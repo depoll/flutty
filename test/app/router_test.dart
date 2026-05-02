@@ -222,7 +222,7 @@ void main() {
     });
   });
 
-  // Characterize routerProvider behavior: it creates a new GoRouter each time
+  // Intentional routerProvider behavior: it creates a new GoRouter each time
   // authStateProvider changes, which resets the navigation back-stack.
   group('routerProvider', () {
     late _MockAuthService authService;
@@ -244,8 +244,8 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
-    test('returns a new GoRouter instance when authState changes '
-        '(back-stack is reset on auth state transitions)', () async {
+    test('intentionally returns a new GoRouter instance when authState changes '
+        'to reset protected back-stack history', () async {
       // Initialise the auth notifier and let it settle to notConfigured.
       container.read(authStateProvider);
       await pumpEventQueue();
@@ -259,16 +259,45 @@ void main() {
 
       final routerAfter = container.read(routerProvider);
 
-      // routerProvider uses ref.watch(authStateProvider), so every auth
-      // state change rebuilds the provider and produces a fresh GoRouter.
-      // Any navigation history accumulated on the previous router is lost.
+      // routerProvider intentionally uses ref.watch(authStateProvider), so
+      // every auth state change rebuilds the provider and produces a fresh
+      // GoRouter. Any navigation history accumulated on the previous router is
+      // lost instead of being kept behind the lock screen.
       expect(
         routerAfter,
         isNot(same(routerBefore)),
         reason:
-            'routerProvider creates a new GoRouter on each auth state '
-            'change; navigation history (back-stack) is not preserved '
-            'across lock/unlock transitions.',
+            'Persistent GoRouter refresh behavior is deferred because the '
+            'current rebuild clears protected navigation history across '
+            'lock/unlock transitions. A persistent router must first prove '
+            'that back navigation cannot reveal protected routes.',
+      );
+    });
+
+    test('persistent router refresh behavior is deferred until notification '
+        'deep-links and lock back-stack safety are proven together', () async {
+      container.read(authStateProvider);
+      await pumpEventQueue();
+      expect(container.read(authStateProvider), AuthState.notConfigured);
+
+      final routerBeforeLock = container.read(routerProvider);
+
+      container.read(authStateProvider.notifier).lockForAutoLock();
+      expect(container.read(authStateProvider), AuthState.locked);
+
+      final routerWhileLocked = container.read(routerProvider);
+      expect(routerWhileLocked, isNot(same(routerBeforeLock)));
+
+      expect(
+        redirectForAuthState(
+          authState: AuthState.locked,
+          matchedLocation: '/terminal/42',
+        ),
+        '/lock',
+        reason:
+            'Notification terminal deep-links remain fail-closed while '
+            'locked; a persistent router must preserve this before it can '
+            'keep back-stack state.',
       );
     });
 

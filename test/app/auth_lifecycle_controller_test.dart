@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs, directives_ordering
 
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,9 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/app/auth_lifecycle_controller.dart';
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 
@@ -33,6 +37,9 @@ void main() {
       overrides: [
         databaseProvider.overrideWithValue(database),
         authServiceProvider.overrideWithValue(authService),
+        secretEncryptionServiceProvider.overrideWithValue(
+          SecretEncryptionService.forTesting(),
+        ),
         dateTimeNowProvider.overrideWithValue(() => now),
       ],
     );
@@ -106,6 +113,47 @@ void main() {
       await controller.handleLifecycleStateChanged(AppLifecycleState.resumed);
 
       expect(container.read(authStateProvider), AuthState.unlocked);
+    });
+
+    test('clears repository decrypt caches when auto-locking', () async {
+      container.read(authStateProvider);
+      await pumpEventQueue();
+      await container.read(authStateProvider.notifier).unlockWithPin('1234');
+
+      final hostRepository = container.read(hostRepositoryProvider);
+      final keyRepository = container.read(keyRepositoryProvider);
+
+      final hostId = await hostRepository.insert(
+        HostsCompanion.insert(
+          label: 'Host',
+          hostname: 'host.example.com',
+          username: 'user',
+          password: const Value('host-secret'),
+        ),
+      );
+      final keyId = await keyRepository.insert(
+        SshKeysCompanion.insert(
+          name: 'Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA',
+          privateKey: 'key-secret',
+          passphrase: const Value('passphrase-secret'),
+        ),
+      );
+
+      await hostRepository.getById(hostId);
+      await keyRepository.getById(keyId);
+      expect(hostRepository.debugDecryptionCacheSize, 1);
+      expect(keyRepository.debugDecryptionCacheSize, 2);
+
+      final controller = container.read(authLifecycleControllerProvider);
+      await controller.handleLifecycleStateChanged(AppLifecycleState.paused);
+      now = now.add(const Duration(minutes: 5));
+      await controller.handleLifecycleStateChanged(AppLifecycleState.resumed);
+
+      expect(container.read(authStateProvider), AuthState.locked);
+      expect(hostRepository.debugDecryptionCacheSize, 0);
+      expect(keyRepository.debugDecryptionCacheSize, 0);
     });
   });
 }

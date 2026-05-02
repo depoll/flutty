@@ -54,6 +54,32 @@ void main() {
       );
     });
 
+    test(
+      'encryptRequired does not double-encrypt an already-encrypted value',
+      () async {
+        const plaintext = 'secret-for-required';
+        final encrypted = await service.encryptRequired(plaintext);
+        final reencrypted = await service.encryptRequired(encrypted);
+
+        expect(reencrypted, encrypted);
+        await expectLater(
+          service.decryptRequired(reencrypted),
+          completion(plaintext),
+        );
+      },
+    );
+
+    test('encryptNullable is idempotent under repeated calls', () async {
+      const plaintext = 'repeat-me';
+      final once = await service.encryptNullable(plaintext);
+      final twice = await service.encryptNullable(once);
+      final thrice = await service.encryptNullable(twice);
+
+      expect(twice, once);
+      expect(thrice, once);
+      await expectLater(service.decryptNullable(thrice), completion(plaintext));
+    });
+
     test('encrypts malformed ENCv1-prefixed plaintext', () async {
       const prefixedPlaintext = 'ENCv1:not-a-valid-envelope';
       final encrypted = await service.encryptNullable(prefixedPlaintext);

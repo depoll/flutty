@@ -14,6 +14,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../models/auto_connect_command.dart';
 import '../models/host_cli_launch_preferences.dart';
+import 'diagnostics_log_service.dart';
 import 'host_cli_launch_preferences_service.dart';
 import 'host_key_verification.dart';
 import 'key_service.dart';
@@ -145,11 +146,28 @@ class MigrationPreview {
 /// Service that encrypts and imports offline transfer payloads.
 class SecureTransferService {
   /// Creates a new [SecureTransferService].
-  SecureTransferService(this._db, this._keyRepository, this._hostRepository);
+  ///
+  /// [isolateAssemblyThresholdBytes] controls the serialized payload size (in
+  /// bytes) above which JSON/base64 assembly is offloaded to a background
+  /// isolate, avoiding platform-thread jank for large migration payloads.
+  /// Defaults to 64 KiB. Pass `0` to force the isolate path for all payloads
+  /// (useful in tests); pass a very large value to always use the inline path.
+  SecureTransferService(
+    this._db,
+    this._keyRepository,
+    this._hostRepository, {
+    int isolateAssemblyThresholdBytes = _defaultIsolateAssemblyThresholdBytes,
+    DiagnosticsLogger diagnosticsLogger = const NoopDiagnosticsLogger(),
+  }) : _isolateAssemblyThresholdBytes = isolateAssemblyThresholdBytes,
+       _diagnosticsLogger = diagnosticsLogger;
+
+  static const _defaultIsolateAssemblyThresholdBytes = 64 * 1024;
 
   final AppDatabase _db;
   final KeyRepository _keyRepository;
   final HostRepository _hostRepository;
+  final int _isolateAssemblyThresholdBytes;
+  final DiagnosticsLogger _diagnosticsLogger;
   final _random = Random.secure();
   final _aesGcm = AesGcm.with256bits();
   final _sha256 = Sha256();
@@ -355,12 +373,20 @@ class SecureTransferService {
       }
     }
 
-    final payloadJson = jsonDecode(utf8.decode(plaintext));
-    if (payloadJson is! Map) {
-      throw const FormatException('Invalid decrypted payload');
+    // For large payloads, offload JSON parsing to a background isolate to
+    // avoid blocking the platform thread during deserialization.
+    final Map<String, dynamic> payloadJsonMap;
+    if (plaintext.length >= _isolateAssemblyThresholdBytes) {
+      payloadJsonMap = await compute(_jsonDecodeFromBytes, plaintext);
+    } else {
+      final payloadJson = jsonDecode(utf8.decode(plaintext));
+      if (payloadJson is! Map) {
+        throw const FormatException('Invalid decrypted payload');
+      }
+      payloadJsonMap = Map<String, dynamic>.from(payloadJson);
     }
 
-    return TransferPayload.fromJson(Map<String, dynamic>.from(payloadJson));
+    return TransferPayload.fromJson(payloadJsonMap);
   }
 
   /// Imports a host payload and returns the created host.
@@ -511,58 +537,88 @@ class SecureTransferService {
     Set<String>? allowedSettingsKeys,
     bool includeKnownHosts = true,
   }) async {
-    await _db.transaction(() async {
-      var deferForeignKeysEnabled = false;
-      try {
-        if (mode == MigrationImportMode.replace) {
-          await _db.customStatement('PRAGMA defer_foreign_keys = ON');
-          deferForeignKeysEnabled = true;
-          await _clearMigrationTables(clearKnownHosts: includeKnownHosts);
-        }
+    final diagnosticsFields = _migrationImportDiagnosticsFields(
+      data: data,
+      mode: mode,
+      allowedSettingsKeys: allowedSettingsKeys,
+      includeKnownHosts: includeKnownHosts,
+    );
+    _diagnosticsLogger.info(
+      'secure_transfer',
+      'migration_import_started',
+      fields: diagnosticsFields,
+    );
+    try {
+      await _db.transaction(() async {
+        var deferForeignKeysEnabled = false;
+        try {
+          if (mode == MigrationImportMode.replace) {
+            await _db.customStatement('PRAGMA defer_foreign_keys = ON');
+            deferForeignKeysEnabled = true;
+            await _clearMigrationTables(clearKnownHosts: includeKnownHosts);
+          }
 
-        final groupMapping = await _importGroups(_listFromData(data, 'groups'));
-        final keyMapping = await _importKeys(_listFromData(data, 'keys'));
-        final snippetFolderMapping = await _importSnippetFolders(
-          _listFromData(data, 'snippetFolders'),
-        );
-        final rawHosts = _listFromData(data, 'hosts');
-        final importedAutoConnectSnippetIds = rawHosts
-            .map((host) => _optionalInt(host['autoConnectSnippetId']))
-            .whereType<int>()
-            .toSet();
-        final snippetMapping = await _importSnippets(
-          _listFromData(data, 'snippets'),
-          snippetFolderMapping: snippetFolderMapping,
-          autoConnectSnippetIds: importedAutoConnectSnippetIds,
-        );
-        final hostMapping = await _importHosts(
-          rawHosts,
-          groupMapping: groupMapping,
-          keyMapping: keyMapping,
-          snippetMapping: snippetMapping,
-        );
-        await _importPortForwards(
-          _listFromData(data, 'portForwards'),
-          hostMapping: hostMapping,
-        );
-        if (includeKnownHosts) {
-          await _importKnownHosts(
-            _listFromData(data, 'knownHosts'),
-            mode: mode,
+          final groupMapping = await _importGroups(
+            _listFromData(data, 'groups'),
           );
+          final keyMapping = await _importKeys(_listFromData(data, 'keys'));
+          final snippetFolderMapping = await _importSnippetFolders(
+            _listFromData(data, 'snippetFolders'),
+          );
+          final rawHosts = _listFromData(data, 'hosts');
+          final importedAutoConnectSnippetIds = rawHosts
+              .map((host) => _optionalInt(host['autoConnectSnippetId']))
+              .whereType<int>()
+              .toSet();
+          final snippetMapping = await _importSnippets(
+            _listFromData(data, 'snippets'),
+            snippetFolderMapping: snippetFolderMapping,
+            autoConnectSnippetIds: importedAutoConnectSnippetIds,
+          );
+          final hostMapping = await _importHosts(
+            rawHosts,
+            groupMapping: groupMapping,
+            keyMapping: keyMapping,
+            snippetMapping: snippetMapping,
+          );
+          await _importPortForwards(
+            _listFromData(data, 'portForwards'),
+            hostMapping: hostMapping,
+          );
+          if (includeKnownHosts) {
+            await _importKnownHosts(
+              _listFromData(data, 'knownHosts'),
+              mode: mode,
+            );
+          }
+          await _importSettings(
+            _settingsFromData(data),
+            clearExisting: mode == MigrationImportMode.replace,
+            allowedSettingsKeys: allowedSettingsKeys,
+            hostMapping: hostMapping,
+          );
+        } finally {
+          if (deferForeignKeysEnabled) {
+            await _db.customStatement('PRAGMA defer_foreign_keys = OFF');
+          }
         }
-        await _importSettings(
-          _settingsFromData(data),
-          clearExisting: mode == MigrationImportMode.replace,
-          allowedSettingsKeys: allowedSettingsKeys,
-          hostMapping: hostMapping,
-        );
-      } finally {
-        if (deferForeignKeysEnabled) {
-          await _db.customStatement('PRAGMA defer_foreign_keys = OFF');
-        }
-      }
-    });
+      });
+      _diagnosticsLogger.info(
+        'secure_transfer',
+        'migration_import_completed',
+        fields: diagnosticsFields,
+      );
+    } on Object catch (error) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'migration_import_failed',
+        fields: {
+          ...diagnosticsFields,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+      rethrow;
+    }
   }
 
   Future<String> _encryptPayload(
@@ -573,7 +629,9 @@ class SecureTransferService {
       throw const FormatException('Transfer passphrase is required');
     }
 
-    final payloadBytes = utf8.encode(jsonEncode(payload.toJson()));
+    final payloadBytes = Uint8List.fromList(
+      utf8.encode(jsonEncode(payload.toJson())),
+    );
     final salt = _randomBytes(_saltBytes);
     final nonce = _randomBytes(_nonceBytes);
     final secretKey = await _deriveArgon2idKey(
@@ -589,6 +647,26 @@ class SecureTransferService {
       nonce: nonce,
     );
     final checksum = await _sha256.hash(payloadBytes);
+
+    // For large payloads, offload the JSON/base64 envelope assembly to a
+    // background isolate to avoid blocking the platform thread during
+    // serialization of potentially large ciphertext blobs.
+    if (payloadBytes.length >= _isolateAssemblyThresholdBytes) {
+      return compute(_assembleTransferEnvelope, {
+        'prefix': _payloadPrefix,
+        'v': _envelopeVersion,
+        'alg': 'AES-GCM-256',
+        'kdf': 'Argon2id',
+        'iter': _argon2idIterations,
+        'mem': _argon2idMemoryKiB,
+        'lanes': _argon2idLanes,
+        'salt': salt,
+        'nonce': nonce,
+        'ciphertext': encryptedBox.cipherText,
+        'mac': encryptedBox.mac.bytes,
+        'checksum': checksum.bytes,
+      });
+    }
 
     final envelope = {
       'v': _envelopeVersion,
@@ -1166,6 +1244,35 @@ class SecureTransferService {
         .toList(growable: false);
   }
 
+  Map<String, Object?> _migrationImportDiagnosticsFields({
+    required Map<String, dynamic> data,
+    required MigrationImportMode mode,
+    required Set<String>? allowedSettingsKeys,
+    required bool includeKnownHosts,
+  }) => {
+    'mode': mode,
+    'includeKnownHosts': includeKnownHosts,
+    'settingsCount': _mapCount(data, 'settings'),
+    'allowedSettingsKeyCount': allowedSettingsKeys?.length,
+    'groupCount': _listCount(data, 'groups'),
+    'keyCount': _listCount(data, 'keys'),
+    'hostCount': _listCount(data, 'hosts'),
+    'snippetFolderCount': _listCount(data, 'snippetFolders'),
+    'snippetCount': _listCount(data, 'snippets'),
+    'portForwardCount': _listCount(data, 'portForwards'),
+    'knownHostCount': includeKnownHosts ? _listCount(data, 'knownHosts') : 0,
+  };
+
+  int _listCount(Map<String, dynamic> data, String key) {
+    final value = data[key];
+    return value is List ? value.length : 0;
+  }
+
+  int _mapCount(Map<String, dynamic> data, String key) {
+    final value = data[key];
+    return value is Map ? value.length : 0;
+  }
+
   Map<String, String> _settingsFromData(Map<String, dynamic> data) {
     final rawSettings = data['settings'];
     if (rawSettings is! Map) {
@@ -1556,6 +1663,7 @@ final secureTransferServiceProvider = Provider<SecureTransferService>(
     ref.watch(databaseProvider),
     ref.watch(keyRepositoryProvider),
     ref.watch(hostRepositoryProvider),
+    diagnosticsLogger: ref.watch(diagnosticsLoggerProvider),
   ),
 );
 
@@ -1577,4 +1685,40 @@ List<int> _deriveArgon2idKeyBytes(Map<String, Object> request) {
       ),
     );
   return generator.process(Uint8List.fromList(utf8.encode(passphrase)));
+}
+
+/// Assembles the outer base64url-encoded transfer envelope string from raw
+/// encryption outputs.
+///
+/// Accepts a map with keys: `prefix` (String), `v`, `iter`, `mem`, `lanes`
+/// (int), `alg`, `kdf` (String), `salt`, `nonce`, `ciphertext`, `mac`,
+/// `checksum` (`List<int>`). Invoked via [compute] for large payloads.
+String _assembleTransferEnvelope(Map<String, Object> params) {
+  final prefix = params['prefix']! as String;
+  final envelope = {
+    'v': params['v'],
+    'alg': params['alg'],
+    'kdf': params['kdf'],
+    'iter': params['iter'],
+    'mem': params['mem'],
+    'lanes': params['lanes'],
+    'salt': base64Url.encode(params['salt']! as List<int>),
+    'nonce': base64Url.encode(params['nonce']! as List<int>),
+    'ciphertext': base64Url.encode(params['ciphertext']! as List<int>),
+    'mac': base64Url.encode(params['mac']! as List<int>),
+    'checksum': base64Url.encode(params['checksum']! as List<int>),
+  };
+  return '$prefix${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
+}
+
+/// Decodes UTF-8-encoded JSON bytes to a [Map].
+///
+/// Throws [FormatException] if the bytes do not decode to a JSON object.
+/// Invoked via [compute] for large payloads.
+Map<String, dynamic> _jsonDecodeFromBytes(List<int> bytes) {
+  final decoded = jsonDecode(utf8.decode(bytes));
+  if (decoded is! Map) {
+    throw const FormatException('Invalid decrypted payload');
+  }
+  return Map<String, dynamic>.from(decoded);
 }

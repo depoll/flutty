@@ -22,6 +22,8 @@ import 'ssh_exec_queue.dart';
 import 'terminal_hyperlink_tracker.dart';
 import 'wifi_network_service.dart';
 
+part 'ssh_session_runtime.dart';
+
 /// Current terminal dimensions used to answer terminal size queries.
 typedef TerminalWindowMetrics = ({
   int columns,
@@ -1879,35 +1881,14 @@ class SshSession {
   final ClipboardSharingService _clipboardSharingService =
       const ClipboardSharingService();
 
-  SSHSession? _shell;
-  StreamController<String>? _shellStdoutController;
-  StreamController<String>? _shellStderrController;
-  StreamController<void>? _shellDoneController;
-  StreamSubscription<String>? _shellStdoutSubscription;
-  StreamSubscription<String>? _shellStderrSubscription;
-  StreamSubscription<void>? _shellDoneSubscription;
-  Timer? _previewRefreshTimer;
-  Timer? _shellIoDiagnosticsTimer;
-  int _shellStdoutChunkCount = 0;
-  int _shellStdoutCharCount = 0;
-  int _shellStderrChunkCount = 0;
-  int _shellStderrCharCount = 0;
-  int _shellStdinWriteCount = 0;
-  int _shellStdinCharCount = 0;
-  TerminalWindowMetrics? _terminalWindowMetrics;
-  String _terminalWindowQueryPendingInput = '';
-  String _terminalTmuxPassthroughPendingInput = '';
-  String _terminalControlModeUpdatePendingInput = '';
-  bool _terminalColorSchemeUpdatesMode = false;
-
-  /// Persistent terminal that survives screen rebuilds.
-  Terminal? _terminal;
+  late final _SshSessionRuntime _runtime = _SshSessionRuntime(this);
 
   /// The active terminal theme used to answer remote OSC color queries.
   TerminalThemeData? terminalTheme;
 
   /// Whether the foreground app requested xterm color-scheme update reports.
-  bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
+  bool get terminalColorSchemeUpdatesMode =>
+      _runtime.terminalColorSchemeUpdatesMode;
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
@@ -1922,7 +1903,7 @@ class SshSession {
   int? _lastExitCode;
 
   /// The persistent terminal for this session. Created on first shell open.
-  Terminal? get terminal => _terminal;
+  Terminal? get terminal => _runtime.terminal;
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
@@ -1948,14 +1929,12 @@ class SshSession {
     required int rows,
     required int pixelWidth,
     required int pixelHeight,
-  }) {
-    _terminalWindowMetrics = (
-      columns: columns,
-      rows: rows,
-      pixelWidth: pixelWidth,
-      pixelHeight: pixelHeight,
-    );
-  }
+  }) => _runtime.updateTerminalWindowMetrics(
+    columns: columns,
+    rows: rows,
+    pixelWidth: pixelWidth,
+    pixelHeight: pixelHeight,
+  );
 
   /// Adds a listener for terminal preview and preview-adjacent metadata changes.
   void addPreviewListener(VoidCallback listener) {
@@ -1996,16 +1975,8 @@ class SshSession {
   }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
-  Terminal getOrCreateTerminal({int maxLines = 10000}) {
-    _terminal ??= Terminal(maxLines: maxLines);
-    _terminal!
-      ..onTitleChange = _handleWindowTitleChange
-      ..onIconChange = _handleIconNameChange;
-    terminalHyperlinkTracker.attach(_terminal!);
-    _terminal!.onPrivateOSC = _handlePrivateOsc;
-    _refreshTerminalPreview();
-    return _terminal!;
-  }
+  Terminal getOrCreateTerminal({int maxLines = 10000}) =>
+      _runtime.getOrCreateTerminal(maxLines: maxLines);
 
   /// Active port forward tunnels.
   final Map<int, _ActiveTunnel> _activeTunnels = {};
@@ -2024,378 +1995,30 @@ class SshSession {
       .toList();
 
   /// Get or create a shell session.
-  Future<SSHSession> getShell({
-    SSHPtyConfig? pty,
-    bool forceNew = false,
-  }) async {
-    if (forceNew) {
-      await closeShell();
-    }
-    if (_shell == null) {
-      DiagnosticsLogService.instance.info(
-        'ssh.shell',
-        'open_start',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          'requestedPty': pty != null,
-        },
-      );
-      try {
-        _shell = await client.shell(pty: pty ?? const SSHPtyConfig());
-        DiagnosticsLogService.instance.info(
-          'ssh.shell',
-          'open_success',
-          fields: {'connectionId': connectionId},
-        );
-      } on Object catch (error) {
-        DiagnosticsLogService.instance.error(
-          'ssh.shell',
-          'open_failed',
-          fields: {
-            'connectionId': connectionId,
-            'errorType': error.runtimeType,
-          },
-        );
-        rethrow;
-      }
-    } else {
-      DiagnosticsLogService.instance.debug(
-        'ssh.shell',
-        'reuse_existing',
-        fields: {'connectionId': connectionId},
-      );
-    }
-    _ensureShellStreamPipes();
-    return _shell!;
-  }
+  Future<SSHSession> getShell({SSHPtyConfig? pty, bool forceNew = false}) =>
+      _runtime.getShell(pty: pty, forceNew: forceNew);
 
   /// Shell stdout as a broadcast stream for screen re-attachment.
-  Stream<String> get shellStdoutStream =>
-      _shellStdoutController?.stream ?? const Stream.empty();
+  Stream<String> get shellStdoutStream => _runtime.shellStdoutStream;
 
   /// Shell stderr as a broadcast stream for screen re-attachment.
-  Stream<String> get shellStderrStream =>
-      _shellStderrController?.stream ?? const Stream.empty();
+  Stream<String> get shellStderrStream => _runtime.shellStderrStream;
 
   /// Shell done event stream for screen re-attachment.
-  Stream<void> get shellDoneStream =>
-      _shellDoneController?.stream ?? const Stream.empty();
+  Stream<void> get shellDoneStream => _runtime.shellDoneStream;
 
   /// Close only the interactive shell channel while keeping the SSH client.
-  Future<void> closeShell({bool waitForStreams = true}) async {
-    _flushShellIoDiagnostics();
-    _shellIoDiagnosticsTimer?.cancel();
-    _shellIoDiagnosticsTimer = null;
-    DiagnosticsLogService.instance.info(
-      'ssh.shell',
-      'close_start',
-      fields: {'connectionId': connectionId, 'hadShell': _shell != null},
-    );
-    _previewRefreshTimer?.cancel();
-    _previewRefreshTimer = null;
-    if (waitForStreams) {
-      await _shellStdoutSubscription?.cancel();
-      await _shellStderrSubscription?.cancel();
-      await _shellDoneSubscription?.cancel();
-    } else {
-      unawaited(_shellStdoutSubscription?.cancel());
-      unawaited(_shellStderrSubscription?.cancel());
-      unawaited(_shellDoneSubscription?.cancel());
-    }
-    _shellStdoutSubscription = null;
-    _shellStderrSubscription = null;
-    _shellDoneSubscription = null;
+  Future<void> closeShell({bool waitForStreams = true}) =>
+      _runtime.closeShell(waitForStreams: waitForStreams);
 
-    if (waitForStreams) {
-      await _shellStdoutController?.close();
-      await _shellStderrController?.close();
-      await _shellDoneController?.close();
-    } else {
-      unawaited(_shellStdoutController?.close());
-      unawaited(_shellStderrController?.close());
-      unawaited(_shellDoneController?.close());
-    }
-    _shellStdoutController = null;
-    _shellStderrController = null;
-    _shellDoneController = null;
-
-    _shell?.close();
-    _shell = null;
+  void _resetShellRuntimeMetadata() {
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
     _iconName = null;
     _workingDirectory = null;
     _shellStatus = null;
     _lastExitCode = null;
-    _terminalWindowMetrics = null;
-    _terminalWindowQueryPendingInput = '';
-    _terminalTmuxPassthroughPendingInput = '';
-    _terminalControlModeUpdatePendingInput = '';
-    _terminalColorSchemeUpdatesMode = false;
-    _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
-    DiagnosticsLogService.instance.info(
-      'ssh.shell',
-      'close_complete',
-      fields: {'connectionId': connectionId},
-    );
-  }
-
-  void _ensureShellStreamPipes() {
-    if (_shell == null || _shellStdoutController != null) {
-      return;
-    }
-
-    final shell = _shell!;
-    final terminal = getOrCreateTerminal();
-    _shellStdoutController = StreamController<String>.broadcast();
-    _shellStderrController = StreamController<String>.broadcast();
-    _shellDoneController = StreamController<void>.broadcast();
-
-    _shellStdoutSubscription = shell.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen(
-          (data) {
-            _recordShellIo(stdoutChars: data.length);
-            final terminalData = _unwrapTerminalTmuxPassthrough(data);
-            if (terminalData.isNotEmpty) {
-              terminal.write(terminalData);
-              _respondToTerminalWindowControlQueries(terminalData, terminal);
-            }
-            _scheduleTerminalPreviewRefresh();
-            final stdoutController = _shellStdoutController;
-            if (identical(_shell, shell) &&
-                stdoutController != null &&
-                !stdoutController.isClosed) {
-              stdoutController.add(data);
-            }
-          },
-          onError: (Object error, StackTrace stackTrace) {
-            DiagnosticsLogService.instance.error(
-              'ssh.shell',
-              'stdout_error',
-              fields: {
-                'connectionId': connectionId,
-                'errorType': error.runtimeType,
-              },
-            );
-            final stdoutController = _shellStdoutController;
-            if (identical(_shell, shell) &&
-                stdoutController != null &&
-                !stdoutController.isClosed) {
-              stdoutController.addError(error, stackTrace);
-            }
-          },
-        );
-    _shellStderrSubscription = shell.stderr
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen(
-          (data) {
-            _recordShellIo(stderrChars: data.length);
-            terminal.write(data);
-            _scheduleTerminalPreviewRefresh();
-            final stderrController = _shellStderrController;
-            if (identical(_shell, shell) &&
-                stderrController != null &&
-                !stderrController.isClosed) {
-              stderrController.add(data);
-            }
-          },
-          onError: (Object error, StackTrace stackTrace) {
-            DiagnosticsLogService.instance.error(
-              'ssh.shell',
-              'stderr_error',
-              fields: {
-                'connectionId': connectionId,
-                'errorType': error.runtimeType,
-              },
-            );
-            final stderrController = _shellStderrController;
-            if (identical(_shell, shell) &&
-                stderrController != null &&
-                !stderrController.isClosed) {
-              stderrController.addError(error, stackTrace);
-            }
-          },
-        );
-    _shellDoneSubscription = shell.done.asStream().listen(
-      (_) {
-        DiagnosticsLogService.instance.info(
-          'ssh.shell',
-          'done',
-          fields: {'connectionId': connectionId},
-        );
-        final doneController = _shellDoneController;
-        if (identical(_shell, shell) &&
-            doneController != null &&
-            !doneController.isClosed) {
-          doneController.add(null);
-        }
-      },
-      onError: (Object error, StackTrace stackTrace) {
-        DiagnosticsLogService.instance.error(
-          'ssh.shell',
-          'done_error',
-          fields: {
-            'connectionId': connectionId,
-            'errorType': error.runtimeType,
-          },
-        );
-        final doneController = _shellDoneController;
-        if (identical(_shell, shell) &&
-            doneController != null &&
-            !doneController.isClosed) {
-          doneController.addError(error, stackTrace);
-        }
-      },
-    );
-
-    // Wire terminal keyboard output → shell stdin (persistent).
-    terminal.onOutput = (data) {
-      final output = normalizeTerminalOutputForRemoteShell(data);
-      _recordShellIo(stdinChars: output.length);
-      shell.write(utf8.encode(output));
-    };
-    _refreshTerminalPreview();
-  }
-
-  void _recordShellIo({
-    int stdoutChars = 0,
-    int stderrChars = 0,
-    int stdinChars = 0,
-  }) {
-    if (!DiagnosticsLogService.instance.enabled) {
-      return;
-    }
-    if (stdoutChars > 0) {
-      _shellStdoutChunkCount += 1;
-      _shellStdoutCharCount += stdoutChars;
-    }
-    if (stderrChars > 0) {
-      _shellStderrChunkCount += 1;
-      _shellStderrCharCount += stderrChars;
-    }
-    if (stdinChars > 0) {
-      _shellStdinWriteCount += 1;
-      _shellStdinCharCount += stdinChars;
-    }
-    if (!(_shellIoDiagnosticsTimer?.isActive ?? false)) {
-      _shellIoDiagnosticsTimer = Timer(
-        _shellIoDiagnosticsInterval,
-        _flushShellIoDiagnostics,
-      );
-    }
-  }
-
-  void _flushShellIoDiagnostics() {
-    _shellIoDiagnosticsTimer?.cancel();
-    _shellIoDiagnosticsTimer = null;
-    if (_shellStdoutChunkCount == 0 &&
-        _shellStderrChunkCount == 0 &&
-        _shellStdinWriteCount == 0) {
-      return;
-    }
-    DiagnosticsLogService.instance.debug(
-      'ssh.shell',
-      'io_summary',
-      fields: {
-        'connectionId': connectionId,
-        'stdoutChunks': _shellStdoutChunkCount,
-        'stdoutChars': _shellStdoutCharCount,
-        'stderrChunks': _shellStderrChunkCount,
-        'stderrChars': _shellStderrCharCount,
-        'stdinWrites': _shellStdinWriteCount,
-        'stdinChars': _shellStdinCharCount,
-      },
-    );
-    _shellStdoutChunkCount = 0;
-    _shellStdoutCharCount = 0;
-    _shellStderrChunkCount = 0;
-    _shellStderrCharCount = 0;
-    _shellStdinWriteCount = 0;
-    _shellStdinCharCount = 0;
-  }
-
-  void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
-    final modeUpdateResult = extractTerminalControlModeUpdates(
-      input: data,
-      pendingInput: _terminalControlModeUpdatePendingInput,
-    );
-    _terminalControlModeUpdatePendingInput = modeUpdateResult.pendingInput;
-    final nextColorSchemeUpdatesMode = modeUpdateResult.colorSchemeUpdatesMode;
-    if (nextColorSchemeUpdatesMode != null &&
-        nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
-      _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
-    }
-
-    final result = buildTerminalWindowControlQueryResponses(
-      input: data,
-      pendingInput: _terminalWindowQueryPendingInput,
-      metrics: _terminalWindowMetrics,
-      modeState: _terminalModeState(terminal),
-      theme: terminalTheme,
-    );
-    _terminalWindowQueryPendingInput = result.pendingInput;
-
-    final response = result.response;
-    if (response == null) {
-      return;
-    }
-
-    _shell?.write(utf8.encode(response));
-  }
-
-  String _unwrapTerminalTmuxPassthrough(String data) {
-    final result = unwrapTerminalTmuxPassthroughSequences(
-      input: data,
-      pendingInput: _terminalTmuxPassthroughPendingInput,
-    );
-    _terminalTmuxPassthroughPendingInput = result.pendingInput;
-    return result.output;
-  }
-
-  TerminalControlModeState _terminalModeState(Terminal terminal) => (
-    reportFocusMode: terminal.reportFocusMode,
-    bracketedPasteMode: terminal.bracketedPasteMode,
-    colorSchemeUpdatesMode: _terminalColorSchemeUpdatesMode,
-    isUsingAltBuffer: terminal.isUsingAltBuffer,
-    mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
-    mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,
-    mouseMoveTrackingMode: terminal.mouseMode == MouseMode.upDownScrollMove,
-    sgrMouseReportMode: terminal.mouseReportMode == MouseReportMode.sgr,
-  );
-
-  void _scheduleTerminalPreviewRefresh() {
-    if (_previewRefreshTimer?.isActive ?? false) {
-      return;
-    }
-    _previewRefreshTimer = Timer(_previewRefreshInterval, () {
-      _previewRefreshTimer = null;
-      _refreshTerminalPreview();
-    });
-  }
-
-  void _refreshTerminalPreview() {
-    final nextPreview = _terminal == null
-        ? null
-        : buildTerminalPreview(_terminal!);
-    if (nextPreview == _terminalPreview) {
-      return;
-    }
-    _terminalPreview = nextPreview;
-    DiagnosticsLogService.instance.debug(
-      'ssh.preview',
-      'changed',
-      fields: {
-        'connectionId': connectionId,
-        'hasPreview': nextPreview != null,
-        'charCount': nextPreview?.length ?? 0,
-      },
-    );
-    _notifyPreviewChanged();
   }
 
   void _handleWindowTitleChange(String title) {
@@ -2441,7 +2064,7 @@ class SshSession {
           'connectionId': connectionId,
           'code': code,
           'themeId': terminalTheme?.id,
-          'hasShell': _shell != null,
+          'hasShell': _runtime.hasShell,
         },
       );
     }
@@ -2453,7 +2076,7 @@ class SshSession {
             args: args,
           );
     if (themeOscResponse != null) {
-      final shell = _shell;
+      final shell = _runtime.shell;
       if (shell == null) {
         DiagnosticsLogService.instance.warning(
           'terminal.osc',
@@ -2555,8 +2178,8 @@ class SshSession {
       _clipboardSharingService
           .handleOsc52(args, allowLocalClipboardRead: localClipboardReadEnabled)
           .then((response) {
-            if (response != null && _shell != null) {
-              _shell!.write(utf8.encode(response));
+            if (response != null) {
+              _runtime.writeToShell(response);
             }
           })
           .catchError((Object error, StackTrace stackTrace) {

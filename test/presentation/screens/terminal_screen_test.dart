@@ -860,6 +860,86 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
+    testWidgets(
+      'build-path sets session.terminalTheme on initial build',
+      (tester) async {
+        await pumpScreen(tester);
+
+        // After the initial build sequence the session must have a theme.
+        expect(session.terminalTheme, isNotNull);
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'build-path does not re-trigger TUI refresh on rebuild with unchanged '
+      'effective theme (idempotency guard)',
+      (tester) async {
+        await pumpScreen(tester);
+        // Enable plain-TUI signals so that a "first theme assigned to session"
+        // event would cause focus-loss/focus-gain writes to the shell if the
+        // theme were re-applied.
+        enablePlainTuiSignals();
+
+        // Manually clear the session theme to simulate the state that would
+        // cause a spurious TUI refresh if the build-path guard were absent:
+        // session.terminalTheme == null means _shouldRefreshFirstTheme == true.
+        session.terminalTheme = null;
+        shellWrites.clear();
+
+        // Trigger a rebuild without any theme change by switching the terminal
+        // into the alternate screen buffer, which causes _onTerminalStateChanged
+        // to call setState.
+        session.terminal!.write('\x1b[?1049h');
+        await tester.pump();
+
+        final writtenText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+
+        // The build-path guard (_lastBuildAppliedTheme) must prevent
+        // _applyTerminalThemeToSession from being called again — no TUI
+        // refresh writes and the session theme should remain null.
+        expect(writtenText, isEmpty);
+        expect(session.terminalTheme, isNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'build-path re-applies theme after effective theme changes between '
+      'rebuilds (guard does not suppress new theme)',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        // Simulate the session theme being cleared (e.g. after a fresh
+        // connection).
+        session.terminalTheme = null;
+        shellWrites.clear();
+
+        // Change the effective theme — _lastBuildAppliedTheme is now stale.
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        // The new dark theme must have been applied to the session.
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
     Future<void> pumpTmuxScreen(
       WidgetTester tester,
       _MockTmuxService tmuxService,

@@ -271,6 +271,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 }
 
 /// Data for a single card in a stacked connection preview.
+@immutable
 class ConnectionPreviewStackEntry {
   /// Creates a [ConnectionPreviewStackEntry].
   const ConnectionPreviewStackEntry({
@@ -287,6 +288,17 @@ class ConnectionPreviewStackEntry {
 
   /// Terminal theme used to tint the preview surface.
   final TerminalThemeData? terminalTheme;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ConnectionPreviewStackEntry &&
+          other.title == title &&
+          other.body == body &&
+          other.terminalTheme == terminalTheme;
+
+  @override
+  int get hashCode => Object.hash(title, body, terminalTheme);
 }
 
 /// Renders one or more connection preview cards in a visibly offset stack.

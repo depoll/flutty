@@ -1219,6 +1219,55 @@ void main() {
     });
   });
 
+  group('terminalRowMayContainPath', () {
+    BufferLine buildLineWithText(String text) {
+      final t = Terminal()..write(text);
+      return t.buffer.lines[0];
+    }
+
+    test('returns true for a row with an absolute path prefix', () {
+      expect(
+        terminalRowMayContainPath(buildLineWithText('ls /var/log/app.log'), 80),
+        isTrue,
+      );
+    });
+
+    test('returns true for a row with a tilde home-relative path', () {
+      expect(
+        terminalRowMayContainPath(
+          buildLineWithText('cat ~/Documents/notes.txt'),
+          80,
+        ),
+        isTrue,
+      );
+    });
+
+    test('returns true for a row containing only a slash', () {
+      expect(terminalRowMayContainPath(buildLineWithText('cd /'), 80), isTrue);
+    });
+
+    test('returns false for a row with plain text and no path characters', () {
+      expect(
+        terminalRowMayContainPath(buildLineWithText('echo hello world'), 80),
+        isFalse,
+      );
+    });
+
+    test('returns false for an empty (blank) row', () {
+      expect(terminalRowMayContainPath(buildLineWithText(''), 80), isFalse);
+    });
+
+    test('returns false for a row with only digits and letters', () {
+      expect(
+        terminalRowMayContainPath(
+          buildLineWithText('git status on branch main'),
+          80,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('resolveTerminalPathTouchTargetRect', () {
     test('covers the path text with nearby padding', () {
       expect(

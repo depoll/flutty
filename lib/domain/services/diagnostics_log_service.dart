@@ -21,6 +21,71 @@ enum DiagnosticsLogLevel {
   error,
 }
 
+/// Minimal diagnostics logging seam for services that emit safe metadata.
+abstract interface class DiagnosticsLogger {
+  /// Records a debug event.
+  void debug(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  });
+
+  /// Records an informational event.
+  void info(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  });
+
+  /// Records a warning event.
+  void warning(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  });
+
+  /// Records an error event.
+  void error(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  });
+}
+
+/// Diagnostics logger that drops all events.
+class NoopDiagnosticsLogger implements DiagnosticsLogger {
+  /// Creates a diagnostics logger that drops events.
+  const NoopDiagnosticsLogger();
+
+  @override
+  void debug(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) {}
+
+  @override
+  void error(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) {}
+
+  @override
+  void info(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) {}
+
+  @override
+  void warning(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) {}
+}
+
 /// A single sanitized diagnostics log entry.
 @immutable
 class DiagnosticsLogEntry {
@@ -79,7 +144,8 @@ class DiagnosticsLogEntry {
 }
 
 /// Preview/beta-only diagnostics log with strict field sanitization.
-class DiagnosticsLogService extends ChangeNotifier {
+class DiagnosticsLogService extends ChangeNotifier
+    implements DiagnosticsLogger {
   /// Creates a diagnostics logger.
   DiagnosticsLogService({
     required this.enabled,
@@ -180,6 +246,7 @@ class DiagnosticsLogService extends ChangeNotifier {
   }
 
   /// Records a debug event.
+  @override
   void debug(
     String category,
     String message, {
@@ -187,6 +254,7 @@ class DiagnosticsLogService extends ChangeNotifier {
   }) => _add(DiagnosticsLogLevel.debug, category, message, fields);
 
   /// Records an informational event.
+  @override
   void info(
     String category,
     String message, {
@@ -194,6 +262,7 @@ class DiagnosticsLogService extends ChangeNotifier {
   }) => _add(DiagnosticsLogLevel.info, category, message, fields);
 
   /// Records a warning event.
+  @override
   void warning(
     String category,
     String message, {
@@ -201,6 +270,7 @@ class DiagnosticsLogService extends ChangeNotifier {
   }) => _add(DiagnosticsLogLevel.warning, category, message, fields);
 
   /// Records an error event.
+  @override
   void error(
     String category,
     String message, {
@@ -353,4 +423,9 @@ class DiagnosticsLogService extends ChangeNotifier {
 /// Provider for the preview diagnostics log.
 final diagnosticsLogServiceProvider = Provider<DiagnosticsLogService>(
   (ref) => DiagnosticsLogService.instance,
+);
+
+/// Provider for injectable diagnostics logging seams.
+final diagnosticsLoggerProvider = Provider<DiagnosticsLogger>(
+  (ref) => ref.watch(diagnosticsLogServiceProvider),
 );

@@ -114,6 +114,7 @@ class _BackgroundLifecycleBridgeState
     extends ConsumerState<_BackgroundLifecycleBridge>
     with WidgetsBindingObserver {
   late final AppLifecycleCoordinator _lifecycleCoordinator;
+  late final AppBootstrapController _bootstrapController;
   StreamSubscription<List<Host>>? _homeScreenShortcutHostsSubscription;
   StreamSubscription<Set<int>>? _pinnedHomeScreenShortcutHostsSubscription;
   StreamSubscription<TmuxAlertNotificationPayload>? _tmuxAlertTapSubscription;
@@ -135,26 +136,18 @@ class _BackgroundLifecycleBridgeState
       syncBackgroundState: () =>
           BackgroundSshService.setForegroundState(isForeground: false),
     );
-    _listenForTmuxAlertNotifications();
-    if (supportsHomeScreenShortcutActions) {
-      _listenForHomeScreenShortcutChanges();
-      _runLifecycleSync(
-        () => ref.read(homeScreenShortcutServiceProvider).initialize(),
-        errorContext:
-            'while initializing home-screen shortcuts during app startup',
-        defer: true,
-      );
-    }
-    _runLifecycleSync(
-      _refreshMonetizationOnStartup,
-      errorContext: 'while refreshing subscription state during app startup',
-      defer: true,
+    _bootstrapController = AppBootstrapController(
+      startNotificationRouting: _startTmuxAlertNotificationRouting,
+      initializeNotificationRouting: _initializeTmuxAlertNotificationRouting,
+      supportsHomeScreenShortcutActions: supportsHomeScreenShortcutActions,
+      startHomeScreenShortcutListeners: _listenForHomeScreenShortcutChanges,
+      initializeHomeScreenShortcuts: () =>
+          ref.read(homeScreenShortcutServiceProvider).initialize(),
+      refreshMonetizationOnStartup: _refreshMonetizationOnStartup,
+      syncForegroundBackgroundStatus: _syncForegroundBackgroundStatus,
+      runStartupTask: _runLifecycleSync,
     );
-    _runLifecycleSync(
-      _syncForegroundBackgroundStatus,
-      errorContext: 'while syncing background SSH status during app startup',
-      defer: true,
-    );
+    _bootstrapController.start();
   }
 
   @override
@@ -167,7 +160,7 @@ class _BackgroundLifecycleBridgeState
     super.dispose();
   }
 
-  void _listenForTmuxAlertNotifications() {
+  void _startTmuxAlertNotificationRouting() {
     final notificationService = ref.read(localNotificationServiceProvider);
     _tmuxAlertTapSubscription = notificationService.tmuxAlertTaps.listen(
       _handleTmuxAlertNotification,
@@ -180,18 +173,15 @@ class _BackgroundLifecycleBridgeState
         _queuePendingTmuxAlertNavigation();
       }
     });
-    _runLifecycleSync(
-      () async {
-        await notificationService.initialize();
-        final launchAlert = await notificationService.consumeLaunchTmuxAlert();
-        if (launchAlert != null) {
-          _handleTmuxAlertNotification(launchAlert);
-        }
-      },
-      errorContext:
-          'while initializing tmux alert notification routing during app startup',
-      defer: true,
-    );
+  }
+
+  Future<void> _initializeTmuxAlertNotificationRouting() async {
+    final notificationService = ref.read(localNotificationServiceProvider);
+    await notificationService.initialize();
+    final launchAlert = await notificationService.consumeLaunchTmuxAlert();
+    if (launchAlert != null) {
+      _handleTmuxAlertNotification(launchAlert);
+    }
   }
 
   bool _canOpenTmuxAlertNotification(AuthState authState) =>

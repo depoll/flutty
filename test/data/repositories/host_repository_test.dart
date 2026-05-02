@@ -381,6 +381,116 @@ void main() {
       expect(updated.autoConnectSnippetId, snippetId);
     });
 
+    test('update does not double-encrypt a pre-encrypted password', () async {
+      const plaintextPassword = 'pre-encrypted-pass';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Secure Host',
+          hostname: '10.0.0.1',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      // Read the raw stored row (password is already encrypted by insert).
+      final rawHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(rawHost.password, startsWith('ENCv1:'));
+      final storedEncryptedPassword = rawHost.password!;
+
+      // Call update with the already-encrypted state (skipping the normal
+      // getById decryption path) to prove no double-encryption occurs.
+      await repository.update(rawHost.copyWith(label: 'Updated Host'));
+
+      final afterUpdate = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(afterUpdate.password, startsWith('ENCv1:'));
+      // The stored value must not be a double-wrapped ENCv1 envelope.
+      expect(afterUpdate.password, isNot(contains('ENCv1:ENCv1:')));
+      // The stored value should be identical since the service skips
+      // re-encrypting an already valid envelope.
+      expect(afterUpdate.password, storedEncryptedPassword);
+
+      // Round-trip through the repository should still yield original plaintext.
+      final decrypted = await repository.getById(id);
+      expect(decrypted!.password, plaintextPassword);
+    });
+
+    test('toggleFavorite does not double-encrypt the password', () async {
+      const plaintextPassword = 'fav-password';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Host',
+          hostname: '10.0.0.2',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      // Two toggles to exercise the full update cycle twice.
+      await repository.toggleFavorite(id);
+      await repository.toggleFavorite(id);
+
+      final rawHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(rawHost.password, startsWith('ENCv1:'));
+      expect(rawHost.password, isNot(contains('ENCv1:ENCv1:')));
+
+      final decrypted = await repository.getById(id);
+      expect(decrypted!.password, plaintextPassword);
+    });
+
+    test('updateLastConnected does not double-encrypt the password', () async {
+      const plaintextPassword = 'last-connect-pass';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Host',
+          hostname: '10.0.0.3',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      await repository.updateLastConnected(id);
+      await repository.updateLastConnected(id);
+
+      final rawHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(rawHost.password, startsWith('ENCv1:'));
+      expect(rawHost.password, isNot(contains('ENCv1:ENCv1:')));
+
+      final decrypted = await repository.getById(id);
+      expect(decrypted!.password, plaintextPassword);
+    });
+
+    test('duplicate does not double-encrypt the password', () async {
+      const plaintextPassword = 'dup-password';
+      final sourceId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Source Host',
+          hostname: '10.0.0.4',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      final sourceHost = await repository.getById(sourceId);
+      final dupId = await repository.duplicate(sourceHost!);
+
+      final rawDup = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(dupId))).getSingle();
+      expect(rawDup.password, startsWith('ENCv1:'));
+      expect(rawDup.password, isNot(contains('ENCv1:ENCv1:')));
+
+      final decryptedDup = await repository.getById(dupId);
+      expect(decryptedDup!.password, plaintextPassword);
+    });
+
     test('delete removes host', () async {
       final id = await repository.insert(
         HostsCompanion.insert(
@@ -494,6 +604,119 @@ void main() {
       expect(results, hasLength(1));
       expect(results.first.hostname, 'prod.example.com');
     });
+
+    test('search finds hosts by tags', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Tagged Server',
+          hostname: 'tagged.example.com',
+          username: 'admin',
+          tags: const Value('prod,critical'),
+        ),
+      );
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Other Server',
+          hostname: 'other.example.com',
+          username: 'admin',
+          tags: const Value('dev'),
+        ),
+      );
+
+      final results = await repository.search('critical');
+      expect(results, hasLength(1));
+      expect(results.first.label, 'Tagged Server');
+    });
+
+    // Wildcard-safety tests: % and _ in the query must be treated as
+    // literal characters, not as SQL LIKE metacharacters.
+
+    test(
+      'search treats percent as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          HostsCompanion.insert(
+            label: '99% uptime',
+            hostname: 'uptime.example.com',
+            username: 'admin',
+          ),
+        );
+        await repository.insert(
+          HostsCompanion.insert(
+            label: 'No special chars',
+            hostname: 'normal.example.com',
+            username: 'admin',
+          ),
+        );
+
+        // Without escaping, '%' would match every host; with escaping it
+        // matches only hosts that literally contain '%'.
+        final results = await repository.search('%');
+        expect(results, hasLength(1));
+        expect(results.first.label, '99% uptime');
+      },
+    );
+
+    test(
+      'search treats underscore as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          HostsCompanion.insert(
+            label: 'web_server',
+            hostname: 'web.example.com',
+            username: 'admin',
+          ),
+        );
+        await repository.insert(
+          HostsCompanion.insert(
+            label: 'api server',
+            hostname: 'api.example.com',
+            username: 'admin',
+          ),
+        );
+
+        // 'web_' should match only the host whose label contains the literal
+        // substring "web_", not "web" followed by any single character.
+        final results = await repository.search('web_');
+        expect(results, hasLength(1));
+        expect(results.first.label, 'web_server');
+      },
+    );
+
+    test(
+      'search with percent does not return hosts that lack a literal percent',
+      () async {
+        await repository.insert(
+          HostsCompanion.insert(
+            label: 'Normal Server',
+            hostname: 'normal.example.com',
+            username: 'admin',
+          ),
+        );
+
+        // A bare '%' query should return nothing when no host data contains '%'.
+        final results = await repository.search('%');
+        expect(results, isEmpty);
+      },
+    );
+
+    test(
+      'search with underscore does not cross-match non-underscore hosts',
+      () async {
+        await repository.insert(
+          HostsCompanion.insert(
+            label: 'abc',
+            hostname: 'abc.example.com',
+            username: 'admin',
+          ),
+        );
+
+        // Without escaping, 'a_c' would match 'abc' (any single char between
+        // a and c). With escaping it should return nothing.
+        final results = await repository.search('a_c');
+        expect(results, isEmpty);
+      },
+    );
 
     test('getByGroup returns hosts with null groupId', () async {
       await repository.insert(

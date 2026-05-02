@@ -11,22 +11,19 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
-import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
-import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
-import '../../domain/services/agent_launch_preset_service.dart';
-import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/wifi_network_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../view_models/host_edit_view_model.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
@@ -34,90 +31,6 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/unsaved_changes_guard.dart';
 import 'transfer_screen.dart';
-
-enum _HostStartupMode { none, tmux, agent, customCommand, snippet }
-
-extension _HostStartupModePresentation on _HostStartupMode {
-  String get label => switch (this) {
-    _HostStartupMode.none => 'Do nothing',
-    _HostStartupMode.tmux => 'Open tmux session',
-    _HostStartupMode.agent => 'Launch coding agent',
-    _HostStartupMode.customCommand => 'Run custom command',
-    _HostStartupMode.snippet => 'Run saved snippet',
-  };
-}
-
-final _tmuxDisableStatusBarPattern = RegExp(
-  r'(^|\s)\\;\s*set\s+status\s+off(?=\s|$)',
-);
-
-bool _hasTmuxDisableStatusBarCommand(String? extraFlags) {
-  final normalized = extraFlags?.trim();
-  if (normalized == null || normalized.isEmpty) {
-    return false;
-  }
-  return _tmuxDisableStatusBarPattern.hasMatch(normalized);
-}
-
-String _stripTmuxDisableStatusBarCommand(String? extraFlags) {
-  final normalized = extraFlags?.trim();
-  if (normalized == null || normalized.isEmpty) {
-    return '';
-  }
-  return normalized
-      .replaceAll(_tmuxDisableStatusBarPattern, ' ')
-      .replaceAll(RegExp(r'\s{2,}'), ' ')
-      .trim();
-}
-
-String? _resolveTmuxExtraFlags({
-  required String extraFlags,
-  required bool disableStatusBar,
-}) {
-  final normalized = extraFlags.trim();
-  if (!disableStatusBar) {
-    return normalized.isEmpty ? null : normalized;
-  }
-  if (normalized.isEmpty) {
-    return tmuxDisableStatusBarCommand;
-  }
-  if (_hasTmuxDisableStatusBarCommand(normalized)) {
-    return normalized;
-  }
-  return '$normalized $tmuxDisableStatusBarCommand';
-}
-
-typedef _HostEditDraft = ({
-  String label,
-  String hostname,
-  String port,
-  String username,
-  String password,
-  String tags,
-  String autoConnectCommand,
-  String tmuxSession,
-  String tmuxWorkingDirectory,
-  String tmuxExtraFlags,
-  String agentWorkingDirectory,
-  String agentTmuxSession,
-  String agentTmuxExtraFlags,
-  String agentArguments,
-  int? selectedKeyId,
-  int? selectedGroupId,
-  int? selectedJumpHostId,
-  String? skipJumpHostOnSsids,
-  int? selectedAutoConnectSnippetId,
-  String? selectedLightThemeId,
-  String? selectedDarkThemeId,
-  String? selectedFontFamily,
-  _HostStartupMode selectedStartupMode,
-  AutoConnectCommandMode selectedAutoConnectMode,
-  AgentLaunchTool selectedAgentLaunchTool,
-  bool isFavorite,
-  bool disableTmuxStatusBar,
-  bool disableAgentTmuxStatusBar,
-  bool startClisInYoloMode,
-});
 
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
@@ -177,19 +90,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   String? _selectedLightThemeId;
   String? _selectedDarkThemeId;
   String? _selectedFontFamily;
-  _HostStartupMode _selectedStartupMode = _HostStartupMode.none;
+  HostStartupMode _selectedStartupMode = HostStartupMode.none;
   AutoConnectCommandMode _selectedAutoConnectMode = AutoConnectCommandMode.none;
   AgentLaunchTool _selectedAgentLaunchTool = AgentLaunchTool.claudeCode;
   bool _isFavorite = false;
-  bool _isLoading = false;
   bool _showPassword = false;
   bool _disableTmuxStatusBar = false;
   bool _disableAgentTmuxStatusBar = false;
   bool _startClisInYoloMode = false;
 
-  Host? _existingHost;
   List<PortForward> _portForwards = [];
-  _HostEditDraft? _initialDraft;
 
   /// Tracks whether the form has unsaved changes without requiring a full
   /// widget tree rebuild on every keystroke. Updated by text-controller
@@ -243,12 +153,23 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
 
     if (widget.hostId != null) {
-      _loadHost();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          unawaited(_loadHost());
+        }
+      });
     } else {
       if (widget.initialSshUrl?.trim().isNotEmpty ?? false) {
         _applySshUrl(widget.initialSshUrl!.trim());
       }
-      _initialDraft = _currentDraft();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        ref
+            .read(hostEditViewModelProvider(widget.hostId).notifier)
+            .markInitialDraft(_currentDraft());
+      });
     }
   }
 
@@ -270,29 +191,22 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _loadHost() async {
-    setState(() => _isLoading = true);
-    final host = await ref.read(hostRepositoryProvider).getById(widget.hostId!);
+    final result = await ref
+        .read(hostEditViewModelProvider(widget.hostId).notifier)
+        .loadHost();
     if (!mounted) return;
-    if (host == null) {
-      setState(() {
-        _isLoading = false;
-        _initialDraft = _currentDraft();
-      });
+    if (result == null) {
+      ref
+          .read(hostEditViewModelProvider(widget.hostId).notifier)
+          .markInitialDraft(_currentDraft());
+      _updateDirtyState();
       return;
     }
-    final portForwards = await ref
-        .read(portForwardRepositoryProvider)
-        .getByHostId(host.id);
-    final preset = await ref
-        .read(agentLaunchPresetServiceProvider)
-        .getPresetForHost(host.id);
-    final cliLaunchPreferences = await ref
-        .read(hostCliLaunchPreferencesServiceProvider)
-        .getPreferencesForHost(host.id);
+    final host = result.host;
+    final preset = result.preset;
+    final cliLaunchPreferences = result.cliLaunchPreferences;
     final tmuxExtraFlags = host.tmuxExtraFlags ?? '';
-    if (!mounted) return;
     setState(() {
-      _existingHost = host;
       _labelController.text = host.label;
       _hostnameController.text = host.hostname;
       _portController.text = host.port.toString();
@@ -309,11 +223,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedFontFamily = host.terminalFontFamily;
       _tmuxSessionController.text = host.tmuxSessionName ?? '';
       _tmuxWorkingDirectoryController.text = host.tmuxWorkingDirectory ?? '';
-      _tmuxExtraFlagsController.text = _stripTmuxDisableStatusBarCommand(
+      _tmuxExtraFlagsController.text = stripTmuxDisableStatusBarCommand(
         tmuxExtraFlags,
       );
       _autoConnectCommandController.text = host.autoConnectCommand ?? '';
-      _disableTmuxStatusBar = _hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
+      _disableTmuxStatusBar = hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
       _disableAgentTmuxStatusBar = preset?.tmuxDisableStatusBar ?? false;
       _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
@@ -342,10 +256,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         }
       }
       _isFavorite = host.isFavorite;
-      _portForwards = portForwards;
-      _isLoading = false;
-      _initialDraft = _currentDraft();
+      _portForwards = result.portForwards;
     });
+    ref
+        .read(hostEditViewModelProvider(widget.hostId).notifier)
+        .markInitialDraft(_currentDraft());
     _updateDirtyState();
   }
 
@@ -378,21 +293,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     super.dispose();
   }
 
-  bool get _hasUnsavedChanges {
-    final initialDraft = _initialDraft;
-    return initialDraft != null && _currentDraft() != initialDraft;
-  }
-
   /// Synchronizes [_isDirtyNotifier] with the current unsaved-changes state.
   ///
-  /// Call this after any mutation that could change [_hasUnsavedChanges]
+  /// Call this after any mutation that could change the current draft
   /// without going through a text-controller listener (e.g. dropdown/checkbox
-  /// setStates, or after resetting [_initialDraft] on save/load).
+  /// setStates, or after resetting the initial draft on save/load).
   void _updateDirtyState() {
-    _isDirtyNotifier.value = _hasUnsavedChanges;
+    _isDirtyNotifier.value = ref
+        .read(hostEditViewModelProvider(widget.hostId).notifier)
+        .updateDraft(_currentDraft());
   }
 
-  _HostEditDraft _currentDraft() => (
+  HostEditDraft _currentDraft() => (
     label: _labelController.text,
     hostname: _hostnameController.text,
     port: _portController.text,
@@ -424,17 +336,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     startClisInYoloMode: _startClisInYoloMode,
   );
 
-  void _closeWithoutUnsavedPrompt(
-    SnackBar snackBar, {
-    bool clearLoading = false,
-  }) {
+  void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
     final messenger = ScaffoldMessenger.of(context);
-    setState(() {
-      _initialDraft = _currentDraft();
-      if (clearLoading) {
-        _isLoading = false;
-      }
-    });
+    ref
+        .read(hostEditViewModelProvider(widget.hostId).notifier)
+        .markInitialDraft(_currentDraft());
     _updateDirtyState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -448,9 +354,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.hostId != null;
+    final isLoading = ref.watch(
+      hostEditViewModelProvider(
+        widget.hostId,
+      ).select((state) => state.isLoading),
+    );
     final keysAsync = ref.watch(allKeysProvider);
     final hostsAsync = ref.watch(allHostsProvider);
-    final snippetsAsync = ref.watch(_allSnippetsProvider);
+    final snippetsAsync = ref.watch(allSnippetsProvider);
     final monetizationState =
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
@@ -497,7 +408,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               ),
             ],
           ),
-          body: _isLoading
+          body: isLoading
               ? const Center(child: CircularProgressIndicator())
               : Form(
                   key: _formKey,
@@ -865,21 +776,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     );
   }
 
-  _HostStartupMode _resolveStartupMode({
+  HostStartupMode _resolveStartupMode({
     required Host host,
     required AgentLaunchPreset? preset,
     required AutoConnectCommandMode autoConnectMode,
   }) {
     if (preset != null) {
-      return _HostStartupMode.agent;
+      return HostStartupMode.agent;
     }
     if (host.tmuxSessionName case final value? when value.trim().isNotEmpty) {
-      return _HostStartupMode.tmux;
+      return HostStartupMode.tmux;
     }
     return switch (autoConnectMode) {
-      AutoConnectCommandMode.none => _HostStartupMode.none,
-      AutoConnectCommandMode.custom => _HostStartupMode.customCommand,
-      AutoConnectCommandMode.snippet => _HostStartupMode.snippet,
+      AutoConnectCommandMode.none => HostStartupMode.none,
+      AutoConnectCommandMode.custom => HostStartupMode.customCommand,
+      AutoConnectCommandMode.snippet => HostStartupMode.snippet,
     };
   }
 
@@ -921,9 +832,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
-              _selectedStartupMode == _HostStartupMode.agent ||
-                      _selectedStartupMode == _HostStartupMode.customCommand ||
-                      _selectedStartupMode == _HostStartupMode.snippet
+              _selectedStartupMode == HostStartupMode.agent ||
+                      _selectedStartupMode == HostStartupMode.customCommand ||
+                      _selectedStartupMode == HostStartupMode.snippet
                   ? 'This host keeps its saved Pro startup, but it will not run until MonkeySSH Pro is active again.'
                   : 'Free hosts can still open tmux automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
               style: theme.textTheme.bodySmall,
@@ -951,7 +862,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               : null,
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<_HostStartupMode>(
+        DropdownButtonFormField<HostStartupMode>(
           key: const Key('host-startup-mode-field'),
           // ignore: deprecated_member_use
           value: _selectedStartupMode,
@@ -961,9 +872,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             helperText:
                 'Pick a startup flow for this host. tmux stays free; agent/custom/snippet flows require MonkeySSH Pro.',
           ),
-          items: _HostStartupMode.values
+          items: HostStartupMode.values
               .map(
-                (mode) => DropdownMenuItem<_HostStartupMode>(
+                (mode) => DropdownMenuItem<HostStartupMode>(
                   value: mode,
                   child: Text(mode.label),
                 ),
@@ -977,16 +888,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           },
         ),
         switch (_selectedStartupMode) {
-          _HostStartupMode.none => const SizedBox.shrink(),
-          _HostStartupMode.tmux => _buildTmuxStartupFields(context),
-          _HostStartupMode.agent => _buildAgentStartupFields(
+          HostStartupMode.none => const SizedBox.shrink(),
+          HostStartupMode.tmux => _buildTmuxStartupFields(context),
+          HostStartupMode.agent => _buildAgentStartupFields(
             context,
             hasAgentPresetAccess: hasAgentPresetAccess,
           ),
-          _HostStartupMode.customCommand => _buildCustomCommandFields(
+          HostStartupMode.customCommand => _buildCustomCommandFields(
             hasAutomationAccess: hasAutomationAccess,
           ),
-          _HostStartupMode.snippet => _buildSnippetFields(
+          HostStartupMode.snippet => _buildSnippetFields(
             context,
             snippetsAsync: snippetsAsync,
             hasAutomationAccess: hasAutomationAccess,
@@ -997,7 +908,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Widget _buildTmuxStartupFields(BuildContext context) {
-    final effectiveTmuxExtraFlags = _resolveTmuxExtraFlags(
+    final effectiveTmuxExtraFlags = resolveTmuxExtraFlags(
       extraFlags: _tmuxExtraFlagsController.text,
       disableStatusBar: _disableTmuxStatusBar,
     );
@@ -1029,7 +940,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             autocorrect: false,
             onChanged: (_) => setState(() {}),
             validator: (value) {
-              if (_selectedStartupMode != _HostStartupMode.tmux) {
+              if (_selectedStartupMode != HostStartupMode.tmux) {
                 return null;
               }
               if (value == null || value.trim().isEmpty) {
@@ -1110,7 +1021,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         startInYoloMode: _startClisInYoloMode,
       );
     } on FormatException catch (error) {
-      generatedCommandError = _formatFormatExceptionMessage(error);
+      generatedCommandError = error.message;
     }
 
     return Column(
@@ -1305,7 +1216,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           readOnly: !hasAutomationAccess,
           autocorrect: false,
           validator: (value) {
-            if (_selectedStartupMode != _HostStartupMode.customCommand) {
+            if (_selectedStartupMode != HostStartupMode.customCommand) {
               return null;
             }
             if (value == null || value.trim().isEmpty) {
@@ -1373,7 +1284,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         }
                       : null,
                   validator: (value) {
-                    if (_selectedStartupMode != _HostStartupMode.snippet) {
+                    if (_selectedStartupMode != HostStartupMode.snippet) {
                       return null;
                     }
                     if (value == null) {
@@ -1413,9 +1324,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       return;
     }
 
-    setState(() => _isLoading = true);
-    var didScheduleClose = false;
-
     try {
       final monetizationState =
           ref.read(monetizationStateProvider).asData?.value ??
@@ -1426,227 +1334,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final hasAgentPresetAccess = monetizationState.allowsFeature(
         MonetizationFeature.agentLaunchPresets,
       );
-      final repo = ref.read(hostRepositoryProvider);
-      final presetService = ref.read(agentLaunchPresetServiceProvider);
-      final cliLaunchPreferencesService = ref.read(
-        hostCliLaunchPreferencesServiceProvider,
-      );
-      final port = int.parse(_portController.text);
-      final password = _passwordController.text.isEmpty
-          ? null
-          : _passwordController.text;
-      final tags = _tagsController.text.trim().isEmpty
-          ? null
-          : _tagsController.text.trim();
-      final snippetRepo = ref.read(snippetRepositoryProvider);
-      final autoConnectSnippetId =
-          _selectedAutoConnectMode == AutoConnectCommandMode.snippet
-          ? _selectedAutoConnectSnippetId
-          : null;
-      final selectedSnippet = autoConnectSnippetId == null
-          ? null
-          : await snippetRepo.getById(autoConnectSnippetId);
-      final currentPreset = _buildCurrentAgentLaunchPreset();
-      final presetCommand = currentPreset == null
-          ? null
-          : buildAgentLaunchCommand(
-              currentPreset,
-              startInYoloMode: _startClisInYoloMode,
-            );
-      final tmuxSessionName = _tmuxSessionController.text.trim();
-      final tmuxWorkingDirectory = _tmuxWorkingDirectoryController.text.trim();
-      final tmuxExtraFlags = _tmuxExtraFlagsController.text.trim();
 
-      final normalizedTmuxSessionName = switch (_selectedStartupMode) {
-        _HostStartupMode.tmux =>
-          tmuxSessionName.isEmpty ? null : tmuxSessionName,
-        _HostStartupMode.none => null,
-        _ => hasAutomationAccess ? null : _existingHost?.tmuxSessionName,
-      };
-      final normalizedTmuxWorkingDirectory = switch (_selectedStartupMode) {
-        _HostStartupMode.tmux =>
-          tmuxWorkingDirectory.isEmpty ? null : tmuxWorkingDirectory,
-        _HostStartupMode.none => null,
-        _ => hasAutomationAccess ? null : _existingHost?.tmuxWorkingDirectory,
-      };
-      final normalizedTmuxExtraFlags = switch (_selectedStartupMode) {
-        _HostStartupMode.tmux => _resolveTmuxExtraFlags(
-          extraFlags: tmuxExtraFlags,
-          disableStatusBar: _disableTmuxStatusBar,
-        ),
-        _HostStartupMode.none => null,
-        _ => hasAutomationAccess ? null : _existingHost?.tmuxExtraFlags,
-      };
-
-      String? normalizedAutoConnectCommand;
-      int? normalizedAutoConnectSnippetId;
-      late final bool autoConnectRequiresConfirmation;
-      switch (_selectedStartupMode) {
-        case _HostStartupMode.none:
-        case _HostStartupMode.tmux:
-          normalizedAutoConnectCommand = null;
-          normalizedAutoConnectSnippetId = null;
-          autoConnectRequiresConfirmation = false;
-        case _HostStartupMode.agent:
-          if (hasAutomationAccess) {
-            normalizedAutoConnectCommand =
-                presetCommand == null || presetCommand.trim().isEmpty
-                ? null
-                : presetCommand;
-            normalizedAutoConnectSnippetId = null;
-            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-              command: normalizedAutoConnectCommand,
-              snippetId: null,
-            );
-          } else {
-            normalizedAutoConnectCommand = _existingHost?.autoConnectCommand;
-            normalizedAutoConnectSnippetId =
-                _existingHost?.autoConnectSnippetId;
-            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-              command: _existingHost?.autoConnectCommand,
-              snippetId: _existingHost?.autoConnectSnippetId,
-            );
-          }
-        case _HostStartupMode.customCommand:
-          if (hasAutomationAccess) {
-            final autoConnectCommand = _autoConnectCommandController.text
-                .trim();
-            normalizedAutoConnectCommand = autoConnectCommand.isEmpty
-                ? null
-                : autoConnectCommand;
-            normalizedAutoConnectSnippetId = null;
-            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-              command: normalizedAutoConnectCommand,
-              snippetId: null,
-            );
-          } else {
-            normalizedAutoConnectCommand = _existingHost?.autoConnectCommand;
-            normalizedAutoConnectSnippetId =
-                _existingHost?.autoConnectSnippetId;
-            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-              command: _existingHost?.autoConnectCommand,
-              snippetId: _existingHost?.autoConnectSnippetId,
-            );
-          }
-        case _HostStartupMode.snippet:
-          if (hasAutomationAccess) {
-            normalizedAutoConnectCommand =
-                selectedSnippet?.command ?? _autoConnectCommandController.text;
-            normalizedAutoConnectSnippetId = selectedSnippet?.id;
-            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-              command: normalizedAutoConnectCommand,
-              snippetId: normalizedAutoConnectSnippetId,
-            );
-          } else {
-            normalizedAutoConnectCommand = _existingHost?.autoConnectCommand;
-            normalizedAutoConnectSnippetId =
-                _existingHost?.autoConnectSnippetId;
-            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-              command: _existingHost?.autoConnectCommand,
-              snippetId: _existingHost?.autoConnectSnippetId,
-            );
-          }
-      }
-      var savedHostId = widget.hostId;
-
-      if (widget.hostId != null && _existingHost != null) {
-        // Update existing host
-        final updatedHost = _existingHost!.copyWith(
-          label: _labelController.text,
-          hostname: _hostnameController.text,
-          port: port,
-          username: _usernameController.text,
-          password: drift.Value(password),
-          tags: drift.Value(tags),
-          keyId: drift.Value(_selectedKeyId),
-          groupId: drift.Value(_selectedGroupId),
-          jumpHostId: drift.Value(_selectedJumpHostId),
-          skipJumpHostOnSsids: drift.Value(
-            _selectedJumpHostId == null
-                ? null
-                : encodeSkipJumpHostSsids(_skipJumpHostOnSsids),
-          ),
-          terminalThemeLightId: drift.Value(_selectedLightThemeId),
-          terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
-          terminalFontFamily: drift.Value(_selectedFontFamily),
-          autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
-          autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
-          autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
-          tmuxSessionName: drift.Value(normalizedTmuxSessionName),
-          tmuxWorkingDirectory: drift.Value(normalizedTmuxWorkingDirectory),
-          tmuxExtraFlags: drift.Value(normalizedTmuxExtraFlags),
-          isFavorite: _isFavorite,
-        );
-        await repo.update(updatedHost);
-      } else {
-        // Create new host
-        savedHostId = await repo.insert(
-          HostsCompanion.insert(
-            label: _labelController.text,
-            hostname: _hostnameController.text,
-            port: drift.Value(port),
-            username: _usernameController.text,
-            password: drift.Value(password),
-            tags: drift.Value(tags),
-            keyId: drift.Value(_selectedKeyId),
-            groupId: drift.Value(_selectedGroupId),
-            jumpHostId: drift.Value(_selectedJumpHostId),
-            skipJumpHostOnSsids: drift.Value(
-              _selectedJumpHostId == null
-                  ? null
-                  : encodeSkipJumpHostSsids(_skipJumpHostOnSsids),
+      await ref
+          .read(hostEditViewModelProvider(widget.hostId).notifier)
+          .save(
+            HostEditSaveRequest(
+              draft: _currentDraft(),
+              hasAutomationAccess: hasAutomationAccess,
+              hasAgentPresetAccess: hasAgentPresetAccess,
             ),
-            terminalThemeLightId: drift.Value(_selectedLightThemeId),
-            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
-            terminalFontFamily: drift.Value(_selectedFontFamily),
-            autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
-            autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
-            autoConnectRequiresConfirmation: drift.Value(
-              autoConnectRequiresConfirmation,
-            ),
-            tmuxSessionName: drift.Value(normalizedTmuxSessionName),
-            tmuxWorkingDirectory: drift.Value(normalizedTmuxWorkingDirectory),
-            tmuxExtraFlags: drift.Value(normalizedTmuxExtraFlags),
-            isFavorite: drift.Value(_isFavorite),
-          ),
-        );
-      }
-
-      if (savedHostId != null) {
-        if (hasAgentPresetAccess) {
-          await cliLaunchPreferencesService.setPreferencesForHost(
-            savedHostId,
-            HostCliLaunchPreferences(startInYoloMode: _startClisInYoloMode),
           );
-        }
-
-        final preset = _buildCurrentAgentLaunchPreset();
-        if (_selectedStartupMode == _HostStartupMode.agent &&
-            hasAutomationAccess &&
-            hasAgentPresetAccess &&
-            preset != null) {
-          await presetService.setPresetForHost(savedHostId, preset);
-        } else if (_selectedStartupMode == _HostStartupMode.none ||
-            _selectedStartupMode == _HostStartupMode.tmux ||
-            ((_selectedStartupMode == _HostStartupMode.customCommand ||
-                    _selectedStartupMode == _HostStartupMode.snippet) &&
-                hasAutomationAccess &&
-                hasAgentPresetAccess)) {
-          await presetService.deletePresetForHost(savedHostId);
-        }
-      }
-
-      ref.invalidate(allHostsProvider);
 
       if (mounted) {
-        didScheduleClose = true;
         _closeWithoutUnsavedPrompt(
           SnackBar(
             content: Text(
               widget.hostId != null ? 'Host updated' : 'Host added',
             ),
           ),
-          clearLoading: true,
         );
       }
     } on Exception catch (e) {
@@ -1662,8 +1367,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           const SnackBar(content: Text('Could not save host. Try again.')),
         );
       }
-    } finally {
-      if (mounted && !didScheduleClose) setState(() => _isLoading = false);
     }
   }
 
@@ -1698,85 +1401,57 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
   ({GlobalKey locationKey, FocusNode focusNode, String message})?
   _firstInvalidHostField() {
-    if (_labelController.text.isEmpty) {
-      return (
+    final issue = ref
+        .read(hostEditViewModelProvider(widget.hostId).notifier)
+        .validateDraft(_currentDraft());
+    if (issue == null) {
+      return null;
+    }
+
+    final target = switch (issue.target) {
+      HostEditValidationTarget.label => (
         locationKey: _labelFieldLocationKey,
         focusNode: _labelFocusNode,
-        message: 'Fix label to save this host',
-      );
-    }
-    if (_hostnameController.text.isEmpty) {
-      return (
+      ),
+      HostEditValidationTarget.hostname => (
         locationKey: _hostnameFieldLocationKey,
         focusNode: _hostnameFocusNode,
-        message: 'Fix hostname to save this host',
-      );
-    }
-
-    final port = int.tryParse(_portController.text);
-    if (_portController.text.isEmpty ||
-        port == null ||
-        port < 1 ||
-        port > 65535) {
-      return (
+      ),
+      HostEditValidationTarget.port => (
         locationKey: _portFieldLocationKey,
         focusNode: _portFocusNode,
-        message: 'Fix port to save this host',
-      );
-    }
-    if (_usernameController.text.isEmpty) {
-      return (
+      ),
+      HostEditValidationTarget.username => (
         locationKey: _usernameFieldLocationKey,
         focusNode: _usernameFocusNode,
-        message: 'Fix username to save this host',
-      );
-    }
+      ),
+      HostEditValidationTarget.tmuxSession => (
+        locationKey: _tmuxSessionFieldLocationKey,
+        focusNode: _tmuxSessionFocusNode,
+      ),
+      HostEditValidationTarget.agentTmuxFlags => (
+        locationKey: _agentTmuxFlagsFieldLocationKey,
+        focusNode: _agentTmuxFlagsFocusNode,
+      ),
+      HostEditValidationTarget.customCommand => (
+        locationKey: _customCommandFieldLocationKey,
+        focusNode: _customCommandFocusNode,
+      ),
+      HostEditValidationTarget.snippet => (
+        locationKey: _snippetFieldLocationKey,
+        focusNode: _snippetFocusNode,
+      ),
+    };
 
-    switch (_selectedStartupMode) {
-      case _HostStartupMode.none:
-        return null;
-      case _HostStartupMode.tmux:
-        if (_tmuxSessionController.text.trim().isEmpty) {
-          return (
-            locationKey: _tmuxSessionFieldLocationKey,
-            focusNode: _tmuxSessionFocusNode,
-            message: 'Fix tmux session name to save this host',
-          );
-        }
-        return null;
-      case _HostStartupMode.agent:
-        if (_validateAgentTmuxExtraFlags(_agentTmuxExtraFlagsController.text) !=
-            null) {
-          return (
-            locationKey: _agentTmuxFlagsFieldLocationKey,
-            focusNode: _agentTmuxFlagsFocusNode,
-            message: 'Fix agent tmux flags to save this host',
-          );
-        }
-        return null;
-      case _HostStartupMode.customCommand:
-        if (_autoConnectCommandController.text.trim().isEmpty) {
-          return (
-            locationKey: _customCommandFieldLocationKey,
-            focusNode: _customCommandFocusNode,
-            message: 'Fix custom command to save this host',
-          );
-        }
-        return null;
-      case _HostStartupMode.snippet:
-        if (_selectedAutoConnectSnippetId == null) {
-          return (
-            locationKey: _snippetFieldLocationKey,
-            focusNode: _snippetFocusNode,
-            message: 'Choose a startup snippet to save this host',
-          );
-        }
-        return null;
-    }
+    return (
+      locationKey: target.locationKey,
+      focusNode: target.focusNode,
+      message: issue.message,
+    );
   }
 
-  Future<void> _handleStartupModeSelection(_HostStartupMode value) async {
-    if (value == _HostStartupMode.agent) {
+  Future<void> _handleStartupModeSelection(HostStartupMode value) async {
+    if (value == HostStartupMode.agent) {
       final hasAccess = await requireMonetizationFeatureAccess(
         context: context,
         ref: ref,
@@ -1789,8 +1464,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       if (!hasAccess || !mounted) {
         return;
       }
-    } else if (value == _HostStartupMode.customCommand ||
-        value == _HostStartupMode.snippet) {
+    } else if (value == HostStartupMode.customCommand ||
+        value == HostStartupMode.snippet) {
       final hasAccess = await requireMonetizationFeatureAccess(
         context: context,
         ref: ref,
@@ -1808,51 +1483,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     setState(() {
       _selectedStartupMode = value;
       switch (value) {
-        case _HostStartupMode.none:
-        case _HostStartupMode.tmux:
+        case HostStartupMode.none:
+        case HostStartupMode.tmux:
           _selectedAutoConnectMode = AutoConnectCommandMode.none;
-        case _HostStartupMode.agent:
+        case HostStartupMode.agent:
           _selectedAutoConnectMode = AutoConnectCommandMode.custom;
-        case _HostStartupMode.customCommand:
+        case HostStartupMode.customCommand:
           _selectedAutoConnectMode = AutoConnectCommandMode.custom;
-        case _HostStartupMode.snippet:
+        case HostStartupMode.snippet:
           _selectedAutoConnectMode = AutoConnectCommandMode.snippet;
       }
     });
     _updateDirtyState();
-    if (value == _HostStartupMode.agent) {
+    if (value == HostStartupMode.agent) {
       _syncAutoConnectCommandFromPreset();
     }
-  }
-
-  bool _resolveAutoConnectConfirmation({
-    required String? command,
-    required int? snippetId,
-  }) {
-    final existingHost = _existingHost;
-    if (existingHost == null || !existingHost.autoConnectRequiresConfirmation) {
-      return false;
-    }
-
-    final previousMode = resolveAutoConnectCommandMode(
-      command: existingHost.autoConnectCommand,
-      snippetId: existingHost.autoConnectSnippetId,
-    );
-    final nextMode = resolveAutoConnectCommandMode(
-      command: command,
-      snippetId: snippetId,
-    );
-    if (nextMode != previousMode) {
-      return false;
-    }
-
-    return switch (nextMode) {
-      AutoConnectCommandMode.none => false,
-      AutoConnectCommandMode.custom =>
-        existingHost.autoConnectCommand == command,
-      AutoConnectCommandMode.snippet =>
-        existingHost.autoConnectSnippetId == snippetId,
-    };
   }
 
   Future<void> _testConnection() async {
@@ -2018,42 +1663,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
   }
 
-  AgentLaunchPreset? _buildCurrentAgentLaunchPreset() {
-    if (_selectedStartupMode != _HostStartupMode.agent) {
-      return null;
-    }
-    return AgentLaunchPreset(
-      tool: _selectedAgentLaunchTool,
-      workingDirectory: _agentWorkingDirectoryController.text.trim(),
-      tmuxSessionName: _agentTmuxSessionController.text.trim(),
-      tmuxExtraFlags: _agentTmuxExtraFlagsController.text.trim(),
-      tmuxDisableStatusBar: _disableAgentTmuxStatusBar,
-      additionalArguments: _agentArgumentsController.text.trim(),
-    );
-  }
+  AgentLaunchPreset? _buildCurrentAgentLaunchPreset() =>
+      buildCurrentAgentLaunchPreset(_currentDraft());
 
   void _handleAgentPresetFieldChanged() {
     setState(() {});
     _syncAutoConnectCommandFromPreset();
   }
 
-  String? _validateAgentTmuxExtraFlags(String? value) {
-    if (_agentTmuxSessionController.text.trim().isEmpty) {
-      return null;
-    }
-    try {
-      buildAgentLaunchCommand(
-        AgentLaunchPreset(
-          tool: AgentLaunchTool.claudeCode,
-          tmuxSessionName: 'preview',
-          tmuxExtraFlags: value,
-        ),
-      );
-      return null;
-    } on FormatException catch (error) {
-      return _formatFormatExceptionMessage(error);
-    }
-  }
+  String? _validateAgentTmuxExtraFlags(String? value) =>
+      validateAgentTmuxExtraFlags(value, _currentDraft());
 
   String? _tryBuildAgentLaunchCommand(
     AgentLaunchPreset? preset, {
@@ -2071,8 +1690,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       return null;
     }
   }
-
-  String _formatFormatExceptionMessage(FormatException error) => error.message;
 
   void _syncAutoConnectCommandFromPreset() {
     final preset = _buildCurrentAgentLaunchPreset();
@@ -2797,11 +2414,6 @@ class _PortForwardTile extends StatelessWidget {
     );
   }
 }
-
-final _allSnippetsProvider = StreamProvider<List<Snippet>>((ref) {
-  final repo = ref.watch(snippetRepositoryProvider);
-  return repo.watchAll();
-});
 
 class _SkipJumpHostOnWifiSection extends ConsumerStatefulWidget {
   const _SkipJumpHostOnWifiSection({
