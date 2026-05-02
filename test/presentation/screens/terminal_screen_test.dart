@@ -729,6 +729,35 @@ void main() {
     );
 
     testWidgets(
+      'refreshes an active TUI when assigning the first session theme',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        session.terminalTheme = null;
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'refreshes the active TUI when platform brightness changes',
       (tester) async {
         tester.platformDispatcher.platformBrightnessTestValue =

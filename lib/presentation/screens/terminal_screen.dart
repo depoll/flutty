@@ -3665,18 +3665,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (targetSession?.terminal != _terminal || targetSession == null) {
       return;
     }
-    if (forceRemoteRefresh ||
-        (previousTheme != null &&
-            !_terminalThemesMatchForRemoteRefresh(previousTheme, theme))) {
+    final didThemeChange =
+        previousTheme != null &&
+        !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
+    final shouldRefreshFirstTheme =
+        previousTheme == null &&
+        (_isTmuxActive || _shouldRefreshPlainTerminalTui(targetSession));
+    if (forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme) {
       _refreshTerminalThemeForTui(theme, targetSession);
       return;
-    }
-    if (previousTheme == null && _isTmuxActive) {
-      // First time the session learns its terminal theme. tmux already
-      // detected as active means it may have queried OSC 10/11 before
-      // session.terminalTheme was set (e.g., during shell startup) and
-      // cached a fallback. Push the right values now so the cache matches.
-      _primeTmuxTerminalTheme(targetSession);
     }
   }
 
@@ -3686,6 +3683,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'refresh_requested',
+      fields: {
+        'connectionId': session.connectionId,
+        'isTmuxActive': _isTmuxActive,
+        'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+        'focusMode': _terminal.reportFocusMode,
+        'altBuffer': _terminal.isUsingAltBuffer,
+        'mouseMode': _terminal.mouseMode != MouseMode.none,
+      },
+    );
     if (_isTmuxActive) {
       // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
       // terminal's default colors and ANSI palette and answers inner-pane OSC
@@ -6815,7 +6824,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
       }
       setState(() => _sessionThemeOverride = theme);
-      _applyTerminalThemeToSession(theme);
+      _applyTerminalThemeToSession(theme, forceRemoteRefresh: true);
 
       // Show option to save to host
       if (_host != null) {
