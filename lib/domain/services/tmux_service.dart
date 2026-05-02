@@ -1696,10 +1696,10 @@ String buildTmuxRefreshTerminalThemeCommand(
     extraFlags: extraFlags,
     forceUtf8: true,
   );
-  final setPaneColours = [
-    for (var index = 0; index < 16; index += 1)
-      _buildTmuxSetPaneColourCommand(index, theme, extraFlags: extraFlags),
-  ].join(' ');
+  final setPaneColours = _buildTmuxSetPaneColoursCommand(
+    theme,
+    extraFlags: extraFlags,
+  );
   // Make sure tmux forwards focus events to inner panes — without this,
   // theme-aware TUIs like Codex/Copilot CLI never receive the FocusGained
   // signal we use as the trigger to re-query OSC 10/11 after a theme switch
@@ -1786,23 +1786,31 @@ _TmuxThemeRefreshStats? _parseTmuxThemeRefreshStats(String output) {
   );
 }
 
-String _buildTmuxSetPaneColourCommand(
-  int index,
+String _buildTmuxSetPaneColoursCommand(
   TerminalThemeData theme, {
   String? extraFlags,
 }) {
+  final commands = <String>[
+    for (var index = 0; index < 16; index += 1)
+      _buildTmuxSetPaneColourSubcommand(index, theme),
+  ];
+  final command = TmuxService._tmuxCommand(
+    commands.join(r' \; '),
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return '$command 2>/dev/null || true;';
+}
+
+String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
   final color = terminalThemePaletteColor(theme, index);
   if (color == null) {
     throw ArgumentError.value(index, 'index', 'Expected ANSI color index 0-15');
   }
   final hexColor = formatTerminalThemeRgbHex(color);
   final optionName = TmuxService._shellQuote('pane-colours[$index]');
-  final command = TmuxService._tmuxCommand(
-    'set-option -p -t "\$pane" $optionName ${TmuxService._shellQuote(hexColor)}',
-    extraFlags: extraFlags,
-    forceUtf8: true,
-  );
-  return '$command 2>/dev/null || true;';
+  return r'set-option -p -t "$pane" '
+      '$optionName ${TmuxService._shellQuote(hexColor)}';
 }
 
 String _buildTmuxSendPaneTerminalThemeCommand(

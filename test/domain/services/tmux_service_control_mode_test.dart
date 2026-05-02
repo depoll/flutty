@@ -134,6 +134,11 @@ void main() {
         contains("tmux -u list-panes -s -t 'dev'\"'\"'s session'"),
       );
       expect(command, contains(r'set-option -p -t "$pane"'));
+      expect(
+        RegExp(r'tmux -u set-option -p -t "\$pane"').allMatches(command),
+        hasLength(1),
+      );
+      expect(command, contains(r'\; set-option -p -t "$pane"'));
       expect(command, contains("'pane-colours[5]' '#ff79c6'"));
       expect(command, contains("'pane-colours[6]' '#8be9fd'"));
       expect(
