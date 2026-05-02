@@ -1726,9 +1726,9 @@ String buildTmuxRefreshTerminalThemeCommand(
 
   return r'SEP=$(printf "\037"); '
       '$enableFocusEvents 2>/dev/null || true; '
-      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}" '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{pane_title}" '
       '2>/dev/null | '
-      r'{ while IFS="$SEP" read -r pane active alternate pane_command; do '
+      r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       'injected=0; foreground_tui=0; '
@@ -1743,8 +1743,15 @@ String buildTmuxRefreshTerminalThemeCommand(
       'codex|codex-*) '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
+      'opencode|opencode-*) '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
+      '*) '
+      r'case "$pane_title" in '
+      '*OpenCode*|*opencode*) '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
       '*) '
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & ;; '
+      'esac ;; '
       'esac; '
       'fi; '
       'fi; '
@@ -1834,6 +1841,8 @@ String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
 String _buildTmuxSendPaneTerminalThemeCommand(
   TerminalThemeData theme, {
   String? extraFlags,
+  bool forceFocusTransition = false,
+  bool includeLateFocusTransition = false,
 }) {
   final themeModeReport = buildTerminalThemeModeReport(isDark: theme.isDark);
   final defaultColorReports = buildTerminalThemeDefaultColorReports(theme);
@@ -1847,9 +1856,14 @@ String _buildTmuxSendPaneTerminalThemeCommand(
   // color cycle even when tmux consumes the outer OSC responses. Codex panes
   // are routed to the focus-only refresh above because unsolicited mode/color
   // reports can reset its composer input while the user is typing.
-  final focusInCommand = _buildTmuxSendPaneFocusRefreshCommand(
-    extraFlags: extraFlags,
-  );
+  final focusCommand = forceFocusTransition
+      ? _buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)
+      : _buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags);
+  final lateFocusCommand = includeLateFocusTransition
+      ? ' sleep 0.08; '
+            '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
+            '2>/dev/null || true;'
+      : '';
   final modeCommand = TmuxService._tmuxCommand(
     r'send-keys -t "$pane" -H '
     '${_formatTmuxSendKeysHexArguments(themeModeReport)}',
@@ -1862,7 +1876,7 @@ String _buildTmuxSendPaneTerminalThemeCommand(
     extraFlags: extraFlags,
     forceUtf8: true,
   );
-  return '$focusInCommand 2>/dev/null || true; '
+  return '$focusCommand 2>/dev/null || true; '
       'sleep 0.25; '
       '$modeCommand 2>/dev/null || true;'
       ' sleep 0.08; '
@@ -1870,16 +1884,27 @@ String _buildTmuxSendPaneTerminalThemeCommand(
       ' sleep 0.08; '
       '$directColorCommand 2>/dev/null || true;'
       ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;';
+      '$directColorCommand 2>/dev/null || true;'
+      '$lateFocusCommand';
 }
 
 String _buildTmuxSendPaneFocusRefreshCommand({String? extraFlags}) =>
-    TmuxService._tmuxCommand(
-      r'send-keys -t "$pane" -H '
-      '${_formatTmuxSendKeysHexArguments('\x1b[I')}',
-      extraFlags: extraFlags,
-      forceUtf8: true,
-    );
+    _buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags);
+
+String _buildTmuxSendPaneFocusTransitionCommand({String? extraFlags}) =>
+    '${_buildTmuxSendPaneFocusReportCommand('\x1b[O', extraFlags: extraFlags)} '
+    '2>/dev/null || true; sleep 0.12; '
+    '${_buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags)}';
+
+String _buildTmuxSendPaneFocusReportCommand(
+  String report, {
+  String? extraFlags,
+}) => TmuxService._tmuxCommand(
+  r'send-keys -t "$pane" -H '
+  '${_formatTmuxSendKeysHexArguments(report)}',
+  extraFlags: extraFlags,
+  forceUtf8: true,
+);
 
 String _formatTmuxSendKeysHexArguments(String input) =>
     input.codeUnits.map(_formatTmuxSendKeysHexArgument).join(' ');

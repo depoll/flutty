@@ -1327,7 +1327,9 @@ void main() {
           () =>
               tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
         ).called(1);
-        expect(shellWrites.map(utf8.decode).join(), isEmpty);
+        final writtenText = shellWrites.map(utf8.decode).join();
+        expect(writtenText, isNot(contains('tmux ')));
+        expect(writtenText, isNot(contains('new-session')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

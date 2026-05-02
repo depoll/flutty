@@ -46,6 +46,7 @@ const _codexTmuxSession = String.fromEnvironment(
 const _opencodeTmuxSession = String.fromEnvironment(
   'TUI_THEME_PROOF_OPENCODE_TMUX_SESSION',
 );
+const _proofCaseFilter = String.fromEnvironment('TUI_THEME_PROOF_CASE_FILTER');
 
 bool get _hasValidationEnvironment =>
     _sshPort > 0 &&
@@ -105,6 +106,10 @@ void main() {
     testWidgets('${proofCase.label} follows light and dark terminal themes', (
       tester,
     ) async {
+      if (_proofCaseFilter.isNotEmpty && proofCase.id != _proofCaseFilter) {
+        markTestSkipped('TUI_THEME_PROOF_CASE_FILTER=$_proofCaseFilter');
+        return;
+      }
       if (!_hasValidationEnvironment) {
         markTestSkipped('TUI_THEME_PROOF_* dart-defines are not configured.');
         return;
@@ -127,6 +132,20 @@ void main() {
         proofCase.expectedText,
         description: 'Timed out waiting for ${proofCase.label}',
         timeout: const Duration(seconds: 90),
+      );
+      await _waitForOpenCodeThemeSurface(
+        tester,
+        proofCase,
+        monkey_themes.TerminalThemes.defaultLightTheme,
+        minBackgroundLuminance: 0.55,
+        description: '${proofCase.label} initial light surface',
+      );
+      await _waitForOpenCodeViewportBackground(
+        tester,
+        proofCase,
+        monkey_themes.TerminalThemes.defaultLightTheme,
+        maxOppositeThemeFraction: 0.18,
+        description: '${proofCase.label} initial light viewport',
       );
       await binding.takeScreenshot('${proofCase.id}-light-before');
 
@@ -250,6 +269,21 @@ Future<void> _assertThemeSwitchReadable(
   final terminal = _terminalFromView(tester);
   final contrast = _minimumTokenContrast(terminal, step.theme, token);
   final surface = _composerSurfaceForToken(terminal, step.theme, token);
+  await _waitForOpenCodeThemeSurface(
+    tester,
+    proofCase,
+    step.theme,
+    minBackgroundLuminance: step.minBackgroundLuminance,
+    maxBackgroundLuminance: step.maxBackgroundLuminance,
+    description: '${proofCase.label} ${step.id} app surface',
+  );
+  await _waitForOpenCodeViewportBackground(
+    tester,
+    proofCase,
+    step.theme,
+    maxOppositeThemeFraction: step.theme.isDark ? 0.08 : 0.18,
+    description: '${proofCase.label} ${step.id} viewport',
+  );
   await binding.takeScreenshot('${proofCase.id}-${step.id}');
 
   expect(contrast, greaterThanOrEqualTo(3.0));
@@ -272,6 +306,81 @@ Future<void> _assertThemeSwitchReadable(
   debugPrint(
     '${proofCase.id} ${step.id} contrast=$contrast '
     'surface=${surface.background}',
+  );
+}
+
+Future<void> _waitForOpenCodeThemeSurface(
+  WidgetTester tester,
+  _ProofCase proofCase,
+  TerminalThemeData theme, {
+  required String description,
+  double? minBackgroundLuminance,
+  double? maxBackgroundLuminance,
+}) async {
+  if (!proofCase.id.startsWith('opencode-')) {
+    return;
+  }
+
+  await _pumpUntil(
+    tester,
+    () {
+      final surface = _surfaceForTextOrNull(
+        _terminalFromView(tester),
+        theme,
+        proofCase.expectedText,
+      );
+      if (surface == null) {
+        return false;
+      }
+      final luminance = surface.background.computeLuminance();
+      if (minBackgroundLuminance != null &&
+          luminance <= minBackgroundLuminance) {
+        return false;
+      }
+      if (maxBackgroundLuminance != null &&
+          luminance >= maxBackgroundLuminance) {
+        return false;
+      }
+      return true;
+    },
+    description: description,
+    timeout: const Duration(seconds: 20),
+  );
+
+  final surface = _surfaceForTextOrNull(
+    _terminalFromView(tester),
+    theme,
+    proofCase.expectedText,
+  );
+  debugPrint('${proofCase.id} $description appSurface=${surface?.background}');
+}
+
+Future<void> _waitForOpenCodeViewportBackground(
+  WidgetTester tester,
+  _ProofCase proofCase,
+  TerminalThemeData theme, {
+  required double maxOppositeThemeFraction,
+  required String description,
+}) async {
+  if (!proofCase.id.startsWith('opencode-')) {
+    return;
+  }
+
+  await _pumpUntil(
+    tester,
+    () {
+      final stats = _viewportBackgroundStats(_terminalFromView(tester), theme);
+      return stats.oppositeThemeFraction <= maxOppositeThemeFraction;
+    },
+    description: description,
+    timeout: const Duration(seconds: 20),
+  );
+
+  final stats = _viewportBackgroundStats(_terminalFromView(tester), theme);
+  debugPrint(
+    '${proofCase.id} $description oppositeThemeFraction='
+    '${stats.oppositeThemeFraction} opposite=${stats.oppositeThemeCells} '
+    'sampled=${stats.sampledCells}',
   );
 }
 
@@ -531,6 +640,69 @@ double _minimumTokenContrast(
   }
 
   fail('Could not find token "$token" in terminal buffer.');
+}
+
+({Color background})? _surfaceForTextOrNull(
+  Terminal terminal,
+  TerminalThemeData theme,
+  String text,
+) {
+  final xtermTheme = theme.toXtermTheme();
+  final palette = _buildTerminalPalette(xtermTheme);
+  final cell = CellData.empty();
+
+  for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
+    final line = terminal.buffer.lines[row];
+    final lineText = line.getText(0, terminal.buffer.viewWidth);
+    final startColumn = lineText.indexOf(text);
+    if (startColumn == -1) {
+      continue;
+    }
+
+    line.getCellData(startColumn, cell);
+    return (
+      background: _effectiveCellColors(cell, xtermTheme, palette).background,
+    );
+  }
+
+  return null;
+}
+
+({int sampledCells, int oppositeThemeCells, double oppositeThemeFraction})
+_viewportBackgroundStats(Terminal terminal, TerminalThemeData theme) {
+  final xtermTheme = theme.toXtermTheme();
+  final palette = _buildTerminalPalette(xtermTheme);
+  final cell = CellData.empty();
+  var sampledCells = 0;
+  var oppositeThemeCells = 0;
+  final startRow = terminal.buffer.scrollBack;
+  final endRow = startRow + terminal.buffer.viewHeight;
+
+  for (var row = startRow; row < endRow; row += 1) {
+    final line = terminal.buffer.lines[row];
+    for (var column = 0; column < terminal.buffer.viewWidth; column += 1) {
+      line.getCellData(column, cell);
+      final background = _effectiveCellColors(
+        cell,
+        xtermTheme,
+        palette,
+      ).background;
+      final luminance = background.computeLuminance();
+      final oppositeTheme = theme.isDark ? luminance > 0.55 : luminance < 0.20;
+      sampledCells += 1;
+      if (oppositeTheme) {
+        oppositeThemeCells += 1;
+      }
+    }
+  }
+
+  return (
+    sampledCells: sampledCells,
+    oppositeThemeCells: oppositeThemeCells,
+    oppositeThemeFraction: sampledCells == 0
+        ? 0
+        : oppositeThemeCells / sampledCells,
+  );
 }
 
 int _effectiveBackgroundCellColor(CellData cell) =>

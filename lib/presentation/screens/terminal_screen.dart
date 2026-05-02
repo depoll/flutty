@@ -230,6 +230,20 @@ bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   return hadVisibleOrPrimedTmuxState && hadDetectionFailure;
 }
 
+/// Returns whether detection should show the expected tmux UI before exec
+/// probes complete.
+@visibleForTesting
+bool shouldPrimeTerminalTmuxStateWhileDetecting({
+  required String? candidateSessionName,
+  required bool hasExistingVisibleTmuxState,
+  required bool mayPreserveExistingTmuxState,
+  required bool isReopeningExistingTerminal,
+}) =>
+    candidateSessionName != null &&
+    !hasExistingVisibleTmuxState &&
+    !mayPreserveExistingTmuxState &&
+    isReopeningExistingTerminal;
+
 /// Chooses the tmux session name to verify during detection.
 ///
 /// Prefer explicit route/host configuration, but keep verifying the existing
@@ -4031,51 +4045,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
-    // Run the tmux palette update synchronously instead of using the 75ms
-    // debounced path; priming should fire immediately when tmux is detected
-    // so the cache is right before any inner TUI queries it.
-    unawaited(
-      ref
-          .read(tmuxServiceProvider)
-          .refreshTerminalTheme(
-            session,
-            tmuxSessionName,
-            theme,
-            extraFlags: _host?.tmuxExtraFlags,
-          )
-          .then((_) {
-            if (!_isCurrentTerminalThemeRefresh(
-              theme: theme,
-              session: session,
-              refreshGeneration: refreshGeneration,
-            )) {
-              return;
-            }
-            _refreshTerminalThemeReportsForTui(
-              theme,
-              includeColorReports: true,
-              reason: 'tmux_prime_complete_outer',
-            );
-            _scheduleTerminalThemeRefreshForTui(
-              theme: theme,
-              session: session,
-              refreshGeneration: refreshGeneration,
-              delay: const Duration(milliseconds: 150),
-              includeColorReports: true,
-              reason: 'tmux_prime_complete_outer_late',
-            );
-          })
-          .catchError((Object error) {
-            DiagnosticsLogService.instance.warning(
-              'terminal.theme',
-              'tmux_prime_failed',
-              fields: {
-                'connectionId': session.connectionId,
-                'errorType': error.runtimeType,
-              },
-            );
-          }),
+    final extraFlags = _host?.tmuxExtraFlags;
+    _queueTmuxTerminalThemeRefresh(
+      _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: tmuxSessionName,
+        refreshGeneration: refreshGeneration,
+        reason: 'tmux_prime',
+        extraFlags: extraFlags,
+      ),
     );
+    for (final (:delay, :reason) in const [
+      (delay: Duration(milliseconds: 900), reason: 'tmux_prime_late_900ms'),
+      (delay: Duration(milliseconds: 1800), reason: 'tmux_prime_late_1800ms'),
+    ]) {
+      _scheduleTmuxTerminalThemeRefresh(
+        _TmuxTerminalThemeRefreshRequest(
+          theme: theme,
+          session: session,
+          sessionName: tmuxSessionName,
+          refreshGeneration: refreshGeneration,
+          reason: reason,
+          extraFlags: extraFlags,
+        ),
+        delay: delay,
+      );
+    }
   }
 
   void _refreshTmuxClientAfterTerminalThemeChange({
@@ -4097,27 +4093,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 75), () {
-        if (!_isCurrentTerminalThemeRefresh(
-          theme: theme,
-          session: session,
-          refreshGeneration: refreshGeneration,
-        )) {
-          return;
-        }
-        _queueTmuxTerminalThemeRefresh(
-          _TmuxTerminalThemeRefreshRequest(
-            theme: theme,
-            session: session,
-            sessionName: tmuxSessionName,
-            refreshGeneration: refreshGeneration,
-            reason: reason,
-            extraFlags: _host?.tmuxExtraFlags,
-          ),
-        );
-      }),
+    _scheduleTmuxTerminalThemeRefresh(
+      _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: tmuxSessionName,
+        refreshGeneration: refreshGeneration,
+        reason: reason,
+        extraFlags: _host?.tmuxExtraFlags,
+      ),
+      delay: const Duration(milliseconds: 75),
     );
+  }
+
+  void _scheduleTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request, {
+    required Duration delay,
+  }) {
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (_tmuxSessionName != request.sessionName ||
+          !_isCurrentTerminalThemeRefresh(
+            theme: request.theme,
+            session: request.session,
+            refreshGeneration: request.refreshGeneration,
+          )) {
+        return;
+      }
+      _queueTmuxTerminalThemeRefresh(request);
+    });
+    _terminalThemeRefreshTimers.add(timer);
   }
 
   void _queueTmuxTerminalThemeRefresh(
@@ -5029,7 +5035,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
         if (!_isTmuxActive) {
-          unawaited(_detectTmux(session, skipDelay: true));
+          unawaited(
+            _detectTmux(
+              session,
+              skipDelay: true,
+              isReopeningExistingTerminal: true,
+            ),
+          );
         }
         return;
       }
@@ -5588,6 +5600,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     bool skipDelay = false,
     bool preserveExistingTmuxState = false,
+    bool isReopeningExistingTerminal = false,
   }) async {
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
@@ -5616,7 +5629,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (hasExistingVisibleTmuxState &&
             candidateSessionName != null &&
             candidateSessionName == existingCandidateSessionName);
-    final hadVisibleOrPrimedTmuxState = hasExistingVisibleTmuxState;
+    final shouldPrimeTmuxStateWhileDetecting =
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: candidateSessionName,
+          hasExistingVisibleTmuxState: hasExistingVisibleTmuxState,
+          mayPreserveExistingTmuxState: mayPreserveExistingTmuxState,
+          isReopeningExistingTerminal: isReopeningExistingTerminal,
+        );
+    final hadVisibleOrPrimedTmuxState =
+        hasExistingVisibleTmuxState || shouldPrimeTmuxStateWhileDetecting;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
     var confirmedTmuxActive = false;
     var hadDetectionFailure = false;
@@ -5628,6 +5649,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
             _tmuxWorkingDirectory = preferredWorkingDirectory;
           }
+        } else if (shouldPrimeTmuxStateWhileDetecting) {
+          _isTmuxActive = true;
+          _tmuxSessionName = candidateSessionName;
+          _tmuxStateConnectionId = session.connectionId;
+          _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+          _tmuxWorkingDirectory = preferredWorkingDirectory;
         } else if (!mayPreserveExistingTmuxState) {
           _stopTmuxForegroundVerification();
           _isTmuxActive = false;

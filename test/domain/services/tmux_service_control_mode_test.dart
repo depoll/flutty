@@ -144,10 +144,15 @@ void main() {
       expect(
         command,
         contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}',
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_title}',
         ),
       );
-      expect(command, contains(r'{ while IFS="$SEP" read -r pane active'));
+      expect(
+        command,
+        contains(
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title',
+        ),
+      );
       expect(command, contains(r'[ "$active" = 1 ]'));
       expect(command, isNot(contains('window_active')));
       expect(command, contains(r'[ "$alternate" = 1 ]'));
@@ -158,10 +163,25 @@ void main() {
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
       expect(command, contains('codex|codex-*)'));
+      expect(command, contains('opencode|opencode-*)'));
+      expect(command, contains(r'case "$pane_title" in'));
+      expect(command, contains('*OpenCode*|*opencode*)'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
-      expect(command, isNot(contains('1b 5b 4f')));
+      expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
+      final codexBranchStart = command.indexOf('codex|codex-*)');
+      final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
+      expect(codexBranchStart, isNonNegative);
+      expect(opencodeBranchStart, greaterThan(codexBranchStart));
+      expect(
+        command.substring(codexBranchStart, opencodeBranchStart),
+        isNot(contains('1b 5b 4f')),
+      );
+      expect(
+        command.indexOf('1b 5b 4f', opencodeBranchStart),
+        greaterThan(opencodeBranchStart),
+      );
       expect(command, contains('sleep 0.25'));
       expect(command, contains('sleep 0.08'));
       expect(
@@ -175,8 +195,8 @@ void main() {
       expect(command, contains('1b 5d 31 30 3b'));
       expect(command, contains('1b 5d 31 31 3b'));
       expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(3));
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(3));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(9));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(9));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),

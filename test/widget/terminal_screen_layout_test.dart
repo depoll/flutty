@@ -321,6 +321,54 @@ void main() {
       );
     });
 
+    test('primes configured tmux state while detection is pending', () {
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: 'MonkeySSH',
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: 'MonkeySSH',
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+          preserveExistingTmuxState: false,
+          hadVisibleOrPrimedTmuxState: true,
+          confirmedTmuxActive: false,
+          hadDetectionFailure: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: null,
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: 'MonkeySSH',
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('keeps verifying the existing tmux session without a preference', () {
       expect(
         resolveTmuxDetectionCandidateSessionName(existingSessionName: ' work '),
