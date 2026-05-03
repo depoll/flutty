@@ -1857,24 +1857,27 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   required List<ContextMenuButtonItem> defaultItems,
   required VoidCallback onPaste,
 }) {
-  var hasPaste = false;
   final buttonItems = <ContextMenuButtonItem>[];
   for (final item in defaultItems) {
-    if (item.type == ContextMenuButtonType.paste) {
-      hasPaste = true;
-      buttonItems.add(item.copyWith(onPressed: onPaste));
-    } else {
-      buttonItems.add(item);
+    switch (item.type) {
+      case ContextMenuButtonType.cut:
+      case ContextMenuButtonType.delete:
+      case ContextMenuButtonType.selectAll:
+        // These actions do not have a meaningful terminal selection behavior.
+        continue;
+      case ContextMenuButtonType.paste:
+        // Replaced below with terminal-aware paste.
+        continue;
+      default:
+        buttonItems.add(item);
     }
   }
-  if (!hasPaste) {
-    buttonItems.add(
-      ContextMenuButtonItem(
-        type: ContextMenuButtonType.paste,
-        onPressed: onPaste,
-      ),
-    );
-  }
+  buttonItems.add(
+    ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
+      onPressed: onPaste,
+    ),
+  );
   return buttonItems;
 }
 
@@ -6632,123 +6635,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
-    final selectionText = _currentTerminalSelectionText();
-    var hasCopy = false;
-    final buttonItems = <ContextMenuButtonItem>[];
-    for (final item in selectableRegionState.contextMenuButtonItems) {
-      switch (item.type) {
-        case ContextMenuButtonType.copy:
-          hasCopy = true;
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(
-                    _copySelectionText(
-                      text,
-                      clearTerminalSelection: true,
-                      restoreFocus: true,
-                    ),
-                  );
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.lookUp:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(_lookUpTerminalSelectionText(text));
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.searchWeb:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(_searchWebForTerminalSelectionText(text));
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.share:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(_shareTerminalSelectionText(text));
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.selectAll:
-        case ContextMenuButtonType.cut:
-        case ContextMenuButtonType.delete:
-          // Drop items that have no meaningful action against the
-          // terminal's xterm-managed selection.
-          continue;
-        case ContextMenuButtonType.paste:
-          // Replaced below with our terminal-aware paste handler.
-          continue;
-        default:
-          buttonItems.add(item);
-      }
-    }
-    if (!hasCopy) {
-      buttonItems.insert(
-        0,
-        ContextMenuButtonItem(
-          onPressed: buildTerminalSelectionContextMenuAction(
-            action: () {
-              final text = selectionText;
-              if (text == null) {
-                return;
-              }
-              unawaited(
-                _copySelectionText(
-                  text,
-                  clearTerminalSelection: true,
-                  restoreFocus: true,
-                ),
-              );
-            },
-            hideToolbar: selectableRegionState.hideToolbar,
-          ),
-          type: ContextMenuButtonType.copy,
-        ),
-      );
-    }
-    buttonItems.add(
-      ContextMenuButtonItem(
-        onPressed: () {
-          selectableRegionState.hideToolbar();
-          unawaited(_pasteClipboard());
-        },
-        type: ContextMenuButtonType.paste,
-      ),
+    final buttonItems = buildNativeSelectionContextMenuButtonItems(
+      defaultItems: selectableRegionState.contextMenuButtonItems,
+      onPaste: () {
+        selectableRegionState.hideToolbar();
+        unawaited(_pasteClipboard());
+      },
     );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
@@ -8431,33 +8323,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
     return text.isEmpty ? null : text;
-  }
-
-  Future<void> _lookUpTerminalSelectionText(String text) async {
-    try {
-      await SystemChannels.platform.invokeMethod<void>('LookUp.invoke', text);
-    } on PlatformException {
-      // Platform doesn't support LookUp; ignore.
-    }
-  }
-
-  Future<void> _searchWebForTerminalSelectionText(String text) async {
-    try {
-      await SystemChannels.platform.invokeMethod<void>(
-        'SearchWeb.invoke',
-        text,
-      );
-    } on PlatformException {
-      // Platform doesn't support SearchWeb; ignore.
-    }
-  }
-
-  Future<void> _shareTerminalSelectionText(String text) async {
-    try {
-      await SystemChannels.platform.invokeMethod<void>('Share.invoke', text);
-    } on PlatformException {
-      // Platform doesn't support Share; ignore.
-    }
   }
 
   Future<void> _writeLocalClipboardText(String text) async {

@@ -230,6 +230,30 @@ void main() {
       expect(didPaste, isTrue);
     });
 
+    test(
+      'preserves default copy action in the native overlay context menu',
+      () {
+        var didCopy = false;
+
+        final items = buildNativeSelectionContextMenuButtonItems(
+          defaultItems: [
+            ContextMenuButtonItem(
+              type: ContextMenuButtonType.copy,
+              onPressed: () => didCopy = true,
+            ),
+          ],
+          onPaste: () {},
+        );
+
+        final copyItem = items.singleWhere(
+          (item) => item.type == ContextMenuButtonType.copy,
+        );
+        copyItem.onPressed!();
+
+        expect(didCopy, isTrue);
+      },
+    );
+
     test('runs terminal selection menu action before hiding toolbar', () {
       String? selectedText = 'alpha';
       String? copiedText;

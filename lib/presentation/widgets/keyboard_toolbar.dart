@@ -227,7 +227,15 @@ class KeyboardToolbar extends StatefulWidget {
 
 /// State for [KeyboardToolbar].
 class KeyboardToolbarState extends State<KeyboardToolbar> {
+  static const _pasteOptionsWidth = 220.0;
+  static const _pasteOptionHeight = 44.0;
+  static const _pasteOptionsGap = 8.0;
+  static const _pasteOptionsScreenMargin = 8.0;
+
   late final KeyboardToolbarController _fallbackController;
+  final _pasteButtonKey = GlobalKey();
+  OverlayEntry? _pasteOptionsOverlay;
+  _PasteToolbarAction? _highlightedPasteAction;
 
   KeyboardToolbarController get _controller =>
       widget.controller ?? _fallbackController;
@@ -252,6 +260,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   @override
   void dispose() {
+    _hidePasteOptionsMenu();
     _controller.removeListener(_handleControllerChanged);
     _fallbackController.dispose();
     super.dispose();
@@ -364,10 +373,14 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _ToolbarButton(label: '/', onTap: () => _sendText('/'), tooltip: 'Slash'),
     _ToolbarButton(label: '~', onTap: () => _sendText('~'), tooltip: 'Tilde'),
     _ToolbarButton(
+      key: _pasteButtonKey,
       icon: Icons.paste_rounded,
       label: 'Paste',
       onTap: _pasteClipboard,
-      onLongPressStart: _showPasteOptions,
+      onLongPressStartWithDetails: _showPasteOptions,
+      onLongPressMoveUpdate: _updatePasteOptionsHighlight,
+      onLongPressEnd: _chooseHighlightedPasteOption,
+      onLongPressCancel: _hidePasteOptionsMenu,
       tooltip: 'Paste',
     ),
   ];
@@ -493,54 +506,158 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     unawaited(_runToolbarAction(widget.onPasteRequested));
   }
 
-  void _showPasteOptions() {
+  void _showPasteOptions(LongPressStartDetails details) {
     HapticFeedback.mediumImpact();
     widget.onKeyPressed?.call();
     _consumeOneShot();
-    unawaited(_showPasteOptionsSheet());
+    _showPasteOptionsMenu(details.globalPosition);
   }
 
-  Future<void> _showPasteOptionsSheet() async {
-    final action = await showModalBottomSheet<_PasteToolbarAction>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.image_outlined),
-              title: const Text('Paste Images'),
-              enabled: widget.onPasteImageRequested != null,
-              onTap: widget.onPasteImageRequested == null
-                  ? null
-                  : () => Navigator.pop(context, _PasteToolbarAction.images),
-            ),
-            ListTile(
-              leading: const Icon(Icons.attach_file_rounded),
-              title: const Text('Paste Files'),
-              enabled: widget.onPasteFilesRequested != null,
-              onTap: widget.onPasteFilesRequested == null
-                  ? null
-                  : () => Navigator.pop(context, _PasteToolbarAction.files),
-            ),
-          ],
+  void _showPasteOptionsMenu(Offset globalPosition) {
+    final overlay = Overlay.of(context);
+    final buttonRect = _pasteButtonGlobalRect();
+    if (buttonRect == null) {
+      return;
+    }
+    final overlayBox = overlay.context.findRenderObject();
+    if (overlayBox is! RenderBox) {
+      return;
+    }
+
+    final overlaySize = overlayBox.size;
+    final topLeft = overlayBox.globalToLocal(buttonRect.topLeft);
+    final bottomRight = overlayBox.globalToLocal(buttonRect.bottomRight);
+    final targetRect = Rect.fromPoints(topLeft, bottomRight);
+    final menuHeight = _PasteToolbarAction.values.length * _pasteOptionHeight;
+    final left = _clampDouble(
+      targetRect.right - _pasteOptionsWidth,
+      _pasteOptionsScreenMargin,
+      overlaySize.width - _pasteOptionsWidth - _pasteOptionsScreenMargin,
+    );
+    final top = _clampDouble(
+      targetRect.top - menuHeight - _pasteOptionsGap,
+      _pasteOptionsScreenMargin,
+      overlaySize.height - menuHeight - _pasteOptionsScreenMargin,
+    );
+    _hidePasteOptionsMenu();
+    _highlightedPasteAction = _pasteActionAtGlobalPosition(
+      globalPosition,
+      menuOrigin: overlayBox.localToGlobal(Offset(left, top)),
+    );
+    _pasteOptionsOverlay = OverlayEntry(
+      builder: (context) => Positioned(
+        left: left,
+        top: top,
+        width: _pasteOptionsWidth,
+        child: _PasteOptionsMenu(
+          highlightedAction: _highlightedPasteAction,
+          imageEnabled: widget.onPasteImageRequested != null,
+          filesEnabled: widget.onPasteFilesRequested != null,
         ),
       ),
     );
-    if (!mounted) {
-      return;
-    }
-    if (action == null) {
-      _refocusTerminal();
-      return;
-    }
+    overlay.insert(_pasteOptionsOverlay!);
+  }
 
+  Rect? _pasteButtonGlobalRect() {
+    final renderObject = _pasteButtonKey.currentContext?.findRenderObject();
+    if (renderObject is! RenderBox) {
+      return null;
+    }
+    return renderObject.localToGlobal(Offset.zero) & renderObject.size;
+  }
+
+  void _updatePasteOptionsHighlight(LongPressMoveUpdateDetails details) {
+    final action = _pasteActionAtGlobalPosition(details.globalPosition);
+    if (action == _highlightedPasteAction) {
+      return;
+    }
+    _highlightedPasteAction = action;
+    _pasteOptionsOverlay?.markNeedsBuild();
+  }
+
+  _PasteToolbarAction? _pasteActionAtGlobalPosition(
+    Offset globalPosition, {
+    Offset? menuOrigin,
+  }) {
+    final overlay = _pasteOptionsOverlay;
+    if (overlay == null && menuOrigin == null) {
+      return null;
+    }
+    final overlayBox = Overlay.of(context).context.findRenderObject();
+    if (overlayBox is! RenderBox) {
+      return null;
+    }
+    final offset = menuOrigin == null
+        ? _pasteOptionsOverlayOffset(overlayBox.size)
+        : null;
+    if (menuOrigin == null && offset == null) {
+      return null;
+    }
+    final origin = menuOrigin ?? overlayBox.localToGlobal(offset!);
+    final local = globalPosition - origin;
+    if (local.dx < 0 || local.dx > _pasteOptionsWidth || local.dy < 0) {
+      return null;
+    }
+    final index = local.dy ~/ _pasteOptionHeight;
+    if (index < 0 || index >= _PasteToolbarAction.values.length) {
+      return null;
+    }
+    final action = _PasteToolbarAction.values[index];
+    return _isPasteActionEnabled(action) ? action : null;
+  }
+
+  Offset? _pasteOptionsOverlayOffset(Size overlaySize) {
+    final buttonRect = _pasteButtonGlobalRect();
+    if (buttonRect == null) {
+      return null;
+    }
+    final overlayBox = Overlay.of(context).context.findRenderObject();
+    if (overlayBox is! RenderBox) {
+      return null;
+    }
+    final topLeft = overlayBox.globalToLocal(buttonRect.topLeft);
+    final bottomRight = overlayBox.globalToLocal(buttonRect.bottomRight);
+    final targetRect = Rect.fromPoints(topLeft, bottomRight);
+    final menuHeight = _PasteToolbarAction.values.length * _pasteOptionHeight;
+    return Offset(
+      _clampDouble(
+        targetRect.right - _pasteOptionsWidth,
+        _pasteOptionsScreenMargin,
+        overlaySize.width - _pasteOptionsWidth - _pasteOptionsScreenMargin,
+      ),
+      _clampDouble(
+        targetRect.top - menuHeight - _pasteOptionsGap,
+        _pasteOptionsScreenMargin,
+        overlaySize.height - menuHeight - _pasteOptionsScreenMargin,
+      ),
+    );
+  }
+
+  bool _isPasteActionEnabled(_PasteToolbarAction action) => switch (action) {
+    _PasteToolbarAction.images => widget.onPasteImageRequested != null,
+    _PasteToolbarAction.files => widget.onPasteFilesRequested != null,
+  };
+
+  void _chooseHighlightedPasteOption(LongPressEndDetails details) {
+    final action =
+        _pasteActionAtGlobalPosition(details.globalPosition) ??
+        _highlightedPasteAction;
+    _hidePasteOptionsMenu();
     switch (action) {
       case _PasteToolbarAction.images:
-        await _runToolbarAction(widget.onPasteImageRequested);
+        unawaited(_runToolbarAction(widget.onPasteImageRequested));
       case _PasteToolbarAction.files:
-        await _runToolbarAction(widget.onPasteFilesRequested);
+        unawaited(_runToolbarAction(widget.onPasteFilesRequested));
+      case null:
+        _refocusTerminal();
     }
+  }
+
+  void _hidePasteOptionsMenu() {
+    _pasteOptionsOverlay?.remove();
+    _pasteOptionsOverlay = null;
+    _highlightedPasteAction = null;
   }
 
   Future<void> _runToolbarAction(FutureOr<void> Function()? action) async {
@@ -673,6 +790,108 @@ enum _Arrow { up, down, left, right }
 
 enum _PasteToolbarAction { images, files }
 
+double _clampDouble(double value, double min, double max) {
+  final effectiveMax = max < min ? min : max;
+  return value.clamp(min, effectiveMax);
+}
+
+class _PasteOptionsMenu extends StatelessWidget {
+  const _PasteOptionsMenu({
+    required this.highlightedAction,
+    required this.imageEnabled,
+    required this.filesEnabled,
+  });
+
+  final _PasteToolbarAction? highlightedAction;
+  final bool imageEnabled;
+  final bool filesEnabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.surfaceContainerHighest,
+      elevation: 8,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _PasteOptionsMenuItem(
+            icon: Icons.image_outlined,
+            label: 'Paste Images',
+            enabled: imageEnabled,
+            highlighted: highlightedAction == _PasteToolbarAction.images,
+          ),
+          Divider(height: 1, color: colorScheme.outlineVariant),
+          _PasteOptionsMenuItem(
+            icon: Icons.attach_file_rounded,
+            label: 'Paste Files',
+            enabled: filesEnabled,
+            highlighted: highlightedAction == _PasteToolbarAction.files,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PasteOptionsMenuItem extends StatelessWidget {
+  const _PasteOptionsMenuItem({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    required this.highlighted,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool enabled;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final contentColor = enabled
+        ? colorScheme.onSurfaceVariant
+        : colorScheme.onSurfaceVariant.withAlpha(96);
+    final backgroundColor = highlighted && enabled
+        ? colorScheme.primaryContainer
+        : Colors.transparent;
+    final foregroundColor = highlighted && enabled
+        ? colorScheme.onPrimaryContainer
+        : contentColor;
+
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      selected: highlighted,
+      label: label,
+      child: Container(
+        height: KeyboardToolbarState._pasteOptionHeight,
+        color: backgroundColor,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: foregroundColor),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontWeight: highlighted ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _KeyRow extends StatelessWidget {
   const _KeyRow({required this.children});
 
@@ -699,8 +918,13 @@ class _ToolbarButton extends StatefulWidget {
     this.icon,
     this.mirrorIcon = false,
     this.onLongPressStart,
+    this.onLongPressStartWithDetails,
+    this.onLongPressMoveUpdate,
+    this.onLongPressEnd,
+    this.onLongPressCancel,
     this.onLongPressRepeat,
     this.tooltip,
+    super.key,
   });
 
   final String label;
@@ -708,8 +932,20 @@ class _ToolbarButton extends StatefulWidget {
   final bool mirrorIcon;
   final VoidCallback onTap;
   final VoidCallback? onLongPressStart;
+  final GestureLongPressStartCallback? onLongPressStartWithDetails;
+  final GestureLongPressMoveUpdateCallback? onLongPressMoveUpdate;
+  final GestureLongPressEndCallback? onLongPressEnd;
+  final VoidCallback? onLongPressCancel;
   final VoidCallback? onLongPressRepeat;
   final String? tooltip;
+
+  bool get hasLongPressHandler =>
+      onLongPressStart != null ||
+      onLongPressStartWithDetails != null ||
+      onLongPressMoveUpdate != null ||
+      onLongPressEnd != null ||
+      onLongPressCancel != null ||
+      onLongPressRepeat != null;
 
   @override
   State<_ToolbarButton> createState() => _ToolbarButtonState();
@@ -773,22 +1009,27 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
       onTapUp: (_) => _setPressed(false),
       onTapCancel: _stopRepeat,
       onTap: widget.onTap,
-      onLongPressStart:
-          widget.onLongPressStart != null || widget.onLongPressRepeat != null
-          ? (_) {
+      onLongPressStart: widget.hasLongPressHandler
+          ? (details) {
               widget.onLongPressStart?.call();
+              widget.onLongPressStartWithDetails?.call(details);
               if (widget.onLongPressRepeat != null) {
                 _startRepeat();
               }
             }
           : null,
-      onLongPressEnd:
-          widget.onLongPressStart != null || widget.onLongPressRepeat != null
-          ? (_) => _stopRepeat()
+      onLongPressMoveUpdate: widget.onLongPressMoveUpdate,
+      onLongPressEnd: widget.hasLongPressHandler
+          ? (details) {
+              widget.onLongPressEnd?.call(details);
+              _stopRepeat();
+            }
           : null,
-      onLongPressCancel:
-          widget.onLongPressStart != null || widget.onLongPressRepeat != null
-          ? _stopRepeat
+      onLongPressCancel: widget.hasLongPressHandler
+          ? () {
+              widget.onLongPressCancel?.call();
+              _stopRepeat();
+            }
           : null,
       child: Container(
         margin: const EdgeInsets.all(2),

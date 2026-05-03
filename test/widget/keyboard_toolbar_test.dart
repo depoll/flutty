@@ -333,7 +333,7 @@ void main() {
       expect(keyPressedCount, 1);
     });
 
-    testWidgets('Paste button shows image and file options on long press', (
+    testWidgets('Paste long press opens an anchored drag-release menu', (
       tester,
     ) async {
       var imagePasteCount = 0;
@@ -342,26 +342,41 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: KeyboardToolbar(
-              terminal: terminal,
-              onPasteImageRequested: () async => imagePasteCount++,
-              onPasteFilesRequested: () async => filePasteCount++,
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  onPasteImageRequested: () async => imagePasteCount++,
+                  onPasteFilesRequested: () async => filePasteCount++,
+                ),
+              ],
             ),
           ),
         ),
       );
 
-      await tester.longPress(find.byTooltip('Paste'));
-      await tester.pumpAndSettle();
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
 
       expect(find.text('Paste Images'), findsOneWidget);
       expect(find.text('Paste Files'), findsOneWidget);
+      expect(
+        tester.getCenter(find.text('Paste Images')).dy,
+        lessThan(pasteCenter.dy),
+      );
 
-      await tester.tap(find.text('Paste Images'));
-      await tester.pumpAndSettle();
+      await gesture.moveTo(tester.getCenter(find.text('Paste Images')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
 
       expect(imagePasteCount, 1);
       expect(filePasteCount, 0);
+      expect(find.text('Paste Images'), findsNothing);
+      expect(find.text('Paste Files'), findsNothing);
     });
 
     testWidgets('Enter button renders and triggers callback', (tester) async {
