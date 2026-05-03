@@ -230,6 +230,30 @@ void main() {
       expect(didPaste, isTrue);
     });
 
+    test(
+      'preserves default copy action in the native overlay context menu',
+      () {
+        var didCopy = false;
+
+        final items = buildNativeSelectionContextMenuButtonItems(
+          defaultItems: [
+            ContextMenuButtonItem(
+              type: ContextMenuButtonType.copy,
+              onPressed: () => didCopy = true,
+            ),
+          ],
+          onPaste: () {},
+        );
+
+        final copyItem = items.singleWhere(
+          (item) => item.type == ContextMenuButtonType.copy,
+        );
+        copyItem.onPressed!();
+
+        expect(didCopy, isTrue);
+      },
+    );
+
     test('runs terminal selection menu action before hiding toolbar', () {
       String? selectedText = 'alpha';
       String? copiedText;
@@ -772,6 +796,36 @@ void main() {
       await tester.pump();
 
       expect(wakelockPlatform.toggleCalls.last, false);
+    });
+
+    testWidgets('terminal overflow menu omits standalone copy action', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is PopupMenuItem<String> && widget.value == 'copy',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_file',
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets(

@@ -1859,24 +1859,27 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   required List<ContextMenuButtonItem> defaultItems,
   required VoidCallback onPaste,
 }) {
-  var hasPaste = false;
   final buttonItems = <ContextMenuButtonItem>[];
   for (final item in defaultItems) {
-    if (item.type == ContextMenuButtonType.paste) {
-      hasPaste = true;
-      buttonItems.add(item.copyWith(onPressed: onPaste));
-    } else {
-      buttonItems.add(item);
+    switch (item.type) {
+      case ContextMenuButtonType.cut:
+      case ContextMenuButtonType.delete:
+      case ContextMenuButtonType.selectAll:
+        // These actions do not have a meaningful terminal selection behavior.
+        continue;
+      case ContextMenuButtonType.paste:
+        // Replaced below with terminal-aware paste.
+        continue;
+      default:
+        buttonItems.add(item);
     }
   }
-  if (!hasPaste) {
-    buttonItems.add(
-      ContextMenuButtonItem(
-        type: ContextMenuButtonType.paste,
-        onPressed: onPaste,
-      ),
-    );
-  }
+  buttonItems.add(
+    ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
+      onPressed: onPaste,
+    ),
+  );
   return buttonItems;
 }
 
@@ -6038,16 +6041,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       ],
                     ),
                   ),
-                const PopupMenuItem(
-                  value: 'copy',
-                  child: Row(
-                    children: [
-                      Icon(Icons.copy_rounded, size: 20),
-                      SizedBox(width: 12),
-                      Text('Copy'),
-                    ],
-                  ),
-                ),
                 if (_currentTerminalSelectionText() != null)
                   const PopupMenuItem(
                     value: 'create_snippet',
@@ -6135,6 +6128,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     controller: _toolbarController,
                     terminal: _terminal,
                     onKeyPressed: _handleKeyboardToolbarKeyPressed,
+                    onPasteRequested: _pasteClipboard,
+                    onPasteImageRequested: _pastePickedImage,
+                    onPasteFilesRequested: _pastePickedFiles,
                     terminalFocusNode: _terminalFocusNode,
                   ),
               ],
@@ -6878,9 +6874,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'copy_working_directory':
         await _copyWorkingDirectory();
-        break;
-      case 'copy':
-        await _copySelection();
         break;
       case 'create_snippet':
         await _createSnippetFromSelection();
@@ -8413,19 +8406,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _showTerminalLinkMessage(result);
-  }
-
-  Future<void> _copySelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
-
-    await _copySelectionText(
-      text,
-      clearTerminalSelection: !_isNativeSelectionMode,
-      restoreFocus: !_isNativeSelectionMode,
-    );
   }
 
   Future<void> _createSnippetFromSelection() async {
