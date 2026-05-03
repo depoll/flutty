@@ -64,17 +64,20 @@ Be respectful and constructive in all interactions.
 
 3. Write tests for new functionality
 
-4. Ensure all checks pass:
+4. Ensure local checks cover your change:
    ```bash
    # Format code
    dart format .
-   
+
    # Analyze code
    flutter analyze
-   
-   # Run tests
-   flutter test
+
+   # Run tests relevant to the changed behavior
+   flutter test test/path/to/relevant_test.dart
    ```
+
+   Run the full `flutter test` suite locally for broad or high-risk changes.
+   CI runs the full suite with coverage for every pull request.
 
 5. Commit your changes:
    ```bash
