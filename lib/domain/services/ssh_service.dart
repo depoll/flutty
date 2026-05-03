@@ -82,8 +82,8 @@ typedef TerminalControlModeState = ({
 
     output.write(combinedInput.substring(cursor, startIndex));
     final payloadStart = startIndex + _terminalTmuxPassthroughStart.length;
-    final endIndex = combinedInput.indexOf(
-      _terminalStringTerminator,
+    final endIndex = _terminalTmuxPassthroughEndIndex(
+      combinedInput,
       payloadStart,
     );
     if (endIndex == -1) {
@@ -298,6 +298,27 @@ const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
 
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
+
+int _terminalTmuxPassthroughEndIndex(String input, int payloadStart) {
+  var index = payloadStart;
+  while (index < input.length - 1) {
+    if (input[index] != _terminalEscape) {
+      index += 1;
+      continue;
+    }
+
+    final next = input[index + 1];
+    if (next == _terminalEscape) {
+      index += 2;
+      continue;
+    }
+    if (next == r'\') {
+      return index;
+    }
+    index += 1;
+  }
+  return -1;
+}
 
 String _terminalTmuxPassthroughPendingSuffix(String input) {
   final maxSuffixLength =
