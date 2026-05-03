@@ -37,7 +37,9 @@ import '../widgets/connection_preview_snippet.dart';
 import '../widgets/file_picker_helpers.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
+import '../widgets/snippet_folder_dialog.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'snippet_edit_screen.dart';
 import 'transfer_screen.dart';
 
 const _redactStoreScreenshotIdentities = bool.fromEnvironment(
@@ -2214,15 +2216,27 @@ class _KeyRow extends ConsumerWidget {
 }
 
 /// Panel for displaying and managing snippets inline.
-class SnippetsPanel extends ConsumerWidget {
+class SnippetsPanel extends ConsumerStatefulWidget {
   /// Creates a [SnippetsPanel].
   const SnippetsPanel({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SnippetsPanel> createState() => _SnippetsPanelState();
+}
+
+class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
+  int? _selectedFolderId;
+  bool _showsUnfiledSnippets = false;
+
+  bool get _showsAllSnippets =>
+      !_showsUnfiledSnippets && _selectedFolderId == null;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final snippetsAsync = ref.watch(allSnippetsProvider);
+    final foldersAsync = ref.watch(allSnippetFoldersProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2245,9 +2259,15 @@ class SnippetsPanel extends ConsumerWidget {
               ),
               const Spacer(),
               _ActionButton(
+                icon: Icons.create_new_folder_outlined,
+                label: 'New Folder',
+                onTap: () => unawaited(_createFolder(context)),
+              ),
+              const SizedBox(width: 8),
+              _ActionButton(
                 icon: Icons.add,
                 label: 'Add Snippet',
-                onTap: () => context.push('/snippets/add'),
+                onTap: () => _addSnippet(context),
                 primary: true,
               ),
             ],
@@ -2261,63 +2281,241 @@ class SnippetsPanel extends ConsumerWidget {
                 const Center(child: CircularProgressIndicator(strokeWidth: 2)),
             error: (_, _) =>
                 const Center(child: Text('Could not load snippets.')),
-            data: (snippets) => snippets.isEmpty
-                ? _buildEmptyState(context, ref)
-                : _buildSnippetsList(context, ref, snippets),
+            data: (snippets) => foldersAsync.when(
+              loading: () => const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              error: (_, _) =>
+                  const Center(child: Text('Could not load snippet folders.')),
+              data: (folders) => _buildSnippetsBody(context, snippets, folders),
+            ),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildEmptyState(BuildContext context, WidgetRef ref) =>
+  void _addSnippet(BuildContext context) {
+    context.push(
+      '/snippets/add',
+      extra: SnippetEditPrefill(folderId: _selectedFolderId),
+    );
+  }
+
+  Future<void> _createFolder(BuildContext context) async {
+    final name = await showCreateSnippetFolderDialog(context);
+    if (name == null || !context.mounted) {
+      return;
+    }
+
+    try {
+      final folderId = await ref
+          .read(snippetRepositoryProvider)
+          .insertFolder(SnippetFoldersCompanion.insert(name: name));
+      if (!context.mounted) {
+        return;
+      }
+      setState(() {
+        _selectedFolderId = folderId;
+        _showsUnfiledSnippets = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Created folder "$name"')));
+    } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'snippets',
+          context: ErrorDescription('while creating a snippet folder'),
+        ),
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not create folder. Try again.')),
+        );
+      }
+    }
+  }
+
+  Widget _buildSnippetsBody(
+    BuildContext context,
+    List<Snippet> snippets,
+    List<SnippetFolder> folders,
+  ) {
+    final folderIds = folders.map((folder) => folder.id).toSet();
+    final selectedFolderId = folderIds.contains(_selectedFolderId)
+        ? _selectedFolderId
+        : null;
+    SnippetFolder? selectedFolder;
+    for (final folder in folders) {
+      if (folder.id == selectedFolderId) {
+        selectedFolder = folder;
+        break;
+      }
+    }
+    final visibleSnippets = _visibleSnippets(
+      snippets,
+      selectedFolderId: selectedFolderId,
+    );
+    final folderNames = {for (final folder in folders) folder.id: folder.name};
+    final showsFolderFilters =
+        folders.isNotEmpty ||
+        snippets.any((snippet) => snippet.folderId == null);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (showsFolderFilters)
+          _buildFolderFilters(
+            snippets: snippets,
+            folders: folders,
+            selectedFolderId: selectedFolderId,
+          ),
+        Expanded(
+          child: visibleSnippets.isEmpty
+              ? _buildEmptyState(context, selectedFolder?.name)
+              : _buildSnippetsList(
+                  context,
+                  snippets,
+                  visibleSnippets,
+                  folderNames,
+                ),
+        ),
+      ],
+    );
+  }
+
+  List<Snippet> _visibleSnippets(
+    List<Snippet> snippets, {
+    required int? selectedFolderId,
+  }) {
+    if (_showsUnfiledSnippets) {
+      return snippets
+          .where((snippet) => snippet.folderId == null)
+          .toList(growable: false);
+    }
+    if (selectedFolderId == null) {
+      return snippets;
+    }
+    return snippets
+        .where((snippet) => snippet.folderId == selectedFolderId)
+        .toList(growable: false);
+  }
+
+  Widget _buildFolderFilters({
+    required List<Snippet> snippets,
+    required List<SnippetFolder> folders,
+    required int? selectedFolderId,
+  }) {
+    final unfiledCount = snippets
+        .where((snippet) => snippet.folderId == null)
+        .length;
+    final folderCounts = <int, int>{};
+    for (final snippet in snippets) {
+      final folderId = snippet.folderId;
+      if (folderId != null) {
+        folderCounts[folderId] = (folderCounts[folderId] ?? 0) + 1;
+      }
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Row(
+        children: [
+          FilterChip(
+            label: Text('All (${snippets.length})'),
+            selected: _showsAllSnippets,
+            onSelected: (_) => setState(() {
+              _selectedFolderId = null;
+              _showsUnfiledSnippets = false;
+            }),
+          ),
+          if (unfiledCount > 0 || _showsUnfiledSnippets) ...[
+            const SizedBox(width: 8),
+            FilterChip(
+              label: Text('No folder ($unfiledCount)'),
+              selected: _showsUnfiledSnippets,
+              onSelected: (_) => setState(() {
+                _selectedFolderId = null;
+                _showsUnfiledSnippets = true;
+              }),
+            ),
+          ],
+          for (final folder in folders) ...[
+            const SizedBox(width: 8),
+            FilterChip(
+              label: Text('${folder.name} (${folderCounts[folder.id] ?? 0})'),
+              selected: !_showsUnfiledSnippets && selectedFolderId == folder.id,
+              onSelected: (_) => setState(() {
+                _selectedFolderId = folder.id;
+                _showsUnfiledSnippets = false;
+              }),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context, String? selectedFolderName) =>
       FluttyTheme.buildEmptyState(
         context: context,
         icon: Icons.code_outlined,
-        title: 'No snippets yet',
-        subtitle:
-            'Save commands you run often. Try templates such as '
-            '`tail -f {{log_file}}`, `docker restart {{container}}`, or '
-            '`git pull && {{restart_command}}`.',
-        onAction: () => context.push('/snippets/add'),
+        title: selectedFolderName == null
+            ? 'No snippets yet'
+            : 'No snippets in $selectedFolderName',
+        subtitle: selectedFolderName == null
+            ? 'Save commands you run often. Try templates such as '
+                  '`tail -f {{log_file}}`, `docker restart {{container}}`, or '
+                  '`git pull && {{restart_command}}`.'
+            : 'Add a snippet to this folder or pick another folder above.',
+        onAction: () => _addSnippet(context),
         actionLabel: 'Add Snippet',
       );
 
   Widget _buildSnippetsList(
     BuildContext context,
-    WidgetRef ref,
-    List<Snippet> snippets,
+    List<Snippet> allSnippets,
+    List<Snippet> visibleSnippets,
+    Map<int, String> folderNames,
   ) => ReorderableListView.builder(
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
-    itemCount: snippets.length,
+    itemCount: visibleSnippets.length,
     onReorder: (oldIndex, newIndex) => unawaited(
       _reorderSnippets(
-        ref: ref,
-        snippets: snippets,
+        allSnippets: allSnippets,
+        visibleSnippets: visibleSnippets,
         oldIndex: oldIndex,
         newIndex: newIndex,
       ),
     ),
     itemBuilder: (context, index) {
-      final snippet = snippets[index];
+      final snippet = visibleSnippets[index];
       return _SnippetRow(
         key: ValueKey('home-snippet-${snippet.id}'),
         snippet: snippet,
+        folderName: _showsAllSnippets && snippet.folderId != null
+            ? folderNames[snippet.folderId]
+            : null,
         reorderHandle: ReorderGrip(index: index),
       );
     },
   );
 
   Future<void> _reorderSnippets({
-    required WidgetRef ref,
-    required List<Snippet> snippets,
+    required List<Snippet> allSnippets,
+    required List<Snippet> visibleSnippets,
     required int oldIndex,
     required int newIndex,
   }) async {
     final reorderedIds = reorderVisibleIdsInFullOrder(
-      allIds: snippets.map((snippet) => snippet.id).toList(growable: false),
-      visibleIds: snippets.map((snippet) => snippet.id).toList(growable: false),
+      allIds: allSnippets.map((snippet) => snippet.id).toList(growable: false),
+      visibleIds: visibleSnippets
+          .map((snippet) => snippet.id)
+          .toList(growable: false),
       oldIndex: oldIndex,
       newIndex: newIndex,
     );
@@ -2329,10 +2527,12 @@ class _SnippetRow extends ConsumerWidget {
   const _SnippetRow({
     required this.snippet,
     required this.reorderHandle,
+    this.folderName,
     super.key,
   });
 
   final Snippet snippet;
+  final String? folderName;
   final Widget reorderHandle;
 
   @override
@@ -2386,6 +2586,29 @@ class _SnippetRow extends ConsumerWidget {
                         color: colorScheme.onSurface.withAlpha(100),
                       ),
                     ),
+                    if (folderName case final folderName?) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.folder_outlined,
+                            size: 12,
+                            color: colorScheme.onSurface.withAlpha(110),
+                          ),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              folderName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: colorScheme.onSurface.withAlpha(120),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),

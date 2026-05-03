@@ -19,19 +19,33 @@ Snippet _buildSnippet({
   required int id,
   required String name,
   required int sortOrder,
+  int? folderId,
 }) => Snippet(
   id: id,
   name: name,
   command: 'echo $name',
+  folderId: folderId,
   autoExecute: false,
   createdAt: DateTime(2026),
   usageCount: 0,
   sortOrder: sortOrder,
 );
 
+SnippetFolder _buildFolder({
+  required int id,
+  required String name,
+  int sortOrder = 0,
+}) => SnippetFolder(
+  id: id,
+  name: name,
+  sortOrder: sortOrder,
+  createdAt: DateTime(2026),
+);
+
 void main() {
   setUpAll(() {
     registerFallbackValue(<int>[]);
+    registerFallbackValue(SnippetFoldersCompanion.insert(name: 'fallback'));
   });
 
   group('SnippetsScreen', () {
@@ -45,6 +59,9 @@ void main() {
       when(
         snippetRepository.watchAll,
       ).thenAnswer((_) => snippetsController.stream);
+      when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => Stream.value(const <SnippetFolder>[]));
 
       await tester.pumpWidget(
         ProviderScope(
@@ -76,6 +93,9 @@ void main() {
       when(
         snippetRepository.watchAll,
       ).thenAnswer((_) => Stream.value(const <Snippet>[]));
+      when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => Stream.value(const <SnippetFolder>[]));
 
       await tester.pumpWidget(
         ProviderScope(
@@ -109,6 +129,50 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Full snippet editor'), findsOneWidget);
+    });
+
+    testWidgets('creates folders from the snippets screen header', (
+      tester,
+    ) async {
+      final snippetRepository = _MockSnippetRepository();
+      final snippetsController = StreamController<List<Snippet>>();
+      final foldersController = StreamController<List<SnippetFolder>>();
+      addTearDown(snippetsController.close);
+      addTearDown(foldersController.close);
+      when(
+        snippetRepository.watchAll,
+      ).thenAnswer((_) => snippetsController.stream);
+      when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => foldersController.stream);
+      when(() => snippetRepository.insertFolder(any())).thenAnswer((_) async {
+        foldersController.add([_buildFolder(id: 7, name: 'Deploy')]);
+        return 7;
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: const MaterialApp(home: SnippetsScreen()),
+        ),
+      );
+      snippetsController.add(const <Snippet>[]);
+      foldersController.add(const <SnippetFolder>[]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('New Folder'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Folder name'),
+        'Deploy',
+      );
+      await tester.tap(find.text('Create'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Deploy (0)'), findsOneWidget);
+      verify(() => snippetRepository.insertFolder(any())).called(1);
     });
 
     testWidgets('full editor updates variable preview as command changes', (
@@ -179,6 +243,47 @@ void main() {
       expect(descriptionField.controller!.text, 'Selected from terminal');
     });
 
+    testWidgets('full editor creates and selects a folder from the picker', (
+      tester,
+    ) async {
+      final snippetRepository = _MockSnippetRepository();
+      var getFoldersCallCount = 0;
+      when(snippetRepository.getAllFolders).thenAnswer((_) async {
+        getFoldersCallCount += 1;
+        if (getFoldersCallCount == 1) {
+          return const <SnippetFolder>[];
+        }
+        return [_buildFolder(id: 9, name: 'Deploy')];
+      });
+      when(
+        () => snippetRepository.insertFolder(any()),
+      ).thenAnswer((_) async => 9);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: const MaterialApp(home: SnippetEditScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(DropdownButtonFormField<int?>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create folder...').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Folder name'),
+        'Deploy',
+      );
+      await tester.tap(find.text('Create'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Deploy'), findsOneWidget);
+      verify(() => snippetRepository.insertFolder(any())).called(1);
+    });
+
     testWidgets('reordering snippets persists the new order', (tester) async {
       final snippetRepository = _MockSnippetRepository();
       when(snippetRepository.watchAll).thenAnswer(
@@ -187,6 +292,9 @@ void main() {
           _buildSnippet(id: 2, name: 'Second', sortOrder: 1),
         ]),
       );
+      when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => Stream.value(const <SnippetFolder>[]));
       when(
         () => snippetRepository.reorderByIds(any()),
       ).thenAnswer((_) async {});
@@ -210,6 +318,64 @@ void main() {
       await tester.pumpAndSettle();
 
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
+    });
+
+    testWidgets('folder filter shows and reorders snippets in that folder', (
+      tester,
+    ) async {
+      final snippetRepository = _MockSnippetRepository();
+      when(snippetRepository.watchAll).thenAnswer(
+        (_) => Stream.value([
+          _buildSnippet(id: 1, name: 'Unfiled', sortOrder: 0),
+          _buildSnippet(
+            id: 2,
+            name: 'Deploy first',
+            sortOrder: 1,
+            folderId: 10,
+          ),
+          _buildSnippet(
+            id: 3,
+            name: 'Deploy second',
+            sortOrder: 2,
+            folderId: 10,
+          ),
+          _buildSnippet(id: 4, name: 'Cleanup', sortOrder: 3),
+        ]),
+      );
+      when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => Stream.value([_buildFolder(id: 10, name: 'Deploy')]));
+      when(
+        () => snippetRepository.reorderByIds(any()),
+      ).thenAnswer((_) async {});
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: const MaterialApp(home: SnippetsScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Deploy (2)'), findsOneWidget);
+      expect(find.text('Deploy'), findsNWidgets(2));
+
+      await tester.tap(find.text('Deploy (2)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Deploy first'), findsOneWidget);
+      expect(find.text('Deploy second'), findsOneWidget);
+      expect(find.text('Unfiled'), findsNothing);
+
+      final list = tester.widget<ReorderableListView>(
+        find.byType(ReorderableListView),
+      );
+      list.onReorder(0, 2);
+      await tester.pumpAndSettle();
+
+      verify(() => snippetRepository.reorderByIds([1, 3, 2, 4])).called(1);
     });
   });
 }

@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../widgets/snippet_folder_dialog.dart';
 import '../widgets/unsaved_changes_guard.dart';
 
 typedef _SnippetEditDraft = ({
@@ -17,11 +18,18 @@ typedef _SnippetEditDraft = ({
   int? selectedFolderId,
 });
 
+const _createFolderDropdownValue = -1;
+
 /// Initial values used when creating a new snippet draft.
 @immutable
 class SnippetEditPrefill {
   /// Creates initial snippet editor values.
-  const SnippetEditPrefill({this.name, this.command, this.description});
+  const SnippetEditPrefill({
+    this.name,
+    this.command,
+    this.description,
+    this.folderId,
+  });
 
   /// Initial snippet name.
   final String? name;
@@ -31,6 +39,9 @@ class SnippetEditPrefill {
 
   /// Initial snippet description.
   final String? description;
+
+  /// Initial folder selection.
+  final int? folderId;
 }
 
 /// Screen for adding or editing a snippet.
@@ -61,6 +72,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
   bool _isLoading = false;
   Snippet? _existingSnippet;
   int? _selectedFolderId;
+  int _folderDropdownRevision = 0;
   List<SnippetFolder> _folders = [];
   _SnippetEditDraft? _initialDraft;
 
@@ -80,12 +92,16 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
     _nameController.text = prefill.name ?? '';
     _contentController.text = prefill.command ?? '';
     _descriptionController.text = prefill.description ?? '';
+    _selectedFolderId = prefill.folderId;
   }
 
   Future<void> _loadFolders() async {
     final folders = await ref.read(snippetRepositoryProvider).getAllFolders();
     if (mounted) {
-      setState(() => _folders = folders);
+      setState(() {
+        _folders = folders;
+        _folderDropdownRevision += 1;
+      });
     }
   }
 
@@ -171,6 +187,10 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                     const SizedBox(height: 16),
 
                     DropdownButtonFormField<int?>(
+                      key: ValueKey(
+                        'snippet-folder-$_selectedFolderId-'
+                        '$_folderDropdownRevision-${_folders.length}',
+                      ),
                       initialValue:
                           _folders.any(
                             (folder) => folder.id == _selectedFolderId,
@@ -189,9 +209,12 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                             child: Text(folder.name),
                           ),
                         ),
+                        const DropdownMenuItem<int?>(
+                          value: _createFolderDropdownValue,
+                          child: Text('Create folder...'),
+                        ),
                       ],
-                      onChanged: (value) =>
-                          setState(() => _selectedFolderId = value),
+                      onChanged: _handleFolderChanged,
                     ),
                     const SizedBox(height: 16),
 
@@ -250,6 +273,58 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
     description: _descriptionController.text,
     selectedFolderId: _selectedFolderId,
   );
+
+  void _handleFolderChanged(int? value) {
+    if (value == _createFolderDropdownValue) {
+      unawaited(_createFolderFromDropdown());
+      return;
+    }
+    setState(() => _selectedFolderId = value);
+  }
+
+  Future<void> _createFolderFromDropdown() async {
+    setState(() => _folderDropdownRevision += 1);
+    final name = await showCreateSnippetFolderDialog(context);
+    if (name == null || !mounted) {
+      if (mounted) {
+        setState(() => _folderDropdownRevision += 1);
+      }
+      return;
+    }
+
+    try {
+      final repo = ref.read(snippetRepositoryProvider);
+      final folderId = await repo.insertFolder(
+        SnippetFoldersCompanion.insert(name: name),
+      );
+      final folders = await repo.getAllFolders();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _folders = folders;
+        _selectedFolderId = folderId;
+        _folderDropdownRevision += 1;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Created folder "$name"')));
+    } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'snippets',
+          context: ErrorDescription('while creating a snippet folder'),
+        ),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not create folder. Try again.')),
+        );
+        setState(() => _folderDropdownRevision += 1);
+      }
+    }
+  }
 
   void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
     final messenger = ScaffoldMessenger.of(context);

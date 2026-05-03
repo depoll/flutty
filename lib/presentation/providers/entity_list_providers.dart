@@ -34,6 +34,12 @@ final allSnippetsProvider = StreamProvider<List<Snippet>>((ref) {
   return repo.watchAll();
 });
 
+/// Shared stream of all snippet folders for presentation screens.
+final allSnippetFoldersProvider = StreamProvider<List<SnippetFolder>>((ref) {
+  final repo = ref.watch(snippetRepositoryProvider);
+  return repo.watchAllFolders();
+});
+
 /// Shared stream of all port forwards for presentation screens.
 final allPortForwardsProvider = StreamProvider<List<PortForward>>((ref) {
   final repo = ref.watch(portForwardRepositoryProvider);
@@ -50,6 +56,7 @@ void invalidateImportedEntityProviders(ProviderInvalidator invalidate) {
   invalidate(allKeysProvider);
   invalidate(allGroupsProvider);
   invalidate(allSnippetsProvider);
+  invalidate(allSnippetFoldersProvider);
   invalidate(allPortForwardsProvider);
 }
 
