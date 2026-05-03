@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -761,13 +762,12 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     try {
-      final output = await _exec(
+      final output = await _execTmuxCommand(
         session,
-        _tmuxCommand(
-          "display-message -p -t ${_shellQuote('$sessionName:')} "
-          "'#{pane_current_path}'",
-          extraFlags: extraFlags,
-        ),
+        sessionName,
+        "display-message -p -t ${_shellQuote('$sessionName:')} "
+        "'#{pane_current_path}'",
+        extraFlags: extraFlags,
       );
       final path = parseTmuxCurrentPanePath(output);
       DiagnosticsLogService.instance.info(
@@ -991,30 +991,31 @@ class TmuxService {
     // (e.g. resuming an AI session in a specific project). Without -c,
     // tmux uses the session's default-directory — matching Ctrl+b,c.
     final parts = <String>[
-      _tmuxCommand(
-        "new-window -P -F '#{window_index}' -t ${_shellQuote(sessionName)}",
-        extraFlags: extraFlags,
-      ),
+      "new-window -P -F '#{window_index}' -t ${_shellQuote(sessionName)}",
       if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
         '-c ${_shellQuote(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
         '-n ${_shellQuote(name.trim())}',
     ];
     final createdWindowIndex = _parseCreatedWindowIndex(
-      await _exec(session, parts.join(' ')),
+      await _execTmuxCommand(
+        session,
+        sessionName,
+        parts.join(' '),
+        extraFlags: extraFlags,
+      ),
     );
     final target = createdWindowIndex == null
         ? sessionName
         : '$sessionName:$createdWindowIndex';
     final agentTool = _agentToolForCreatedWindow(command: command, name: name);
     if (agentTool != null) {
-      await _exec(
+      await _execTmuxCommand(
         session,
-        _tmuxCommand(
-          'set-option -w -t ${_shellQuote(target)} '
-          '@flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
-          extraFlags: extraFlags,
-        ),
+        sessionName,
+        'set-option -w -t ${_shellQuote(target)} '
+        '@flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
+        extraFlags: extraFlags,
       );
     }
     DiagnosticsLogService.instance.info(
@@ -1030,13 +1031,12 @@ class TmuxService {
     // This ensures the command runs inside the login shell environment
     // where CLI tools installed via Homebrew/nvm/etc. are available.
     if (command != null && command.trim().isNotEmpty) {
-      _execFireAndForget(
+      _execTmuxCommandFireAndForget(
         session,
-        _tmuxCommand(
-          'send-keys -t ${_shellQuote(target)} '
-          '${_shellQuote(command.trim())} Enter',
-          extraFlags: extraFlags,
-        ),
+        sessionName,
+        'send-keys -t ${_shellQuote(target)} '
+        '${_shellQuote(command.trim())} Enter',
+        extraFlags: extraFlags,
       );
       DiagnosticsLogService.instance.info(
         'tmux.action',
@@ -1080,9 +1080,11 @@ class TmuxService {
         'hasWindowId': hasTargetWindowId,
       },
     );
-    await _exec(
+    await _execTmuxCommand(
       session,
-      _tmuxCommand('select-window -t $target', extraFlags: extraFlags),
+      sessionName,
+      'select-window -t $target',
+      extraFlags: extraFlags,
     );
     DiagnosticsLogService.instance.info(
       'tmux.action',
@@ -1110,12 +1112,11 @@ class TmuxService {
         'windowIndex': windowIndex,
       },
     );
-    await _exec(
+    await _execTmuxCommand(
       session,
-      _tmuxCommand(
-        'kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
-        extraFlags: extraFlags,
-      ),
+      sessionName,
+      'kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
+      extraFlags: extraFlags,
     );
     DiagnosticsLogService.instance.info(
       'tmux.action',
@@ -1307,6 +1308,66 @@ class TmuxService {
     priority: priority,
   );
 
+  Future<String> _execTmuxCommand(
+    SshSession session,
+    String sessionName,
+    String tmuxCommand, {
+    String? extraFlags,
+    bool forceUtf8 = false,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    final controlOutput = await _tryControlCommand(
+      session,
+      sessionName,
+      tmuxCommand,
+      extraFlags: extraFlags,
+    );
+    if (controlOutput != null) {
+      return controlOutput;
+    }
+    return _exec(
+      session,
+      _tmuxCommand(tmuxCommand, extraFlags: extraFlags, forceUtf8: forceUtf8),
+      priority: priority,
+    );
+  }
+
+  Future<String?> _tryControlCommand(
+    SshSession session,
+    String sessionName,
+    String tmuxCommand, {
+    String? extraFlags,
+  }) async {
+    final observer = _controlCommandObserver(
+      session,
+      sessionName,
+      extraFlags: extraFlags,
+    );
+    if (observer == null) {
+      return null;
+    }
+    try {
+      return await observer.runCommand(
+        tmuxCommand,
+        commandKind: _diagnosticTmuxCommandKind(tmuxCommand),
+        timeout: _execOutputTimeout,
+      );
+    } on _TmuxControlCommandUnavailable {
+      return null;
+    }
+  }
+
+  _TmuxWindowChangeObserver? _controlCommandObserver(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) =>
+      _windowObservers[_TmuxWindowWatchKey(
+        connectionId: session.connectionId,
+        sessionName: sessionName,
+        extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
+      )];
+
   Future<String> _execUnqueued(SshSession session, String command) async {
     final startedAt = DateTime.now();
     final wrappedCommand = _wrapCommand(session, command);
@@ -1416,22 +1477,40 @@ class TmuxService {
   ///
   /// Used for follow-up operations where completion does not need to block the
   /// caller, but still closes the exec channel once the command marker returns.
-  void _execFireAndForget(SshSession session, String command) {
+  void _execTmuxCommandFireAndForget(
+    SshSession session,
+    String sessionName,
+    String tmuxCommand, {
+    String? extraFlags,
+  }) {
+    final commandKind = _diagnosticTmuxCommandKind(tmuxCommand);
     DiagnosticsLogService.instance.debug(
       'tmux.exec',
       'fire_and_forget_start',
       fields: {
         'connectionId': session.connectionId,
-        'commandKind': _diagnosticTmuxCommandKind(command),
+        'commandKind': commandKind,
       },
     );
-    _exec(session, command).catchError((Object error) {
+    final controlObserver = _controlCommandObserver(
+      session,
+      sessionName,
+      extraFlags: extraFlags,
+    );
+    final commandFuture =
+        controlObserver?.runCommand(
+          tmuxCommand,
+          commandKind: commandKind,
+          timeout: _execOutputTimeout,
+        ) ??
+        _exec(session, _tmuxCommand(tmuxCommand, extraFlags: extraFlags));
+    commandFuture.catchError((Object error) {
       DiagnosticsLogService.instance.warning(
         'tmux.exec',
         'fire_and_forget_failed',
         fields: {
           'connectionId': session.connectionId,
-          'commandKind': _diagnosticTmuxCommandKind(command),
+          'commandKind': commandKind,
           'errorType': error.runtimeType,
         },
       );
@@ -2193,7 +2272,7 @@ const _tmuxWindowSubscriptionFormat =
     '#{@flutty_agent_tool}$tmuxWindowFieldSeparator'
     '#{window_id}';
 
-const _tmuxControlModeClientFlags = 'read-only,ignore-size,no-output,wait-exit';
+const _tmuxControlModeClientFlags = 'ignore-size,no-output,wait-exit';
 
 /// Builds the tmux control-mode attach command used for live window updates.
 @visibleForTesting
@@ -2392,6 +2471,51 @@ class _TmuxWindowWatchKey {
   int get hashCode => Object.hash(connectionId, sessionName, extraFlags);
 }
 
+class _TmuxControlCommandUnavailable implements Exception {
+  const _TmuxControlCommandUnavailable();
+}
+
+class _TmuxControlCommandRequest {
+  _TmuxControlCommandRequest({
+    required this.command,
+    required this.commandKind,
+    required this.timeout,
+  });
+
+  final String command;
+  final String commandKind;
+  final Duration timeout;
+  final output = StringBuffer();
+  final _completer = Completer<String>();
+  Timer? _timeoutTimer;
+  bool started = false;
+
+  Future<String> get future => _completer.future;
+
+  void startTimeout(void Function() onTimeout) {
+    _timeoutTimer = Timer(timeout, onTimeout);
+  }
+
+  void cancelTimeout() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+  }
+
+  void complete(String value) {
+    cancelTimeout();
+    if (!_completer.isCompleted) {
+      _completer.complete(value);
+    }
+  }
+
+  void completeError(Object error, StackTrace stackTrace) {
+    cancelTimeout();
+    if (!_completer.isCompleted) {
+      _completer.completeError(error, stackTrace);
+    }
+  }
+}
+
 class _TmuxWindowChangeObserver {
   _TmuxWindowChangeObserver({
     required this.service,
@@ -2429,6 +2553,8 @@ class _TmuxWindowChangeObserver {
   Timer? _restartTimer;
   Timer? _heartbeatTimer;
   SSHSession? _controlSession;
+  final _controlCommandQueue = Queue<_TmuxControlCommandRequest>();
+  _TmuxControlCommandRequest? _activeControlCommand;
   bool _starting = false;
   bool _disposed = false;
   bool _preserveScheduledReloadThroughSnapshots = false;
@@ -2439,6 +2565,75 @@ class _TmuxWindowChangeObserver {
       'flutty-${session.connectionId}-${sessionName.hashCode.abs()}';
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  Future<String> runCommand(
+    String command, {
+    required String commandKind,
+    required Duration timeout,
+  }) {
+    if (_disposed || _controlSession == null) {
+      return Future<String>.error(const _TmuxControlCommandUnavailable());
+    }
+    final request = _TmuxControlCommandRequest(
+      command: command,
+      commandKind: commandKind,
+      timeout: timeout,
+    );
+    _controlCommandQueue.add(request);
+    _startNextControlCommand();
+    return request.future;
+  }
+
+  void _startNextControlCommand() {
+    if (_disposed ||
+        _activeControlCommand != null ||
+        _controlCommandQueue.isEmpty) {
+      return;
+    }
+    final controlSession = _controlSession;
+    if (controlSession == null) {
+      _failControlCommands(
+        const _TmuxControlCommandUnavailable(),
+        StackTrace.current,
+      );
+      return;
+    }
+    final request = _controlCommandQueue.removeFirst();
+    _activeControlCommand = request;
+    request.startTimeout(() {
+      if (!identical(_activeControlCommand, request)) {
+        return;
+      }
+      final error = TimeoutException(
+        'Timed out waiting for tmux control command',
+        request.timeout,
+      );
+      DiagnosticsLogService.instance.warning(
+        'tmux.control',
+        'command_timeout',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': request.commandKind,
+          'timeoutMs': request.timeout.inMilliseconds,
+        },
+      );
+      _handleControlFailure(error, StackTrace.current);
+    });
+    DiagnosticsLogService.instance.debug(
+      'tmux.control',
+      'command_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'commandKind': request.commandKind,
+        'queuedCount': _controlCommandQueue.length,
+      },
+    );
+    try {
+      controlSession.write(utf8.encode('${request.command}\n'));
+    } on Object catch (error, stackTrace) {
+      _handleControlFailure(error, stackTrace);
+    }
+  }
 
   Future<void> _ensureStarted() async {
     if (_disposed || _starting || _controlSession != null) return;
@@ -2504,22 +2699,39 @@ class _TmuxWindowChangeObserver {
   }
 
   void _configureControlSession() {
-    final controlSession = _controlSession;
-    if (controlSession == null) return;
+    if (_controlSession == null) return;
     DiagnosticsLogService.instance.debug(
       'tmux.watch',
       'subscribe',
       fields: {'connectionId': session.connectionId},
     );
-    controlSession.write(
-      utf8.encode('${buildTmuxWindowSubscriptionCommand(_subscriptionName)}\n'),
-    );
+    runCommand(
+      buildTmuxWindowSubscriptionCommand(_subscriptionName),
+      commandKind: 'control_subscription',
+      timeout: service._execOutputTimeout,
+    ).catchError((Object error) {
+      if (_disposed) {
+        return '';
+      }
+      DiagnosticsLogService.instance.warning(
+        'tmux.watch',
+        'subscribe_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return '';
+    }).ignore();
   }
 
   void _handleStdoutLine(String line) {
     if (_disposed) return;
     _lastControlActivity = _now();
     final trimmed = _normalizeTmuxControlLine(line);
+    if (_handleControlCommandLine(trimmed)) {
+      return;
+    }
     if (trimmed.startsWith('%exit')) {
       DiagnosticsLogService.instance.info(
         'tmux.watch',
@@ -2586,6 +2798,95 @@ class _TmuxWindowChangeObserver {
     );
   }
 
+  bool _handleControlCommandLine(String trimmed) {
+    final request = _activeControlCommand;
+    if (request == null) {
+      return false;
+    }
+    if (trimmed.startsWith('%begin ')) {
+      request.started = true;
+      return true;
+    }
+    if (!request.started) {
+      return false;
+    }
+    if (trimmed.startsWith('%end ')) {
+      _completeActiveControlCommand();
+      return true;
+    }
+    if (trimmed.startsWith('%error ')) {
+      _failActiveControlCommand(
+        const TmuxCommandException('tmux control command failed'),
+        StackTrace.current,
+      );
+      return true;
+    }
+    if (trimmed.startsWith('%')) {
+      return false;
+    }
+    request.output.writeln(trimmed);
+    return true;
+  }
+
+  void _completeActiveControlCommand() {
+    final request = _activeControlCommand;
+    if (request == null) {
+      return;
+    }
+    _activeControlCommand = null;
+    final output = request.output.toString().trimRight();
+    DiagnosticsLogService.instance.debug(
+      'tmux.control',
+      'command_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'commandKind': request.commandKind,
+        'outputChars': output.length,
+      },
+    );
+    request.complete(output);
+    _startNextControlCommand();
+  }
+
+  void _failActiveControlCommand(Object error, StackTrace stackTrace) {
+    final request = _activeControlCommand;
+    if (request == null) {
+      return;
+    }
+    _activeControlCommand = null;
+    DiagnosticsLogService.instance.warning(
+      'tmux.control',
+      'command_failed',
+      fields: {
+        'connectionId': session.connectionId,
+        'commandKind': request.commandKind,
+        'errorType': error.runtimeType,
+      },
+    );
+    request.completeError(error, stackTrace);
+    _startNextControlCommand();
+  }
+
+  void _failControlCommands(Object error, StackTrace stackTrace) {
+    final activeRequest = _activeControlCommand;
+    _activeControlCommand = null;
+    if (activeRequest != null) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.control',
+        'command_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': activeRequest.commandKind,
+          'errorType': error.runtimeType,
+        },
+      );
+      activeRequest.completeError(error, stackTrace);
+    }
+    while (_controlCommandQueue.isNotEmpty) {
+      _controlCommandQueue.removeFirst().completeError(error, stackTrace);
+    }
+  }
+
   void _handleStderrLine(String line) {
     if (_disposed || line.trim().isEmpty) return;
     _lastControlActivity = _now();
@@ -2636,7 +2937,7 @@ class _TmuxWindowChangeObserver {
         'errorType': error.runtimeType,
       },
     );
-    _cleanupControlSession();
+    _cleanupControlSession(error, stackTrace);
     _scheduleRestart(
       channelOpenFailure: shouldBackOffTmuxExecChannelAfterFailure(error),
     );
@@ -2648,7 +2949,12 @@ class _TmuxWindowChangeObserver {
       'control_closed',
       fields: {'connectionId': session.connectionId},
     );
-    _cleanupControlSession();
+    _cleanupControlSession(
+      const TmuxCommandException(
+        'tmux control channel closed before command completed',
+      ),
+      StackTrace.current,
+    );
     _scheduleRestart();
   }
 
@@ -2716,9 +3022,13 @@ class _TmuxWindowChangeObserver {
     }
   }
 
-  void _cleanupControlSession() {
+  void _cleanupControlSession([Object? commandError, StackTrace? stackTrace]) {
     _stopHeartbeat();
     _cancelScheduledReload();
+    _failControlCommands(
+      commandError ?? const _TmuxControlCommandUnavailable(),
+      stackTrace ?? StackTrace.current,
+    );
     unawaited(_stdoutSubscription?.cancel());
     unawaited(_stderrSubscription?.cancel());
     unawaited(_doneSubscription?.cancel());

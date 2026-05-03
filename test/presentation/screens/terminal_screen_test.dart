@@ -727,6 +727,19 @@ void main() {
       expect(wakelockPlatform.toggleCalls.last, false);
     });
 
+    testWidgets('terminal overflow menu omits standalone copy action', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Copy'), findsNothing);
+      expect(find.text('Paste'), findsOneWidget);
+      expect(find.text('Paste Files'), findsOneWidget);
+    });
+
     testWidgets(
       'does not send synthetic terminal reports to an idle shell prompt',
       (tester) async {
