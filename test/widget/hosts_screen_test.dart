@@ -213,7 +213,7 @@ void main() {
     verify(() => hostRepository.reorderByIds([2, 1])).called(1);
   });
 
-  testWidgets('long press opens host context menu without overflow button', (
+  testWidgets('host actions are exposed through the context menu trigger', (
     tester,
   ) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -233,10 +233,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.more_vert), findsNothing);
+    expect(find.byTooltip('Host actions'), findsOneWidget);
     expect(find.byIcon(Icons.edit_outlined), findsNothing);
 
-    await tester.longPress(find.text('Alpha'));
+    await tester.tap(find.byTooltip('Host actions'));
     await tester.pumpAndSettle();
 
     expect(find.text('Connect'), findsOneWidget);

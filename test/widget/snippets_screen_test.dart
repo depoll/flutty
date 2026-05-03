@@ -86,6 +86,43 @@ void main() {
       expect(find.text('Imported snippet'), findsOneWidget);
     });
 
+    testWidgets(
+      'snippet actions are exposed through the context menu trigger',
+      (tester) async {
+        final snippetRepository = _MockSnippetRepository();
+        when(snippetRepository.watchAll).thenAnswer(
+          (_) => Stream.value([
+            _buildSnippet(id: 1, name: 'Restart API', sortOrder: 0),
+          ]),
+        );
+        when(
+          snippetRepository.watchAllFolders,
+        ).thenAnswer((_) => Stream.value(const <SnippetFolder>[]));
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              snippetRepositoryProvider.overrideWithValue(snippetRepository),
+            ],
+            child: const MaterialApp(home: SnippetsScreen()),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byTooltip('Snippet actions'), findsOneWidget);
+        expect(find.byIcon(Icons.copy), findsNothing);
+        expect(find.byIcon(Icons.edit_outlined), findsNothing);
+        expect(find.byIcon(Icons.delete_outline), findsNothing);
+
+        await tester.tap(find.byTooltip('Snippet actions'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Copy command'), findsOneWidget);
+        expect(find.text('Edit'), findsOneWidget);
+        expect(find.text('Delete'), findsOneWidget);
+      },
+    );
+
     testWidgets('routes empty-state creation to the full snippet editor', (
       tester,
     ) async {
