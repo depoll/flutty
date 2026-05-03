@@ -915,6 +915,55 @@ void main() {
     );
 
     testWidgets(
+      'reasserts the current theme when reopening an existing active TUI',
+      (tester) async {
+        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        await pumpScreen(tester);
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'reasserts the current theme when an active TUI resumes from background',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'build-path sets session.terminalTheme on initial build',
       (tester) async {
         await pumpScreen(tester);
