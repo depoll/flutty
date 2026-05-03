@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -15,6 +16,7 @@ import 'package:flutter/services.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/cell_flags.dart';
+import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
@@ -284,6 +286,9 @@ const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
 const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
 
+/// A terminal cell range rendered with text underline decoration.
+typedef TerminalTextUnderline = ({int row, int startColumn, int endColumn});
+
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
   const MonkeyTerminalView(
@@ -327,6 +332,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.onSystemSelectionChanged,
     this.onInsertText,
     this.onPasteText,
+    this.inlineUnderlines = const <TerminalTextUnderline>[],
   });
 
   /// The underlying terminal that this widget renders.
@@ -467,6 +473,9 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// Called to handle paste shortcuts before xterm pastes clipboard text.
   final Future<void> Function()? onPasteText;
+
+  /// Cell ranges that should be painted with inline text underlines.
+  final List<TerminalTextUnderline> inlineUnderlines;
 
   @override
   State<MonkeyTerminalView> createState() => MonkeyTerminalViewState();
@@ -692,6 +701,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
           theme: widget.theme,
+          inlineUnderlines: widget.inlineUnderlines,
           focusNode: _focusNode,
           cursorType: widget.cursorType,
           alwaysShowCursor: widget.alwaysShowCursor,
@@ -1198,6 +1208,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.textStyle,
     required this.textScaler,
     required this.theme,
+    required this.inlineUnderlines,
     required this.focusNode,
     required this.cursorType,
     required this.alwaysShowCursor,
@@ -1228,6 +1239,8 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final TerminalTheme theme;
 
+  final List<TerminalTextUnderline> inlineUnderlines;
+
   final FocusNode focusNode;
 
   final TerminalCursorType cursorType;
@@ -1254,6 +1267,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       textStyle: textStyle,
       textScaler: textScaler,
       theme: theme,
+      inlineUnderlines: inlineUnderlines,
       focusNode: focusNode,
       cursorType: cursorType,
       alwaysShowCursor: alwaysShowCursor,
@@ -1280,6 +1294,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..textStyle = textStyle
       ..textScaler = textScaler
       ..theme = theme
+      ..inlineUnderlines = inlineUnderlines
       ..focusNode = focusNode
       ..cursorType = cursorType
       ..alwaysShowCursor = alwaysShowCursor
@@ -1331,6 +1346,44 @@ class MonkeyTerminalPainter extends TerminalPainter {
   void clearFontCache() {
     super.clearFontCache();
     _paragraphCache.clear();
+  }
+
+  void paintLineWithInlineUnderlines(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+    List<TerminalTextUnderline> inlineUnderlines,
+  ) {
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+
+      final charWidth = cellData.content >> CellContent.widthShift;
+      final cellOffset = offset.translate(i * cellWidth, 0);
+      if (_shouldUnderlineCell(i, inlineUnderlines)) {
+        cellData.flags |= CellFlags.underline;
+      }
+
+      paintCell(canvas, cellOffset, cellData);
+
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
+  bool _shouldUnderlineCell(
+    int column,
+    List<TerminalTextUnderline> inlineUnderlines,
+  ) {
+    for (final underline in inlineUnderlines) {
+      if (column >= underline.startColumn && column <= underline.endColumn) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
@@ -1432,6 +1485,7 @@ class MonkeyRenderTerminal extends RenderBox
     required TerminalStyle textStyle,
     required TextScaler textScaler,
     required TerminalTheme theme,
+    required List<TerminalTextUnderline> inlineUnderlines,
     required FocusNode focusNode,
     required TerminalCursorType cursorType,
     required bool alwaysShowCursor,
@@ -1446,6 +1500,7 @@ class MonkeyRenderTerminal extends RenderBox
        _autoResize = autoResize,
        _resizeBottomInset = resizeBottomInset,
        _liveOutputAutoScroll = liveOutputAutoScroll,
+       _inlineUnderlines = inlineUnderlines,
        _focusNode = focusNode,
        _cursorType = cursorType,
        _alwaysShowCursor = alwaysShowCursor,
@@ -1560,6 +1615,13 @@ class MonkeyRenderTerminal extends RenderBox
     markNeedsPaint();
   }
 
+  List<TerminalTextUnderline> _inlineUnderlines;
+  set inlineUnderlines(List<TerminalTextUnderline> value) {
+    if (listEquals(value, _inlineUnderlines)) return;
+    _inlineUnderlines = value;
+    markNeedsPaint();
+  }
+
   FocusNode _focusNode;
   set focusNode(FocusNode value) {
     if (value == _focusNode) return;
@@ -1616,7 +1678,7 @@ class MonkeyRenderTerminal extends RenderBox
   })?
   _pendingTerminalResize;
 
-  final TerminalPainter _painter;
+  final MonkeyTerminalPainter _painter;
 
   var _stickToBottom = true;
 
@@ -2618,14 +2680,21 @@ class MonkeyRenderTerminal extends RenderBox
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      _painter.paintLine(
-        canvas,
-        offset.translate(
-          origin.dx,
-          (i * charHeight + _lineOffset).truncateToDouble(),
-        ),
-        lines[i],
+      final lineOffset = offset.translate(
+        origin.dx,
+        (i * charHeight + _lineOffset).truncateToDouble(),
       );
+      final lineUnderlines = _inlineUnderlinesForRow(i);
+      if (lineUnderlines.isEmpty) {
+        _painter.paintLine(canvas, lineOffset, lines[i]);
+      } else {
+        _painter.paintLineWithInlineUnderlines(
+          canvas,
+          lineOffset,
+          lines[i],
+          lineUnderlines,
+        );
+      }
     }
 
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
@@ -2657,6 +2726,35 @@ class MonkeyRenderTerminal extends RenderBox
     }
 
     _paintSelectionHandleLayers(context, offset);
+  }
+
+  List<TerminalTextUnderline> _inlineUnderlinesForRow(int row) {
+    if (_inlineUnderlines.isEmpty) {
+      return const <TerminalTextUnderline>[];
+    }
+
+    final columnCount = _terminal.viewWidth;
+    if (columnCount <= 0) {
+      return const <TerminalTextUnderline>[];
+    }
+
+    final lineUnderlines = <TerminalTextUnderline>[];
+    for (final underline in _inlineUnderlines) {
+      if (underline.row != row) {
+        continue;
+      }
+
+      final startColumn = underline.startColumn.clamp(0, columnCount - 1);
+      final endColumn = underline.endColumn.clamp(0, columnCount - 1);
+      if (startColumn <= endColumn) {
+        lineUnderlines.add((
+          row: row,
+          startColumn: startColumn,
+          endColumn: endColumn,
+        ));
+      }
+    }
+    return lineUnderlines;
   }
 
   BufferRange? get _selectionRangeForPaint {

@@ -1113,34 +1113,25 @@ List<CellOffset> resolveForgivingTerminalTapOffsets(CellOffset offset) {
   return (topRow: topRow, bottomRow: bottomRow);
 }
 
-/// Builds a visible underline rect that hugs the bottom of a terminal row.
+/// Builds a terminal cell range for inline path underline painting.
 @visibleForTesting
-Rect? resolveTerminalPathUnderlineRect({
-  required Offset lineTopLeft,
-  required Offset lineEndOffset,
-  required double lineHeight,
-  required double viewportHeight,
-  double? rowHeight,
-  double? textHeight,
+TerminalTextUnderline? resolveTerminalPathInlineUnderline({
+  required int row,
+  required int startColumn,
+  required int endColumn,
+  required int rowCount,
+  required int columnCount,
 }) {
-  final width = lineEndOffset.dx - lineTopLeft.dx;
-  if (width <= 0 || lineHeight <= 0 || viewportHeight <= 0) {
+  if (row < 0 || row >= rowCount || columnCount <= 0) {
     return null;
   }
 
-  final effectiveRowHeight = (rowHeight ?? lineHeight) < lineHeight
-      ? lineHeight
-      : (rowHeight ?? lineHeight);
-  final effectiveTextHeight = textHeight ?? effectiveRowHeight;
-  final thickness = (effectiveTextHeight * 0.08).clamp(0.75, 2.5);
-  final rowBottom = lineTopLeft.dy + effectiveRowHeight;
-  final preferredTop = lineTopLeft.dy + effectiveTextHeight + 0.25;
-  final maxTopWithinRow = rowBottom - thickness - 0.5;
-  final top = min(
-    preferredTop,
-    maxTopWithinRow,
-  ).clamp(0.0, viewportHeight - thickness);
-  return Rect.fromLTWH(lineTopLeft.dx, top, width, thickness);
+  final normalizedStart = startColumn.clamp(0, columnCount - 1);
+  final normalizedEnd = endColumn.clamp(0, columnCount - 1);
+  if (normalizedStart > normalizedEnd) {
+    return null;
+  }
+  return (row: row, startColumn: normalizedStart, endColumn: normalizedEnd);
 }
 
 /// Builds a forgiving touch target around a terminal path segment.
@@ -2166,10 +2157,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Offset? _pendingTerminalMouseTapDownPosition;
   Duration? _pendingTerminalMouseTapDownTimestamp;
   final Set<int> _terminalOutputPauseTouchPointers = <int>{};
-  Rect? _hoveredTerminalPathUnderline;
-  List<({String path, Rect underlineRect, Rect touchRect})>
+  TerminalTextUnderline? _hoveredTerminalPathUnderline;
+  List<({String path, TerminalTextUnderline underline, Rect touchRect})>
   _visibleTerminalPathUnderlines =
-      const <({String path, Rect underlineRect, Rect touchRect})>[];
+      const <
+        ({String path, TerminalTextUnderline underline, Rect touchRect})
+      >[];
   bool _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
   bool? _lastShowsTerminalPathUnderlines;
   CellOffset? _lastHoveredTerminalPathOffset;
@@ -6391,6 +6384,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final showsTerminalPathUnderlines =
+        terminalPathLinksEnabled && terminalPathLinkUnderlinesEnabled;
+    final inlineUnderlines = showsTerminalPathUnderlines
+        ? _isMobilePlatform
+              ? [
+                  for (final underline in _visibleTerminalPathUnderlines)
+                    underline.underline,
+                ]
+              : <TerminalTextUnderline>[?_hoveredTerminalPathUnderline]
+        : const <TerminalTextUnderline>[];
     final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
@@ -6409,6 +6412,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
+      inlineUnderlines: inlineUnderlines,
       keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
       deleteDetection: !isMobile,
@@ -6426,8 +6430,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: isMobile ? null : _pasteClipboard,
     );
 
-    final showsTerminalPathUnderlines =
-        terminalPathLinksEnabled && terminalPathLinkUnderlinesEnabled;
     if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {
       _lastShowsTerminalPathUnderlines = showsTerminalPathUnderlines;
       _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild =
@@ -6450,7 +6452,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         setState(
           () => _visibleTerminalPathUnderlines =
-              const <({String path, Rect underlineRect, Rect touchRect})>[],
+              const <
+                ({String path, TerminalTextUnderline underline, Rect touchRect})
+              >[],
         );
       });
     }
@@ -6470,59 +6474,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = false;
           _queueVisibleTerminalPathUnderlineRefresh();
         }
-        terminalView = Stack(
-          fit: StackFit.expand,
-          children: [
-            terminalView,
-            for (final entry in _visibleTerminalPathUnderlines.asMap().entries)
-              Positioned(
-                left: entry.value.underlineRect.left,
-                top: entry.value.underlineRect.top,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: terminalTheme.foreground.withValues(alpha: 0.92),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: SizedBox(
-                      key: ValueKey<String>(
-                        'terminal-path-underline:${entry.key}:${entry.value.path}',
-                      ),
-                      width: entry.value.underlineRect.width,
-                      height: entry.value.underlineRect.height,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        );
       } else {
         terminalView = MouseRegion(
           onHover: _handleTerminalPathHover,
           onExit: (_) => _clearHoveredTerminalPathUnderline(),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              terminalView,
-              if (_hoveredTerminalPathUnderline != null)
-                Positioned(
-                  left: _hoveredTerminalPathUnderline!.left,
-                  top: _hoveredTerminalPathUnderline!.top,
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: terminalTheme.foreground.withValues(alpha: 0.92),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: SizedBox(
-                        width: _hoveredTerminalPathUnderline!.width,
-                        height: _hoveredTerminalPathUnderline!.height,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
+          child: terminalView,
         );
       }
     }
@@ -6751,37 +6707,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       fontSize: fontSize,
     );
     return TerminalStyle.fromTextStyle(textStyle);
-  }
-
-  Size? _measureTerminalPathUnderlineTextSize(String text) {
-    if (text.isEmpty) {
-      return null;
-    }
-    final globalFontSize = ref.read(fontSizeNotifierProvider);
-    final fontSize = resolveTerminalFontSize(
-      globalFontSize: globalFontSize,
-      sessionFontSize: _sessionFontSizeOverride,
-      pinchFontSize: _pinchFontSize,
-    );
-    final fontFamily =
-        _host?.terminalFontFamily ??
-        ref.read(fontFamilyNotifierProvider) ??
-        'monospace';
-    final textStyle = resolveMonospaceTextStyle(
-      fontFamily,
-      platform: Theme.of(context).platform,
-      fontSize: fontSize,
-    );
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: textStyle),
-      textDirection: TextDirection.ltr,
-      textScaler: MediaQuery.textScalerOf(context),
-      maxLines: 1,
-    )..layout();
-    if (painter.width <= 0 || painter.height <= 0) {
-      return null;
-    }
-    return Size(painter.width, painter.height);
   }
 
   void _openConnectionFileBrowser() {
@@ -7483,12 +7408,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _clearHoveredTerminalPathUnderline();
       return;
     }
-    final underline = _buildTerminalPathUnderlineRect(
-      terminalViewState,
+    final underline = _buildTerminalPathInlineUnderline(
       row: offset.y,
       startColumn: hoveredSegment.startColumn,
       endColumn: hoveredSegment.endColumn,
-      text: hoveredSegment.text,
     );
     if (underline == null) {
       _clearHoveredTerminalPathUnderline();
@@ -7972,7 +7895,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_visibleTerminalPathUnderlines.isNotEmpty) {
         setState(
           () => _visibleTerminalPathUnderlines =
-              const <({String path, Rect underlineRect, Rect touchRect})>[],
+              const <
+                ({String path, TerminalTextUnderline underline, Rect touchRect})
+              >[],
         );
       }
       return;
@@ -7991,7 +7916,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final underlines = <({String path, Rect underlineRect, Rect touchRect})>[];
+    final underlines =
+        <({String path, TerminalTextUnderline underline, Rect touchRect})>[];
     final buffer = _terminal.buffer;
     var row = rowRange.topRow;
     while (row <= rowRange.bottomRow) {
@@ -8029,12 +7955,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (!_shouldShowTerminalPathBadge(segment.path)) {
             continue;
           }
-          final underlineRect = _buildTerminalPathUnderlineRect(
-            terminalViewState,
+          final underline = _buildTerminalPathInlineUnderline(
             row: snapshotRow,
             startColumn: segment.startColumn,
             endColumn: segment.endColumn,
-            text: segment.text,
           );
           final touchRect = _buildTerminalPathTouchTargetRect(
             terminalViewState,
@@ -8042,10 +7966,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             startColumn: segment.startColumn,
             endColumn: segment.endColumn,
           );
-          if (underlineRect != null && touchRect != null) {
+          if (underline != null && touchRect != null) {
             underlines.add((
               path: segment.path,
-              underlineRect: underlineRect,
+              underline: underline,
               touchRect: touchRect,
             ));
           }
@@ -8059,38 +7983,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Rect? _buildTerminalPathUnderlineRect(
-    MonkeyTerminalViewState terminalViewState, {
+  TerminalTextUnderline? _buildTerminalPathInlineUnderline({
     required int row,
     required int startColumn,
     required int endColumn,
-    required String text,
-  }) {
-    final terminalViewObject = terminalViewState.context.findRenderObject();
-    if (terminalViewObject is! RenderBox) {
-      return null;
-    }
-    final renderTerminal = terminalViewState.renderTerminal;
-    final lineTopLeft = renderTerminal.localToGlobal(
-      renderTerminal.getOffset(CellOffset(startColumn, row)),
-      ancestor: terminalViewObject,
-    );
-    final measuredTextSize = _measureTerminalPathUnderlineTextSize(text);
-    final lineEndOffset = renderTerminal.localToGlobal(
-      renderTerminal.getOffset(
-        CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
-      ),
-      ancestor: terminalViewObject,
-    );
-    return resolveTerminalPathUnderlineRect(
-      lineTopLeft: lineTopLeft,
-      lineEndOffset: lineEndOffset,
-      lineHeight: renderTerminal.lineHeight,
-      viewportHeight: terminalViewObject.size.height,
-      rowHeight: renderTerminal.cellSize.height,
-      textHeight: measuredTextSize?.height,
-    );
-  }
+  }) => resolveTerminalPathInlineUnderline(
+    row: row,
+    startColumn: startColumn,
+    endColumn: endColumn,
+    rowCount: _terminal.buffer.height,
+    columnCount: _terminal.buffer.viewWidth,
+  );
 
   Rect? _buildTerminalPathTouchTargetRect(
     MonkeyTerminalViewState terminalViewState, {
