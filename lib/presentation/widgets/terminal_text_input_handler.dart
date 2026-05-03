@@ -189,6 +189,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.consumeTerminalKeyModifiers,
     this.applyTerminalTextInputModifiers,
     this.hasActiveToolbarModifier,
+    this.sensitiveInput = false,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     this.showKeyboardOnFocus,
@@ -244,6 +245,13 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// than visible text. In that case the IME buffer is cleared after sending
   /// the input so that stale suggestions don't accumulate from non-text input.
   final ValueGetter<bool>? hasActiveToolbarModifier;
+
+  /// Whether the terminal appears to be accepting sensitive text.
+  ///
+  /// When true, the platform keyboard is configured like a password field so
+  /// autocorrect, suggestions, dictation, and IME learning stay disabled while
+  /// a remote password/passphrase prompt is active.
+  final bool sensitiveInput;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -346,7 +354,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
     if (hasInputConnection &&
-        widget.keyboardAppearance != oldWidget.keyboardAppearance) {
+        (widget.keyboardAppearance != oldWidget.keyboardAppearance ||
+            widget.sensitiveInput != oldWidget.sensitiveInput)) {
       _connection!.updateConfig(_buildTextInputConfiguration());
     }
     if (!_shouldCreateInputConnection) {
@@ -921,22 +930,25 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
         // ignore: avoid_redundant_argument_values
-        inputType: TextInputType.text,
+        inputType: widget.sensitiveInput
+            ? TextInputType.visiblePassword
+            : TextInputType.text,
         // ignore: avoid_redundant_argument_values
-        autocorrect: true,
+        autocorrect: !widget.sensitiveInput,
         // ignore: avoid_redundant_argument_values
         inputAction: TextInputAction.newline,
         keyboardAppearance: widget.keyboardAppearance,
         // Enable suggestions so the IME offers dictation and adds spaces
         // between swiped words.
         // ignore: avoid_redundant_argument_values
-        enableSuggestions: true,
+        enableSuggestions: !widget.sensitiveInput,
+        obscureText: widget.sensitiveInput,
         smartDashesType: SmartDashesType.disabled,
         smartQuotesType: SmartQuotesType.disabled,
         // Let the keyboard behave like a normal text field; voice input can
         // depend on this on third-party IMEs.
         // ignore: avoid_redundant_argument_values
-        enableIMEPersonalizedLearning: true,
+        enableIMEPersonalizedLearning: !widget.sensitiveInput,
       );
 
   void _closeInputConnectionIfNeeded() {
