@@ -2338,6 +2338,43 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
     }
   }
 
+  Future<void> _showFolderContextMenu(
+    BuildContext context,
+    LongPressStartDetails details,
+    SnippetFolder folder,
+    int snippetCount,
+  ) async {
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) {
+      return;
+    }
+
+    final menuPosition = overlay.globalToLocal(details.globalPosition);
+    final action = await showMenu<_SnippetFolderAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(menuPosition.dx, menuPosition.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        const PopupMenuItem<_SnippetFolderAction>(
+          value: _SnippetFolderAction.delete,
+          child: Row(
+            children: [
+              Icon(Icons.delete_outline),
+              SizedBox(width: 12),
+              Text('Delete folder'),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    if (action == _SnippetFolderAction.delete && context.mounted) {
+      await _deleteFolder(context, folder, snippetCount);
+    }
+  }
+
   Future<void> _deleteFolder(
     BuildContext context,
     SnippetFolder folder,
@@ -2518,11 +2555,16 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
           for (final folder in folders) ...[
             const SizedBox(width: 8),
             Tooltip(
-              message: 'Long press to delete folder',
+              message: 'Long press for folder actions',
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onLongPress: () => unawaited(
-                  _deleteFolder(context, folder, folderCounts[folder.id] ?? 0),
+                onLongPressStart: (details) => unawaited(
+                  _showFolderContextMenu(
+                    context,
+                    details,
+                    folder,
+                    folderCounts[folder.id] ?? 0,
+                  ),
                 ),
                 child: FilterChip(
                   label: Text(
@@ -2606,6 +2648,8 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
     await ref.read(snippetRepositoryProvider).reorderByIds(reorderedIds);
   }
 }
+
+enum _SnippetFolderAction { delete }
 
 class _SnippetRow extends ConsumerWidget {
   const _SnippetRow({

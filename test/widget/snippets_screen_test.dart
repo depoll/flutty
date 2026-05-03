@@ -175,7 +175,7 @@ void main() {
       verify(() => snippetRepository.insertFolder(any())).called(1);
     });
 
-    testWidgets('long-pressing a folder chip deletes the folder', (
+    testWidgets('long-pressing a folder chip opens delete action', (
       tester,
     ) async {
       final snippetRepository = _MockSnippetRepository();
@@ -212,6 +212,13 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.longPress(find.text('Deploy (1)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Delete folder'), findsOneWidget);
+      expect(find.text('Delete "Deploy"?'), findsNothing);
+      verifyNever(() => snippetRepository.deleteFolder(10));
+
+      await tester.tap(find.text('Delete folder'));
       await tester.pumpAndSettle();
 
       expect(find.text('Delete "Deploy"?'), findsOneWidget);
