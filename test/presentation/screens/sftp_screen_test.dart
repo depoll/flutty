@@ -52,17 +52,14 @@ void main() {
       },
     );
 
-    test('location shortcuts normalize and de-duplicate directories', () {
+    test('location shortcuts normalize and de-duplicate paths', () {
       expect(
         resolveSftpLocationShortcuts(
           homeDirectory: '/home/depoll',
           connectionStartDirectory: '/home/depoll/./',
           tmuxPaneDirectory: '/home/depoll/project',
         ),
-        [
-          (label: 'Home / Connection start', path: '/home/depoll'),
-          (label: 'tmux pane', path: '/home/depoll/project'),
-        ],
+        ['/home/depoll', '/home/depoll/project'],
       );
     });
 

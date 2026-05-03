@@ -136,37 +136,25 @@ resolveRequestedSftpNavigationTarget(
 
 /// Resolves quick-jump locations for the SFTP browser.
 @visibleForTesting
-List<({String label, String path})> resolveSftpLocationShortcuts({
+List<String> resolveSftpLocationShortcuts({
   String? homeDirectory,
   String? connectionStartDirectory,
   String? tmuxPaneDirectory,
 }) {
-  final shortcuts = <({String label, String path})>[];
+  final shortcuts = <String>[];
 
-  void addShortcut(String label, String? directory) {
+  void addShortcut(String? directory) {
     final normalizedDirectory = normalizeSftpAbsolutePath(directory);
-    if (normalizedDirectory == null) {
+    if (normalizedDirectory == null ||
+        shortcuts.contains(normalizedDirectory)) {
       return;
     }
-
-    final existingIndex = shortcuts.indexWhere(
-      (shortcut) => shortcut.path == normalizedDirectory,
-    );
-    if (existingIndex >= 0) {
-      final existing = shortcuts[existingIndex];
-      shortcuts[existingIndex] = (
-        label: '${existing.label} / $label',
-        path: existing.path,
-      );
-      return;
-    }
-
-    shortcuts.add((label: label, path: normalizedDirectory));
+    shortcuts.add(normalizedDirectory);
   }
 
-  addShortcut('Home', homeDirectory);
-  addShortcut('Connection start', connectionStartDirectory);
-  addShortcut('tmux pane', tmuxPaneDirectory);
+  addShortcut(homeDirectory);
+  addShortcut(connectionStartDirectory);
+  addShortcut(tmuxPaneDirectory);
 
   return shortcuts;
 }
@@ -1118,22 +1106,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             for (final shortcut in shortcuts)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
-                child: ActionChip(
-                  avatar: Icon(
-                    _iconForLocationShortcut(shortcut.label),
-                    size: 18,
-                  ),
-                  label: Text(
-                    '${shortcut.label}: '
-                    '${_formatLocationShortcutPath(shortcut.path)}',
-                  ),
-                  onPressed: shortcut.path == _currentPath
-                      ? null
-                      : () => unawaited(_navigateTo(shortcut.path)),
-                  tooltip: shortcut.path == _currentPath
-                      ? '${shortcut.label}: ${shortcut.path} (current)'
-                      : '${shortcut.label}: ${shortcut.path}',
-                ),
+                child: _buildLocationShortcutChip(shortcut, theme),
               ),
           ],
         ),
@@ -1141,23 +1114,38 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     );
   }
 
-  IconData _iconForLocationShortcut(String label) {
-    if (label.contains('Home')) {
-      return Icons.home_outlined;
+  Widget _buildLocationShortcutChip(String shortcutPath, ThemeData theme) {
+    final isCurrent = shortcutPath == _currentPath;
+    if (isCurrent) {
+      return Tooltip(
+        message: 'Current folder: $shortcutPath',
+        child: Chip(
+          avatar: Icon(
+            Icons.check_circle_rounded,
+            color: theme.colorScheme.onPrimaryContainer,
+            size: 18,
+          ),
+          label: Text(shortcutPath),
+          labelStyle: theme.textTheme.labelLarge?.copyWith(
+            color: theme.colorScheme.onPrimaryContainer,
+            fontWeight: FontWeight.w700,
+          ),
+          backgroundColor: theme.colorScheme.primaryContainer,
+          side: BorderSide(color: theme.colorScheme.primary),
+        ),
+      );
     }
-    if (label.contains('tmux')) {
-      return Icons.view_week_outlined;
-    }
-    return Icons.flag_outlined;
-  }
 
-  String _formatLocationShortcutPath(String remotePath) {
-    if (remotePath == '/') {
-      return '/';
-    }
-
-    final basename = path.posix.basename(remotePath);
-    return basename.isEmpty ? remotePath : basename;
+    return ActionChip(
+      label: Text(shortcutPath),
+      labelStyle: theme.textTheme.labelLarge?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+      backgroundColor: theme.colorScheme.surface,
+      side: BorderSide(color: theme.colorScheme.outlineVariant),
+      onPressed: () => unawaited(_navigateTo(shortcutPath)),
+      tooltip: 'Go to $shortcutPath',
+    );
   }
 
   Widget _buildBreadcrumbs() {
