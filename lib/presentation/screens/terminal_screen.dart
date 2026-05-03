@@ -5940,16 +5940,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ),
                   ),
                 const PopupMenuItem(
-                  value: 'copy',
-                  child: Row(
-                    children: [
-                      Icon(Icons.copy_rounded, size: 20),
-                      SizedBox(width: 12),
-                      Text('Copy'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
                   value: 'paste',
                   child: Row(
                     children: [
@@ -6842,9 +6832,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'copy_working_directory':
         await _copyWorkingDirectory();
-        break;
-      case 'copy':
-        await _copySelection();
         break;
       case 'paste':
         await _pasteClipboard();
@@ -8374,19 +8361,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _showTerminalLinkMessage(result);
-  }
-
-  Future<void> _copySelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
-
-    await _copySelectionText(
-      text,
-      clearTerminalSelection: !_isNativeSelectionMode,
-      restoreFocus: !_isNativeSelectionMode,
-    );
   }
 
   Future<void> _copySelectionText(
