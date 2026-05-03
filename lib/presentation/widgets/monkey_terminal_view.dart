@@ -1313,6 +1313,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   List<Color> _palette;
   final _paragraphCache = ParagraphCache(10240);
+  final _inlineUnderlineParagraphCache = ParagraphCache(1024);
 
   @override
   set textStyle(TerminalStyle value) {
@@ -1321,6 +1322,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
     super.textStyle = value;
     _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
   }
 
   @override
@@ -1330,6 +1332,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
     super.textScaler = value;
     _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
   }
 
   @override
@@ -1340,15 +1343,17 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.theme = value;
     _palette = _buildMonkeyTerminalPalette(value);
     _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
   }
 
   @override
   void clearFontCache() {
     super.clearFontCache();
     _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
   }
 
-  void paintLineWithInlineUnderlines(
+  void paintLineInlineUnderlines(
     Canvas canvas,
     Offset offset,
     BufferLine line,
@@ -1363,10 +1368,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
       final charWidth = cellData.content >> CellContent.widthShift;
       final cellOffset = offset.translate(i * cellWidth, 0);
       if (_shouldUnderlineCell(i, inlineUnderlines)) {
-        cellData.flags |= CellFlags.underline;
+        paintCellInlineUnderline(canvas, cellOffset, cellData);
       }
-
-      paintCell(canvas, cellOffset, cellData);
 
       if (charWidth == 2) {
         i++;
@@ -1386,6 +1389,46 @@ class MonkeyTerminalPainter extends TerminalPainter {
     return false;
   }
 
+  void paintCellInlineUnderline(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+  ) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return;
+    }
+
+    final cacheKey = cellData.getHash() ^ textScaler.hashCode;
+    var paragraph = _inlineUnderlineParagraphCache.getLayoutFromCache(cacheKey);
+
+    if (paragraph == null) {
+      final cellFlags = cellData.flags;
+      final style = textStyle
+          .toTextStyle(
+            color: Colors.transparent,
+            bold: cellFlags & CellFlags.bold != 0,
+            italic: cellFlags & CellFlags.italic != 0,
+            underline: true,
+          )
+          .copyWith(decorationColor: _resolveCellForegroundColor(cellData));
+
+      var char = String.fromCharCode(charCode);
+      if (charCode == 0x20) {
+        char = String.fromCharCode(0xA0);
+      }
+
+      paragraph = _inlineUnderlineParagraphCache.performAndCacheLayout(
+        char,
+        style,
+        textScaler,
+        cacheKey,
+      );
+    }
+
+    canvas.drawParagraph(paragraph, offset);
+  }
+
   @override
   void paintCellForeground(Canvas canvas, Offset offset, CellData cellData) {
     final charCode = cellData.content & CellContent.codepointMask;
@@ -1398,20 +1441,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
     if (paragraph == null) {
       final cellFlags = cellData.flags;
-      final inverse = cellFlags & CellFlags.inverse != 0;
-      var color = inverse
-          ? resolveBackgroundColor(cellData.background)
-          : resolveForegroundColor(cellData.foreground);
-
-      if (cellFlags & CellFlags.faint != 0) {
-        final background = inverse
-            ? resolveForegroundColor(cellData.foreground)
-            : resolveBackgroundColor(cellData.background);
-        color = resolveMonkeyTerminalFaintForegroundColor(
-          foreground: color,
-          background: background,
-        );
-      }
+      final color = _resolveCellForegroundColor(cellData);
 
       final style = textStyle.toTextStyle(
         color: color,
@@ -1434,6 +1464,25 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+  }
+
+  Color _resolveCellForegroundColor(CellData cellData) {
+    final cellFlags = cellData.flags;
+    final inverse = cellFlags & CellFlags.inverse != 0;
+    var color = inverse
+        ? resolveBackgroundColor(cellData.background)
+        : resolveForegroundColor(cellData.foreground);
+
+    if (cellFlags & CellFlags.faint != 0) {
+      final background = inverse
+          ? resolveForegroundColor(cellData.foreground)
+          : resolveBackgroundColor(cellData.background);
+      color = resolveMonkeyTerminalFaintForegroundColor(
+        foreground: color,
+        background: background,
+      );
+    }
+    return color;
   }
 
   @override
@@ -2680,21 +2729,7 @@ class MonkeyRenderTerminal extends RenderBox
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      final lineOffset = offset.translate(
-        origin.dx,
-        (i * charHeight + _lineOffset).truncateToDouble(),
-      );
-      final lineUnderlines = _inlineUnderlinesForRow(i);
-      if (lineUnderlines.isEmpty) {
-        _painter.paintLine(canvas, lineOffset, lines[i]);
-      } else {
-        _painter.paintLineWithInlineUnderlines(
-          canvas,
-          lineOffset,
-          lines[i],
-          lineUnderlines,
-        );
-      }
+      _painter.paintLine(canvas, _linePaintOffset(offset, i), lines[i]);
     }
 
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
@@ -2725,7 +2760,42 @@ class MonkeyRenderTerminal extends RenderBox
       _paintSelection(canvas, selection, effectFirstLine, effectLastLine);
     }
 
+    // Keep link affordances visible over opaque selection/highlight fills while
+    // preserving each cell's own underline styling.
+    _paintInlineUnderlines(canvas, offset, effectFirstLine, effectLastLine);
+
     _paintSelectionHandleLayers(context, offset);
+  }
+
+  Offset _linePaintOffset(Offset offset, int row) => offset.translate(
+    _contentOrigin.dx,
+    (row * _painter.cellSize.height + _lineOffset).truncateToDouble(),
+  );
+
+  void _paintInlineUnderlines(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+  ) {
+    if (_inlineUnderlines.isEmpty) {
+      return;
+    }
+
+    final lines = _terminal.buffer.lines;
+    for (var i = firstLine; i <= lastLine; i++) {
+      final lineUnderlines = _inlineUnderlinesForRow(i);
+      if (lineUnderlines.isEmpty) {
+        continue;
+      }
+
+      _painter.paintLineInlineUnderlines(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+        lineUnderlines,
+      );
+    }
   }
 
   List<TerminalTextUnderline> _inlineUnderlinesForRow(int row) {
