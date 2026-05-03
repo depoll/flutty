@@ -379,6 +379,129 @@ void main() {
       expect(find.text('Paste Files'), findsNothing);
     });
 
+    testWidgets('Paste long press releases over a top-level snippet', (
+      tester,
+    ) async {
+      KeyboardToolbarSnippet? selectedSnippet;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  snippets: const [
+                    KeyboardToolbarSnippet(
+                      id: 1,
+                      name: 'Top level',
+                      command: 'git status',
+                    ),
+                  ],
+                  onSnippetPasteRequested: (snippet) async {
+                    selectedSnippet = snippet;
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      expect(find.byIcon(Icons.chevron_left_rounded), findsOneWidget);
+
+      await gesture.moveTo(tester.getCenter(find.text('Snippets')));
+      await tester.pump();
+
+      expect(find.text('Top level'), findsOneWidget);
+
+      await gesture.moveTo(tester.getCenter(find.text('Top level')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(selectedSnippet?.id, 1);
+      expect(selectedSnippet?.command, 'git status');
+      expect(find.text('Top level'), findsNothing);
+    });
+
+    testWidgets('Paste long press releases over a folder snippet', (
+      tester,
+    ) async {
+      KeyboardToolbarSnippet? selectedSnippet;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  snippetFolders: const [
+                    KeyboardToolbarSnippetFolder(id: 7, name: 'Deploy'),
+                  ],
+                  snippets: const [
+                    KeyboardToolbarSnippet(
+                      id: 2,
+                      name: 'Restart API',
+                      command: 'systemctl restart api',
+                      folderId: 7,
+                    ),
+                  ],
+                  onSnippetPasteRequested: (snippet) async {
+                    selectedSnippet = snippet;
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      await gesture.moveTo(tester.getCenter(find.text('Snippets')));
+      await tester.pump();
+
+      expect(find.text('Deploy'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Deploy')).dx,
+        lessThan(tester.getTopLeft(find.text('Snippets')).dx),
+      );
+
+      await gesture.moveTo(tester.getCenter(find.text('Deploy')));
+      await tester.pump();
+
+      expect(find.text('Restart API'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Restart API')).dx,
+        lessThan(tester.getTopLeft(find.text('Snippets')).dx),
+      );
+      expect(
+        tester.getTopLeft(find.text('Restart API')).dy,
+        greaterThan(tester.getTopLeft(find.text('Deploy')).dy),
+      );
+
+      await gesture.moveTo(tester.getCenter(find.text('Restart API')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(selectedSnippet?.id, 2);
+      expect(selectedSnippet?.command, 'systemctl restart api');
+      expect(find.text('Restart API'), findsNothing);
+    });
+
     testWidgets('Enter button renders and triggers callback', (tester) async {
       var callCount = 0;
       final output = <String>[];

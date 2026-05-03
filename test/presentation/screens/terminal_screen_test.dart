@@ -272,6 +272,77 @@ void main() {
       expect(selectedText, isNull);
     });
 
+    test('adds create snippet action after copy in terminal menu', () {
+      var didCreateSnippet = false;
+
+      final items = buildTerminalSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.paste,
+            onPressed: null,
+          ),
+        ],
+        onCopy: () {},
+        onLookUp: () {},
+        onSearchWeb: () {},
+        onShare: () {},
+        onCreateSnippet: () => didCreateSnippet = true,
+        onPaste: () {},
+      );
+
+      final copyIndex = items.indexWhere(
+        (item) => item.type == ContextMenuButtonType.copy,
+      );
+      final snippetIndex = items.indexWhere(
+        (item) => item.label == 'Create Snippet',
+      );
+
+      expect(snippetIndex, copyIndex + 1);
+      items[snippetIndex].onPressed!();
+      expect(didCreateSnippet, isTrue);
+    });
+
+    test('omits create snippet action without selected text', () {
+      final items = buildTerminalSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+        ],
+        onCopy: () {},
+        onLookUp: () {},
+        onSearchWeb: () {},
+        onShare: () {},
+        onCreateSnippet: null,
+        onPaste: () {},
+      );
+
+      expect(items.where((item) => item.label == 'Create Snippet'), isEmpty);
+    });
+
+    test('builds snippet name from selected terminal text', () {
+      final longLine = List.filled(80, 'a').join();
+      final truncatedLine = '${List.filled(57, 'a').join()}...';
+
+      expect(
+        buildSnippetNameFromTerminalSelection('\n  git status\n'),
+        'git status',
+      );
+      expect(
+        buildSnippetNameFromTerminalSelection('   \n'),
+        'Terminal selection',
+      );
+      expect(
+        buildSnippetNameFromTerminalSelection('$longLine\nsecond'),
+        truncatedLine,
+      );
+    });
+
     test('hides terminal selection toolbar when action throws', () {
       var didHideToolbar = false;
 

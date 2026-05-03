@@ -443,6 +443,9 @@ void main() {
         ]),
       );
       when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => Stream.value(const <SnippetFolder>[]));
+      when(
         () => snippetRepository.reorderByIds(any()),
       ).thenAnswer((_) async {});
 

@@ -139,9 +139,15 @@ class SnippetRepository {
   Future<bool> updateFolder(SnippetFolder folder) =>
       _db.update(_db.snippetFolders).replace(folder);
 
-  /// Delete a folder.
-  Future<int> deleteFolder(int id) =>
-      (_db.delete(_db.snippetFolders)..where((f) => f.id.equals(id))).go();
+  /// Delete a folder, moving its snippets back to No folder.
+  Future<int> deleteFolder(int id) => _db.transaction(() async {
+    await (_db.update(_db.snippets)..where((s) => s.folderId.equals(id))).write(
+      const SnippetsCompanion(folderId: Value<int?>(null)),
+    );
+    await (_db.update(_db.snippetFolders)..where((f) => f.parentId.equals(id)))
+        .write(const SnippetFoldersCompanion(parentId: Value<int?>(null)));
+    return (_db.delete(_db.snippetFolders)..where((f) => f.id.equals(id))).go();
+  });
 
   SimpleSelectStatement<$SnippetsTable, Snippet> _orderedSnippetsQuery() =>
       _db.select(_db.snippets)..orderBy([

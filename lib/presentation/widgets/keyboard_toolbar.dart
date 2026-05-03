@@ -179,6 +179,43 @@ class KeyboardToolbarController extends ChangeNotifier {
   }
 }
 
+/// Snippet option shown in the keyboard toolbar paste menu.
+@immutable
+class KeyboardToolbarSnippet {
+  /// Creates a [KeyboardToolbarSnippet].
+  const KeyboardToolbarSnippet({
+    required this.id,
+    required this.name,
+    required this.command,
+    this.folderId,
+  });
+
+  /// Persistent snippet ID.
+  final int id;
+
+  /// User-visible snippet name.
+  final String name;
+
+  /// Command text inserted when the snippet is selected.
+  final String command;
+
+  /// Folder containing this snippet, or null for a top-level snippet.
+  final int? folderId;
+}
+
+/// Snippet folder option shown in the keyboard toolbar paste menu.
+@immutable
+class KeyboardToolbarSnippetFolder {
+  /// Creates a [KeyboardToolbarSnippetFolder].
+  const KeyboardToolbarSnippetFolder({required this.id, required this.name});
+
+  /// Persistent folder ID.
+  final int id;
+
+  /// User-visible folder name.
+  final String name;
+}
+
 /// Compact keyboard toolbar for terminal input.
 ///
 /// Features:
@@ -193,8 +230,12 @@ class KeyboardToolbar extends StatefulWidget {
     this.controller,
     this.onKeyPressed,
     this.onPasteRequested,
+    this.onPasteMenuOpened,
+    this.onSnippetPasteRequested,
     this.onPasteImageRequested,
     this.onPasteFilesRequested,
+    this.snippets = const <KeyboardToolbarSnippet>[],
+    this.snippetFolders = const <KeyboardToolbarSnippetFolder>[],
     this.terminalFocusNode,
     super.key,
   });
@@ -211,11 +252,24 @@ class KeyboardToolbar extends StatefulWidget {
   /// Optional callback when the Paste key is tapped.
   final FutureOr<void> Function()? onPasteRequested;
 
+  /// Optional callback when the Paste key's long-press menu opens.
+  final FutureOr<void> Function()? onPasteMenuOpened;
+
+  /// Optional callback when a snippet is selected from the Paste menu.
+  final FutureOr<void> Function(KeyboardToolbarSnippet snippet)?
+  onSnippetPasteRequested;
+
   /// Optional callback when the Paste key's long-press image option is tapped.
   final FutureOr<void> Function()? onPasteImageRequested;
 
   /// Optional callback when the Paste key's long-press file option is tapped.
   final FutureOr<void> Function()? onPasteFilesRequested;
+
+  /// Snippets available in the Paste menu.
+  final List<KeyboardToolbarSnippet> snippets;
+
+  /// Snippet folders available in the Paste menu.
+  final List<KeyboardToolbarSnippetFolder> snippetFolders;
 
   /// Optional focus node for the terminal. When provided, the toolbar
   /// re-requests focus after interactions so the soft keyboard stays visible.
@@ -227,8 +281,10 @@ class KeyboardToolbar extends StatefulWidget {
 
 /// State for [KeyboardToolbar].
 class KeyboardToolbarState extends State<KeyboardToolbar> {
-  static const _pasteOptionsWidth = 220.0;
+  static const _pasteOptionsWidth = 200.0;
+  static const _pasteSnippetMenuWidth = 180.0;
   static const _pasteOptionHeight = 44.0;
+  static const _pasteOptionsDividerHeight = 1.0;
   static const _pasteOptionsGap = 8.0;
   static const _pasteOptionsScreenMargin = 8.0;
 
@@ -236,6 +292,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   final _pasteButtonKey = GlobalKey();
   OverlayEntry? _pasteOptionsOverlay;
   _PasteToolbarAction? _highlightedPasteAction;
+  KeyboardToolbarSnippetFolder? _highlightedSnippetFolder;
+  KeyboardToolbarSnippet? _highlightedSnippet;
 
   KeyboardToolbarController get _controller =>
       widget.controller ?? _fallbackController;
@@ -255,6 +313,10 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (!identical(previousController, nextController)) {
       previousController.removeListener(_handleControllerChanged);
       nextController.addListener(_handleControllerChanged);
+    }
+    if (!identical(oldWidget.snippets, widget.snippets) ||
+        !identical(oldWidget.snippetFolders, widget.snippetFolders)) {
+      _pasteOptionsOverlay?.markNeedsBuild();
     }
   }
 
@@ -511,6 +573,10 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     widget.onKeyPressed?.call();
     _consumeOneShot();
     _showPasteOptionsMenu(details.globalPosition);
+    final onPasteMenuOpened = widget.onPasteMenuOpened;
+    if (onPasteMenuOpened != null) {
+      unawaited(Future<void>.sync(onPasteMenuOpened));
+    }
   }
 
   void _showPasteOptionsMenu(Offset globalPosition) {
@@ -528,7 +594,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     final topLeft = overlayBox.globalToLocal(buttonRect.topLeft);
     final bottomRight = overlayBox.globalToLocal(buttonRect.bottomRight);
     final targetRect = Rect.fromPoints(topLeft, bottomRight);
-    final menuHeight = _PasteToolbarAction.values.length * _pasteOptionHeight;
+    final menuHeight = _pasteOptionsMenuHeight;
     final left = _clampDouble(
       targetRect.right - _pasteOptionsWidth,
       _pasteOptionsScreenMargin,
@@ -540,23 +606,55 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       overlaySize.height - menuHeight - _pasteOptionsScreenMargin,
     );
     _hidePasteOptionsMenu();
-    _highlightedPasteAction = _pasteActionAtGlobalPosition(
+    final hit = _pasteMenuHitAtGlobalPosition(
       globalPosition,
       menuOrigin: overlayBox.localToGlobal(Offset(left, top)),
     );
-    _pasteOptionsOverlay = OverlayEntry(
-      builder: (context) => Positioned(
-        left: left,
-        top: top,
-        width: _pasteOptionsWidth,
-        child: _PasteOptionsMenu(
-          highlightedAction: _highlightedPasteAction,
-          imageEnabled: widget.onPasteImageRequested != null,
-          filesEnabled: widget.onPasteFilesRequested != null,
-        ),
-      ),
-    );
+    _applyPasteMenuHit(hit);
+    _pasteOptionsOverlay = OverlayEntry(builder: _buildPasteOptionsOverlay);
     overlay.insert(_pasteOptionsOverlay!);
+  }
+
+  Widget _buildPasteOptionsOverlay(BuildContext context) {
+    final overlayBox = Overlay.of(context).context.findRenderObject();
+    if (overlayBox is! RenderBox) {
+      return const SizedBox.shrink();
+    }
+    final layout = _pasteMenuLayout(overlayBox.size);
+    if (layout == null) {
+      return const SizedBox.shrink();
+    }
+
+    final snippetEntries = _expandedSnippetMenuEntries;
+    final showSnippetMenu =
+        _highlightedPasteAction == _PasteToolbarAction.snippets &&
+        _snippetMenuEntries.isNotEmpty;
+
+    return Stack(
+      children: [
+        Positioned.fromRect(
+          rect: layout.mainMenuRect,
+          child: _PasteOptionsMenu(
+            highlightedAction: _highlightedPasteAction,
+            snippetsEnabled: _areSnippetsEnabled,
+            imageEnabled: widget.onPasteImageRequested != null,
+            filesEnabled: widget.onPasteFilesRequested != null,
+            snippetsTrailingIcon: layout.snippetMenuOpensLeft
+                ? Icons.chevron_left_rounded
+                : Icons.chevron_right_rounded,
+          ),
+        ),
+        if (showSnippetMenu && layout.snippetMenuRect != null)
+          Positioned.fromRect(
+            rect: layout.snippetMenuRect!,
+            child: _SnippetCascadeMenu(
+              entries: snippetEntries,
+              highlightedFolder: _highlightedSnippetFolder,
+              highlightedSnippet: _highlightedSnippet,
+            ),
+          ),
+      ],
+    );
   }
 
   Rect? _pasteButtonGlobalRect() {
@@ -568,15 +666,32 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   }
 
   void _updatePasteOptionsHighlight(LongPressMoveUpdateDetails details) {
-    final action = _pasteActionAtGlobalPosition(details.globalPosition);
-    if (action == _highlightedPasteAction) {
+    final hit = _pasteMenuHitAtGlobalPosition(details.globalPosition);
+    if (hit == null &&
+        _highlightedPasteAction == _PasteToolbarAction.snippets) {
+      if (_highlightedSnippet == null) {
+        return;
+      }
+      _highlightedSnippet = null;
+      _pasteOptionsOverlay?.markNeedsBuild();
       return;
     }
-    _highlightedPasteAction = action;
+    if (_isSamePasteMenuHit(hit, _currentPasteMenuHit)) {
+      return;
+    }
+    _applyPasteMenuHit(hit);
     _pasteOptionsOverlay?.markNeedsBuild();
   }
 
-  _PasteToolbarAction? _pasteActionAtGlobalPosition(
+  _PasteMenuHit? get _currentPasteMenuHit => _highlightedPasteAction == null
+      ? null
+      : _PasteMenuHit(
+          action: _highlightedPasteAction!,
+          folder: _highlightedSnippetFolder,
+          snippet: _highlightedSnippet,
+        );
+
+  _PasteMenuHit? _pasteMenuHitAtGlobalPosition(
     Offset globalPosition, {
     Offset? menuOrigin,
   }) {
@@ -588,26 +703,53 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (overlayBox is! RenderBox) {
       return null;
     }
-    final offset = menuOrigin == null
-        ? _pasteOptionsOverlayOffset(overlayBox.size)
-        : null;
-    if (menuOrigin == null && offset == null) {
+    final layout = _pasteMenuLayout(
+      overlayBox.size,
+      mainMenuOrigin: menuOrigin == null
+          ? null
+          : overlayBox.globalToLocal(menuOrigin),
+    );
+    if (layout == null) {
       return null;
     }
-    final origin = menuOrigin ?? overlayBox.localToGlobal(offset!);
-    final local = globalPosition - origin;
-    if (local.dx < 0 || local.dx > _pasteOptionsWidth || local.dy < 0) {
+
+    final globalMainRect = _localRectToGlobal(overlayBox, layout.mainMenuRect);
+    final globalSnippetRect = layout.snippetMenuRect == null
+        ? null
+        : _localRectToGlobal(overlayBox, layout.snippetMenuRect!);
+
+    if (globalSnippetRect != null &&
+        globalSnippetRect.contains(globalPosition)) {
+      final entries = _expandedSnippetMenuEntries;
+      final index =
+          (globalPosition.dy - globalSnippetRect.top) ~/ _pasteOptionHeight;
+      if (index >= 0 && index < entries.length) {
+        final entry = entries[index];
+        return _PasteMenuHit(
+          action: _PasteToolbarAction.snippets,
+          folder: entry.folder ?? entry.parentFolder,
+          snippet: entry.snippet,
+        );
+      }
+    }
+
+    if (!globalMainRect.contains(globalPosition)) {
       return null;
     }
-    final index = local.dy ~/ _pasteOptionHeight;
+    final index = _pasteMainActionIndexAt(
+      globalPosition.dy - globalMainRect.top,
+    );
     if (index < 0 || index >= _PasteToolbarAction.values.length) {
       return null;
     }
     final action = _PasteToolbarAction.values[index];
-    return _isPasteActionEnabled(action) ? action : null;
+    return _isPasteActionEnabled(action) ? _PasteMenuHit(action: action) : null;
   }
 
-  Offset? _pasteOptionsOverlayOffset(Size overlaySize) {
+  _PasteMenuLayout? _pasteMenuLayout(
+    Size overlaySize, {
+    Offset? mainMenuOrigin,
+  }) {
     final buttonRect = _pasteButtonGlobalRect();
     if (buttonRect == null) {
       return null;
@@ -619,32 +761,164 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     final topLeft = overlayBox.globalToLocal(buttonRect.topLeft);
     final bottomRight = overlayBox.globalToLocal(buttonRect.bottomRight);
     final targetRect = Rect.fromPoints(topLeft, bottomRight);
-    final menuHeight = _PasteToolbarAction.values.length * _pasteOptionHeight;
-    return Offset(
-      _clampDouble(
-        targetRect.right - _pasteOptionsWidth,
-        _pasteOptionsScreenMargin,
-        overlaySize.width - _pasteOptionsWidth - _pasteOptionsScreenMargin,
-      ),
-      _clampDouble(
-        targetRect.top - menuHeight - _pasteOptionsGap,
-        _pasteOptionsScreenMargin,
-        overlaySize.height - menuHeight - _pasteOptionsScreenMargin,
-      ),
+    final mainLeft =
+        mainMenuOrigin?.dx ??
+        _clampDouble(
+          targetRect.right - _pasteOptionsWidth,
+          _pasteOptionsScreenMargin,
+          overlaySize.width - _pasteOptionsWidth - _pasteOptionsScreenMargin,
+        );
+    final mainTop =
+        mainMenuOrigin?.dy ??
+        _clampDouble(
+          targetRect.top - _pasteOptionsMenuHeight - _pasteOptionsGap,
+          _pasteOptionsScreenMargin,
+          overlaySize.height -
+              _pasteOptionsMenuHeight -
+              _pasteOptionsScreenMargin,
+        );
+    final mainRect = Rect.fromLTWH(
+      mainLeft,
+      mainTop,
+      _pasteOptionsWidth,
+      _pasteOptionsMenuHeight,
+    );
+    final entries = _expandedSnippetMenuEntries;
+    Rect? snippetMenuRect;
+    var snippetMenuOpensLeft = true;
+    if (entries.isNotEmpty) {
+      final snippetMenuHeight = entries.length * _pasteOptionHeight;
+      final canOpenLeft =
+          mainRect.left -
+              _pasteOptionsGap -
+              _pasteSnippetMenuWidth -
+              _pasteOptionsScreenMargin >=
+          0;
+      snippetMenuOpensLeft =
+          canOpenLeft ||
+          mainRect.right + _pasteOptionsGap + _pasteSnippetMenuWidth >
+              overlaySize.width - _pasteOptionsScreenMargin;
+      final snippetLeft = snippetMenuOpensLeft
+          ? mainRect.left - _pasteOptionsGap - _pasteSnippetMenuWidth
+          : mainRect.right + _pasteOptionsGap;
+      snippetMenuRect = Rect.fromLTWH(
+        _clampDouble(
+          snippetLeft,
+          _pasteOptionsScreenMargin,
+          overlaySize.width -
+              _pasteSnippetMenuWidth -
+              _pasteOptionsScreenMargin,
+        ),
+        _clampDouble(
+          mainRect.top,
+          _pasteOptionsScreenMargin,
+          overlaySize.height - snippetMenuHeight - _pasteOptionsScreenMargin,
+        ),
+        _pasteSnippetMenuWidth,
+        snippetMenuHeight,
+      );
+    }
+
+    return _PasteMenuLayout(
+      mainMenuRect: mainRect,
+      snippetMenuRect: snippetMenuRect,
+      snippetMenuOpensLeft: snippetMenuOpensLeft,
     );
   }
 
   bool _isPasteActionEnabled(_PasteToolbarAction action) => switch (action) {
+    _PasteToolbarAction.snippets => _areSnippetsEnabled,
     _PasteToolbarAction.images => widget.onPasteImageRequested != null,
     _PasteToolbarAction.files => widget.onPasteFilesRequested != null,
   };
 
+  bool get _areSnippetsEnabled =>
+      widget.onSnippetPasteRequested != null && _snippetMenuEntries.isNotEmpty;
+
+  double get _pasteOptionsMenuHeight =>
+      _PasteToolbarAction.values.length * _pasteOptionHeight +
+      (_PasteToolbarAction.values.length - 1) * _pasteOptionsDividerHeight;
+
+  int _pasteMainActionIndexAt(double localDy) {
+    if (localDy < 0) {
+      return -1;
+    }
+    for (var index = 0; index < _PasteToolbarAction.values.length; index += 1) {
+      final top = index * (_pasteOptionHeight + _pasteOptionsDividerHeight);
+      if (localDy >= top && localDy < top + _pasteOptionHeight) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  List<_SnippetMenuEntry> get _snippetMenuEntries {
+    final folderIds = widget.snippetFolders.map((folder) => folder.id).toSet();
+    final entries = <_SnippetMenuEntry>[
+      for (final folder in widget.snippetFolders)
+        if (_snippetsInFolder(folder.id).isNotEmpty)
+          _SnippetMenuEntry.folder(folder),
+      for (final snippet in widget.snippets)
+        if (snippet.folderId == null || !folderIds.contains(snippet.folderId))
+          _SnippetMenuEntry.snippet(snippet),
+    ];
+    return entries;
+  }
+
+  List<_SnippetMenuEntry> get _expandedSnippetMenuEntries {
+    final entries = _snippetMenuEntries;
+    final folder = _highlightedSnippetFolder;
+    if (folder == null) {
+      return entries;
+    }
+
+    final expandedEntries = <_SnippetMenuEntry>[];
+    for (final entry in entries) {
+      expandedEntries.add(entry);
+      if (entry.folder?.id == folder.id) {
+        expandedEntries.addAll(
+          _snippetsInFolder(
+            folder.id,
+          ).map((snippet) => _SnippetMenuEntry.snippet(snippet, folder)),
+        );
+      }
+    }
+    return expandedEntries;
+  }
+
+  List<KeyboardToolbarSnippet> _snippetsInFolder(int folderId) => widget
+      .snippets
+      .where((snippet) => snippet.folderId == folderId)
+      .toList(growable: false);
+
+  Rect _localRectToGlobal(RenderBox overlayBox, Rect rect) {
+    final topLeft = overlayBox.localToGlobal(rect.topLeft);
+    return topLeft & rect.size;
+  }
+
+  void _applyPasteMenuHit(_PasteMenuHit? hit) {
+    _highlightedPasteAction = hit?.action;
+    _highlightedSnippetFolder = hit?.folder;
+    _highlightedSnippet = hit?.snippet;
+  }
+
+  bool _isSamePasteMenuHit(_PasteMenuHit? a, _PasteMenuHit? b) =>
+      a?.action == b?.action &&
+      a?.folder?.id == b?.folder?.id &&
+      a?.snippet?.id == b?.snippet?.id;
+
   void _chooseHighlightedPasteOption(LongPressEndDetails details) {
-    final action =
-        _pasteActionAtGlobalPosition(details.globalPosition) ??
-        _highlightedPasteAction;
+    final hit = _pasteMenuHitAtGlobalPosition(details.globalPosition);
+    final action = hit?.action ?? _highlightedPasteAction;
+    final snippet = hit?.snippet;
     _hidePasteOptionsMenu();
+    if (snippet != null) {
+      unawaited(_runSnippetPasteAction(snippet));
+      return;
+    }
     switch (action) {
+      case _PasteToolbarAction.snippets:
+        _refocusTerminal();
       case _PasteToolbarAction.images:
         unawaited(_runToolbarAction(widget.onPasteImageRequested));
       case _PasteToolbarAction.files:
@@ -658,6 +932,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _pasteOptionsOverlay?.remove();
     _pasteOptionsOverlay = null;
     _highlightedPasteAction = null;
+    _highlightedSnippetFolder = null;
+    _highlightedSnippet = null;
   }
 
   Future<void> _runToolbarAction(FutureOr<void> Function()? action) async {
@@ -666,6 +942,15 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       return;
     }
     await action();
+  }
+
+  Future<void> _runSnippetPasteAction(KeyboardToolbarSnippet snippet) async {
+    final action = widget.onSnippetPasteRequested;
+    if (action == null) {
+      _refocusTerminal();
+      return;
+    }
+    await action(snippet);
   }
 
   void _consumeOneShot() {
@@ -788,7 +1073,40 @@ enum _Modifier { ctrl, alt, shift }
 
 enum _Arrow { up, down, left, right }
 
-enum _PasteToolbarAction { images, files }
+enum _PasteToolbarAction { snippets, images, files }
+
+class _PasteMenuHit {
+  const _PasteMenuHit({required this.action, this.folder, this.snippet});
+
+  final _PasteToolbarAction action;
+  final KeyboardToolbarSnippetFolder? folder;
+  final KeyboardToolbarSnippet? snippet;
+}
+
+class _PasteMenuLayout {
+  const _PasteMenuLayout({
+    required this.mainMenuRect,
+    required this.snippetMenuRect,
+    required this.snippetMenuOpensLeft,
+  });
+
+  final Rect mainMenuRect;
+  final Rect? snippetMenuRect;
+  final bool snippetMenuOpensLeft;
+}
+
+class _SnippetMenuEntry {
+  const _SnippetMenuEntry.folder(KeyboardToolbarSnippetFolder this.folder)
+    : snippet = null,
+      parentFolder = null;
+
+  const _SnippetMenuEntry.snippet(this.snippet, [this.parentFolder])
+    : folder = null;
+
+  final KeyboardToolbarSnippetFolder? folder;
+  final KeyboardToolbarSnippet? snippet;
+  final KeyboardToolbarSnippetFolder? parentFolder;
+}
 
 double _clampDouble(double value, double min, double max) {
   final effectiveMax = max < min ? min : max;
@@ -798,13 +1116,17 @@ double _clampDouble(double value, double min, double max) {
 class _PasteOptionsMenu extends StatelessWidget {
   const _PasteOptionsMenu({
     required this.highlightedAction,
+    required this.snippetsEnabled,
     required this.imageEnabled,
     required this.filesEnabled,
+    required this.snippetsTrailingIcon,
   });
 
   final _PasteToolbarAction? highlightedAction;
+  final bool snippetsEnabled;
   final bool imageEnabled;
   final bool filesEnabled;
+  final IconData snippetsTrailingIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -817,6 +1139,14 @@ class _PasteOptionsMenu extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          _PasteOptionsMenuItem(
+            icon: Icons.code_rounded,
+            label: 'Snippets',
+            enabled: snippetsEnabled,
+            highlighted: highlightedAction == _PasteToolbarAction.snippets,
+            trailingIcon: snippetsTrailingIcon,
+          ),
+          Divider(height: 1, color: colorScheme.outlineVariant),
           _PasteOptionsMenuItem(
             icon: Icons.image_outlined,
             label: 'Paste Images',
@@ -836,18 +1166,75 @@ class _PasteOptionsMenu extends StatelessWidget {
   }
 }
 
+class _SnippetCascadeMenu extends StatelessWidget {
+  const _SnippetCascadeMenu({
+    required this.entries,
+    required this.highlightedFolder,
+    required this.highlightedSnippet,
+  });
+
+  final List<_SnippetMenuEntry> entries;
+  final KeyboardToolbarSnippetFolder? highlightedFolder;
+  final KeyboardToolbarSnippet? highlightedSnippet;
+
+  @override
+  Widget build(BuildContext context) => _CascadeMenuFrame(
+    children: [
+      for (final entry in entries)
+        if (entry.folder case final folder?)
+          _PasteOptionsMenuItem(
+            icon: Icons.folder_outlined,
+            label: folder.name,
+            enabled: true,
+            highlighted: highlightedFolder?.id == folder.id,
+            trailingIcon: Icons.expand_more_rounded,
+          )
+        else if (entry.snippet case final snippet?)
+          _PasteOptionsMenuItem(
+            icon: Icons.code_rounded,
+            label: snippet.name,
+            enabled: true,
+            highlighted: highlightedSnippet?.id == snippet.id,
+            leadingIndent: entry.parentFolder == null ? 0 : 18,
+          ),
+    ],
+  );
+}
+
+class _CascadeMenuFrame extends StatelessWidget {
+  const _CascadeMenuFrame({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.surfaceContainerHighest,
+      elevation: 8,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+    );
+  }
+}
+
 class _PasteOptionsMenuItem extends StatelessWidget {
   const _PasteOptionsMenuItem({
     required this.icon,
     required this.label,
     required this.enabled,
     required this.highlighted,
+    this.leadingIndent = 0,
+    this.trailingIcon,
   });
 
   final IconData icon;
   final String label;
   final bool enabled;
   final bool highlighted;
+  final double leadingIndent;
+  final IconData? trailingIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -873,6 +1260,7 @@ class _PasteOptionsMenuItem extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
           children: [
+            if (leadingIndent > 0) SizedBox(width: leadingIndent),
             Icon(icon, size: 20, color: foregroundColor),
             const SizedBox(width: 12),
             Expanded(
@@ -885,6 +1273,10 @@ class _PasteOptionsMenuItem extends StatelessWidget {
                 ),
               ),
             ),
+            if (trailingIcon case final trailingIcon?) ...[
+              const SizedBox(width: 8),
+              Icon(trailingIcon, size: 20, color: foregroundColor),
+            ],
           ],
         ),
       ),
