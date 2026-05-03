@@ -51,12 +51,27 @@ class _CapturingSshService extends SshService {
 }
 
 class _StubWifiNetworkService extends WifiNetworkService {
-  _StubWifiNetworkService(this.ssid);
+  _StubWifiNetworkService(
+    this.ssid, {
+    this.permissionStatus = WifiPermissionStatus.granted,
+  });
 
   final String? ssid;
+  final WifiPermissionStatus permissionStatus;
+  int requestPermissionCallCount = 0;
+  int getCurrentSsidCallCount = 0;
 
   @override
-  Future<String?> getCurrentSsid() async => ssid;
+  Future<WifiPermissionStatus> requestPermission() async {
+    requestPermissionCallCount++;
+    return permissionStatus;
+  }
+
+  @override
+  Future<String?> getCurrentSsid() async {
+    getCurrentSsidCallCount++;
+    return ssid;
+  }
 }
 
 class _CountingKeyRepository extends KeyRepository {
@@ -882,16 +897,20 @@ void main() {
 
       await pumpEventQueue();
 
-      expect(started, [0, 1]);
-      expect(activeQueuedSshExecCountForTesting(9), 2);
-      expect(pendingQueuedSshExecCountForTesting(9), 1);
+      expect(started, [0]);
+      expect(activeQueuedSshExecCountForTesting(9), 1);
+      expect(pendingQueuedSshExecCountForTesting(9), 2);
 
       completers[0].complete(0);
       await pumpEventQueue();
 
-      expect(started, [0, 1, 2]);
+      expect(started, [0, 1]);
 
       completers[1].complete(1);
+      await pumpEventQueue();
+
+      expect(started, [0, 1, 2]);
+
       completers[2].complete(2);
 
       expect(await Future.wait(futures), [0, 1, 2]);
@@ -2470,16 +2489,19 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService('home');
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService('home'),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(db);
       await service.connectToHost(hostId);
 
       expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(wifiNetworkService.requestPermissionCallCount, 0);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 0);
     });
 
     test('uses jump host when current SSID is not in skip list', () async {
@@ -2488,10 +2510,11 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService('cafe');
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService('cafe'),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(
@@ -2502,6 +2525,8 @@ void main() {
 
       expect(service.capturedConfig?.jumpHost, isNotNull);
       expect(service.capturedConfig?.hostname, 'target.example.com');
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 1);
     });
 
     test('skips jump host when current SSID is in skip list', () async {
@@ -2510,10 +2535,11 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService('home');
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService('home'),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(
@@ -2525,6 +2551,32 @@ void main() {
       expect(service.capturedConfig, isNotNull);
       expect(service.capturedConfig!.jumpHost, isNull);
       expect(service.capturedConfig!.hostname, 'target.example.com');
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 1);
+    });
+
+    test('uses jump host when Wi-Fi permission is denied', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService(
+        'home',
+        permissionStatus: WifiPermissionStatus.denied,
+      );
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+        wifiNetworkService: wifiNetworkService,
+      );
+
+      final hostId = await seedHostWithJump(db, skipJumpHostOnSsids: 'home');
+      await service.connectToHost(hostId);
+
+      expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 0);
     });
 
     test('uses jump host when SSID detection returns null', () async {
@@ -2533,16 +2585,19 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService(null);
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService(null),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(db, skipJumpHostOnSsids: 'home');
       await service.connectToHost(hostId);
 
       expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 1);
     });
   });
 }

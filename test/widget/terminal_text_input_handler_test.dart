@@ -961,6 +961,19 @@ TextEditingValue _editingValue(
         ),
 );
 
+String _iosBackspaceRunwayPayload(int length) =>
+    String.fromCharCodes(List<int>.filled(length, 0x200B));
+
+TextEditingValue _iosBackspaceRunwayValue(int length, {String suffix = ''}) {
+  final text =
+      '$_deleteDetectionMarker${_iosBackspaceRunwayPayload(length)}'
+      '$suffix';
+  return TextEditingValue(
+    text: text,
+    selection: TextSelection.collapsed(offset: text.length),
+  );
+}
+
 String _terminalKeyOutput(
   TerminalKey key, {
   bool shift = false,
@@ -6974,6 +6987,84 @@ void main() {
               (call) => call.method == 'TextInput.setEditingState',
             ),
             isEmpty,
+          );
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'keeps iOS held backspace fast after visible text is exhausted',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+          final backspaceOutput = _terminalKeyOutput(TerminalKey.backspace);
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('ab', selectionOffset: 2),
+          );
+          await tester.pump();
+          harness.terminalOutput.clear();
+          tester.testTextInput.log.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('a', selectionOffset: 1),
+          );
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('', selectionOffset: 0),
+          );
+          await tester.pump();
+
+          expect(
+            _terminalStateFromEvents(
+              harness.terminalOutput,
+              initialText: 'ab',
+              initialCursorOffset: 2,
+            ),
+            (text: '', cursorOffset: 0),
+          );
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _iosBackspaceRunwayValue(terminalIosBackspaceRepeatRunwayLength),
+          );
+
+          harness.terminalOutput.clear();
+          tester.testTextInput.log.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _iosBackspaceRunwayValue(
+              terminalIosBackspaceRepeatRunwayLength - 1,
+            ),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, [backspaceOutput]);
+          expect(
+            tester.testTextInput.log.where(
+              (call) => call.method == 'TextInput.setEditingState',
+            ),
+            isEmpty,
+          );
+
+          harness.terminalOutput.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _iosBackspaceRunwayValue(
+              terminalIosBackspaceRepeatRunwayLength - 1,
+              suffix: 'x',
+            ),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, ['x']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('x', selectionOffset: 1),
           );
 
           await _disposeTerminalHarness(tester, harness);

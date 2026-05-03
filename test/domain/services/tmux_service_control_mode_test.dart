@@ -1179,6 +1179,101 @@ void main() {
     });
 
     test(
+      'listWindows uses an active control-mode watcher during exec backoff',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 72);
+        const service = TmuxService();
+        const sep = tmuxWindowFieldSeparator;
+        final stdoutController = StreamController<Uint8List>();
+        final writes = <String>[];
+        final windowLine = [
+          '1',
+          'fresh',
+          '1',
+          'nvim',
+          '/tmp/project',
+          '*',
+          'fresh-title',
+          '200',
+          'nvim',
+          '',
+          '@9',
+        ].join(sep);
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          onWrite: (value) {
+            writes.add(value);
+            if (value.startsWith('refresh-client ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+                ),
+              );
+            } else if (value.startsWith('list-windows ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 2 1 0\n$windowLine\n%end 2 1 0\n'),
+                ),
+              );
+            }
+          },
+        );
+        var executeCalls = 0;
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          executeCalls += 1;
+          if (executeCalls == 1) {
+            return _buildOpenExecSession(
+              stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}',
+            );
+          }
+          if (executeCalls == 2) {
+            return controlSession;
+          }
+          if (executeCalls == 3) {
+            return Future<SSHSession>.error(
+              SSHChannelOpenError(2, 'open failed'),
+            );
+          }
+          throw StateError('Unexpected SSH exec call $executeCalls');
+        });
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          service.clearCache(72);
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(() => controlSession.write(any()));
+        await Future<void>.delayed(Duration.zero);
+
+        await expectLater(
+          service.hasSessionOrThrow(session, 'main'),
+          throwsA(isA<SSHChannelOpenError>()),
+        );
+        expect(TmuxService.hasExecChannelBackoffEntry(72), isTrue);
+
+        final windows = await service.listWindows(session, 'main');
+
+        expect(windows, hasLength(1));
+        expect(windows.single.name, 'fresh');
+        expect(windows.single.id, '@9');
+        expect(
+          writes,
+          contains(
+            predicate<String>((value) => value.startsWith('list-windows ')),
+          ),
+        );
+        expect(executeCalls, 3);
+      },
+    );
+
+    test(
       'selectWindow completes when stdout stays open after the done marker',
       () async {
         final client = _MockSshClient();

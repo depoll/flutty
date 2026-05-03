@@ -27,5 +27,5 @@ dart format --output=none --set-exit-if-changed -- "${staged_dart_files[@]}"
 echo 'Running analyzer on staged Dart files...'
 flutter analyze --fatal-warnings --fatal-infos --no-pub -- "${staged_dart_files[@]}"
 
-echo 'Skipping tests in pre-commit; full checks run in pre-push.'
+echo 'Skipping tests in pre-commit; run targeted tests for changed behavior before pushing.'
 echo 'Pre-commit checks passed!'

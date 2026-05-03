@@ -642,6 +642,8 @@ final _terminalStandalonePathMetadataPattern = RegExp(
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
+const _terminalPathVerificationChannelBackoff = Duration(seconds: 10);
+const _terminalPathVerificationBatchDelay = Duration(milliseconds: 50);
 
 typedef _TerminalPathMatch = ({
   String path,
@@ -2233,6 +2235,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<SftpClient?>? _terminalPathVerificationSftpFuture;
   SftpClient? _terminalPathVerificationSftp;
   String? _terminalPathVerificationHomeDirectory;
+  DateTime? _terminalPathVerificationBackoffUntil;
+  final Map<String, String> _pendingTerminalPathVerifications = {};
+  bool _isTerminalPathVerificationBatchScheduled = false;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   late final ProviderSubscription<bool> _terminalWakeLockSubscription;
@@ -5277,6 +5282,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool forceVisibleTmux = false,
   }) async {
     final tmux = ref.read(tmuxServiceProvider);
+    if (!forceVisibleTmux && tmux.isExecChannelCoolingDown(session)) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'reattach_foreground_check_deferred',
+        fields: {'connectionId': session.connectionId},
+      );
+      return;
+    }
     var hasForegroundClient = false;
     try {
       hasForegroundClient = await tmux.hasForegroundClientOrThrow(
@@ -5810,6 +5823,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       connectionState,
       isConnecting: _isConnecting,
     );
+    final isConnectedThroughJumpHost =
+        connectionState == SshConnectionState.connected &&
+        _connectionId != null &&
+        ref
+                .read(activeSessionsProvider.notifier)
+                .getSession(_connectionId!)
+                ?.config
+                .jumpHost !=
+            null;
     final connectionIdentity = formatTerminalConnectionIdentity(
       username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
       hostname: _redactStoreScreenshotIdentities
@@ -5861,6 +5883,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     state: connectionState,
                     isConnecting: _isConnecting,
                   ),
+                  if (isConnectedThroughJumpHost) ...[
+                    const SizedBox(width: 4),
+                    const _TerminalJumpHostIndicator(),
+                  ],
                 ],
               ),
               if (titleSubtitle.isNotEmpty)
@@ -8338,6 +8364,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _verifiedTerminalPathCache.clear();
     _verifiedTerminalPathCacheOrder.clear();
     _verifyingTerminalPathCacheKeys.clear();
+    _pendingTerminalPathVerifications.clear();
   }
 
   void _cacheVerifiedTerminalPath(
@@ -8366,11 +8393,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalPathVerificationSftpFuture = null;
     _terminalPathVerificationSession = null;
     _terminalPathVerificationHomeDirectory = null;
+    _terminalPathVerificationBackoffUntil = null;
+    _pendingTerminalPathVerifications.clear();
+    _verifyingTerminalPathCacheKeys.clear();
   }
 
   Future<SftpClient?> _resolveTerminalPathVerificationSftp(
-    SshSession session,
-  ) async {
+    SshSession session, {
+    required bool allowBackoff,
+  }) async {
     if (!identical(_terminalPathVerificationSession, session)) {
       _disposeTerminalPathVerificationSftp();
       _terminalPathVerificationSession = session;
@@ -8386,6 +8417,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return inFlight;
     }
 
+    if (allowBackoff && _isTerminalPathVerificationBackedOff()) {
+      DiagnosticsLogService.instance.debug(
+        'terminal',
+        'sftp_path_resolution_deferred',
+        fields: {'connectionId': session.connectionId},
+      );
+      return null;
+    }
+
     final future = session
         .sftp()
         .timeout(_terminalPathVerificationTimeout)
@@ -8394,17 +8434,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp.close();
             return null;
           }
+          _terminalPathVerificationBackoffUntil = null;
           _terminalPathVerificationSftp = sftp;
           return sftp;
         });
     _terminalPathVerificationSftpFuture = future;
     try {
       return await future;
+    } on Object catch (error) {
+      _recordTerminalPathVerificationBackoff(session, error);
+      rethrow;
     } finally {
       if (identical(_terminalPathVerificationSftpFuture, future)) {
         _terminalPathVerificationSftpFuture = null;
       }
     }
+  }
+
+  bool _isTerminalPathVerificationBackedOff() =>
+      _terminalPathVerificationBackoffRemaining() != null;
+
+  Duration? _terminalPathVerificationBackoffRemaining() {
+    final backoffUntil = _terminalPathVerificationBackoffUntil;
+    if (backoffUntil == null) {
+      return null;
+    }
+    final remaining = backoffUntil.difference(DateTime.now());
+    if (remaining > Duration.zero) {
+      return remaining;
+    }
+    _terminalPathVerificationBackoffUntil = null;
+    return null;
+  }
+
+  void _recordTerminalPathVerificationBackoff(
+    SshSession session,
+    Object error,
+  ) {
+    if (error is! SSHChannelOpenError && error is! TimeoutException) {
+      return;
+    }
+    _terminalPathVerificationBackoffUntil = DateTime.now().add(
+      _terminalPathVerificationChannelBackoff,
+    );
+    DiagnosticsLogService.instance.debug(
+      'terminal',
+      'sftp_path_resolution_backoff',
+      fields: {
+        'connectionId': session.connectionId,
+        'delayMs': _terminalPathVerificationChannelBackoff.inMilliseconds,
+        'errorType': error.runtimeType.toString(),
+      },
+    );
   }
 
   Future<String?> _resolveTerminalPathVerificationHomeDirectory(
@@ -8460,23 +8541,186 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _pendingTerminalPathVerifications[cacheKey] = terminalPath;
     _verifyingTerminalPathCacheKeys.add(cacheKey);
+    _scheduleTerminalPathVerificationBatch();
+  }
+
+  void _scheduleTerminalPathVerificationBatch([
+    Duration delay = _terminalPathVerificationBatchDelay,
+  ]) {
+    if (_isTerminalPathVerificationBatchScheduled) {
+      return;
+    }
+    _isTerminalPathVerificationBatchScheduled = true;
     unawaited(() async {
+      Duration? nextDelay;
       try {
-        final verifiedPath = await _resolveVerifiedTerminalFilePath(
-          terminalPath,
-          showErrors: false,
-        );
-        if (!mounted || verifiedPath == null) {
+        await Future<void>.delayed(delay);
+        if (!mounted) {
+          _pendingTerminalPathVerifications.clear();
+          _verifyingTerminalPathCacheKeys.clear();
           return;
         }
-        setState(() {
-          _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
-        });
+        nextDelay = await _verifyPendingTerminalFilePaths();
       } finally {
-        _verifyingTerminalPathCacheKeys.remove(cacheKey);
+        _isTerminalPathVerificationBatchScheduled = false;
+        if (mounted && _pendingTerminalPathVerifications.isNotEmpty) {
+          _scheduleTerminalPathVerificationBatch(
+            nextDelay ?? _terminalPathVerificationBatchDelay,
+          );
+        }
       }
     }());
+  }
+
+  Future<Duration?> _verifyPendingTerminalFilePaths() async {
+    _syncVerifiedTerminalPathCacheScope();
+    if (_pendingTerminalPathVerifications.isEmpty) {
+      return null;
+    }
+
+    final backoffRemaining = _terminalPathVerificationBackoffRemaining();
+    if (backoffRemaining != null) {
+      DiagnosticsLogService.instance.debug(
+        'terminal',
+        'sftp_path_resolution_batch_deferred',
+        fields: {'pendingCount': _pendingTerminalPathVerifications.length},
+      );
+      return backoffRemaining;
+    }
+
+    final session = _activeSession();
+    if (session == null) {
+      _pendingTerminalPathVerifications.clear();
+      _verifyingTerminalPathCacheKeys.clear();
+      return null;
+    }
+
+    final batch = Map<String, String>.from(_pendingTerminalPathVerifications);
+    _pendingTerminalPathVerifications.clear();
+    var verifiedAny = false;
+    try {
+      final sftp = await _resolveTerminalPathVerificationSftp(
+        session,
+        allowBackoff: true,
+      );
+      if (sftp == null) {
+        return null;
+      }
+
+      for (final entry in batch.entries) {
+        if (_verifiedTerminalPathCache.containsKey(entry.key)) {
+          continue;
+        }
+        try {
+          final verifiedPath = await _resolveVerifiedTerminalFilePathWithSftp(
+            sftp,
+            entry.value,
+            showErrors: false,
+          );
+          verifiedAny = verifiedAny || verifiedPath != null;
+        } on TimeoutException {
+          // Background path verification is opportunistic.
+        } on SftpStatusError {
+          // Background path verification is opportunistic.
+        } on Object catch (error, stackTrace) {
+          DiagnosticsLogService.instance.warning(
+            'terminal',
+            'sftp_path_resolution_failed',
+            fields: {'errorType': error.runtimeType.toString()},
+          );
+          if (kDebugMode) {
+            debugPrint('Failed to resolve terminal file path: $error');
+            debugPrint('$stackTrace');
+          }
+        }
+      }
+    } on Object catch (error, stackTrace) {
+      final backoffRemaining = _terminalPathVerificationBackoffRemaining();
+      if (backoffRemaining != null) {
+        _pendingTerminalPathVerifications.addAll(batch);
+        return backoffRemaining;
+      }
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'sftp_path_resolution_failed',
+        fields: {'errorType': error.runtimeType.toString()},
+      );
+      if (kDebugMode) {
+        debugPrint('Failed to resolve terminal file paths: $error');
+        debugPrint('$stackTrace');
+      }
+    } finally {
+      for (final cacheKey in batch.keys) {
+        if (!_pendingTerminalPathVerifications.containsKey(cacheKey)) {
+          _verifyingTerminalPathCacheKeys.remove(cacheKey);
+        }
+      }
+    }
+
+    if (verifiedAny && mounted) {
+      setState(() {
+        _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
+      });
+    }
+    return null;
+  }
+
+  Future<String?> _resolveVerifiedTerminalFilePathWithSftp(
+    SftpClient sftp,
+    String terminalPath, {
+    required bool showErrors,
+  }) async {
+    _syncVerifiedTerminalPathCacheScope();
+    final cacheKey = _terminalPathCacheKey(terminalPath);
+    final cachedPath = _verifiedTerminalPathCache[cacheKey];
+    if (cachedPath != null) {
+      return cachedPath.resolvedPath;
+    }
+
+    final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
+    final verificationCandidates =
+        requiresTerminalFilePathVerification(terminalPath)
+        ? resolveTerminalFilePathVerificationCandidates(terminalPath)
+        : <String>[terminalPath];
+    for (final candidate in verificationCandidates) {
+      final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
+        sftp,
+        candidate,
+      );
+      final resolvedPath = resolveRequestedSftpPath(
+        candidate,
+        workingDirectory: _workingDirectoryPath,
+        homeDirectory: homeDirectory,
+      );
+      if (resolvedPath == null) {
+        continue;
+      }
+
+      try {
+        await sftp.stat(resolvedPath).timeout(_terminalPathVerificationTimeout);
+      } on SftpStatusError catch (error) {
+        if (error.code == SftpStatusCode.noSuchFile) {
+          continue;
+        }
+        rethrow;
+      }
+
+      _cacheVerifiedTerminalPath(
+        cacheKey,
+        terminalPath: candidate,
+        resolvedPath: resolvedPath,
+      );
+      return resolvedPath;
+    }
+
+    if (showErrors && isExplicitPath) {
+      _showTerminalLinkMessage(
+        'Could not open "$terminalPath" in SFTP: path does not exist',
+      );
+    }
+    return null;
   }
 
   Future<String?> _resolveVerifiedTerminalFilePath(
@@ -8500,54 +8744,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     try {
-      final sftp = await _resolveTerminalPathVerificationSftp(session);
+      final sftp = await _resolveTerminalPathVerificationSftp(
+        session,
+        allowBackoff: !showErrors,
+      );
       if (sftp == null) {
         return null;
       }
-      final verificationCandidates =
-          requiresTerminalFilePathVerification(terminalPath)
-          ? resolveTerminalFilePathVerificationCandidates(terminalPath)
-          : <String>[terminalPath];
-      for (final candidate in verificationCandidates) {
-        final homeDirectory =
-            await _resolveTerminalPathVerificationHomeDirectory(
-              sftp,
-              candidate,
-            );
-        final resolvedPath = resolveRequestedSftpPath(
-          candidate,
-          workingDirectory: _workingDirectoryPath,
-          homeDirectory: homeDirectory,
-        );
-        if (resolvedPath == null) {
-          continue;
-        }
-
-        try {
-          await sftp
-              .stat(resolvedPath)
-              .timeout(_terminalPathVerificationTimeout);
-        } on SftpStatusError catch (error) {
-          if (error.code == SftpStatusCode.noSuchFile) {
-            continue;
-          }
-          rethrow;
-        }
-
-        _cacheVerifiedTerminalPath(
-          cacheKey,
-          terminalPath: candidate,
-          resolvedPath: resolvedPath,
-        );
-        return resolvedPath;
-      }
-
-      if (showErrors && isExplicitPath) {
-        _showTerminalLinkMessage(
-          'Could not open "$terminalPath" in SFTP: path does not exist',
-        );
-      }
-      return null;
+      return await _resolveVerifiedTerminalFilePathWithSftp(
+        sftp,
+        terminalPath,
+        showErrors: showErrors,
+      );
     } on TimeoutException {
       if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
@@ -9481,6 +9689,24 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
         message: label,
         excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
+      ),
+    );
+  }
+}
+
+class _TerminalJumpHostIndicator extends StatelessWidget {
+  const _TerminalJumpHostIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      label: 'Connected through jump host',
+      child: Tooltip(
+        message: 'Connected through jump host',
+        excludeFromSemantics: true,
+        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
       ),
     );
   }

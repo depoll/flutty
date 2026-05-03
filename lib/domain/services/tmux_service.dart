@@ -337,7 +337,17 @@ class TmuxService {
         },
       );
       if (age >= _installedAgentToolsFreshTtl) {
-        unawaited(_refreshInstalledAgentTools(session));
+        if (_isExecChannelCoolingDown(session)) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.agent',
+            'tool_detection_refresh_deferred',
+            fields: {'connectionId': session.connectionId},
+          );
+        } else {
+          unawaited(
+            _refreshInstalledAgentTools(session, priority: SshExecPriority.low),
+          );
+        }
       }
       return cached.tools;
     }
@@ -641,7 +651,13 @@ class TmuxService {
       sessionName: sessionName,
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
-    if (_isExecChannelCoolingDown(session)) {
+    if (_isExecChannelCoolingDown(session) &&
+        _controlCommandObserver(
+              session,
+              sessionName,
+              extraFlags: extraFlags,
+            )?.canRunCommands !=
+            true) {
       final cachedWindows = _windowSnapshotCache[key];
       if (cachedWindows != null && cachedWindows.isNotEmpty) {
         DiagnosticsLogService.instance.warning(
@@ -689,16 +705,14 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     final quotedName = _shellQuote(sessionName);
-    const sep = r'${SEP}';
     try {
-      final output = await _exec(
+      final output = await _execTmuxCommand(
         session,
-        r'SEP=$(printf "\037"); '
-        '${_tmuxCommand('list-windows -t $quotedName -F ', extraFlags: extraFlags, forceUtf8: true)}'
-        '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
-        '#{pane_current_command}$sep#{pane_current_path}$sep'
-        '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
-        '#{pane_start_command}$sep#{@flutty_agent_tool}$sep#{window_id}"',
+        sessionName,
+        'list-windows -t $quotedName -F '
+        '${_shellQuote(_tmuxWindowSubscriptionFormat)}',
+        extraFlags: extraFlags,
+        forceUtf8: true,
       );
       final windows = List<TmuxWindow>.unmodifiable(
         _parseLines(output, TmuxWindow.fromTmuxFormat),
@@ -1139,6 +1153,10 @@ class TmuxService {
     _execChannelBackoffs.remove(session.connectionId);
     return false;
   }
+
+  /// Returns whether optional SSH exec-channel work should be deferred.
+  bool isExecChannelCoolingDown(SshSession session) =>
+      _isExecChannelCoolingDown(session);
 
   void _recordExecChannelFailure(int connectionId, Object error) {
     final failureCount =
@@ -2565,6 +2583,8 @@ class _TmuxWindowChangeObserver {
       'flutty-${session.connectionId}-${sessionName.hashCode.abs()}';
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  bool get canRunCommands => !_disposed && _controlSession != null;
 
   Future<String> runCommand(
     String command, {
