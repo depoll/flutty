@@ -1024,80 +1024,74 @@ void main() {
     });
   });
 
-  group('resolveTerminalPathUnderlineRect', () {
-    test('places the underline at the bottom of the rendered row', () {
+  group('resolveTerminalPathInlineUnderline', () {
+    test('returns the requested cell range', () {
       expect(
-        resolveTerminalPathUnderlineRect(
-          lineTopLeft: const Offset(24, 18),
-          lineEndOffset: const Offset(104, 18),
-          lineHeight: 20,
-          viewportHeight: 300,
+        resolveTerminalPathInlineUnderline(
+          row: 12,
+          startColumn: 4,
+          endColumn: 18,
+          rowCount: 100,
+          columnCount: 80,
         ),
-        const Rect.fromLTWH(24, 35.9, 80, 1.6),
+        (row: 12, startColumn: 4, endColumn: 18),
       );
     });
 
-    test(
-      'uses the rendered row height when it is taller than the line height',
-      () {
-        expect(
-          resolveTerminalPathUnderlineRect(
-            lineTopLeft: const Offset(24, 18),
-            lineEndOffset: const Offset(104, 18),
-            lineHeight: 20,
-            rowHeight: 24,
-            viewportHeight: 300,
-          ),
-          const Rect.fromLTWH(24, 39.58, 80, 1.92),
-        );
-      },
-    );
-
-    test('prefers measured text height when available', () {
+    test('clamps columns to the terminal width', () {
       expect(
-        resolveTerminalPathUnderlineRect(
-          lineTopLeft: const Offset(24, 18),
-          lineEndOffset: const Offset(98, 18),
-          lineHeight: 20,
-          rowHeight: 24,
-          textHeight: 16,
-          viewportHeight: 300,
+        resolveTerminalPathInlineUnderline(
+          row: 2,
+          startColumn: -4,
+          endColumn: 100,
+          rowCount: 20,
+          columnCount: 80,
         ),
-        const Rect.fromLTWH(24, 34.25, 74, 1.28),
+        (row: 2, startColumn: 0, endColumn: 79),
       );
     });
 
-    test('scales underline thickness down for smaller terminal text', () {
+    test('returns null for invalid rows or empty terminal width', () {
       expect(
-        resolveTerminalPathUnderlineRect(
-          lineTopLeft: const Offset(24, 18),
-          lineEndOffset: const Offset(104, 18),
-          lineHeight: 12,
-          viewportHeight: 300,
+        resolveTerminalPathInlineUnderline(
+          row: -1,
+          startColumn: 0,
+          endColumn: 4,
+          rowCount: 20,
+          columnCount: 80,
         ),
-        const Rect.fromLTWH(24, 28.54, 80, 0.96),
+        isNull,
+      );
+      expect(
+        resolveTerminalPathInlineUnderline(
+          row: 20,
+          startColumn: 0,
+          endColumn: 4,
+          rowCount: 20,
+          columnCount: 80,
+        ),
+        isNull,
+      );
+      expect(
+        resolveTerminalPathInlineUnderline(
+          row: 0,
+          startColumn: 0,
+          endColumn: 4,
+          rowCount: 20,
+          columnCount: 0,
+        ),
+        isNull,
       );
     });
 
-    test('scales underline thickness up for larger terminal text', () {
+    test('returns null when the normalized range is empty', () {
       expect(
-        resolveTerminalPathUnderlineRect(
-          lineTopLeft: const Offset(24, 18),
-          lineEndOffset: const Offset(104, 18),
-          lineHeight: 32,
-          viewportHeight: 300,
-        ),
-        const Rect.fromLTWH(24, 47, 80, 2.5),
-      );
-    });
-
-    test('returns null when the underline would have no visible width', () {
-      expect(
-        resolveTerminalPathUnderlineRect(
-          lineTopLeft: const Offset(24, 18),
-          lineEndOffset: const Offset(24, 18),
-          lineHeight: 20,
-          viewportHeight: 300,
+        resolveTerminalPathInlineUnderline(
+          row: 0,
+          startColumn: 8,
+          endColumn: 4,
+          rowCount: 20,
+          columnCount: 80,
         ),
         isNull,
       );
