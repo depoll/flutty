@@ -14,6 +14,10 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(Uint8List(0));
+  });
+
   group('control mode command builders', () {
     test(
       'attach command starts tmux in control mode with safe client flags',
@@ -21,7 +25,7 @@ void main() {
         expect(
           buildTmuxControlModeAttachCommand('dev\'s session'),
           'tmux -CC attach-session -f '
-          'read-only,ignore-size,no-output,wait-exit '
+          'ignore-size,no-output,wait-exit '
           "-t 'dev'\"'\"'s session'",
         );
       },
@@ -36,7 +40,7 @@ void main() {
             extraFlags: '-x 160 -S /tmp/tmux-socket -n editor',
           ),
           "tmux -S '/tmp/tmux-socket' -CC attach-session -f "
-          'read-only,ignore-size,no-output,wait-exit '
+          'ignore-size,no-output,wait-exit '
           "-t 'main'",
         );
       },
@@ -1040,7 +1044,7 @@ void main() {
           command,
           contains(
             "/usr/bin/tmux -u -S '/tmp/socket' -CC attach-session -f "
-            'read-only,ignore-size,no-output,wait-exit ',
+            'ignore-size,no-output,wait-exit ',
           ),
         );
         expect(command, isNot(contains('set status off')));
@@ -1048,6 +1052,131 @@ void main() {
         await subscription.cancel();
       },
     );
+
+    test('selectWindow uses an active control-mode watcher', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 70);
+      const service = TmuxService();
+      final stdoutController = StreamController<Uint8List>();
+      final writes = <String>[];
+      final controlSession = _buildInteractiveExecSession(
+        stdoutController: stdoutController,
+        onWrite: (value) {
+          writes.add(value);
+          if (value.startsWith('refresh-client ') ||
+              value.startsWith('select-window ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+              ),
+            );
+          }
+        },
+      );
+      final execSessions = Queue<SSHSession>.from([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        controlSession,
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final subscription = service
+          .watchWindowChanges(session, 'main')
+          .listen((_) {});
+      await untilCalled(() => controlSession.write(any()));
+
+      await service.selectWindow(session, 'main', 2);
+
+      expect(writes, contains("select-window -t 'main':2\n"));
+      verifyNever(
+        () => client.execute(
+          any(that: contains('select-window')),
+          pty: any(named: 'pty'),
+        ),
+      );
+
+      await subscription.cancel();
+      await stdoutController.close();
+    });
+
+    test('createWindow uses an active control-mode watcher', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 71);
+      const service = TmuxService();
+      final stdoutController = StreamController<Uint8List>();
+      final writes = <String>[];
+      final controlSession = _buildInteractiveExecSession(
+        stdoutController: stdoutController,
+        onWrite: (value) {
+          writes.add(value);
+          if (value.startsWith('refresh-client ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+              ),
+            );
+          } else if (value.startsWith('new-window ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n4\n%end 1 1 0\n'),
+              ),
+            );
+          } else if (value.startsWith('set-option ') ||
+              value.startsWith('send-keys ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+              ),
+            );
+          }
+        },
+      );
+      final execSessions = Queue<SSHSession>.from([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        controlSession,
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final subscription = service
+          .watchWindowChanges(session, 'main')
+          .listen((_) {});
+      await untilCalled(() => controlSession.write(any()));
+
+      await service.createWindow(
+        session,
+        'main',
+        command: 'gemini --yolo',
+        name: 'gemini',
+        workingDirectory: '/tmp/project',
+      );
+
+      expect(
+        writes,
+        contains(
+          "new-window -P -F '#{window_index}' -t 'main' "
+          "-c '/tmp/project' -n 'gemini'\n",
+        ),
+      );
+      expect(
+        writes,
+        contains("set-option -w -t 'main:4' @flutty_agent_tool 'gemini'\n"),
+      );
+      expect(writes, contains("send-keys -t 'main:4' 'gemini --yolo' Enter\n"));
+      verifyNever(
+        () => client.execute(
+          any(that: contains('new-window')),
+          pty: any(named: 'pty'),
+        ),
+      );
+
+      await subscription.cancel();
+      await stdoutController.close();
+    });
 
     test(
       'selectWindow completes when stdout stays open after the done marker',
@@ -1566,6 +1695,8 @@ Stream<Uint8List> _closedUtf8Stream(String value) =>
       value.isEmpty ? const [] : [Uint8List.fromList(utf8.encode(value))],
     );
 
+Uint8List _utf8Bytes(String value) => Uint8List.fromList(utf8.encode(value));
+
 void _ignoreInvocation(Invocation _) {}
 
 SSHSession _buildOpenExecSession({
@@ -1588,5 +1719,24 @@ SSHSession _buildClosedExecSession({String stdout = '', String stderr = ''}) {
   when(() => session.stderr).thenAnswer((_) => _closedUtf8Stream(stderr));
   when(() => session.done).thenAnswer((_) => Future<void>.value());
   when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
+
+SSHSession _buildInteractiveExecSession({
+  required StreamController<Uint8List> stdoutController,
+  void Function(String)? onWrite,
+  String stderr = '',
+  Future<void>? done,
+}) {
+  final session = _MockExecSession();
+  final doneFuture = done ?? Completer<void>().future;
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
+  when(() => session.done).thenAnswer((_) => doneFuture);
+  when(session.close).thenAnswer(_ignoreInvocation);
+  when(() => session.write(any())).thenAnswer((invocation) {
+    final data = invocation.positionalArguments.single as List<int>;
+    onWrite?.call(utf8.decode(data));
+  });
   return session;
 }
