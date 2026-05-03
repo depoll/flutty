@@ -1216,8 +1216,34 @@ Future<void> _expectTextFieldComparisonScenario(
 TextInputClient _terminalTextInputClient(WidgetTester tester) =>
     tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient;
 
+Map<dynamic, dynamic> _latestTextInputSetClientConfiguration(
+  WidgetTester tester,
+) {
+  final call = tester.testTextInput.log.lastWhere(
+    (call) => call.method == 'TextInput.setClient',
+  );
+  final arguments = call.arguments! as List<dynamic>;
+  return arguments[1]! as Map<dynamic, dynamic>;
+}
+
 void main() {
   group('TerminalTextInputHandler', () {
+    testWidgets(
+      'uses a normal text IME configuration for keyboard voice input',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+        final configuration = _latestTextInputSetClientConfiguration(tester);
+        final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
+
+        expect(inputType['name'], 'TextInputType.text');
+        expect(configuration['autocorrect'], isTrue);
+        expect(configuration['enableSuggestions'], isTrue);
+        expect(configuration['enableIMEPersonalizedLearning'], isTrue);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
     testWidgets('preserves swipe typing context across short pauses', (
       tester,
     ) async {
