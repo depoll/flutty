@@ -2338,6 +2338,78 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
     }
   }
 
+  Future<void> _deleteFolder(
+    BuildContext context,
+    SnippetFolder folder,
+    int snippetCount,
+  ) async {
+    final snippetLabel = snippetCount == 1
+        ? '1 snippet'
+        : '$snippetCount snippets';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete "${folder.name}"?'),
+        content: Text(
+          snippetCount == 0
+              ? 'This folder will be removed.'
+              : '$snippetLabel will move to No folder.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if ((confirmed ?? false) == false || !context.mounted) {
+      return;
+    }
+
+    try {
+      final deleted = await ref
+          .read(snippetRepositoryProvider)
+          .deleteFolder(folder.id);
+      if (!context.mounted) {
+        return;
+      }
+      setState(() {
+        if (_selectedFolderId == folder.id) {
+          _selectedFolderId = null;
+          _showsUnfiledSnippets = snippetCount > 0;
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            deleted == 0
+                ? 'Folder "${folder.name}" was already deleted.'
+                : 'Deleted folder "${folder.name}"',
+          ),
+        ),
+      );
+    } on Exception catch (e, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          stack: stackTrace,
+          library: 'snippets',
+          context: ErrorDescription('while deleting a snippet folder'),
+        ),
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not delete folder. Try again.')),
+        );
+      }
+    }
+  }
+
   Widget _buildSnippetsBody(
     BuildContext context,
     List<Snippet> snippets,
@@ -2445,13 +2517,25 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
           ],
           for (final folder in folders) ...[
             const SizedBox(width: 8),
-            FilterChip(
-              label: Text('${folder.name} (${folderCounts[folder.id] ?? 0})'),
-              selected: !_showsUnfiledSnippets && selectedFolderId == folder.id,
-              onSelected: (_) => setState(() {
-                _selectedFolderId = folder.id;
-                _showsUnfiledSnippets = false;
-              }),
+            Tooltip(
+              message: 'Long press to delete folder',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onLongPress: () => unawaited(
+                  _deleteFolder(context, folder, folderCounts[folder.id] ?? 0),
+                ),
+                child: FilterChip(
+                  label: Text(
+                    '${folder.name} (${folderCounts[folder.id] ?? 0})',
+                  ),
+                  selected:
+                      !_showsUnfiledSnippets && selectedFolderId == folder.id,
+                  onSelected: (_) => setState(() {
+                    _selectedFolderId = folder.id;
+                    _showsUnfiledSnippets = false;
+                  }),
+                ),
+              ),
             ),
           ],
         ],

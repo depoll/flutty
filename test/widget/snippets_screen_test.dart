@@ -175,6 +175,57 @@ void main() {
       verify(() => snippetRepository.insertFolder(any())).called(1);
     });
 
+    testWidgets('long-pressing a folder chip deletes the folder', (
+      tester,
+    ) async {
+      final snippetRepository = _MockSnippetRepository();
+      final snippetsController = StreamController<List<Snippet>>();
+      final foldersController = StreamController<List<SnippetFolder>>();
+      addTearDown(snippetsController.close);
+      addTearDown(foldersController.close);
+      when(
+        snippetRepository.watchAll,
+      ).thenAnswer((_) => snippetsController.stream);
+      when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => foldersController.stream);
+      when(() => snippetRepository.deleteFolder(10)).thenAnswer((_) async {
+        foldersController.add(const <SnippetFolder>[]);
+        snippetsController.add([
+          _buildSnippet(id: 1, name: 'Restart API', sortOrder: 0),
+        ]);
+        return 1;
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: const MaterialApp(home: SnippetsScreen()),
+        ),
+      );
+      snippetsController.add([
+        _buildSnippet(id: 1, name: 'Restart API', sortOrder: 0, folderId: 10),
+      ]);
+      foldersController.add([_buildFolder(id: 10, name: 'Deploy')]);
+      await tester.pumpAndSettle();
+
+      await tester.longPress(find.text('Deploy (1)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Delete "Deploy"?'), findsOneWidget);
+      expect(find.text('1 snippet will move to No folder.'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pumpAndSettle();
+
+      verify(() => snippetRepository.deleteFolder(10)).called(1);
+      expect(find.text('Deploy (1)'), findsNothing);
+      expect(find.text('No folder (1)'), findsOneWidget);
+      expect(find.text('Deleted folder "Deploy"'), findsOneWidget);
+    });
+
     testWidgets('full editor updates variable preview as command changes', (
       tester,
     ) async {

@@ -414,6 +414,8 @@ void main() {
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump();
 
+      expect(find.byIcon(Icons.chevron_left_rounded), findsOneWidget);
+
       await gesture.moveTo(tester.getCenter(find.text('Snippets')));
       await tester.pump();
 
@@ -472,11 +474,23 @@ void main() {
       await tester.pump();
 
       expect(find.text('Deploy'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Deploy')).dx,
+        lessThan(tester.getTopLeft(find.text('Snippets')).dx),
+      );
 
       await gesture.moveTo(tester.getCenter(find.text('Deploy')));
       await tester.pump();
 
       expect(find.text('Restart API'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Restart API')).dx,
+        lessThan(tester.getTopLeft(find.text('Snippets')).dx),
+      );
+      expect(
+        tester.getTopLeft(find.text('Restart API')).dy,
+        greaterThan(tester.getTopLeft(find.text('Deploy')).dy),
+      );
 
       await gesture.moveTo(tester.getCenter(find.text('Restart API')));
       await tester.pump();

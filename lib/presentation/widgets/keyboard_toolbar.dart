@@ -625,19 +625,10 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       return const SizedBox.shrink();
     }
 
-    final snippetEntries = _snippetMenuEntries;
-    final highlightedFolder = _highlightedSnippetFolder;
-    final folderSnippets = highlightedFolder == null
-        ? const <KeyboardToolbarSnippet>[]
-        : _snippetsInFolder(highlightedFolder.id);
+    final snippetEntries = _expandedSnippetMenuEntries;
     final showSnippetMenu =
         _highlightedPasteAction == _PasteToolbarAction.snippets &&
-        snippetEntries.isNotEmpty;
-    final showFolderMenu =
-        showSnippetMenu &&
-        highlightedFolder != null &&
-        folderSnippets.isNotEmpty &&
-        layout.folderMenuRect != null;
+        _snippetMenuEntries.isNotEmpty;
 
     return Stack(
       children: [
@@ -648,6 +639,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
             snippetsEnabled: _areSnippetsEnabled,
             imageEnabled: widget.onPasteImageRequested != null,
             filesEnabled: widget.onPasteFilesRequested != null,
+            snippetsTrailingIcon: layout.snippetMenuOpensLeft
+                ? Icons.chevron_left_rounded
+                : Icons.chevron_right_rounded,
           ),
         ),
         if (showSnippetMenu && layout.snippetMenuRect != null)
@@ -656,14 +650,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
             child: _SnippetCascadeMenu(
               entries: snippetEntries,
               highlightedFolder: _highlightedSnippetFolder,
-              highlightedSnippet: _highlightedSnippet,
-            ),
-          ),
-        if (showFolderMenu)
-          Positioned.fromRect(
-            rect: layout.folderMenuRect!,
-            child: _SnippetFolderCascadeMenu(
-              snippets: folderSnippets,
               highlightedSnippet: _highlightedSnippet,
             ),
           ),
@@ -731,37 +717,17 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     final globalSnippetRect = layout.snippetMenuRect == null
         ? null
         : _localRectToGlobal(overlayBox, layout.snippetMenuRect!);
-    final globalFolderRect = layout.folderMenuRect == null
-        ? null
-        : _localRectToGlobal(overlayBox, layout.folderMenuRect!);
-
-    if (globalFolderRect != null && globalFolderRect.contains(globalPosition)) {
-      final folder = _highlightedSnippetFolder;
-      if (folder == null) {
-        return null;
-      }
-      final snippets = _snippetsInFolder(folder.id);
-      final index =
-          (globalPosition.dy - globalFolderRect.top) ~/ _pasteOptionHeight;
-      if (index >= 0 && index < snippets.length) {
-        return _PasteMenuHit(
-          action: _PasteToolbarAction.snippets,
-          folder: folder,
-          snippet: snippets[index],
-        );
-      }
-    }
 
     if (globalSnippetRect != null &&
         globalSnippetRect.contains(globalPosition)) {
-      final entries = _snippetMenuEntries;
+      final entries = _expandedSnippetMenuEntries;
       final index =
           (globalPosition.dy - globalSnippetRect.top) ~/ _pasteOptionHeight;
       if (index >= 0 && index < entries.length) {
         final entry = entries[index];
         return _PasteMenuHit(
           action: _PasteToolbarAction.snippets,
-          folder: entry.folder,
+          folder: entry.folder ?? entry.parentFolder,
           snippet: entry.snippet,
         );
       }
@@ -817,9 +783,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       _pasteOptionsWidth,
       _pasteOptionsMenuHeight,
     );
-    final entries = _snippetMenuEntries;
+    final entries = _expandedSnippetMenuEntries;
     Rect? snippetMenuRect;
-    Rect? folderMenuRect;
     var snippetMenuOpensLeft = true;
     if (entries.isNotEmpty) {
       final snippetMenuHeight = entries.length * _pasteOptionHeight;
@@ -852,46 +817,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         _pasteSnippetMenuWidth,
         snippetMenuHeight,
       );
-
-      final folder = _highlightedSnippetFolder;
-      if (folder != null) {
-        final folderSnippets = _snippetsInFolder(folder.id);
-        final folderIndex = entries.indexWhere(
-          (entry) => entry.folder?.id == folder.id,
-        );
-        if (folderIndex >= 0 && folderSnippets.isNotEmpty) {
-          final folderMenuHeight = folderSnippets.length * _pasteOptionHeight;
-          final folderTop =
-              snippetMenuRect.top + folderIndex * _pasteOptionHeight;
-          final folderLeft = snippetMenuOpensLeft
-              ? snippetMenuRect.right + _pasteOptionsGap
-              : snippetMenuRect.left -
-                    _pasteOptionsGap -
-                    _pasteSnippetMenuWidth;
-          folderMenuRect = Rect.fromLTWH(
-            _clampDouble(
-              folderLeft,
-              _pasteOptionsScreenMargin,
-              overlaySize.width -
-                  _pasteSnippetMenuWidth -
-                  _pasteOptionsScreenMargin,
-            ),
-            _clampDouble(
-              folderTop,
-              _pasteOptionsScreenMargin,
-              overlaySize.height - folderMenuHeight - _pasteOptionsScreenMargin,
-            ),
-            _pasteSnippetMenuWidth,
-            folderMenuHeight,
-          );
-        }
-      }
     }
 
     return _PasteMenuLayout(
       mainMenuRect: mainRect,
       snippetMenuRect: snippetMenuRect,
-      folderMenuRect: folderMenuRect,
+      snippetMenuOpensLeft: snippetMenuOpensLeft,
     );
   }
 
@@ -932,6 +863,27 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
           _SnippetMenuEntry.snippet(snippet),
     ];
     return entries;
+  }
+
+  List<_SnippetMenuEntry> get _expandedSnippetMenuEntries {
+    final entries = _snippetMenuEntries;
+    final folder = _highlightedSnippetFolder;
+    if (folder == null) {
+      return entries;
+    }
+
+    final expandedEntries = <_SnippetMenuEntry>[];
+    for (final entry in entries) {
+      expandedEntries.add(entry);
+      if (entry.folder?.id == folder.id) {
+        expandedEntries.addAll(
+          _snippetsInFolder(
+            folder.id,
+          ).map((snippet) => _SnippetMenuEntry.snippet(snippet, folder)),
+        );
+      }
+    }
+    return expandedEntries;
   }
 
   List<KeyboardToolbarSnippet> _snippetsInFolder(int folderId) => widget
@@ -1135,23 +1087,25 @@ class _PasteMenuLayout {
   const _PasteMenuLayout({
     required this.mainMenuRect,
     required this.snippetMenuRect,
-    required this.folderMenuRect,
+    required this.snippetMenuOpensLeft,
   });
 
   final Rect mainMenuRect;
   final Rect? snippetMenuRect;
-  final Rect? folderMenuRect;
+  final bool snippetMenuOpensLeft;
 }
 
 class _SnippetMenuEntry {
   const _SnippetMenuEntry.folder(KeyboardToolbarSnippetFolder this.folder)
-    : snippet = null;
+    : snippet = null,
+      parentFolder = null;
 
-  const _SnippetMenuEntry.snippet(KeyboardToolbarSnippet this.snippet)
+  const _SnippetMenuEntry.snippet(this.snippet, [this.parentFolder])
     : folder = null;
 
   final KeyboardToolbarSnippetFolder? folder;
   final KeyboardToolbarSnippet? snippet;
+  final KeyboardToolbarSnippetFolder? parentFolder;
 }
 
 double _clampDouble(double value, double min, double max) {
@@ -1165,12 +1119,14 @@ class _PasteOptionsMenu extends StatelessWidget {
     required this.snippetsEnabled,
     required this.imageEnabled,
     required this.filesEnabled,
+    required this.snippetsTrailingIcon,
   });
 
   final _PasteToolbarAction? highlightedAction;
   final bool snippetsEnabled;
   final bool imageEnabled;
   final bool filesEnabled;
+  final IconData snippetsTrailingIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -1188,7 +1144,7 @@ class _PasteOptionsMenu extends StatelessWidget {
             label: 'Snippets',
             enabled: snippetsEnabled,
             highlighted: highlightedAction == _PasteToolbarAction.snippets,
-            trailingIcon: Icons.chevron_right_rounded,
+            trailingIcon: snippetsTrailingIcon,
           ),
           Divider(height: 1, color: colorScheme.outlineVariant),
           _PasteOptionsMenuItem(
@@ -1231,7 +1187,7 @@ class _SnippetCascadeMenu extends StatelessWidget {
             label: folder.name,
             enabled: true,
             highlighted: highlightedFolder?.id == folder.id,
-            trailingIcon: Icons.chevron_right_rounded,
+            trailingIcon: Icons.expand_more_rounded,
           )
         else if (entry.snippet case final snippet?)
           _PasteOptionsMenuItem(
@@ -1239,30 +1195,8 @@ class _SnippetCascadeMenu extends StatelessWidget {
             label: snippet.name,
             enabled: true,
             highlighted: highlightedSnippet?.id == snippet.id,
+            leadingIndent: entry.parentFolder == null ? 0 : 18,
           ),
-    ],
-  );
-}
-
-class _SnippetFolderCascadeMenu extends StatelessWidget {
-  const _SnippetFolderCascadeMenu({
-    required this.snippets,
-    required this.highlightedSnippet,
-  });
-
-  final List<KeyboardToolbarSnippet> snippets;
-  final KeyboardToolbarSnippet? highlightedSnippet;
-
-  @override
-  Widget build(BuildContext context) => _CascadeMenuFrame(
-    children: [
-      for (final snippet in snippets)
-        _PasteOptionsMenuItem(
-          icon: Icons.code_rounded,
-          label: snippet.name,
-          enabled: true,
-          highlighted: highlightedSnippet?.id == snippet.id,
-        ),
     ],
   );
 }
@@ -1291,6 +1225,7 @@ class _PasteOptionsMenuItem extends StatelessWidget {
     required this.label,
     required this.enabled,
     required this.highlighted,
+    this.leadingIndent = 0,
     this.trailingIcon,
   });
 
@@ -1298,6 +1233,7 @@ class _PasteOptionsMenuItem extends StatelessWidget {
   final String label;
   final bool enabled;
   final bool highlighted;
+  final double leadingIndent;
   final IconData? trailingIcon;
 
   @override
@@ -1324,6 +1260,7 @@ class _PasteOptionsMenuItem extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
           children: [
+            if (leadingIndent > 0) SizedBox(width: leadingIndent),
             Icon(icon, size: 20, color: foregroundColor),
             const SizedBox(width: 12),
             Expanded(
