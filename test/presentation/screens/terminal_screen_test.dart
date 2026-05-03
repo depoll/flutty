@@ -986,6 +986,55 @@ void main() {
     );
 
     testWidgets(
+      'reasserts the current theme when reopening an existing active TUI',
+      (tester) async {
+        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        await pumpScreen(tester);
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'reasserts the current theme when an active TUI resumes from background',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'build-path sets session.terminalTheme on initial build',
       (tester) async {
         await pumpScreen(tester);
@@ -2875,7 +2924,7 @@ void main() {
     );
 
     testWidgets(
-      'prompt path underline tracks scroll without dropping a frame',
+      'prompt path underline stays inline while scrolling',
       (tester) async {
         await pumpScreen(tester);
 
@@ -2887,17 +2936,11 @@ void main() {
         session.terminal!.write(output);
         await tester.pumpAndSettle();
 
-        final underlineFinder = find.byWidgetPredicate((widget) {
-          final key = widget.key;
-          return key is ValueKey<String> &&
-              key.value.startsWith('terminal-path-underline:');
-        });
-
-        expect(underlineFinder, findsOneWidget);
-        final initialTop = tester.getTopLeft(underlineFinder).dy;
         final terminalView = tester.widget<MonkeyTerminalView>(
           find.byType(MonkeyTerminalView),
         );
+        expect(terminalView.inlineUnderlines, hasLength(1));
+        final initialUnderline = terminalView.inlineUnderlines.single;
         final scrollController = terminalView.scrollController;
         final lineHeight = tester
             .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
@@ -2913,8 +2956,10 @@ void main() {
         );
         await tester.pump();
 
-        expect(underlineFinder, findsOneWidget);
-        expect(tester.getTopLeft(underlineFinder).dy, isNot(initialTop));
+        final scrolledTerminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(scrolledTerminalView.inlineUnderlines, [initialUnderline]);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -2945,21 +2990,24 @@ void main() {
         session.terminal!.write('git add $relativePath');
         await tester.pump();
 
-        final underlineFinder = find.byWidgetPredicate((widget) {
-          final key = widget.key;
-          return key is ValueKey<String> &&
-              key.value.contains('terminal-path-underline:') &&
-              key.value.contains(relativePath);
-        });
-
-        expect(underlineFinder, findsNothing);
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .inlineUnderlines,
+          isEmpty,
+        );
 
         statCompleter.complete(
           SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
         );
         await tester.pumpAndSettle();
 
-        expect(underlineFinder, findsOneWidget);
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .inlineUnderlines,
+          hasLength(1),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -3025,16 +3073,24 @@ void main() {
         session.terminal!.write('open $remotePath');
         await tester.pumpAndSettle();
 
-        final underlineFinder = find.byWidgetPredicate((widget) {
-          final key = widget.key;
-          return key is ValueKey<String> &&
-              key.value.contains('terminal-path-underline:') &&
-              key.value.contains(remotePath);
-        });
-        expect(underlineFinder, findsOneWidget);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.inlineUnderlines, hasLength(1));
         expect(find.byType(SelectionArea), findsOneWidget);
 
-        await tester.tapAt(tester.getCenter(underlineFinder));
+        final terminalState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final underline = terminalView.inlineUnderlines.single;
+        final tapPosition = terminalState.renderTerminal.localToGlobal(
+          terminalState.renderTerminal.getOffset(
+                CellOffset(underline.startColumn, underline.row),
+              ) +
+              terminalState.renderTerminal.cellSize.center(Offset.zero),
+        );
+
+        await tester.tapAt(tapPosition);
         await tester.pumpAndSettle();
 
         expect(openedPaths, [remotePath]);
