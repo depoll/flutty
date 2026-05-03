@@ -1634,6 +1634,47 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _textLengthInGraphemes(String text) => text.characters.length;
 
+  bool _clearImeForPendingTouchCursorMove(
+    TextEditingValue value,
+    String currentText,
+  ) {
+    if (!_clearImeAfterNextTouchCursorMove || currentText != _lastSentText) {
+      return false;
+    }
+
+    final targetCursorOffset = _collapsedSelectionCursorOffset(
+      currentText,
+      value,
+    );
+    if (targetCursorOffset == null ||
+        targetCursorOffset == _lastSentCursorOffset) {
+      return false;
+    }
+
+    _notifyUserInput();
+    _moveTerminalCursorTo(targetCursorOffset);
+    _clearImeAfterNextTouchCursorMove = false;
+    _clearImeBufferForFreshInput();
+    return true;
+  }
+
+  bool _sendSingleBackspaceForPendingTouchDeletion({
+    required ({int deletedCount, String appendedText, int deleteCursorOffset})
+    delta,
+  }) {
+    if (!_clearImeAfterNextTouchCursorMove ||
+        delta.deletedCount == 0 ||
+        delta.appendedText.isNotEmpty) {
+      return false;
+    }
+
+    _notifyUserInput();
+    widget.terminal.keyInput(TerminalKey.backspace);
+    _clearImeAfterNextTouchCursorMove = false;
+    _clearImeBufferForFreshInput();
+    return true;
+  }
+
   int _graphemeOffsetForCodeUnitOffset(String text, int codeUnitOffset) => text
       .substring(0, _clampTextOffset(codeUnitOffset, text.length))
       .characters
@@ -2070,6 +2111,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     var processedUserSelectionWasValid = false;
     var processedUserSelection = const TextSelection.collapsed(offset: 0);
     try {
+      final pendingTouchCursorCurrentText = _extractInputText(value.text);
+      if (_clearImeForPendingTouchCursorMove(
+        value,
+        pendingTouchCursorCurrentText,
+      )) {
+        _sawImeComposition = false;
+        return;
+      }
+
       // Handle composing (IME input in progress).
       if (!value.composing.isCollapsed) {
         _cancelDeferredTrailingBackspaceImeClear();
@@ -2175,7 +2225,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      _clearImeAfterNextTouchCursorMove = false;
       final deleteResetContinuation = _resolveDeleteResetContinuation(
         normalizedCurrentText,
         cursorOffsetHint: normalizedTargetCursorOffset,
@@ -2195,6 +2244,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
+      if (_sendSingleBackspaceForPendingTouchDeletion(delta: delta)) {
+        _sawImeComposition = false;
+        return;
+      }
+      _clearImeAfterNextTouchCursorMove = false;
       final pendingInputIsTrailingPureDeletion =
           deltaPreviousText.isNotEmpty &&
           delta.deletedCount > 0 &&
