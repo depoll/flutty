@@ -8,7 +8,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -42,6 +44,14 @@ const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _videoPreviewCacheDirectoryName = 'monkeyssh-sftp-video-preview';
+
+/// Identifies a remembered SFTP browser location.
+typedef SftpBrowserLocationKey = ({int hostId, int? connectionId});
+
+/// Last successfully opened SFTP directory, keyed by host and connection.
+final StateProvider<Map<SftpBrowserLocationKey, String>>
+sftpBrowserLastPathsProvider =
+    StateProvider<Map<SftpBrowserLocationKey, String>>((ref) => const {});
 
 /// Bounds SFTP operations so stale SSH channels don't leave the browser loading
 /// forever.
@@ -123,6 +133,43 @@ resolveRequestedSftpNavigationTarget(
       : parentRemotePath(normalizedPath),
   highlightedFileName: isDirectory ? null : path.posix.basename(normalizedPath),
 );
+
+/// Resolves quick-jump locations for the SFTP browser.
+@visibleForTesting
+List<({String label, String path})> resolveSftpLocationShortcuts({
+  String? homeDirectory,
+  String? connectionStartDirectory,
+  String? tmuxPaneDirectory,
+}) {
+  final shortcuts = <({String label, String path})>[];
+
+  void addShortcut(String label, String? directory) {
+    final normalizedDirectory = normalizeSftpAbsolutePath(directory);
+    if (normalizedDirectory == null) {
+      return;
+    }
+
+    final existingIndex = shortcuts.indexWhere(
+      (shortcut) => shortcut.path == normalizedDirectory,
+    );
+    if (existingIndex >= 0) {
+      final existing = shortcuts[existingIndex];
+      shortcuts[existingIndex] = (
+        label: '${existing.label} / $label',
+        path: existing.path,
+      );
+      return;
+    }
+
+    shortcuts.add((label: label, path: normalizedDirectory));
+  }
+
+  addShortcut('Home', homeDirectory);
+  addShortcut('Connection start', connectionStartDirectory);
+  addShortcut('tmux pane', tmuxPaneDirectory);
+
+  return shortcuts;
+}
 
 /// Whether the file name should be previewable as an image.
 @visibleForTesting
@@ -399,6 +446,9 @@ class SftpScreen extends ConsumerStatefulWidget {
     this.connectionId,
     this.initialPath,
     this.initialWorkingDirectory,
+    this.connectionStartDirectory,
+    this.tmuxPaneDirectory,
+    this.showCloseButton = false,
     super.key,
   });
 
@@ -413,6 +463,15 @@ class SftpScreen extends ConsumerStatefulWidget {
 
   /// Optional terminal working directory used to resolve relative paths.
   final String? initialWorkingDirectory;
+
+  /// Optional directory where the terminal connection first opened.
+  final String? connectionStartDirectory;
+
+  /// Optional working directory reported by the active tmux pane.
+  final String? tmuxPaneDirectory;
+
+  /// Whether to show an explicit close affordance in the app bar.
+  final bool showCloseButton;
 
   @override
   ConsumerState<SftpScreen> createState() => _SftpScreenState();
@@ -433,17 +492,36 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   String? _highlightedFileName;
   String? _homeDirectoryPath;
   String? _fallbackDirectoryPath;
+  String? _connectionStartDirectoryPath;
+  String? _tmuxPaneDirectoryPath;
 
   @override
   void initState() {
     super.initState();
     _pendingInitialPath = _sanitizeRequestedPath(widget.initialPath);
+    _connectionStartDirectoryPath = normalizeSftpAbsolutePath(
+      widget.connectionStartDirectory,
+    );
+    _tmuxPaneDirectoryPath = normalizeSftpAbsolutePath(
+      widget.tmuxPaneDirectory,
+    );
     _connect();
   }
 
   @override
   void didUpdateWidget(covariant SftpScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.connectionStartDirectory != widget.connectionStartDirectory) {
+      _connectionStartDirectoryPath = normalizeSftpAbsolutePath(
+        widget.connectionStartDirectory,
+      );
+    }
+    if (oldWidget.tmuxPaneDirectory != widget.tmuxPaneDirectory) {
+      _tmuxPaneDirectoryPath = normalizeSftpAbsolutePath(
+        widget.tmuxPaneDirectory,
+      );
+    }
 
     if (oldWidget.initialPath == widget.initialPath &&
         oldWidget.initialWorkingDirectory == widget.initialWorkingDirectory) {
@@ -553,6 +631,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       pendingSftp = null;
       _hostLabel = session.config.hostname;
       _fallbackDirectoryPath = normalizeSftpAbsolutePath(initialPath) ?? '/';
+      _homeDirectoryPath ??= _fallbackDirectoryPath;
+      _connectionStartDirectoryPath ??= _fallbackDirectoryPath;
       final requestedPath = _pendingInitialPath;
       if (requestedPath != null) {
         _pendingInitialPath = null;
@@ -699,6 +779,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         _isLoading = false;
         _error = null;
       });
+      _rememberCurrentPath(path);
       _queueScrollBreadcrumbTailIntoView();
       return true;
     } on Exception catch (e) {
@@ -752,6 +833,20 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
     final nextHistory = popSftpPathHistory(_pathHistory);
     await _loadDirectory(nextHistory.last, nextHistory: nextHistory);
+  }
+
+  void _rememberCurrentPath(String remotePath) {
+    final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+    if (normalizedPath == null) {
+      return;
+    }
+
+    final key = (hostId: widget.hostId, connectionId: widget.connectionId);
+    final notifier = ref.read(sftpBrowserLastPathsProvider.notifier);
+    notifier.state = <SftpBrowserLocationKey, String>{
+      ...notifier.state,
+      key: normalizedPath,
+    };
   }
 
   Future<bool> _openRequestedPath(String requestedPath) async {
@@ -951,6 +1046,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     },
     child: Scaffold(
       appBar: AppBar(
+        leading: widget.showCloseButton
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _closeBrowser,
+                tooltip: 'Close file browser',
+              )
+            : null,
         title: Text(_hostLabel == null ? 'Files' : 'Files - $_hostLabel'),
         actions: [
           IconButton(
@@ -967,6 +1069,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
       body: Column(
         children: [
+          _buildLocationShortcuts(),
           _buildBreadcrumbs(),
           Expanded(child: _buildFileList()),
         ],
@@ -978,6 +1081,84 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
     ),
   );
+
+  void _closeBrowser() {
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+    context.go('/');
+  }
+
+  Widget _buildLocationShortcuts() {
+    final shortcuts = resolveSftpLocationShortcuts(
+      homeDirectory: _homeDirectoryPath,
+      connectionStartDirectory: _connectionStartDirectoryPath,
+      tmuxPaneDirectory: _tmuxPaneDirectoryPath,
+    );
+    if (shortcuts.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final shortcut in shortcuts)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ActionChip(
+                  avatar: Icon(
+                    _iconForLocationShortcut(shortcut.label),
+                    size: 18,
+                  ),
+                  label: Text(
+                    '${shortcut.label}: '
+                    '${_formatLocationShortcutPath(shortcut.path)}',
+                  ),
+                  onPressed: shortcut.path == _currentPath
+                      ? null
+                      : () => unawaited(_navigateTo(shortcut.path)),
+                  tooltip: shortcut.path == _currentPath
+                      ? '${shortcut.label}: ${shortcut.path} (current)'
+                      : '${shortcut.label}: ${shortcut.path}',
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _iconForLocationShortcut(String label) {
+    if (label.contains('Home')) {
+      return Icons.home_outlined;
+    }
+    if (label.contains('tmux')) {
+      return Icons.view_week_outlined;
+    }
+    return Icons.flag_outlined;
+  }
+
+  String _formatLocationShortcutPath(String remotePath) {
+    if (remotePath == '/') {
+      return '/';
+    }
+
+    final basename = path.posix.basename(remotePath);
+    return basename.isEmpty ? remotePath : basename;
+  }
 
   Widget _buildBreadcrumbs() {
     final parts = _currentPath.split('/').where((p) => p.isNotEmpty).toList();

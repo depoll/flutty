@@ -52,6 +52,20 @@ void main() {
       },
     );
 
+    test('location shortcuts normalize and de-duplicate directories', () {
+      expect(
+        resolveSftpLocationShortcuts(
+          homeDirectory: '/home/depoll',
+          connectionStartDirectory: '/home/depoll/./',
+          tmuxPaneDirectory: '/home/depoll/project',
+        ),
+        [
+          (label: 'Home / Connection start', path: '/home/depoll'),
+          (label: 'tmux pane', path: '/home/depoll/project'),
+        ],
+      );
+    });
+
     test('scrolls upward when the highlighted file is above the viewport', () {
       expect(
         resolveSftpHighlightedFileScrollOffset(

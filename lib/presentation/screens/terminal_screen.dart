@@ -58,6 +58,7 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'sftp_screen.dart';
 
 part '../widgets/tmux_expandable_bar.dart';
 
@@ -2128,6 +2129,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
+  String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   int _tmuxDetectionGeneration = 0;
@@ -2539,6 +2541,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _observeSessionMetadata(SshSession session) {
     if (_sessionController.isObservingSession(session)) {
+      _captureConnectionOpenedWorkingDirectory();
       return;
     }
 
@@ -2546,14 +2549,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _disposeTerminalPathVerificationSftp();
     }
     _sessionController.observeSessionMetadata(session);
+    _captureConnectionOpenedWorkingDirectory();
   }
 
   void _handleSessionMetadataChanged() {
     if (!mounted) {
       return;
     }
+    _captureConnectionOpenedWorkingDirectory();
     _syncVerifiedTerminalPathCacheScope();
     setState(() {});
+  }
+
+  void _captureConnectionOpenedWorkingDirectory() {
+    if (_connectionOpenedWorkingDirectory != null) {
+      return;
+    }
+
+    _connectionOpenedWorkingDirectory = normalizeSftpAbsolutePath(
+      _liveWorkingDirectoryPath ?? _tmuxLaunchWorkingDirectory,
+    );
   }
 
   Future<void> _applySharedClipboardSetting({
@@ -3791,6 +3806,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isConnecting = true;
       _error = null;
+      _connectionOpenedWorkingDirectory = null;
     });
 
     _sessionsNotifier = ref.read(activeSessionsProvider.notifier);
@@ -4662,6 +4678,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
+          _connectionOpenedWorkingDirectory ??= normalizeSftpAbsolutePath(
+            tmuxLaunchCwd,
+          );
         });
         _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
@@ -5842,7 +5861,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   _connectionId == null ||
                       connectionState != SshConnectionState.connected
                   ? null
-                  : _openConnectionFileBrowser,
+                  : () => unawaited(_openConnectionFileBrowser()),
               tooltip: 'Browse files',
             ),
             if (isMobile)
@@ -6638,23 +6657,92 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalStyle.fromTextStyle(textStyle);
   }
 
-  void _openConnectionFileBrowser() {
+  Future<void> _openConnectionFileBrowser() async {
     final connectionId = _connectionId;
     if (connectionId == null) {
       return;
     }
 
-    // Pass the terminal's working directory (from OSC 7) as both the
-    // initial path and the working directory for relative path resolution.
+    final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
+    if (!mounted) {
+      return;
+    }
+
+    // Prefer the last browser directory when opening from the toolbar. The
+    // terminal cwd remains available for relative path resolution and as a
+    // quick-jump inside the browser.
     final cwd = _workingDirectoryPath;
-    context.pushNamed(
-      Routes.sftp,
-      pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: {
-        'connectionId': connectionId.toString(),
-        if (cwd != null) ...{'path': cwd, 'cwd': cwd},
-      },
+    final rememberedPath = ref.read(
+      sftpBrowserLastPathsProvider,
+    )[(hostId: widget.hostId, connectionId: connectionId)];
+    final initialPath = rememberedPath ?? cwd;
+    unawaited(
+      context.pushNamed<String>(
+        Routes.sftp,
+        pathParameters: {'hostId': widget.hostId.toString()},
+        queryParameters: _buildSftpBrowserQueryParameters(
+          connectionId: connectionId,
+          initialPath: initialPath,
+          workingDirectory: cwd,
+          tmuxPaneDirectory: tmuxPaneDirectory,
+        ),
+      ),
     );
+  }
+
+  Map<String, String> _buildSftpBrowserQueryParameters({
+    int? connectionId,
+    String? initialPath,
+    String? workingDirectory,
+    String? tmuxPaneDirectory,
+  }) {
+    final queryParameters = <String, String>{};
+
+    void addParameter(String key, String? value) {
+      if (value == null) {
+        return;
+      }
+      queryParameters[key] = value;
+    }
+
+    addParameter('connectionId', connectionId?.toString());
+    addParameter('path', initialPath);
+    addParameter('cwd', workingDirectory);
+    addParameter('connectionCwd', _connectionOpenedWorkingDirectory);
+    addParameter('tmuxCwd', tmuxPaneDirectory);
+
+    return queryParameters;
+  }
+
+  Future<String?> _resolveCurrentTmuxPaneDirectory() async {
+    final fallbackDirectory = normalizeSftpAbsolutePath(_tmuxWorkingDirectory);
+    final connectionId = _connectionId;
+    final sessionName = _tmuxSessionName;
+    if (!_isTmuxActive || connectionId == null || sessionName == null) {
+      return fallbackDirectory;
+    }
+
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) {
+      return fallbackDirectory;
+    }
+
+    final paneDirectory = normalizeSftpAbsolutePath(
+      await ref
+          .read(tmuxServiceProvider)
+          .currentPanePath(
+            session,
+            sessionName,
+            extraFlags: _host?.tmuxExtraFlags,
+          ),
+    );
+    if (paneDirectory == null) {
+      return fallbackDirectory;
+    }
+    if (mounted && paneDirectory != _tmuxWorkingDirectory) {
+      setState(() => _tmuxWorkingDirectory = paneDirectory);
+    }
+    return paneDirectory;
   }
 
   Future<void> _handleMenuAction(String action) async {
@@ -8180,13 +8268,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final connectionId = _connectionId;
+    final cwd = _workingDirectoryPath;
+    final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
+    if (!mounted) {
+      return;
+    }
+
     final result = await context.pushNamed<String>(
       Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: {
-        if (connectionId != null) 'connectionId': connectionId.toString(),
-        'path': verifiedPath,
-      },
+      queryParameters: _buildSftpBrowserQueryParameters(
+        connectionId: connectionId,
+        initialPath: verifiedPath,
+        workingDirectory: cwd,
+        tmuxPaneDirectory: tmuxPaneDirectory,
+      ),
     );
     if (!mounted || result == null) {
       return;
