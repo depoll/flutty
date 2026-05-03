@@ -172,12 +172,18 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/snippets/add',
-        name: 'snippet-add',
-        builder: (context, state) => const SnippetEditScreen(),
+        name: Routes.snippetAdd,
+        builder: (context, state) {
+          final extra = state.extra;
+          final prefill = extra is SnippetEditPrefill
+              ? extra
+              : const SnippetEditPrefill();
+          return SnippetEditScreen(prefill: prefill);
+        },
       ),
       GoRoute(
         path: '/snippets/edit/:snippetId',
-        name: 'snippet-edit',
+        name: Routes.snippetEdit,
         builder: (context, state) {
           final snippetId = int.tryParse(
             state.pathParameters['snippetId'] ?? '',

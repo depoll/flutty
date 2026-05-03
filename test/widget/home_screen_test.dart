@@ -443,6 +443,9 @@ void main() {
         ]),
       );
       when(
+        snippetRepository.watchAllFolders,
+      ).thenAnswer((_) => Stream.value(const <SnippetFolder>[]));
+      when(
         () => snippetRepository.reorderByIds(any()),
       ).thenAnswer((_) async {});
 
@@ -539,7 +542,7 @@ void main() {
     });
   });
 
-  testWidgets('small icon actions expose semantics labels', (tester) async {
+  testWidgets('context menu triggers expose semantics labels', (tester) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);
 
@@ -562,7 +565,7 @@ void main() {
       find.byWidgetPredicate(
         (widget) =>
             widget is Semantics &&
-            widget.properties.label == 'New connection' &&
+            widget.properties.label == 'Host actions' &&
             (widget.properties.button ?? false) &&
             widget.properties.onTap != null,
       ),

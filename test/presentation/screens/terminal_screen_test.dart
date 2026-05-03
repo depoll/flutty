@@ -46,7 +46,10 @@ class _MockMonetizationService extends Mock implements MonetizationService {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
-class _MockTmuxService extends Mock implements TmuxService {}
+class _MockTmuxService extends Mock implements TmuxService {
+  @override
+  bool isExecChannelCoolingDown(SshSession session) => false;
+}
 
 class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
   final toggleCalls = <bool>[];
@@ -267,6 +270,77 @@ void main() {
 
       expect(copiedText, 'alpha');
       expect(selectedText, isNull);
+    });
+
+    test('adds create snippet action after copy in terminal menu', () {
+      var didCreateSnippet = false;
+
+      final items = buildTerminalSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.paste,
+            onPressed: null,
+          ),
+        ],
+        onCopy: () {},
+        onLookUp: () {},
+        onSearchWeb: () {},
+        onShare: () {},
+        onCreateSnippet: () => didCreateSnippet = true,
+        onPaste: () {},
+      );
+
+      final copyIndex = items.indexWhere(
+        (item) => item.type == ContextMenuButtonType.copy,
+      );
+      final snippetIndex = items.indexWhere(
+        (item) => item.label == 'Create Snippet',
+      );
+
+      expect(snippetIndex, copyIndex + 1);
+      items[snippetIndex].onPressed!();
+      expect(didCreateSnippet, isTrue);
+    });
+
+    test('omits create snippet action without selected text', () {
+      final items = buildTerminalSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+        ],
+        onCopy: () {},
+        onLookUp: () {},
+        onSearchWeb: () {},
+        onShare: () {},
+        onCreateSnippet: null,
+        onPaste: () {},
+      );
+
+      expect(items.where((item) => item.label == 'Create Snippet'), isEmpty);
+    });
+
+    test('builds snippet name from selected terminal text', () {
+      final longLine = List.filled(80, 'a').join();
+      final truncatedLine = '${List.filled(57, 'a').join()}...';
+
+      expect(
+        buildSnippetNameFromTerminalSelection('\n  git status\n'),
+        'git status',
+      );
+      expect(
+        buildSnippetNameFromTerminalSelection('   \n'),
+        'Terminal selection',
+      );
+      expect(
+        buildSnippetNameFromTerminalSelection('$longLine\nsecond'),
+        truncatedLine,
+      );
     });
 
     test('hides terminal selection toolbar when action throws', () {
@@ -755,6 +829,31 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('shows jump host indicator for tunneled sessions', (
+      tester,
+    ) async {
+      session = SshSession(
+        connectionId: 7,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+          jumpHost: SshConnectionConfig(
+            hostname: 'bastion.example.com',
+            port: 22,
+            username: 'bastion',
+          ),
+        ),
+      )..getOrCreateTerminal();
+
+      await pumpScreen(tester);
+
+      expect(find.byTooltip('Connected through jump host'), findsOneWidget);
+      expect(find.byIcon(Icons.alt_route), findsOneWidget);
     });
 
     testWidgets(
@@ -2937,6 +3036,57 @@ void main() {
               .inlineUnderlines,
           hasLength(1),
         );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'background path verification batches relative path stats',
+      (tester) async {
+        const firstPath = 'lib/presentation/screens/terminal_screen.dart';
+        const secondPath = 'lib/domain/services/tmux_service.dart';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+        final firstStatStarted = Completer<void>();
+        final firstStatCompleter = Completer<SftpFileAttrs>();
+        var secondStatCalls = 0;
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(() => sftp.stat('$workingDirectory/$firstPath')).thenAnswer((_) {
+          if (!firstStatStarted.isCompleted) {
+            firstStatStarted.complete();
+          }
+          return firstStatCompleter.future;
+        });
+        when(() => sftp.stat('$workingDirectory/$secondPath')).thenAnswer((_) {
+          secondStatCalls++;
+          return Future.value(SftpFileAttrs());
+        });
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('git add $firstPath $secondPath');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await firstStatStarted.future.timeout(const Duration(seconds: 1));
+
+        expect(secondStatCalls, 0);
+
+        firstStatCompleter.complete(SftpFileAttrs());
+        await tester.pumpAndSettle();
+
+        expect(secondStatCalls, 1);
+        verify(() => sshClient.sftp()).called(1);
+        verify(() => sftp.stat('$workingDirectory/$firstPath')).called(1);
+        verify(() => sftp.stat('$workingDirectory/$secondPath')).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
