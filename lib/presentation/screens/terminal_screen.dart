@@ -2213,6 +2213,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
+  List<KeyboardToolbarSnippet> _keyboardToolbarSnippets =
+      const <KeyboardToolbarSnippet>[];
+  List<KeyboardToolbarSnippetFolder> _keyboardToolbarSnippetFolders =
+      const <KeyboardToolbarSnippetFolder>[];
   bool _isNativeSelectionMode = false;
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
@@ -2586,6 +2590,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
+    unawaited(_refreshKeyboardToolbarSnippetMenu());
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
   }
@@ -6129,8 +6134,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     terminal: _terminal,
                     onKeyPressed: _handleKeyboardToolbarKeyPressed,
                     onPasteRequested: _pasteClipboard,
+                    onPasteMenuOpened: _refreshKeyboardToolbarSnippetMenu,
+                    onSnippetPasteRequested: _pasteKeyboardToolbarSnippet,
                     onPasteImageRequested: _pastePickedImage,
                     onPasteFilesRequested: _pastePickedFiles,
+                    snippets: _keyboardToolbarSnippets,
+                    snippetFolders: _keyboardToolbarSnippetFolders,
                     terminalFocusNode: _terminalFocusNode,
                   ),
               ],
@@ -9337,6 +9346,74 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'This text inserted from your keyboard could execute multiple or reshaped commands.',
       confirmLabel: 'Insert anyway',
     );
+  }
+
+  Future<void> _refreshKeyboardToolbarSnippetMenu() async {
+    final snippetRepo = ref.read(snippetRepositoryProvider);
+    final snippets = await snippetRepo.getAll();
+    final folders = await snippetRepo.getAllFolders();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _keyboardToolbarSnippets = [
+        for (final snippet in snippets)
+          KeyboardToolbarSnippet(
+            id: snippet.id,
+            name: snippet.name,
+            command: snippet.command,
+            folderId: snippet.folderId,
+          ),
+      ];
+      _keyboardToolbarSnippetFolders = [
+        for (final folder in folders)
+          KeyboardToolbarSnippetFolder(id: folder.id, name: folder.name),
+      ];
+    });
+  }
+
+  Future<void> _pasteKeyboardToolbarSnippet(
+    KeyboardToolbarSnippet selectedSnippet,
+  ) async {
+    final snippetRepo = ref.read(snippetRepositoryProvider);
+    final snippet = await snippetRepo.getById(selectedSnippet.id);
+    if (!mounted) {
+      return;
+    }
+    if (snippet == null) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Snippet is no longer available.');
+      return;
+    }
+
+    final substitution = await _substituteVariables(context, snippet);
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    if (substitution == null || substitution.command.isEmpty) {
+      return;
+    }
+
+    final shouldInsert = await _confirmTerminalInsertionIfNeeded(
+      insertedText: substitution.command,
+      buildReview: (commandText) => assessSnippetCommandInsertion(
+        commandText,
+        hadVariableSubstitution: substitution.hadVariableSubstitution,
+      ),
+      title: 'Review snippet command',
+      messageBuilder: (_) =>
+          'Confirm the rendered command before inserting it.',
+      confirmLabel: 'Insert command',
+    );
+    if (!shouldInsert) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    _followLiveOutput();
+    _terminal.paste(substitution.command);
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    unawaited(snippetRepo.incrementUsage(snippet.id));
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
