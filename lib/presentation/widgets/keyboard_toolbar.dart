@@ -297,7 +297,11 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   Widget _buildModifierRow() => _KeyRow(children: _buildModifierButtons());
 
   Widget _buildNavigationRow() => _KeyRow(
-    children: [..._buildArrowButtons(), ..._buildSeriesNavigationButtons()],
+    children: [
+      ..._buildArrowButtons(),
+      ..._buildSeriesNavigationButtons(),
+      _buildEnterButton(),
+    ],
   );
 
   Widget _buildLandscapeRow() => _KeyRow(
@@ -305,7 +309,15 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       ..._buildModifierButtons(),
       ..._buildArrowButtons(),
       ..._buildSeriesNavigationButtons(),
+      _buildEnterButton(),
     ],
+  );
+
+  Widget _buildEnterButton() => _ToolbarButton(
+    icon: Icons.keyboard_return_rounded,
+    label: '',
+    onTap: _sendEnter,
+    tooltip: 'Enter',
   );
 
   List<Widget> _buildModifierButtons() => [
@@ -357,12 +369,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       onTap: _pasteClipboard,
       onLongPressStart: _showPasteOptions,
       tooltip: 'Paste',
-    ),
-    _ToolbarButton(
-      icon: Icons.keyboard_return_rounded,
-      label: '',
-      onTap: _sendEnter,
-      tooltip: 'Enter',
     ),
   ];
 

@@ -66,6 +66,7 @@ void main() {
       expect(find.byTooltip('Shift'), findsOneWidget);
       expect(find.byTooltip('Tilde'), findsOneWidget);
       expect(find.byTooltip('Paste'), findsOneWidget);
+      expect(find.byTooltip('Enter'), findsOneWidget);
 
       // Check navigation row keys
       expect(find.byTooltip('Up'), findsOneWidget);
@@ -78,7 +79,64 @@ void main() {
       expect(find.byTooltip('Page Down'), findsOneWidget);
     });
 
-    testWidgets('keeps arrow keys to the left of PgUp/PgDn/Home/End', (
+    testWidgets('keeps Paste and Enter on the right edge of their rows', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      const topRowOrder = [
+        'Escape',
+        'Tab',
+        'Ctrl',
+        'Alt',
+        'Shift',
+        'Pipe',
+        'Slash',
+        'Tilde',
+        'Paste',
+      ];
+      const bottomRowOrder = [
+        'Left',
+        'Right',
+        'Up',
+        'Down',
+        'Page Up',
+        'Page Down',
+        'Home',
+        'End',
+        'Enter',
+      ];
+
+      final topRowCenters = <String, Offset>{
+        for (final label in topRowOrder)
+          label: tester.getCenter(find.byTooltip(label)),
+      };
+      final bottomRowCenters = <String, Offset>{
+        for (final label in bottomRowOrder)
+          label: tester.getCenter(find.byTooltip(label)),
+      };
+      final actualTopRowOrder = topRowOrder.toList()
+        ..sort((a, b) => topRowCenters[a]!.dx.compareTo(topRowCenters[b]!.dx));
+      final actualBottomRowOrder = bottomRowOrder.toList()
+        ..sort(
+          (a, b) => bottomRowCenters[a]!.dx.compareTo(bottomRowCenters[b]!.dx),
+        );
+
+      expect(actualTopRowOrder, topRowOrder);
+      expect(actualBottomRowOrder, bottomRowOrder);
+      expect(topRowCenters['Paste']!.dy, topRowCenters['Escape']!.dy);
+      expect(bottomRowCenters['Enter']!.dy, bottomRowCenters['Left']!.dy);
+      expect(
+        bottomRowCenters['Enter']!.dy,
+        greaterThan(topRowCenters['Paste']!.dy),
+      );
+    });
+
+    testWidgets('keeps arrow keys to the left of PgUp/PgDn/Home/End/Enter', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -96,6 +154,7 @@ void main() {
         'Page Down',
         'Home',
         'End',
+        'Enter',
       ];
       final positions = <String, double>{
         for (final label in expectedOrder)
@@ -127,7 +186,9 @@ void main() {
       expect((escapeCenter.dy - endCenter.dy).abs(), lessThan(0.1));
     });
 
-    testWidgets('keeps the landscape End key fully on screen', (tester) async {
+    testWidgets('keeps the landscape Enter key fully on screen', (
+      tester,
+    ) async {
       await tester.binding.setSurfaceSize(const Size(844, 390));
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -140,9 +201,9 @@ void main() {
         ),
       );
 
-      final endRight = tester.getTopRight(find.byTooltip('End')).dx;
+      final enterRight = tester.getTopRight(find.byTooltip('Enter')).dx;
 
-      expect(endRight, lessThanOrEqualTo(844.001));
+      expect(enterRight, lessThanOrEqualTo(844.001));
     });
 
     testWidgets('modifier key toggles state on tap', (tester) async {
