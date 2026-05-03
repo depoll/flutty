@@ -7,6 +7,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -168,6 +169,27 @@ void main() {
       expect(command, contains(r'case "$pane_title" in'));
       expect(command, contains('*OpenCode*|*opencode*)'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
+      expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
+      expect(
+        command,
+        contains(
+          buildTerminalThemeOscResponse(
+            theme: TerminalThemes.dracula,
+            code: '10',
+            args: const ['?'],
+          ),
+        ),
+      );
+      expect(
+        command,
+        contains(
+          buildTerminalThemeOscResponse(
+            theme: TerminalThemes.dracula,
+            code: '11',
+            args: const ['?'],
+          ),
+        ),
+      );
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
@@ -225,6 +247,14 @@ void main() {
           'tmux -u -S '
           "'/tmp/tmux-socket' -L 'alerts' "
           r"""set-option -p -t "$pane" 'pane-colours[0]'""",
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client" -r "$pane":',
         ),
       );
       expect(

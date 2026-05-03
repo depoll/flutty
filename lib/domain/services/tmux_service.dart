@@ -1742,6 +1742,11 @@ String buildTmuxRefreshTerminalThemeCommand(
     theme,
     extraFlags: extraFlags,
   );
+  final provideClientThemeReports = _buildTmuxProvideClientThemeReportsCommand(
+    sessionName,
+    theme,
+    extraFlags: extraFlags,
+  );
   // Make sure tmux forwards focus events to inner panes — without this,
   // theme-aware TUIs like Codex/Copilot CLI never receive the FocusGained
   // signal we use as the trigger to re-query OSC 10/11 after a theme switch
@@ -1761,6 +1766,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
+      '$provideClientThemeReports '
       'injected=0; foreground_tui=0; '
       r'if [ "$active" = 1 ]; then '
       r'case "${pane_command##*/}" in '
@@ -1866,6 +1872,45 @@ String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
   final optionName = TmuxService._shellQuote('pane-colours[$index]');
   return r'set-option -p -t "$pane" '
       '$optionName ${TmuxService._shellQuote(hexColor)}';
+}
+
+String _buildTmuxProvideClientThemeReportsCommand(
+  String sessionName,
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) {
+  final reports = [
+    buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
+    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
+  ].whereType<String>().toList(growable: false);
+  if (reports.isEmpty) {
+    return '';
+  }
+
+  const sep = r'${SEP}';
+  final listClients = TmuxService._tmuxCommand(
+    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final refreshReports = reports
+      .map((report) {
+        final reportCommand = TmuxService._tmuxCommand(
+          '${r'refresh-client -t "$client" -r "$pane":'}'
+          '${TmuxService._shellQuote(report)}',
+          extraFlags: extraFlags,
+          forceUtf8: true,
+        );
+        return '$reportCommand 2>/dev/null || true;';
+      })
+      .join(' ');
+
+  return '$listClients"#{client_name}$sep#{client_control_mode}" '
+      '2>/dev/null | '
+      r'while IFS="$SEP" read -r client _control; do '
+      r'[ -n "$client" ] || continue; '
+      '$refreshReports '
+      'done;';
 }
 
 String _buildTmuxSendPaneTerminalThemeCommand(
