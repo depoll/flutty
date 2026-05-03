@@ -213,6 +213,9 @@ class _SshSessionRuntime {
                 terminalData: terminalData,
                 stdoutData: data,
               );
+              if (_shouldFlushShellOutputImmediately(terminalData)) {
+                _flushPendingShellOutput(drainAll: true);
+              }
             }
           },
           onError: (Object error, StackTrace stackTrace) {
@@ -397,6 +400,9 @@ class _SshSessionRuntime {
       );
     }
   }
+
+  bool _shouldFlushShellOutputImmediately(String terminalData) =>
+      terminalData.contains('\x1b]') || terminalData.contains('\x1b[?');
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();
