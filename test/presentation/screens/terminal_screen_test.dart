@@ -757,6 +757,31 @@ void main() {
       );
     });
 
+    testWidgets('shows jump host indicator for tunneled sessions', (
+      tester,
+    ) async {
+      session = SshSession(
+        connectionId: 7,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+          jumpHost: SshConnectionConfig(
+            hostname: 'bastion.example.com',
+            port: 22,
+            username: 'bastion',
+          ),
+        ),
+      )..getOrCreateTerminal();
+
+      await pumpScreen(tester);
+
+      expect(find.byTooltip('Connected through jump host'), findsOneWidget);
+      expect(find.byIcon(Icons.alt_route), findsOneWidget);
+    });
+
     testWidgets(
       'does not send synthetic terminal reports to an idle shell prompt',
       (tester) async {
