@@ -133,21 +133,35 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/sftp/:hostId',
         name: Routes.sftp,
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
           );
           final initialPath = state.uri.queryParameters['path'];
           final initialWorkingDirectory = state.uri.queryParameters['cwd'];
+          final connectionStartDirectory =
+              state.uri.queryParameters['connectionCwd'];
+          final tmuxPaneDirectory = state.uri.queryParameters['tmuxCwd'];
           if (hostId == null) {
-            return const Scaffold(body: Center(child: Text('Invalid host ID')));
+            return _buildSlideUpPage<String>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid host ID')),
+              ),
+            );
           }
-          return SftpScreen(
-            hostId: hostId,
-            connectionId: connectionId,
-            initialPath: initialPath,
-            initialWorkingDirectory: initialWorkingDirectory,
+          return _buildSlideUpPage<String>(
+            key: state.pageKey,
+            child: SftpScreen(
+              hostId: hostId,
+              connectionId: connectionId,
+              initialPath: initialPath,
+              initialWorkingDirectory: initialWorkingDirectory,
+              connectionStartDirectory: connectionStartDirectory,
+              tmuxPaneDirectory: tmuxPaneDirectory,
+              showCloseButton: true,
+            ),
           );
         },
       ),
@@ -223,6 +237,27 @@ HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   'connections' => HomeScreenTab.connections,
   _ => HomeScreenTab.hosts,
 };
+
+CustomTransitionPage<T> _buildSlideUpPage<T>({
+  required LocalKey key,
+  required Widget child,
+}) => CustomTransitionPage<T>(
+  key: key,
+  fullscreenDialog: true,
+  transitionDuration: const Duration(milliseconds: 280),
+  reverseTransitionDuration: const Duration(milliseconds: 220),
+  transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+      SlideTransition(
+        position: animation.drive(
+          Tween<Offset>(
+            begin: const Offset(0, 1),
+            end: Offset.zero,
+          ).chain(CurveTween(curve: Curves.easeOutCubic)),
+        ),
+        child: child,
+      ),
+  child: child,
+);
 
 /// Computes the route redirect for the given authentication state.
 String? redirectForAuthState({
