@@ -2618,6 +2618,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
       targetSession,
     );
+    final terminalViewReady = _isTerminalThemeRefreshViewReady;
     final shouldRefreshFirstTheme =
         previousTheme == null && (_isTmuxActive || plainTuiRefreshAllowed);
     final willRefresh =
@@ -2642,7 +2643,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'altBuffer': _terminal.isUsingAltBuffer,
           'mouseMode': _terminal.mouseMode != MouseMode.none,
           'shellReady': _shell != null,
-          'terminalViewReady': _terminalViewKey.currentState != null,
+          'terminalViewReady': terminalViewReady,
         },
       );
     }
@@ -2660,6 +2661,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(session);
+    final terminalViewReady = _isTerminalThemeRefreshViewReady;
     final tmuxStateBelongsToSession =
         _tmuxStateConnectionId == session.connectionId;
     DiagnosticsLogService.instance.info(
@@ -2676,9 +2678,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'altBuffer': _terminal.isUsingAltBuffer,
         'mouseMode': _terminal.mouseMode != MouseMode.none,
         'shellReady': _shell != null,
-        'terminalViewReady': _terminalViewKey.currentState != null,
+        'terminalViewReady': terminalViewReady,
       },
     );
+    if (!terminalViewReady) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_isCurrentTerminalThemeRefresh(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+        )) {
+          return;
+        }
+        _refreshTerminalThemeForTui(
+          theme,
+          session,
+          reason: '${reason}_view_ready',
+        );
+      });
+    }
     if (_isTmuxActive && tmuxStateBelongsToSession) {
       // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
       // terminal's default colors and ANSI palette and answers inner-pane OSC
@@ -2712,7 +2730,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'altBuffer': _terminal.isUsingAltBuffer,
           'mouseMode': _terminal.mouseMode != MouseMode.none,
           'shellReady': _shell != null,
-          'terminalViewReady': _terminalViewKey.currentState != null,
+          'terminalViewReady': _isTerminalThemeRefreshViewReady,
         },
       );
       return;
@@ -2786,7 +2804,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String reason = 'unspecified',
   }) {
     final terminalView = _terminalViewKey.currentState;
-    if (terminalView == null) {
+    if (terminalView == null || !_isTerminalThemeRefreshViewReady) {
       DiagnosticsLogService.instance.info(
         'terminal.theme',
         'reports_unavailable',
@@ -2834,6 +2852,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.reportFocusMode ||
       _terminal.isUsingAltBuffer ||
       _terminal.mouseMode != MouseMode.none;
+
+  bool get _isTerminalThemeRefreshViewReady {
+    final terminalViewWidget = _terminalViewKey.currentWidget;
+    return _terminalViewKey.currentState != null &&
+        terminalViewWidget is MonkeyTerminalView &&
+        identical(terminalViewWidget.terminal, _terminal);
+  }
 
   /// Proactively pushes the active terminal theme into tmux's per-pane color
   /// cache.
@@ -3861,6 +3886,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         await _restoreSessionThemeOverride(
           session,
+          forceRemoteRefresh: true,
           reason: 'open_existing_restore_override',
         );
         setState(() {
@@ -3934,6 +3960,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       await _restoreSessionThemeOverride(
         session,
+        forceRemoteRefresh: true,
         reason: 'open_new_restore_override',
       );
       setState(() {
@@ -5574,6 +5601,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
         _reconnect();
+      } else if (session != null) {
+        unawaited(
+          _reloadTerminalThemeForDependencies(
+            forceRemoteRefresh: true,
+            reason: 'app_resumed',
+          ),
+        );
       }
     }
   }
