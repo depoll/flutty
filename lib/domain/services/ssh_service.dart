@@ -795,16 +795,34 @@ class SshService {
       var skipJumpHost = false;
       if (host.skipJumpHostOnSsids != null &&
           host.skipJumpHostOnSsids!.isNotEmpty) {
-        final currentSsid = await wifiNetworkService.getCurrentSsid();
-        skipJumpHost = shouldSkipJumpHostForSsid(
-          currentSsid: currentSsid,
-          skipJumpHostOnSsids: host.skipJumpHostOnSsids,
+        onProgress?.call(
+          const ConnectionProgressUpdate(
+            state: SshConnectionState.connecting,
+            message: 'Checking Wi-Fi network for jump host bypass…',
+          ),
         );
+        final permission = await wifiNetworkService.requestPermission();
+        String? currentSsid;
+        if (permission == WifiPermissionStatus.granted) {
+          currentSsid = await wifiNetworkService.getCurrentSsid();
+          skipJumpHost = shouldSkipJumpHostForSsid(
+            currentSsid: currentSsid,
+            skipJumpHostOnSsids: host.skipJumpHostOnSsids,
+          );
+        } else {
+          onProgress?.call(
+            const ConnectionProgressUpdate(
+              state: SshConnectionState.connecting,
+              message: 'Wi-Fi permission denied. Using jump host…',
+            ),
+          );
+        }
         DiagnosticsLogService.instance.info(
           'ssh.connect',
           'jump_host_ssid_check',
           fields: {
             'hostId': hostId,
+            'permissionStatus': permission.name,
             'hasCurrentSsid': currentSsid != null,
             'skipJumpHost': skipJumpHost,
           },

@@ -5753,6 +5753,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       connectionState,
       isConnecting: _isConnecting,
     );
+    final isConnectedThroughJumpHost =
+        connectionState == SshConnectionState.connected &&
+        _connectionId != null &&
+        ref
+                .read(activeSessionsProvider.notifier)
+                .getSession(_connectionId!)
+                ?.config
+                .jumpHost !=
+            null;
     final connectionIdentity = formatTerminalConnectionIdentity(
       username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
       hostname: _redactStoreScreenshotIdentities
@@ -5804,6 +5813,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     state: connectionState,
                     isConnecting: _isConnecting,
                   ),
+                  if (isConnectedThroughJumpHost) ...[
+                    const SizedBox(width: 4),
+                    const _TerminalJumpHostIndicator(),
+                  ],
                 ],
               ),
               if (titleSubtitle.isNotEmpty)
@@ -9594,6 +9607,24 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
         message: label,
         excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
+      ),
+    );
+  }
+}
+
+class _TerminalJumpHostIndicator extends StatelessWidget {
+  const _TerminalJumpHostIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      label: 'Connected through jump host',
+      child: Tooltip(
+        message: 'Connected through jump host',
+        excludeFromSemantics: true,
+        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
       ),
     );
   }
