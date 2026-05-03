@@ -735,9 +735,26 @@ void main() {
       await tester.tap(find.byType(PopupMenuButton<String>));
       await tester.pumpAndSettle();
 
-      expect(find.text('Copy'), findsNothing);
-      expect(find.text('Paste'), findsOneWidget);
-      expect(find.text('Paste Files'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is PopupMenuItem<String> && widget.value == 'copy',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_file',
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets(

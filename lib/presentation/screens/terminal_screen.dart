@@ -8258,47 +8258,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showTerminalLinkMessage(result);
   }
 
-  Future<void> _copySelectionText(
-    String text, {
-    required bool clearTerminalSelection,
-    required bool restoreFocus,
-  }) async {
-    if (text.isEmpty) {
-      if (restoreFocus) {
-        _restoreTerminalFocus();
-      }
-      return;
-    }
-
-    await _writeLocalClipboardText(text);
-    if (clearTerminalSelection) {
-      _terminalController.clearSelection();
-    }
-    if (restoreFocus) {
-      _restoreTerminalFocus();
-    }
-
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Copied')));
-  }
-
-  String? _currentTerminalSelectionText() {
-    if (_isNativeSelectionMode) {
-      final text = selectedNativeOverlayText(_nativeSelectionController.value);
-      return text.isEmpty ? null : text;
-    }
-    final selection = _terminalController.selection;
-    if (selection == null) {
-      return null;
-    }
-    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
-    return text.isEmpty ? null : text;
-  }
-
   Future<void> _writeLocalClipboardText(String text) async {
     _recentLocalClipboardText = text;
     _recentLocalClipboardAt = DateTime.now();
