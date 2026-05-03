@@ -1661,8 +1661,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _sendSingleBackspaceForPendingTouchDeletion({
     required ({int deletedCount, String appendedText, int deleteCursorOffset})
     delta,
-    required int? cursorOffsetHint,
-    required String previousText,
   }) {
     if (!_clearImeAfterNextTouchCursorMove ||
         delta.deletedCount == 0 ||
@@ -1670,12 +1668,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return false;
     }
 
-    final previousTextLength = _textLengthInGraphemes(previousText);
-    final targetCursorOffset = cursorOffsetHint == null
-        ? delta.deleteCursorOffset
-        : _clampTextOffset(cursorOffsetHint + 1, previousTextLength);
     _notifyUserInput();
-    _moveTerminalCursorTo(targetCursorOffset);
     widget.terminal.keyInput(TerminalKey.backspace);
     _clearImeAfterNextTouchCursorMove = false;
     _clearImeBufferForFreshInput();
@@ -2251,11 +2244,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
-      if (_sendSingleBackspaceForPendingTouchDeletion(
-        delta: delta,
-        cursorOffsetHint: effectiveTargetCursorOffset,
-        previousText: deltaPreviousText,
-      )) {
+      if (_sendSingleBackspaceForPendingTouchDeletion(delta: delta)) {
         _sawImeComposition = false;
         return;
       }

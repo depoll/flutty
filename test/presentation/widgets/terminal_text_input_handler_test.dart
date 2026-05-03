@@ -184,7 +184,7 @@ void main() {
             initialText: 'hello world',
             initialCursorOffset: 'hello world'.length,
           ),
-          (text: 'hello orld', cursorOffset: 'hello '.length),
+          (text: 'hello worl', cursorOffset: 'hello worl'.length),
         );
 
         final client =
@@ -196,6 +196,72 @@ void main() {
             text: _deleteDetectionMarker,
             selection: TextSelection.collapsed(offset: 2),
           ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'does not move before backspacing a stale chunk deletion after touch',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}hello world',
+            selection: TextSelection.collapsed(offset: 13),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}hello world',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        await tester.tap(find.byType(TerminalTextInputHandler));
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}hello ',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, ['\x7f']);
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'hello world',
+            initialCursorOffset: 'hello '.length,
+          ),
+          (text: 'helloworld', cursorOffset: 'hello'.length),
         );
 
         focusNode.dispose();
