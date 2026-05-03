@@ -1075,11 +1075,14 @@ class _HostRow extends ConsumerWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      _SmallIconButton(
-                        icon: Icons.add,
-                        tooltip: 'New connection',
-                        onTap: () =>
-                            unawaited(_openNewConnection(context, ref)),
+                      Builder(
+                        builder: (buttonContext) => _SmallIconButton(
+                          icon: Icons.more_vert,
+                          tooltip: 'Host actions',
+                          onTap: () => unawaited(
+                            _showContextMenuAtCenter(buttonContext, ref),
+                          ),
+                        ),
                       ),
                       reorderHandle,
                     ],
@@ -2651,6 +2654,8 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
 
 enum _SnippetFolderAction { delete }
 
+enum _SnippetContextAction { copy, edit, delete }
+
 class _SnippetRow extends ConsumerWidget {
   const _SnippetRow({
     required this.snippet,
@@ -2673,6 +2678,9 @@ class _SnippetRow extends ConsumerWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: () => _copySnippet(context, ref),
+        onLongPress: () => unawaited(_showContextMenuAtCenter(context, ref)),
+        onSecondaryTapDown: (details) =>
+            unawaited(_showContextMenu(context, ref, details.globalPosition)),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
@@ -2741,21 +2749,13 @@ class _SnippetRow extends ConsumerWidget {
                 ),
               ),
 
-              // Actions
-              _SmallIconButton(
-                icon: Icons.copy,
-                tooltip: 'Copy command',
-                onTap: () => _copySnippet(context, ref),
-              ),
-              _SmallIconButton(
-                icon: Icons.edit_outlined,
-                tooltip: 'Edit',
-                onTap: () => context.push('/snippets/edit/${snippet.id}'),
-              ),
-              _SmallIconButton(
-                icon: Icons.delete_outline,
-                tooltip: 'Delete',
-                onTap: () => _confirmDelete(context, ref),
+              Builder(
+                builder: (buttonContext) => _SmallIconButton(
+                  icon: Icons.more_vert,
+                  tooltip: 'Snippet actions',
+                  onTap: () =>
+                      unawaited(_showContextMenuAtCenter(buttonContext, ref)),
+                ),
               ),
               reorderHandle,
             ],
@@ -2763,6 +2763,85 @@ class _SnippetRow extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _showContextMenuAtCenter(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null) {
+      return;
+    }
+
+    final globalPosition = renderBox.localToGlobal(
+      renderBox.size.center(Offset.zero),
+    );
+    await _showContextMenu(context, ref, globalPosition);
+  }
+
+  Future<void> _showContextMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Offset globalPosition,
+  ) async {
+    final colorScheme = Theme.of(context).colorScheme;
+    final overlay = Overlay.maybeOf(context);
+    final overlayBox = overlay?.context.findRenderObject() as RenderBox?;
+    if (overlayBox == null) {
+      return;
+    }
+
+    final selection = await showMenu<_SnippetContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 0, 0),
+        Offset.zero & overlayBox.size,
+      ),
+      items: [
+        const PopupMenuItem<_SnippetContextAction>(
+          value: _SnippetContextAction.copy,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.copy),
+            title: Text('Copy command'),
+          ),
+        ),
+        const PopupMenuItem<_SnippetContextAction>(
+          value: _SnippetContextAction.edit,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.edit_outlined),
+            title: Text('Edit'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem<_SnippetContextAction>(
+          value: _SnippetContextAction.delete,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.delete_outline, color: colorScheme.error),
+            title: Text('Delete', style: TextStyle(color: colorScheme.error)),
+          ),
+        ),
+      ],
+    );
+
+    if (!context.mounted || selection == null) {
+      return;
+    }
+
+    switch (selection) {
+      case _SnippetContextAction.copy:
+        _copySnippet(context, ref);
+        return;
+      case _SnippetContextAction.edit:
+        unawaited(context.push('/snippets/edit/${snippet.id}'));
+        return;
+      case _SnippetContextAction.delete:
+        await _confirmDelete(context, ref);
+        return;
+    }
   }
 
   void _copySnippet(BuildContext context, WidgetRef ref) {
