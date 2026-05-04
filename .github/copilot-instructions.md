@@ -24,9 +24,6 @@ flutter test test/unit/database_test.dart
 # Run tests matching a name pattern
 flutter test --name "insert and retrieve host"
 
-# Run tests with coverage
-flutter test --coverage
-
 # Integration tests
 flutter test integration_test
 ```
@@ -48,8 +45,8 @@ flutter test test/path/to/relevant_test.dart
 ```
 
 Run the full `flutter test` suite locally when the touched area is broad,
-high-risk, or lacks narrower coverage. Otherwise, CI runs the full suite with
-coverage after the PR is opened. CI will fail if there are ANY analyzer issues
+high-risk, or lacks a narrower targeted test. Otherwise, CI runs the full suite
+after the PR is opened. CI will fail if there are ANY analyzer issues
 (including `info` level). Common issues to watch for:
 
 - **`public_member_api_docs`**: Add `///` documentation to all public members
