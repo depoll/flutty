@@ -2758,6 +2758,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _applyTerminalThemeToSession(
     TerminalThemeData theme, {
     SshSession? session,
+    bool allowRemoteRefresh = true,
     bool forceRemoteRefresh = false,
     String reason = 'unspecified',
   }) {
@@ -2772,6 +2773,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fields: {
             'reason': reason,
             'connectionId': _connectionId,
+            'allowRemoteRefresh': allowRemoteRefresh,
             'forceRemoteRefresh': forceRemoteRefresh,
           },
         );
@@ -2788,6 +2790,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fields: {
             'reason': reason,
             'connectionId': targetSession.connectionId,
+            'allowRemoteRefresh': allowRemoteRefresh,
             'forceRemoteRefresh': forceRemoteRefresh,
             'hasSessionTerminal': targetSession.terminal != null,
           },
@@ -2805,7 +2808,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldRefreshFirstTheme =
         previousTheme == null && (_isTmuxActive || plainTuiRefreshAllowed);
     final willRefresh =
-        forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme;
+        allowRemoteRefresh &&
+        (forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme);
     if (willRefresh || reason != 'build') {
       DiagnosticsLogService.instance.info(
         'terminal.theme',
@@ -2813,6 +2817,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fields: {
           'reason': reason,
           'connectionId': targetSession.connectionId,
+          'allowRemoteRefresh': allowRemoteRefresh,
           'forceRemoteRefresh': forceRemoteRefresh,
           'hasPreviousTheme': previousTheme != null,
           'didThemeChange': didThemeChange,
@@ -6514,80 +6519,117 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _showThemePicker() async {
     final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
+    final previousSessionThemeOverride = _sessionThemeOverride;
+    final previousTheme = _resolveEffectiveTerminalTheme();
     final theme = await showThemePickerDialog(
       context: context,
       currentThemeId: currentId,
+      onThemePreviewed: _previewThemeFromPicker,
     );
 
-    if (theme != null && mounted) {
-      final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
-      final monetizationState =
-          ref.read(monetizationStateProvider).asData?.value ??
-          ref.read(monetizationServiceProvider).currentState;
-      final hasHostThemeAccess = monetizationState.allowsFeature(
-        MonetizationFeature.hostSpecificThemes,
-      );
-      final connectionId = _connectionId;
-      var hasSession = false;
-      if (connectionId != null) {
-        final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-        final session =
-            (sessionsNotifier
-                  ..updateSessionTheme(connectionId, theme.id, isDark: isDark))
-                .getSession(connectionId);
-        if (session != null) {
-          hasSession = true;
-          _syncAppThemeOverrideFromSession(session);
-        }
-      }
-      setState(() => _sessionThemeOverride = theme);
-      DiagnosticsLogService.instance.info(
-        'terminal.theme',
-        'picker_selected',
-        fields: {
-          'connectionId': connectionId,
-          'isDark': isDark,
-          'hasHostThemeAccess': hasHostThemeAccess,
-          'hasSession': hasSession,
-        },
-      );
-      _applyTerminalThemeToSession(
-        theme,
-        forceRemoteRefresh: true,
-        reason: 'theme_picker',
-      );
+    if (!mounted) {
+      return;
+    }
 
-      // Show option to save to host
-      if (_host != null) {
-        final scaffoldMessenger = ScaffoldMessenger.of(context);
+    if (theme == null) {
+      _restoreThemePickerPreview(
+        previousTheme: previousTheme,
+        previousSessionThemeOverride: previousSessionThemeOverride,
+      );
+      return;
+    }
 
-        // Clear any existing snackbar first to prevent stacking
-        scaffoldMessenger
-          ..hideCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  Expanded(child: Text('Theme: ${theme.name}')),
-                  const SizedBox(width: 8),
-                  FilledButton.tonal(
-                    onPressed: () {
-                      scaffoldMessenger.hideCurrentSnackBar();
-                      _saveThemeToHost(theme, isDark: isDark);
-                    },
-                    child: Text(
-                      hasHostThemeAccess
-                          ? 'Save to Host'
-                          : 'Save to Host (Pro)',
-                    ),
-                  ),
-                ],
-              ),
-              duration: const Duration(seconds: 6),
-            ),
-          );
+    final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final hasHostThemeAccess = monetizationState.allowsFeature(
+      MonetizationFeature.hostSpecificThemes,
+    );
+    final connectionId = _connectionId;
+    var hasSession = false;
+    if (connectionId != null) {
+      final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+      final session =
+          (sessionsNotifier
+                ..updateSessionTheme(connectionId, theme.id, isDark: isDark))
+              .getSession(connectionId);
+      if (session != null) {
+        hasSession = true;
+        _syncAppThemeOverrideFromSession(session);
       }
     }
+    setState(() => _sessionThemeOverride = theme);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'picker_selected',
+      fields: {
+        'connectionId': connectionId,
+        'isDark': isDark,
+        'hasHostThemeAccess': hasHostThemeAccess,
+        'hasSession': hasSession,
+      },
+    );
+    _applyTerminalThemeToSession(
+      theme,
+      forceRemoteRefresh: true,
+      reason: 'theme_picker',
+    );
+
+    // Show option to save to host
+    if (_host != null) {
+      final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+      // Clear any existing snackbar first to prevent stacking
+      scaffoldMessenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Expanded(child: Text('Theme: ${theme.name}')),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: () {
+                    scaffoldMessenger.hideCurrentSnackBar();
+                    _saveThemeToHost(theme, isDark: isDark);
+                  },
+                  child: Text(
+                    hasHostThemeAccess ? 'Save to Host' : 'Save to Host (Pro)',
+                  ),
+                ),
+              ],
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+    }
+  }
+
+  void _previewThemeFromPicker(TerminalThemeData theme) {
+    if (!mounted) {
+      return;
+    }
+    setState(() => _sessionThemeOverride = theme);
+    _lastBuildAppliedTheme = theme;
+    _applyTerminalThemeToSession(
+      theme,
+      allowRemoteRefresh: false,
+      reason: 'theme_picker_preview',
+    );
+  }
+
+  void _restoreThemePickerPreview({
+    required TerminalThemeData previousTheme,
+    required TerminalThemeData? previousSessionThemeOverride,
+  }) {
+    setState(() => _sessionThemeOverride = previousSessionThemeOverride);
+    _lastBuildAppliedTheme = previousTheme;
+    _applyTerminalThemeToSession(
+      previousTheme,
+      allowRemoteRefresh: false,
+      reason: 'theme_picker_cancel',
+    );
   }
 
   Future<void> _saveThemeToHost(
