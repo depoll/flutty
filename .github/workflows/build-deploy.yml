@@ -276,10 +276,24 @@ jobs:
             echo "::error title=Missing Android SDK::ANDROID_HOME or ANDROID_SDK_ROOT must be set."
             exit 1
           fi
+          SDKMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(command -v sdkmanager || true)"
+          fi
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(
+              find "$ANDROID_SDK" -path '*/bin/sdkmanager' -type f -perm -111 \
+                | head -n 1
+            )"
+          fi
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error title=Missing sdkmanager::Could not find sdkmanager under the Android SDK."
+            exit 1
+          fi
           rm -rf "$ANDROID_SDK/cmake/3.22.1"
           set +o pipefail
-          yes | sdkmanager --licenses >/dev/null
-          yes | sdkmanager --install 'cmake;3.22.1'
+          yes | "$SDKMANAGER" --licenses >/dev/null
+          yes | "$SDKMANAGER" --install 'cmake;3.22.1'
           set -o pipefail
 
       - name: Validate Android signing secrets
