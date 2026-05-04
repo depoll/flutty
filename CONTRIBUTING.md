@@ -77,7 +77,7 @@ Be respectful and constructive in all interactions.
    ```
 
    Run the full `flutter test` suite locally for broad or high-risk changes.
-   CI runs the full suite with coverage for every pull request.
+   CI runs the full suite for every pull request.
 
 5. Commit your changes:
    ```bash
@@ -131,7 +131,6 @@ test: add unit tests for host repository
 
 - Write unit tests for business logic
 - Write widget tests for UI components
-- Aim for 80%+ code coverage
 - Test edge cases and error conditions
 
 ## Pull Request Process

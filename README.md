@@ -3,7 +3,6 @@
 **MonkeySSH is the SSH app for agentic coding.** It combines a serious mobile terminal, SFTP workspace, tmux-aware remote workflows, and first-class launch/resume flows for modern coding agents.
 
 [![CI](https://github.com/depollsoft/MonkeySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/depollsoft/MonkeySSH/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/depollsoft/MonkeySSH/branch/main/graph/badge.svg)](https://codecov.io/gh/depollsoft/MonkeySSH)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 MonkeySSH is built for the way people actually work with remote development environments now: connect to a box, jump into tmux, resume the right agent session, browse files, edit config, forward a port, paste commands safely, and keep moving without a laptop.
