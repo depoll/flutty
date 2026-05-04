@@ -25,6 +25,7 @@ const _remoteFileSnapshotBatchSize = 40;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
+const _acpResponseTimeout = Duration(seconds: 5);
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -617,6 +618,46 @@ parseGeminiSessionMetadata(
     isSubagent: _readStringField(decoded, 'kind') == 'subagent',
     parsedAny: true,
   );
+}
+
+/// Parses ACP `session/list` responses into unified session metadata.
+@visibleForTesting
+List<ToolSessionInfo> parseAcpSessionListResult(
+  String toolName,
+  Map<String, dynamic> result,
+) {
+  final rawSessions = _readListField(result, 'sessions');
+  if (rawSessions == null || rawSessions.isEmpty) {
+    return const <ToolSessionInfo>[];
+  }
+
+  final sessions = <ToolSessionInfo>[];
+  for (final rawSession in rawSessions.whereType<Map>()) {
+    final session = rawSession.map((key, value) => MapEntry('$key', value));
+    final sessionId = _readStringField(session, 'sessionId');
+    if (sessionId == null || sessionId.isEmpty) continue;
+
+    sessions.add(
+      ToolSessionInfo(
+        toolName: toolName,
+        sessionId: sessionId,
+        workingDirectory:
+            _readStringField(session, 'cwd') ??
+            _readStringField(session, 'workingDirectory') ??
+            _readStringField(session, 'directory'),
+        lastActive:
+            _parseDateTimeValue(session['updatedAt']) ??
+            _parseDateTimeValue(session['updated_at']) ??
+            _parseDateTimeValue(session['updated']),
+        summary:
+            _readStringField(session, 'title') ??
+            _readStringField(session, 'summary') ??
+            _readStringField(session, 'name') ??
+            _truncateSessionIdValue(sessionId),
+      ),
+    );
+  }
+  return sessions;
 }
 
 String? _trimWorkingDirectory(String? value) {
@@ -1245,6 +1286,7 @@ class AgentSessionDiscoveryService {
           ),
           _discoverCopilotSessions(
             session,
+            workingDirectory,
             relatedWorkingDirectories,
             maxPerTool,
           ),
@@ -1292,6 +1334,7 @@ class AgentSessionDiscoveryService {
     ),
     'Copilot CLI' => _discoverCopilotSessions(
       session,
+      workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
     ),
@@ -1689,6 +1732,7 @@ class AgentSessionDiscoveryService {
 
   Future<_ToolDiscoveryResult> _discoverCopilotSessions(
     SshSession session,
+    String? workingDirectory,
     List<String> relatedWorkingDirectories,
     int max,
   ) async {
@@ -1699,6 +1743,22 @@ class AgentSessionDiscoveryService {
         minimum: 120,
         maximum: 240,
       );
+      final acpSessions = await _discoverAcpSessions(
+        session,
+        provider: _AcpSessionProvider.copilot,
+        toolName: 'Copilot CLI',
+        workingDirectory: workingDirectory,
+        relatedWorkingDirectories: relatedWorkingDirectories,
+        max: scanLimit,
+      );
+      if (acpSessions != null) {
+        return _ToolDiscoveryResult.success(
+          'Copilot CLI',
+          sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
+          hadError: acpSessions.hadError,
+        );
+      }
+
       final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
       final workspacePaths = await _listCopilotWorkspacePaths(
         session,
@@ -1964,6 +2024,21 @@ class AgentSessionDiscoveryService {
         maximum: 120,
       );
       var hadError = false;
+      final acpSessions = await _discoverAcpSessions(
+        session,
+        provider: _AcpSessionProvider.openCode,
+        toolName: 'OpenCode',
+        workingDirectory: workingDirectory,
+        relatedWorkingDirectories: relatedWorkingDirectories,
+        max: scanLimit,
+      );
+      if (acpSessions != null) {
+        return _ToolDiscoveryResult.success(
+          'OpenCode',
+          sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
+          hadError: acpSessions.hadError,
+        );
+      }
 
       if (workingDirectory != null && workingDirectory.isNotEmpty) {
         final scopedDbOutput = await _queryOpenCodeDb(
@@ -2153,6 +2228,223 @@ class AgentSessionDiscoveryService {
           execSession.close();
         }
       }, priority: SshExecPriority.low);
+
+  List<String?> _acpSessionListWorkingDirectories(
+    String? workingDirectory,
+    Iterable<String> relatedWorkingDirectories,
+  ) {
+    final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
+    if (trimmedWorkingDirectory == null) return const <String?>[null];
+
+    final directories = <String>{
+      ...relatedWorkingDirectories
+          .map(_trimWorkingDirectory)
+          .whereType<String>(),
+      trimmedWorkingDirectory,
+    };
+    return <String>{
+      for (final directory in directories) ...{
+        directory,
+        normalizeWorkingDirectoryForComparison(directory),
+      },
+    }.toList(growable: false);
+  }
+
+  String _buildAcpSessionListCommand(
+    _AcpSessionProvider provider,
+    String? workingDirectory,
+  ) => switch (provider) {
+    _AcpSessionProvider.copilot =>
+      'copilot --acp --no-color --no-auto-update --log-level error',
+    _AcpSessionProvider.openCode =>
+      'opencode acp --log-level ERROR'
+          '${workingDirectory == null || workingDirectory.isEmpty ? '' : ' --cwd ${_shellQuote(workingDirectory)}'}',
+  };
+
+  Future<_AcpSessionListResult?> _discoverAcpSessions(
+    SshSession session, {
+    required _AcpSessionProvider provider,
+    required String toolName,
+    required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
+    required int max,
+  }) async {
+    final scopedWorkingDirectories = _acpSessionListWorkingDirectories(
+      workingDirectory,
+      relatedWorkingDirectories,
+    );
+    try {
+      final scopedResult = await _listAcpSessions(
+        session,
+        provider: provider,
+        toolName: toolName,
+        workingDirectory: workingDirectory,
+        listWorkingDirectories: scopedWorkingDirectories,
+        max: max,
+      );
+      if (scopedResult == null || scopedResult.sessions.isNotEmpty) {
+        return scopedResult;
+      }
+      if (scopedWorkingDirectories.length == 1 &&
+          scopedWorkingDirectories.single == null) {
+        return scopedResult;
+      }
+
+      final unscopedResult = await _listAcpSessions(
+        session,
+        provider: provider,
+        toolName: toolName,
+        workingDirectory: workingDirectory,
+        listWorkingDirectories: const <String?>[null],
+        max: max,
+      );
+      if (unscopedResult == null) {
+        return scopedResult;
+      }
+      return _AcpSessionListResult(
+        sessions: unscopedResult.sessions,
+        hadError: scopedResult.hadError || unscopedResult.hadError,
+      );
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<_AcpSessionListResult?> _listAcpSessions(
+    SshSession session, {
+    required _AcpSessionProvider provider,
+    required String toolName,
+    required String? workingDirectory,
+    required List<String?> listWorkingDirectories,
+    required int max,
+  }) => session.runQueuedExec(() async {
+    final execSession = await session.execute(
+      '$_profileSourcingPrefix${_buildAcpSessionListCommand(provider, workingDirectory)}',
+    );
+    final pendingResponses = <int, Completer<Map<String, dynamic>>>{};
+    late final StreamSubscription<String> stdoutSubscription;
+    late final StreamSubscription<List<int>> stderrSubscription;
+
+    void completePendingWithError(Object error, StackTrace stackTrace) {
+      for (final completer in pendingResponses.values) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      }
+      pendingResponses.clear();
+    }
+
+    stdoutSubscription = execSession.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          (line) {
+            final decoded = _tryDecodeJsonObject(line.trim());
+            if (decoded == null) return;
+            final id = decoded['id'];
+            if (id is! int) return;
+            final completer = pendingResponses.remove(id);
+            if (completer != null && !completer.isCompleted) {
+              completer.complete(decoded);
+            }
+          },
+          onError: completePendingWithError,
+          onDone: () => completePendingWithError(
+            StateError('ACP process closed before responding'),
+            StackTrace.current,
+          ),
+        );
+    stderrSubscription = execSession.stderr.listen((_) {});
+
+    var nextRequestId = 0;
+
+    Future<Map<String, dynamic>> request(
+      String method, [
+      Map<String, dynamic>? params,
+    ]) {
+      final id = nextRequestId++;
+      final completer = Completer<Map<String, dynamic>>();
+      pendingResponses[id] = completer;
+      final payload = <String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': id,
+        'method': method,
+        'params': ?params,
+      };
+      execSession.write(
+        Uint8List.fromList(utf8.encode('${jsonEncode(payload)}\n')),
+      );
+      return completer.future.timeout(_acpResponseTimeout);
+    }
+
+    try {
+      final initializeResponse = await request('initialize', {
+        'protocolVersion': 1,
+        'clientCapabilities': {
+          'fs': {'readTextFile': false, 'writeTextFile': false},
+          'terminal': false,
+        },
+        'clientInfo': {'name': 'monkeyssh', 'title': 'MonkeySSH'},
+      });
+      if (initializeResponse.containsKey('error')) return null;
+
+      final result = _readMapField(initializeResponse, 'result');
+      final capabilities = _readMapField(result, 'agentCapabilities');
+      final sessionCapabilities = _readMapField(
+        capabilities,
+        'sessionCapabilities',
+      );
+      if (sessionCapabilities == null ||
+          !sessionCapabilities.containsKey('list')) {
+        return null;
+      }
+
+      final sessionsById = <String, ToolSessionInfo>{};
+      var hadError = false;
+      for (final listWorkingDirectory in listWorkingDirectories) {
+        String? cursor;
+        do {
+          final params = <String, dynamic>{
+            'cwd': ?listWorkingDirectory,
+            'cursor': ?cursor,
+          };
+          final listResponse = await request('session/list', params);
+          final error = _readMapField(listResponse, 'error');
+          if (error != null) {
+            return null;
+          }
+
+          final listResult = _readMapField(listResponse, 'result');
+          if (listResult == null) {
+            hadError = true;
+            break;
+          }
+          for (final info in parseAcpSessionListResult(toolName, listResult)) {
+            sessionsById.putIfAbsent(info.sessionId, () => info);
+          }
+          cursor = _readStringField(listResult, 'nextCursor');
+        } while (cursor != null && sessionsById.length < max);
+      }
+
+      return _AcpSessionListResult(
+        sessions: sortAndLimitDiscoveredSessions(sessionsById.values, max),
+        hadError: hadError,
+      );
+    } finally {
+      for (final completer in pendingResponses.values) {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            StateError('ACP session discovery was cancelled'),
+          );
+        }
+      }
+      pendingResponses.clear();
+      await stdoutSubscription.cancel();
+      await stderrSubscription.cancel();
+      execSession.close();
+    }
+  }, priority: SshExecPriority.low);
 
   Future<List<String>> _listCopilotWorkspacePaths(
     SshSession session,
@@ -2593,6 +2885,15 @@ class _IndexedToolDiscoveryResult {
 
   final int index;
   final _ToolDiscoveryResult result;
+}
+
+enum _AcpSessionProvider { copilot, openCode }
+
+class _AcpSessionListResult {
+  const _AcpSessionListResult({required this.sessions, required this.hadError});
+
+  final List<ToolSessionInfo> sessions;
+  final bool hadError;
 }
 
 class _CodexSessionIndexResult {
