@@ -60,6 +60,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
   isScrollControlled: true,
+  requestFocus: false,
   builder: (context) => _TmuxNavigatorSheet(
     session: session,
     tmuxSessionName: tmuxSessionName,
@@ -507,6 +508,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         .detectInstalledAgentTools(widget.session);
     showModalBottomSheet<void>(
       context: context,
+      requestFocus: false,
       builder: (context) => TmuxToolPickerSheet(
         isProUser: widget.isProUser,
         installedToolsFuture: installedToolsFuture,

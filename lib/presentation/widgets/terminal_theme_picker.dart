@@ -403,6 +403,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   void _handleCustomThemeLongPress(TerminalThemeData theme) {
     showModalBottomSheet<void>(
       context: context,
+      requestFocus: false,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -430,6 +431,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   void _confirmDelete(TerminalThemeData theme) {
     showDialog<void>(
       context: context,
+      requestFocus: false,
       builder: (context) => AlertDialog(
         title: const Text('Delete theme?'),
         content: Text('Are you sure you want to delete "${theme.name}"?'),
@@ -1047,12 +1049,16 @@ class _ThemeGridSection extends StatelessWidget {
 }
 
 /// Shows a theme picker dialog and returns the selected theme.
+///
+/// [requestFocus] controls whether the picker route takes focus when shown.
 Future<TerminalThemeData?> showThemePickerDialog({
   required BuildContext context,
   required String? currentThemeId,
+  bool? requestFocus,
 }) async => showModalBottomSheet<TerminalThemeData>(
   context: context,
   isScrollControlled: true,
+  requestFocus: requestFocus,
   useSafeArea: true,
   builder: (context) => DraggableScrollableSheet(
     initialChildSize: 0.85,

@@ -6192,6 +6192,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             PopupMenuButton<String>(
               onSelected: _handleMenuAction,
+              requestFocus: false,
               itemBuilder: (context) => [
                 const PopupMenuItem(
                   value: 'snippets',
@@ -6437,6 +6438,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
   }
 
+  void _dismissTerminalKeyboardForSftp() {
+    if (!_isMobilePlatform) {
+      return;
+    }
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+  }
+
   void _handleKeyboardToolbarKeyPressed() {
     _followLiveOutput();
     _terminalTextInputController.clearImeBuffer();
@@ -6517,6 +6526,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final theme = await showThemePickerDialog(
       context: context,
       currentThemeId: currentId,
+      requestFocus: false,
     );
 
     if (theme != null && mounted) {
@@ -7021,6 +7031,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _dismissTerminalKeyboardForSftp();
     final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
     if (!mounted) {
       return;
@@ -8640,6 +8651,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _dismissTerminalKeyboardForSftp();
     final result = await context.pushNamed<String>(
       Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
@@ -9502,6 +9514,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final confirmed = await showDialog<bool>(
       context: context,
+      requestFocus: false,
       builder: (context) => AlertDialog(
         title: Text(title),
         content: SingleChildScrollView(
@@ -9860,6 +9873,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         >(
           context: context,
           isScrollControlled: true,
+          requestFocus: false,
           builder: (context) => DraggableScrollableSheet(
             maxChildSize: 0.8,
             minChildSize: 0.3,
@@ -10051,6 +10065,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) async {
     final decision = await showDialog<_AutoConnectReviewDecision>(
       context: context,
+      requestFocus: false,
       builder: (context) => AlertDialog(
         title: const Text('Review imported auto-connect command'),
         content: _buildCommandReviewContent(
@@ -10088,6 +10103,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) async {
     final confirmed = await showDialog<bool>(
       context: context,
+      requestFocus: false,
       builder: (context) => AlertDialog(
         title: Text(title),
         content: _buildCommandReviewContent(review: review, message: message),

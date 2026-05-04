@@ -2319,6 +2319,105 @@ void main() {
     );
 
     testWidgets(
+      'terminal overflow menu preserves the visible mobile keyboard',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        expect(
+          tester
+              .widget<PopupMenuButton<String>>(
+                find.byType(PopupMenuButton<String>),
+              )
+              .requestFocus,
+          isFalse,
+        );
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Snippets'), findsOneWidget);
+        expect(tester.testTextInput.isVisible, isTrue);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'browse files hides the mobile keyboard when opening SFTP',
+      (tester) async {
+        final openedPaths = <String>[];
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+            GoRoute(
+              path: '/sftp/:hostId',
+              name: Routes.sftp,
+              builder: (context, state) {
+                openedPaths.add(state.uri.queryParameters['path'] ?? '');
+                return const Scaffold(body: Text('SFTP opened'));
+              },
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        tester.testTextInput.log.clear();
+
+        await tester.tap(find.byTooltip('Browse files'));
+        await tester.pumpAndSettle();
+
+        expect(openedPaths, ['']);
+        expect(find.text('SFTP opened'), findsOneWidget);
+        expect(tester.testTextInput.isVisible, isFalse);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.hide',
+          ),
+          isNotEmpty,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'terminal double tap selects text without sending Tab',
       (tester) async {
         await pumpScreen(tester);
