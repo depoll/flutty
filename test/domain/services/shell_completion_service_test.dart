@@ -6,16 +6,16 @@ void main() {
     test('uses a captured prompt prefix to isolate the command text', () {
       const prompt = 'depoll@mac-mini ~ % ';
       final invocation = buildShellCompletionInvocation(
-        terminalText: '${prompt}c',
-        terminalCursorOffset: '${prompt}c'.length,
+        terminalText: '${prompt}gi',
+        terminalCursorOffset: '${prompt}gi'.length,
         promptPrefix: prompt,
         workingDirectory: '/Users/depoll',
       );
 
       expect(invocation, isNotNull);
-      expect(invocation!.commandLine, 'c');
-      expect(invocation.cursorOffset, 1);
-      expect(invocation.token, 'c');
+      expect(invocation!.commandLine, 'gi');
+      expect(invocation.cursorOffset, 2);
+      expect(invocation.token, 'gi');
       expect(invocation.tokenStart, 0);
       expect(invocation.mode, ShellCompletionMode.command);
       expect(invocation.workingDirectory, '/Users/depoll');
@@ -55,24 +55,32 @@ void main() {
       expect(invocation, isNull);
     });
 
-    test(
-      'requests dynamic argument completions after an empty argument token',
-      () {
-        final argumentInvocation = buildShellCompletionInvocation(
-          terminalText: 'tester@host ~ % git ',
-          terminalCursorOffset: 'tester@host ~ % git '.length,
-        );
+    test('does not request dynamic argument completions for empty tokens', () {
+      final argumentInvocation = buildShellCompletionInvocation(
+        terminalText: 'tester@host ~ % git ',
+        terminalCursorOffset: 'tester@host ~ % git '.length,
+      );
 
-        expect(argumentInvocation, isNotNull);
-        expect(argumentInvocation!.commandLine, 'git ');
-        expect(argumentInvocation.commandName, 'git');
-        expect(argumentInvocation.token, isEmpty);
-        expect(argumentInvocation.tokenStart, 4);
-        expect(argumentInvocation.mode, ShellCompletionMode.argument);
-        expect(argumentInvocation.words, ['git']);
-        expect(argumentInvocation.wordIndex, 1);
-      },
-    );
+      expect(argumentInvocation, isNull);
+    });
+
+    test('requests shell-native argument completions for typed tokens', () {
+      final argumentInvocation = buildShellCompletionInvocation(
+        terminalText: 'tester@host ~ % git c',
+        terminalCursorOffset: 'tester@host ~ % git c'.length,
+        shellCommand: 'zsh',
+      );
+
+      expect(argumentInvocation, isNotNull);
+      expect(argumentInvocation!.commandLine, 'git c');
+      expect(argumentInvocation.commandName, 'git');
+      expect(argumentInvocation.shellCommand, 'zsh');
+      expect(argumentInvocation.token, 'c');
+      expect(argumentInvocation.tokenStart, 4);
+      expect(argumentInvocation.mode, ShellCompletionMode.argument);
+      expect(argumentInvocation.words, ['git', 'c']);
+      expect(argumentInvocation.wordIndex, 1);
+    });
 
     test('does not request all directories after an empty cd token', () {
       final directoryInvocation = buildShellCompletionInvocation(
@@ -260,17 +268,22 @@ void main() {
       token: 'gi',
       tokenStart: 0,
       mode: ShellCompletionMode.command,
+      shellCommand: '/bin/zsh',
       workingDirectory: '/Users/depoll/project',
     );
 
     final command = buildShellCompletionRemoteCommand(invocation);
 
-    expect(command, contains(r'flutty_shell=${SHELL:-}'));
+    expect(
+      command,
+      contains(r'flutty_shell=${FLUTTY_PREFERRED_SHELL:-${SHELL:-}}'),
+    );
     expect(command, contains("export FLUTTY_MODE='command' FLUTTY_TOKEN='gi'"));
     expect(command, contains("FLUTTY_COMMAND_LINE='gi'"));
     expect(command, contains('FLUTTY_CURSOR_OFFSET=2'));
     expect(command, contains('FLUTTY_WORD_INDEX=0'));
     expect(command, contains('FLUTTY_COMP_WORDS_ASSIGNMENT='));
+    expect(command, contains("FLUTTY_PREFERRED_SHELL='/bin/zsh'"));
     expect(command, contains('FLUTTY_INCLUDE_CD_SHORTCUTS=0'));
     expect(command, contains("FLUTTY_CWD='/Users/depoll/project'"));
     expect(command, contains('FLUTTY_LIMIT=96'));
@@ -281,6 +294,9 @@ void main() {
     expect(command, contains(r'eval "$FLUTTY_COMP_WORDS_ASSIGNMENT"'));
     expect(command, contains(r'_completion_loader "$cmd"'));
     expect(command, contains('emit_dynamic_argument_matches'));
+    expect(command, contains('emit_zsh_native_matches'));
+    expect(command, contains('zpty -b'));
+    expect(command, contains('zle -C _flutty_complete'));
     expect(command, contains(r'''printf '%s\n' "$item"'''));
     expect(command, contains(r'source_if_readable "$HOME/.bash_profile"'));
     expect(command, contains(r'emit_line command "$item" || break'));

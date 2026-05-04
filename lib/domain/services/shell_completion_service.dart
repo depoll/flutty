@@ -46,6 +46,7 @@ class ShellCompletionInvocation {
     required this.mode,
     required this.workingDirectory,
     this.commandName,
+    this.shellCommand,
     this.words = const <String>[],
     this.wordIndex = 0,
     this.maxSuggestions = 24,
@@ -68,6 +69,9 @@ class ShellCompletionInvocation {
 
   /// Parsed command name, when the cursor is in an argument.
   final String? commandName;
+
+  /// Foreground shell command to use for shell-native completion, when known.
+  final String? shellCommand;
 
   /// Parsed shell words before or at the cursor.
   final List<String> words;
@@ -116,9 +120,10 @@ class ShellCompletionSuggestion {
 /// Resolves shell completions over a short-lived SSH exec side channel.
 class ShellCompletionService {
   /// Creates a shell completion service.
-  const ShellCompletionService({
+  ShellCompletionService({
     this.timeout = const Duration(milliseconds: 1500),
     this.maxOutputChars = 12000,
+    this.cacheTtl = const Duration(seconds: 2),
   });
 
   /// Maximum time to wait for a completion exec.
@@ -127,23 +132,56 @@ class ShellCompletionService {
   /// Maximum stdout characters to buffer from the remote helper.
   final int maxOutputChars;
 
+  /// How long exact completion requests can be reused.
+  final Duration cacheTtl;
+
+  final Map<String, _ShellCompletionCacheEntry> _cache =
+      <String, _ShellCompletionCacheEntry>{};
+  final Map<String, Future<List<ShellCompletionSuggestion>>> _inFlight =
+      <String, Future<List<ShellCompletionSuggestion>>>{};
+
   /// Runs a completion query for [invocation].
   Future<List<ShellCompletionSuggestion>> complete(
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
-    DiagnosticsLogService.instance.debug(
-      'shell_completion',
-      'request_start',
-      fields: {
-        'connectionId': session.connectionId,
-        'mode': invocation.mode.name,
-        'tokenLength': invocation.token.length,
-        'hasWorkingDirectory':
-            invocation.workingDirectory?.trim().isNotEmpty ?? false,
-      },
-    );
+    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
+    if (staticSuggestions != null && invocation.token.isEmpty) {
+      return staticSuggestions;
+    }
 
+    final cacheKey = _shellCompletionCacheKey(session, invocation);
+    final cached = _cache[cacheKey];
+    final now = DateTime.now();
+    if (cached != null && now.difference(cached.createdAt) <= cacheTtl) {
+      return cached.suggestions;
+    }
+
+    final pending = _inFlight[cacheKey];
+    if (pending != null) {
+      return pending;
+    }
+
+    final future = _completeUncached(session, invocation, staticSuggestions);
+    _inFlight[cacheKey] = future;
+    try {
+      final suggestions = await future;
+      _cache[cacheKey] = _ShellCompletionCacheEntry(
+        createdAt: DateTime.now(),
+        suggestions: List<ShellCompletionSuggestion>.unmodifiable(suggestions),
+      );
+      _trimCompletionCache(now);
+      return suggestions;
+    } finally {
+      _inFlight.remove(cacheKey)?.ignore();
+    }
+  }
+
+  Future<List<ShellCompletionSuggestion>> _completeUncached(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+    List<ShellCompletionSuggestion>? staticSuggestions,
+  ) async {
     final startedAt = DateTime.now();
     final output = await session
         .runQueuedExec(
@@ -151,29 +189,28 @@ class ShellCompletionService {
           priority: SshExecPriority.low,
         )
         .onError<Object>((error, stackTrace) {
-          final fallbackSuggestions = buildShellCompletionStaticSuggestions(
-            invocation,
-          );
-          if (fallbackSuggestions != null) {
+          if (staticSuggestions != null) {
             return '';
           }
           Error.throwWithStackTrace(error, stackTrace);
         });
     final suggestions = parseShellCompletionOutput(output, invocation);
-    final fallbackSuggestions = suggestions.isEmpty
-        ? buildShellCompletionStaticSuggestions(invocation)
-        : null;
-    final resolvedSuggestions = fallbackSuggestions ?? suggestions;
-    DiagnosticsLogService.instance.debug(
-      'shell_completion',
-      'request_complete',
-      fields: {
-        'connectionId': session.connectionId,
-        'mode': invocation.mode.name,
-        'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
-        'suggestionCount': resolvedSuggestions.length,
-      },
-    );
+    final resolvedSuggestions = suggestions.isEmpty && staticSuggestions != null
+        ? staticSuggestions
+        : suggestions;
+    final duration = DateTime.now().difference(startedAt);
+    if (duration >= const Duration(milliseconds: 350)) {
+      DiagnosticsLogService.instance.debug(
+        'shell_completion',
+        'request_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'mode': invocation.mode.name,
+          'durationMs': duration.inMilliseconds,
+          'suggestionCount': resolvedSuggestions.length,
+        },
+      );
+    }
     return resolvedSuggestions;
   }
 
@@ -219,11 +256,51 @@ class ShellCompletionService {
       exec.close();
     }
   }
+
+  void _trimCompletionCache(DateTime now) {
+    _cache.removeWhere(
+      (key, value) => now.difference(value.createdAt) > cacheTtl,
+    );
+    const maxEntries = 64;
+    if (_cache.length <= maxEntries) {
+      return;
+    }
+    final overflow = _cache.length - maxEntries;
+    final keysToRemove = _cache.keys.take(overflow).toList(growable: false);
+    for (final key in keysToRemove) {
+      _cache.remove(key);
+    }
+  }
 }
+
+class _ShellCompletionCacheEntry {
+  const _ShellCompletionCacheEntry({
+    required this.createdAt,
+    required this.suggestions,
+  });
+
+  final DateTime createdAt;
+  final List<ShellCompletionSuggestion> suggestions;
+}
+
+String _shellCompletionCacheKey(
+  SshSession session,
+  ShellCompletionInvocation invocation,
+) => [
+  session.connectionId,
+  invocation.mode.name,
+  invocation.workingDirectory ?? '',
+  invocation.shellCommand ?? '',
+  invocation.commandLine,
+  invocation.cursorOffset,
+  invocation.tokenStart,
+  invocation.token,
+  invocation.maxSuggestions,
+].join('\u001f');
 
 /// Provider for [ShellCompletionService].
 final shellCompletionServiceProvider = Provider<ShellCompletionService>(
-  (ref) => const ShellCompletionService(),
+  (ref) => ShellCompletionService(),
 );
 
 /// Builds a completion invocation from a rendered terminal line snapshot.
@@ -232,6 +309,7 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
   required int terminalCursorOffset,
   String? promptPrefix,
   String? workingDirectory,
+  String? shellCommand,
   int maxSuggestions = 24,
 }) {
   final commandSnapshot = resolveShellCompletionCommandLine(
@@ -268,7 +346,12 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
         );
   final normalizedToken = normalizeShellCompletionToken(tokenState.token);
 
-  if (normalizedToken.isEmpty && mode != ShellCompletionMode.argument) {
+  if (mode == ShellCompletionMode.command && normalizedToken.length < 2) {
+    return null;
+  }
+  if (normalizedToken.isEmpty &&
+      (mode != ShellCompletionMode.argument ||
+          _staticSubcommandsFor(commandName) == null)) {
     return null;
   }
 
@@ -283,6 +366,7 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
     tokenStart: tokenState.tokenStart,
     mode: mode,
     commandName: commandName,
+    shellCommand: shellCommand,
     words: normalizedWords,
     wordIndex: tokenState.wordIndex,
     workingDirectory: workingDirectory,
@@ -791,14 +875,15 @@ String buildShellCompletionRemoteCommand(ShellCompletionInvocation invocation) {
   final commandName =
       _normalizeShellCompletionCommandName(invocation.commandName) ?? '';
   final compWordsAssignment = _bashCompWordsAssignment(invocation);
+  final preferredShell = invocation.shellCommand?.trim() ?? '';
   final includeCdShortcuts =
       invocation.mode == ShellCompletionMode.command &&
       'cd'.startsWith(invocation.token);
 
   return '''
-export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_COMMAND_NAME=${_shellQuote(commandName)} FLUTTY_COMMAND_LINE=${_shellQuote(invocation.commandLine)} FLUTTY_CURSOR_OFFSET=${invocation.cursorOffset} FLUTTY_WORD_INDEX=${invocation.wordIndex} FLUTTY_COMP_WORDS_ASSIGNMENT=${_shellQuote(compWordsAssignment)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_LIMIT=$limit; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
-case "\$FLUTTY_MODE" in
-  command|argument)
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_COMMAND_NAME=${_shellQuote(commandName)} FLUTTY_COMMAND_LINE=${_shellQuote(invocation.commandLine)} FLUTTY_CURSOR_OFFSET=${invocation.cursorOffset} FLUTTY_WORD_INDEX=${invocation.wordIndex} FLUTTY_COMP_WORDS_ASSIGNMENT=${_shellQuote(compWordsAssignment)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_LIMIT=$limit FLUTTY_PREFERRED_SHELL=${_shellQuote(preferredShell)}; flutty_shell=\${FLUTTY_PREFERRED_SHELL:-\${SHELL:-}}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) if [ -x "\$flutty_shell" ]; then flutty_runner=\$flutty_shell; else flutty_runner=\$(command -v "\$flutty_shell_name" 2>/dev/null || printf %s "\$flutty_shell_name"); fi; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
+case "\$FLUTTY_MODE:\$FLUTTY_PROFILE_KIND" in
+  command:*|argument:bash)
     source_if_readable() {
       [ -r "\$1" ] || return 0
       . "\$1" >/dev/null 2>&1 || :
@@ -929,6 +1014,125 @@ emit_path_matches() {
   emit_path_fallback "\$mode" "\$token"
 }
 
+emit_native_completion_item() {
+  item=\$1
+  case "\$FLUTTY_MODE" in
+    command)
+      emit_line command "\$item"
+      ;;
+    directory)
+      [ -d "\$item" ] && emit_line directory "\$item"
+      ;;
+    path)
+      if [ -d "\$item" ]; then
+        emit_line directory "\$item"
+      elif [ -e "\$item" ]; then
+        emit_line file "\$item"
+      fi
+      ;;
+    argument)
+      if [ -d "\$item" ]; then
+        emit_line directory "\$item"
+      elif [ -e "\$item" ]; then
+        emit_line file "\$item"
+      else
+        emit_line argument "\$item"
+      fi
+      ;;
+  esac
+}
+
+read_zsh_pty_until() {
+  emulate -L zsh
+  local pty_name=\$1 marker=\$2 chunk output attempts
+  output=
+  attempts=0
+  while (( attempts < 80 )); do
+    if zpty -r -t "\$pty_name" chunk '*'; then
+      output+="\$chunk"
+      [[ "\$output" == *"\$marker"* ]] && break
+    else
+      sleep 0.025
+      attempts=\$((attempts + 1))
+    fi
+  done
+  print -rn -- "\$output"
+  [[ "\$output" == *"\$marker"* ]]
+}
+
+emit_zsh_native_matches() {
+  emulate -L zsh
+  [ -n "\${ZSH_VERSION:-}" ] || return 1
+  zmodload zsh/zpty 2>/dev/null || return 1
+
+  local setup_file pty_name ready_output native_output line in_matches
+  setup_file=\$(mktemp "\${TMPDIR:-/tmp}/flutty-completion.XXXXXX") ||
+    return 1
+  pty_name="_flutty_completion_\$\$"
+  {
+    cat >| "\$setup_file" <<'__FLUTTY_ZSH_COMPLETION_SETUP__'
+source_if_readable() {
+  [ -r "\$1" ] || return 0
+  . "\$1" >/dev/null 2>&1 || :
+}
+source_if_readable "\$HOME/.zprofile"
+source_if_readable "\$HOME/.zshrc"
+autoload -Uz compinit
+compinit -C >/dev/null 2>&1 || compinit -u >/dev/null 2>&1 || :
+zstyle ':completion:*' verbose no
+zstyle ':completion:*' group-name ''
+zstyle ':completion:*' format ''
+_flutty_dump_completions() {
+  typeset -ga _flutty_matches
+  _flutty_matches=()
+  compadd() {
+    local -a out
+    builtin compadd -O out "\$@" 2>/dev/null
+    local status=\$?
+    _flutty_matches+=("\${out[@]}")
+    return \$status
+  }
+  _main_complete >/dev/null 2>&1 || :
+  print -r -- __FLUTTY_ZSH_START__
+  print -rl -- "\${_flutty_matches[@]}"
+  print -r -- __FLUTTY_ZSH_END__
+  exit 0
+}
+zle -C _flutty_complete complete-word _flutty_dump_completions
+bindkey "^I" _flutty_complete
+print -r -- __FLUTTY_ZSH_READY__
+__FLUTTY_ZSH_COMPLETION_SETUP__
+
+    zpty -b "\$pty_name" zsh -fi || return 1
+    zpty -w "\$pty_name" "source \${(q)setup_file}"\$'\\n'
+    ready_output=\$(read_zsh_pty_until "\$pty_name" __FLUTTY_ZSH_READY__) ||
+      return 1
+    zpty -w "\$pty_name" "\$FLUTTY_COMMAND_LINE"\$'\\t'
+    native_output=\$(read_zsh_pty_until "\$pty_name" __FLUTTY_ZSH_END__) ||
+      return 1
+
+    in_matches=0
+    while IFS= read -r line; do
+      line=\${line//\$'\\r'/}
+      case "\$line" in
+        *__FLUTTY_ZSH_START__*)
+          in_matches=1
+          continue
+          ;;
+        *__FLUTTY_ZSH_END__*)
+          break
+          ;;
+      esac
+      (( in_matches )) || continue
+      [ -n "\$line" ] || continue
+      emit_native_completion_item "\$line" || break
+    done <<< "\$native_output"
+  } always {
+    zpty -d "\$pty_name" 2>/dev/null || :
+    rm -f "\$setup_file" 2>/dev/null || :
+  }
+}
+
 emit_bash_programmable_argument_matches() {
   command -v bash >/dev/null 2>&1 || return 1
   bash --noprofile --norc -s <<'__FLUTTY_BASH_COMPLETION__'
@@ -1052,15 +1256,17 @@ case "\$FLUTTY_MODE" in
     fi
     ;;
   argument)
-    if ! emit_dynamic_argument_matches && [ -n "\$FLUTTY_TOKEN" ]; then
+    if ! emit_zsh_native_matches &&
+        ! emit_dynamic_argument_matches &&
+        [ -n "\$FLUTTY_TOKEN" ]; then
       emit_path_matches path "\$FLUTTY_TOKEN"
     fi
     ;;
   directory)
-    emit_path_matches directory "\$FLUTTY_TOKEN"
+    emit_zsh_native_matches || emit_path_matches directory "\$FLUTTY_TOKEN"
     ;;
   path)
-    emit_path_matches path "\$FLUTTY_TOKEN"
+    emit_zsh_native_matches || emit_path_matches path "\$FLUTTY_TOKEN"
     ;;
 esac
 __FLUTTY_COMPLETION__

@@ -799,7 +799,7 @@ class TmuxService {
         priority: priority,
       );
       final context = parseTmuxCurrentPaneContext(output);
-      DiagnosticsLogService.instance.info(
+      DiagnosticsLogService.instance.debug(
         'tmux.query',
         'current_pane_context_complete',
         fields: {
