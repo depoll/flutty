@@ -159,7 +159,7 @@ void main() {
           r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title',
         ),
       );
-      expect(command, contains(r'[ "$active" = 1 ]'));
+      expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
       expect(command, contains(r'[ "$alternate" = 1 ]'));
       expect(command, contains(r'[ "$foreground_tui" = 1 ]'));
