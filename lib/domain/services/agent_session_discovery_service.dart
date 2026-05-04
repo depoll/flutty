@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -26,6 +27,11 @@ const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
 const _acpResponseTimeout = Duration(seconds: 2);
+const _execOutputTimeout = Duration(seconds: 10);
+const _execDoneMarker = '__flutty_agent_discovery_exec_done__';
+final RegExp _execDoneMarkerLinePattern = RegExp(
+  '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
+);
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -2399,18 +2405,48 @@ class AgentSessionDiscoveryService {
   Future<String> _exec(SshSession session, String command) =>
       session.runQueuedExec(() async {
         final execSession = await session.execute(
-          '$_profileSourcingPrefix$command',
+          _markCommandDone('$_profileSourcingPrefix$command'),
         );
         try {
-          final results = await Future.wait([
-            execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-            execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-          ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
-          return results[0];
+          execSession.stderr.drain<void>().ignore();
+          return await _readStdoutUntilDoneMarker(execSession);
         } finally {
           execSession.close();
         }
       }, priority: SshExecPriority.low);
+
+  static String _markCommandDone(String command) =>
+      '{ $command; __flutty_agent_discovery_exec_status__=\$?; '
+      'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
+      r'"$__flutty_agent_discovery_exec_status__"; }';
+
+  static Future<String> _readStdoutUntilDoneMarker(
+    SSHSession execSession,
+  ) async {
+    final output = StringBuffer();
+    try {
+      await for (final chunk
+          in execSession.stdout
+              .cast<List<int>>()
+              .transform(utf8.decoder)
+              .timeout(_execOutputTimeout)) {
+        output.write(chunk);
+        final currentOutput = output.toString();
+        RegExpMatch? markerMatch;
+        for (final match in _execDoneMarkerLinePattern.allMatches(
+          currentOutput,
+        )) {
+          markerMatch = match;
+        }
+        if (markerMatch != null) {
+          return currentOutput.substring(0, markerMatch.start);
+        }
+      }
+    } on TimeoutException {
+      return output.toString();
+    }
+    return output.toString();
+  }
 
   List<String?> _acpSessionListWorkingDirectories(String? workingDirectory) {
     final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);

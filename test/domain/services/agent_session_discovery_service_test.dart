@@ -39,6 +39,29 @@ SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
   return session;
 }
 
+SSHSession _buildOpenMarkerExecSession({String stdout = ''}) {
+  final session = _MockExecSession();
+  final stdoutController = StreamController<Uint8List>();
+  final stderrController = StreamController<Uint8List>();
+
+  scheduleMicrotask(() {
+    stdoutController.add(
+      Uint8List.fromList(
+        utf8.encode('$stdout\n__flutty_agent_discovery_exec_done__:0\n'),
+      ),
+    );
+  });
+
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => stderrController.stream);
+  when(() => session.write(any())).thenAnswer(_ignoreInvocation);
+  when(session.close).thenAnswer((_) {
+    if (!stdoutController.isClosed) unawaited(stdoutController.close());
+    if (!stderrController.isClosed) unawaited(stderrController.close());
+  });
+  return session;
+}
+
 SSHSession _buildAcpSessionListExecSession({
   required List<Map<String, Object?>> sessions,
   bool supportsList = true,
@@ -1103,6 +1126,43 @@ branch refs/heads/main
         'session-large',
       ]);
       expect(result.sessions.single.summary, 'Large Gemini session');
+    });
+
+    test('returns when SSH exec stdout stays open after done marker', () async {
+      final client = _MockSshClient();
+      const geminiPath =
+          '/Users/demo/.gemini/tmp/flutty/chats/session-open.json';
+      final sessionJson = jsonEncode({
+        'sessionId': 'session-open',
+        'summary': 'Open stream Gemini session',
+        'lastUpdated': '2026-04-12T21:29:53.292Z',
+        'kind': 'main',
+        'messages': const <Object?>[],
+      });
+
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.gemini/tmp')) {
+          return _buildOpenMarkerExecSession(stdout: geminiPath);
+        }
+        if (command.contains(geminiPath)) {
+          return _buildOpenMarkerExecSession(
+            stdout: _remoteSnapshotLine(geminiPath, sessionJson),
+          );
+        }
+        return _buildOpenMarkerExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery
+          .discoverSessions(session, toolName: 'Gemini CLI')
+          .timeout(const Duration(seconds: 2));
+
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-open',
+      ]);
     });
 
     test(
