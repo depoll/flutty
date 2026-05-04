@@ -47,6 +47,14 @@ const terminalKeyboardTapLongPressTimeout = kLongPressTimeout;
 @visibleForTesting
 const terminalIosBackspaceRepeatSettleDelay = Duration(seconds: 2);
 
+/// Hidden backspace sentinels to preload after iOS exhausts visible IME text.
+@visibleForTesting
+const terminalIosBackspaceRepeatRunwayLength = 96;
+
+/// Runway length at which the hidden iOS backspace sentinels are replenished.
+@visibleForTesting
+const terminalIosBackspaceRepeatRunwayRefillThreshold = 12;
+
 /// Delay before iOS hardware keys begin app-controlled repeat.
 @visibleForTesting
 const terminalIosHardwareKeyRepeatStartDelay = Duration(milliseconds: 250);
@@ -54,6 +62,8 @@ const terminalIosHardwareKeyRepeatStartDelay = Duration(milliseconds: 250);
 /// Repeat interval for iOS hardware terminal navigation/editing keys.
 @visibleForTesting
 const terminalIosHardwareKeyRepeatInterval = Duration(milliseconds: 35);
+
+const _iosBackspaceRepeatRunwayCodeUnit = 0x200B;
 
 DateTime Function()? _modifierChordClockOverride;
 
@@ -165,10 +175,11 @@ class TerminalTextInputHandlerController {
 /// proper IME configuration for swipe typing.
 ///
 /// The xterm package's built-in [CustomTextEdit] hard-codes
-/// `autocorrect: false` and `enableSuggestions: false`, which causes
-/// most IMEs to drop spaces between swiped words. This widget replaces
-/// that text input handling with `enableSuggestions: true` so swipe
-/// typing works correctly.
+/// `autocorrect: false` and `enableSuggestions: false`, which hides voice
+/// input on some system keyboards and causes most IMEs to drop spaces between
+/// swiped words. This widget replaces that text input handling with a normal
+/// text keyboard configuration so dictation, suggestions, and swipe typing work
+/// correctly.
 ///
 /// The child [TerminalView] should use `hardwareKeyboardOnly: true`.
 class TerminalTextInputHandler extends StatefulWidget {
@@ -188,6 +199,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.consumeTerminalKeyModifiers,
     this.applyTerminalTextInputModifiers,
     this.hasActiveToolbarModifier,
+    this.sensitiveInput = false,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     this.showKeyboardOnFocus,
@@ -243,6 +255,13 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// than visible text. In that case the IME buffer is cleared after sending
   /// the input so that stale suggestions don't accumulate from non-text input.
   final ValueGetter<bool>? hasActiveToolbarModifier;
+
+  /// Whether the terminal appears to be accepting sensitive text.
+  ///
+  /// When true, the platform keyboard is configured like a password field so
+  /// autocorrect, suggestions, dictation, and IME learning stay disabled while
+  /// a remote password/passphrase prompt is active.
+  final bool sensitiveInput;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -309,8 +328,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   String? _pendingDeleteResetBaselineText;
   int? _pendingDeleteResetBaselineCursorOffset;
   String? _pendingDeleteResetDeletedSuffixText;
+  bool _isInputConnectionShown = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
+  int _iosBackspaceRunwayLength = 0;
   String? _pendingPerformedEnterText;
   int _pendingEnterActionSuppressions = 0;
   int _latestEditingValueRevision = 0;
@@ -343,6 +364,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       } else {
         HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
       }
+    }
+    if (hasInputConnection &&
+        widget.sensitiveInput != oldWidget.sensitiveInput) {
+      _restartInputConnection();
+    } else if (hasInputConnection &&
+        widget.keyboardAppearance != oldWidget.keyboardAppearance) {
+      _connection!.updateConfig(_buildTextInputConfiguration());
     }
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
@@ -527,6 +555,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   bool get _shouldUseCustomHardwareKeyRepeat =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  bool get _shouldUseIosBackspaceRunway =>
+      widget.deleteDetection && _shouldDeferTrailingBackspaceImeClear;
 
   bool _isRepeatableHardwareTerminalKey(TerminalKey key) => switch (key) {
     TerminalKey.backspace ||
@@ -786,6 +817,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (hasInputConnection) {
       _connection?.close();
     }
+    _isInputConnectionShown = false;
   }
 
   void _suppressNextTouchKeyboardRequest() {
@@ -799,6 +831,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     int? deleteResetBaselineCursorOffset,
     String? deleteResetDeletedSuffixText,
     bool flushPlatformContext = false,
+    bool armIosBackspaceRunway = false,
   }) {
     _cancelDeferredTrailingBackspaceImeClear();
     if (flushPlatformContext && hasInputConnection) {
@@ -809,7 +842,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.setEditingState(_currentEditingState);
     }
     _invalidatePendingEditingUpdates();
-    _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
+    _resetCommittedInputState(
+      clearPendingDeleteResetBaseline: false,
+      armIosBackspaceRunway: armIosBackspaceRunway,
+    );
     _sawImeComposition = false;
     _hasPendingPromptOutputImeReset = false;
     if (deleteResetBaselineText != null &&
@@ -889,24 +925,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      if (show) _connection!.show();
+      if (show) {
+        _connection!.show();
+        _isInputConnectionShown = true;
+      }
     } else {
-      final config = TextInputConfiguration(
-        // Keep these explicit because terminal IME behavior is central here.
-        // ignore: avoid_redundant_argument_values
-        autocorrect: false,
-        inputAction: TextInputAction.newline,
-        keyboardAppearance: widget.keyboardAppearance,
-        // Enable suggestions so the IME adds spaces between swiped words.
-        // ignore: avoid_redundant_argument_values
-        enableSuggestions: true,
-        smartDashesType: SmartDashesType.disabled,
-        smartQuotesType: SmartQuotesType.disabled,
-        enableIMEPersonalizedLearning: false,
-      );
-
-      _connection = TextInput.attach(this, config);
-      if (show) _connection!.show();
+      _connection = TextInput.attach(this, _buildTextInputConfiguration());
+      _isInputConnectionShown = false;
+      if (show) {
+        _connection!.show();
+        _isInputConnectionShown = true;
+      }
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastProcessedUserSelectionWasValid = false;
@@ -919,12 +948,36 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _clearPendingDeleteResetBaseline();
       _lastSentText = '';
       _lastSentCursorOffset = 0;
+      _iosBackspaceRunwayLength = 0;
       _pendingPerformedEnterText = null;
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
       _connection!.setEditingState(_initEditingState);
     }
   }
+
+  TextInputConfiguration _buildTextInputConfiguration() =>
+      TextInputConfiguration(
+        // Keep these explicit because terminal IME behavior is central here.
+        // ignore: avoid_redundant_argument_values
+        inputType: TextInputType.text,
+        // ignore: avoid_redundant_argument_values
+        autocorrect: !widget.sensitiveInput,
+        // ignore: avoid_redundant_argument_values
+        inputAction: TextInputAction.newline,
+        keyboardAppearance: widget.keyboardAppearance,
+        // Enable suggestions so the IME offers dictation and adds spaces
+        // between swiped words.
+        // ignore: avoid_redundant_argument_values
+        enableSuggestions: !widget.sensitiveInput,
+        obscureText: widget.sensitiveInput,
+        smartDashesType: SmartDashesType.disabled,
+        smartQuotesType: SmartQuotesType.disabled,
+        // Let the keyboard behave like a normal text field; voice input can
+        // depend on this on third-party IMEs.
+        // ignore: avoid_redundant_argument_values
+        enableIMEPersonalizedLearning: !widget.sensitiveInput,
+      );
 
   void _closeInputConnectionIfNeeded() {
     _stopHardwareKeyRepeat();
@@ -933,6 +986,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
+    _isInputConnectionShown = false;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastProcessedUserSelectionWasValid = false;
@@ -945,9 +999,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _clearPendingDeleteResetBaseline();
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _iosBackspaceRunwayLength = 0;
     _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
+  }
+
+  void _restartInputConnection() {
+    final shouldShow = _isInputConnectionShown;
+    _closeInputConnectionIfNeeded();
+    _openInputConnection(show: shouldShow);
   }
 
   // -- Editing state --
@@ -1217,6 +1278,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     int pendingEnterSuppressions = 0,
     bool clearPendingPerformedEnterText = true,
     bool clearPendingDeleteResetBaseline = true,
+    bool armIosBackspaceRunway = false,
   }) {
     _cancelDeferredTrailingBackspaceImeClear();
     _lastSentText = '';
@@ -1233,7 +1295,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (clearPendingDeleteResetBaseline) {
       _clearPendingDeleteResetBaseline();
     }
-    _syncEditingStateWithUserText('');
+    if (armIosBackspaceRunway && _shouldUseIosBackspaceRunway) {
+      _syncEditingStateWithIosBackspaceRunway();
+    } else {
+      _syncEditingStateWithUserText('');
+    }
   }
 
   void _clearPendingDeleteResetBaseline() {
@@ -1629,6 +1695,47 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _textLengthInGraphemes(String text) => text.characters.length;
 
+  bool _clearImeForPendingTouchCursorMove(
+    TextEditingValue value,
+    String currentText,
+  ) {
+    if (!_clearImeAfterNextTouchCursorMove || currentText != _lastSentText) {
+      return false;
+    }
+
+    final targetCursorOffset = _collapsedSelectionCursorOffset(
+      currentText,
+      value,
+    );
+    if (targetCursorOffset == null ||
+        targetCursorOffset == _lastSentCursorOffset) {
+      return false;
+    }
+
+    _notifyUserInput();
+    _moveTerminalCursorTo(targetCursorOffset);
+    _clearImeAfterNextTouchCursorMove = false;
+    _clearImeBufferForFreshInput();
+    return true;
+  }
+
+  bool _sendSingleBackspaceForPendingTouchDeletion({
+    required ({int deletedCount, String appendedText, int deleteCursorOffset})
+    delta,
+  }) {
+    if (!_clearImeAfterNextTouchCursorMove ||
+        delta.deletedCount == 0 ||
+        delta.appendedText.isNotEmpty) {
+      return false;
+    }
+
+    _notifyUserInput();
+    widget.terminal.keyInput(TerminalKey.backspace);
+    _clearImeAfterNextTouchCursorMove = false;
+    _clearImeBufferForFreshInput();
+    return true;
+  }
+
   int _graphemeOffsetForCodeUnitOffset(String text, int codeUnitOffset) => text
       .substring(0, _clampTextOffset(codeUnitOffset, text.length))
       .characters
@@ -1960,11 +2067,192 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
   }
 
+  String _iosBackspaceRunwayPayload(int length) =>
+      String.fromCharCodes(List<int>.filled(length, 0x200B));
+
+  TextEditingValue _editingStateForIosBackspaceRunway() {
+    final text =
+        '$_deleteDetectionMarker'
+        '${_iosBackspaceRunwayPayload(terminalIosBackspaceRepeatRunwayLength)}';
+    return TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+
+  void _syncEditingStateWithIosBackspaceRunway() {
+    if (!_shouldUseIosBackspaceRunway) {
+      _syncEditingStateWithUserText('');
+      return;
+    }
+
+    _iosBackspaceRunwayLength = terminalIosBackspaceRepeatRunwayLength;
+    _currentEditingState = _editingStateForIosBackspaceRunway();
+    if (hasInputConnection) {
+      _connection!.setEditingState(_currentEditingState);
+    }
+  }
+
+  int _leadingIosBackspaceRunwayLength(String rawUserText) {
+    final limit = rawUserText.length < _iosBackspaceRunwayLength
+        ? rawUserText.length
+        : _iosBackspaceRunwayLength;
+    var length = 0;
+    while (length < limit &&
+        rawUserText.codeUnitAt(length) == _iosBackspaceRepeatRunwayCodeUnit) {
+      length++;
+    }
+    return length;
+  }
+
+  int _offsetAfterRemovedRange({
+    required int offset,
+    required int start,
+    required int length,
+  }) {
+    if (offset < 0 || offset <= start) {
+      return offset;
+    }
+    final end = start + length;
+    if (offset <= end) {
+      return start;
+    }
+    return offset - length;
+  }
+
+  TextSelection _selectionAfterRemovedRange(
+    TextSelection selection, {
+    required int start,
+    required int length,
+  }) => TextSelection(
+    baseOffset: _offsetAfterRemovedRange(
+      offset: selection.baseOffset,
+      start: start,
+      length: length,
+    ),
+    extentOffset: _offsetAfterRemovedRange(
+      offset: selection.extentOffset,
+      start: start,
+      length: length,
+    ),
+    affinity: selection.affinity,
+    isDirectional: selection.isDirectional,
+  );
+
+  TextRange _rangeAfterRemovedRange(
+    TextRange range, {
+    required int start,
+    required int length,
+  }) {
+    if (!range.isValid || range.isCollapsed) {
+      return range;
+    }
+    final shiftedStart = _offsetAfterRemovedRange(
+      offset: range.start,
+      start: start,
+      length: length,
+    );
+    final shiftedEnd = _offsetAfterRemovedRange(
+      offset: range.end,
+      start: start,
+      length: length,
+    );
+    if (shiftedStart >= shiftedEnd) {
+      return TextRange.empty;
+    }
+    return TextRange(start: shiftedStart, end: shiftedEnd);
+  }
+
+  TextEditingValue _editingValueWithoutIosBackspaceRunway(
+    TextEditingValue value,
+    int runwayPrefixLength,
+  ) {
+    final markerLength = _initEditingState.text.length;
+    final text = value.text.replaceRange(
+      markerLength,
+      markerLength + runwayPrefixLength,
+      '',
+    );
+    return TextEditingValue(
+      text: text,
+      selection: _selectionAfterRemovedRange(
+        value.selection,
+        start: markerLength,
+        length: runwayPrefixLength,
+      ),
+      composing: _rangeAfterRemovedRange(
+        value.composing,
+        start: markerLength,
+        length: runwayPrefixLength,
+      ),
+    );
+  }
+
+  bool _handleIosBackspaceRunwayDeletion(TextEditingValue value) {
+    if (!_shouldUseIosBackspaceRunway || _iosBackspaceRunwayLength == 0) {
+      return false;
+    }
+    if (_editingPrefixLength(value.text) != _initEditingState.text.length) {
+      _iosBackspaceRunwayLength = 0;
+      return false;
+    }
+
+    final rawUserText = _extractRawInputText(value.text);
+    final runwayPrefixLength = _leadingIosBackspaceRunwayLength(rawUserText);
+    if (runwayPrefixLength == 0) {
+      _iosBackspaceRunwayLength = 0;
+      return false;
+    }
+    if (runwayPrefixLength < rawUserText.length) {
+      return false;
+    }
+
+    final deletedCount = _iosBackspaceRunwayLength - runwayPrefixLength;
+    if (deletedCount > 0) {
+      _notifyUserInput();
+      for (var index = 0; index < deletedCount; index++) {
+        widget.terminal.keyInput(TerminalKey.backspace);
+      }
+    }
+    _lastSentText = '';
+    _lastSentCursorOffset = 0;
+    _iosBackspaceRunwayLength = runwayPrefixLength;
+    _currentEditingState = value;
+
+    if (_iosBackspaceRunwayLength <=
+        terminalIosBackspaceRepeatRunwayRefillThreshold) {
+      _syncEditingStateWithIosBackspaceRunway();
+    }
+    return true;
+  }
+
+  TextEditingValue _stripIosBackspaceRunway(TextEditingValue value) {
+    if (!_shouldUseIosBackspaceRunway || _iosBackspaceRunwayLength == 0) {
+      return value;
+    }
+    if (_editingPrefixLength(value.text) != _initEditingState.text.length) {
+      _iosBackspaceRunwayLength = 0;
+      return value;
+    }
+
+    final runwayPrefixLength = _leadingIosBackspaceRunwayLength(
+      _extractRawInputText(value.text),
+    );
+    if (runwayPrefixLength == 0) {
+      _iosBackspaceRunwayLength = 0;
+      return value;
+    }
+
+    _iosBackspaceRunwayLength = 0;
+    return _editingValueWithoutIosBackspaceRunway(value, runwayPrefixLength);
+  }
+
   void _syncEditingStateWithUserText(
     String userText, {
     TextEditingValue? sourceValue,
     bool forceResyncState = false,
   }) {
+    _iosBackspaceRunwayLength = 0;
     final rawPrefixLength = sourceValue == null
         ? _initEditingState.text.length
         : _editingPrefixLength(sourceValue.text);
@@ -2060,17 +2348,38 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
   }
 
-  Future<void> _updateEditingValue(TextEditingValue value, int revision) async {
+  Future<void> _updateEditingValue(
+    TextEditingValue incomingValue,
+    int revision,
+  ) async {
+    var value = incomingValue;
     _currentEditingState = value;
     var processedUserSelectionWasValid = false;
     var processedUserSelection = const TextSelection.collapsed(offset: 0);
     try {
+      final pendingTouchCursorCurrentText = _extractInputText(value.text);
+      if (_clearImeForPendingTouchCursorMove(
+        value,
+        pendingTouchCursorCurrentText,
+      )) {
+        _sawImeComposition = false;
+        return;
+      }
+
       // Handle composing (IME input in progress).
       if (!value.composing.isCollapsed) {
         _cancelDeferredTrailingBackspaceImeClear();
+        _iosBackspaceRunwayLength = 0;
         _sawImeComposition = true;
         return;
       }
+
+      if (_handleIosBackspaceRunwayDeletion(value)) {
+        _sawImeComposition = false;
+        return;
+      }
+      value = _stripIosBackspaceRunway(value);
+      _currentEditingState = value;
 
       if (_editingPrefixLength(value.text) < _initEditingState.text.length) {
         final deletedCount = _textLengthInGraphemes(_lastSentText);
@@ -2085,7 +2394,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           widget.terminal.keyInput(TerminalKey.backspace);
         }
         _sawImeComposition = false;
-        _resetCommittedInputState();
+        _resetCommittedInputState(
+          armIosBackspaceRunway: _shouldUseIosBackspaceRunway,
+        );
         _trimLeadingSwipeSpaceAfterBufferClear = clearedBufferedInput;
         return;
       }
@@ -2170,7 +2481,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      _clearImeAfterNextTouchCursorMove = false;
       final deleteResetContinuation = _resolveDeleteResetContinuation(
         normalizedCurrentText,
         cursorOffsetHint: normalizedTargetCursorOffset,
@@ -2190,6 +2500,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
+      if (_sendSingleBackspaceForPendingTouchDeletion(delta: delta)) {
+        _sawImeComposition = false;
+        return;
+      }
+      _clearImeAfterNextTouchCursorMove = false;
       final pendingInputIsTrailingPureDeletion =
           deltaPreviousText.isNotEmpty &&
           delta.deletedCount > 0 &&
@@ -2300,11 +2615,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             .join();
         if (_shouldDeferTrailingBackspaceImeClear) {
           _trimLeadingSuggestionSpaceAfterDelete = true;
-          _scheduleDeferredTrailingBackspaceImeClear(
-            baselineText: effectiveCurrentText,
-            baselineCursorOffset: _lastSentCursorOffset,
-            deletedSuffixText: deletedSuffixText,
-          );
+          if (effectiveCurrentText.isEmpty) {
+            _clearImeBufferForFreshInput(
+              deleteResetBaselineText: effectiveCurrentText,
+              deleteResetBaselineCursorOffset: _lastSentCursorOffset,
+              deleteResetDeletedSuffixText: deletedSuffixText,
+              armIosBackspaceRunway: true,
+            );
+          } else {
+            _scheduleDeferredTrailingBackspaceImeClear(
+              baselineText: effectiveCurrentText,
+              baselineCursorOffset: _lastSentCursorOffset,
+              deletedSuffixText: deletedSuffixText,
+            );
+          }
         } else {
           _clearImeBufferForFreshInput(
             deleteResetBaselineText: effectiveCurrentText,
@@ -2393,6 +2717,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _hasPendingPromptOutputImeReset = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _iosBackspaceRunwayLength = 0;
     _pendingPerformedEnterText = null;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;

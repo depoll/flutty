@@ -62,10 +62,13 @@ void main() {
         'Editing main.dart',
         '1712930000',
         'vim main.dart',
+        '',
+        '@8',
       ].join(sep);
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 0);
+      expect(window.id, '@8');
       expect(window.name, 'vim');
       expect(window.isActive, true);
       expect(window.currentCommand, 'vim');
@@ -82,6 +85,7 @@ void main() {
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 0);
+      expect(window.id, isNull);
       expect(window.name, 'vim');
       expect(window.displayTitle, 'Editing main.dart');
     });
@@ -411,8 +415,8 @@ void main() {
       'replaces an existing window snapshot and clears prior active state',
       () {
         const windows = <TmuxWindow>[
-          TmuxWindow(index: 0, name: 'first', isActive: true),
-          TmuxWindow(index: 1, name: 'second', isActive: false),
+          TmuxWindow(index: 0, id: '@1', name: 'first', isActive: true),
+          TmuxWindow(index: 1, id: '@2', name: 'second', isActive: false),
         ];
 
         final updated = applyTmuxWindowChangeEvent(
@@ -420,6 +424,7 @@ void main() {
           const TmuxWindowSnapshotEvent(
             TmuxWindow(
               index: 1,
+              id: '@2',
               name: 'second-renamed',
               isActive: true,
               paneTitle: 'editing',
@@ -433,6 +438,24 @@ void main() {
         expect(updated[1].paneTitle, 'editing');
       },
     );
+
+    test('matches snapshots by stable window ID when indexes changed', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 1, id: '@7', name: 'agent', isActive: false),
+        TmuxWindow(index: 2, id: '@8', name: 'shell', isActive: true),
+      ];
+
+      final updated = applyTmuxWindowChangeEvent(
+        windows,
+        const TmuxWindowSnapshotEvent(
+          TmuxWindow(index: 3, id: '@7', name: 'agent', isActive: true),
+        ),
+      );
+
+      expect(updated, hasLength(2));
+      expect(updated.firstWhere((window) => window.id == '@7').index, 3);
+      expect(updated.firstWhere((window) => window.id == '@8').isActive, false);
+    });
 
     test('adds a new window snapshot in index order', () {
       const windows = <TmuxWindow>[
@@ -683,28 +706,28 @@ void main() {
     test('builds basic command', () {
       expect(
         buildTmuxCommand(sessionName: 'dev'),
-        "tmux new-session -A -s 'dev'",
+        r"tmux new-session -A -s 'dev' \; set-option -g focus-events on",
       );
     });
 
     test('includes working directory', () {
       expect(
         buildTmuxCommand(sessionName: 'dev', workingDirectory: '/home/user'),
-        "tmux new-session -A -s 'dev' -c '/home/user'",
+        r"tmux new-session -A -s 'dev' -c '/home/user' \; set-option -g focus-events on",
       );
     });
 
     test('includes extra flags', () {
       expect(
         buildTmuxCommand(sessionName: 'dev', extraFlags: '-x 200 -y 50'),
-        "tmux new-session -A -s 'dev' -x 200 -y 50",
+        r"tmux new-session -A -s 'dev' -x 200 -y 50 \; set-option -g focus-events on",
       );
     });
 
     test('supports tmux commands in extra flags', () {
       expect(
         buildTmuxCommand(sessionName: 'dev', extraFlags: r'\; set status off'),
-        r"tmux new-session -A -s 'dev' \; set status off",
+        r"tmux new-session -A -s 'dev' \; set status off \; set-option -g focus-events on",
       );
     });
 
@@ -715,7 +738,7 @@ void main() {
           workingDirectory: '/tmp',
           extraFlags: '-n editor',
         ),
-        "tmux new-session -A -s 'dev' -c '/tmp' -n editor",
+        r"tmux new-session -A -s 'dev' -c '/tmp' -n editor \; set-option -g focus-events on",
       );
     });
   });

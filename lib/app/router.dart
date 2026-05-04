@@ -19,7 +19,6 @@ import '../presentation/screens/sftp_screen.dart';
 import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
-import '../presentation/screens/theme_editor_screen.dart';
 import '../presentation/screens/upgrade_screen.dart';
 import 'routes.dart';
 
@@ -28,6 +27,11 @@ final appNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'appNavigator');
 
 /// Provider for the app router.
 final routerProvider = Provider<GoRouter>((ref) {
+  // Keep this watch: rebuilding the router on auth transitions intentionally
+  // clears protected navigation history when the app locks.
+  // TODO(router): only switch to a persistent GoRouter/refreshListenable after
+  // tests prove locked routes cannot be revealed via back navigation and
+  // notification deep-link navigation remains compatible.
   final authState = ref.watch(authStateProvider);
 
   return GoRouter(
@@ -41,7 +45,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/',
         name: Routes.home,
-        builder: (context, state) => const HomeScreen(),
+        builder: (context, state) => HomeScreen(
+          initialTab: _homeScreenTabFromRoute(state.uri.queryParameters['tab']),
+        ),
       ),
       GoRoute(
         path: '/lock',
@@ -66,6 +72,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           final initialTmuxWindowIndex = int.tryParse(
             state.uri.queryParameters['tmuxWindow'] ?? '',
           );
+          final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
@@ -76,6 +83,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                 connectionId,
                 initialTmuxSessionName,
                 initialTmuxWindowIndex,
+                initialTmuxWindowId,
                 state.uri.queryParameters['notificationTap'],
               ),
             ),
@@ -83,6 +91,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             connectionId: connectionId,
             initialTmuxSessionName: initialTmuxSessionName,
             initialTmuxWindowIndex: initialTmuxWindowIndex,
+            initialTmuxWindowId: initialTmuxWindowId,
             initialTmuxWindowRequiresVisibleSession:
                 state.uri.queryParameters['notificationTap'] != null,
             initiallyExpandTmuxWindows:
@@ -124,21 +133,35 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/sftp/:hostId',
         name: Routes.sftp,
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
           );
           final initialPath = state.uri.queryParameters['path'];
           final initialWorkingDirectory = state.uri.queryParameters['cwd'];
+          final connectionStartDirectory =
+              state.uri.queryParameters['connectionCwd'];
+          final tmuxPaneDirectory = state.uri.queryParameters['tmuxCwd'];
           if (hostId == null) {
-            return const Scaffold(body: Center(child: Text('Invalid host ID')));
+            return _buildSlideUpPage<String>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid host ID')),
+              ),
+            );
           }
-          return SftpScreen(
-            hostId: hostId,
-            connectionId: connectionId,
-            initialPath: initialPath,
-            initialWorkingDirectory: initialWorkingDirectory,
+          return _buildSlideUpPage<String>(
+            key: state.pageKey,
+            child: SftpScreen(
+              hostId: hostId,
+              connectionId: connectionId,
+              initialPath: initialPath,
+              initialWorkingDirectory: initialWorkingDirectory,
+              connectionStartDirectory: connectionStartDirectory,
+              tmuxPaneDirectory: tmuxPaneDirectory,
+              showCloseButton: true,
+            ),
           );
         },
       ),
@@ -149,12 +172,18 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/snippets/add',
-        name: 'snippet-add',
-        builder: (context, state) => const SnippetEditScreen(),
+        name: Routes.snippetAdd,
+        builder: (context, state) {
+          final extra = state.extra;
+          final prefill = extra is SnippetEditPrefill
+              ? extra
+              : const SnippetEditPrefill();
+          return SnippetEditScreen(prefill: prefill);
+        },
       ),
       GoRoute(
         path: '/snippets/edit/:snippetId',
-        name: 'snippet-edit',
+        name: Routes.snippetEdit,
         builder: (context, state) {
           final snippetId = int.tryParse(
             state.pathParameters['snippetId'] ?? '',
@@ -200,22 +229,35 @@ final routerProvider = Provider<GoRouter>((ref) {
           );
         },
       ),
-      GoRoute(
-        path: '/theme-editor',
-        name: Routes.themeEditorNew,
-        builder: (context, state) => const ThemeEditorScreen(),
-      ),
-      GoRoute(
-        path: '/theme-editor/:themeId',
-        name: Routes.themeEditor,
-        builder: (context, state) {
-          final themeId = state.pathParameters['themeId'];
-          return ThemeEditorScreen(themeId: themeId);
-        },
-      ),
     ],
   );
 });
+
+HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
+  'connections' => HomeScreenTab.connections,
+  _ => HomeScreenTab.hosts,
+};
+
+CustomTransitionPage<T> _buildSlideUpPage<T>({
+  required LocalKey key,
+  required Widget child,
+}) => CustomTransitionPage<T>(
+  key: key,
+  fullscreenDialog: true,
+  transitionDuration: const Duration(milliseconds: 280),
+  reverseTransitionDuration: const Duration(milliseconds: 220),
+  transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+      SlideTransition(
+        position: animation.drive(
+          Tween<Offset>(
+            begin: const Offset(0, 1),
+            end: Offset.zero,
+          ).chain(CurveTween(curve: Curves.easeOutCubic)),
+        ),
+        child: child,
+      ),
+  child: child,
+);
 
 /// Computes the route redirect for the given authentication state.
 String? redirectForAuthState({

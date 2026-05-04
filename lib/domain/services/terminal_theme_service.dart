@@ -8,6 +8,64 @@ import '../models/terminal_theme.dart';
 import '../models/terminal_themes.dart';
 import 'settings_service.dart';
 
+/// Theme IDs from the foreground terminal connection that should drive app UI.
+@immutable
+class TerminalAppThemeOverride {
+  /// Creates a new [TerminalAppThemeOverride].
+  const TerminalAppThemeOverride({
+    required this.owner,
+    this.lightThemeId,
+    this.darkThemeId,
+  });
+
+  /// Identity token used so screens only clear overrides they created.
+  final Object owner;
+
+  /// Light terminal theme ID for the foreground terminal connection.
+  final String? lightThemeId;
+
+  /// Dark terminal theme ID for the foreground terminal connection.
+  final String? darkThemeId;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TerminalAppThemeOverride &&
+          identical(owner, other.owner) &&
+          lightThemeId == other.lightThemeId &&
+          darkThemeId == other.darkThemeId;
+
+  @override
+  int get hashCode =>
+      Object.hash(identityHashCode(owner), lightThemeId, darkThemeId);
+}
+
+/// Notifier for the active terminal connection app-theme override.
+class TerminalAppThemeOverrideNotifier
+    extends Notifier<TerminalAppThemeOverride?> {
+  /// Starts without an active terminal app-theme override.
+  @override
+  TerminalAppThemeOverride? build() => null;
+
+  /// Current active terminal app-theme override.
+  TerminalAppThemeOverride? get activeOverride => state;
+
+  /// Updates the active terminal app-theme override.
+  set activeOverride(TerminalAppThemeOverride override) {
+    if (state == override) {
+      return;
+    }
+    state = override;
+  }
+
+  /// Clears the active terminal app-theme override if [owner] created it.
+  void clearForOwner(Object owner) {
+    if (identical(state?.owner, owner)) {
+      state = null;
+    }
+  }
+}
+
 /// Service for managing terminal themes.
 ///
 /// Provides methods for resolving the appropriate theme for a host,
@@ -54,13 +112,13 @@ class TerminalThemeService {
       }
     }
 
-    return isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite;
+    return TerminalThemes.defaultThemeForBrightness(brightness);
   }
 
   /// Gets a theme by ID (checks built-in themes first, then custom).
   Future<TerminalThemeData?> getThemeById(String id) async {
     final builtIn = TerminalThemes.getById(id);
-    if (builtIn != null) {
+    if (builtIn != null && TerminalThemes.resolveThemeId(id) == id) {
       return builtIn;
     }
 
@@ -70,7 +128,7 @@ class TerminalThemeService {
         return theme;
       }
     }
-    return null;
+    return builtIn;
   }
 
   /// Gets all available themes (built-in + custom).
@@ -99,12 +157,12 @@ class TerminalThemeService {
     }
 
     try {
-      final list = jsonDecode(json) as List<dynamic>;
-      return list
-          .map(
-            (item) => TerminalThemeData.fromJson(item as Map<String, dynamic>),
-          )
-          .toList();
+      final decoded = jsonDecode(json);
+      if (decoded is! List) {
+        return [];
+      }
+
+      return [for (final item in decoded) ?TerminalThemeData.tryFromJson(item)];
     } on FormatException {
       return [];
     }
@@ -158,3 +216,10 @@ final customTerminalThemesProvider = FutureProvider<List<TerminalThemeData>>((
   final service = ref.watch(terminalThemeServiceProvider);
   return service.getCustomThemes();
 });
+
+/// Active terminal connection theme override for app-wide UI theming.
+final terminalAppThemeOverrideProvider =
+    NotifierProvider<
+      TerminalAppThemeOverrideNotifier,
+      TerminalAppThemeOverride?
+    >(TerminalAppThemeOverrideNotifier.new);

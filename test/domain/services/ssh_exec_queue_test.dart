@@ -19,18 +19,24 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, [0, 1]);
-    expect(activeQueuedSshExecCountForTesting(1), 2);
-    expect(pendingQueuedSshExecCountForTesting(1), 1);
+    expect(startedJobs, [0]);
+    expect(activeQueuedSshExecCountForTesting(1), 1);
+    expect(pendingQueuedSshExecCountForTesting(1), 2);
 
     completers[0].complete(0);
     await pumpEventQueue();
 
-    expect(startedJobs, [0, 1, 2]);
-    expect(activeQueuedSshExecCountForTesting(1), 2);
-    expect(pendingQueuedSshExecCountForTesting(1), 0);
+    expect(startedJobs, [0, 1]);
+    expect(activeQueuedSshExecCountForTesting(1), 1);
+    expect(pendingQueuedSshExecCountForTesting(1), 1);
 
     completers[1].complete(1);
+    await pumpEventQueue();
+
+    expect(startedJobs, [0, 1, 2]);
+    expect(activeQueuedSshExecCountForTesting(1), 1);
+    expect(pendingQueuedSshExecCountForTesting(1), 0);
+
     completers[2].complete(2);
 
     expect(await Future.wait(futures), [0, 1, 2]);
@@ -64,16 +70,16 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-1', 'normal']);
-    expect(activeQueuedSshExecCountForTesting(2), 2);
-    expect(pendingQueuedSshExecCountForTesting(2), 1);
+    expect(startedJobs, ['low-1']);
+    expect(activeQueuedSshExecCountForTesting(2), 1);
+    expect(pendingQueuedSshExecCountForTesting(2), 2);
 
-    normal.complete('normal');
+    firstLow.complete('low-1');
     await pumpEventQueue();
 
     expect(startedJobs, ['low-1', 'normal']);
 
-    firstLow.complete('low-1');
+    normal.complete('normal');
     await pumpEventQueue();
 
     expect(startedJobs, ['low-1', 'normal', 'low-2']);
@@ -85,5 +91,62 @@ void main() {
       'low-2',
       'normal',
     ]);
+  });
+
+  test('prioritizes normal work ahead of queued low-priority work', () async {
+    final startedJobs = <String>[];
+    final firstNormal = Completer<String>();
+    final low = Completer<String>();
+    final secondNormal = Completer<String>();
+
+    final firstNormalFuture = runQueuedSshExec(3, () {
+      startedJobs.add('normal-1');
+      return firstNormal.future;
+    });
+
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+
+    final lowFuture = runQueuedSshExec(3, () {
+      startedJobs.add('low');
+      return low.future;
+    }, priority: SshExecPriority.low);
+
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+    expect(pendingQueuedSshExecCountForTesting(3), 1);
+
+    final secondNormalFuture = runQueuedSshExec(3, () {
+      startedJobs.add('normal-2');
+      return secondNormal.future;
+    });
+
+    await pumpEventQueue();
+
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+    expect(pendingQueuedSshExecCountForTesting(3), 2);
+
+    firstNormal.complete('normal-1');
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1', 'normal-2']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+    expect(pendingQueuedSshExecCountForTesting(3), 1);
+
+    secondNormal.complete('normal-2');
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1', 'normal-2', 'low']);
+
+    low.complete('low');
+
+    expect(
+      await Future.wait([firstNormalFuture, lowFuture, secondNormalFuture]),
+      ['normal-1', 'low', 'normal-2'],
+    );
   });
 }

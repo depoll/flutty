@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../domain/models/terminal_theme.dart';
+
 /// Theme configuration for the Flutty app.
 /// Inspired by Termius with a modern hacker aesthetic.
 abstract final class FluttyTheme {
@@ -55,24 +57,84 @@ abstract final class FluttyTheme {
   /// Dark theme.
   static ThemeData get dark => _buildTheme(Brightness.dark);
 
-  static ThemeData _buildTheme(Brightness brightness) {
+  /// Uses system text styles instead of Google Fonts when true.
+  ///
+  /// This is intended for tests that instantiate theme data without a bundled
+  /// font asset bundle.
+  @visibleForTesting
+  static bool debugUseSystemFonts = false;
+
+  /// Builds an app theme using colors from a terminal theme palette.
+  static ThemeData fromTerminalTheme(
+    TerminalThemeData terminalTheme, {
+    required Brightness brightness,
+  }) => _buildTheme(brightness, terminalTheme: terminalTheme);
+
+  static ThemeData _buildTheme(
+    Brightness brightness, {
+    TerminalThemeData? terminalTheme,
+  }) {
     final isDark = brightness == Brightness.dark;
+    final background =
+        terminalTheme?.background ??
+        (isDark ? _backgroundDark : _backgroundLight);
+    final textPrimary =
+        terminalTheme?.foreground ?? (isDark ? _textPrimary : Colors.black87);
+    final textSecondary = terminalTheme == null
+        ? (isDark ? _textSecondary : Colors.black54)
+        : _blend(background, textPrimary, isDark ? 0.62 : 0.84);
+    final surface =
+        terminalTheme?.background ?? (isDark ? _surfaceDark : _surfaceLight);
+    final card = terminalTheme == null
+        ? (isDark ? _cardDark : _cardLight)
+        : _blend(background, textPrimary, isDark ? 0.07 : 0.025);
+    final border = terminalTheme == null
+        ? (isDark ? _borderDark : _borderLight)
+        : _blend(background, textPrimary, isDark ? 0.18 : 0.16);
+    final primary = terminalTheme == null
+        ? _accentTeal
+        : _resolveTerminalAccent(terminalTheme);
+    final primarySoft = terminalTheme == null
+        ? _accentTealSoft
+        : _blend(background, primary, isDark ? 0.55 : 0.28);
+    final error = terminalTheme?.red ?? _errorColor;
+    final warning = terminalTheme?.yellow ?? _warningColor;
+    final inputFill = terminalTheme == null
+        ? (isDark ? _cardDark : Colors.grey.shade50)
+        : _blend(background, textPrimary, isDark ? 0.08 : 0.018);
+    final inputHover = terminalTheme == null
+        ? (isDark ? _borderDark : Colors.grey.shade100)
+        : _blend(background, textPrimary, isDark ? 0.12 : 0.045);
+    final overlayBackground = terminalTheme?.black ?? Colors.grey.shade900;
+    final snackBarBackground = isDark ? card : overlayBackground;
+    final snackBarForeground = _readableTextColor(snackBarBackground);
+    final tooltipBackground = isDark ? card : overlayBackground;
+    final tooltipForeground = _readableTextColor(tooltipBackground);
+    final onPrimary = terminalTheme == null
+        ? Colors.white
+        : _readableTextColor(primary);
+    final onTertiary = terminalTheme == null
+        ? Colors.black
+        : _readableTextColor(warning);
+    final onError = terminalTheme == null
+        ? Colors.white
+        : _readableTextColor(error);
 
     final colorScheme = ColorScheme(
       brightness: brightness,
-      primary: _accentTeal,
-      onPrimary: Colors.white,
-      secondary: isDark ? _cardDark : _surfaceLight,
-      onSecondary: isDark ? _textPrimary : Colors.black87,
-      tertiary: _warningColor,
-      onTertiary: Colors.black,
-      error: _errorColor,
-      onError: Colors.white,
-      surface: isDark ? _surfaceDark : _surfaceLight,
-      onSurface: isDark ? _textPrimary : Colors.black87,
-      surfaceContainerHighest: isDark ? _cardDark : _cardLight,
-      outline: isDark ? _borderDark : _borderLight,
-      outlineVariant: isDark ? _borderDark.withAlpha(128) : _borderLight,
+      primary: primary,
+      onPrimary: onPrimary,
+      secondary: card,
+      onSecondary: textPrimary,
+      tertiary: warning,
+      onTertiary: onTertiary,
+      error: error,
+      onError: onError,
+      surface: surface,
+      onSurface: textPrimary,
+      surfaceContainerHighest: card,
+      outline: border,
+      outlineVariant: border.withAlpha(isDark ? 128 : 180),
     );
 
     // Use JetBrains Mono for that terminal feel, Inter for UI
@@ -80,54 +142,54 @@ abstract final class FluttyTheme {
         ? ThemeData.dark().textTheme
         : ThemeData.light().textTheme;
 
-    final textTheme = GoogleFonts.interTextTheme(baseTextTheme).copyWith(
+    final textTheme = _interTextTheme(baseTextTheme).copyWith(
       // Headings with more weight
-      headlineLarge: GoogleFonts.inter(
+      headlineLarge: _inter(
         fontSize: 32,
         fontWeight: FontWeight.w700,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
         letterSpacing: -0.5,
       ),
-      headlineMedium: GoogleFonts.inter(
+      headlineMedium: _inter(
         fontSize: 24,
         fontWeight: FontWeight.w600,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
         letterSpacing: -0.3,
       ),
-      headlineSmall: GoogleFonts.inter(
+      headlineSmall: _inter(
         fontSize: 20,
         fontWeight: FontWeight.w600,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
       ),
-      titleLarge: GoogleFonts.inter(
+      titleLarge: _inter(
         fontSize: 18,
         fontWeight: FontWeight.w600,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
       ),
-      titleMedium: GoogleFonts.inter(
+      titleMedium: _inter(
         fontSize: 16,
         fontWeight: FontWeight.w500,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
       ),
-      bodyLarge: GoogleFonts.inter(
+      bodyLarge: _inter(
         fontSize: 16,
         fontWeight: FontWeight.w400,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
       ),
-      bodyMedium: GoogleFonts.inter(
+      bodyMedium: _inter(
         fontSize: 14,
         fontWeight: FontWeight.w400,
-        color: isDark ? _textSecondary : Colors.black54,
+        color: textSecondary,
       ),
-      bodySmall: GoogleFonts.inter(
+      bodySmall: _inter(
         fontSize: 12,
         fontWeight: FontWeight.w400,
-        color: isDark ? _textSecondary : Colors.black54,
+        color: textSecondary,
       ),
-      labelLarge: GoogleFonts.inter(
+      labelLarge: _inter(
         fontSize: 14,
         fontWeight: FontWeight.w600,
-        color: isDark ? _textPrimary : Colors.black87,
+        color: textPrimary,
       ),
     );
 
@@ -136,30 +198,30 @@ abstract final class FluttyTheme {
       brightness: brightness,
       colorScheme: colorScheme,
       textTheme: textTheme,
-      scaffoldBackgroundColor: isDark ? _backgroundDark : _backgroundLight,
+      scaffoldBackgroundColor: background,
 
       // App bar with subtle blur effect vibe
       appBarTheme: AppBarTheme(
-        backgroundColor: isDark ? _backgroundDark : _backgroundLight,
-        foregroundColor: isDark ? _textPrimary : Colors.black87,
+        backgroundColor: background,
+        foregroundColor: textPrimary,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        titleTextStyle: GoogleFonts.inter(
+        titleTextStyle: _inter(
           fontSize: 20,
           fontWeight: FontWeight.w600,
-          color: isDark ? _textPrimary : Colors.black87,
+          color: textPrimary,
         ),
       ),
 
       // Cards with subtle glow on dark theme
       cardTheme: CardThemeData(
-        color: isDark ? _cardDark : _cardLight,
+        color: card,
         elevation: isDark ? 0 : 1,
-        shadowColor: isDark ? _accentTeal.withAlpha(20) : Colors.black12,
+        shadowColor: isDark ? primary.withAlpha(20) : Colors.black12,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: isDark ? _borderDark : _borderLight),
+          side: BorderSide(color: border),
         ),
         margin: EdgeInsets.zero,
       ),
@@ -175,33 +237,31 @@ abstract final class FluttyTheme {
       // Modern input fields
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: isDark ? _cardDark : Colors.grey.shade50,
-        hoverColor: isDark ? _borderDark : Colors.grey.shade100,
+        fillColor: inputFill,
+        hoverColor: inputHover,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: isDark ? _borderDark : _borderLight),
+          borderSide: BorderSide(color: border),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: isDark ? _borderDark : _borderLight),
+          borderSide: BorderSide(color: border),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _accentTeal, width: 2),
+          borderSide: BorderSide(color: primary, width: 2),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _errorColor),
+          borderSide: BorderSide(color: error),
         ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
           vertical: 16,
         ),
-        labelStyle: TextStyle(color: isDark ? _textSecondary : Colors.black54),
-        hintStyle: TextStyle(
-          color: isDark ? _textSecondary.withAlpha(150) : Colors.black38,
-        ),
-        prefixIconColor: isDark ? _textSecondary : Colors.black45,
+        labelStyle: TextStyle(color: textSecondary),
+        hintStyle: TextStyle(color: textSecondary.withAlpha(150)),
+        prefixIconColor: textSecondary,
       ),
 
       // Buttons with glow
@@ -214,10 +274,7 @@ abstract final class FluttyTheme {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
-          textStyle: GoogleFonts.inter(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: _inter(fontSize: 15, fontWeight: FontWeight.w600),
         ),
       ),
 
@@ -226,33 +283,24 @@ abstract final class FluttyTheme {
           backgroundColor: colorScheme.primary,
           foregroundColor: colorScheme.onPrimary,
           elevation: isDark ? 4 : 2,
-          shadowColor: isDark ? _accentTeal.withAlpha(80) : Colors.black26,
+          shadowColor: isDark ? primary.withAlpha(80) : Colors.black26,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
-          textStyle: GoogleFonts.inter(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: _inter(fontSize: 15, fontWeight: FontWeight.w600),
         ),
       ),
 
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: isDark ? _textPrimary : Colors.black87,
+          foregroundColor: textPrimary,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
-          side: BorderSide(
-            color: isDark ? _borderDark : _borderLight,
-            width: 1.5,
-          ),
-          textStyle: GoogleFonts.inter(
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-          ),
+          side: BorderSide(color: border, width: 1.5),
+          textStyle: _inter(fontSize: 15, fontWeight: FontWeight.w500),
         ),
       ),
 
@@ -260,10 +308,7 @@ abstract final class FluttyTheme {
         style: TextButton.styleFrom(
           foregroundColor: colorScheme.primary,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          textStyle: GoogleFonts.inter(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: _inter(fontSize: 14, fontWeight: FontWeight.w600),
         ),
       ),
 
@@ -274,56 +319,48 @@ abstract final class FluttyTheme {
             if (states.contains(WidgetState.selected)) {
               return colorScheme.primary;
             }
-            return isDark ? _cardDark : _cardLight;
+            return card;
           }),
           foregroundColor: WidgetStateProperty.resolveWith((states) {
             if (states.contains(WidgetState.selected)) {
               return colorScheme.onPrimary;
             }
-            return isDark ? _textPrimary : Colors.black87;
+            return textPrimary;
           }),
-          side: WidgetStateProperty.all(
-            BorderSide(color: isDark ? _borderDark : _borderLight),
-          ),
+          side: WidgetStateProperty.all(BorderSide(color: border)),
         ),
       ),
 
       // Chips
       chipTheme: ChipThemeData(
-        backgroundColor: isDark ? _cardDark : _cardLight,
-        selectedColor: _accentTealSoft,
-        labelStyle: GoogleFonts.inter(
+        backgroundColor: card,
+        selectedColor: primarySoft,
+        labelStyle: _inter(
           fontSize: 13,
           fontWeight: FontWeight.w500,
           // Material 3 InputChip leaves the label transparent if labelStyle
           // is supplied without a color, so pin one here.
-          color: isDark ? _textPrimary : Colors.black87,
+          color: textPrimary,
         ),
-        side: BorderSide(color: isDark ? _borderDark : _borderLight),
+        side: BorderSide(color: border),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
 
       // Dividers
-      dividerTheme: DividerThemeData(
-        color: isDark ? _borderDark : _borderLight,
-        thickness: 1,
-        space: 1,
-      ),
+      dividerTheme: DividerThemeData(color: border, thickness: 1, space: 1),
 
       // List tiles
       listTileTheme: ListTileThemeData(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         tileColor: Colors.transparent,
-        selectedTileColor: isDark
-            ? _accentTeal.withAlpha(20)
-            : _accentTeal.withAlpha(30),
-        iconColor: isDark ? _textSecondary : Colors.black54,
+        selectedTileColor: primary.withAlpha(isDark ? 20 : 30),
+        iconColor: textSecondary,
       ),
 
       // Bottom sheet
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: isDark ? _surfaceDark : _surfaceLight,
+        backgroundColor: surface,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
@@ -331,19 +368,19 @@ abstract final class FluttyTheme {
 
       // Dialog
       dialogTheme: DialogThemeData(
-        backgroundColor: isDark ? _surfaceDark : _surfaceLight,
+        backgroundColor: surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        titleTextStyle: GoogleFonts.inter(
+        titleTextStyle: _inter(
           fontSize: 20,
           fontWeight: FontWeight.w600,
-          color: isDark ? _textPrimary : Colors.black87,
+          color: textPrimary,
         ),
       ),
 
       // Snackbar
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: isDark ? _cardDark : Colors.grey.shade900,
-        contentTextStyle: GoogleFonts.inter(color: Colors.white),
+        backgroundColor: snackBarBackground,
+        contentTextStyle: _inter(color: snackBarForeground),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         behavior: SnackBarBehavior.floating,
       ),
@@ -351,51 +388,39 @@ abstract final class FluttyTheme {
       // Tab bar
       tabBarTheme: TabBarThemeData(
         labelColor: colorScheme.primary,
-        unselectedLabelColor: isDark ? _textSecondary : Colors.black54,
+        unselectedLabelColor: textSecondary,
         indicatorColor: colorScheme.primary,
         indicatorSize: TabBarIndicatorSize.label,
-        labelStyle: GoogleFonts.inter(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-        ),
-        unselectedLabelStyle: GoogleFonts.inter(
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
-        ),
+        labelStyle: _inter(fontSize: 14, fontWeight: FontWeight.w600),
+        unselectedLabelStyle: _inter(fontSize: 14, fontWeight: FontWeight.w500),
       ),
 
       // Progress indicators
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: colorScheme.primary,
-        linearTrackColor: isDark ? _borderDark : _borderLight,
-        circularTrackColor: isDark ? _borderDark : _borderLight,
+        linearTrackColor: border,
+        circularTrackColor: border,
       ),
 
       // Icons
-      iconTheme: IconThemeData(
-        color: isDark ? _textSecondary : Colors.black54,
-        size: 24,
-      ),
+      iconTheme: IconThemeData(color: textSecondary, size: 24),
 
       // Popup menu
       popupMenuTheme: PopupMenuThemeData(
-        color: isDark ? _cardDark : _cardLight,
+        color: card,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: isDark ? _borderDark : _borderLight),
+          side: BorderSide(color: border),
         ),
-        textStyle: GoogleFonts.inter(
-          fontSize: 14,
-          color: isDark ? _textPrimary : Colors.black87,
-        ),
+        textStyle: _inter(fontSize: 14, color: textPrimary),
       ),
 
       // Expansion tile
       expansionTileTheme: ExpansionTileThemeData(
-        iconColor: isDark ? _textSecondary : Colors.black54,
-        collapsedIconColor: isDark ? _textSecondary : Colors.black54,
-        textColor: isDark ? _textPrimary : Colors.black87,
-        collapsedTextColor: isDark ? _textPrimary : Colors.black87,
+        iconColor: textSecondary,
+        collapsedIconColor: textSecondary,
+        textColor: textPrimary,
+        collapsedTextColor: textPrimary,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         collapsedShape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
@@ -404,25 +429,21 @@ abstract final class FluttyTheme {
 
       // Navigation bar (mobile bottom nav)
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: isDark ? _surfaceDark : _surfaceLight,
+        backgroundColor: surface,
         indicatorColor: colorScheme.primary.withAlpha(isDark ? 35 : 30),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
-          return GoogleFonts.inter(
+          return _inter(
             fontSize: 12,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-            color: selected
-                ? colorScheme.primary
-                : (isDark ? _textSecondary : Colors.black54),
+            color: selected ? colorScheme.primary : textSecondary,
           );
         }),
         iconTheme: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return IconThemeData(
             size: 22,
-            color: selected
-                ? colorScheme.primary
-                : (isDark ? _textSecondary : Colors.black54),
+            color: selected ? colorScheme.primary : textSecondary,
           );
         }),
         elevation: isDark ? 0 : 1,
@@ -432,14 +453,16 @@ abstract final class FluttyTheme {
       // Tooltips
       tooltipTheme: TooltipThemeData(
         decoration: BoxDecoration(
-          color: isDark ? _cardDark : Colors.grey.shade800,
+          color: tooltipBackground,
           borderRadius: BorderRadius.circular(8),
-          border: isDark ? Border.all(color: _borderDark) : null,
+          border: terminalTheme == null && !isDark
+              ? null
+              : Border.all(color: border),
         ),
-        textStyle: GoogleFonts.inter(
+        textStyle: _inter(
           fontSize: 12,
           fontWeight: FontWeight.w500,
-          color: isDark ? _textPrimary : Colors.white,
+          color: tooltipForeground,
         ),
         waitDuration: const Duration(milliseconds: 500),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -449,29 +472,119 @@ abstract final class FluttyTheme {
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
-            return Colors.white;
+            return colorScheme.onPrimary;
           }
-          return isDark ? _textSecondary : Colors.grey.shade400;
+          return textSecondary;
         }),
         trackColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
             return colorScheme.primary;
           }
-          return isDark ? _borderDark : Colors.grey.shade300;
+          return border;
         }),
         trackOutlineColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
             return Colors.transparent;
           }
-          return isDark ? _borderDark.withAlpha(100) : Colors.grey.shade400;
+          return border.withAlpha(isDark ? 100 : 180);
         }),
       ),
     );
   }
 
+  static TextTheme _interTextTheme(TextTheme textTheme) =>
+      debugUseSystemFonts ? textTheme : GoogleFonts.interTextTheme(textTheme);
+
+  static TextStyle _inter({
+    double? fontSize,
+    FontWeight? fontWeight,
+    Color? color,
+    double? letterSpacing,
+  }) {
+    if (debugUseSystemFonts) {
+      return TextStyle(
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        color: color,
+        letterSpacing: letterSpacing,
+      );
+    }
+
+    return GoogleFonts.inter(
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: color,
+      letterSpacing: letterSpacing,
+    );
+  }
+
+  static Color _blend(Color background, Color foreground, double amount) =>
+      Color.lerp(background, foreground, amount)!;
+
+  static Color _resolveTerminalAccent(TerminalThemeData theme) {
+    // Prefer the theme's cursor color when its designer chose a strongly
+    // saturated, sufficiently contrasty value. Themes that use a near-neutral
+    // cursor (e.g. white-on-black) fall through to the candidate-scoring
+    // fallback below so we still pick a vivid accent.
+    final cursorHsl = HSLColor.fromColor(theme.cursor);
+    if (cursorHsl.saturation >= 0.45 &&
+        _contrastRatio(theme.cursor, theme.background) >= 2.5) {
+      return theme.cursor;
+    }
+
+    final candidates = [
+      theme.blue,
+      theme.cyan,
+      theme.magenta,
+      theme.green,
+      theme.brightBlue,
+      theme.brightCyan,
+      theme.brightMagenta,
+      theme.cursor,
+      theme.yellow,
+      theme.red,
+    ];
+    var bestColor = candidates.first;
+    var bestScore = double.negativeInfinity;
+
+    for (final candidate in candidates) {
+      final hsl = HSLColor.fromColor(candidate);
+      final balance = 1 - (hsl.lightness - 0.5).abs();
+      final score =
+          _contrastRatio(candidate, theme.background) +
+          (hsl.saturation * 2) +
+          balance;
+      if (score > bestScore) {
+        bestColor = candidate;
+        bestScore = score;
+      }
+    }
+
+    return bestColor;
+  }
+
+  static Color _readableTextColor(Color background) =>
+      _contrastRatio(Colors.white, background) >
+          _contrastRatio(Colors.black, background)
+      ? Colors.white
+      : Colors.black;
+
+  static double _contrastRatio(Color a, Color b) {
+    final luminanceA = a.computeLuminance();
+    final luminanceB = b.computeLuminance();
+    final lighter = luminanceA > luminanceB ? luminanceA : luminanceB;
+    final darker = luminanceA > luminanceB ? luminanceB : luminanceA;
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
   /// Monospace text style for terminal/code content.
-  static TextStyle get monoStyle =>
-      GoogleFonts.jetBrainsMono(fontSize: 13, fontWeight: FontWeight.w400);
+  static TextStyle get monoStyle => debugUseSystemFonts
+      ? const TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 13,
+          fontWeight: FontWeight.w400,
+        )
+      : GoogleFonts.jetBrainsMono(fontSize: 13, fontWeight: FontWeight.w400);
 
   /// Accent gradient for special elements.
   static LinearGradient get accentGradient => const LinearGradient(

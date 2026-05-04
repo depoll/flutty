@@ -1,6 +1,8 @@
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
 
@@ -11,6 +13,23 @@ class HostRepository {
 
   final AppDatabase _db;
   final SecretEncryptionService _secretEncryptionService;
+
+  static const _maxDecryptCacheEntries = 512;
+
+  // Ciphertext-keyed cache so repeated watchAll emissions only pay the
+  // AES-GCM cost for rows whose encrypted field actually changed.
+  // Keyed by the full ENCv1:… envelope string; value is the decrypted
+  // plaintext. Entries are bounded and cleared on auth lock / writes.
+  final _decryptCache = <String, String>{};
+
+  /// Clears cached decrypted secret plaintexts.
+  void clearDecryptionCache() {
+    _decryptCache.clear();
+  }
+
+  /// Number of cached decrypted secret plaintexts.
+  @visibleForTesting
+  int get debugDecryptionCacheSize => _decryptCache.length;
 
   /// Get all hosts.
   Future<List<Host>> getAll() async {
@@ -79,21 +98,33 @@ class HostRepository {
     return _decryptHost(host);
   }
 
-  /// Search hosts by label or hostname.
-  Future<List<Host>> search(String query) =>
-      (_db.select(_db.hosts)
-            ..where(
-              (h) =>
-                  h.label.like('%$query%') |
-                  h.hostname.like('%$query%') |
-                  h.tags.like('%$query%'),
-            )
-            ..orderBy([
-              (h) => OrderingTerm.asc(h.sortOrder),
-              (h) => OrderingTerm.asc(h.id),
-            ]))
-          .get()
-          .then(_decryptHosts);
+  /// Search hosts by label, hostname, or tags.
+  ///
+  /// The query is treated as a literal string: `%` and `_` are matched
+  /// exactly rather than acting as SQL LIKE wildcards.
+  Future<List<Host>> search(String query) {
+    final escaped = _escapeLike(query);
+    return (_db.select(_db.hosts)
+          ..where(
+            (h) =>
+                h.label.like('%$escaped%', escapeChar: r'\') |
+                h.hostname.like('%$escaped%', escapeChar: r'\') |
+                h.tags.like('%$escaped%', escapeChar: r'\'),
+          )
+          ..orderBy([
+            (h) => OrderingTerm.asc(h.sortOrder),
+            (h) => OrderingTerm.asc(h.id),
+          ]))
+        .get()
+        .then(_decryptHosts);
+  }
+
+  /// Escapes SQLite LIKE metacharacters so that `%`, `_`, and `\` in the
+  /// [query] are matched literally rather than as pattern characters.
+  static String _escapeLike(String query) => query
+      .replaceAll(r'\', r'\\')
+      .replaceAll('%', r'\%')
+      .replaceAll('_', r'\_');
 
   /// Insert a new host.
   Future<int> insert(HostsCompanion host) async {
@@ -175,17 +206,31 @@ class HostRepository {
 
   /// Update an existing host.
   Future<bool> update(Host host) async {
+    final previousStoredPassword = await _storedPasswordForHost(host.id);
     final encryptedPassword = await _secretEncryptionService.encryptNullable(
       host.password,
     );
-    return _db
+    final updated = await _db
         .update(_db.hosts)
         .replace(host.copyWith(password: Value(encryptedPassword)));
+    if (updated) {
+      _evictDecrypted(previousStoredPassword);
+      _rememberEncryptedPlaintext(encryptedPassword, host.password);
+    }
+    return updated;
   }
 
   /// Delete a host.
-  Future<int> delete(int id) =>
-      (_db.delete(_db.hosts)..where((h) => h.id.equals(id))).go();
+  Future<int> delete(int id) async {
+    final previousStoredPassword = await _storedPasswordForHost(id);
+    final deleted = await (_db.delete(
+      _db.hosts,
+    )..where((h) => h.id.equals(id))).go();
+    if (deleted > 0) {
+      _evictDecrypted(previousStoredPassword);
+    }
+    return deleted;
+  }
 
   /// Toggle favorite status.
   Future<bool> toggleFavorite(int id) async {
@@ -210,10 +255,59 @@ class HostRepository {
       return host;
     }
 
-    final decryptedPassword = await _secretEncryptionService.decryptNullable(
-      storedPassword,
-    );
+    final decryptedPassword = await _cachedDecrypt(storedPassword);
     return host.copyWith(password: Value(decryptedPassword));
+  }
+
+  /// Returns the decrypted form of [ciphertext], using [_decryptCache] to
+  /// avoid redundant AES-GCM operations across stream emissions.
+  Future<String?> _cachedDecrypt(String ciphertext) async {
+    final hit = _decryptCache.remove(ciphertext);
+    if (hit != null) {
+      _decryptCache[ciphertext] = hit;
+      return hit;
+    }
+
+    final plaintext = await _secretEncryptionService.decryptNullable(
+      ciphertext,
+    );
+    if (plaintext != null && plaintext.isNotEmpty) {
+      _rememberDecrypted(ciphertext, plaintext);
+    }
+    return plaintext;
+  }
+
+  Future<String?> _storedPasswordForHost(int id) async {
+    final row = await (_db.select(
+      _db.hosts,
+    )..where((h) => h.id.equals(id))).getSingleOrNull();
+    return row?.password;
+  }
+
+  void _rememberEncryptedPlaintext(String? ciphertext, String? plaintext) {
+    if (ciphertext == null ||
+        ciphertext.isEmpty ||
+        plaintext == null ||
+        plaintext.isEmpty ||
+        _secretEncryptionService.isEncryptedValue(plaintext)) {
+      return;
+    }
+    _rememberDecrypted(ciphertext, plaintext);
+  }
+
+  void _rememberDecrypted(String ciphertext, String plaintext) {
+    _decryptCache.remove(ciphertext);
+    _decryptCache[ciphertext] = plaintext;
+    while (_decryptCache.length > _maxDecryptCacheEntries) {
+      _decryptCache.remove(_decryptCache.keys.first);
+    }
+  }
+
+  void _evictDecrypted(String? ciphertext) {
+    if (ciphertext == null || ciphertext.isEmpty) {
+      return;
+    }
+    _decryptCache.remove(ciphertext);
   }
 
   Future<HostsCompanion> _encryptHostCompanion(HostsCompanion host) async {
@@ -242,9 +336,15 @@ class HostRepository {
 }
 
 /// Provider for [HostRepository].
-final hostRepositoryProvider = Provider<HostRepository>(
-  (ref) => HostRepository(
+final hostRepositoryProvider = Provider<HostRepository>((ref) {
+  final repository = HostRepository(
     ref.watch(databaseProvider),
     ref.watch(secretEncryptionServiceProvider),
-  ),
-);
+  );
+  ref.listen<AuthState>(authStateProvider, (_, next) {
+    if (next == AuthState.locked) {
+      repository.clearDecryptionCache();
+    }
+  });
+  return repository;
+});

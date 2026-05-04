@@ -1,10 +1,13 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+
 import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 
 void main() {
@@ -171,6 +174,10 @@ void main() {
   group('SettingKeys', () {
     test('has expected constants', () {
       expect(SettingKeys.themeMode, 'theme_mode');
+      expect(
+        SettingKeys.terminalThemesApplyToApp,
+        'terminal_themes_apply_to_app',
+      );
       expect(SettingKeys.terminalFont, 'terminal_font');
       expect(SettingKeys.terminalFontSize, 'terminal_font_size');
       expect(SettingKeys.terminalColorScheme, 'terminal_color_scheme');
@@ -215,6 +222,62 @@ void main() {
         container.invalidate(themeModeProvider);
         final result = await container.read(themeModeProvider.future);
         expect(result, 'dark');
+      });
+    });
+
+    group('terminalThemesApplyToAppProvider', () {
+      test('returns true by default', () async {
+        final result = await container.read(
+          terminalThemesApplyToAppProvider.future,
+        );
+        expect(result, isTrue);
+      });
+
+      test('returns stored false when disabled', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setBool(
+          SettingKeys.terminalThemesApplyToApp,
+          value: false,
+        );
+        container.invalidate(terminalThemesApplyToAppProvider);
+
+        final result = await container.read(
+          terminalThemesApplyToAppProvider.future,
+        );
+
+        expect(result, isFalse);
+      });
+    });
+
+    group('terminalThemesApplyToAppNotifierProvider', () {
+      test('starts enabled by default', () {
+        expect(
+          container.read(terminalThemesApplyToAppNotifierProvider),
+          isTrue,
+        );
+      });
+
+      test('persists disabled state', () async {
+        final notifier = container.read(
+          terminalThemesApplyToAppNotifierProvider.notifier,
+        );
+
+        await notifier.setEnabled(enabled: false);
+
+        expect(
+          container.read(terminalThemesApplyToAppNotifierProvider),
+          isFalse,
+        );
+        expect(
+          await container
+              .read(settingsServiceProvider)
+              .getBool(SettingKeys.terminalThemesApplyToApp),
+          isFalse,
+        );
+        expect(
+          await container.read(terminalThemesApplyToAppProvider.future),
+          isFalse,
+        );
       });
     });
 
@@ -308,9 +371,259 @@ void main() {
       });
     });
 
-    // Note: NotifierProvider tests (themeModeNotifierProvider, fontSizeNotifierProvider,
-    // terminalThemeSettingsProvider, etc.) are skipped because they have async _init()
-    // methods that can race with test teardown and cause "database closed" errors.
+    group('terminalThemeSettingsProvider', () {
+      test(
+        'normalizes legacy default theme ids to their iTerm2 successors',
+        () async {
+          final settings = container.read(settingsServiceProvider);
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeLight,
+            'github-light',
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeDark,
+            'dracula',
+          );
+
+          container.read(terminalThemeSettingsProvider);
+          // Users who explicitly picked GitHub Light or Dracula (via the old
+          // unprefixed legacy IDs) should keep those exact themes after the
+          // MonkeySSH defaults landed; only purely unknown IDs fall back to
+          // the new branded defaults (covered by the next test).
+          await _waitForStoredTerminalThemeIds(
+            settings,
+            lightThemeId: 'iterm2-github-light-default',
+            darkThemeId: 'iterm2-dracula',
+          );
+          final state = container.read(terminalThemeSettingsProvider);
+
+          expect(state.lightThemeId, 'iterm2-github-light-default');
+          expect(state.darkThemeId, 'iterm2-dracula');
+          expect(
+            await settings.getString(SettingKeys.defaultTerminalThemeLight),
+            'iterm2-github-light-default',
+          );
+          expect(
+            await settings.getString(SettingKeys.defaultTerminalThemeDark),
+            'iterm2-dracula',
+          );
+        },
+      );
+
+      test('normalizes unknown saved theme ids', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          'missing-light-theme',
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeDark,
+          'missing-dark-theme',
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        await _waitForStoredTerminalThemeIds(
+          settings,
+          lightThemeId: TerminalThemes.defaultLightThemeId,
+          darkThemeId: TerminalThemes.defaultDarkThemeId,
+        );
+        final state = container.read(terminalThemeSettingsProvider);
+
+        expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
+        expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          TerminalThemes.defaultLightThemeId,
+        );
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeDark),
+          TerminalThemes.defaultDarkThemeId,
+        );
+      });
+
+      test('keeps saved custom theme ids', () async {
+        final settings = container.read(settingsServiceProvider);
+        final customTheme = TerminalThemes.defaultLightTheme.copyWith(
+          id: 'custom-light-theme',
+          name: 'Custom Light Theme',
+          isCustom: true,
+        );
+        await settings.setString(
+          SettingKeys.customTerminalThemes,
+          jsonEncode([customTheme.toJson()]),
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          customTheme.id,
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        final state = await _waitForTerminalThemeSettings(
+          container,
+          (settings) => settings.lightThemeId == customTheme.id,
+        );
+
+        expect(state.lightThemeId, customTheme.id);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          customTheme.id,
+        );
+      });
+
+      test('keeps custom theme ids that match legacy defaults', () async {
+        final settings = container.read(settingsServiceProvider);
+        final customLightTheme = TerminalThemes.defaultLightTheme.copyWith(
+          id: 'github-light',
+          name: 'Custom GitHub Light',
+          isCustom: true,
+        );
+        final customDarkTheme = TerminalThemes.defaultDarkTheme.copyWith(
+          id: 'dracula',
+          name: 'Custom Dracula',
+          isCustom: true,
+        );
+        await settings.setString(
+          SettingKeys.customTerminalThemes,
+          jsonEncode([customLightTheme.toJson(), customDarkTheme.toJson()]),
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          customLightTheme.id,
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeDark,
+          customDarkTheme.id,
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        final state = await _waitForTerminalThemeSettings(
+          container,
+          (settings) =>
+              settings.lightThemeId == customLightTheme.id &&
+              settings.darkThemeId == customDarkTheme.id,
+        );
+
+        expect(state.lightThemeId, customLightTheme.id);
+        expect(state.darkThemeId, customDarkTheme.id);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          customLightTheme.id,
+        );
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeDark),
+          customDarkTheme.id,
+        );
+      });
+
+      test(
+        'normalizes unknown ids when custom theme JSON is not a list',
+        () async {
+          final settings = container.read(settingsServiceProvider);
+          await settings.setString(
+            SettingKeys.customTerminalThemes,
+            jsonEncode({'themes': <String>[]}),
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeLight,
+            'missing-light-theme',
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeDark,
+            'missing-dark-theme',
+          );
+
+          container.read(terminalThemeSettingsProvider);
+          await _waitForStoredTerminalThemeIds(
+            settings,
+            lightThemeId: TerminalThemes.defaultLightThemeId,
+            darkThemeId: TerminalThemes.defaultDarkThemeId,
+          );
+          final state = container.read(terminalThemeSettingsProvider);
+
+          expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
+          expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
+        },
+      );
+
+      test(
+        'keeps valid custom themes while skipping malformed entries',
+        () async {
+          final settings = container.read(settingsServiceProvider);
+          final customTheme = TerminalThemes.defaultLightTheme.copyWith(
+            id: 'custom-theme-with-malformed-neighbors',
+            name: 'Custom Theme With Malformed Neighbors',
+            isCustom: true,
+          );
+          await settings.setString(
+            SettingKeys.customTerminalThemes,
+            jsonEncode([
+              42,
+              {'id': 'incomplete-theme'},
+              customTheme.toJson(),
+            ]),
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeLight,
+            customTheme.id,
+          );
+
+          container.read(terminalThemeSettingsProvider);
+          final state = await _waitForTerminalThemeSettings(
+            container,
+            (settings) => settings.lightThemeId == customTheme.id,
+          );
+
+          expect(state.lightThemeId, customTheme.id);
+        },
+      );
+    });
+
+    // Note: most NotifierProvider tests (themeModeNotifierProvider,
+    // fontSizeNotifierProvider, etc.) are skipped because they have async _init()
+    // methods that can race with test teardown and cause "database closed"
+    // errors.
     // The FutureProvider tests above provide coverage for the provider initialization.
   });
+}
+
+Future<TerminalThemeSettings> _waitForTerminalThemeSettings(
+  ProviderContainer container,
+  bool Function(TerminalThemeSettings settings) matches,
+) async {
+  for (var attempt = 0; attempt < 20; attempt += 1) {
+    final settings = container.read(terminalThemeSettingsProvider);
+    if (matches(settings)) {
+      return settings;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  return container.read(terminalThemeSettingsProvider);
+}
+
+Future<void> _waitForStoredTerminalThemeIds(
+  SettingsService settings, {
+  required String lightThemeId,
+  required String darkThemeId,
+}) async {
+  String? lastLight;
+  String? lastDark;
+
+  for (var attempt = 0; attempt < 20; attempt += 1) {
+    final light = await settings.getString(
+      SettingKeys.defaultTerminalThemeLight,
+    );
+    final dark = await settings.getString(SettingKeys.defaultTerminalThemeDark);
+    lastLight = light;
+    lastDark = dark;
+    if (light == lightThemeId && dark == darkThemeId) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+
+  throw TestFailure(
+    'Timed out waiting for stored terminal theme IDs. '
+    'Expected light="$lightThemeId", dark="$darkThemeId", '
+    'but last observed light="$lastLight", dark="$lastDark".',
+  );
 }

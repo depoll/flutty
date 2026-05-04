@@ -17,6 +17,8 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
@@ -49,12 +51,27 @@ class _CapturingSshService extends SshService {
 }
 
 class _StubWifiNetworkService extends WifiNetworkService {
-  _StubWifiNetworkService(this.ssid);
+  _StubWifiNetworkService(
+    this.ssid, {
+    this.permissionStatus = WifiPermissionStatus.granted,
+  });
 
   final String? ssid;
+  final WifiPermissionStatus permissionStatus;
+  int requestPermissionCallCount = 0;
+  int getCurrentSsidCallCount = 0;
 
   @override
-  Future<String?> getCurrentSsid() async => ssid;
+  Future<WifiPermissionStatus> requestPermission() async {
+    requestPermissionCallCount++;
+    return permissionStatus;
+  }
+
+  @override
+  Future<String?> getCurrentSsid() async {
+    getCurrentSsidCallCount++;
+    return ssid;
+  }
 }
 
 class _CountingKeyRepository extends KeyRepository {
@@ -203,6 +220,7 @@ class _FakeActiveSessionsSshService extends SshService {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   registerFallbackValue(const SSHPtyConfig());
+  registerFallbackValue(Uint8List(0));
 
   group('SshConnectionState', () {
     test('has expected values', () {
@@ -290,6 +308,73 @@ void main() {
       },
     );
 
+    test(
+      'normalizes cursor position reports to terminal protocol coordinates',
+      () {
+        expect(
+          normalizeTerminalOutputForRemoteShell('before\x1b[0;0Rafter'),
+          'before\x1b[1;1Rafter',
+        );
+        expect(normalizeTerminalOutputForRemoteShell('\x1b[4;7R'), '\x1b[5;8R');
+      },
+    );
+
+    test('unwraps complete tmux passthrough sequences', () {
+      final result = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
+        pendingInput: '',
+      );
+
+      expect(result.output, 'before\x1b]11;?\x07after');
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('unwraps ST-terminated tmux passthrough OSC sequences', () {
+      final result = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b\x1b]11;?\x1b\x1b\\\x1b\\after',
+        pendingInput: '',
+      );
+
+      expect(result.output, 'before\x1b]11;?\x1b\\after');
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split tmux passthrough sequences across chunks', () {
+      final first = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1bPtmux;\x1b');
+
+      final second = unwrapTerminalTmuxPassthroughSequences(
+        input: '\x1b[?1004\$p\x1b\\after',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[?1004\$pafter');
+      expect(second.pendingInput, isEmpty);
+    });
+
+    test('preserves split tmux passthrough sequence starts', () {
+      final first = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtm',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1bPtm');
+
+      final second = unwrapTerminalTmuxPassthroughSequences(
+        input: 'ux;\x1b\x1b[14t\x1b\\after',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[14tafter');
+      expect(second.pendingInput, isEmpty);
+    });
+
     test('answers terminal window and cell size reports', () {
       final result = buildTerminalWindowControlQueryResponses(
         input: 'before\x1b[14tmiddle\x1b[16tafter',
@@ -335,6 +420,166 @@ void main() {
       expect(second.response, '\x1b[6;20;12t');
       expect(second.pendingInput, isEmpty);
     });
+
+    test('answers terminal theme mode report queries', () {
+      final dark = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?996nafter',
+        pendingInput: '',
+        metrics: null,
+        theme: monkey_themes.TerminalThemes.defaultDarkTheme,
+      );
+
+      expect(dark.response, '\x1b[?997;1n');
+      expect(dark.pendingInput, isEmpty);
+
+      final light = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?996nafter',
+        pendingInput: '',
+        metrics: null,
+        theme: monkey_themes.TerminalThemes.defaultLightTheme,
+      );
+
+      expect(light.response, '\x1b[?997;2n');
+      expect(light.pendingInput, isEmpty);
+    });
+
+    test('answers DEC private mode report queries', () {
+      final result = buildTerminalWindowControlQueryResponses(
+        input:
+            'before\x1b[?1004\$p\x1b[?2004\$p\x1b[?1006\$p'
+            '\x1b[?2026\$pafter',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: true,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: true,
+        ),
+      );
+
+      expect(
+        result.response,
+        '\x1b[?1004;1\$y'
+        '\x1b[?2004;2\$y'
+        '\x1b[?1006;1\$y'
+        '\x1b[?2026;0\$y',
+      );
+      expect(result.pendingInput, isEmpty);
+
+      final colorSchemeReset = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?2031\$pafter',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: false,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(colorSchemeReset.response, '\x1b[?2031;2\$y');
+    });
+
+    test('preserves split DEC private mode report queries across chunks', () {
+      final first = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?1004\$',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(first.response, isNull);
+      expect(first.pendingInput, '\x1b[?1004\$');
+
+      final second = buildTerminalWindowControlQueryResponses(
+        input: 'pafter',
+        pendingInput: first.pendingInput,
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(second.response, '\x1b[?1004;1\$y');
+      expect(second.pendingInput, isEmpty);
+    });
+
+    test('extracts color scheme update mode changes', () {
+      final enabled = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?2031hafter',
+        pendingInput: '',
+      );
+
+      expect(enabled.colorSchemeUpdatesMode, isTrue);
+      expect(enabled.pendingInput, isEmpty);
+
+      final first = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?203',
+        pendingInput: '',
+      );
+
+      expect(first.colorSchemeUpdatesMode, isNull);
+      expect(first.pendingInput, '\x1b[?203');
+
+      final disabled = extractTerminalControlModeUpdates(
+        input: '1lafter',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(disabled.colorSchemeUpdatesMode, isFalse);
+      expect(disabled.pendingInput, isEmpty);
+    });
+
+    test(
+      'preserves split terminal theme mode report queries across chunks',
+      () {
+        final first = buildTerminalWindowControlQueryResponses(
+          input: 'before\x1b[?99',
+          pendingInput: '',
+          metrics: null,
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
+        );
+
+        expect(first.response, isNull);
+        expect(first.pendingInput, '\x1b[?99');
+
+        final second = buildTerminalWindowControlQueryResponses(
+          input: '6nafter',
+          pendingInput: first.pendingInput,
+          metrics: null,
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
+        );
+
+        expect(second.response, '\x1b[?997;2n');
+        expect(second.pendingInput, isEmpty);
+      },
+    );
   });
 
   group('host key capture', () {
@@ -652,16 +897,20 @@ void main() {
 
       await pumpEventQueue();
 
-      expect(started, [0, 1]);
-      expect(activeQueuedSshExecCountForTesting(9), 2);
-      expect(pendingQueuedSshExecCountForTesting(9), 1);
+      expect(started, [0]);
+      expect(activeQueuedSshExecCountForTesting(9), 1);
+      expect(pendingQueuedSshExecCountForTesting(9), 2);
 
       completers[0].complete(0);
       await pumpEventQueue();
 
-      expect(started, [0, 1, 2]);
+      expect(started, [0, 1]);
 
       completers[1].complete(1);
+      await pumpEventQueue();
+
+      expect(started, [0, 1, 2]);
+
       completers[2].complete(2);
 
       expect(await Future.wait(futures), [0, 1, 2]);
@@ -697,6 +946,162 @@ void main() {
         'beta',
       );
       expect(SshSession.buildTerminalPreview(terminal, maxChars: 0), '…');
+    });
+  });
+
+  group('SshSession terminal output batching', () {
+    Future<
+      ({
+        Completer<void> done,
+        _MockExecSession shell,
+        SshSession session,
+        StreamController<Uint8List> stderr,
+        StreamController<Uint8List> stdout,
+        List<List<int>> shellWrites,
+      })
+    >
+    openShell() async {
+      final client = _MockSshClient();
+      final shell = _MockExecSession();
+      final stdout = StreamController<Uint8List>();
+      final stderr = StreamController<Uint8List>();
+      final done = Completer<void>();
+      final shellWrites = <List<int>>[];
+      final session = SshSession(
+        connectionId: 91,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      when(
+        () => client.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shell);
+      when(() => shell.stdout).thenAnswer((_) => stdout.stream);
+      when(() => shell.stderr).thenAnswer((_) => stderr.stream);
+      when(() => shell.done).thenAnswer((_) => done.future);
+      when(() => shell.write(any())).thenAnswer((invocation) {
+        final bytes = invocation.positionalArguments.single as List<int>;
+        shellWrites.add(List<int>.from(bytes));
+      });
+
+      await session.getShell();
+      addTearDown(() async {
+        await session.closeShell(waitForStreams: false);
+        await stdout.close();
+        await stderr.close();
+        if (!done.isCompleted) {
+          done.complete();
+        }
+      });
+      return (
+        done: done,
+        shell: shell,
+        session: session,
+        stderr: stderr,
+        stdout: stdout,
+        shellWrites: shellWrites,
+      );
+    }
+
+    String firstLineText(Terminal terminal) => terminal.buffer.lines[0]
+        .getText(0, terminal.buffer.viewWidth)
+        .trimRight();
+
+    test('coalesces burst stdout into one terminal write per frame', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+      final stdoutEvents = <String>[];
+      final stdoutSubscription = session.shellStdoutStream.listen(
+        stdoutEvents.add,
+      );
+      addTearDown(stdoutSubscription.cancel);
+
+      var terminalNotifications = 0;
+      terminal.addListener(() => terminalNotifications += 1);
+
+      shell.stdout
+        ..add(Uint8List.fromList(utf8.encode('hello ')))
+        ..add(Uint8List.fromList(utf8.encode('world')));
+      await pumpEventQueue();
+
+      expect(firstLineText(terminal), isNot(contains('hello')));
+      expect(stdoutEvents, isEmpty);
+
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(firstLineText(terminal), 'hello world');
+      expect(stdoutEvents, ['hello world']);
+      expect(terminalNotifications, 1);
+    });
+
+    test('flushes terminal theme OSC queries without frame delay', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+      session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]11;?\x1b\\')));
+      await pumpEventQueue();
+
+      expect(firstLineText(terminal), isEmpty);
+      expect(
+        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+        buildTerminalThemeOscResponse(
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
+          code: '11',
+          args: const ['?'],
+        ),
+      );
+    });
+
+    test(
+      'flushes tmux-wrapped terminal theme OSC queries without frame delay',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        final terminal = session.terminal!;
+        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+
+        shell.stdout.add(
+          Uint8List.fromList(
+            utf8.encode('\x1bPtmux;\x1b\x1b]11;?\x1b\x1b\\\x1b\\'),
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(firstLineText(terminal), isEmpty);
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          buildTerminalThemeOscResponse(
+            theme: monkey_themes.TerminalThemes.defaultLightTheme,
+            code: '11',
+            args: const ['?'],
+          ),
+        );
+      },
+    );
+
+    test('flushes pending terminal output before shell done event', () async {
+      final shell = await openShell();
+      final done = shell.done;
+      final session = shell.session;
+      final terminal = session.terminal!;
+      final lineWhenDone = Completer<String>();
+      final doneSubscription = session.shellDoneStream.listen((_) {
+        lineWhenDone.complete(firstLineText(terminal));
+      });
+      addTearDown(doneSubscription.cancel);
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('final prompt')));
+      done.complete();
+
+      expect(await lineWhenDone.future, 'final prompt');
     });
   });
 
@@ -820,6 +1225,36 @@ void main() {
         notifier.getConnectionAttempt(42)?.latestMessage,
         'Connection closed',
       );
+    });
+
+    test('updateSessionTheme skips unchanged theme IDs', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final notifications = <Map<int, SshConnectionState>>[];
+      final subscription = container.listen<Map<int, SshConnectionState>>(
+        activeSessionsProvider,
+        (_, next) => notifications.add(next),
+      );
+      addTearDown(subscription.close);
+
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      final connectionId = result.connectionId!;
+      notifications.clear();
+
+      notifier.updateSessionTheme(
+        connectionId,
+        monkey_themes.TerminalThemes.dracula.id,
+        isDark: true,
+      );
+      expect(notifications, hasLength(1));
+      notifications.clear();
+
+      notifier.updateSessionTheme(
+        connectionId,
+        monkey_themes.TerminalThemes.dracula.id,
+        isDark: true,
+      );
+      expect(notifications, isEmpty);
     });
 
     test(
@@ -2054,16 +2489,19 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService('home');
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService('home'),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(db);
       await service.connectToHost(hostId);
 
       expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(wifiNetworkService.requestPermissionCallCount, 0);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 0);
     });
 
     test('uses jump host when current SSID is not in skip list', () async {
@@ -2072,10 +2510,11 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService('cafe');
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService('cafe'),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(
@@ -2086,6 +2525,8 @@ void main() {
 
       expect(service.capturedConfig?.jumpHost, isNotNull);
       expect(service.capturedConfig?.hostname, 'target.example.com');
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 1);
     });
 
     test('skips jump host when current SSID is in skip list', () async {
@@ -2094,10 +2535,11 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService('home');
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService('home'),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(
@@ -2109,6 +2551,32 @@ void main() {
       expect(service.capturedConfig, isNotNull);
       expect(service.capturedConfig!.jumpHost, isNull);
       expect(service.capturedConfig!.hostname, 'target.example.com');
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 1);
+    });
+
+    test('uses jump host when Wi-Fi permission is denied', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService(
+        'home',
+        permissionStatus: WifiPermissionStatus.denied,
+      );
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+        wifiNetworkService: wifiNetworkService,
+      );
+
+      final hostId = await seedHostWithJump(db, skipJumpHostOnSsids: 'home');
+      await service.connectToHost(hostId);
+
+      expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 0);
     });
 
     test('uses jump host when SSID detection returns null', () async {
@@ -2117,16 +2585,19 @@ void main() {
       final encryption = SecretEncryptionService.forTesting();
       final hostRepo = HostRepository(db, encryption);
       final keyRepo = KeyRepository(db, encryption);
+      final wifiNetworkService = _StubWifiNetworkService(null);
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
-        wifiNetworkService: _StubWifiNetworkService(null),
+        wifiNetworkService: wifiNetworkService,
       );
 
       final hostId = await seedHostWithJump(db, skipJumpHostOnSsids: 'home');
       await service.connectToHost(hostId);
 
       expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(wifiNetworkService.requestPermissionCallCount, 1);
+      expect(wifiNetworkService.getCurrentSsidCallCount, 1);
     });
   });
 }

@@ -1,8 +1,31 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../domain/services/ssh_service.dart';
+
+/// An immutable, value-equal snapshot of the active session tab entries.
+///
+/// Used with [activeSessionsProvider.select] so that [TerminalTabBar] only
+/// rebuilds when the set of sessions or their connection states actually
+/// changes, rather than on every map-reference update.
+@immutable
+class _TabsSnapshot {
+  const _TabsSnapshot(this.entries);
+
+  /// Ordered list of `(connectionId, connectionState)` pairs.
+  final List<(int, SshConnectionState)> entries;
+
+  static const _eq = ListEquality<(int, SshConnectionState)>();
+
+  @override
+  bool operator ==(Object other) =>
+      other is _TabsSnapshot && _eq.equals(entries, other.entries);
+
+  @override
+  int get hashCode => _eq.hash(entries);
+}
 
 /// Tab bar for managing multiple terminal sessions.
 class TerminalTabBar extends ConsumerWidget {
@@ -29,11 +52,16 @@ class TerminalTabBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final sessionStates = ref.watch(activeSessionsProvider);
+    final snapshot = ref.watch(
+      activeSessionsProvider.select(
+        (map) =>
+            _TabsSnapshot(map.entries.map((e) => (e.key, e.value)).toList()),
+      ),
+    );
     final sshService = ref.read(sshServiceProvider);
     final colorScheme = Theme.of(context).colorScheme;
 
-    if (sessionStates.isEmpty) {
+    if (snapshot.entries.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -48,10 +76,9 @@ class TerminalTabBar extends ConsumerWidget {
           Expanded(
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              itemCount: sessionStates.length,
+              itemCount: snapshot.entries.length,
               itemBuilder: (context, index) {
-                final hostId = sessionStates.keys.elementAt(index);
-                final connectionState = sessionStates[hostId]!;
+                final (hostId, connectionState) = snapshot.entries[index];
                 final session = sshService.getSession(hostId);
                 final isActive = hostId == activeHostId;
                 final isConnected =

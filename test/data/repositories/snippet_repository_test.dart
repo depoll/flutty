@@ -367,6 +367,44 @@ void main() {
       expect(folders, isEmpty);
     });
 
+    test('deleteFolder moves snippets to no folder', () async {
+      final folderId = await repository.insertFolder(
+        SnippetFoldersCompanion.insert(name: 'Deploy'),
+      );
+      await repository.insert(
+        SnippetsCompanion.insert(
+          name: 'Restart API',
+          command: 'systemctl restart api',
+          folderId: Value(folderId),
+        ),
+      );
+
+      final deleted = await repository.deleteFolder(folderId);
+      expect(deleted, 1);
+
+      final snippets = await repository.getAll();
+      expect(snippets.single.folderId, isNull);
+      expect(await repository.getByFolder(null), hasLength(1));
+    });
+
+    test('deleteFolder clears child folder parents', () async {
+      final parentId = await repository.insertFolder(
+        SnippetFoldersCompanion.insert(name: 'Parent'),
+      );
+      await repository.insertFolder(
+        SnippetFoldersCompanion.insert(
+          name: 'Child',
+          parentId: Value(parentId),
+        ),
+      );
+
+      final deleted = await repository.deleteFolder(parentId);
+      expect(deleted, 1);
+
+      final child = (await repository.getAllFolders()).single;
+      expect(child.parentId, isNull);
+    });
+
     test('deleteFolder returns 0 when folder not exists', () async {
       final deleted = await repository.deleteFolder(999);
       expect(deleted, 0);

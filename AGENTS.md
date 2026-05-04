@@ -34,6 +34,37 @@ flutter run --device-id <simulator-id>
 
 The script generates a temporary SSH key, authorizes it for localhost, and creates a tmux session with 3 windows. Follow the on-screen instructions to add a host in the app and test the navigator.
 
+## Manual testing: Android emulator local SSH
+
+For Android emulator validation against the Mac host, use `10.0.2.2` from the emulator to reach services bound to `127.0.0.1` on macOS. Run the private flavor with JDK 17:
+
+```bash
+JAVA_HOME="$(/usr/libexec/java_home -v 17)" \
+  flutter run -d emulator-5554 --debug --flavor private -t lib/main.dart
+```
+
+A no-auth Paramiko SSH server is useful for quick simulator testing, but make it behave like the Mac default SSH environment:
+
+- Use `/bin/zsh` for both shell channels and exec probes (`/bin/zsh -lc <command>`).
+- Set `SHELL=/bin/zsh`, `TERM=xterm-256color`, `COLORTERM=truecolor`, and include Homebrew in `PATH` (`/Users/depoll/homebrew/bin`, `/opt/homebrew/bin`, `/usr/local/bin`).
+- Do not launch `bash --noprofile --norc`; it hides Homebrew tools and does not match a normal Mac SSH session.
+- Build a clean environment instead of copying the agent process environment; inherited variables such as `TMUX` make TUIs think they are running inside tmux and can change their terminal protocol behavior.
+- Honor SSH `pty-req` and `window-change` dimensions by applying them to the local PTY with `TIOCSWINSZ`; otherwise TUIs such as Codex can think the terminal has an invalid size (for example 65,535 rows) and render a blank viewport.
+- For opencode system-theme testing, create a temp HOME with `.config/opencode/tui.json` containing `{"theme":"system"}`.
+
+In the app, create or seed a host with hostname `10.0.2.2`, the test server port (for example `2223`), the test username, and no password/key for no-auth. Leave auto-connect fields empty unless you specifically need to test Pro-gated auto-connect behavior. To start a TUI without fragile ADB text input, put a temporary zsh startup command such as `exec opencode --pure` in the test HOME `.zshrc`, then remove it when done.
+
+Useful emulator commands:
+
+```bash
+ADB="$HOME/Library/Android/sdk/platform-tools/adb"
+"$ADB" shell cmd uimode night no      # light mode
+"$ADB" shell cmd uimode night yes     # dark mode
+"$ADB" exec-out screencap -p > /tmp/monkeyssh.png
+```
+
+ADB text injection is IME-dependent. Prefer separate key events for spaces (`adb shell input keyevent SPACE`) rather than relying on escaped spaces in `adb shell input text`.
+
 ### Key gotchas for tmux over SSH exec channels
 
 - **PATH**: SSH exec channels use a minimal PATH that excludes Homebrew. The tmux service sources `~/.profile`, `~/.bash_profile`, and `~/.zprofile` before running commands.

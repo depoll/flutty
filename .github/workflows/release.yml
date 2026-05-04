@@ -103,7 +103,7 @@ jobs:
       - name: Download iOS artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: ios-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
+          name: ios-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}.ipa
           path: artifacts/ios
 
       - name: Generate release checksums

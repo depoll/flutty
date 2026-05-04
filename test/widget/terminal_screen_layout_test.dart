@@ -322,6 +322,54 @@ void main() {
       );
     });
 
+    test('primes configured tmux state while detection is pending', () {
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: 'MonkeySSH',
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: 'MonkeySSH',
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+          preserveExistingTmuxState: false,
+          hadVisibleOrPrimedTmuxState: true,
+          confirmedTmuxActive: false,
+          hadDetectionFailure: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: null,
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: 'MonkeySSH',
+          hasExistingVisibleTmuxState: false,
+          mayPreserveExistingTmuxState: false,
+          isReopeningExistingTerminal: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('keeps verifying the existing tmux session without a preference', () {
       expect(
         resolveTmuxDetectionCandidateSessionName(existingSessionName: ' work '),
@@ -340,6 +388,25 @@ void main() {
           existingSessionName: '',
         ),
         isNull,
+      );
+    });
+
+    test('ignores existing tmux sessions from other SSH connections', () {
+      expect(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: 2,
+          tmuxStateConnectionId: 1,
+          existingSessionName: 'work',
+        ),
+        isNull,
+      );
+      expect(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: 2,
+          tmuxStateConnectionId: 2,
+          existingSessionName: ' work ',
+        ),
+        'work',
       );
     });
 
@@ -449,7 +516,7 @@ void main() {
           hasForegroundClient: false,
           shellStatus: TerminalShellStatus.editingCommand,
         ),
-        isTrue,
+        isFalse,
       );
       expect(
         shouldReattachTmuxAfterWindowAction(
@@ -463,7 +530,7 @@ void main() {
           hasForegroundClient: false,
           shellStatus: null,
         ),
-        isTrue,
+        isFalse,
       );
     });
 

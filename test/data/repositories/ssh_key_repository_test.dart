@@ -117,6 +117,108 @@ void main() {
       expect(updated!.name, 'Updated Key');
     });
 
+    test(
+      'update does not double-encrypt a pre-encrypted private key',
+      () async {
+        const privateKey = 'fixture-open-ssh-material...';
+        final id = await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA...',
+            privateKey: privateKey,
+          ),
+        );
+
+        // Read the raw stored row (private key already encrypted by insert).
+        final rawKey = await (db.select(
+          db.sshKeys,
+        )..where((k) => k.id.equals(id))).getSingle();
+        expect(rawKey.privateKey, startsWith('ENCv1:'));
+        final storedEncryptedPrivKey = rawKey.privateKey;
+
+        // Call update with the already-encrypted state (bypassing getById
+        // decryption) to prove no double-encryption occurs.
+        await repository.update(rawKey.copyWith(name: 'Updated Key'));
+
+        final afterUpdate = await (db.select(
+          db.sshKeys,
+        )..where((k) => k.id.equals(id))).getSingle();
+        expect(afterUpdate.privateKey, startsWith('ENCv1:'));
+        expect(afterUpdate.privateKey, isNot(contains('ENCv1:ENCv1:')));
+        // Service skips re-encrypting a valid envelope, so the stored bytes
+        // must be identical.
+        expect(afterUpdate.privateKey, storedEncryptedPrivKey);
+
+        // Round-trip through the repository must still yield the original key.
+        final decrypted = await repository.getById(id);
+        expect(decrypted!.privateKey, privateKey);
+      },
+    );
+
+    test('update does not double-encrypt a pre-encrypted passphrase', () async {
+      const privateKey = 'fixture-open-ssh-material...';
+      const passphrase = 'my-passphrase';
+      final id = await repository.insert(
+        SshKeysCompanion.insert(
+          name: 'Key With Passphrase',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: privateKey,
+          passphrase: const Value(passphrase),
+        ),
+      );
+
+      final rawKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(rawKey.passphrase, startsWith('ENCv1:'));
+      final storedEncryptedPassphrase = rawKey.passphrase;
+
+      await repository.update(rawKey.copyWith(name: 'Updated Key'));
+
+      final afterUpdate = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(afterUpdate.passphrase, startsWith('ENCv1:'));
+      expect(afterUpdate.passphrase, isNot(contains('ENCv1:ENCv1:')));
+      expect(afterUpdate.passphrase, storedEncryptedPassphrase);
+
+      final decrypted = await repository.getById(id);
+      expect(decrypted!.passphrase, passphrase);
+    });
+
+    test(
+      'repeated update cycles preserve private key decryptability',
+      () async {
+        const privateKey = 'fixture-open-ssh-material...';
+        final id = await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'Original Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA...',
+            privateKey: privateKey,
+          ),
+        );
+
+        // Simulate multiple getById → update cycles (each decrypts then
+        // re-encrypts with a fresh nonce, but must never double-wrap).
+        for (var i = 0; i < 3; i++) {
+          final key = await repository.getById(id);
+          await repository.update(key!.copyWith(name: 'Key ${i + 1}'));
+        }
+
+        final rawKey = await (db.select(
+          db.sshKeys,
+        )..where((k) => k.id.equals(id))).getSingle();
+        expect(rawKey.privateKey, startsWith('ENCv1:'));
+        expect(rawKey.privateKey, isNot(contains('ENCv1:ENCv1:')));
+
+        final decrypted = await repository.getById(id);
+        expect(decrypted!.privateKey, privateKey);
+      },
+    );
+
     test('delete removes key', () async {
       final id = await repository.insert(
         SshKeysCompanion.insert(

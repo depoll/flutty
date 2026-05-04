@@ -276,6 +276,7 @@ void main() {
 
       expect(find.text('Theme'), findsOneWidget);
       expect(find.text('System default'), findsOneWidget);
+      expect(find.text('Use terminal themes for app'), findsOneWidget);
     });
 
     testWidgets('displays font size option', (tester) async {
@@ -345,6 +346,26 @@ void main() {
       expect(find.text('Bell sound'), findsOneWidget);
       expect(find.text('Play sound on terminal bell'), findsOneWidget);
       expect(find.byType(SwitchListTile), findsWidgets);
+    });
+
+    testWidgets('displays terminal wake lock toggle', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Keep screen awake'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Keep screen awake'), findsOneWidget);
+      expect(
+        find.text('Hold a wake lock while a terminal is active'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('displays terminal path link toggles', (tester) async {
@@ -905,6 +926,9 @@ void main() {
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
             themeModeNotifierProvider.overrideWith(StaticThemeModeNotifier.new),
+            terminalThemesApplyToAppNotifierProvider.overrideWith(
+              StaticTerminalThemesApplyToAppNotifier.new,
+            ),
             fontSizeNotifierProvider.overrideWith(StaticFontSizeNotifier.new),
             fontFamilyNotifierProvider.overrideWith(
               StaticFontFamilyNotifier.new,

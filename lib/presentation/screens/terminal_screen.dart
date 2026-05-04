@@ -31,6 +31,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/clipboard_content_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
@@ -43,7 +44,9 @@ import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
+import '../controllers/terminal_session_controller.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/keyboard_toolbar.dart';
@@ -56,6 +59,10 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'sftp_screen.dart';
+import 'snippet_edit_screen.dart';
+
+part '../widgets/tmux_expandable_bar.dart';
 
 bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x20 ||
@@ -253,6 +260,20 @@ bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   return hadVisibleOrPrimedTmuxState && hadDetectionFailure;
 }
 
+/// Returns whether detection should show the expected tmux UI before exec
+/// probes complete.
+@visibleForTesting
+bool shouldPrimeTerminalTmuxStateWhileDetecting({
+  required String? candidateSessionName,
+  required bool hasExistingVisibleTmuxState,
+  required bool mayPreserveExistingTmuxState,
+  required bool isReopeningExistingTerminal,
+}) =>
+    candidateSessionName != null &&
+    !hasExistingVisibleTmuxState &&
+    !mayPreserveExistingTmuxState &&
+    isReopeningExistingTerminal;
+
 /// Chooses the tmux session name to verify during detection.
 ///
 /// Prefer explicit route/host configuration, but keep verifying the existing
@@ -271,6 +292,22 @@ String? resolveTmuxDetectionCandidateSessionName({
     return existing;
   }
   return null;
+}
+
+/// Keeps an existing tmux session candidate scoped to the SSH connection that
+/// created it.
+@visibleForTesting
+String? resolveOwnedTmuxDetectionExistingSessionName({
+  required int sessionConnectionId,
+  required int? tmuxStateConnectionId,
+  String? existingSessionName,
+}) {
+  if (tmuxStateConnectionId != sessionConnectionId) {
+    return null;
+  }
+  return resolveTmuxDetectionCandidateSessionName(
+    existingSessionName: existingSessionName,
+  );
 }
 
 /// Returns whether a tmux bar widget update should keep its last window list.
@@ -316,7 +353,7 @@ bool shouldReattachTmuxAfterWindowAction({
   if (hasForegroundClient) {
     return false;
   }
-  return shellStatus != TerminalShellStatus.runningCommand;
+  return shellStatus == TerminalShellStatus.prompt;
 }
 
 /// Returns whether shell-command review warnings should be shown for text
@@ -574,6 +611,41 @@ String _stripTerminalPromptEscapeSequences(String text) => text
     .replaceAll(_csiEscapeSequencePattern, '')
     .replaceAll(_singleCharEscapeSequencePattern, '');
 
+final _terminalSensitivePromptPattern = RegExp(
+  r'\b(?:password|passphrase|pin|otp|one[- ]time(?:\s+password)?|verification(?:\s+code)?|authentication(?:\s+code)?|auth(?:\s+code)?|security(?:\s+code)?)\b[^\r\n]{0,160}[:：]\s*$',
+  caseSensitive: false,
+);
+
+final _terminalPasswordPolicyPromptPattern = RegExp(
+  r'\b(?:password|passphrase)\s+(?:requirements?|policy|rules?|hint|incorrect|invalid|failed|failure|reset|changed|updated)\b',
+  caseSensitive: false,
+);
+
+/// Returns whether the visible terminal text appears to be requesting a secret.
+@visibleForTesting
+bool terminalTextLooksLikeSensitiveInputPrompt(String? textBeforeCursor) {
+  if (textBeforeCursor == null) {
+    return false;
+  }
+
+  final sanitizedText = _stripTerminalPromptEscapeSequences(textBeforeCursor);
+  if (sanitizedText.trimRight().isEmpty) {
+    return false;
+  }
+
+  final lastLine = sanitizedText.split(RegExp(r'[\r\n]')).last.trimRight();
+  if (lastLine.isEmpty || lastLine.length > 220) {
+    return false;
+  }
+
+  final normalizedLine = lastLine.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (_terminalPasswordPolicyPromptPattern.hasMatch(normalizedLine)) {
+    return false;
+  }
+
+  return _terminalSensitivePromptPattern.hasMatch(normalizedLine);
+}
+
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
@@ -581,7 +653,9 @@ const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
 const _terminalSelectionNearbySearchColumns = 4;
+const _recentLocalClipboardProtection = Duration(seconds: 5);
 const _maxTerminalFilePathVerificationCandidates = 12;
+const _terminalSelectionSnippetNameMaxLength = 60;
 const _terminalFilePathVerificationExtensions = <String>[
   'properties',
   'gradle',
@@ -633,1210 +707,6 @@ const _terminalFilePathVerificationExtensions = <String>[
   'm',
 ];
 
-/// Expandable tmux bar overlaid at the bottom of the terminal.
-///
-/// Collapsed: a slim handle bar sitting over bottom padding in the terminal.
-/// Expanded: slides up over the terminal content.
-/// The handle height matches the terminal's bottom padding so it never
-/// covers actual terminal content when collapsed.
-class _TmuxExpandableBar extends StatefulWidget {
-  const _TmuxExpandableBar({
-    required this.session,
-    required this.tmuxSessionName,
-    required this.availableHeight,
-    required this.recoveryGeneration,
-    required this.isProUser,
-    required this.startClisInYoloMode,
-    required this.initiallyExpanded,
-    required this.ref,
-    required this.onAction,
-    required this.onExpandedChanged,
-    this.tmuxExtraFlags,
-    this.scopeWorkingDirectory,
-    this.onWindowLoadStalled,
-    this.onWindowsChanged,
-    super.key,
-  });
-
-  /// The active SSH session.
-  final SshSession session;
-
-  /// The tmux session name.
-  final String tmuxSessionName;
-
-  /// Optional extra flags for tmux commands (e.g. custom socket path).
-  final String? tmuxExtraFlags;
-
-  /// The available terminal height the bar can expand into.
-  final double availableHeight;
-
-  /// Forces state recovery when tmux window loading stalls.
-  final int recoveryGeneration;
-
-  /// Whether the user has Pro access.
-  final bool isProUser;
-
-  /// Whether supported coding CLIs should launch in YOLO mode for this host.
-  final bool startClisInYoloMode;
-
-  /// Whether the tmux window list should start expanded.
-  final bool initiallyExpanded;
-
-  /// Riverpod ref.
-  final WidgetRef ref;
-
-  /// Callback for navigator actions.
-  final Future<void> Function(TmuxNavigatorAction) onAction;
-
-  /// Called when the expanded/collapsed state changes.
-  final ValueChanged<bool> onExpandedChanged;
-
-  final Future<void> Function(SshSession session, String sessionName)?
-  onWindowLoadStalled;
-
-  /// Called when the tmux window snapshot changes.
-  final ValueChanged<List<TmuxWindow>>? onWindowsChanged;
-
-  /// Best-known project working directory for AI session scoping.
-  final String? scopeWorkingDirectory;
-
-  /// Height of the collapsed handle bar. The terminal adds this as
-  /// bottom padding so the handle sits over empty space.
-  static const handleHeight = tmuxHandleMinTouchExtent;
-
-  @override
-  State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
-}
-
-class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
-    with SingleTickerProviderStateMixin {
-  static const _denseTileVisualDensity = VisualDensity(vertical: -2);
-  static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
-  static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
-  static const _prefetchSessionFetchLimit = 6;
-  static const _pendingSelectionTimeout = Duration(seconds: 2);
-
-  List<TmuxWindow>? _windows;
-  AgentLaunchTool? _preferredLaunchTool;
-  final Set<int> _seenAlertWindows = <int>{};
-  late bool _expanded;
-  bool _isLoading = true;
-  bool _showSessions = false;
-  bool _hasInitializedSessionProviders = false;
-  double _dragOffset = 0;
-  StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
-  late AnimationController _bounceController;
-  late Animation<double> _bounceAnimation;
-  bool _loadingWindows = false;
-  bool _pendingWindowReload = false;
-  int _windowReloadGeneration = 0;
-  int _windowEventGeneration = 0;
-  int? _pendingSelectedWindowIndex;
-  Timer? _pendingSelectionTimer;
-  Timer? _windowRetryTimer;
-  int _windowRetryAttempts = 0;
-  int _consecutiveEmptyWindowReloads = 0;
-  bool _windowReloadRecoveryRequested = false;
-
-  TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
-
-  AgentSessionDiscoveryService get _discovery =>
-      widget.ref.read(agentSessionDiscoveryServiceProvider);
-
-  List<TmuxWindow>? get _displayedWindows => resolveTmuxBarDisplayedWindows(
-    _windows,
-    pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    _expanded = widget.initiallyExpanded;
-    _bounceController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    );
-    _bounceAnimation =
-        TweenSequence<double>([
-          TweenSequenceItem(tween: Tween(begin: 0, end: -6), weight: 1),
-          TweenSequenceItem(tween: Tween(begin: -6, end: 0), weight: 1),
-          TweenSequenceItem(tween: Tween(begin: 0, end: -3), weight: 1),
-          TweenSequenceItem(tween: Tween(begin: -3, end: 0), weight: 1),
-        ]).animate(
-          CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
-        );
-    unawaited(_loadPreferredLaunchTool());
-    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
-    _loadWindows();
-    _subscribeToWindowChanges();
-  }
-
-  @override
-  void didUpdateWidget(covariant _TmuxExpandableBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final sessionChanged =
-        oldWidget.session.connectionId != widget.session.connectionId ||
-        oldWidget.tmuxSessionName != widget.tmuxSessionName ||
-        oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
-    final recoveryChanged =
-        oldWidget.recoveryGeneration != widget.recoveryGeneration;
-    if (!sessionChanged && !recoveryChanged) {
-      return;
-    }
-    final wasExpanded = _expanded;
-    _clearPendingSelectedWindow(notify: false);
-    _resetWindowReloadRecovery();
-    if (!shouldPreserveTmuxBarSnapshotOnUpdate(
-      sessionChanged: sessionChanged,
-      recoveryChanged: recoveryChanged,
-    )) {
-      _clearSeenAlertNotifications(
-        oldWidget.session,
-        oldWidget.tmuxSessionName,
-      );
-      setState(() {
-        _windows = null;
-        _isLoading = true;
-        _expanded = false;
-        _showSessions = false;
-        _hasInitializedSessionProviders = false;
-        _dragOffset = 0;
-      });
-      if (wasExpanded) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            widget.onExpandedChanged(false);
-          }
-        });
-      }
-      unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
-    } else if (!(_windows?.isNotEmpty ?? false)) {
-      setState(() => _isLoading = true);
-    }
-    if (sessionChanged) {
-      unawaited(_windowChangeSubscription?.cancel());
-      _subscribeToWindowChanges();
-    }
-    unawaited(_loadPreferredLaunchTool());
-    _loadWindows();
-  }
-
-  @override
-  void dispose() {
-    _clearPendingSelectedWindow(notify: false);
-    _resetWindowReloadRecovery();
-    unawaited(_windowChangeSubscription?.cancel());
-    _clearSeenAlertNotifications(widget.session, widget.tmuxSessionName);
-    _bounceController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadPreferredLaunchTool() async {
-    final hostId = widget.session.hostId;
-    final preset = await widget.ref
-        .read(agentLaunchPresetServiceProvider)
-        .getPresetForHost(hostId);
-    if (!mounted || widget.session.hostId != hostId) return;
-
-    final preferredLaunchTool = preset?.tool;
-    if (_preferredLaunchTool == preferredLaunchTool) return;
-    setState(() => _preferredLaunchTool = preferredLaunchTool);
-  }
-
-  void _subscribeToWindowChanges() {
-    final generation = ++_windowEventGeneration;
-    DiagnosticsLogService.instance.info(
-      'tmux.ui',
-      'bar_subscribe',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'generation': generation,
-      },
-    );
-    _windowChangeSubscription = _tmux
-        .watchWindowChanges(
-          widget.session,
-          widget.tmuxSessionName,
-          extraFlags: widget.tmuxExtraFlags,
-        )
-        .listen((event) => _handleWindowChangeEvent(event, generation));
-  }
-
-  void _handleWindowChangeEvent(TmuxWindowChangeEvent event, int generation) {
-    if (!mounted) return;
-    if (generation != _windowEventGeneration) return;
-    if (event is TmuxWindowReloadEvent) {
-      DiagnosticsLogService.instance.debug(
-        'tmux.ui',
-        'bar_reload_event',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': generation,
-        },
-      );
-      _loadWindows();
-      return;
-    }
-    final currentWindows = _windows;
-    if (currentWindows == null) {
-      DiagnosticsLogService.instance.debug(
-        'tmux.ui',
-        'bar_snapshot_without_state',
-        fields: {'connectionId': widget.session.connectionId},
-      );
-      _loadWindows();
-      return;
-    }
-    _windowReloadGeneration += 1;
-    _resetWindowReloadRecovery();
-    final windows = applyTmuxWindowChangeEvent(currentWindows, event);
-    DiagnosticsLogService.instance.debug(
-      'tmux.ui',
-      'bar_snapshot_applied',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'windowCount': windows.length,
-      },
-    );
-    _applyWindows(windows);
-    if (widget.isProUser && _showSessions) {
-      unawaited(_prefetchPreferredSessionProvider(windows: windows));
-    }
-  }
-
-  void _applyWindows(List<TmuxWindow> windows) {
-    // Detect new alerts that weren't in the previous window list.
-    final newAlerts = windows.where(
-      (w) => w.hasAlert && !w.isActive && !_seenAlertWindows.contains(w.index),
-    );
-    if (newAlerts.isNotEmpty) {
-      unawaited(_bounceController.forward(from: 0));
-      for (final w in newAlerts) {
-        _seenAlertWindows.add(w.index);
-        _sendAlertNotification(w, windows);
-      }
-    }
-
-    final activeAlerts = _seenAlertWindows
-        .where(
-          (idx) =>
-              windows.any((w) => w.index == idx && w.hasAlert && w.isActive),
-        )
-        .toList(growable: false);
-    for (final windowIndex in activeAlerts) {
-      _clearAlertNotification(windowIndex);
-    }
-
-    final clearedAlerts = _seenAlertWindows
-        .where((idx) => !windows.any((w) => w.index == idx && w.hasAlert))
-        .toList(growable: false);
-    for (final windowIndex in clearedAlerts) {
-      _seenAlertWindows.remove(windowIndex);
-      _clearAlertNotification(windowIndex);
-    }
-
-    final nextPendingSelectedWindowIndex =
-        resolveTmuxBarPendingSelectedWindowIndex(
-          windows,
-          pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
-        );
-    if (_pendingSelectedWindowIndex != null &&
-        nextPendingSelectedWindowIndex == null) {
-      _pendingSelectionTimer?.cancel();
-      _pendingSelectionTimer = null;
-    }
-
-    setState(() {
-      _windows = windows;
-      _isLoading = false;
-      _pendingSelectedWindowIndex = nextPendingSelectedWindowIndex;
-    });
-    widget.onWindowsChanged?.call(windows);
-  }
-
-  void _startPendingSelectionTimer(int windowIndex) {
-    _pendingSelectionTimer?.cancel();
-    _pendingSelectionTimer = Timer(_pendingSelectionTimeout, () {
-      _pendingSelectionTimer = null;
-      if (!mounted || _pendingSelectedWindowIndex != windowIndex) {
-        return;
-      }
-      setState(() => _pendingSelectedWindowIndex = null);
-    });
-  }
-
-  void _clearPendingSelectedWindow({required bool notify}) {
-    _pendingSelectionTimer?.cancel();
-    _pendingSelectionTimer = null;
-    if (_pendingSelectedWindowIndex == null) {
-      return;
-    }
-    if (!notify || !mounted) {
-      _pendingSelectedWindowIndex = null;
-      return;
-    }
-    setState(() => _pendingSelectedWindowIndex = null);
-  }
-
-  void _cancelWindowRetry() {
-    _windowRetryTimer?.cancel();
-    _windowRetryTimer = null;
-  }
-
-  void _resetWindowReloadRecovery() {
-    _cancelWindowRetry();
-    _windowRetryAttempts = 0;
-    _consecutiveEmptyWindowReloads = 0;
-    _windowReloadRecoveryRequested = false;
-  }
-
-  void _scheduleWindowRetry() {
-    if (!mounted || (_windowRetryTimer?.isActive ?? false)) {
-      return;
-    }
-    final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
-    _windowRetryAttempts += 1;
-    DiagnosticsLogService.instance.warning(
-      'tmux.ui',
-      'bar_retry_scheduled',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'attempt': _windowRetryAttempts,
-        'delayMs': delay.inMilliseconds,
-      },
-    );
-    _windowRetryTimer = Timer(delay, () {
-      _windowRetryTimer = null;
-      if (mounted) {
-        unawaited(_loadWindows());
-      }
-    });
-  }
-
-  bool get _shouldRequestWindowReloadRecovery =>
-      !(_windows?.isNotEmpty ?? false) && _windowRetryAttempts >= 1;
-
-  void _requestWindowReloadRecovery() {
-    if (_windowReloadRecoveryRequested) {
-      return;
-    }
-    _windowReloadRecoveryRequested = true;
-    DiagnosticsLogService.instance.warning(
-      'tmux.ui',
-      'bar_recovery_requested',
-      fields: {'connectionId': widget.session.connectionId},
-    );
-    final onWindowLoadStalled = widget.onWindowLoadStalled;
-    if (onWindowLoadStalled != null) {
-      unawaited(onWindowLoadStalled(widget.session, widget.tmuxSessionName));
-    }
-  }
-
-  bool collapseIfExpanded() {
-    if (!_expanded) {
-      return false;
-    }
-    setState(() {
-      _expanded = false;
-      _dragOffset = 0;
-    });
-    widget.onExpandedChanged(false);
-    return true;
-  }
-
-  String? _resolveRecentSessionScopeWorkingDirectory([
-    List<TmuxWindow>? windows,
-  ]) {
-    final activeWindow = (windows ?? _windows)
-        ?.where((window) => window.isActive)
-        .firstOrNull;
-    return widget.scopeWorkingDirectory ??
-        resolveAgentSessionScopeWorkingDirectory(
-          activeWorkingDirectory: activeWindow?.currentPath,
-          sessionWorkingDirectory: widget.session.workingDirectory,
-        );
-  }
-
-  Future<void> _prefetchPreferredSessionProvider({
-    List<TmuxWindow>? windows,
-    int maxPerTool = _prefetchSessionFetchLimit,
-  }) async {
-    final toolName = _preferredLaunchTool?.discoveredSessionToolName;
-    if (toolName == null || toolName.isEmpty) return;
-    await _discovery.prefetchSessions(
-      widget.session,
-      workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
-      maxPerTool: maxPerTool,
-      toolName: toolName,
-    );
-  }
-
-  Future<void> _loadWindows() async {
-    if (_loadingWindows) {
-      _pendingWindowReload = true;
-      DiagnosticsLogService.instance.debug(
-        'tmux.ui',
-        'bar_reload_queued',
-        fields: {'connectionId': widget.session.connectionId},
-      );
-      return;
-    }
-    _loadingWindows = true;
-    final reloadGeneration = ++_windowReloadGeneration;
-    DiagnosticsLogService.instance.debug(
-      'tmux.ui',
-      'bar_reload_start',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'generation': reloadGeneration,
-      },
-    );
-    try {
-      final reloadedWindows = await _tmux.listWindows(
-        widget.session,
-        widget.tmuxSessionName,
-        extraFlags: widget.tmuxExtraFlags,
-      );
-      if (!mounted) return;
-      if (reloadGeneration < _windowReloadGeneration) return;
-      final isEmptyReload = reloadedWindows.isEmpty;
-      if (isEmptyReload) {
-        _consecutiveEmptyWindowReloads += 1;
-      } else {
-        _resetWindowReloadRecovery();
-      }
-      DiagnosticsLogService.instance.info(
-        'tmux.ui',
-        'bar_reload_result',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': reloadGeneration,
-          'windowCount': reloadedWindows.length,
-          'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
-        },
-      );
-      final windows = resolveTmuxReloadedWindows(
-        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
-              _windows,
-              consecutiveEmptyReloads: _consecutiveEmptyWindowReloads,
-            )
-            ? _windows
-            : null,
-        reloadedWindows,
-      );
-      if (windows == null) {
-        DiagnosticsLogService.instance.warning(
-          'tmux.ui',
-          'bar_reload_preserved_previous',
-          fields: {
-            'connectionId': widget.session.connectionId,
-            'generation': reloadGeneration,
-          },
-        );
-        final shouldRecover = _shouldRequestWindowReloadRecovery;
-        _scheduleWindowRetry();
-        if (shouldRecover) {
-          final wasExpanded = _expanded;
-          setState(() {
-            _expanded = false;
-            _isLoading = false;
-          });
-          if (wasExpanded) {
-            widget.onExpandedChanged(false);
-          }
-          _requestWindowReloadRecovery();
-        } else if (_windows != null || !_isLoading) {
-          setState(() {
-            _windows = null;
-            _isLoading = true;
-          });
-        }
-        return;
-      }
-      if (isEmptyReload) {
-        _scheduleWindowRetry();
-      } else {
-        _resetWindowReloadRecovery();
-      }
-      _applyWindows(windows);
-      if (widget.isProUser && _showSessions) {
-        unawaited(_prefetchPreferredSessionProvider(windows: windows));
-      }
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'tmux.ui',
-        'bar_reload_failed',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': reloadGeneration,
-          'errorType': error.runtimeType,
-        },
-      );
-      if (!mounted) return;
-      final shouldRecover = _shouldRequestWindowReloadRecovery;
-      _scheduleWindowRetry();
-      if (_windows?.isNotEmpty ?? false) {
-        if (_isLoading) {
-          setState(() => _isLoading = false);
-        }
-      } else if (shouldRecover) {
-        final wasExpanded = _expanded;
-        setState(() {
-          _expanded = false;
-          _isLoading = false;
-        });
-        if (wasExpanded) {
-          widget.onExpandedChanged(false);
-        }
-        _requestWindowReloadRecovery();
-      } else {
-        setState(() => _isLoading = true);
-      }
-    } finally {
-      _loadingWindows = false;
-      if (_pendingWindowReload) {
-        _pendingWindowReload = false;
-        unawaited(_loadWindows());
-      }
-    }
-  }
-
-  void _resumeSession(ToolSessionInfo info) {
-    final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(info);
-    final wasExpanded = _expanded;
-    setState(() => _expanded = false);
-    if (wasExpanded) {
-      widget.onExpandedChanged(false);
-    }
-    widget.onAction(
-      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
-    );
-  }
-
-  Future<void> _showSessionPickerForTool(
-    AiSessionProviderEntry provider,
-  ) async {
-    final selected = await showAiSessionPickerDialog(
-      context: context,
-      toolName: provider.toolName,
-      loadSessions: (maxSessions) => _discovery.discoverSessionsStream(
-        widget.session,
-        workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
-        maxPerTool: maxSessions,
-        toolName: provider.toolName,
-      ),
-    );
-    if (!mounted || selected == null) return;
-    _resumeSession(selected);
-  }
-
-  int _tmuxAlertNotificationId(
-    SshSession session,
-    String tmuxSessionName,
-    int windowIndex,
-  ) =>
-      Object.hash(
-        session.hostId,
-        session.connectionId,
-        tmuxSessionName,
-        windowIndex,
-      ) &
-      0x7fffffff;
-
-  void _sendAlertNotification(TmuxWindow window, List<TmuxWindow> windows) {
-    final content = resolveTmuxAlertNotificationContent(
-      tmuxSessionName: widget.tmuxSessionName,
-      window: window,
-      windows: windows,
-    );
-    unawaited(HapticFeedback.mediumImpact());
-    unawaited(
-      widget.ref
-          .read(localNotificationServiceProvider)
-          .showTmuxAlert(
-            notificationId: _tmuxAlertNotificationId(
-              widget.session,
-              widget.tmuxSessionName,
-              window.index,
-            ),
-            title: content.title,
-            body: content.body,
-            payload: TmuxAlertNotificationPayload(
-              hostId: widget.session.hostId,
-              connectionId: widget.session.connectionId,
-              tmuxSessionName: widget.tmuxSessionName,
-              windowIndex: window.index,
-            ),
-          ),
-    );
-  }
-
-  void _clearAlertNotification(int windowIndex) {
-    unawaited(
-      widget.ref
-          .read(localNotificationServiceProvider)
-          .clearTmuxAlert(
-            _tmuxAlertNotificationId(
-              widget.session,
-              widget.tmuxSessionName,
-              windowIndex,
-            ),
-          ),
-    );
-  }
-
-  void _clearAlertNotificationFor(
-    SshSession session,
-    String tmuxSessionName,
-    int windowIndex,
-  ) {
-    unawaited(
-      widget.ref
-          .read(localNotificationServiceProvider)
-          .clearTmuxAlert(
-            _tmuxAlertNotificationId(session, tmuxSessionName, windowIndex),
-          ),
-    );
-  }
-
-  void _clearSeenAlertNotifications(
-    SshSession session,
-    String tmuxSessionName,
-  ) {
-    for (final windowIndex in _seenAlertWindows) {
-      _clearAlertNotificationFor(session, tmuxSessionName, windowIndex);
-    }
-    _seenAlertWindows.clear();
-  }
-
-  void _onVerticalDragUpdate(DragUpdateDetails details) {
-    setState(() {
-      _dragOffset += _expanded ? details.delta.dy : -details.delta.dy;
-      _dragOffset = _dragOffset.clamp(0.0, 300.0);
-    });
-  }
-
-  void _onVerticalDragEnd(DragEndDetails details) {
-    final velocity = details.primaryVelocity ?? 0;
-    final shouldExpand = !_expanded && (velocity < -200 || _dragOffset > 60);
-    final shouldCollapse = _expanded && (velocity > 200 || _dragOffset > 60);
-    setState(() {
-      if (shouldExpand) {
-        _expanded = true;
-      } else if (shouldCollapse) {
-        _expanded = false;
-      }
-      _dragOffset = 0;
-    });
-    if (shouldExpand) {
-      widget.onExpandedChanged(true);
-    } else if (shouldCollapse) {
-      widget.onExpandedChanged(false);
-    }
-    if (shouldExpand) _loadWindows();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final availableHeight = widget.availableHeight.isFinite
-        ? widget.availableHeight
-        : MediaQuery.sizeOf(context).height * 0.5;
-    final mediaQuery = MediaQuery.of(context);
-    final visibleViewportHeight = max(
-      0,
-      mediaQuery.size.height -
-          mediaQuery.viewPadding.vertical -
-          mediaQuery.viewInsets.bottom,
-    );
-    final maxContentHeight = resolveTmuxBarMaxContentHeight(
-      availableHeight,
-      fallbackAvailableHeight: visibleViewportHeight * 0.5,
-    );
-    final dragDistance = _dragOffset.clamp(0.0, maxContentHeight);
-    final contentHeight = _expanded
-        ? (maxContentHeight - dragDistance).clamp(0.0, maxContentHeight)
-        : dragDistance;
-
-    return AnimatedBuilder(
-      animation: _bounceAnimation,
-      builder: (context, child) => Transform.translate(
-        offset: Offset(0, _bounceAnimation.value),
-        child: child,
-      ),
-      child: GestureDetector(
-        onVerticalDragUpdate: _onVerticalDragUpdate,
-        onVerticalDragEnd: _onVerticalDragEnd,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            border: Border(
-              top: BorderSide(
-                color: theme.colorScheme.outlineVariant,
-                width: 0.5,
-              ),
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildHandleBar(theme),
-              AnimatedContainer(
-                duration: _dragOffset > 0
-                    ? Duration.zero
-                    : const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-                height: contentHeight,
-                child: contentHeight > 0
-                    ? ClipRect(child: _buildWindowList(theme))
-                    : const SizedBox.shrink(),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHandleBar(ThemeData theme) {
-    final displayedWindows = _displayedWindows;
-    final handleLabel = resolveTmuxBarHandleLabel(
-      widget.tmuxSessionName,
-      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
-    );
-    final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
-    final tooltip = _expanded
-        ? 'Collapse tmux windows'
-        : 'Show tmux windows: $handleLabel';
-
-    return Semantics(
-      button: true,
-      toggled: _expanded,
-      label: 'tmux windows: $handleLabel',
-      hint: _expanded
-          ? 'Double tap to collapse the tmux window list'
-          : 'Double tap to show tmux windows',
-      child: Tooltip(
-        message: tooltip,
-        child: GestureDetector(
-          key: const ValueKey('tmux-handle-bar'),
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            final wasExpanded = _expanded;
-            setState(() => _expanded = !_expanded);
-            widget.onExpandedChanged(!wasExpanded);
-            // Refresh window list when expanding to get current active state.
-            if (!wasExpanded) {
-              _loadWindows();
-              if (widget.isProUser && _showSessions) {
-                unawaited(_prefetchPreferredSessionProvider());
-              }
-            }
-          },
-          child: SizedBox(
-            height: _TmuxExpandableBar.handleHeight,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  AgentToolIcon(
-                    tool: activeWindowTool,
-                    size: 16,
-                    color: theme.colorScheme.primary,
-                    fallbackIcon: Icons.window_outlined,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      handleLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.onSurfaceVariant.withAlpha(110),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: const SizedBox(width: 28, height: 4),
-                  ),
-                  const SizedBox(width: 8),
-                  AnimatedRotation(
-                    duration: const Duration(milliseconds: 300),
-                    turns: _expanded ? 0.5 : 0,
-                    child: Icon(
-                      Icons.keyboard_arrow_up,
-                      size: 20,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildWindowList(ThemeData theme) {
-    final displayedWindows = _displayedWindows;
-    if (_isLoading) {
-      return const Padding(
-        padding: EdgeInsets.all(16),
-        child: Center(
-          child: SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-          ),
-        ),
-      );
-    }
-
-    if (displayedWindows == null || displayedWindows.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Divider(height: 1),
-          for (final window in displayedWindows)
-            _buildWindowTile(theme, window),
-          const Divider(height: 1),
-          ListTile(
-            dense: true,
-            visualDensity: _denseTileVisualDensity,
-            minTileHeight: 42,
-            contentPadding: _denseTilePadding,
-            horizontalTitleGap: 12,
-            minLeadingWidth: 20,
-            leading: Icon(
-              Icons.add_circle_outline,
-              color: theme.colorScheme.primary,
-              size: 18,
-            ),
-            title: const Text('New Window'),
-            onTap: () {
-              final wasExpanded = _expanded;
-              setState(() => _expanded = false);
-              if (wasExpanded) {
-                widget.onExpandedChanged(false);
-              }
-              final installedToolsFuture = _tmux.detectInstalledAgentTools(
-                widget.session,
-              );
-              showModalBottomSheet<AgentLaunchTool?>(
-                context: context,
-                builder: (ctx) => TmuxToolPickerSheet(
-                  isProUser: widget.isProUser,
-                  installedToolsFuture: installedToolsFuture,
-                  preferredTool: _preferredLaunchTool,
-                  onToolSelected: (tool) => Navigator.pop(ctx, tool),
-                  onEmptyWindow: () {
-                    Navigator.pop(ctx);
-                    widget.onAction(const TmuxNewWindowAction());
-                  },
-                ),
-              ).then((tool) {
-                if (!mounted || tool == null) {
-                  return;
-                }
-                widget.onAction(
-                  TmuxNewWindowAction(
-                    command: buildAgentToolCommand(
-                      tool,
-                      startInYoloMode: widget.startClisInYoloMode,
-                    ),
-                    windowName: tool.commandName,
-                  ),
-                );
-              });
-            },
-          ),
-          if (widget.isProUser) ...[
-            const Divider(height: 1),
-            _buildSessionsSection(theme),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSessionsSection(ThemeData theme) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      ListTile(
-        dense: true,
-        visualDensity: _denseTileVisualDensity,
-        minTileHeight: 42,
-        contentPadding: _denseTilePadding,
-        horizontalTitleGap: 12,
-        minLeadingWidth: 18,
-        leading: Icon(
-          Icons.smart_toy_outlined,
-          size: 16,
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-        title: const Text('AI Sessions'),
-        trailing: Icon(
-          _showSessions ? Icons.expand_less : Icons.expand_more,
-          size: 16,
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-        onTap: () {
-          final showSessions = !_showSessions;
-          setState(() {
-            _showSessions = showSessions;
-            if (showSessions) {
-              _hasInitializedSessionProviders = true;
-            }
-          });
-          if (showSessions) {
-            unawaited(_prefetchPreferredSessionProvider());
-          }
-        },
-      ),
-      if (_hasInitializedSessionProviders)
-        Offstage(
-          offstage: !_showSessions,
-          child: AiSessionProviderList(
-            key: ValueKey<Object>(
-              Object.hashAll(<Object?>[
-                widget.session.connectionId,
-                widget.tmuxSessionName,
-                _resolveRecentSessionScopeWorkingDirectory(),
-              ]),
-            ),
-            orderedTools: orderedDiscoveredSessionTools(
-              const <String, List<ToolSessionInfo>>{},
-              const <String>{},
-              preferredToolName:
-                  _preferredLaunchTool?.discoveredSessionToolName,
-            ),
-            loadSessionsForTool: (toolName, maxSessions) =>
-                _discovery.discoverSessionsStream(
-                  widget.session,
-                  workingDirectory:
-                      _resolveRecentSessionScopeWorkingDirectory(),
-                  maxPerTool: maxSessions,
-                  toolName: toolName,
-                ),
-            itemBuilder: (context, provider) =>
-                _buildSessionProviderTile(theme, provider),
-          ),
-        ),
-    ],
-  );
-
-  Widget _buildSessionProviderTile(
-    ThemeData theme,
-    AiSessionProviderEntry provider,
-  ) {
-    final titleColor = provider.hasFailure
-        ? theme.colorScheme.error
-        : provider.isSelectable
-        ? theme.colorScheme.onSurface
-        : theme.colorScheme.onSurfaceVariant;
-    final iconColor = provider.hasFailure
-        ? theme.colorScheme.error
-        : provider.isSelectable
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
-
-    return ListTile(
-      dense: true,
-      visualDensity: _denseTileVisualDensity,
-      minVerticalPadding: 2,
-      contentPadding: _groupTilePadding,
-      horizontalTitleGap: 12,
-      minLeadingWidth: 18,
-      leading: AgentToolIcon(
-        toolName: provider.toolName,
-        size: 16,
-        color: iconColor,
-      ),
-      title: Text(
-        provider.toolName,
-        style: theme.textTheme.bodyMedium?.copyWith(color: titleColor),
-      ),
-      subtitle: Text(
-        provider.statusLabel,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: provider.hasFailure
-              ? theme.colorScheme.error
-              : theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-      trailing: provider.isLoading && !provider.hasSessions
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-            )
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (provider.isLoading) ...[
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 4),
-                ],
-                if (provider.isSelectable)
-                  Icon(
-                    Icons.chevron_right,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-              ],
-            ),
-      onTap: provider.isSelectable
-          ? () => unawaited(_showSessionPickerForTool(provider))
-          : null,
-    );
-  }
-
-  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
-    final isActive = window.isActive;
-    final title = _redactStoreScreenshotIdentities
-        ? switch (window.name.trim()) {
-            'claude' || 'claude-code' => 'Claude Code Workspace',
-            'copilot' => 'Mobile Copilot Workspace',
-            final name when name.isNotEmpty => name,
-            _ => window.displayTitle,
-          }
-        : window.displayTitle;
-    final secondaryTitle = _redactStoreScreenshotIdentities
-        ? null
-        : window.secondaryTitle;
-    final iconColor = isActive
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
-
-    return ListTile(
-      dense: true,
-      visualDensity: _denseTileVisualDensity,
-      minVerticalPadding: 2,
-      contentPadding: const EdgeInsets.only(left: 12, right: 4),
-      horizontalTitleGap: 10,
-      minLeadingWidth: 24,
-      tileColor: isActive
-          ? theme.colorScheme.primaryContainer.withAlpha(80)
-          : null,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      leading: Container(
-        width: 22,
-        height: 22,
-        decoration: BoxDecoration(
-          color: isActive
-              ? theme.colorScheme.primary
-              : theme.colorScheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          '${window.index}',
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: isActive
-                ? theme.colorScheme.onPrimary
-                : theme.colorScheme.onSurfaceVariant,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-      title: Row(
-        children: [
-          AgentToolIcon(
-            tool: window.foregroundAgentTool,
-            size: 16,
-            color: iconColor,
-            fallbackIcon: Icons.terminal,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: isActive
-                  ? theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    )
-                  : null,
-            ),
-          ),
-        ],
-      ),
-      subtitle: secondaryTitle != null
-          ? Text(
-              secondaryTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            )
-          : null,
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: TmuxWindowStatusBadge(window: window),
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16),
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-            padding: EdgeInsets.zero,
-            tooltip: 'Close window',
-            onPressed: () {
-              widget.onAction(TmuxCloseWindowAction(window.index));
-              setState(() {
-                _windows = _windows
-                    ?.where((w) => w.index != window.index)
-                    .toList();
-                if (_pendingSelectedWindowIndex == window.index) {
-                  _pendingSelectedWindowIndex = null;
-                  _pendingSelectionTimer?.cancel();
-                  _pendingSelectionTimer = null;
-                }
-              });
-            },
-          ),
-        ],
-      ),
-      onTap: isActive
-          ? () {
-              final wasExpanded = _expanded;
-              setState(() => _expanded = false);
-              if (wasExpanded) {
-                widget.onExpandedChanged(false);
-              }
-            }
-          : () {
-              setState(() {
-                _pendingSelectedWindowIndex = window.index;
-                _expanded = false;
-              });
-              widget.onExpandedChanged(false);
-              _startPendingSelectionTimer(window.index);
-              unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
-            },
-    );
-  }
-}
-
 class _ExtraKeysToggleKeycap extends StatelessWidget {
   const _ExtraKeysToggleKeycap({required this.isActive, super.key});
 
@@ -1882,9 +752,6 @@ class _ExtraKeysToggleKeycap extends StatelessWidget {
 
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
-const _clipboardContentChannel = MethodChannel(
-  'xyz.depollsoft.monkeyssh/clipboard_content',
-);
 final _terminalLinkPattern = RegExp(
   r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
@@ -1907,6 +774,8 @@ final _terminalStandalonePathMetadataPattern = RegExp(
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
+const _terminalPathVerificationChannelBackoff = Duration(seconds: 10);
+const _terminalPathVerificationBatchDelay = Duration(milliseconds: 50);
 
 typedef _TerminalPathMatch = ({
   String path,
@@ -2413,34 +1282,25 @@ List<CellOffset> resolveForgivingTerminalTapOffsets(CellOffset offset) {
   return (topRow: topRow, bottomRow: bottomRow);
 }
 
-/// Builds a visible underline rect that hugs the bottom of a terminal row.
+/// Builds a terminal cell range for inline path underline painting.
 @visibleForTesting
-Rect? resolveTerminalPathUnderlineRect({
-  required Offset lineTopLeft,
-  required Offset lineEndOffset,
-  required double lineHeight,
-  required double viewportHeight,
-  double? rowHeight,
-  double? textHeight,
+TerminalTextUnderline? resolveTerminalPathInlineUnderline({
+  required int row,
+  required int startColumn,
+  required int endColumn,
+  required int rowCount,
+  required int columnCount,
 }) {
-  final width = lineEndOffset.dx - lineTopLeft.dx;
-  if (width <= 0 || lineHeight <= 0 || viewportHeight <= 0) {
+  if (row < 0 || row >= rowCount || columnCount <= 0) {
     return null;
   }
 
-  final effectiveRowHeight = (rowHeight ?? lineHeight) < lineHeight
-      ? lineHeight
-      : (rowHeight ?? lineHeight);
-  final effectiveTextHeight = textHeight ?? effectiveRowHeight;
-  final thickness = (effectiveTextHeight * 0.08).clamp(0.75, 2.5);
-  final rowBottom = lineTopLeft.dy + effectiveRowHeight;
-  final preferredTop = lineTopLeft.dy + effectiveTextHeight + 0.25;
-  final maxTopWithinRow = rowBottom - thickness - 0.5;
-  final top = min(
-    preferredTop,
-    maxTopWithinRow,
-  ).clamp(0.0, viewportHeight - thickness);
-  return Rect.fromLTWH(lineTopLeft.dx, top, width, thickness);
+  final normalizedStart = startColumn.clamp(0, columnCount - 1);
+  final normalizedEnd = endColumn.clamp(0, columnCount - 1);
+  if (normalizedStart > normalizedEnd) {
+    return null;
+  }
+  return (row: row, startColumn: normalizedStart, endColumn: normalizedEnd);
 }
 
 /// Builds a forgiving touch target around a terminal path segment.
@@ -2614,6 +1474,25 @@ bool isTerminalPathContinuationAcrossLines({
   previousText: previousLineText,
   nextText: _trimTerminalPathContinuationPrefix(nextLineText),
 );
+
+/// Whether a terminal buffer row may contain path-like content.
+///
+/// Performs a quick scan of raw codepoints to filter rows that are unlikely
+/// to contain file paths, avoiding the more expensive snapshot-building work.
+/// Returns `true` if any column contains `/` (0x2F) or `~` (0x7E), both of
+/// which are necessary for any detectable absolute, home-relative, or
+/// relative path.
+///
+/// Only intended as a fast pre-filter; rows that return `true` are not
+/// guaranteed to actually contain a valid path.
+@visibleForTesting
+bool terminalRowMayContainPath(BufferLine line, int viewWidth) {
+  for (var col = 0; col < viewWidth; col++) {
+    final cp = line.getCodePoint(col);
+    if (cp == 0x2f /* '/' */ || cp == 0x7e /* '~' */ ) return true;
+  }
+  return false;
+}
 
 _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   String text,
@@ -2915,6 +1794,11 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
+/// Chooses the platform keyboard appearance that best matches a terminal theme.
+@visibleForTesting
+Brightness resolveTerminalKeyboardAppearance(TerminalThemeData theme) =>
+    theme.isDark ? Brightness.dark : Brightness.light;
+
 /// Applies pasted or rendered text at the terminal cursor within a wrapped line.
 @visibleForTesting
 String applyTerminalCursorInsertion({
@@ -3133,25 +2017,168 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   required List<ContextMenuButtonItem> defaultItems,
   required VoidCallback onPaste,
 }) {
-  var hasPaste = false;
   final buttonItems = <ContextMenuButtonItem>[];
   for (final item in defaultItems) {
-    if (item.type == ContextMenuButtonType.paste) {
-      hasPaste = true;
-      buttonItems.add(item.copyWith(onPressed: onPaste));
-    } else {
-      buttonItems.add(item);
+    switch (item.type) {
+      case ContextMenuButtonType.cut:
+      case ContextMenuButtonType.delete:
+      case ContextMenuButtonType.selectAll:
+        // These actions do not have a meaningful terminal selection behavior.
+        continue;
+      case ContextMenuButtonType.paste:
+        // Replaced below with terminal-aware paste.
+        continue;
+      default:
+        buttonItems.add(item);
     }
   }
-  if (!hasPaste) {
+  buttonItems.add(
+    ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
+      onPressed: onPaste,
+    ),
+  );
+  return buttonItems;
+}
+
+/// Builds terminal selection context menu items with terminal-aware callbacks.
+@visibleForTesting
+List<ContextMenuButtonItem> buildTerminalSelectionContextMenuButtonItems({
+  required List<ContextMenuButtonItem> defaultItems,
+  required VoidCallback onCopy,
+  required VoidCallback onLookUp,
+  required VoidCallback onSearchWeb,
+  required VoidCallback onShare,
+  required VoidCallback? onCreateSnippet,
+  required VoidCallback onPaste,
+}) {
+  var hasCopy = false;
+  var addedCreateSnippet = false;
+  final buttonItems = <ContextMenuButtonItem>[];
+
+  void addCreateSnippet() {
+    if (onCreateSnippet == null || addedCreateSnippet) {
+      return;
+    }
+    addedCreateSnippet = true;
     buttonItems.add(
       ContextMenuButtonItem(
-        type: ContextMenuButtonType.paste,
-        onPressed: onPaste,
+        label: 'Create Snippet',
+        onPressed: onCreateSnippet,
       ),
     );
   }
+
+  for (final item in defaultItems) {
+    switch (item.type) {
+      case ContextMenuButtonType.copy:
+        hasCopy = true;
+        buttonItems.add(item.copyWith(onPressed: onCopy));
+        addCreateSnippet();
+      case ContextMenuButtonType.lookUp:
+        buttonItems.add(item.copyWith(onPressed: onLookUp));
+      case ContextMenuButtonType.searchWeb:
+        buttonItems.add(item.copyWith(onPressed: onSearchWeb));
+      case ContextMenuButtonType.share:
+        buttonItems.add(item.copyWith(onPressed: onShare));
+      case ContextMenuButtonType.selectAll:
+      case ContextMenuButtonType.cut:
+      case ContextMenuButtonType.delete:
+        continue;
+      case ContextMenuButtonType.paste:
+        continue;
+      default:
+        buttonItems.add(item);
+    }
+  }
+  if (!hasCopy) {
+    buttonItems.insert(
+      0,
+      ContextMenuButtonItem(
+        onPressed: onCopy,
+        type: ContextMenuButtonType.copy,
+      ),
+    );
+    if (onCreateSnippet != null) {
+      buttonItems.insert(
+        1,
+        ContextMenuButtonItem(
+          label: 'Create Snippet',
+          onPressed: onCreateSnippet,
+        ),
+      );
+      addedCreateSnippet = true;
+    }
+  }
+  if (!addedCreateSnippet) {
+    addCreateSnippet();
+  }
+  buttonItems.add(
+    ContextMenuButtonItem(
+      onPressed: onPaste,
+      type: ContextMenuButtonType.paste,
+    ),
+  );
   return buttonItems;
+}
+
+/// Builds a menu callback that lets the action read selection before hiding.
+@visibleForTesting
+VoidCallback buildTerminalSelectionContextMenuAction({
+  required VoidCallback action,
+  required VoidCallback hideToolbar,
+}) => () {
+  try {
+    action();
+  } finally {
+    hideToolbar();
+  }
+};
+
+/// Builds an editable snippet name from selected terminal text.
+@visibleForTesting
+String buildSnippetNameFromTerminalSelection(String text) {
+  for (final line in text.split('\n')) {
+    final candidate = line.trim();
+    if (candidate.isEmpty) {
+      continue;
+    }
+    if (candidate.length <= _terminalSelectionSnippetNameMaxLength) {
+      return candidate;
+    }
+    return '${candidate.substring(0, _terminalSelectionSnippetNameMaxLength - 3)}...';
+  }
+  return 'Terminal selection';
+}
+
+/// Whether a polled remote clipboard value should replace the local clipboard.
+@visibleForTesting
+bool shouldApplyRemoteClipboardTextToLocal({
+  required String? remoteText,
+  required String? lastObservedRemoteText,
+  required String? lastObservedLocalText,
+  required String? lastAppliedRemoteText,
+  required String? recentLocalClipboardText,
+  required DateTime? recentLocalClipboardAt,
+  required DateTime now,
+  Duration recentLocalClipboardProtection = _recentLocalClipboardProtection,
+}) {
+  if (remoteText == null || remoteText.isEmpty) {
+    return false;
+  }
+  if (remoteText == lastObservedRemoteText ||
+      remoteText == lastObservedLocalText ||
+      remoteText == lastAppliedRemoteText) {
+    return false;
+  }
+  if (recentLocalClipboardText != null && recentLocalClipboardAt != null) {
+    final isProtectedRecentLocalWrite =
+        now.difference(recentLocalClipboardAt) < recentLocalClipboardProtection;
+    if (remoteText == recentLocalClipboardText || isProtectedRecentLocalWrite) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// Whether terminal tap links should be resolved for the current overlay state.
@@ -3255,6 +2282,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.connectionId,
     this.initialTmuxSessionName,
     this.initialTmuxWindowIndex,
+    this.initialTmuxWindowId,
     this.initialTmuxWindowRequiresVisibleSession = false,
     this.initiallyExpandTmuxWindows = false,
     super.key,
@@ -3272,6 +2300,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
   /// Optional tmux window to focus after opening the terminal.
   final int? initialTmuxWindowIndex;
 
+  /// Optional stable tmux window ID to focus after opening the terminal.
+  final String? initialTmuxWindowId;
+
   /// Whether focusing the initial tmux window must also make tmux visible.
   final bool initialTmuxWindowRequiresVisibleSession;
 
@@ -3287,11 +2318,31 @@ class _InitialTmuxWindowTarget {
     required this.sessionName,
     required this.windowIndex,
     required this.requiresVisibleSession,
+    this.windowId,
   });
 
   final String sessionName;
   final int windowIndex;
+  final String? windowId;
   final bool requiresVisibleSession;
+}
+
+class _TmuxTerminalThemeRefreshRequest {
+  const _TmuxTerminalThemeRefreshRequest({
+    required this.theme,
+    required this.session,
+    required this.sessionName,
+    required this.refreshGeneration,
+    required this.reason,
+    required this.extraFlags,
+  });
+
+  final TerminalThemeData theme;
+  final SshSession session;
+  final String sessionName;
+  final int refreshGeneration;
+  final String reason;
+  final String? extraFlags;
 }
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
@@ -3299,6 +2350,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
+  static const _tmuxForegroundVerificationInterval = Duration(seconds: 5);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -3317,8 +2369,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
+  bool _manualSensitiveKeyboardMode = false;
+  bool _detectedSensitiveKeyboardPrompt = false;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
+  List<KeyboardToolbarSnippet> _keyboardToolbarSnippets =
+      const <KeyboardToolbarSnippet>[];
+  List<KeyboardToolbarSnippetFolder> _keyboardToolbarSnippetFolders =
+      const <KeyboardToolbarSnippetFolder>[];
   bool _isNativeSelectionMode = false;
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
@@ -3334,18 +2392,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
-  SshSession? _observedSession;
+  late final TerminalSessionController _sessionController;
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  int? _tmuxStateConnectionId;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
+  String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   String? _tmuxCurrentCommand;
   int _tmuxDetectionGeneration = 0;
   int _tmuxBarRecoveryGeneration = 0;
+  int _tmuxForegroundVerificationGeneration = 0;
+  Timer? _tmuxForegroundVerificationTimer;
+  bool _tmuxForegroundVerificationInFlight = false;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -3371,21 +2434,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Offset? _pendingTerminalMouseTapDownPosition;
   Duration? _pendingTerminalMouseTapDownTimestamp;
   final Set<int> _terminalOutputPauseTouchPointers = <int>{};
-  Rect? _hoveredTerminalPathUnderline;
-  List<({String path, Rect underlineRect, Rect touchRect})>
+  TerminalTextUnderline? _hoveredTerminalPathUnderline;
+  List<({String path, TerminalTextUnderline underline, Rect touchRect})>
   _visibleTerminalPathUnderlines =
-      const <({String path, Rect underlineRect, Rect touchRect})>[];
+      const <
+        ({String path, TerminalTextUnderline underline, Rect touchRect})
+      >[];
   bool _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
   bool? _lastShowsTerminalPathUnderlines;
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   bool _isTerminalPathUnderlineRefreshQueued = false;
+
+  /// Monotonically-increasing counter; incremented whenever the terminal
+  /// buffer changes content. Used to invalidate per-row snapshot caches.
+  int _terminalContentGeneration = 0;
+
+  /// Cache of [_TerminalPathTapSnapshot] objects keyed by the canonical start
+  /// row of each wrapped-line group. Invalidated when
+  /// [_terminalContentGeneration] changes.
+  final Map<int, _TerminalPathTapSnapshot?> _terminalPathSnapshotCache = {};
+
+  /// The terminal-content generation that [_terminalPathSnapshotCache] and
+  /// [_terminalPathAnalysisCache] were last populated for.
+  int _terminalPathSnapshotCacheGeneration = -1;
+
+  /// Cache of [_TerminalPathSnapshotAnalysis] keyed by snapshot text. The
+  /// regex-heavy analysis is deterministic on the snapshot text, so it can be
+  /// shared across rows that produce the same text content. Cleared together
+  /// with [_terminalPathSnapshotCache].
+  final Map<String, _TerminalPathSnapshotAnalysis> _terminalPathAnalysisCache =
+      {};
+
   SshSession? _terminalPathVerificationSession;
   Future<SftpClient?>? _terminalPathVerificationSftpFuture;
   SftpClient? _terminalPathVerificationSftp;
   String? _terminalPathVerificationHomeDirectory;
+  DateTime? _terminalPathVerificationBackoffUntil;
+  final Map<String, String> _pendingTerminalPathVerifications = {};
+  bool _isTerminalPathVerificationBatchScheduled = false;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
+  late final ProviderSubscription<bool> _terminalWakeLockSubscription;
+  late final ProviderSubscription<TerminalThemeSettings>
+  _terminalThemeSettingsSubscription;
+  late final ProviderSubscription<ThemeMode> _themeModeSubscription;
   late final ProviderSubscription<bool> _shellCompletionsSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
@@ -3398,6 +2491,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
+  String? _recentLocalClipboardText;
+  DateTime? _recentLocalClipboardAt;
+  bool _isTerminalSizeRefreshQueued = false;
+  bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
   ShellCompletionInvocation? _shellCompletionSourceInvocation;
@@ -3410,12 +2507,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _shellCompletionInFlightRequestKey;
   bool _shellCompletionRefreshAfterInFlight = false;
 
+  bool get _usesSensitiveKeyboardMode =>
+      _manualSensitiveKeyboardMode || _detectedSensitiveKeyboardPrompt;
+
   // Theme state
   Host? _host;
   AgentLaunchPreset? _autoConnectAgentPreset;
   bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
+  final Object _terminalAppThemeOverrideOwner = Object();
+  late final TerminalAppThemeOverrideNotifier _terminalAppThemeOverrideNotifier;
+  Brightness? _lastThemeDependencyBrightness;
+  int _terminalThemeRefreshGeneration = 0;
+  final Set<Timer> _terminalThemeRefreshTimers = <Timer>{};
+  bool _isTmuxThemeRefreshRunning = false;
+  _TmuxTerminalThemeRefreshRequest? _pendingTmuxThemeRefreshRequest;
+  bool _terminalThemeDependencyReloadQueued = false;
+  bool _pendingTerminalThemeDependencyReload = false;
+  bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+  String _pendingTerminalThemeDependencyReason = 'unknown';
+  // Guards the build-path theme application so the same theme is not pushed
+  // to the session on every rebuild.  Cleared at connect-time so the safety-
+  // net call in build() still fires once for each new connection.
+  TerminalThemeData? _lastBuildAppliedTheme;
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3463,6 +2578,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   String? get _windowTitle => _observedSession?.windowTitle;
+
+  SshSession? get _observedSession => _sessionController.observedSession;
 
   String? get _iconName => _observedSession?.iconName;
 
@@ -3561,6 +2678,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void initState() {
     super.initState();
+    DiagnosticsLogService.instance.info(
+      'terminal.screen',
+      'init',
+      fields: {
+        'hostId': widget.hostId,
+        'hasConnectionId': widget.connectionId != null,
+        'hasInitialTmuxSession': widget.initialTmuxSessionName != null,
+        'hasInitialTmuxWindow': widget.initialTmuxWindowIndex != null,
+      },
+    );
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -3590,6 +2717,56 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
       },
     );
+    _terminalAppThemeOverrideNotifier = ref.read(
+      terminalAppThemeOverrideProvider.notifier,
+    );
+    final terminalWakeLockService = ref.read(terminalWakeLockServiceProvider);
+    _sessionController = TerminalSessionController(
+      wakeLockService: terminalWakeLockService,
+      wakeLockOwnerId: terminalWakeLockService.createOwner(),
+      readCurrentConnectionState: _readCurrentConnectionState,
+      getSession: (connectionId) => _sessionsNotifier?.getSession(connectionId),
+      connectionId: () => _connectionId,
+      hasActiveShell: () => _shell != null,
+      hasError: () => _error != null,
+      isBackgrounded: () => _wasBackgrounded,
+      onSessionMetadataChanged: _handleSessionMetadataChanged,
+    );
+    _terminalWakeLockSetting = ref.read(terminalWakeLockNotifierProvider);
+    _sessionController.wakeLockEnabled = _terminalWakeLockSetting;
+    _terminalWakeLockSubscription = ref.listenManual<bool>(
+      terminalWakeLockNotifierProvider,
+      (previous, next) {
+        _terminalWakeLockSetting = next;
+        _sessionController.wakeLockEnabled = next;
+        _syncTerminalWakeLock();
+      },
+    );
+    _terminalThemeSettingsSubscription = ref
+        .listenManual<TerminalThemeSettings>(terminalThemeSettingsProvider, (
+          previous,
+          next,
+        ) {
+          if (_sameTerminalThemeSettings(previous, next)) {
+            return;
+          }
+          _handleTerminalThemeDependenciesChanged(
+            forceRemoteRefresh: true,
+            reason: 'settings_changed',
+          );
+        });
+    _themeModeSubscription = ref.listenManual<ThemeMode>(
+      themeModeNotifierProvider,
+      (previous, next) {
+        if (previous == next) {
+          return;
+        }
+        _handleTerminalThemeDependenciesChanged(
+          forceRemoteRefresh: true,
+          reason: 'theme_mode_changed',
+        );
+      },
+    );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
@@ -3604,6 +2781,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
+    unawaited(_refreshKeyboardToolbarSnippetMenu());
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
   }
@@ -3613,6 +2791,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     final sessionName = widget.initialTmuxSessionName?.trim();
     final windowIndex = widget.initialTmuxWindowIndex;
+    final windowId = widget.initialTmuxWindowId?.trim();
     if (sessionName == null ||
         sessionName.isEmpty ||
         windowIndex == null ||
@@ -3622,12 +2801,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return _InitialTmuxWindowTarget(
       sessionName: sessionName,
       windowIndex: windowIndex,
+      windowId: windowId != null && isValidTmuxWindowId(windowId)
+          ? windowId
+          : null,
       requiresVisibleSession: widget.initialTmuxWindowRequiresVisibleSession,
     );
   }
 
   void _onTerminalStateChanged() {
     _nativeSelectionSnapshotCache = null;
+    _terminalContentGeneration++;
     if (_isNativeSelectionMode && !_hasExpandedNativeOverlaySelection) {
       _refreshNativeOverlayText(preserveSelection: true);
     }
@@ -3644,44 +2827,68 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _queueTerminalScrollToBottom();
     }
 
+    if (!mounted) {
+      return;
+    }
+
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
     final terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
-    if (!mounted ||
-        !didTerminalScrollPolicyChange(
-          previousIsUsingAltBuffer: _isUsingAltBuffer,
-          nextIsUsingAltBuffer: isUsingAltBuffer,
-          previousReportsMouseWheel: _terminalReportsMouseWheel,
-          nextReportsMouseWheel: terminalReportsMouseWheel,
-        )) {
+    final scrollPolicyChanged = didTerminalScrollPolicyChange(
+      previousIsUsingAltBuffer: _isUsingAltBuffer,
+      nextIsUsingAltBuffer: isUsingAltBuffer,
+      previousReportsMouseWheel: _terminalReportsMouseWheel,
+      nextReportsMouseWheel: terminalReportsMouseWheel,
+    );
+    final detectedSensitiveKeyboardPrompt =
+        _isMobilePlatform &&
+        terminalTextLooksLikeSensitiveInputPrompt(_terminalTextBeforeCursor());
+    final sensitiveKeyboardPromptChanged =
+        detectedSensitiveKeyboardPrompt != _detectedSensitiveKeyboardPrompt;
+    if (!scrollPolicyChanged && !sensitiveKeyboardPromptChanged) {
       return;
     }
 
     setState(() {
-      _isUsingAltBuffer = isUsingAltBuffer;
-      _terminalReportsMouseWheel = terminalReportsMouseWheel;
+      if (scrollPolicyChanged) {
+        _isUsingAltBuffer = isUsingAltBuffer;
+        _terminalReportsMouseWheel = terminalReportsMouseWheel;
+      }
+      if (sensitiveKeyboardPromptChanged) {
+        _detectedSensitiveKeyboardPrompt = detectedSensitiveKeyboardPrompt;
+      }
     });
   }
 
   void _observeSessionMetadata(SshSession session) {
-    if (identical(_observedSession, session)) {
+    if (_sessionController.isObservingSession(session)) {
+      _captureConnectionOpenedWorkingDirectory();
       return;
     }
 
     if (!identical(_terminalPathVerificationSession, session)) {
       _disposeTerminalPathVerificationSftp();
     }
-    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
-    _observedSession = session
-      ..removeMetadataListener(_handleSessionMetadataChanged)
-      ..addMetadataListener(_handleSessionMetadataChanged);
+    _sessionController.observeSessionMetadata(session);
+    _captureConnectionOpenedWorkingDirectory();
   }
 
   void _handleSessionMetadataChanged() {
     if (!mounted) {
       return;
     }
+    _captureConnectionOpenedWorkingDirectory();
     _syncVerifiedTerminalPathCacheScope();
     setState(() {});
+  }
+
+  void _captureConnectionOpenedWorkingDirectory() {
+    if (_connectionOpenedWorkingDirectory != null) {
+      return;
+    }
+
+    _connectionOpenedWorkingDirectory = normalizeSftpAbsolutePath(
+      _liveWorkingDirectoryPath ?? _tmuxLaunchWorkingDirectory,
+    );
   }
 
   Future<void> _applySharedClipboardSetting({
@@ -3690,51 +2897,797 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession? session,
     bool waitForInitialSync = true,
   }) async {
-    final targetSession =
-        session ??
-        _observedSession ??
-        (_connectionId == null
-            ? null
-            : _sessionsNotifier?.getSession(_connectionId!));
-    if (targetSession == null) {
-      return;
-    }
-
-    targetSession
-      ..clipboardSharingEnabled = enabled
-      ..localClipboardReadEnabled = enabled && allowLocalClipboardRead;
-    if (!enabled) {
-      _stopSharedClipboardSync();
-      return;
-    }
-
-    if (waitForInitialSync) {
-      await _startSharedClipboardSync(targetSession);
-      return;
-    }
-
-    unawaited(_startSharedClipboardSync(targetSession));
+    await _sessionController.applySharedClipboardSetting(
+      enabled: enabled,
+      allowLocalClipboardRead: allowLocalClipboardRead,
+      startSync: _startSharedClipboardSync,
+      stopSync: _stopSharedClipboardSync,
+      session: session,
+      waitForInitialSync: waitForInitialSync,
+    );
   }
 
   void _applyTerminalThemeToSession(
     TerminalThemeData theme, {
     SshSession? session,
+    bool forceRemoteRefresh = false,
+    String reason = 'unspecified',
   }) {
-    final targetSession =
-        session ??
-        _observedSession ??
-        (_connectionId == null
-            ? null
-            : _sessionsNotifier?.getSession(_connectionId!));
-    targetSession?.terminalTheme = theme;
+    final targetSession = _sessionController.resolveTargetSession(
+      session: session,
+    );
+    if (targetSession == null) {
+      if (reason != 'build') {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'apply_no_session',
+          fields: {
+            'reason': reason,
+            'connectionId': _connectionId,
+            'forceRemoteRefresh': forceRemoteRefresh,
+          },
+        );
+      }
+      return;
+    }
+    final previousTheme = targetSession.terminalTheme;
+    targetSession.terminalTheme = theme;
+    if (targetSession.terminal != _terminal) {
+      if (reason != 'build') {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'apply_foreign_terminal',
+          fields: {
+            'reason': reason,
+            'connectionId': targetSession.connectionId,
+            'forceRemoteRefresh': forceRemoteRefresh,
+            'hasSessionTerminal': targetSession.terminal != null,
+          },
+        );
+      }
+      return;
+    }
+    final didThemeChange =
+        previousTheme != null &&
+        !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
+    final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
+      targetSession,
+    );
+    final terminalViewReady = _isTerminalThemeRefreshViewReady;
+    final shouldRefreshFirstTheme =
+        previousTheme == null && (_isTmuxActive || plainTuiRefreshAllowed);
+    final willRefresh =
+        forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme;
+    if (willRefresh || reason != 'build') {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'apply_decision',
+        fields: {
+          'reason': reason,
+          'connectionId': targetSession.connectionId,
+          'forceRemoteRefresh': forceRemoteRefresh,
+          'hasPreviousTheme': previousTheme != null,
+          'didThemeChange': didThemeChange,
+          'shouldRefreshFirstTheme': shouldRefreshFirstTheme,
+          'willRefresh': willRefresh,
+          'isTmuxActive': _isTmuxActive,
+          'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
+          'colorSchemeUpdatesMode':
+              targetSession.terminalColorSchemeUpdatesMode,
+          'focusMode': _terminal.reportFocusMode,
+          'altBuffer': _terminal.isUsingAltBuffer,
+          'mouseMode': _terminal.mouseMode != MouseMode.none,
+          'shellReady': _shell != null,
+          'terminalViewReady': terminalViewReady,
+        },
+      );
+    }
+    if (willRefresh) {
+      _refreshTerminalThemeForTui(theme, targetSession, reason: reason);
+      return;
+    }
   }
 
+  void _refreshTerminalThemeForTui(
+    TerminalThemeData theme,
+    SshSession session, {
+    required String reason,
+  }) {
+    _cancelTerminalThemeRefreshTimers();
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(session);
+    final terminalViewReady = _isTerminalThemeRefreshViewReady;
+    final tmuxStateBelongsToSession =
+        _tmuxStateConnectionId == session.connectionId;
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'refresh_requested',
+      fields: {
+        'reason': reason,
+        'connectionId': session.connectionId,
+        'isTmuxActive': _isTmuxActive,
+        'tmuxStateBelongsToSession': tmuxStateBelongsToSession,
+        'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
+        'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+        'focusMode': _terminal.reportFocusMode,
+        'altBuffer': _terminal.isUsingAltBuffer,
+        'mouseMode': _terminal.mouseMode != MouseMode.none,
+        'shellReady': _shell != null,
+        'terminalViewReady': terminalViewReady,
+      },
+    );
+    if (!terminalViewReady) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_isCurrentTerminalThemeRefresh(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+        )) {
+          return;
+        }
+        _refreshTerminalThemeForTui(
+          theme,
+          session,
+          reason: '${reason}_view_ready',
+        );
+      });
+    }
+    if (_isTmuxActive && tmuxStateBelongsToSession) {
+      // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
+      // terminal's default colors and ANSI palette and answers inner-pane OSC
+      // queries from that cache.
+      _refreshTerminalThemeReportsForTui(
+        theme,
+        includeColorReports: true,
+        reason: '${reason}_tmux_outer',
+      );
+      _refreshTmuxClientAfterTerminalThemeChange(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        reason: reason,
+      );
+      return;
+    }
+
+    if (!plainTuiRefreshAllowed) {
+      // A bare shell prompt treats terminal reports as typed input. Only send
+      // synthetic reports after a foreground app has enabled terminal-control
+      // modes that identify it as a TUI.
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'plain_refresh_skipped',
+        fields: {
+          'reason': reason,
+          'connectionId': session.connectionId,
+          'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+          'focusMode': _terminal.reportFocusMode,
+          'altBuffer': _terminal.isUsingAltBuffer,
+          'mouseMode': _terminal.mouseMode != MouseMode.none,
+          'shellReady': _shell != null,
+          'terminalViewReady': _isTerminalThemeRefreshViewReady,
+        },
+      );
+      return;
+    }
+
+    // Do not send unsolicited OSC palette replies directly to a plain
+    // foreground TUI. Codex treats those bytes as user input, and its crossterm
+    // color re-query can also be disrupted by unrelated terminal reports.
+    // Always send a synthetic focus transition so focus-aware TUIs re-query OSC
+    // 10/11 through the normal path; only send the private theme-mode and
+    // default-color response cycle to apps that explicitly requested DEC 2031
+    // color-scheme updates.
+    final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeThemeModeReport: false,
+      reason: '${reason}_plain_focus',
+    );
+    if (includeThemeModeReport) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 250),
+        includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode',
+      );
+      for (final delay in const [
+        Duration(milliseconds: 330),
+        Duration(milliseconds: 410),
+        Duration(milliseconds: 490),
+      ]) {
+        _scheduleTerminalThemeRefreshForTui(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+          delay: delay,
+          includeFocusReport: false,
+          includeThemeModeReport: false,
+          includeDefaultColorReports: true,
+          reason: '${reason}_plain_defaults',
+        );
+      }
+    }
+    _scheduleTerminalThemeRefreshForTui(
+      theme: theme,
+      session: session,
+      refreshGeneration: refreshGeneration,
+      delay: const Duration(milliseconds: 550),
+      includeThemeModeReport: false,
+      reason: '${reason}_plain_focus_late',
+    );
+    if (includeThemeModeReport) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 800),
+        includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode_late',
+      );
+    }
+  }
+
+  void _refreshTerminalThemeReportsForTui(
+    TerminalThemeData theme, {
+    bool includeThemeModeReport = true,
+    bool includeColorReports = false,
+    bool includeDefaultColorReports = false,
+    bool includeFocusReport = true,
+    String reason = 'unspecified',
+  }) {
+    final terminalView = _terminalViewKey.currentState;
+    if (terminalView == null || !_isTerminalThemeRefreshViewReady) {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'reports_unavailable',
+        fields: {
+          'reason': reason,
+          'includeThemeModeReport': includeThemeModeReport,
+          'includeColorReports': includeColorReports,
+          'includeDefaultColorReports': includeDefaultColorReports,
+          'includeFocusReport': includeFocusReport,
+          'shellReady': _shell != null,
+          'hasOutputCallback': _terminal.onOutput != null,
+        },
+      );
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'terminal.theme',
+      'reports_sent',
+      fields: {
+        'reason': reason,
+        'includeThemeModeReport': includeThemeModeReport,
+        'includeColorReports': includeColorReports,
+        'includeDefaultColorReports': includeDefaultColorReports,
+        'includeFocusReport': includeFocusReport,
+        'shellReady': _shell != null,
+        'hasOutputCallback': _terminal.onOutput != null,
+      },
+    );
+    if (includeThemeModeReport) {
+      terminalView.refreshThemeModeReport(isDark: theme.isDark);
+    }
+    if (includeColorReports) {
+      terminalView.refreshThemeColorReports(theme);
+    }
+    if (includeDefaultColorReports) {
+      terminalView.refreshThemeDefaultColorReports(theme);
+    }
+    if (includeFocusReport) {
+      terminalView.refreshFocusReport(forceTransition: true, force: true);
+    }
+  }
+
+  bool _shouldRefreshPlainTerminalTui(SshSession session) =>
+      session.terminalColorSchemeUpdatesMode ||
+      _terminal.reportFocusMode ||
+      _terminal.isUsingAltBuffer ||
+      _terminal.mouseMode != MouseMode.none;
+
+  bool get _isTerminalThemeRefreshViewReady {
+    final terminalViewWidget = _terminalViewKey.currentWidget;
+    return _terminalViewKey.currentState != null &&
+        terminalViewWidget is MonkeyTerminalView &&
+        identical(terminalViewWidget.terminal, _terminal);
+  }
+
+  /// Proactively pushes the active terminal theme into tmux's per-pane color
+  /// cache.
+  ///
+  /// Called whenever tmux is freshly detected or re-detected, regardless of
+  /// whether a theme switch just happened. tmux caches the outer terminal's
+  /// default colors per-pane, populated either when tmux first queries the
+  /// outer client or via unsolicited OSC reports. If MonkeySSH attaches to a
+  /// tmux session that was started under a different (or wrong) outer
+  /// terminal — or if a previous attach landed before [SshSession.terminalTheme]
+  /// was set — the cache can answer inner-pane OSC 10/11/12 queries with stale
+  /// values forever. TUIs like Codex CLI bake those answers into their
+  /// composer/surface colors, leaving them mismatched until the cache is
+  /// refreshed.
+  ///
+  /// This priming sends the same OSC reports + tmux pane palette update +
+  /// foreground-client redraw that a theme switch would. It also wakes the
+  /// foreground pane because tmux may be detected after a TUI has already
+  /// cached stale default colors.
+  void _primeTmuxTerminalTheme(SshSession session) {
+    if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
+      return;
+    }
+    _cancelTerminalThemeRefreshTimers();
+    final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'tmux_prime_requested',
+      fields: {
+        'connectionId': session.connectionId,
+        'hasTmuxSessionName': _tmuxSessionName != null,
+        'shellReady': _shell != null,
+        'terminalViewReady': _terminalViewKey.currentState != null,
+      },
+    );
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeColorReports: true,
+      reason: 'tmux_prime_outer',
+    );
+
+    final tmuxSessionName = _tmuxSessionName;
+    if (tmuxSessionName == null) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: ++_terminalThemeRefreshGeneration,
+        delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
+        reason: 'tmux_prime_no_session_name',
+      );
+      return;
+    }
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final extraFlags = _host?.tmuxExtraFlags;
+    _queueTmuxTerminalThemeRefresh(
+      _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: tmuxSessionName,
+        refreshGeneration: refreshGeneration,
+        reason: 'tmux_prime',
+        extraFlags: extraFlags,
+      ),
+    );
+    for (final (:delay, :reason) in const [
+      (delay: Duration(milliseconds: 900), reason: 'tmux_prime_late_900ms'),
+      (delay: Duration(milliseconds: 1800), reason: 'tmux_prime_late_1800ms'),
+    ]) {
+      _scheduleTmuxTerminalThemeRefresh(
+        _TmuxTerminalThemeRefreshRequest(
+          theme: theme,
+          session: session,
+          sessionName: tmuxSessionName,
+          refreshGeneration: refreshGeneration,
+          reason: reason,
+          extraFlags: extraFlags,
+        ),
+        delay: delay,
+      );
+    }
+  }
+
+  void _refreshTmuxClientAfterTerminalThemeChange({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+    required String reason,
+  }) {
+    final tmuxSessionName = _tmuxSessionName;
+    if (tmuxSessionName == null) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
+        reason: '${reason}_tmux_no_session_name',
+      );
+      return;
+    }
+
+    _scheduleTmuxTerminalThemeRefresh(
+      _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: tmuxSessionName,
+        refreshGeneration: refreshGeneration,
+        reason: reason,
+        extraFlags: _host?.tmuxExtraFlags,
+      ),
+      delay: const Duration(milliseconds: 75),
+    );
+  }
+
+  void _scheduleTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request, {
+    required Duration delay,
+  }) {
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (_tmuxSessionName != request.sessionName ||
+          !_isCurrentTerminalThemeRefresh(
+            theme: request.theme,
+            session: request.session,
+            refreshGeneration: request.refreshGeneration,
+          )) {
+        return;
+      }
+      _queueTmuxTerminalThemeRefresh(request);
+    });
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
+  void _queueTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) {
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+    if (_isTmuxThemeRefreshRunning) {
+      _pendingTmuxThemeRefreshRequest = request;
+      DiagnosticsLogService.instance.debug(
+        'terminal.theme',
+        'tmux_refresh_queued',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      return;
+    }
+
+    _isTmuxThemeRefreshRunning = true;
+    unawaited(_runQueuedTmuxTerminalThemeRefresh(request));
+  }
+
+  Future<void> _runQueuedTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest initialRequest,
+  ) async {
+    try {
+      var request = initialRequest;
+      while (true) {
+        await _runTmuxTerminalThemeRefresh(request);
+        final nextRequest = _pendingTmuxThemeRefreshRequest;
+        _pendingTmuxThemeRefreshRequest = null;
+        if (nextRequest == null ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: nextRequest.theme,
+              session: nextRequest.session,
+              refreshGeneration: nextRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        request = nextRequest;
+      }
+    } finally {
+      _isTmuxThemeRefreshRunning = false;
+    }
+  }
+
+  Future<void> _runTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) async {
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+
+    try {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'tmux_refresh_start',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      await ref
+          .read(tmuxServiceProvider)
+          .refreshTerminalTheme(
+            request.session,
+            request.sessionName,
+            request.theme,
+            extraFlags: request.extraFlags,
+          );
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'tmux_refresh_complete',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.theme',
+        'tmux_refresh_failed',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+    _refreshTerminalThemeReportsForTui(
+      request.theme,
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer',
+    );
+    _scheduleTerminalThemeRefreshForTui(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+      delay: const Duration(milliseconds: 25),
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer_25ms',
+    );
+    _scheduleTerminalThemeRefreshForTui(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+      delay: const Duration(milliseconds: 275),
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer_275ms',
+    );
+  }
+
+  void _scheduleTerminalThemeRefreshForTui({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+    required Duration delay,
+    bool includeThemeModeReport = true,
+    bool includeColorReports = false,
+    bool includeDefaultColorReports = false,
+    bool includeFocusReport = true,
+    String reason = 'unspecified',
+  }) {
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (!_isCurrentTerminalThemeRefresh(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+      )) {
+        return;
+      }
+      _refreshTerminalThemeReportsForTui(
+        theme,
+        includeThemeModeReport: includeThemeModeReport,
+        includeColorReports: includeColorReports,
+        includeDefaultColorReports: includeDefaultColorReports,
+        includeFocusReport: includeFocusReport,
+        reason: reason,
+      );
+    });
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
+  void _cancelTerminalThemeRefreshTimers() {
+    for (final timer in _terminalThemeRefreshTimers) {
+      timer.cancel();
+    }
+    _terminalThemeRefreshTimers.clear();
+  }
+
+  bool _isCurrentTerminalThemeRefresh({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+  }) {
+    final activeTheme = session.terminalTheme;
+    return mounted &&
+        refreshGeneration == _terminalThemeRefreshGeneration &&
+        session.terminal == _terminal &&
+        activeTheme != null &&
+        _terminalThemesMatchForRemoteRefresh(activeTheme, theme);
+  }
+
+  bool _terminalThemesMatchForRemoteRefresh(
+    TerminalThemeData previous,
+    TerminalThemeData next,
+  ) =>
+      previous.id == next.id &&
+      previous.isDark == next.isDark &&
+      previous.foreground == next.foreground &&
+      previous.background == next.background &&
+      previous.cursor == next.cursor &&
+      previous.selection == next.selection &&
+      previous.black == next.black &&
+      previous.red == next.red &&
+      previous.green == next.green &&
+      previous.yellow == next.yellow &&
+      previous.blue == next.blue &&
+      previous.magenta == next.magenta &&
+      previous.cyan == next.cyan &&
+      previous.white == next.white &&
+      previous.brightBlack == next.brightBlack &&
+      previous.brightRed == next.brightRed &&
+      previous.brightGreen == next.brightGreen &&
+      previous.brightYellow == next.brightYellow &&
+      previous.brightBlue == next.brightBlue &&
+      previous.brightMagenta == next.brightMagenta &&
+      previous.brightCyan == next.brightCyan &&
+      previous.brightWhite == next.brightWhite;
+
+  bool _sameTerminalTheme(
+    TerminalThemeData? previous,
+    TerminalThemeData? next,
+  ) {
+    if (previous == null || next == null) {
+      return previous == next;
+    }
+    return _terminalThemesMatchForRemoteRefresh(previous, next);
+  }
+
+  bool _sameTerminalThemeSettings(
+    TerminalThemeSettings? previous,
+    TerminalThemeSettings next,
+  ) =>
+      previous != null &&
+      previous.lightThemeId == next.lightThemeId &&
+      previous.darkThemeId == next.darkThemeId;
+
+  void _handleTerminalThemeDependenciesChanged({
+    bool forceRemoteRefresh = false,
+    String reason = 'unknown',
+  }) {
+    if (!mounted) {
+      return;
+    }
+    _pendingTerminalThemeDependencyReload = true;
+    _pendingTerminalThemeDependencyForceRemoteRefresh =
+        _pendingTerminalThemeDependencyForceRemoteRefresh || forceRemoteRefresh;
+    _pendingTerminalThemeDependencyReason = reason;
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'dependency_changed',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'hasCurrentTheme': _currentTheme != null,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
+    _scheduleTerminalThemeDependencyReload();
+  }
+
+  void _scheduleTerminalThemeDependencyReload() {
+    if (_terminalThemeDependencyReloadQueued) {
+      return;
+    }
+    _terminalThemeDependencyReloadQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _terminalThemeDependencyReloadQueued = false;
+      if (!mounted || !_pendingTerminalThemeDependencyReload) {
+        return;
+      }
+      if (_currentTheme == null) {
+        return;
+      }
+      final forceRemoteRefresh =
+          _pendingTerminalThemeDependencyForceRemoteRefresh;
+      final reason = _pendingTerminalThemeDependencyReason;
+      _pendingTerminalThemeDependencyReload = false;
+      _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+      _pendingTerminalThemeDependencyReason = 'unknown';
+      unawaited(
+        _reloadTerminalThemeForDependencies(
+          forceRemoteRefresh: forceRemoteRefresh,
+          reason: reason,
+        ),
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  Future<void> _reloadTerminalThemeForDependencies({
+    bool forceRemoteRefresh = false,
+    String reason = 'unknown',
+  }) async {
+    final session = _connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(_connectionId!);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'dependency_reload',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'hasSession': session != null,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
+    if (session != null) {
+      final restored = await _restoreSessionThemeOverride(
+        session,
+        forceRemoteRefresh: forceRemoteRefresh,
+        reason: reason,
+      );
+      if (restored) {
+        return;
+      }
+    }
+
+    if (_sessionThemeOverride == null) {
+      await _loadTheme(forceRemoteRefresh: forceRemoteRefresh, reason: reason);
+    }
+  }
+
+  void _syncAppThemeOverrideFromSession(SshSession session) {
+    if (session.terminalThemeLightId == null &&
+        session.terminalThemeDarkId == null) {
+      _clearAppThemeOverride();
+      return;
+    }
+    _terminalAppThemeOverrideNotifier.activeOverride = TerminalAppThemeOverride(
+      owner: _terminalAppThemeOverrideOwner,
+      lightThemeId: session.terminalThemeLightId,
+      darkThemeId: session.terminalThemeDarkId,
+    );
+  }
+
+  void _clearAppThemeOverride() => _terminalAppThemeOverrideNotifier
+      .clearForOwner(_terminalAppThemeOverrideOwner);
+
   TerminalThemeData _resolveEffectiveTerminalTheme() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
     return _sessionThemeOverride ??
         _currentTheme ??
-        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+        (isDark
+            ? TerminalThemes.defaultDarkTheme
+            : TerminalThemes.defaultLightTheme);
   }
+
+  Brightness _resolveTerminalThemeBrightness() {
+    final themeMode = ref.read(themeModeNotifierProvider);
+    return switch (themeMode) {
+      ThemeMode.dark => Brightness.dark,
+      ThemeMode.light => Brightness.light,
+      ThemeMode.system =>
+        WidgetsBinding.instance.platformDispatcher.platformBrightness,
+    };
+  }
+
+  SshConnectionState _selectTrackedConnectionState(
+    Map<int, SshConnectionState> states,
+  ) => _sessionController.selectTrackedConnectionState(states);
 
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
@@ -3800,7 +3753,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted ||
         !session.clipboardSharingEnabled ||
         !session.localClipboardReadEnabled ||
-        !identical(_observedSession, session) ||
+        !_sessionController.isObservingSession(session) ||
         _remoteClipboardUnsupported ||
         _isPushingLocalClipboard) {
       return;
@@ -3839,7 +3792,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _syncRemoteClipboardToLocal(SshSession session) async {
     if (!mounted ||
         !session.clipboardSharingEnabled ||
-        !identical(_observedSession, session) ||
+        !_sessionController.isObservingSession(session) ||
         _remoteClipboardUnsupported ||
         _isPollingRemoteClipboard) {
       return;
@@ -3848,20 +3801,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isPollingRemoteClipboard = true;
     try {
       final remoteText = await _readRemoteClipboardText(session);
-      if (remoteText == null ||
-          remoteText == _lastObservedRemoteClipboardText ||
-          remoteText == _lastObservedLocalClipboardText ||
-          remoteText == _lastAppliedRemoteClipboardText) {
+      if (!shouldApplyRemoteClipboardTextToLocal(
+        remoteText: remoteText,
+        lastObservedRemoteText: _lastObservedRemoteClipboardText,
+        lastObservedLocalText: _lastObservedLocalClipboardText,
+        lastAppliedRemoteText: _lastAppliedRemoteClipboardText,
+        recentLocalClipboardText: _recentLocalClipboardText,
+        recentLocalClipboardAt: _recentLocalClipboardAt,
+        now: DateTime.now(),
+      )) {
         if (remoteText != null) {
           _lastObservedRemoteClipboardText = remoteText;
         }
         return;
       }
 
-      await Clipboard.setData(ClipboardData(text: remoteText));
-      _lastObservedRemoteClipboardText = remoteText;
-      _lastObservedLocalClipboardText = remoteText;
-      _lastAppliedLocalClipboardText = remoteText;
+      final remoteClipboardText = remoteText;
+      if (remoteClipboardText == null) {
+        return;
+      }
+      await Clipboard.setData(ClipboardData(text: remoteClipboardText));
+      _lastObservedRemoteClipboardText = remoteClipboardText;
+      _lastObservedLocalClipboardText = remoteClipboardText;
+      _lastAppliedLocalClipboardText = remoteClipboardText;
     } on PlatformException {
       return;
     } finally {
@@ -4383,14 +4345,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
     _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
-    await _loadTheme();
+    DiagnosticsLogService.instance.info(
+      'terminal.screen',
+      'host_loaded',
+      fields: {
+        'hostId': widget.hostId,
+        'hasHost': _host != null,
+        'hasAutoConnectCommand':
+            _host?.autoConnectCommand?.trim().isNotEmpty ?? false,
+        'hasTmuxAutoAttach': _host?.tmuxSessionName?.trim().isNotEmpty ?? false,
+      },
+    );
+    await _loadTheme(reason: 'initial_load');
     await _connect(preferredConnectionId: widget.connectionId);
   }
 
-  Future<void> _loadTheme() async {
+  Future<void> _loadTheme({
+    bool forceRemoteRefresh = false,
+    String reason = 'load_theme',
+  }) async {
     if (!mounted) return;
 
-    final brightness = MediaQuery.of(context).platformBrightness;
+    final brightness = _resolveTerminalThemeBrightness();
+    _lastThemeDependencyBrightness = brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??
@@ -4403,25 +4380,60 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
 
-    if (mounted) {
+    if (!mounted) {
+      return;
+    }
+    final didThemeChange = !_sameTerminalTheme(_currentTheme, theme);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'loaded',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'brightness': brightness.name,
+        'didThemeChange': didThemeChange,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
+    if (didThemeChange) {
       setState(() => _currentTheme = theme);
-      _applyTerminalThemeToSession(theme);
+    } else {
+      _currentTheme = theme;
+    }
+    _applyTerminalThemeToSession(
+      theme,
+      forceRemoteRefresh: forceRemoteRefresh,
+      reason: reason,
+    );
+    if (_pendingTerminalThemeDependencyReload) {
+      _scheduleTerminalThemeDependencyReload();
     }
   }
 
-  Future<bool> _restoreSessionThemeOverride(SshSession session) async {
-    final brightness = Theme.of(context).brightness;
+  Future<bool> _restoreSessionThemeOverride(
+    SshSession session, {
+    bool forceRemoteRefresh = false,
+    String reason = 'restore_override',
+  }) async {
+    final brightness = _resolveTerminalThemeBrightness();
     final themeId = brightness == Brightness.dark
         ? session.terminalThemeDarkId
         : session.terminalThemeLightId;
 
     if (themeId == null) {
       if (mounted) {
-        setState(() => _sessionThemeOverride = null);
-        _applyTerminalThemeToSession(
-          _resolveEffectiveTerminalTheme(),
-          session: session,
+        if (_sessionThemeOverride != null) {
+          setState(() => _sessionThemeOverride = null);
+        }
+        _syncAppThemeOverrideFromSession(session);
+      }
+      if (forceRemoteRefresh) {
+        await _loadTheme(
+          forceRemoteRefresh: true,
+          reason: '${reason}_fallback',
         );
+        return true;
       }
       return false;
     }
@@ -4431,11 +4443,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return false;
     }
-    setState(() => _sessionThemeOverride = resolvedTheme);
-    if (resolvedTheme != null) {
-      _applyTerminalThemeToSession(resolvedTheme, session: session);
+    if (resolvedTheme == null) {
+      if (_sessionThemeOverride != null) {
+        setState(() => _sessionThemeOverride = null);
+      }
+      return false;
     }
-    return resolvedTheme != null;
+    if (!_sameTerminalTheme(_sessionThemeOverride, resolvedTheme)) {
+      setState(() => _sessionThemeOverride = resolvedTheme);
+    } else {
+      _sessionThemeOverride = resolvedTheme;
+    }
+    _applyTerminalThemeToSession(
+      resolvedTheme,
+      session: session,
+      forceRemoteRefresh: forceRemoteRefresh,
+      reason: reason,
+    );
+    _syncAppThemeOverrideFromSession(session);
+    return true;
   }
 
   Future<void> _connect({
@@ -4453,10 +4479,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer = null;
     _hideShellCompletionPopup();
     _shell = null;
+    // Allow the build-path safety-net call to fire once for the new session.
+    _lastBuildAppliedTheme = null;
 
     setState(() {
       _isConnecting = true;
       _error = null;
+      _connectionOpenedWorkingDirectory = null;
     });
 
     _sessionsNotifier = ref.read(activeSessionsProvider.notifier);
@@ -4503,6 +4532,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
         _error = 'Session not found';
       });
+      _syncTerminalWakeLock(SshConnectionState.disconnected);
       return;
     }
 
@@ -4536,29 +4566,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
+        _shell = await session.getShell();
+        _wireTerminalCallbacks(session);
         _applyTerminalThemeToSession(
           _resolveEffectiveTerminalTheme(),
           session: session,
+          reason: 'open_existing_terminal',
         );
-        _shell = await session.getShell();
-        _wireTerminalCallbacks(session);
         await _applySharedClipboardSetting(
           enabled: sharedClipboardEnabled,
           allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
           session: session,
           waitForInitialSync: false,
         );
-        await _restoreSessionThemeOverride(session);
+        await _restoreSessionThemeOverride(
+          session,
+          forceRemoteRefresh: true,
+          reason: 'open_existing_restore_override',
+        );
         setState(() {
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
         });
+        _syncTerminalWakeLock(SshConnectionState.connected);
+        _scheduleTerminalSizeRefresh();
         _restoreTerminalFocus();
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
         if (!_isTmuxActive) {
-          unawaited(_detectTmux(session, skipDelay: true));
+          unawaited(
+            _detectTmux(
+              session,
+              skipDelay: true,
+              isReopeningExistingTerminal: true,
+            ),
+          );
         }
         return;
       }
@@ -4585,6 +4628,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _applyTerminalThemeToSession(
         _resolveEffectiveTerminalTheme(),
         session: session,
+        reason: 'open_new_terminal',
       );
 
       _shell = await session.getShell(
@@ -4609,13 +4653,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!mounted) return;
 
-      await _restoreSessionThemeOverride(session);
+      await _restoreSessionThemeOverride(
+        session,
+        forceRemoteRefresh: true,
+        reason: 'open_new_restore_override',
+      );
       setState(() {
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;
       });
+      _syncTerminalWakeLock(SshConnectionState.connected);
+      _scheduleTerminalSizeRefresh();
       _restoreTerminalFocus();
-      _primeTmuxStateFromHost();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -4679,8 +4728,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // keyInput(TerminalKey.enter) path already produces '\r', so we
       // only normalize single-'\n' to avoid rewriting legitimate LF
       // characters in pasted or multi-char input.
-      final output = data == '\n' ? '\r' : data;
+      final output = normalizeTerminalOutputForRemoteShell(
+        data == '\n' ? '\r' : data,
+      );
 
+      _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
       _shell?.write(utf8.encode(output));
     };
@@ -4694,6 +4746,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
     };
+  }
+
+  void _scheduleTerminalSizeRefresh() {
+    if (_isTerminalSizeRefreshQueued) {
+      return;
+    }
+    _isTerminalSizeRefreshQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalSizeRefreshQueued = false;
+      if (!mounted) {
+        return;
+      }
+      _terminalViewKey.currentState?.refreshTerminalSize();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  SshConnectionState _readCurrentConnectionState() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return SshConnectionState.disconnected;
+    }
+    return ref.read(activeSessionsProvider)[connectionId] ??
+        SshConnectionState.disconnected;
+  }
+
+  void _syncTerminalWakeLock([SshConnectionState? connectionState]) {
+    _sessionController.syncWakeLock(connectionState);
+  }
+
+  void _clearDetectedSensitiveKeyboardPromptAfterInput(String output) {
+    if (!_detectedSensitiveKeyboardPrompt ||
+        (!output.contains('\r') && !output.contains('\n'))) {
+      return;
+    }
+
+    if (!mounted) {
+      _detectedSensitiveKeyboardPrompt = false;
+      return;
+    }
+
+    setState(() => _detectedSensitiveKeyboardPrompt = false);
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -4853,6 +4947,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
+    final mode = resolveAutoConnectCommandMode(
+      command: resolvedStoredCommand,
+      snippetId: host.autoConnectSnippetId,
+    );
+    if (mode == AutoConnectCommandMode.none) {
+      return;
+    }
+
     final hasAccess = await ref
         .read(monetizationServiceProvider)
         .canUseFeature(MonetizationFeature.autoConnectAutomation);
@@ -4888,15 +4991,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
-      return;
-    }
-
-    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
-    final mode = resolveAutoConnectCommandMode(
-      command: resolvedStoredCommand,
-      snippetId: host.autoConnectSnippetId,
-    );
-    if (mode == AutoConnectCommandMode.none) {
       return;
     }
 
@@ -4954,23 +5048,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _primeTmuxStateFromHost() {
-    final host = _host;
-    final preferredSessionName = _preferredTmuxSessionName(host);
-    if (!mounted || preferredSessionName == null) {
-      return;
-    }
-
-    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
-    setState(() {
-      _isTmuxActive = true;
-      _tmuxSessionName = preferredSessionName;
-      _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
-      _tmuxWorkingDirectory = preferredWorkingDirectory;
-      _tmuxCurrentCommand = null;
-    });
-  }
-
   String? get _initialTmuxSessionName {
     final sessionName = widget.initialTmuxSessionName?.trim();
     return sessionName == null || sessionName.isEmpty ? null : sessionName;
@@ -4984,13 +5061,100 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
 
   void _clearTmuxState() {
+    _stopTmuxForegroundVerification();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
+  }
+
+  void _startTmuxForegroundVerification(
+    SshSession session,
+    String sessionName,
+  ) {
+    _tmuxForegroundVerificationTimer?.cancel();
+    _tmuxForegroundVerificationInFlight = false;
+    final generation = ++_tmuxForegroundVerificationGeneration;
+    _tmuxForegroundVerificationTimer = Timer.periodic(
+      _tmuxForegroundVerificationInterval,
+      (_) => unawaited(
+        _verifyTmuxForegroundSession(session, sessionName, generation),
+      ),
+    );
+  }
+
+  void _stopTmuxForegroundVerification() {
+    _tmuxForegroundVerificationTimer?.cancel();
+    _tmuxForegroundVerificationTimer = null;
+    _tmuxForegroundVerificationGeneration += 1;
+    _tmuxForegroundVerificationInFlight = false;
+  }
+
+  Future<void> _verifyTmuxForegroundSession(
+    SshSession session,
+    String sessionName,
+    int generation,
+  ) async {
+    if (_tmuxForegroundVerificationInFlight ||
+        !mounted ||
+        generation != _tmuxForegroundVerificationGeneration ||
+        _connectionId != session.connectionId ||
+        !_isTmuxActive ||
+        _tmuxSessionName != sessionName) {
+      return;
+    }
+
+    _tmuxForegroundVerificationInFlight = true;
+    try {
+      final foregroundSessionName = await ref
+          .read(tmuxServiceProvider)
+          .foregroundSessionNameOrThrow(
+            session,
+            extraFlags: _host?.tmuxExtraFlags,
+          );
+      if (!mounted ||
+          generation != _tmuxForegroundVerificationGeneration ||
+          _connectionId != session.connectionId ||
+          !_isTmuxActive ||
+          _tmuxSessionName != sessionName) {
+        return;
+      }
+      if (foregroundSessionName == sessionName) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'foreground_verified',
+          fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
+
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'foreground_detached',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasForegroundSession': foregroundSessionName != null,
+        },
+      );
+      setState(_clearTmuxState);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'foreground_verify_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    } finally {
+      if (generation == _tmuxForegroundVerificationGeneration) {
+        _tmuxForegroundVerificationInFlight = false;
+      }
+    }
   }
 
   /// Detects whether the connected session is inside tmux.
@@ -5001,6 +5165,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     bool skipDelay = false,
     bool preserveExistingTmuxState = false,
+    bool isReopeningExistingTerminal = false,
   }) async {
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
@@ -5008,44 +5173,59 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final preferredSessionName = _preferredTmuxSessionName(host);
+    final tmuxStateBelongsToSession =
+        _tmuxStateConnectionId == session.connectionId;
+    final mayPreserveExistingTmuxState =
+        preserveExistingTmuxState && tmuxStateBelongsToSession;
     final existingCandidateSessionName =
-        resolveTmuxDetectionCandidateSessionName(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: session.connectionId,
+          tmuxStateConnectionId: _tmuxStateConnectionId,
           existingSessionName: _tmuxSessionName,
         );
     final candidateSessionName = resolveTmuxDetectionCandidateSessionName(
       preferredSessionName: preferredSessionName,
       existingSessionName: existingCandidateSessionName,
     );
-    final shouldPreserveKnownTmuxState =
-        preserveExistingTmuxState ||
-        (candidateSessionName != null &&
+    final hasExistingVisibleTmuxState =
+        tmuxStateBelongsToSession && _isTmuxActive && _tmuxSessionName != null;
+    final shouldKeepExistingTmuxStateWhileDetecting =
+        mayPreserveExistingTmuxState ||
+        (hasExistingVisibleTmuxState &&
+            candidateSessionName != null &&
             candidateSessionName == existingCandidateSessionName);
+    final shouldPrimeTmuxStateWhileDetecting =
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: candidateSessionName,
+          hasExistingVisibleTmuxState: hasExistingVisibleTmuxState,
+          mayPreserveExistingTmuxState: mayPreserveExistingTmuxState,
+          isReopeningExistingTerminal: isReopeningExistingTerminal,
+        );
     final hadVisibleOrPrimedTmuxState =
-        (_isTmuxActive && _tmuxSessionName != null) ||
-        candidateSessionName != null;
+        hasExistingVisibleTmuxState || shouldPrimeTmuxStateWhileDetecting;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
     var confirmedTmuxActive = false;
     var hadDetectionFailure = false;
 
     if (mounted) {
       setState(() {
-        if (candidateSessionName != null) {
+        if (shouldKeepExistingTmuxStateWhileDetecting) {
+          if (preferredWorkingDirectory != null) {
+            _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+            _tmuxWorkingDirectory = preferredWorkingDirectory;
+          }
+        } else if (shouldPrimeTmuxStateWhileDetecting) {
           _isTmuxActive = true;
           _tmuxSessionName = candidateSessionName;
-          _tmuxLaunchWorkingDirectory =
-              preferredWorkingDirectory ??
-              (shouldPreserveKnownTmuxState
-                  ? _tmuxLaunchWorkingDirectory
-                  : null);
-          _tmuxWorkingDirectory =
-              preferredWorkingDirectory ??
-              (shouldPreserveKnownTmuxState ? _tmuxWorkingDirectory : null);
-          _tmuxCurrentCommand = shouldPreserveKnownTmuxState
-              ? _tmuxCurrentCommand
-              : null;
-        } else if (!preserveExistingTmuxState) {
+          _tmuxStateConnectionId = session.connectionId;
+          _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+          _tmuxWorkingDirectory = preferredWorkingDirectory;
+          _tmuxCurrentCommand = null;
+        } else if (!mayPreserveExistingTmuxState) {
+          _stopTmuxForegroundVerification();
           _isTmuxActive = false;
           _tmuxSessionName = null;
+          _tmuxStateConnectionId = null;
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
           _tmuxCurrentCommand = null;
@@ -5070,17 +5250,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
 
         final bool active;
+        final String? foregroundSessionName;
         try {
+          foregroundSessionName = await tmux.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: host?.tmuxExtraFlags,
+          );
           active = candidateSessionName != null
-              ? await tmux.hasSessionOrThrow(
-                  session,
-                  candidateSessionName,
-                  extraFlags: host?.tmuxExtraFlags,
-                )
-              : await tmux.isTmuxActiveOrThrow(
-                  session,
-                  extraFlags: host?.tmuxExtraFlags,
-                );
+              ? foregroundSessionName == candidateSessionName
+              : foregroundSessionName != null;
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -5092,12 +5270,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               'errorType': error.runtimeType,
             },
           );
-          if (!shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-            preserveExistingTmuxState: preserveExistingTmuxState,
-            hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
-            confirmedTmuxActive: confirmedTmuxActive,
-            hadDetectionFailure: true,
-          )) {
+          if (candidateSessionName == null &&
+              !hadVisibleOrPrimedTmuxState &&
+              !mayPreserveExistingTmuxState) {
             rethrow;
           }
           continue;
@@ -5109,6 +5284,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'connectionId': session.connectionId,
             'active': active,
             'hasCandidate': candidateSessionName != null,
+            'hasForegroundSession': foregroundSessionName != null,
           },
         );
         if (!mounted ||
@@ -5119,28 +5295,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!active) {
           confirmedTmuxActive = false;
           hadDetectionFailure = false;
+          if (candidateSessionName == null &&
+              foregroundSessionName == null &&
+              !hadVisibleOrPrimedTmuxState &&
+              !mayPreserveExistingTmuxState) {
+            break;
+          }
           continue;
         }
         confirmedTmuxActive = true;
 
-        var sessionName = candidateSessionName;
-        try {
-          sessionName ??= await tmux.currentSessionName(
-            session,
-            extraFlags: host?.tmuxExtraFlags,
-          );
-        } on Object catch (error) {
-          hadDetectionFailure = true;
-          DiagnosticsLogService.instance.warning(
-            'tmux.ui',
-            'detection_session_name_failed',
-            fields: {
-              'connectionId': session.connectionId,
-              'errorType': error.runtimeType,
-            },
-          );
-          continue;
-        }
+        final sessionName = candidateSessionName ?? foregroundSessionName;
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
@@ -5210,10 +5375,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() {
           _isTmuxActive = true;
           _tmuxSessionName = sessionName;
+          _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
           _tmuxCurrentCommand = tmuxCurrentCommand;
+          _connectionOpenedWorkingDirectory ??= normalizeSftpAbsolutePath(
+            tmuxLaunchCwd,
+          );
         });
+        _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
           'detection_success',
@@ -5222,6 +5392,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'windowCount': windows.length,
           },
         );
+        // Prime tmux's per-pane color cache with the active theme as soon
+        // as we confirm tmux is running. Without this, an inner TUI like
+        // Codex CLI that queries OSC 11 for theme detection would receive
+        // whatever stale value tmux had cached (e.g., from a previous
+        // attach to a different terminal), and bake the wrong composer
+        // surface color into its rendered output.
+        _primeTmuxTerminalTheme(session);
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return true;
       }
@@ -5233,7 +5410,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-        preserveExistingTmuxState: preserveExistingTmuxState,
+        preserveExistingTmuxState: mayPreserveExistingTmuxState,
         hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: hadDetectionFailure,
@@ -5259,7 +5436,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return false;
       }
 
-      if (!preserveExistingTmuxState) {
+      if (!mayPreserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
       DiagnosticsLogService.instance.info(
@@ -5283,7 +5460,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return false;
       }
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-        preserveExistingTmuxState: preserveExistingTmuxState,
+        preserveExistingTmuxState: mayPreserveExistingTmuxState,
         hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: true,
@@ -5299,7 +5476,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         return false;
       }
-      if (!preserveExistingTmuxState) {
+      if (!mayPreserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
       return false;
@@ -5312,16 +5489,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<TmuxWindow> windows,
   ) async {
     final target = _pendingInitialTmuxWindowTarget;
-    if (target == null ||
-        target.sessionName != sessionName ||
-        !windows.any((window) => window.index == target.windowIndex)) {
+    if (target == null || target.sessionName != sessionName) {
+      return;
+    }
+    final targetWindow = target.windowId == null
+        ? windows
+              .where((window) => window.index == target.windowIndex)
+              .firstOrNull
+        : windows.where((window) => window.id == target.windowId).firstOrNull;
+    if (targetWindow == null) {
       return;
     }
     _pendingInitialTmuxWindowTarget = null;
     try {
       await _switchTmuxWindow(
         session,
-        target.windowIndex,
+        targetWindow.index,
+        windowId: target.windowId,
         forceVisibleTmux: target.requiresVisibleSession,
       );
     } on Exception catch (error) {
@@ -5470,7 +5654,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
-      onWindowsChanged: _handleTmuxWindowsChanged,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -5484,29 +5667,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() => _isTmuxBarExpanded = expanded);
-  }
-
-  void _handleTmuxWindowsChanged(List<TmuxWindow> windows) {
-    if (!mounted || windows.isEmpty) {
-      return;
-    }
-    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
-    final activePath = activeWindow?.currentPath?.trim();
-    final activeCommand = activeWindow?.currentCommand?.trim();
-    final nextWorkingDirectory = activePath == null || activePath.isEmpty
-        ? _tmuxWorkingDirectory
-        : activePath;
-    final nextCommand = activeCommand == null || activeCommand.isEmpty
-        ? null
-        : activeCommand;
-    if (_tmuxWorkingDirectory == nextWorkingDirectory &&
-        _tmuxCurrentCommand == nextCommand) {
-      return;
-    }
-    setState(() {
-      _tmuxWorkingDirectory = nextWorkingDirectory;
-      _tmuxCurrentCommand = nextCommand;
-    });
   }
 
   bool _collapseTmuxBarIfExpanded() {
@@ -5663,19 +5823,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _switchTmuxWindow(
     SshSession session,
     int windowIndex, {
+    String? windowId,
     bool forceVisibleTmux = false,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    await ref
-        .read(tmuxServiceProvider)
-        .selectWindow(
-          session,
-          sessionName,
-          windowIndex,
-          extraFlags: _host?.tmuxExtraFlags,
-        );
+    final tmux = ref.read(tmuxServiceProvider);
+    final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
+        ? windowId
+        : null;
+    if (targetWindowId == null) {
+      await tmux.selectWindow(
+        session,
+        sessionName,
+        windowIndex,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    } else {
+      await tmux.selectWindow(
+        session,
+        sessionName,
+        windowIndex,
+        windowId: targetWindowId,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    }
 
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
@@ -5686,6 +5859,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName,
       forceVisibleTmux: forceVisibleTmux,
     );
+    _scheduleTerminalSizeRefresh();
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -5731,6 +5905,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
     await _reattachTmuxIfNeeded(session, sessionName);
+    _scheduleTerminalSizeRefresh();
   }
 
   /// Closes a tmux window via exec channel.
@@ -5747,6 +5922,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _host?.tmuxExtraFlags,
         );
     _tmuxCurrentCommand = null;
+    _scheduleTerminalSizeRefresh();
   }
 
   Future<void> _reattachTmuxIfNeeded(
@@ -5755,11 +5931,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool forceVisibleTmux = false,
   }) async {
     final tmux = ref.read(tmuxServiceProvider);
-    final hasForegroundClient = await tmux.hasForegroundClient(
-      session,
-      sessionName,
-      extraFlags: _host?.tmuxExtraFlags,
-    );
+    if (!forceVisibleTmux && tmux.isExecChannelCoolingDown(session)) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'reattach_foreground_check_deferred',
+        fields: {'connectionId': session.connectionId},
+      );
+      return;
+    }
+    var hasForegroundClient = false;
+    try {
+      hasForegroundClient = await tmux.hasForegroundClientOrThrow(
+        session,
+        sessionName,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    } on Exception catch (error) {
+      if (!forceVisibleTmux) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.ui',
+          'reattach_foreground_check_failed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        return;
+      }
+      hasForegroundClient = false;
+    }
     if (!mounted || hasForegroundClient) {
       DiagnosticsLogService.instance.info(
         'tmux.ui',
@@ -5780,14 +5980,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'tmux updated $sessionName, but this terminal is outside tmux '
-            'while a command is still running.',
+            'tmux updated $sessionName, but this terminal is not safely at '
+            'a shell prompt.',
           ),
         ),
       );
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
-        'reattach_skipped_command_running',
+        'reattach_skipped_shell_not_prompt',
         fields: {'connectionId': session.connectionId},
       );
       return;
@@ -5877,6 +6077,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _applyTerminalThemeToSession(
         _resolveEffectiveTerminalTheme(),
         session: session,
+        reason: 'reopen_shell',
       );
       shell = await session.getShell(pty: pty);
       if (!stillOwnsSession()) {
@@ -5930,22 +6131,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       });
+      _scheduleTerminalSizeRefresh();
     }
     return shell;
   }
 
   void _handleTrackedConnectionStateChange(
-    Map<int, SshConnectionState>? previous,
-    Map<int, SshConnectionState> next,
+    SshConnectionState? previous,
+    SshConnectionState next,
   ) {
     final connectionId = _connectionId;
     if (connectionId == null) {
+      _syncTerminalWakeLock(SshConnectionState.disconnected);
       return;
     }
 
-    final previousState =
-        previous?[connectionId] ?? SshConnectionState.disconnected;
-    final nextState = next[connectionId] ?? SshConnectionState.disconnected;
+    final previousState = previous ?? SshConnectionState.disconnected;
+    final nextState = next;
+    _syncTerminalWakeLock(nextState);
     if (previousState == nextState ||
         nextState != SshConnectionState.disconnected) {
       return;
@@ -5977,6 +6180,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    _syncTerminalWakeLock(SshConnectionState.disconnected);
     if (!mounted) {
       if (connectionId != null) {
         unawaited(
@@ -5995,6 +6199,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } else {
       setState(() {
         _clearTmuxState();
+        _detectedSensitiveKeyboardPrompt = false;
         _isConnecting = false;
         _error = 'Connection closed';
       });
@@ -6016,6 +6221,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _disconnect() async {
     final connectionId = _connectionId;
     _connectionId = null;
+    _clearAppThemeOverride();
+    _syncTerminalWakeLock(SshConnectionState.disconnected);
     await _doneSubscription?.cancel();
     _doneSubscription = null;
     _shell = null;
@@ -6046,6 +6253,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final previousConnectionId = _connectionId;
     _connectionId = null;
+    _clearAppThemeOverride();
+    _syncTerminalWakeLock(SshConnectionState.disconnected);
     _connectionLostWhileBackgrounded = false;
     try {
       await _doneSubscription?.cancel();
@@ -6069,15 +6278,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _clearAppThemeOverride();
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
+    _terminalWakeLockSubscription.close();
+    _terminalThemeSettingsSubscription.close();
+    _themeModeSubscription.close();
     _shellCompletionsSubscription.close();
+    _cancelTerminalThemeRefreshTimers();
+    _sessionController.dispose();
     _stopSharedClipboardSync();
+    _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
-    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
-    _terminal.removeListener(_onTerminalStateChanged);
+    _terminal
+      ..removeListener(_onTerminalStateChanged)
+      ..onOutput = null
+      ..onResize = null;
     _terminalController
       ..removeListener(_onSelectionChanged)
       ..dispose();
@@ -6105,8 +6323,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         state == AppLifecycleState.inactive) {
       _wasBackgrounded = true;
       _stopSharedClipboardSync();
+      _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
+      _syncTerminalWakeLock();
+      _scheduleTerminalSizeRefresh();
       final session = _observedSession;
       if (session != null && session.clipboardSharingEnabled) {
         unawaited(_startSharedClipboardSync(session));
@@ -6115,35 +6336,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
         _reconnect();
+      } else if (session != null) {
+        unawaited(
+          _reloadTerminalThemeForDependencies(
+            forceRemoteRefresh: true,
+            reason: 'app_resumed',
+          ),
+        );
       }
     }
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    _handleTerminalThemeDependenciesChanged(
+      forceRemoteRefresh: true,
+      reason: 'platform_brightness_changed',
+    );
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    _scheduleTerminalSizeRefresh();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
+    final brightness = _resolveTerminalThemeBrightness();
+    final didBrightnessChange = _lastThemeDependencyBrightness != brightness;
+    _lastThemeDependencyBrightness = brightness;
     if (_currentTheme == null) {
       return;
     }
-
-    final session = _connectionId == null
-        ? null
-        : _sessionsNotifier?.getSession(_connectionId!);
-    if (session != null) {
-      unawaited(
-        _restoreSessionThemeOverride(session).then((restored) {
-          if (!restored) {
-            return _loadTheme();
-          }
-        }),
-      );
+    if (!didBrightnessChange) {
       return;
     }
-
-    if (_sessionThemeOverride == null) {
-      _loadTheme();
-    }
+    _handleTerminalThemeDependenciesChanged(
+      forceRemoteRefresh: true,
+      reason: 'dependencies_brightness_changed',
+    );
   }
 
   List<Widget> _buildTerminalStatusChips(ThemeData theme) {
@@ -6208,19 +6443,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<Map<int, SshConnectionState>>(
-      activeSessionsProvider,
+    ref.listen<SshConnectionState>(
+      activeSessionsProvider.select(_selectTrackedConnectionState),
       _handleTrackedConnectionStateChange,
     );
     final theme = Theme.of(context);
-    final connectionStates = ref.watch(activeSessionsProvider);
+    final connectionState = ref.watch(
+      activeSessionsProvider.select(_selectTrackedConnectionState),
+    );
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
-    final connectionState = _connectionId == null
-        ? SshConnectionState.disconnected
-        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
@@ -6228,11 +6462,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // Use session override, or loaded theme, or fallback.
     final terminalTheme = _resolveEffectiveTerminalTheme();
-    _applyTerminalThemeToSession(terminalTheme);
+    // Only push the theme to the session when it differs from what was last
+    // applied via this path.  Explicit callers (_openShell, _loadTheme, etc.)
+    // use their own call sites and do not update _lastBuildAppliedTheme, so
+    // a theme change from those paths will still trigger one build-path call
+    // on the next rebuild.
+    if (!_sameTerminalTheme(terminalTheme, _lastBuildAppliedTheme)) {
+      _lastBuildAppliedTheme = terminalTheme;
+      _applyTerminalThemeToSession(terminalTheme, reason: 'build');
+    }
     final connectionLabel = describeTerminalConnectionState(
       connectionState,
       isConnecting: _isConnecting,
     );
+    final isConnectedThroughJumpHost =
+        connectionState == SshConnectionState.connected &&
+        _connectionId != null &&
+        ref
+                .read(activeSessionsProvider.notifier)
+                .getSession(_connectionId!)
+                ?.config
+                .jumpHost !=
+            null;
     final connectionIdentity = formatTerminalConnectionIdentity(
       username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
       hostname: _redactStoreScreenshotIdentities
@@ -6284,6 +6535,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     state: connectionState,
                     isConnecting: _isConnecting,
                   ),
+                  if (isConnectedThroughJumpHost) ...[
+                    const SizedBox(width: 4),
+                    const _TerminalJumpHostIndicator(),
+                  ],
                 ],
               ),
               if (titleSubtitle.isNotEmpty)
@@ -6335,7 +6590,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   _connectionId == null ||
                       connectionState != SshConnectionState.connected
                   ? null
-                  : _openConnectionFileBrowser,
+                  : () => unawaited(_openConnectionFileBrowser()),
               tooltip: 'Browse files',
             ),
             if (isMobile)
@@ -6430,6 +6685,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     checked: ref.read(tapToShowKeyboardNotifierProvider),
                     child: const Text('Tap to Show Keyboard'),
                   ),
+                if (isMobile)
+                  CheckedPopupMenuItem(
+                    value: 'toggle_sensitive_keyboard',
+                    checked: _manualSensitiveKeyboardMode,
+                    child: const Text('Sensitive Keyboard'),
+                  ),
                 CheckedPopupMenuItem(
                   value: 'toggle_shell_completions',
                   checked: ref.read(shellCompletionsNotifierProvider),
@@ -6467,16 +6728,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       ],
                     ),
                   ),
-                const PopupMenuItem(
-                  value: 'copy',
-                  child: Row(
-                    children: [
-                      Icon(Icons.copy_rounded, size: 20),
-                      SizedBox(width: 12),
-                      Text('Copy'),
-                    ],
+                if (_currentTerminalSelectionText() != null)
+                  const PopupMenuItem(
+                    value: 'create_snippet',
+                    child: Row(
+                      children: [
+                        Icon(Icons.code_rounded, size: 20),
+                        SizedBox(width: 12),
+                        Text('Create Snippet'),
+                      ],
+                    ),
                   ),
-                ),
                 const PopupMenuItem(
                   value: 'paste',
                   child: Row(
@@ -6553,6 +6815,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     controller: _toolbarController,
                     terminal: _terminal,
                     onKeyPressed: _handleKeyboardToolbarKeyPressed,
+                    onPasteRequested: _pasteClipboard,
+                    onPasteMenuOpened: _refreshKeyboardToolbarSnippetMenu,
+                    onSnippetPasteRequested: _pasteKeyboardToolbarSnippet,
+                    onPasteImageRequested: _pastePickedImage,
+                    onPasteFilesRequested: _pastePickedFiles,
+                    snippets: _keyboardToolbarSnippets,
+                    snippetFolders: _keyboardToolbarSnippetFolders,
                     terminalFocusNode: _terminalFocusNode,
                   ),
               ],
@@ -6846,20 +7115,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (theme != null && mounted) {
-      final isDark = Theme.of(context).brightness == Brightness.dark;
+      final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
       final monetizationState =
           ref.read(monetizationStateProvider).asData?.value ??
           ref.read(monetizationServiceProvider).currentState;
       final hasHostThemeAccess = monetizationState.allowsFeature(
         MonetizationFeature.hostSpecificThemes,
       );
-      if (_connectionId != null) {
-        ref
-            .read(activeSessionsProvider.notifier)
-            .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
+      final connectionId = _connectionId;
+      var hasSession = false;
+      if (connectionId != null) {
+        final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+        final session =
+            (sessionsNotifier
+                  ..updateSessionTheme(connectionId, theme.id, isDark: isDark))
+                .getSession(connectionId);
+        if (session != null) {
+          hasSession = true;
+          _syncAppThemeOverrideFromSession(session);
+        }
       }
       setState(() => _sessionThemeOverride = theme);
-      _applyTerminalThemeToSession(theme);
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'picker_selected',
+        fields: {
+          'connectionId': connectionId,
+          'isDark': isDark,
+          'hasHostThemeAccess': hasHostThemeAccess,
+          'hasSession': hasSession,
+        },
+      );
+      _applyTerminalThemeToSession(
+        theme,
+        forceRemoteRefresh: true,
+        reason: 'theme_picker',
+      );
 
       // Show option to save to host
       if (_host != null) {
@@ -7067,6 +7358,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final showsTerminalPathUnderlines =
+        terminalPathLinksEnabled && terminalPathLinkUnderlinesEnabled;
+    final inlineUnderlines = showsTerminalPathUnderlines
+        ? _isMobilePlatform
+              ? [
+                  for (final underline in _visibleTerminalPathUnderlines)
+                    underline.underline,
+                ]
+              : <TerminalTextUnderline>[?_hoveredTerminalPathUnderline]
+        : const <TerminalTextUnderline>[];
+    final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -7081,10 +7383,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       systemSelectionContextMenuBuilder: isMobile
           ? _buildTerminalSelectionContextMenu
           : null,
-      focusNode: isMobile ? null : _terminalFocusNode,
+      focusNode: _terminalFocusNode,
       cursorFocusNode: isMobile ? _terminalFocusNode : null,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
+      inlineUnderlines: inlineUnderlines,
+      keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
@@ -7101,8 +7405,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: isMobile ? null : _pasteClipboard,
     );
 
-    final showsTerminalPathUnderlines =
-        terminalPathLinksEnabled && terminalPathLinkUnderlinesEnabled;
     if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {
       _lastShowsTerminalPathUnderlines = showsTerminalPathUnderlines;
       _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild =
@@ -7125,7 +7427,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         setState(
           () => _visibleTerminalPathUnderlines =
-              const <({String path, Rect underlineRect, Rect touchRect})>[],
+              const <
+                ({String path, TerminalTextUnderline underline, Rect touchRect})
+              >[],
         );
       });
     }
@@ -7145,59 +7449,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = false;
           _queueVisibleTerminalPathUnderlineRefresh();
         }
-        terminalView = Stack(
-          fit: StackFit.expand,
-          children: [
-            terminalView,
-            for (final entry in _visibleTerminalPathUnderlines.asMap().entries)
-              Positioned(
-                left: entry.value.underlineRect.left,
-                top: entry.value.underlineRect.top,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: terminalTheme.foreground.withValues(alpha: 0.92),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: SizedBox(
-                      key: ValueKey<String>(
-                        'terminal-path-underline:${entry.key}:${entry.value.path}',
-                      ),
-                      width: entry.value.underlineRect.width,
-                      height: entry.value.underlineRect.height,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        );
       } else {
         terminalView = MouseRegion(
           onHover: _handleTerminalPathHover,
           onExit: (_) => _clearHoveredTerminalPathUnderline(),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              terminalView,
-              if (_hoveredTerminalPathUnderline != null)
-                Positioned(
-                  left: _hoveredTerminalPathUnderline!.left,
-                  top: _hoveredTerminalPathUnderline!.top,
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: terminalTheme.foreground.withValues(alpha: 0.92),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: SizedBox(
-                        width: _hoveredTerminalPathUnderline!.width,
-                        height: _hoveredTerminalPathUnderline!.height,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
+          child: terminalView,
         );
       }
     }
@@ -7205,7 +7461,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (isMobile) {
       terminalView = TextSelectionTheme(
         data: TextSelectionTheme.of(context).copyWith(
-          selectionColor: terminalTheme.selection,
+          selectionColor: terminalTheme.readableSelection,
           selectionHandleColor: terminalTheme.cursor,
         ),
         child: terminalView,
@@ -7250,12 +7506,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     Widget terminalViewWithInput = TerminalTextInputHandler(
       terminal: _terminal,
-      // The mobile terminal view owns a separate SelectionArea focus node.
-      // Keep IME focus attached here so keyboard input and prompt resets
-      // still flow through the shared terminal focus node.
       focusNode: _terminalFocusNode,
       controller: _terminalTextInputController,
       deleteDetection: true,
+      keyboardAppearance: keyboardAppearance,
       onUserInput: _followLiveOutput,
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
@@ -7270,12 +7524,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _toolbarController.applySystemKeyboardModifiers,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
+      sensitiveInput: _usesSensitiveKeyboardMode,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard:
           ref.watch(tapToShowKeyboardNotifierProvider) &&
           !_showsNativeSelectionOverlay &&
           overlayMessage == null,
       showKeyboardOnFocus: false,
+      manageFocus: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -7301,80 +7557,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
-    var hasCopy = false;
-    final buttonItems = <ContextMenuButtonItem>[];
-    for (final item in selectableRegionState.contextMenuButtonItems) {
-      switch (item.type) {
-        case ContextMenuButtonType.copy:
-          hasCopy = true;
-          buttonItems.add(
-            item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_copySelection());
-              },
-            ),
-          );
-        case ContextMenuButtonType.lookUp:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_lookUpTerminalSelection());
-              },
-            ),
-          );
-        case ContextMenuButtonType.searchWeb:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_searchWebForTerminalSelection());
-              },
-            ),
-          );
-        case ContextMenuButtonType.share:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_shareTerminalSelection());
-              },
-            ),
-          );
-        case ContextMenuButtonType.selectAll:
-        case ContextMenuButtonType.cut:
-        case ContextMenuButtonType.delete:
-          // Drop items that have no meaningful action against the
-          // terminal's xterm-managed selection.
-          continue;
-        case ContextMenuButtonType.paste:
-          // Replaced below with our terminal-aware paste handler.
-          continue;
-        default:
-          buttonItems.add(item);
-      }
-    }
-    if (!hasCopy) {
-      buttonItems.insert(
-        0,
-        ContextMenuButtonItem(
-          onPressed: () {
-            selectableRegionState.hideToolbar();
-            unawaited(_copySelection());
+    final selectionText = _currentTerminalSelectionText();
+    VoidCallback selectionAction(void Function(String text) action) =>
+        buildTerminalSelectionContextMenuAction(
+          action: () {
+            final text = selectionText;
+            if (text == null) {
+              return;
+            }
+            action(text);
           },
-          type: ContextMenuButtonType.copy,
+          hideToolbar: selectableRegionState.hideToolbar,
+        );
+
+    final buttonItems = buildTerminalSelectionContextMenuButtonItems(
+      defaultItems: selectableRegionState.contextMenuButtonItems,
+      onCopy: selectionAction(
+        (text) => unawaited(
+          _copySelectionText(
+            text,
+            clearTerminalSelection: true,
+            restoreFocus: true,
+          ),
         ),
-      );
-    }
-    buttonItems.add(
-      ContextMenuButtonItem(
-        onPressed: () {
-          selectableRegionState.hideToolbar();
-          unawaited(_pasteClipboard());
-        },
-        type: ContextMenuButtonType.paste,
       ),
+      onLookUp: selectionAction(
+        (text) => unawaited(_lookUpTerminalSelectionText(text)),
+      ),
+      onSearchWeb: selectionAction(
+        (text) => unawaited(_searchWebForTerminalSelectionText(text)),
+      ),
+      onShare: selectionAction(
+        (text) => unawaited(_shareTerminalSelectionText(text)),
+      ),
+      onCreateSnippet: selectionText == null
+          ? null
+          : selectionAction(
+              (text) =>
+                  unawaited(_createSnippetFromTerminalSelectionText(text)),
+            ),
+      onPaste: () {
+        selectableRegionState.hideToolbar();
+        unawaited(_pasteClipboard());
+      },
     );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
@@ -7392,54 +7617,99 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalStyle.fromTextStyle(textStyle);
   }
 
-  Size? _measureTerminalPathUnderlineTextSize(String text) {
-    if (text.isEmpty) {
-      return null;
-    }
-    final globalFontSize = ref.read(fontSizeNotifierProvider);
-    final fontSize = resolveTerminalFontSize(
-      globalFontSize: globalFontSize,
-      sessionFontSize: _sessionFontSizeOverride,
-      pinchFontSize: _pinchFontSize,
-    );
-    final fontFamily =
-        _host?.terminalFontFamily ??
-        ref.read(fontFamilyNotifierProvider) ??
-        'monospace';
-    final textStyle = resolveMonospaceTextStyle(
-      fontFamily,
-      platform: Theme.of(context).platform,
-      fontSize: fontSize,
-    );
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: textStyle),
-      textDirection: TextDirection.ltr,
-      textScaler: MediaQuery.textScalerOf(context),
-      maxLines: 1,
-    )..layout();
-    if (painter.width <= 0 || painter.height <= 0) {
-      return null;
-    }
-    return Size(painter.width, painter.height);
-  }
-
-  void _openConnectionFileBrowser() {
+  Future<void> _openConnectionFileBrowser() async {
     final connectionId = _connectionId;
     if (connectionId == null) {
       return;
     }
 
-    // Pass the terminal's working directory (from OSC 7) as both the
-    // initial path and the working directory for relative path resolution.
+    final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
+    if (!mounted) {
+      return;
+    }
+
+    // Prefer the last browser directory when opening from the toolbar. The
+    // terminal cwd remains available for relative path resolution and as a
+    // quick-jump inside the browser.
     final cwd = _workingDirectoryPath;
-    context.pushNamed(
-      Routes.sftp,
-      pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: {
-        'connectionId': connectionId.toString(),
-        if (cwd != null) ...{'path': cwd, 'cwd': cwd},
-      },
+    final rememberedPath = ref.read(
+      sftpBrowserLastPathsProvider,
+    )[(hostId: widget.hostId, connectionId: connectionId)];
+    final initialPath = rememberedPath ?? cwd;
+    unawaited(
+      context.pushNamed<String>(
+        Routes.sftp,
+        pathParameters: {'hostId': widget.hostId.toString()},
+        queryParameters: _buildSftpBrowserQueryParameters(
+          connectionId: connectionId,
+          initialPath: initialPath,
+          workingDirectory: cwd,
+          tmuxPaneDirectory: tmuxPaneDirectory,
+        ),
+      ),
     );
+  }
+
+  Map<String, String> _buildSftpBrowserQueryParameters({
+    int? connectionId,
+    String? initialPath,
+    String? workingDirectory,
+    String? tmuxPaneDirectory,
+  }) {
+    final queryParameters = <String, String>{};
+
+    void addParameter(String key, String? value) {
+      if (value == null) {
+        return;
+      }
+      queryParameters[key] = value;
+    }
+
+    addParameter('connectionId', connectionId?.toString());
+    addParameter('path', initialPath);
+    addParameter('cwd', workingDirectory);
+    addParameter('connectionCwd', _connectionOpenedWorkingDirectory);
+    addParameter('tmuxCwd', tmuxPaneDirectory);
+
+    return queryParameters;
+  }
+
+  Future<String?> _resolveCurrentTmuxPaneDirectory() async {
+    final fallbackDirectory = normalizeSftpAbsolutePath(_tmuxWorkingDirectory);
+    final connectionId = _connectionId;
+    final sessionName = _tmuxSessionName;
+    if (!_isTmuxActive || connectionId == null || sessionName == null) {
+      return fallbackDirectory;
+    }
+
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) {
+      return fallbackDirectory;
+    }
+
+    final paneContext = await ref
+        .read(tmuxServiceProvider)
+        .currentPaneContext(
+          session,
+          sessionName,
+          extraFlags: _host?.tmuxExtraFlags,
+        );
+    final paneDirectory = normalizeSftpAbsolutePath(paneContext?.currentPath);
+    if (paneDirectory == null) {
+      return fallbackDirectory;
+    }
+    final paneCommand = paneContext?.currentCommand?.trim();
+    if (mounted &&
+        (paneDirectory != _tmuxWorkingDirectory ||
+            paneCommand != _tmuxCurrentCommand)) {
+      setState(() {
+        _tmuxWorkingDirectory = paneDirectory;
+        _tmuxCurrentCommand = paneCommand == null || paneCommand.isEmpty
+            ? null
+            : paneCommand;
+      });
+    }
+    return paneDirectory;
   }
 
   Future<void> _handleMenuAction(String action) async {
@@ -7466,6 +7736,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           enabled: !ref.read(tapToShowKeyboardNotifierProvider),
         );
         break;
+      case 'toggle_sensitive_keyboard':
+        setState(
+          () => _manualSensitiveKeyboardMode = !_manualSensitiveKeyboardMode,
+        );
+        break;
       case 'toggle_shell_completions':
         final notifier = ref.read(shellCompletionsNotifierProvider.notifier);
         final enabled = !ref.read(shellCompletionsNotifierProvider);
@@ -7480,8 +7755,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'copy_working_directory':
         await _copyWorkingDirectory();
         break;
-      case 'copy':
-        await _copySelection();
+      case 'create_snippet':
+        await _createSnippetFromSelection();
         break;
       case 'paste':
         await _pasteClipboard();
@@ -8026,16 +8301,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
+    // Locate the canonical start of the wrapped-line group so that all rows
+    // in the group share the same cache key.
+    var cacheKey = row;
+    while (cacheKey > 0 && buffer.lines[cacheKey].isWrapped) {
+      cacheKey--;
+    }
+
+    // Invalidate snapshot and analysis caches when content has changed.
+    if (_terminalPathSnapshotCacheGeneration != _terminalContentGeneration) {
+      _terminalPathSnapshotCacheGeneration = _terminalContentGeneration;
+      _terminalPathSnapshotCache.clear();
+      _terminalPathAnalysisCache.clear();
+    }
+
+    if (_terminalPathSnapshotCache.containsKey(cacheKey)) {
+      return _terminalPathSnapshotCache[cacheKey];
+    }
+
     String lineTextAt(int lineIndex) => _buildNativeSelectionLineSnapshot(
       buffer.lines[lineIndex],
       buffer.viewWidth,
     ).text;
 
-    var startRow = row;
-    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
-      startRow--;
-    }
-
+    var startRow = cacheKey;
     var endRow = row;
     while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
       endRow++;
@@ -8073,12 +8362,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    return (
+    final snapshot = (
       text: builder.toString(),
       startRow: startRow,
       rowStarts: rowStarts,
       columnOffsets: columnOffsets,
     );
+    _terminalPathSnapshotCache[cacheKey] = snapshot;
+    return snapshot;
   }
 
   void _handleTerminalPathHover(PointerHoverEvent event) {
@@ -8117,12 +8408,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _clearHoveredTerminalPathUnderline();
       return;
     }
-    final underline = _buildTerminalPathUnderlineRect(
-      terminalViewState,
+    final underline = _buildTerminalPathInlineUnderline(
       row: offset.y,
       startColumn: hoveredSegment.startColumn,
       endColumn: hoveredSegment.endColumn,
-      text: hoveredSegment.text,
     );
     if (underline == null) {
       _clearHoveredTerminalPathUnderline();
@@ -8606,7 +8895,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_visibleTerminalPathUnderlines.isNotEmpty) {
         setState(
           () => _visibleTerminalPathUnderlines =
-              const <({String path, Rect underlineRect, Rect touchRect})>[],
+              const <
+                ({String path, TerminalTextUnderline underline, Rect touchRect})
+              >[],
         );
       }
       return;
@@ -8625,9 +8916,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final underlines = <({String path, Rect underlineRect, Rect touchRect})>[];
+    final underlines =
+        <({String path, TerminalTextUnderline underline, Rect touchRect})>[];
+    final buffer = _terminal.buffer;
     var row = rowRange.topRow;
     while (row <= rowRange.bottomRow) {
+      // Skip single, non-wrapped rows that contain no path-like characters.
+      // This avoids the expensive snapshot-building step for the majority of
+      // output lines that can never match a file path.
+      final isSingleRow =
+          !buffer.lines[row].isWrapped &&
+          (row + 1 >= buffer.height || !buffer.lines[row + 1].isWrapped);
+      if (isSingleRow &&
+          !terminalRowMayContainPath(buffer.lines[row], buffer.viewWidth)) {
+        row++;
+        continue;
+      }
       final pathSnapshot = _buildTerminalPathTapSnapshot(row);
       if (pathSnapshot == null) {
         row++;
@@ -8651,12 +8955,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (!_shouldShowTerminalPathBadge(segment.path)) {
             continue;
           }
-          final underlineRect = _buildTerminalPathUnderlineRect(
-            terminalViewState,
+          final underline = _buildTerminalPathInlineUnderline(
             row: snapshotRow,
             startColumn: segment.startColumn,
             endColumn: segment.endColumn,
-            text: segment.text,
           );
           final touchRect = _buildTerminalPathTouchTargetRect(
             terminalViewState,
@@ -8664,10 +8966,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             startColumn: segment.startColumn,
             endColumn: segment.endColumn,
           );
-          if (underlineRect != null && touchRect != null) {
+          if (underline != null && touchRect != null) {
             underlines.add((
               path: segment.path,
-              underlineRect: underlineRect,
+              underline: underline,
               touchRect: touchRect,
             ));
           }
@@ -8681,38 +8983,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Rect? _buildTerminalPathUnderlineRect(
-    MonkeyTerminalViewState terminalViewState, {
+  TerminalTextUnderline? _buildTerminalPathInlineUnderline({
     required int row,
     required int startColumn,
     required int endColumn,
-    required String text,
-  }) {
-    final terminalViewObject = terminalViewState.context.findRenderObject();
-    if (terminalViewObject is! RenderBox) {
-      return null;
-    }
-    final renderTerminal = terminalViewState.renderTerminal;
-    final lineTopLeft = renderTerminal.localToGlobal(
-      renderTerminal.getOffset(CellOffset(startColumn, row)),
-      ancestor: terminalViewObject,
-    );
-    final measuredTextSize = _measureTerminalPathUnderlineTextSize(text);
-    final lineEndOffset = renderTerminal.localToGlobal(
-      renderTerminal.getOffset(
-        CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
-      ),
-      ancestor: terminalViewObject,
-    );
-    return resolveTerminalPathUnderlineRect(
-      lineTopLeft: lineTopLeft,
-      lineEndOffset: lineEndOffset,
-      lineHeight: renderTerminal.lineHeight,
-      viewportHeight: terminalViewObject.size.height,
-      rowHeight: renderTerminal.cellSize.height,
-      textHeight: measuredTextSize?.height,
-    );
-  }
+  }) => resolveTerminalPathInlineUnderline(
+    row: row,
+    startColumn: startColumn,
+    endColumn: endColumn,
+    rowCount: _terminal.buffer.height,
+    columnCount: _terminal.buffer.viewWidth,
+  );
 
   Rect? _buildTerminalPathTouchTargetRect(
     MonkeyTerminalViewState terminalViewState, {
@@ -8762,12 +9043,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   _TerminalPathSnapshotAnalysis _analyzeTerminalPathSnapshot(
     _TerminalPathTapSnapshot pathSnapshot,
-  ) => (
-    detectedPaths: _detectTerminalFilePathMatches(pathSnapshot.text),
-    normalizedSnapshot: _normalizeTerminalFilePathDetectionText(
-      pathSnapshot.text,
-    ),
-  );
+  ) {
+    final cached = _terminalPathAnalysisCache[pathSnapshot.text];
+    if (cached != null) return cached;
+    final analysis = (
+      detectedPaths: _detectTerminalFilePathMatches(pathSnapshot.text),
+      normalizedSnapshot: _normalizeTerminalFilePathDetectionText(
+        pathSnapshot.text,
+      ),
+    );
+    _terminalPathAnalysisCache[pathSnapshot.text] = analysis;
+    return analysis;
+  }
 
   List<({String path, String text, int startColumn, int endColumn})>
   _resolveInteractiveTerminalPathSegmentsOnRow(int row) {
@@ -8964,13 +9251,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final connectionId = _connectionId;
+    final cwd = _workingDirectoryPath;
+    final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
+    if (!mounted) {
+      return;
+    }
+
     final result = await context.pushNamed<String>(
       Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: {
-        if (connectionId != null) 'connectionId': connectionId.toString(),
-        'path': verifiedPath,
-      },
+      queryParameters: _buildSftpBrowserQueryParameters(
+        connectionId: connectionId,
+        initialPath: verifiedPath,
+        workingDirectory: cwd,
+        tmuxPaneDirectory: tmuxPaneDirectory,
+      ),
     );
     if (!mounted || result == null) {
       return;
@@ -8979,36 +9274,64 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showTerminalLinkMessage(result);
   }
 
-  Future<void> _copySelection() async {
+  Future<void> _createSnippetFromSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    await _createSnippetFromTerminalSelectionText(text);
+  }
+
+  Future<void> _createSnippetFromTerminalSelectionText(String text) async {
+    final command = text.trimRight();
+    if (command.isEmpty) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
     if (_isNativeSelectionMode) {
-      final text = selectedNativeOverlayText(_nativeSelectionController.value);
-      if (text.isEmpty) {
-        return;
+      if (_isMobilePlatform) {
+        _dismissNativeSelectionOverlayForEditing();
+      } else {
+        _exitNativeSelectionMode();
       }
-
-      await Clipboard.setData(ClipboardData(text: text));
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Copied')));
-      return;
+    } else {
+      _terminalController.clearSelection();
     }
 
-    final selection = _terminalController.selection;
-    if (selection == null) {
-      return;
+    await context.pushNamed<void>(
+      Routes.snippetAdd,
+      extra: SnippetEditPrefill(
+        name: buildSnippetNameFromTerminalSelection(command),
+        command: command,
+      ),
+    );
+    if (mounted) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     }
-    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
+  }
+
+  Future<void> _copySelectionText(
+    String text, {
+    required bool clearTerminalSelection,
+    required bool restoreFocus,
+  }) async {
     if (text.isEmpty) {
-      _restoreTerminalFocus();
+      if (restoreFocus) {
+        _restoreTerminalFocus();
+      }
       return;
     }
 
-    await Clipboard.setData(ClipboardData(text: text));
-    _terminalController.clearSelection();
-    _restoreTerminalFocus();
+    await _writeLocalClipboardText(text);
+    if (clearTerminalSelection) {
+      _terminalController.clearSelection();
+    }
+    if (restoreFocus) {
+      _restoreTerminalFocus();
+    }
 
     if (!mounted) {
       return;
@@ -9031,11 +9354,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return text.isEmpty ? null : text;
   }
 
-  Future<void> _lookUpTerminalSelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
+  Future<void> _lookUpTerminalSelectionText(String text) async {
     try {
       await SystemChannels.platform.invokeMethod<void>('LookUp.invoke', text);
     } on PlatformException {
@@ -9043,11 +9362,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _searchWebForTerminalSelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
+  Future<void> _searchWebForTerminalSelectionText(String text) async {
     try {
       await SystemChannels.platform.invokeMethod<void>(
         'SearchWeb.invoke',
@@ -9058,16 +9373,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _shareTerminalSelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
+  Future<void> _shareTerminalSelectionText(String text) async {
     try {
       await SystemChannels.platform.invokeMethod<void>('Share.invoke', text);
     } on PlatformException {
       // Platform doesn't support Share; ignore.
     }
+  }
+
+  Future<void> _writeLocalClipboardText(String text) async {
+    _recentLocalClipboardText = text;
+    _recentLocalClipboardAt = DateTime.now();
+    await Clipboard.setData(ClipboardData(text: text));
   }
 
   void _showClipboardMessage(String message) {
@@ -9086,7 +9403,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    await Clipboard.setData(ClipboardData(text: path));
+    await _writeLocalClipboardText(path);
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
 
     if (!mounted) {
@@ -9125,6 +9442,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _verifiedTerminalPathCache.clear();
     _verifiedTerminalPathCacheOrder.clear();
     _verifyingTerminalPathCacheKeys.clear();
+    _pendingTerminalPathVerifications.clear();
   }
 
   void _cacheVerifiedTerminalPath(
@@ -9153,11 +9471,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalPathVerificationSftpFuture = null;
     _terminalPathVerificationSession = null;
     _terminalPathVerificationHomeDirectory = null;
+    _terminalPathVerificationBackoffUntil = null;
+    _pendingTerminalPathVerifications.clear();
+    _verifyingTerminalPathCacheKeys.clear();
   }
 
   Future<SftpClient?> _resolveTerminalPathVerificationSftp(
-    SshSession session,
-  ) async {
+    SshSession session, {
+    required bool allowBackoff,
+  }) async {
     if (!identical(_terminalPathVerificationSession, session)) {
       _disposeTerminalPathVerificationSftp();
       _terminalPathVerificationSession = session;
@@ -9173,6 +9495,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return inFlight;
     }
 
+    if (allowBackoff && _isTerminalPathVerificationBackedOff()) {
+      DiagnosticsLogService.instance.debug(
+        'terminal',
+        'sftp_path_resolution_deferred',
+        fields: {'connectionId': session.connectionId},
+      );
+      return null;
+    }
+
     final future = session
         .sftp()
         .timeout(_terminalPathVerificationTimeout)
@@ -9181,17 +9512,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp.close();
             return null;
           }
+          _terminalPathVerificationBackoffUntil = null;
           _terminalPathVerificationSftp = sftp;
           return sftp;
         });
     _terminalPathVerificationSftpFuture = future;
     try {
       return await future;
+    } on Object catch (error) {
+      _recordTerminalPathVerificationBackoff(session, error);
+      rethrow;
     } finally {
       if (identical(_terminalPathVerificationSftpFuture, future)) {
         _terminalPathVerificationSftpFuture = null;
       }
     }
+  }
+
+  bool _isTerminalPathVerificationBackedOff() =>
+      _terminalPathVerificationBackoffRemaining() != null;
+
+  Duration? _terminalPathVerificationBackoffRemaining() {
+    final backoffUntil = _terminalPathVerificationBackoffUntil;
+    if (backoffUntil == null) {
+      return null;
+    }
+    final remaining = backoffUntil.difference(DateTime.now());
+    if (remaining > Duration.zero) {
+      return remaining;
+    }
+    _terminalPathVerificationBackoffUntil = null;
+    return null;
+  }
+
+  void _recordTerminalPathVerificationBackoff(
+    SshSession session,
+    Object error,
+  ) {
+    if (error is! SSHChannelOpenError && error is! TimeoutException) {
+      return;
+    }
+    _terminalPathVerificationBackoffUntil = DateTime.now().add(
+      _terminalPathVerificationChannelBackoff,
+    );
+    DiagnosticsLogService.instance.debug(
+      'terminal',
+      'sftp_path_resolution_backoff',
+      fields: {
+        'connectionId': session.connectionId,
+        'delayMs': _terminalPathVerificationChannelBackoff.inMilliseconds,
+        'errorType': error.runtimeType.toString(),
+      },
+    );
   }
 
   Future<String?> _resolveTerminalPathVerificationHomeDirectory(
@@ -9247,23 +9619,186 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _pendingTerminalPathVerifications[cacheKey] = terminalPath;
     _verifyingTerminalPathCacheKeys.add(cacheKey);
+    _scheduleTerminalPathVerificationBatch();
+  }
+
+  void _scheduleTerminalPathVerificationBatch([
+    Duration delay = _terminalPathVerificationBatchDelay,
+  ]) {
+    if (_isTerminalPathVerificationBatchScheduled) {
+      return;
+    }
+    _isTerminalPathVerificationBatchScheduled = true;
     unawaited(() async {
+      Duration? nextDelay;
       try {
-        final verifiedPath = await _resolveVerifiedTerminalFilePath(
-          terminalPath,
-          showErrors: false,
-        );
-        if (!mounted || verifiedPath == null) {
+        await Future<void>.delayed(delay);
+        if (!mounted) {
+          _pendingTerminalPathVerifications.clear();
+          _verifyingTerminalPathCacheKeys.clear();
           return;
         }
-        setState(() {
-          _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
-        });
+        nextDelay = await _verifyPendingTerminalFilePaths();
       } finally {
-        _verifyingTerminalPathCacheKeys.remove(cacheKey);
+        _isTerminalPathVerificationBatchScheduled = false;
+        if (mounted && _pendingTerminalPathVerifications.isNotEmpty) {
+          _scheduleTerminalPathVerificationBatch(
+            nextDelay ?? _terminalPathVerificationBatchDelay,
+          );
+        }
       }
     }());
+  }
+
+  Future<Duration?> _verifyPendingTerminalFilePaths() async {
+    _syncVerifiedTerminalPathCacheScope();
+    if (_pendingTerminalPathVerifications.isEmpty) {
+      return null;
+    }
+
+    final backoffRemaining = _terminalPathVerificationBackoffRemaining();
+    if (backoffRemaining != null) {
+      DiagnosticsLogService.instance.debug(
+        'terminal',
+        'sftp_path_resolution_batch_deferred',
+        fields: {'pendingCount': _pendingTerminalPathVerifications.length},
+      );
+      return backoffRemaining;
+    }
+
+    final session = _activeSession();
+    if (session == null) {
+      _pendingTerminalPathVerifications.clear();
+      _verifyingTerminalPathCacheKeys.clear();
+      return null;
+    }
+
+    final batch = Map<String, String>.from(_pendingTerminalPathVerifications);
+    _pendingTerminalPathVerifications.clear();
+    var verifiedAny = false;
+    try {
+      final sftp = await _resolveTerminalPathVerificationSftp(
+        session,
+        allowBackoff: true,
+      );
+      if (sftp == null) {
+        return null;
+      }
+
+      for (final entry in batch.entries) {
+        if (_verifiedTerminalPathCache.containsKey(entry.key)) {
+          continue;
+        }
+        try {
+          final verifiedPath = await _resolveVerifiedTerminalFilePathWithSftp(
+            sftp,
+            entry.value,
+            showErrors: false,
+          );
+          verifiedAny = verifiedAny || verifiedPath != null;
+        } on TimeoutException {
+          // Background path verification is opportunistic.
+        } on SftpStatusError {
+          // Background path verification is opportunistic.
+        } on Object catch (error, stackTrace) {
+          DiagnosticsLogService.instance.warning(
+            'terminal',
+            'sftp_path_resolution_failed',
+            fields: {'errorType': error.runtimeType.toString()},
+          );
+          if (kDebugMode) {
+            debugPrint('Failed to resolve terminal file path: $error');
+            debugPrint('$stackTrace');
+          }
+        }
+      }
+    } on Object catch (error, stackTrace) {
+      final backoffRemaining = _terminalPathVerificationBackoffRemaining();
+      if (backoffRemaining != null) {
+        _pendingTerminalPathVerifications.addAll(batch);
+        return backoffRemaining;
+      }
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'sftp_path_resolution_failed',
+        fields: {'errorType': error.runtimeType.toString()},
+      );
+      if (kDebugMode) {
+        debugPrint('Failed to resolve terminal file paths: $error');
+        debugPrint('$stackTrace');
+      }
+    } finally {
+      for (final cacheKey in batch.keys) {
+        if (!_pendingTerminalPathVerifications.containsKey(cacheKey)) {
+          _verifyingTerminalPathCacheKeys.remove(cacheKey);
+        }
+      }
+    }
+
+    if (verifiedAny && mounted) {
+      setState(() {
+        _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
+      });
+    }
+    return null;
+  }
+
+  Future<String?> _resolveVerifiedTerminalFilePathWithSftp(
+    SftpClient sftp,
+    String terminalPath, {
+    required bool showErrors,
+  }) async {
+    _syncVerifiedTerminalPathCacheScope();
+    final cacheKey = _terminalPathCacheKey(terminalPath);
+    final cachedPath = _verifiedTerminalPathCache[cacheKey];
+    if (cachedPath != null) {
+      return cachedPath.resolvedPath;
+    }
+
+    final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
+    final verificationCandidates =
+        requiresTerminalFilePathVerification(terminalPath)
+        ? resolveTerminalFilePathVerificationCandidates(terminalPath)
+        : <String>[terminalPath];
+    for (final candidate in verificationCandidates) {
+      final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
+        sftp,
+        candidate,
+      );
+      final resolvedPath = resolveRequestedSftpPath(
+        candidate,
+        workingDirectory: _workingDirectoryPath,
+        homeDirectory: homeDirectory,
+      );
+      if (resolvedPath == null) {
+        continue;
+      }
+
+      try {
+        await sftp.stat(resolvedPath).timeout(_terminalPathVerificationTimeout);
+      } on SftpStatusError catch (error) {
+        if (error.code == SftpStatusCode.noSuchFile) {
+          continue;
+        }
+        rethrow;
+      }
+
+      _cacheVerifiedTerminalPath(
+        cacheKey,
+        terminalPath: candidate,
+        resolvedPath: resolvedPath,
+      );
+      return resolvedPath;
+    }
+
+    if (showErrors && isExplicitPath) {
+      _showTerminalLinkMessage(
+        'Could not open "$terminalPath" in SFTP: path does not exist',
+      );
+    }
+    return null;
   }
 
   Future<String?> _resolveVerifiedTerminalFilePath(
@@ -9287,54 +9822,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     try {
-      final sftp = await _resolveTerminalPathVerificationSftp(session);
+      final sftp = await _resolveTerminalPathVerificationSftp(
+        session,
+        allowBackoff: !showErrors,
+      );
       if (sftp == null) {
         return null;
       }
-      final verificationCandidates =
-          requiresTerminalFilePathVerification(terminalPath)
-          ? resolveTerminalFilePathVerificationCandidates(terminalPath)
-          : <String>[terminalPath];
-      for (final candidate in verificationCandidates) {
-        final homeDirectory =
-            await _resolveTerminalPathVerificationHomeDirectory(
-              sftp,
-              candidate,
-            );
-        final resolvedPath = resolveRequestedSftpPath(
-          candidate,
-          workingDirectory: _workingDirectoryPath,
-          homeDirectory: homeDirectory,
-        );
-        if (resolvedPath == null) {
-          continue;
-        }
-
-        try {
-          await sftp
-              .stat(resolvedPath)
-              .timeout(_terminalPathVerificationTimeout);
-        } on SftpStatusError catch (error) {
-          if (error.code == SftpStatusCode.noSuchFile) {
-            continue;
-          }
-          rethrow;
-        }
-
-        _cacheVerifiedTerminalPath(
-          cacheKey,
-          terminalPath: candidate,
-          resolvedPath: resolvedPath,
-        );
-        return resolvedPath;
-      }
-
-      if (showErrors && isExplicitPath) {
-        _showTerminalLinkMessage(
-          'Could not open "$terminalPath" in SFTP: path does not exist',
-        );
-      }
-      return null;
+      return await _resolveVerifiedTerminalFilePathWithSftp(
+        sftp,
+        terminalPath,
+        showErrors: showErrors,
+      );
     } on TimeoutException {
       if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
@@ -9607,29 +10106,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<({String name, Uint8List bytes})> _readAndroidClipboardContentUri(
     String uri,
-  ) async {
-    final response = await _clipboardContentChannel.invokeMethod<Object>(
-      'readContentUri',
-      {'uri': uri},
-    );
-    if (response is! Map<Object?, Object?>) {
-      throw PlatformException(
-        code: 'invalid_clipboard_content',
-        message: 'Unexpected clipboard content response',
-      );
-    }
-
-    final name = response['name'];
-    final bytes = response['bytes'];
-    if (name is! String || bytes is! Uint8List) {
-      throw PlatformException(
-        code: 'invalid_clipboard_content',
-        message: 'Clipboard content response was incomplete',
-      );
-    }
-
-    return (name: name, bytes: bytes);
-  }
+  ) => ref.read(clipboardContentServiceProvider).readContentUri(uri);
 
   Future<bool> _confirmClipboardUpload({
     required String title,
@@ -9908,6 +10385,74 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'This text inserted from your keyboard could execute multiple or reshaped commands.',
       confirmLabel: 'Insert anyway',
     );
+  }
+
+  Future<void> _refreshKeyboardToolbarSnippetMenu() async {
+    final snippetRepo = ref.read(snippetRepositoryProvider);
+    final snippets = await snippetRepo.getAll();
+    final folders = await snippetRepo.getAllFolders();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _keyboardToolbarSnippets = [
+        for (final snippet in snippets)
+          KeyboardToolbarSnippet(
+            id: snippet.id,
+            name: snippet.name,
+            command: snippet.command,
+            folderId: snippet.folderId,
+          ),
+      ];
+      _keyboardToolbarSnippetFolders = [
+        for (final folder in folders)
+          KeyboardToolbarSnippetFolder(id: folder.id, name: folder.name),
+      ];
+    });
+  }
+
+  Future<void> _pasteKeyboardToolbarSnippet(
+    KeyboardToolbarSnippet selectedSnippet,
+  ) async {
+    final snippetRepo = ref.read(snippetRepositoryProvider);
+    final snippet = await snippetRepo.getById(selectedSnippet.id);
+    if (!mounted) {
+      return;
+    }
+    if (snippet == null) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Snippet is no longer available.');
+      return;
+    }
+
+    final substitution = await _substituteVariables(context, snippet);
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    if (substitution == null || substitution.command.isEmpty) {
+      return;
+    }
+
+    final shouldInsert = await _confirmTerminalInsertionIfNeeded(
+      insertedText: substitution.command,
+      buildReview: (commandText) => assessSnippetCommandInsertion(
+        commandText,
+        hadVariableSubstitution: substitution.hadVariableSubstitution,
+      ),
+      title: 'Review snippet command',
+      messageBuilder: (_) =>
+          'Confirm the rendered command before inserting it.',
+      confirmLabel: 'Insert command',
+    );
+    if (!shouldInsert) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    _followLiveOutput();
+    _terminal.paste(substitution.command);
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    unawaited(snippetRepo.incrementUsage(snippet.id));
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
@@ -10290,6 +10835,24 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
         message: label,
         excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
+      ),
+    );
+  }
+}
+
+class _TerminalJumpHostIndicator extends StatelessWidget {
+  const _TerminalJumpHostIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      label: 'Connected through jump host',
+      child: Tooltip(
+        message: 'Connected through jump host',
+        excludeFromSemantics: true,
+        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
       ),
     );
   }

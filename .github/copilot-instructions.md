@@ -33,7 +33,8 @@ flutter test integration_test
 
 ## Pre-Commit Checklist
 
-**IMPORTANT**: Before committing any code changes, always run these checks:
+**IMPORTANT**: Before committing code changes, run the checks that match the
+scope of your change:
 
 ```bash
 # 1. Analyze for ALL issues (not just warnings - CI fails on info too)
@@ -42,11 +43,14 @@ flutter analyze
 # 2. Format all code
 dart format .
 
-# 3. Run tests
-flutter test
+# 3. Run tests relevant to the changed behavior
+flutter test test/path/to/relevant_test.dart
 ```
 
-CI will fail if there are ANY analyzer issues (including `info` level). Common issues to watch for:
+Run the full `flutter test` suite locally when the touched area is broad,
+high-risk, or lacks narrower coverage. Otherwise, CI runs the full suite with
+coverage after the PR is opened. CI will fail if there are ANY analyzer issues
+(including `info` level). Common issues to watch for:
 
 - **`public_member_api_docs`**: Add `///` documentation to all public members
 - **`prefer_const_constructors`**: Use `const` for widget constructors when possible

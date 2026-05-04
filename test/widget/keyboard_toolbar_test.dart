@@ -64,6 +64,9 @@ void main() {
       expect(find.byTooltip('Ctrl'), findsOneWidget);
       expect(find.byTooltip('Alt'), findsOneWidget);
       expect(find.byTooltip('Shift'), findsOneWidget);
+      expect(find.byTooltip('Tilde'), findsOneWidget);
+      expect(find.byTooltip('Paste'), findsOneWidget);
+      expect(find.byTooltip('Enter'), findsOneWidget);
 
       // Check navigation row keys
       expect(find.byTooltip('Up'), findsOneWidget);
@@ -76,7 +79,64 @@ void main() {
       expect(find.byTooltip('Page Down'), findsOneWidget);
     });
 
-    testWidgets('keeps arrow keys to the left of PgUp/PgDn/Home/End', (
+    testWidgets('keeps Paste and Enter on the right edge of their rows', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      const topRowOrder = [
+        'Escape',
+        'Tab',
+        'Ctrl',
+        'Alt',
+        'Shift',
+        'Pipe',
+        'Slash',
+        'Tilde',
+        'Paste',
+      ];
+      const bottomRowOrder = [
+        'Left',
+        'Right',
+        'Up',
+        'Down',
+        'Page Up',
+        'Page Down',
+        'Home',
+        'End',
+        'Enter',
+      ];
+
+      final topRowCenters = <String, Offset>{
+        for (final label in topRowOrder)
+          label: tester.getCenter(find.byTooltip(label)),
+      };
+      final bottomRowCenters = <String, Offset>{
+        for (final label in bottomRowOrder)
+          label: tester.getCenter(find.byTooltip(label)),
+      };
+      final actualTopRowOrder = topRowOrder.toList()
+        ..sort((a, b) => topRowCenters[a]!.dx.compareTo(topRowCenters[b]!.dx));
+      final actualBottomRowOrder = bottomRowOrder.toList()
+        ..sort(
+          (a, b) => bottomRowCenters[a]!.dx.compareTo(bottomRowCenters[b]!.dx),
+        );
+
+      expect(actualTopRowOrder, topRowOrder);
+      expect(actualBottomRowOrder, bottomRowOrder);
+      expect(topRowCenters['Paste']!.dy, topRowCenters['Escape']!.dy);
+      expect(bottomRowCenters['Enter']!.dy, bottomRowCenters['Left']!.dy);
+      expect(
+        bottomRowCenters['Enter']!.dy,
+        greaterThan(topRowCenters['Paste']!.dy),
+      );
+    });
+
+    testWidgets('keeps arrow keys to the left of PgUp/PgDn/Home/End/Enter', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -94,6 +154,7 @@ void main() {
         'Page Down',
         'Home',
         'End',
+        'Enter',
       ];
       final positions = <String, double>{
         for (final label in expectedOrder)
@@ -125,7 +186,9 @@ void main() {
       expect((escapeCenter.dy - endCenter.dy).abs(), lessThan(0.1));
     });
 
-    testWidgets('keeps the landscape End key fully on screen', (tester) async {
+    testWidgets('keeps the landscape Enter key fully on screen', (
+      tester,
+    ) async {
       await tester.binding.setSurfaceSize(const Size(844, 390));
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -138,9 +201,9 @@ void main() {
         ),
       );
 
-      final endRight = tester.getTopRight(find.byTooltip('End')).dx;
+      final enterRight = tester.getTopRight(find.byTooltip('Enter')).dx;
 
-      expect(endRight, lessThanOrEqualTo(844));
+      expect(enterRight, lessThanOrEqualTo(844.001));
     });
 
     testWidgets('modifier key toggles state on tap', (tester) async {
@@ -226,6 +289,217 @@ void main() {
 
       expect(find.text('|'), findsOneWidget);
       expect(find.text('/'), findsOneWidget);
+      expect(find.text('~'), findsOneWidget);
+    });
+
+    testWidgets('Tilde button sends a tilde character', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Tilde'));
+      await tester.pump();
+
+      expect(output, contains('~'));
+    });
+
+    testWidgets('Paste button invokes clipboard paste callback on tap', (
+      tester,
+    ) async {
+      var pasteCount = 0;
+      var keyPressedCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onKeyPressed: () => keyPressedCount++,
+              onPasteRequested: () async => pasteCount++,
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Paste'));
+      await tester.pump();
+
+      expect(pasteCount, 1);
+      expect(keyPressedCount, 1);
+    });
+
+    testWidgets('Paste long press opens an anchored drag-release menu', (
+      tester,
+    ) async {
+      var imagePasteCount = 0;
+      var filePasteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  onPasteImageRequested: () async => imagePasteCount++,
+                  onPasteFilesRequested: () async => filePasteCount++,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      expect(find.text('Paste Images'), findsOneWidget);
+      expect(find.text('Paste Files'), findsOneWidget);
+      expect(
+        tester.getCenter(find.text('Paste Images')).dy,
+        lessThan(pasteCenter.dy),
+      );
+
+      await gesture.moveTo(tester.getCenter(find.text('Paste Images')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(imagePasteCount, 1);
+      expect(filePasteCount, 0);
+      expect(find.text('Paste Images'), findsNothing);
+      expect(find.text('Paste Files'), findsNothing);
+    });
+
+    testWidgets('Paste long press releases over a top-level snippet', (
+      tester,
+    ) async {
+      KeyboardToolbarSnippet? selectedSnippet;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  snippets: const [
+                    KeyboardToolbarSnippet(
+                      id: 1,
+                      name: 'Top level',
+                      command: 'git status',
+                    ),
+                  ],
+                  onSnippetPasteRequested: (snippet) async {
+                    selectedSnippet = snippet;
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      expect(find.byIcon(Icons.chevron_left_rounded), findsOneWidget);
+
+      await gesture.moveTo(tester.getCenter(find.text('Snippets')));
+      await tester.pump();
+
+      expect(find.text('Top level'), findsOneWidget);
+
+      await gesture.moveTo(tester.getCenter(find.text('Top level')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(selectedSnippet?.id, 1);
+      expect(selectedSnippet?.command, 'git status');
+      expect(find.text('Top level'), findsNothing);
+    });
+
+    testWidgets('Paste long press releases over a folder snippet', (
+      tester,
+    ) async {
+      KeyboardToolbarSnippet? selectedSnippet;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  snippetFolders: const [
+                    KeyboardToolbarSnippetFolder(id: 7, name: 'Deploy'),
+                  ],
+                  snippets: const [
+                    KeyboardToolbarSnippet(
+                      id: 2,
+                      name: 'Restart API',
+                      command: 'systemctl restart api',
+                      folderId: 7,
+                    ),
+                  ],
+                  onSnippetPasteRequested: (snippet) async {
+                    selectedSnippet = snippet;
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      await gesture.moveTo(tester.getCenter(find.text('Snippets')));
+      await tester.pump();
+
+      expect(find.text('Deploy'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Deploy')).dx,
+        lessThan(tester.getTopLeft(find.text('Snippets')).dx),
+      );
+
+      await gesture.moveTo(tester.getCenter(find.text('Deploy')));
+      await tester.pump();
+
+      expect(find.text('Restart API'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Restart API')).dx,
+        lessThan(tester.getTopLeft(find.text('Snippets')).dx),
+      );
+      expect(
+        tester.getTopLeft(find.text('Restart API')).dy,
+        greaterThan(tester.getTopLeft(find.text('Deploy')).dy),
+      );
+
+      await gesture.moveTo(tester.getCenter(find.text('Restart API')));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(selectedSnippet?.id, 2);
+      expect(selectedSnippet?.command, 'systemctl restart api');
+      expect(find.text('Restart API'), findsNothing);
     });
 
     testWidgets('Enter button renders and triggers callback', (tester) async {

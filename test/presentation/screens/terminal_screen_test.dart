@@ -12,16 +12,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
-
 import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
+import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -29,6 +30,8 @@ import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
@@ -43,7 +46,44 @@ class _MockMonetizationService extends Mock implements MonetizationService {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
-class _MockTmuxService extends Mock implements TmuxService {}
+class _MockTmuxService extends Mock implements TmuxService {
+  @override
+  bool isExecChannelCoolingDown(SshSession session) => false;
+}
+
+class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
+  final toggleCalls = <bool>[];
+  bool _enabled = false;
+
+  @override
+  Future<void> toggle({required bool enable}) async {
+    _enabled = enable;
+    toggleCalls.add(enable);
+  }
+
+  @override
+  Future<bool> get enabled async => _enabled;
+}
+
+class _RecordingLocalNotificationService extends LocalNotificationService {
+  final shownNotificationIds = <int>[];
+  final clearedNotificationIds = <int>[];
+
+  @override
+  Future<void> showTmuxAlert({
+    required int notificationId,
+    required String title,
+    required String body,
+    required TmuxAlertNotificationPayload payload,
+  }) async {
+    shownNotificationIds.add(notificationId);
+  }
+
+  @override
+  Future<void> clearTmuxAlert(int notificationId) async {
+    clearedNotificationIds.add(notificationId);
+  }
+}
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier(this.session);
@@ -71,6 +111,21 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 
   @override
   Future<void> syncBackgroundStatus() async {}
+}
+
+class _TestThemeModeNotifier extends ThemeModeNotifier {
+  _TestThemeModeNotifier(this.mode);
+
+  ThemeMode mode;
+
+  @override
+  ThemeMode build() => mode;
+
+  @override
+  Future<void> setThemeMode(ThemeMode mode) async {
+    this.mode = mode;
+    state = mode;
+  }
 }
 
 Host _buildHost({
@@ -116,6 +171,7 @@ void main() {
     registerFallbackValue(<int>[]);
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
+    registerFallbackValue(monkey_themes.TerminalThemes.defaultDarkTheme);
   });
 
   group('terminal native selection helpers', () {
@@ -176,6 +232,180 @@ void main() {
 
       expect(didPaste, isTrue);
     });
+
+    test(
+      'preserves default copy action in the native overlay context menu',
+      () {
+        var didCopy = false;
+
+        final items = buildNativeSelectionContextMenuButtonItems(
+          defaultItems: [
+            ContextMenuButtonItem(
+              type: ContextMenuButtonType.copy,
+              onPressed: () => didCopy = true,
+            ),
+          ],
+          onPaste: () {},
+        );
+
+        final copyItem = items.singleWhere(
+          (item) => item.type == ContextMenuButtonType.copy,
+        );
+        copyItem.onPressed!();
+
+        expect(didCopy, isTrue);
+      },
+    );
+
+    test('runs terminal selection menu action before hiding toolbar', () {
+      String? selectedText = 'alpha';
+      String? copiedText;
+
+      final onPressed = buildTerminalSelectionContextMenuAction(
+        action: () => copiedText = selectedText,
+        hideToolbar: () => selectedText = null,
+      );
+
+      onPressed();
+
+      expect(copiedText, 'alpha');
+      expect(selectedText, isNull);
+    });
+
+    test('adds create snippet action after copy in terminal menu', () {
+      var didCreateSnippet = false;
+
+      final items = buildTerminalSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.paste,
+            onPressed: null,
+          ),
+        ],
+        onCopy: () {},
+        onLookUp: () {},
+        onSearchWeb: () {},
+        onShare: () {},
+        onCreateSnippet: () => didCreateSnippet = true,
+        onPaste: () {},
+      );
+
+      final copyIndex = items.indexWhere(
+        (item) => item.type == ContextMenuButtonType.copy,
+      );
+      final snippetIndex = items.indexWhere(
+        (item) => item.label == 'Create Snippet',
+      );
+
+      expect(snippetIndex, copyIndex + 1);
+      items[snippetIndex].onPressed!();
+      expect(didCreateSnippet, isTrue);
+    });
+
+    test('omits create snippet action without selected text', () {
+      final items = buildTerminalSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+        ],
+        onCopy: () {},
+        onLookUp: () {},
+        onSearchWeb: () {},
+        onShare: () {},
+        onCreateSnippet: null,
+        onPaste: () {},
+      );
+
+      expect(items.where((item) => item.label == 'Create Snippet'), isEmpty);
+    });
+
+    test('builds snippet name from selected terminal text', () {
+      final longLine = List.filled(80, 'a').join();
+      final truncatedLine = '${List.filled(57, 'a').join()}...';
+
+      expect(
+        buildSnippetNameFromTerminalSelection('\n  git status\n'),
+        'git status',
+      );
+      expect(
+        buildSnippetNameFromTerminalSelection('   \n'),
+        'Terminal selection',
+      );
+      expect(
+        buildSnippetNameFromTerminalSelection('$longLine\nsecond'),
+        truncatedLine,
+      );
+    });
+
+    test('hides terminal selection toolbar when action throws', () {
+      var didHideToolbar = false;
+
+      final onPressed = buildTerminalSelectionContextMenuAction(
+        action: () => throw StateError('copy failed'),
+        hideToolbar: () => didHideToolbar = true,
+      );
+
+      expect(onPressed, throwsStateError);
+      expect(didHideToolbar, isTrue);
+    });
+
+    test('does not apply empty remote clipboard text locally', () {
+      expect(
+        shouldApplyRemoteClipboardTextToLocal(
+          remoteText: '',
+          lastObservedRemoteText: null,
+          lastObservedLocalText: 'alpha',
+          lastAppliedRemoteText: null,
+          recentLocalClipboardText: null,
+          recentLocalClipboardAt: null,
+          now: DateTime(2026),
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not overwrite a recent local clipboard write', () {
+      final now = DateTime(2026);
+
+      expect(
+        shouldApplyRemoteClipboardTextToLocal(
+          remoteText: 'stale remote',
+          lastObservedRemoteText: 'older remote',
+          lastObservedLocalText: 'older local',
+          lastAppliedRemoteText: null,
+          recentLocalClipboardText: 'fresh local',
+          recentLocalClipboardAt: now.subtract(const Duration(seconds: 1)),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'applies changed non-empty remote clipboard after local protection',
+      () {
+        final now = DateTime(2026);
+
+        expect(
+          shouldApplyRemoteClipboardTextToLocal(
+            remoteText: 'fresh remote',
+            lastObservedRemoteText: 'older remote',
+            lastObservedLocalText: 'older local',
+            lastAppliedRemoteText: null,
+            recentLocalClipboardText: 'local',
+            recentLocalClipboardAt: now.subtract(const Duration(seconds: 10)),
+            now: now,
+          ),
+          isTrue,
+        );
+      },
+    );
   });
 
   group('MonkeyTerminalView system selection geometry', () {
@@ -431,6 +661,23 @@ void main() {
     late Completer<void> shellDoneCompleter;
     late StreamController<Uint8List> shellStdoutController;
     late List<List<int>> shellWrites;
+    late WakelockPlusPlatformInterface originalWakelockPlatform;
+    late _FakeWakelockPlusPlatform wakelockPlatform;
+
+    test('uses terminal theme brightness for keyboard appearance', () {
+      expect(
+        resolveTerminalKeyboardAppearance(
+          monkey_themes.TerminalThemes.defaultDarkTheme,
+        ),
+        Brightness.dark,
+      );
+      expect(
+        resolveTerminalKeyboardAppearance(
+          monkey_themes.TerminalThemes.githubLightDefault,
+        ),
+        Brightness.light,
+      );
+    });
 
     setUp(() {
       db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -442,6 +689,9 @@ void main() {
       shellDoneCompleter = Completer<void>();
       shellStdoutController = StreamController<Uint8List>.broadcast();
       shellWrites = <List<int>>[];
+      originalWakelockPlatform = wakelockPlusPlatformInstance;
+      wakelockPlatform = _FakeWakelockPlusPlatform();
+      wakelockPlusPlatformInstance = wakelockPlatform;
 
       when(
         () => monetizationService.currentState,
@@ -487,11 +737,15 @@ void main() {
     });
 
     tearDown(() async {
+      wakelockPlusPlatformInstance = originalWakelockPlatform;
       await shellStdoutController.close();
       await db.close();
     });
 
-    Future<void> pumpScreen(WidgetTester tester) async {
+    Future<void> pumpScreen(
+      WidgetTester tester, {
+      ThemeMode themeMode = ThemeMode.light,
+    }) async {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
@@ -501,12 +755,18 @@ void main() {
             monetizationStateProvider.overrideWith(
               (ref) => Stream.value(_proMonetizationState),
             ),
+            themeModeNotifierProvider.overrideWith(
+              () => _TestThemeModeNotifier(themeMode),
+            ),
             sharedClipboardProvider.overrideWith((ref) async => false),
             activeSessionsProvider.overrideWith(
               () => _TestActiveSessionsNotifier(session),
             ),
           ],
           child: MaterialApp(
+            theme: ThemeData.light(),
+            darkTheme: ThemeData.dark(),
+            themeMode: themeMode,
             home: TerminalScreen(
               hostId: host.id,
               connectionId: session.connectionId,
@@ -519,6 +779,369 @@ void main() {
       await tester.pump();
     }
 
+    void enablePlainTuiSignals() {
+      session.terminal!.write('\x1b[?1004h');
+    }
+
+    testWidgets('holds wake lock while an opted-in terminal is active', (
+      tester,
+    ) async {
+      await SettingsService(
+        db,
+      ).setBool(SettingKeys.terminalWakeLock, value: true);
+
+      await pumpScreen(tester);
+      await tester.pump();
+
+      expect(wakelockPlatform.toggleCalls, contains(true));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+
+      expect(wakelockPlatform.toggleCalls.last, false);
+    });
+
+    testWidgets('terminal overflow menu omits standalone copy action', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is PopupMenuItem<String> && widget.value == 'copy',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_file',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows jump host indicator for tunneled sessions', (
+      tester,
+    ) async {
+      session = SshSession(
+        connectionId: 7,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+          jumpHost: SshConnectionConfig(
+            hostname: 'bastion.example.com',
+            port: 22,
+            username: 'bastion',
+          ),
+        ),
+      )..getOrCreateTerminal();
+
+      await pumpScreen(tester);
+
+      expect(find.byTooltip('Connected through jump host'), findsOneWidget);
+      expect(find.byIcon(Icons.alt_route), findsOneWidget);
+    });
+
+    testWidgets(
+      'does not send synthetic terminal reports to an idle shell prompt',
+      (tester) async {
+        await pumpScreen(tester);
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isEmpty);
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'refreshes the active TUI when theme mode changes',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'refreshes an active TUI when assigning the first session theme',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        session.terminalTheme = null;
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'refreshes the active TUI when platform brightness changes',
+      (tester) async {
+        tester.platformDispatcher.platformBrightnessTestValue =
+            Brightness.light;
+        addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+        await pumpScreen(tester, themeMode: ThemeMode.system);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+        tester.binding.platformDispatcher.onPlatformBrightnessChanged?.call();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'refreshes the active TUI when terminal theme settings change',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(terminalThemeSettingsProvider.notifier)
+            .setLightTheme(monkey_themes.TerminalThemes.githubLightDefault.id);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isNot(contains('\x1b[?997;2n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.githubLightDefault.id,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'reasserts the current theme when reopening an existing active TUI',
+      (tester) async {
+        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        await pumpScreen(tester);
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'reasserts the current theme when an active TUI resumes from background',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'build-path sets session.terminalTheme on initial build',
+      (tester) async {
+        await pumpScreen(tester);
+
+        // After the initial build sequence the session must have a theme.
+        expect(session.terminalTheme, isNotNull);
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'build-path does not re-trigger TUI refresh on rebuild with unchanged '
+      'effective theme (idempotency guard)',
+      (tester) async {
+        await pumpScreen(tester);
+        // Enable plain-TUI signals so that a "first theme assigned to session"
+        // event would cause focus-loss/focus-gain writes to the shell if the
+        // theme were re-applied.
+        enablePlainTuiSignals();
+
+        // Manually clear the session theme to simulate the state that would
+        // cause a spurious TUI refresh if the build-path guard were absent:
+        // session.terminalTheme == null means _shouldRefreshFirstTheme == true.
+        session.terminalTheme = null;
+        shellWrites.clear();
+
+        // Trigger a rebuild without any theme change by switching the terminal
+        // into the alternate screen buffer, which causes _onTerminalStateChanged
+        // to call setState.
+        session.terminal!.write('\x1b[?1049h');
+        await tester.pump();
+
+        final writtenText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+
+        // The build-path guard (_lastBuildAppliedTheme) must prevent
+        // _applyTerminalThemeToSession from being called again — no TUI
+        // refresh writes and the session theme should remain null.
+        expect(writtenText, isEmpty);
+        expect(session.terminalTheme, isNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'build-path re-applies theme after effective theme changes between '
+      'rebuilds (guard does not suppress new theme)',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        // Simulate the session theme being cleared (e.g. after a fresh
+        // connection).
+        session.terminalTheme = null;
+        shellWrites.clear();
+
+        // Change the effective theme — _lastBuildAppliedTheme is now stale.
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        // The new dark theme must have been applied to the session.
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
     Future<void> pumpTmuxScreen(
       WidgetTester tester,
       _MockTmuxService tmuxService,
@@ -530,8 +1153,8 @@ void main() {
       ];
 
       when(
-        () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
-      ).thenAnswer((_) async => true);
+        () => tmuxService.foregroundSessionNameOrThrow(session),
+      ).thenAnswer((_) async => tmuxSessionName);
       when(
         () => tmuxService.listWindows(session, tmuxSessionName),
       ).thenAnswer((_) async => windows);
@@ -543,6 +1166,14 @@ void main() {
       ).thenAnswer((_) async => const <AgentLaunchTool>{});
       when(
         () => tmuxService.prefetchInstalledAgentTools(session),
+      ).thenAnswer((_) async {});
+      when(
+        () => tmuxService.refreshTerminalTheme(
+          session,
+          tmuxSessionName,
+          any(),
+          extraFlags: any(named: 'extraFlags'),
+        ),
       ).thenAnswer((_) async {});
 
       await tester.pumpWidget(
@@ -576,7 +1207,7 @@ void main() {
     }
 
     testWidgets(
-      'mobile terminal paints cursor from the text input focus node',
+      'mobile terminal paints cursor from the terminal input focus node',
       (tester) async {
         await pumpScreen(tester);
 
@@ -584,8 +1215,8 @@ void main() {
           find.byType(MonkeyTerminalView),
         );
 
-        expect(terminalView.focusNode, isNull);
         expect(terminalView.cursorFocusNode, isNotNull);
+        expect(terminalView.focusNode, same(terminalView.cursorFocusNode));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
@@ -620,6 +1251,206 @@ void main() {
     });
 
     testWidgets(
+      'tmux alert notifications clear legacy index IDs when stable IDs exist',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final notificationService = _RecordingLocalNotificationService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        const tmuxSessionName = 'work';
+        const windowIndex = 1;
+        const windowId = '@9';
+        const indexOnlyWindowIndex = 2;
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@8', name: 'shell', isActive: true),
+          TmuxWindow(
+            index: windowIndex,
+            id: windowId,
+            name: 'agent',
+            isActive: false,
+          ),
+          TmuxWindow(
+            index: indexOnlyWindowIndex,
+            name: 'logs',
+            isActive: false,
+          ),
+        ];
+        final legacyNotificationId =
+            Object.hash(
+              session.hostId,
+              session.connectionId,
+              tmuxSessionName,
+              windowIndex,
+            ) &
+            0x7fffffff;
+        final stableNotificationId =
+            Object.hash(
+              session.hostId,
+              session.connectionId,
+              tmuxSessionName,
+              windowId,
+            ) &
+            0x7fffffff;
+        final stringFallbackNotificationId =
+            Object.hash(
+              session.hostId,
+              session.connectionId,
+              tmuxSessionName,
+              'index:$windowIndex',
+            ) &
+            0x7fffffff;
+        final indexOnlyNotificationId =
+            Object.hash(
+              session.hostId,
+              session.connectionId,
+              tmuxSessionName,
+              indexOnlyWindowIndex,
+            ) &
+            0x7fffffff;
+        final indexOnlyStringFallbackNotificationId =
+            Object.hash(
+              session.hostId,
+              session.connectionId,
+              tmuxSessionName,
+              'index:$indexOnlyWindowIndex',
+            ) &
+            0x7fffffff;
+
+        addTearDown(windowEvents.close);
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        when(
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              localNotificationServiceProvider.overrideWithValue(
+                notificationService,
+              ),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(notificationService.shownNotificationIds, isEmpty);
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: windowIndex,
+              id: windowId,
+              name: 'agent',
+              isActive: false,
+              flags: '!',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(notificationService.shownNotificationIds, [
+          stableNotificationId,
+        ]);
+        expect(notificationService.clearedNotificationIds, [
+          legacyNotificationId,
+          stringFallbackNotificationId,
+        ]);
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: indexOnlyWindowIndex,
+              name: 'logs',
+              isActive: false,
+              flags: '!',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(notificationService.shownNotificationIds, [
+          stableNotificationId,
+          indexOnlyNotificationId,
+        ]);
+        expect(notificationService.clearedNotificationIds, [
+          legacyNotificationId,
+          stringFallbackNotificationId,
+          indexOnlyStringFallbackNotificationId,
+        ]);
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: windowIndex,
+              id: windowId,
+              name: 'agent',
+              isActive: true,
+              flags: '!',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(
+          notificationService.clearedNotificationIds
+              .where((id) => id == stableNotificationId)
+              .length,
+          1,
+        );
+        expect(
+          notificationService.clearedNotificationIds
+              .where((id) => id == legacyNotificationId)
+              .length,
+          2,
+        );
+        expect(
+          notificationService.clearedNotificationIds
+              .where((id) => id == stringFallbackNotificationId)
+              .length,
+          2,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'keeps a primed tmux bar visible after transient detection failure',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -639,15 +1470,15 @@ void main() {
           ),
         );
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
-        var hasSessionCalls = 0;
+        var foregroundSessionCalls = 0;
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async {
-          hasSessionCalls += 1;
-          if (hasSessionCalls == 1) {
+          foregroundSessionCalls += 1;
+          if (foregroundSessionCalls == 1) {
             throw StateError('exec channel temporarily unavailable');
           }
-          return true;
+          return tmuxSessionName;
         });
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
@@ -657,6 +1488,14 @@ void main() {
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
@@ -691,13 +1530,16 @@ void main() {
 
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         expect(find.textContaining(tmuxSessionName), findsOneWidget);
-        expect(hasSessionCalls, greaterThanOrEqualTo(2));
+        expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
-      'clears a primed tmux bar after later clean inactive detection',
+      'does not show a configured tmux bar before foreground confirmation',
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'work';
@@ -716,15 +1558,15 @@ void main() {
           ),
         );
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
-        var hasSessionCalls = 0;
+        var foregroundSessionCalls = 0;
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async {
-          hasSessionCalls += 1;
-          if (hasSessionCalls == 1) {
+          foregroundSessionCalls += 1;
+          if (foregroundSessionCalls == 1) {
             throw StateError('exec channel temporarily unavailable');
           }
-          return false;
+          return null;
         });
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
@@ -734,6 +1576,14 @@ void main() {
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
@@ -764,29 +1614,209 @@ void main() {
 
         await tester.pump();
         await tester.pump();
-        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
 
         await tester.pump(const Duration(seconds: 3));
 
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
-        expect(hasSessionCalls, greaterThanOrEqualTo(2));
+        expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
     testWidgets(
-      'initial tmux target selects the alerted window and can start expanded',
+      'clears an active tmux bar after the foreground terminal detaches',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+          TmuxWindow(index: 1, name: 'agent', isActive: false),
+        ];
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        var foregroundSessionCalls = 0;
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async {
+          foregroundSessionCalls += 1;
+          return foregroundSessionCalls == 1 ? tmuxSessionName : null;
+        });
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+
+        await tester.pump(const Duration(seconds: 5));
+        await tester.pump();
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
+        expect(foregroundSessionCalls, 2);
+      },
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
+    );
+
+    testWidgets(
+      'initial tmux target selects stable window ID and can start expanded',
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'alerts';
+        const staleTargetWindowIndex = 2;
         const targetWindowIndex = 3;
+        const targetWindowId = '@9';
         final windows = <TmuxWindow>[
-          const TmuxWindow(index: 1, name: 'shell', isActive: true),
-          const TmuxWindow(index: 3, name: 'agent', isActive: false),
+          const TmuxWindow(index: 1, id: '@8', name: 'shell', isActive: true),
+          const TmuxWindow(
+            index: targetWindowIndex,
+            id: targetWindowId,
+            name: 'agent',
+            isActive: false,
+          ),
         ];
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.selectWindow(
+            session,
+            tmuxSessionName,
+            targetWindowIndex,
+            windowId: targetWindowId,
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () =>
+              tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+                initialTmuxWindowIndex: staleTargetWindowIndex,
+                initialTmuxWindowId: targetWindowId,
+                initiallyExpandTmuxWindows: true,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        verify(
+          () => tmuxService.selectWindow(
+            session,
+            tmuxSessionName,
+            targetWindowIndex,
+            windowId: targetWindowId,
+          ),
+        ).called(1);
+        expect(find.text('shell'), findsOneWidget);
+        expect(find.text('agent'), findsOneWidget);
+      },
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
+    );
+
+    testWidgets(
+      'does not type a tmux reattach command when foreground check fails',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const targetWindowIndex = 1;
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+          TmuxWindow(index: 1, name: 'agent', isActive: false),
+        ];
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
         ).thenAnswer((_) async => windows);
@@ -798,13 +1828,26 @@ void main() {
           ),
         ).thenAnswer((_) async {});
         when(
-          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
-        ).thenAnswer((_) async => true);
+          () =>
+              tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
+        ).thenThrow(
+          const TmuxCommandException(
+            'SSH exec channel closed before tmux command completed',
+          ),
+        );
         when(
           () => tmuxService.watchWindowChanges(session, tmuxSessionName),
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
@@ -830,7 +1873,6 @@ void main() {
                 connectionId: session.connectionId,
                 initialTmuxSessionName: tmuxSessionName,
                 initialTmuxWindowIndex: targetWindowIndex,
-                initiallyExpandTmuxWindows: true,
               ),
             ),
           ),
@@ -847,8 +1889,13 @@ void main() {
             targetWindowIndex,
           ),
         ).called(1);
-        expect(find.text('shell'), findsOneWidget);
-        expect(find.text('agent'), findsOneWidget);
+        verify(
+          () =>
+              tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
+        ).called(1);
+        final writtenText = shellWrites.map(utf8.decode).join();
+        expect(writtenText, isNot(contains('tmux ')));
+        expect(writtenText, isNot(contains('new-session')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
@@ -860,9 +1907,15 @@ void main() {
         const tmuxSessionName = 'alerts';
         const tmuxExtraFlags = '-S /tmp/alerts.sock';
         const targetWindowIndex = 3;
+        const targetWindowId = '@9';
         final windows = <TmuxWindow>[
-          const TmuxWindow(index: 1, name: 'shell', isActive: true),
-          const TmuxWindow(index: 3, name: 'agent', isActive: false),
+          const TmuxWindow(index: 1, id: '@8', name: 'shell', isActive: true),
+          const TmuxWindow(
+            index: targetWindowIndex,
+            id: targetWindowId,
+            name: 'agent',
+            isActive: false,
+          ),
         ];
         final secondShellOpen = Completer<void>();
         var shellOpenCount = 0;
@@ -880,6 +1933,12 @@ void main() {
           tmuxSessionName: tmuxSessionName,
           tmuxExtraFlags: tmuxExtraFlags,
         );
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: tmuxExtraFlags,
+          ),
+        ).thenAnswer((_) async => tmuxSessionName);
         when(
           () => tmuxService.hasSessionOrThrow(
             session,
@@ -899,11 +1958,12 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            windowId: targetWindowId,
             extraFlags: tmuxExtraFlags,
           ),
         ).thenAnswer((_) async {});
         when(
-          () => tmuxService.hasForegroundClient(
+          () => tmuxService.hasForegroundClientOrThrow(
             session,
             tmuxSessionName,
             extraFlags: tmuxExtraFlags,
@@ -918,6 +1978,14 @@ void main() {
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
         session.terminal!.write('\u001b]133;C\u0007');
         expect(session.shellStatus, TerminalShellStatus.runningCommand);
@@ -945,6 +2013,7 @@ void main() {
                 connectionId: session.connectionId,
                 initialTmuxSessionName: tmuxSessionName,
                 initialTmuxWindowIndex: targetWindowIndex,
+                initialTmuxWindowId: targetWindowId,
                 initialTmuxWindowRequiresVisibleSession: true,
               ),
             ),
@@ -964,20 +2033,20 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            windowId: targetWindowId,
             extraFlags: tmuxExtraFlags,
           ),
         ).called(1);
         verify(
-          () => tmuxService.hasForegroundClient(
+          () => tmuxService.hasForegroundClientOrThrow(
             session,
             tmuxSessionName,
             extraFlags: tmuxExtraFlags,
           ),
         ).called(1);
         verify(
-          () => tmuxService.hasSessionOrThrow(
+          () => tmuxService.foregroundSessionNameOrThrow(
             session,
-            tmuxSessionName,
             extraFlags: tmuxExtraFlags,
           ),
         ).called(1);
@@ -998,7 +2067,10 @@ void main() {
         expect(shellWrites.map(utf8.decode).join(), contains(tmuxSessionName));
         expect(shellOpenCount, greaterThanOrEqualTo(2));
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
@@ -1143,6 +2215,29 @@ void main() {
         );
         expect(writtenShellText, contains('codex --yolo'));
         expect(writtenShellText, isNot(contains('--approval-mode never')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'skips Pro auto-connect gate when the host has no auto-connect workflow',
+      (tester) async {
+        when(
+          () => monetizationService.canUseFeature(any()),
+        ).thenAnswer((_) async => false);
+
+        await pumpScreen(tester);
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(
+          find.text('This auto-connect workflow needs MonkeySSH Pro to run.'),
+          findsNothing,
+        );
+        verifyNever(
+          () => monetizationService.canUseFeature(
+            MonetizationFeature.autoConnectAutomation,
+          ),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
@@ -1901,7 +2996,7 @@ void main() {
     );
 
     testWidgets(
-      'prompt path underline tracks scroll without dropping a frame',
+      'prompt path underline stays inline while scrolling',
       (tester) async {
         await pumpScreen(tester);
 
@@ -1913,17 +3008,11 @@ void main() {
         session.terminal!.write(output);
         await tester.pumpAndSettle();
 
-        final underlineFinder = find.byWidgetPredicate((widget) {
-          final key = widget.key;
-          return key is ValueKey<String> &&
-              key.value.startsWith('terminal-path-underline:');
-        });
-
-        expect(underlineFinder, findsOneWidget);
-        final initialTop = tester.getTopLeft(underlineFinder).dy;
         final terminalView = tester.widget<MonkeyTerminalView>(
           find.byType(MonkeyTerminalView),
         );
+        expect(terminalView.inlineUnderlines, hasLength(1));
+        final initialUnderline = terminalView.inlineUnderlines.single;
         final scrollController = terminalView.scrollController;
         final lineHeight = tester
             .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
@@ -1939,8 +3028,10 @@ void main() {
         );
         await tester.pump();
 
-        expect(underlineFinder, findsOneWidget);
-        expect(tester.getTopLeft(underlineFinder).dy, isNot(initialTop));
+        final scrolledTerminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(scrolledTerminalView.inlineUnderlines, [initialUnderline]);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1971,21 +3062,75 @@ void main() {
         session.terminal!.write('git add $relativePath');
         await tester.pump();
 
-        final underlineFinder = find.byWidgetPredicate((widget) {
-          final key = widget.key;
-          return key is ValueKey<String> &&
-              key.value.contains('terminal-path-underline:') &&
-              key.value.contains(relativePath);
-        });
-
-        expect(underlineFinder, findsNothing);
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .inlineUnderlines,
+          isEmpty,
+        );
 
         statCompleter.complete(
           SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
         );
         await tester.pumpAndSettle();
 
-        expect(underlineFinder, findsOneWidget);
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .inlineUnderlines,
+          hasLength(1),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'background path verification batches relative path stats',
+      (tester) async {
+        const firstPath = 'lib/presentation/screens/terminal_screen.dart';
+        const secondPath = 'lib/domain/services/tmux_service.dart';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+        final firstStatStarted = Completer<void>();
+        final firstStatCompleter = Completer<SftpFileAttrs>();
+        var secondStatCalls = 0;
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(() => sftp.stat('$workingDirectory/$firstPath')).thenAnswer((_) {
+          if (!firstStatStarted.isCompleted) {
+            firstStatStarted.complete();
+          }
+          return firstStatCompleter.future;
+        });
+        when(() => sftp.stat('$workingDirectory/$secondPath')).thenAnswer((_) {
+          secondStatCalls++;
+          return Future.value(SftpFileAttrs());
+        });
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('git add $firstPath $secondPath');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await firstStatStarted.future.timeout(const Duration(seconds: 1));
+
+        expect(secondStatCalls, 0);
+
+        firstStatCompleter.complete(SftpFileAttrs());
+        await tester.pumpAndSettle();
+
+        expect(secondStatCalls, 1);
+        verify(() => sshClient.sftp()).called(1);
+        verify(() => sftp.stat('$workingDirectory/$firstPath')).called(1);
+        verify(() => sftp.stat('$workingDirectory/$secondPath')).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -2051,16 +3196,24 @@ void main() {
         session.terminal!.write('open $remotePath');
         await tester.pumpAndSettle();
 
-        final underlineFinder = find.byWidgetPredicate((widget) {
-          final key = widget.key;
-          return key is ValueKey<String> &&
-              key.value.contains('terminal-path-underline:') &&
-              key.value.contains(remotePath);
-        });
-        expect(underlineFinder, findsOneWidget);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.inlineUnderlines, hasLength(1));
         expect(find.byType(SelectionArea), findsOneWidget);
 
-        await tester.tapAt(tester.getCenter(underlineFinder));
+        final terminalState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final underline = terminalView.inlineUnderlines.single;
+        final tapPosition = terminalState.renderTerminal.localToGlobal(
+          terminalState.renderTerminal.getOffset(
+                CellOffset(underline.startColumn, underline.row),
+              ) +
+              terminalState.renderTerminal.cellSize.center(Offset.zero),
+        );
+
+        await tester.tapAt(tapPosition);
         await tester.pumpAndSettle();
 
         expect(openedPaths, [remotePath]);

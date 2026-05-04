@@ -10,6 +10,7 @@ void main() {
         connectionId: 34,
         tmuxSessionName: 'work',
         windowIndex: 5,
+        windowId: '@9',
       );
 
       expect(TmuxAlertNotificationPayload.decode(payload.encode()), payload);
@@ -25,25 +26,31 @@ void main() {
         ),
         isNull,
       );
+      expect(
+        TmuxAlertNotificationPayload.decode(
+          '{"type":"tmux-alert","version":1,"hostId":12,'
+          '"connectionId":34,"tmuxSessionName":"work","windowIndex":5,'
+          '"windowId":"not-a-window-id"}',
+        ),
+        isNull,
+      );
     });
   });
 
-  test(
-    'buildTmuxAlertTerminalLocation targets the source connection window',
-    () {
-      final location = buildTmuxAlertTerminalLocation(
-        const TmuxAlertNotificationPayload(
-          hostId: 12,
-          connectionId: 34,
-          tmuxSessionName: 'project main',
-          windowIndex: 5,
-        ),
-      );
+  test('buildTmuxAlertTerminalLocation targets the source connection window', () {
+    final location = buildTmuxAlertTerminalLocation(
+      const TmuxAlertNotificationPayload(
+        hostId: 12,
+        connectionId: 34,
+        tmuxSessionName: 'project main',
+        windowIndex: 5,
+        windowId: '@9',
+      ),
+    );
 
-      expect(
-        location,
-        '/terminal/12?connectionId=34&tmuxSession=project+main&tmuxWindow=5',
-      );
-    },
-  );
+    expect(
+      location,
+      '/terminal/12?connectionId=34&tmuxSession=project+main&tmuxWindow=5&tmuxWindowId=%409',
+    );
+  });
 }

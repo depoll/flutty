@@ -92,6 +92,7 @@ class TmuxWindow {
     required this.index,
     required this.name,
     required this.isActive,
+    this.id,
     this.currentCommand,
     this.currentPath,
     this.flags,
@@ -107,7 +108,8 @@ class TmuxWindow {
   /// Expected primary format (from `tmux list-windows -F`) is Unit
   /// Separator-delimited:
   /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
-  /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool`
+  /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool<US>`
+  /// `window_id`
   ///
   /// Legacy pipe-delimited snapshots are still accepted for older tests and
   /// stale control-mode messages.
@@ -124,6 +126,9 @@ class TmuxWindow {
       index: int.tryParse(fields[0]) ?? 0,
       name: fields[1],
       isActive: fields[2] == '1',
+      id: fields.length > 10 && isValidTmuxWindowId(fields[10])
+          ? fields[10]
+          : null,
       currentCommand: fields.length > 3 ? _nonEmpty(fields[3]) : null,
       currentPath: fields.length > 4 ? _nonEmpty(fields[4]) : null,
       flags: fields.length > 5 ? _nonEmpty(fields[5]) : null,
@@ -138,6 +143,9 @@ class TmuxWindow {
 
   /// The tmux-reported window index within the session.
   final int index;
+
+  /// The stable tmux window ID (for example `@7`), when reported.
+  final String? id;
 
   /// The window name (often set by the running program or user).
   final String name;
@@ -203,6 +211,7 @@ class TmuxWindow {
 
   /// Returns a copy of this window with selectively overridden fields.
   TmuxWindow copyWith({
+    String? id,
     bool? isActive,
     String? name,
     String? currentCommand,
@@ -214,6 +223,7 @@ class TmuxWindow {
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
     index: index,
+    id: id ?? this.id,
     name: name ?? this.name,
     isActive: isActive ?? this.isActive,
     currentCommand: currentCommand ?? this.currentCommand,
@@ -397,7 +407,7 @@ class TmuxWindow {
 
   @override
   String toString() =>
-      'TmuxWindow(index: $index, name: $name, active: $isActive, '
+      'TmuxWindow(index: $index, id: $id, name: $name, active: $isActive, '
       'command: $currentCommand, title: $paneTitle)';
 
   @override
@@ -405,6 +415,7 @@ class TmuxWindow {
       identical(this, other) ||
       other is TmuxWindow &&
           index == other.index &&
+          id == other.id &&
           name == other.name &&
           isActive == other.isActive &&
           currentCommand == other.currentCommand &&
@@ -419,6 +430,7 @@ class TmuxWindow {
   @override
   int get hashCode => Object.hash(
     index,
+    id,
     name,
     isActive,
     currentCommand,
@@ -464,13 +476,14 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
     case TmuxWindowSnapshotEvent(window: final window):
       final updated = windows
           .map(
-            (existing) => window.isActive && existing.index != window.index
+            (existing) =>
+                window.isActive && !_isSameTmuxWindow(existing, window)
                 ? existing.copyWith(isActive: false)
                 : existing,
           )
           .toList(growable: true);
       final existingIndex = updated.indexWhere(
-        (existing) => existing.index == window.index,
+        (existing) => _isSameTmuxWindow(existing, window),
       );
       if (existingIndex == -1) {
         updated.add(window);
@@ -480,6 +493,14 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
       updated.sort((a, b) => a.index.compareTo(b.index));
       return updated;
   }
+}
+
+bool _isSameTmuxWindow(TmuxWindow existing, TmuxWindow updated) {
+  final updatedId = updated.id;
+  if (updatedId != null) {
+    return existing.id == updatedId;
+  }
+  return existing.index == updated.index;
 }
 
 /// Resolves the tmux window list after a full reload query.
@@ -622,6 +643,9 @@ const _monthAbbreviations = <String>[
   'Nov',
   'Dec',
 ];
+
+/// Returns whether [value] is a stable tmux window ID such as `@7`.
+bool isValidTmuxWindowId(String value) => RegExp(r'^@\d+$').hasMatch(value);
 
 String? _nonEmpty(String value) {
   final trimmed = value.trim();
@@ -849,6 +873,9 @@ String? _windowContextLabelFromPath(String? value) {
 /// tmux command fragment that disables tmux's built-in status bar.
 const tmuxDisableStatusBarCommand = r'\; set status off';
 
+/// tmux command fragment that lets focus-aware TUIs receive focus events.
+const tmuxEnableFocusEventsCommand = r'\; set-option -g focus-events on';
+
 /// Builds a `tmux new-session` command from structured configuration.
 ///
 /// Always uses `-A` (attach-or-create) so reconnecting reuses the session.
@@ -864,6 +891,7 @@ String buildTmuxCommand({
       "-c '${workingDirectory.trim().replaceAll("'", "'\"'\"'")}'",
     // Extra flags are intentionally raw user input; never populate from imports.
     if (extraFlags != null && extraFlags.trim().isNotEmpty) extraFlags.trim(),
+    tmuxEnableFocusEventsCommand,
   ];
   return parts.join(' ');
 }

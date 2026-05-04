@@ -7,11 +7,17 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(Uint8List(0));
+  });
+
   group('control mode command builders', () {
     test(
       'attach command starts tmux in control mode with safe client flags',
@@ -19,7 +25,7 @@ void main() {
         expect(
           buildTmuxControlModeAttachCommand('dev\'s session'),
           'tmux -CC attach-session -f '
-          'read-only,ignore-size,no-output,wait-exit '
+          'ignore-size,no-output,wait-exit '
           "-t 'dev'\"'\"'s session'",
         );
       },
@@ -34,7 +40,7 @@ void main() {
             extraFlags: '-x 160 -S /tmp/tmux-socket -n editor',
           ),
           "tmux -S '/tmp/tmux-socket' -CC attach-session -f "
-          'read-only,ignore-size,no-output,wait-exit '
+          'ignore-size,no-output,wait-exit '
           "-t 'main'",
         );
       },
@@ -87,10 +93,191 @@ void main() {
           '#{pane_current_command}$sep#{pane_current_path}$sep'
           '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
           '#{pane_start_command}$sep'
-          "#{@flutty_agent_tool}'",
+          '#{@flutty_agent_tool}$sep'
+          "#{window_id}'",
         );
       },
     );
+
+    test('refresh command redraws non-control clients for a session', () {
+      expect(
+        buildTmuxRefreshForegroundClientsCommand("dev's session"),
+        r'SEP=$(printf "\037"); '
+        'tmux -u list-clients -t '
+        "'dev'\"'\"'s session' -F "
+        r'"#{client_control_mode}${SEP}#{client_name}" '
+        '2>/dev/null | '
+        r'while IFS="$SEP" read -r control client; do '
+        r'[ "$control" = 0 ] || continue; '
+        r'[ -n "$client" ] || continue; '
+        r'tmux -u refresh-client -t "$client" 2>/dev/null || true; '
+        'done',
+      );
+    });
+
+    test('refresh command reuses tmux client flags', () {
+      expect(
+        buildTmuxRefreshForegroundClientsCommand(
+          'main',
+          extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
+        ),
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client"',
+        ),
+      );
+    });
+
+    test('theme refresh command updates pane palette before redraw', () {
+      final command = buildTmuxRefreshTerminalThemeCommand(
+        "dev's session",
+        TerminalThemes.dracula,
+      );
+
+      expect(
+        command,
+        contains("tmux -u list-panes -s -t 'dev'\"'\"'s session'"),
+      );
+      expect(command, contains(r'set-option -p -t "$pane"'));
+      expect(
+        RegExp(r'tmux -u set-option -p -t "\$pane"').allMatches(command),
+        hasLength(1),
+      );
+      expect(command, contains(r'\; set-option -p -t "$pane"'));
+      expect(command, contains("'pane-colours[5]' '#ff79c6'"));
+      expect(command, contains("'pane-colours[6]' '#8be9fd'"));
+      expect(
+        command,
+        contains(
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_title}',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title',
+        ),
+      );
+      expect(command, contains(r'[ "$active" = 1 ]'));
+      expect(command, isNot(contains('window_active')));
+      expect(command, contains(r'[ "$alternate" = 1 ]'));
+      expect(command, contains(r'[ "$foreground_tui" = 1 ]'));
+      expect(command, contains(r'case "${pane_command##*/}" in'));
+      expect(command, contains("''|sh|bash|zsh|fish"));
+      expect(command, contains('flutty_theme_refresh_pane'));
+      expect(command, contains(') & ;;'));
+      expect(command, contains('done; wait; };'));
+      expect(command, contains('codex|codex-*)'));
+      expect(command, contains('opencode|opencode-*)'));
+      expect(command, contains(r'case "$pane_title" in'));
+      expect(command, contains('*OpenCode*|*opencode*)'));
+      expect(command, contains(r'send-keys -t "$pane" -H'));
+      expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
+      expect(
+        command,
+        contains(
+          buildTerminalThemeOscResponse(
+            theme: TerminalThemes.dracula,
+            code: '10',
+            args: const ['?'],
+          ),
+        ),
+      );
+      expect(
+        command,
+        contains(
+          buildTerminalThemeOscResponse(
+            theme: TerminalThemes.dracula,
+            code: '11',
+            args: const ['?'],
+          ),
+        ),
+      );
+      expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
+      expect(command, contains('1b 5b 4f'));
+      expect(command, contains('1b 5b 49'));
+      final codexBranchStart = command.indexOf('codex|codex-*)');
+      final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
+      expect(codexBranchStart, isNonNegative);
+      expect(opencodeBranchStart, greaterThan(codexBranchStart));
+      expect(
+        command.substring(codexBranchStart, opencodeBranchStart),
+        isNot(contains('1b 5b 4f')),
+      );
+      expect(
+        command.indexOf('1b 5b 4f', opencodeBranchStart),
+        greaterThan(opencodeBranchStart),
+      );
+      expect(command, contains('sleep 0.25'));
+      expect(command, contains('sleep 0.08'));
+      expect(
+        command.indexOf('1b 5b 49'),
+        lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
+      );
+      expect(
+        command.indexOf('1b 5b 3f 39 39 37 3b 31 6e'),
+        lessThan(command.indexOf('1b 5d 31 30 3b')),
+      );
+      expect(command, contains('1b 5d 31 30 3b'));
+      expect(command, contains('1b 5d 31 31 3b'));
+      expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(9));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(9));
+      expect(
+        command,
+        contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
+      );
+    });
+
+    test('theme refresh command reuses tmux client flags', () {
+      final command = buildTmuxRefreshTerminalThemeCommand(
+        'main',
+        TerminalThemes.githubLightDefault,
+        extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
+      );
+
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          'list-panes',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r"""set-option -p -t "$pane" 'pane-colours[0]'""",
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client" -r "$pane":',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'send-keys -t "$pane" -H',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client"',
+        ),
+      );
+    });
 
     test('detectInstalledAgentTools caches empty results', () async {
       final client = _MockSshClient();
@@ -127,6 +314,74 @@ void main() {
 
       expect(tools, {AgentLaunchTool.geminiCli});
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
+
+    test('isTmuxActiveOrThrow ignores unrelated tmux clients', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 22);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: _doneMarker()),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final active = await service.isTmuxActiveOrThrow(session);
+
+      expect(active, isFalse);
+      final foregroundCommand =
+          verify(
+                () => client.execute(
+                  captureAny(that: contains('list-clients')),
+                  pty: any(named: 'pty'),
+                ),
+              ).captured.single
+              as String;
+      expect(foregroundCommand, contains('#{client_pid}'));
+      expect(foregroundCommand, contains('#{client_control_mode}'));
+      expect(foregroundCommand, contains('connection_pid='));
+      expect(foregroundCommand, isNot(contains('exit 0')));
+      expect(foregroundCommand, contains('break 2'));
+      expect(foregroundCommand, isNot(contains('#{client_tty}')));
+      verifyNever(
+        () => client.execute(
+          any(that: contains('list-sessions')),
+          pty: any(named: 'pty'),
+        ),
+      );
+    });
+
+    test('currentSessionName returns the foreground tmux client', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 23);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final sessionName = await service.currentSessionName(session);
+
+      expect(sessionName, 'work');
+      verify(
+        () => client.execute(
+          any(that: contains('list-clients')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verifyNever(
+        () => client.execute(
+          any(that: contains('display-message')),
+          pty: any(named: 'pty'),
+        ),
+      );
     });
 
     test(
@@ -182,6 +437,39 @@ void main() {
       },
     );
 
+    test('hasSessionOrThrow dedupes concurrent session probes', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 33);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final results = await Future.wait([
+        service.hasSessionOrThrow(session, 'work'),
+        service.hasSessionOrThrow(session, 'work'),
+      ]);
+
+      expect(results, [isTrue, isTrue]);
+      verify(
+        () => client.execute(
+          any(that: contains('command -v tmux')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verify(
+        () => client.execute(
+          any(that: contains('tmux -u has-session')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+    });
+
     test(
       'listWindows serves the last cached snapshot when channels are exhausted',
       () async {
@@ -201,6 +489,7 @@ void main() {
           '100',
           'bash',
           '',
+          '@4',
         ].join(sep);
         final execSession = _buildOpenExecSession(
           stdout: '$windowLine\n${_doneMarker()}',
@@ -224,6 +513,7 @@ void main() {
         expect(initial, hasLength(1));
         expect(cached, initial);
         expect(cached.single.name, 'shell');
+        expect(cached.single.id, '@4');
         verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
       },
     );
@@ -245,6 +535,7 @@ void main() {
         '1712930000',
         'sleep 30',
         'gemini',
+        '@12',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
@@ -259,6 +550,7 @@ void main() {
       expect(snapshot.window.paneTitle, 'custom-title');
       expect(snapshot.window.paneStartCommand, 'sleep 30');
       expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
+      expect(snapshot.window.id, '@12');
     });
 
     test('normalizes the wrapped first control-mode line', () {
@@ -273,6 +565,7 @@ void main() {
         '1712930000',
         'sleep 30',
         '',
+        '@3',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '\u001bP1000p'
@@ -284,6 +577,7 @@ void main() {
       expect(event, isA<TmuxWindowSnapshotEvent>());
       final snapshot = event! as TmuxWindowSnapshotEvent;
       expect(snapshot.window.displayTitle, 'wrapped-title');
+      expect(snapshot.window.id, '@3');
     });
 
     test('returns null for other subscriptions', () {
@@ -489,6 +783,40 @@ void main() {
       expect(hasForegroundTmuxClient('\n0\n'), isTrue);
       expect(hasForegroundTmuxClient(' \n \n'), isFalse);
     });
+
+    test(
+      'hasForegroundClient requires the primary terminal session to match',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 24);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: 'other\n${_doneMarker()}'),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final hasForegroundClient = await service.hasForegroundClient(
+          session,
+          'work',
+        );
+
+        expect(hasForegroundClient, isFalse);
+        final foregroundCommand =
+            verify(
+                  () => client.execute(
+                    captureAny(that: contains('list-clients')),
+                    pty: any(named: 'pty'),
+                  ),
+                ).captured.single
+                as String;
+        expect(foregroundCommand, contains('#{client_pid}'));
+        expect(foregroundCommand, contains('#{client_control_mode}'));
+      },
+    );
   });
 
   group('tmux exec recovery', () {
@@ -719,12 +1047,232 @@ void main() {
           command,
           contains(
             "/usr/bin/tmux -u -S '/tmp/socket' -CC attach-session -f "
-            'read-only,ignore-size,no-output,wait-exit ',
+            'ignore-size,no-output,wait-exit ',
           ),
         );
         expect(command, isNot(contains('set status off')));
 
         await subscription.cancel();
+      },
+    );
+
+    test('selectWindow uses an active control-mode watcher', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 70);
+      const service = TmuxService();
+      final stdoutController = StreamController<Uint8List>();
+      final writes = <String>[];
+      final controlSession = _buildInteractiveExecSession(
+        stdoutController: stdoutController,
+        onWrite: (value) {
+          writes.add(value);
+          if (value.startsWith('refresh-client ') ||
+              value.startsWith('select-window ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+              ),
+            );
+          }
+        },
+      );
+      final execSessions = Queue<SSHSession>.from([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        controlSession,
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final subscription = service
+          .watchWindowChanges(session, 'main')
+          .listen((_) {});
+      await untilCalled(() => controlSession.write(any()));
+
+      await service.selectWindow(session, 'main', 2);
+
+      expect(writes, contains("select-window -t 'main':2\n"));
+      verifyNever(
+        () => client.execute(
+          any(that: contains('select-window')),
+          pty: any(named: 'pty'),
+        ),
+      );
+
+      await subscription.cancel();
+      await stdoutController.close();
+    });
+
+    test('createWindow uses an active control-mode watcher', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 71);
+      const service = TmuxService();
+      final stdoutController = StreamController<Uint8List>();
+      final writes = <String>[];
+      final controlSession = _buildInteractiveExecSession(
+        stdoutController: stdoutController,
+        onWrite: (value) {
+          writes.add(value);
+          if (value.startsWith('refresh-client ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+              ),
+            );
+          } else if (value.startsWith('new-window ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n4\n%end 1 1 0\n'),
+              ),
+            );
+          } else if (value.startsWith('set-option ') ||
+              value.startsWith('send-keys ')) {
+            scheduleMicrotask(
+              () => stdoutController.add(
+                _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+              ),
+            );
+          }
+        },
+      );
+      final execSessions = Queue<SSHSession>.from([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        controlSession,
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final subscription = service
+          .watchWindowChanges(session, 'main')
+          .listen((_) {});
+      await untilCalled(() => controlSession.write(any()));
+
+      await service.createWindow(
+        session,
+        'main',
+        command: 'gemini --yolo',
+        name: 'gemini',
+        workingDirectory: '/tmp/project',
+      );
+
+      expect(
+        writes,
+        contains(
+          "new-window -P -F '#{window_index}' -t 'main' "
+          "-c '/tmp/project' -n 'gemini'\n",
+        ),
+      );
+      expect(
+        writes,
+        contains("set-option -w -t 'main:4' @flutty_agent_tool 'gemini'\n"),
+      );
+      expect(writes, contains("send-keys -t 'main:4' 'gemini --yolo' Enter\n"));
+      verifyNever(
+        () => client.execute(
+          any(that: contains('new-window')),
+          pty: any(named: 'pty'),
+        ),
+      );
+
+      await subscription.cancel();
+      await stdoutController.close();
+    });
+
+    test(
+      'listWindows uses an active control-mode watcher during exec backoff',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 72);
+        const service = TmuxService();
+        const sep = tmuxWindowFieldSeparator;
+        final stdoutController = StreamController<Uint8List>();
+        final writes = <String>[];
+        final windowLine = [
+          '1',
+          'fresh',
+          '1',
+          'nvim',
+          '/tmp/project',
+          '*',
+          'fresh-title',
+          '200',
+          'nvim',
+          '',
+          '@9',
+        ].join(sep);
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          onWrite: (value) {
+            writes.add(value);
+            if (value.startsWith('refresh-client ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+                ),
+              );
+            } else if (value.startsWith('list-windows ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 2 1 0\n$windowLine\n%end 2 1 0\n'),
+                ),
+              );
+            }
+          },
+        );
+        var executeCalls = 0;
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          executeCalls += 1;
+          if (executeCalls == 1) {
+            return _buildOpenExecSession(
+              stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}',
+            );
+          }
+          if (executeCalls == 2) {
+            return controlSession;
+          }
+          if (executeCalls == 3) {
+            return Future<SSHSession>.error(
+              SSHChannelOpenError(2, 'open failed'),
+            );
+          }
+          throw StateError('Unexpected SSH exec call $executeCalls');
+        });
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          service.clearCache(72);
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(() => controlSession.write(any()));
+        await Future<void>.delayed(Duration.zero);
+
+        await expectLater(
+          service.hasSessionOrThrow(session, 'main'),
+          throwsA(isA<SSHChannelOpenError>()),
+        );
+        expect(TmuxService.hasExecChannelBackoffEntry(72), isTrue);
+
+        final windows = await service.listWindows(session, 'main');
+
+        expect(windows, hasLength(1));
+        expect(windows.single.name, 'fresh');
+        expect(windows.single.id, '@9');
+        expect(
+          writes,
+          contains(
+            predicate<String>((value) => value.startsWith('list-windows ')),
+          ),
+        );
+        expect(executeCalls, 3);
       },
     );
 
@@ -788,6 +1336,26 @@ void main() {
         ).called(1);
       },
     );
+
+    test('selectWindow targets stable window IDs when provided', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.selectWindow(session, 'main', 2, windowId: '@12');
+
+      verify(
+        () => client.execute(
+          any(that: contains("tmux -u select-window -t '@12'")),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+    });
 
     test(
       'killWindow waits for the done marker so failures can surface',
@@ -1023,6 +1591,172 @@ void main() {
       );
     });
   });
+
+  group('clearCache lifecycle', () {
+    // Connection IDs 60-69 reserved for this group to avoid static-cache
+    // collisions with other groups in the same test run.
+
+    test(
+      'clears installed agent tools cache so subsequent call re-probes SSH',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 60);
+        const service = TmuxService();
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async => _buildOpenExecSession(
+            stdout: '/opt/homebrew/bin/claude\n${_doneMarker()}',
+          ),
+        );
+
+        // Seed the agent-tools cache.
+        final first = await service.detectInstalledAgentTools(session);
+        expect(first, {AgentLaunchTool.claudeCode});
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(60), isTrue);
+
+        // Clear and verify the cache entry is gone.
+        service.clearCache(60);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(60), isFalse);
+
+        // A subsequent call must re-probe via SSH rather than serve stale data.
+        final second = await service.detectInstalledAgentTools(session);
+        expect(second, {AgentLaunchTool.claudeCode});
+        verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
+      },
+    );
+
+    test(
+      'clears tmux path cache so subsequent path probe is re-issued',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 61);
+        const service = TmuxService();
+        // hasSessionOrThrow issues two SSH execs: (1) the path probe and
+        // (2) the has-session command.  A second call skips the probe.
+        final execQueue = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+          // After clearCache a fresh path probe is issued again.
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+        ]);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execQueue.removeFirst());
+
+        // Seed the path cache via a method that calls _cacheTmuxPath.
+        await service.hasSessionOrThrow(session, 'work');
+        expect(TmuxService.hasTmuxPathCacheEntry(61), isTrue);
+
+        // Clear and verify the cache entry is gone.
+        service.clearCache(61);
+        expect(TmuxService.hasTmuxPathCacheEntry(61), isFalse);
+
+        // A subsequent call must re-probe the tmux binary path.
+        await service.hasSessionOrThrow(session, 'work');
+        expect(TmuxService.hasTmuxPathCacheEntry(61), isTrue);
+        verify(
+          () => client.execute(
+            any(that: contains('command -v tmux')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(2);
+      },
+    );
+
+    test(
+      'clears window snapshot cache so stale windows are not served',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 62);
+        const service = TmuxService();
+        const sep = tmuxWindowFieldSeparator;
+        final windowLine = [
+          '0',
+          'editor',
+          '1',
+          'nvim',
+          '/home/user/project',
+          '*',
+          'editor',
+          '200',
+          'nvim',
+          '',
+          '@1',
+        ].join(sep);
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async =>
+              _buildOpenExecSession(stdout: '$windowLine\n${_doneMarker()}'),
+        );
+
+        // listWindows populates _windowSnapshotCache when results are non-empty.
+        final windows = await service.listWindows(session, 'main');
+        expect(windows, hasLength(1));
+        expect(TmuxService.hasWindowSnapshotCacheEntry(62), isTrue);
+
+        // After clearCache the snapshot is gone.
+        service.clearCache(62);
+        expect(TmuxService.hasWindowSnapshotCacheEntry(62), isFalse);
+      },
+    );
+
+    test(
+      'clears exec-channel backoff so the next exec channel is not throttled',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 63);
+        const service = TmuxService();
+
+        // Trigger a channel-open failure so a backoff entry is recorded.
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async =>
+              Future<SSHSession>.error(SSHChannelOpenError(2, 'open failed')),
+        );
+        await expectLater(
+          service.listWindows(session, 'main'),
+          throwsA(isA<SSHChannelOpenError>()),
+        );
+        expect(TmuxService.hasExecChannelBackoffEntry(63), isTrue);
+
+        // clearCache must remove the backoff so the next open is attempted.
+        service.clearCache(63);
+        expect(TmuxService.hasExecChannelBackoffEntry(63), isFalse);
+      },
+    );
+
+    test(
+      'clearCache for one connection does not affect another connection',
+      () async {
+        final clientA = _MockSshClient();
+        final clientB = _MockSshClient();
+        final sessionA = _buildSession(clientA, connectionId: 64);
+        final sessionB = _buildSession(clientB, connectionId: 65);
+        const service = TmuxService();
+
+        for (final client in [clientA, clientB]) {
+          when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+            (_) async => _buildOpenExecSession(
+              stdout: '/opt/homebrew/bin/codex\n${_doneMarker()}',
+            ),
+          );
+        }
+
+        await service.detectInstalledAgentTools(sessionA);
+        await service.detectInstalledAgentTools(sessionB);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(64), isTrue);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(65), isTrue);
+
+        // Clearing A must not affect B.
+        service.clearCache(64);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(64), isFalse);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(65), isTrue);
+
+        // Clean up B.
+        service.clearCache(65);
+      },
+    );
+  });
 }
 
 SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
@@ -1059,6 +1793,8 @@ Stream<Uint8List> _closedUtf8Stream(String value) =>
       value.isEmpty ? const [] : [Uint8List.fromList(utf8.encode(value))],
     );
 
+Uint8List _utf8Bytes(String value) => Uint8List.fromList(utf8.encode(value));
+
 void _ignoreInvocation(Invocation _) {}
 
 SSHSession _buildOpenExecSession({
@@ -1081,5 +1817,24 @@ SSHSession _buildClosedExecSession({String stdout = '', String stderr = ''}) {
   when(() => session.stderr).thenAnswer((_) => _closedUtf8Stream(stderr));
   when(() => session.done).thenAnswer((_) => Future<void>.value());
   when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
+
+SSHSession _buildInteractiveExecSession({
+  required StreamController<Uint8List> stdoutController,
+  void Function(String)? onWrite,
+  String stderr = '',
+  Future<void>? done,
+}) {
+  final session = _MockExecSession();
+  final doneFuture = done ?? Completer<void>().future;
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
+  when(() => session.done).thenAnswer((_) => doneFuture);
+  when(session.close).thenAnswer(_ignoreInvocation);
+  when(() => session.write(any())).thenAnswer((invocation) {
+    final data = invocation.positionalArguments.single as List<int>;
+    onWrite?.call(utf8.decode(data));
+  });
   return session;
 }

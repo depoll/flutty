@@ -7,15 +7,20 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/cell_flags.dart';
+import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -26,6 +31,8 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/palette_builder.dart';
+import 'package:xterm/src/ui/paragraph_cache.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
@@ -40,6 +47,133 @@ import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
+
+const _minimumFaintTextContrast = 4.5;
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = math.max(luminanceA, luminanceB);
+  final darkest = math.min(luminanceA, luminanceB);
+  return (brightest + 0.05) / (darkest + 0.05);
+}
+
+/// Resolves xterm palette colors while preserving xterm-256color semantics.
+///
+/// Palette entries 0-15 are theme-controlled ANSI colors; entries 16-255 are
+/// fixed xterm color-cube/grayscale colors.
+@visibleForTesting
+Color resolveMonkeyTerminalPaletteColor(TerminalTheme theme, int colorIndex) {
+  switch (colorIndex) {
+    case 0:
+      return theme.black;
+    case 1:
+      return theme.red;
+    case 2:
+      return theme.green;
+    case 3:
+      return theme.yellow;
+    case 4:
+      return theme.blue;
+    case 5:
+      return theme.magenta;
+    case 6:
+      return theme.cyan;
+    case 7:
+      return theme.white;
+    case 8:
+      return theme.brightBlack;
+    case 9:
+      return theme.brightRed;
+    case 10:
+      return theme.brightGreen;
+    case 11:
+      return theme.brightYellow;
+    case 12:
+      return theme.brightBlue;
+    case 13:
+      return theme.brightMagenta;
+    case 14:
+      return theme.brightCyan;
+    case 15:
+      return theme.brightWhite;
+    default:
+      return PaletteBuilder(theme).paletteColor(colorIndex);
+  }
+}
+
+List<Color> _buildMonkeyTerminalPalette(TerminalTheme theme) =>
+    List<Color>.generate(
+      256,
+      (index) => resolveMonkeyTerminalPaletteColor(theme, index),
+      growable: false,
+    );
+
+bool _terminalThemesEqual(TerminalTheme a, TerminalTheme b) =>
+    a.cursor == b.cursor &&
+    a.selection == b.selection &&
+    a.foreground == b.foreground &&
+    a.background == b.background &&
+    a.black == b.black &&
+    a.red == b.red &&
+    a.green == b.green &&
+    a.yellow == b.yellow &&
+    a.blue == b.blue &&
+    a.magenta == b.magenta &&
+    a.cyan == b.cyan &&
+    a.white == b.white &&
+    a.brightBlack == b.brightBlack &&
+    a.brightRed == b.brightRed &&
+    a.brightGreen == b.brightGreen &&
+    a.brightYellow == b.brightYellow &&
+    a.brightBlue == b.brightBlue &&
+    a.brightMagenta == b.brightMagenta &&
+    a.brightCyan == b.brightCyan &&
+    a.brightWhite == b.brightWhite &&
+    a.searchHitBackground == b.searchHitBackground &&
+    a.searchHitBackgroundCurrent == b.searchHitBackgroundCurrent &&
+    a.searchHitForeground == b.searchHitForeground;
+
+/// Resolves SGR 2 faint text while preserving readable contrast.
+///
+/// xterm paints faint text at 50% opacity, which drops many dark-theme
+/// secondary labels below WCAG AA contrast. Keep 50% when it is readable, then
+/// raise only as much as needed for the active foreground/background pair.
+@visibleForTesting
+Color resolveMonkeyTerminalFaintForegroundColor({
+  required Color foreground,
+  required Color background,
+  double minimumContrast = _minimumFaintTextContrast,
+}) {
+  Color blendWithAlpha(double alpha) =>
+      Color.alphaBlend(foreground.withAlpha((alpha * 255).round()), background);
+
+  final defaultFaint = blendWithAlpha(0.5);
+  if (_contrastRatio(defaultFaint, background) >= minimumContrast) {
+    return defaultFaint;
+  }
+
+  if (_contrastRatio(foreground, background) < minimumContrast) {
+    return foreground;
+  }
+
+  var low = 0.5;
+  var high = 1.0;
+  for (var iteration = 0; iteration < 12; iteration += 1) {
+    final mid = (low + high) / 2;
+    final candidate = blendWithAlpha(mid);
+    if (_contrastRatio(candidate, background) >= minimumContrast) {
+      high = mid;
+    } else {
+      low = mid;
+    }
+  }
+
+  final readableFaint = blendWithAlpha(high);
+  return _contrastRatio(readableFaint, background) >= minimumContrast
+      ? readableFaint
+      : foreground;
+}
 
 /// Terminal render padding.
 ///
@@ -150,6 +284,10 @@ double resolveTerminalHorizontalFillScale({
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
 const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
+const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
+
+/// A terminal cell range rendered with text underline decoration.
+typedef TerminalTextUnderline = ({int row, int startColumn, int endColumn});
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
@@ -195,6 +333,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.onSystemSelectionChanged,
     this.onInsertText,
     this.onPasteText,
+    this.inlineUnderlines = const <TerminalTextUnderline>[],
   });
 
   /// The underlying terminal that this widget renders.
@@ -342,6 +481,9 @@ class MonkeyTerminalView extends StatefulWidget {
   /// Called to handle paste shortcuts before xterm pastes clipboard text.
   final Future<void> Function()? onPasteText;
 
+  /// Cell ranges that should be painted with inline text underlines.
+  final List<TerminalTextUnderline> inlineUnderlines;
+
   @override
   State<MonkeyTerminalView> createState() => MonkeyTerminalViewState();
 }
@@ -367,10 +509,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
   int _lastTerminalViewWidth = 0;
+  Timer? _pendingFocusInReportTimer;
 
   late TerminalController _controller;
 
   late ScrollController _scrollController;
+
+  /// Cached action map passed to the [Actions] widget. Allocated once in
+  /// [initState] so each [build] reuses the same map and action objects.
+  late final Map<Type, Action<Intent>> _terminalActions;
 
   MonkeyRenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as MonkeyRenderTerminal;
@@ -385,6 +532,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
+    _terminalActions = {
+      PasteTextIntent: CallbackAction<PasteTextIntent>(onInvoke: _onPasteText),
+      CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
+        onInvoke: _onCopySelectionText,
+      ),
+      SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
+        onInvoke: _onSelectAllText,
+      ),
+    };
     super.initState();
     _touchScrollInertiaTicker = createTicker(_onTouchScrollInertiaTick);
   }
@@ -431,6 +587,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void dispose() {
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
+    _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
     if (widget.focusNode == null) {
@@ -454,6 +611,69 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _lastTerminalViewWidth = currentViewWidth;
     if (mounted) {
       setState(() {});
+    }
+  }
+
+  /// Re-sends focus reports after terminal state changes.
+  ///
+  /// TUIs such as Codex re-query terminal colors after focus-gained events. The
+  /// app can use this after a theme change so those TUIs refresh cached
+  /// foreground/background colors without waiting for a real focus transition.
+  ///
+  /// Set [force] to send the report even when [Terminal.reportFocusMode] is
+  /// off. Inside tmux the outer xterm rarely sees the inner app's
+  /// `CSI ? 1004 h` request because tmux intercepts and re-emits it for its
+  /// own clients, so the outer xterm's tracking flag is unreliable as a gate.
+  void refreshFocusReport({bool forceTransition = false, bool force = false}) {
+    if (!force && !widget.terminal.reportFocusMode) {
+      return;
+    }
+    _pendingFocusInReportTimer?.cancel();
+    _pendingFocusInReportTimer = null;
+    if (!forceTransition) {
+      widget.terminal.onOutput?.call(_terminalFocusInReport);
+      return;
+    }
+    widget.terminal.onOutput?.call(_terminalFocusOutReport);
+    _pendingFocusInReportTimer = Timer(_terminalFocusTransitionDelay, () {
+      _pendingFocusInReportTimer = null;
+      if (!mounted) {
+        return;
+      }
+      widget.terminal.onOutput?.call(_terminalFocusInReport);
+    });
+  }
+
+  /// Reports the current terminal theme mode to focus-aware terminal muxers.
+  void refreshThemeModeReport({required bool isDark}) {
+    widget.terminal.onOutput?.call(
+      buildTerminalThemeModeReport(isDark: isDark),
+    );
+  }
+
+  /// Reports the current terminal theme colors to tmux.
+  void refreshThemeColorReports(TerminalThemeData theme) {
+    final reports = buildTerminalThemeRefreshReports(theme);
+    if (reports.isEmpty) {
+      return;
+    }
+    widget.terminal.onOutput?.call(reports);
+  }
+
+  /// Reports the current default foreground/background colors to a TUI.
+  void refreshThemeDefaultColorReports(TerminalThemeData theme) {
+    final reports = buildTerminalThemeDefaultColorReports(theme);
+    if (reports.isEmpty) {
+      return;
+    }
+    widget.terminal.onOutput?.call(reports);
+  }
+
+  /// Re-sends the current viewport dimensions to the attached terminal.
+  void refreshTerminalSize() {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    if (renderObject is MonkeyRenderTerminal) {
+      renderObject._refreshTerminalSize();
     }
   }
 
@@ -489,6 +709,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
           theme: widget.theme,
+          inlineUnderlines: widget.inlineUnderlines,
           focusNode: cursorFocusNode,
           cursorType: widget.cursorType,
           alwaysShowCursor: widget.alwaysShowCursor,
@@ -530,17 +751,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         keyboardAppearance: widget.keyboardAppearance,
         deleteDetection: widget.deleteDetection,
         onInsert: _onInsert,
-        onDelete: () {
-          _scrollToBottom();
-          widget.terminal.keyInput(TerminalKey.backspace);
-        },
+        onDelete: _onDelete,
         onComposing: _onComposing,
-        onAction: (action) {
-          _scrollToBottom();
-          if (action == TextInputAction.done) {
-            widget.terminal.keyInput(TerminalKey.enter);
-          }
-        },
+        onAction: _onTextInputAction,
         onKeyEvent: _handleKeyEvent,
         readOnly: widget.readOnly,
         child: child,
@@ -557,57 +770,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       );
     }
 
-    child = Actions(
-      actions: {
-        PasteTextIntent: CallbackAction<PasteTextIntent>(
-          onInvoke: (intent) async {
-            if (widget.onPasteText != null) {
-              await widget.onPasteText!();
-              _controller.clearSelection();
-              return null;
-            }
-
-            final data = await Clipboard.getData(Clipboard.kTextPlain);
-            final text = data?.text;
-            if (text != null) {
-              widget.terminal.paste(text);
-              _controller.clearSelection();
-            }
-            return null;
-          },
-        ),
-        CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-          onInvoke: (intent) async {
-            final selection = _controller.selection;
-
-            if (selection == null) {
-              return null;
-            }
-
-            final text = widget.terminal.buffer.getText(selection);
-            await Clipboard.setData(ClipboardData(text: text));
-            return null;
-          },
-        ),
-        SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
-          onInvoke: (intent) {
-            _controller.setSelection(
-              widget.terminal.buffer.createAnchor(
-                0,
-                widget.terminal.buffer.height - widget.terminal.viewHeight,
-              ),
-              widget.terminal.buffer.createAnchor(
-                widget.terminal.viewWidth,
-                widget.terminal.buffer.height - 1,
-              ),
-              mode: SelectionMode.line,
-            );
-            return null;
-          },
-        ),
-      },
-      child: child,
-    );
+    child = Actions(actions: _terminalActions, child: child);
 
     child = KeyboardVisibilty(onKeyboardShow: _onKeyboardShow, child: child);
 
@@ -627,11 +790,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       onSecondaryTapUp: widget.onSecondaryTapUp != null
           ? _onSecondaryTapUp
           : null,
-      resolveLinkTap: widget.resolveLinkTap == null
-          ? null
-          : (localPosition) => widget.resolveLinkTap!(
-              renderTerminal.getCellOffset(localPosition),
-            ),
+      resolveLinkTap: widget.resolveLinkTap == null ? null : _resolveLinkTap,
       onLinkTapDown: widget.onLinkTapDown == null ? null : _onLinkTapDown,
       onLinkTap: widget.onLinkTap,
       onTouchScrollStart: widget.touchScrollToTerminal
@@ -979,6 +1138,62 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _customTextEditKey.currentState?.setEditableRect(rect, caretRect);
   }
 
+  void _onDelete() {
+    _scrollToBottom();
+    widget.terminal.keyInput(TerminalKey.backspace);
+  }
+
+  void _onTextInputAction(TextInputAction action) {
+    _scrollToBottom();
+    if (action == TextInputAction.done) {
+      widget.terminal.keyInput(TerminalKey.enter);
+    }
+  }
+
+  String? _resolveLinkTap(Offset localPosition) =>
+      widget.resolveLinkTap!(renderTerminal.getCellOffset(localPosition));
+
+  Future<Object?> _onPasteText(PasteTextIntent intent) async {
+    if (widget.onPasteText != null) {
+      await widget.onPasteText!();
+      _controller.clearSelection();
+      return null;
+    }
+
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text != null) {
+      widget.terminal.paste(text);
+      _controller.clearSelection();
+    }
+    return null;
+  }
+
+  Future<Object?> _onCopySelectionText(CopySelectionTextIntent intent) async {
+    final selection = _controller.selection;
+    if (selection == null) {
+      return null;
+    }
+    final text = widget.terminal.buffer.getText(selection);
+    await Clipboard.setData(ClipboardData(text: text));
+    return null;
+  }
+
+  Object? _onSelectAllText(SelectAllTextIntent intent) {
+    _controller.setSelection(
+      widget.terminal.buffer.createAnchor(
+        0,
+        widget.terminal.buffer.height - widget.terminal.viewHeight,
+      ),
+      widget.terminal.buffer.createAnchor(
+        widget.terminal.viewWidth,
+        widget.terminal.buffer.height - 1,
+      ),
+      mode: SelectionMode.line,
+    );
+    return null;
+  }
+
   void _scrollToBottom() {
     final position = _scrollableKey.currentState?.position;
     if (position != null) {
@@ -1001,6 +1216,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.textStyle,
     required this.textScaler,
     required this.theme,
+    required this.inlineUnderlines,
     required this.focusNode,
     required this.cursorType,
     required this.alwaysShowCursor,
@@ -1031,6 +1247,8 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final TerminalTheme theme;
 
+  final List<TerminalTextUnderline> inlineUnderlines;
+
   final FocusNode focusNode;
 
   final TerminalCursorType cursorType;
@@ -1057,6 +1275,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       textStyle: textStyle,
       textScaler: textScaler,
       theme: theme,
+      inlineUnderlines: inlineUnderlines,
       focusNode: focusNode,
       cursorType: cursorType,
       alwaysShowCursor: alwaysShowCursor,
@@ -1083,12 +1302,229 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..textStyle = textStyle
       ..textScaler = textScaler
       ..theme = theme
+      ..inlineUnderlines = inlineUnderlines
       ..focusNode = focusNode
       ..cursorType = cursorType
       ..alwaysShowCursor = alwaysShowCursor
       ..onEditableRect = onEditableRect
       ..composingText = composingText
       ..selectionRegistrar = selectionRegistrar;
+  }
+}
+
+class MonkeyTerminalPainter extends TerminalPainter {
+  MonkeyTerminalPainter({
+    required super.theme,
+    required super.textStyle,
+    required super.textScaler,
+  }) : _palette = _buildMonkeyTerminalPalette(theme);
+
+  List<Color> _palette;
+  final _paragraphCache = ParagraphCache(10240);
+  final _inlineUnderlineParagraphCache = ParagraphCache(1024);
+
+  @override
+  set textStyle(TerminalStyle value) {
+    if (value == textStyle) {
+      return;
+    }
+    super.textStyle = value;
+    _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
+  }
+
+  @override
+  set textScaler(TextScaler value) {
+    if (value == textScaler) {
+      return;
+    }
+    super.textScaler = value;
+    _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
+  }
+
+  @override
+  set theme(TerminalTheme value) {
+    if (_terminalThemesEqual(value, theme)) {
+      return;
+    }
+    super.theme = value;
+    _palette = _buildMonkeyTerminalPalette(value);
+    _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
+  }
+
+  @override
+  void clearFontCache() {
+    super.clearFontCache();
+    _paragraphCache.clear();
+    _inlineUnderlineParagraphCache.clear();
+  }
+
+  void paintLineInlineUnderlines(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+    List<TerminalTextUnderline> inlineUnderlines,
+  ) {
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+
+      final charWidth = cellData.content >> CellContent.widthShift;
+      final cellOffset = offset.translate(i * cellWidth, 0);
+      if (_shouldUnderlineCell(i, inlineUnderlines)) {
+        paintCellInlineUnderline(canvas, cellOffset, cellData);
+      }
+
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
+  bool _shouldUnderlineCell(
+    int column,
+    List<TerminalTextUnderline> inlineUnderlines,
+  ) {
+    for (final underline in inlineUnderlines) {
+      if (column >= underline.startColumn && column <= underline.endColumn) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void paintCellInlineUnderline(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+  ) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return;
+    }
+
+    final cacheKey = cellData.getHash() ^ textScaler.hashCode;
+    var paragraph = _inlineUnderlineParagraphCache.getLayoutFromCache(cacheKey);
+
+    if (paragraph == null) {
+      final cellFlags = cellData.flags;
+      final style = textStyle
+          .toTextStyle(
+            color: Colors.transparent,
+            bold: cellFlags & CellFlags.bold != 0,
+            italic: cellFlags & CellFlags.italic != 0,
+            underline: true,
+          )
+          .copyWith(decorationColor: _resolveCellForegroundColor(cellData));
+
+      var char = String.fromCharCode(charCode);
+      if (charCode == 0x20) {
+        char = String.fromCharCode(0xA0);
+      }
+
+      paragraph = _inlineUnderlineParagraphCache.performAndCacheLayout(
+        char,
+        style,
+        textScaler,
+        cacheKey,
+      );
+    }
+
+    canvas.drawParagraph(paragraph, offset);
+  }
+
+  @override
+  void paintCellForeground(Canvas canvas, Offset offset, CellData cellData) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return;
+    }
+
+    final cacheKey = cellData.getHash() ^ textScaler.hashCode;
+    var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
+
+    if (paragraph == null) {
+      final cellFlags = cellData.flags;
+      final color = _resolveCellForegroundColor(cellData);
+
+      final style = textStyle.toTextStyle(
+        color: color,
+        bold: cellFlags & CellFlags.bold != 0,
+        italic: cellFlags & CellFlags.italic != 0,
+        underline: cellFlags & CellFlags.underline != 0,
+      );
+
+      var char = String.fromCharCode(charCode);
+      if (cellFlags & CellFlags.underline != 0 && charCode == 0x20) {
+        char = String.fromCharCode(0xA0);
+      }
+
+      paragraph = _paragraphCache.performAndCacheLayout(
+        char,
+        style,
+        textScaler,
+        cacheKey,
+      );
+    }
+
+    canvas.drawParagraph(paragraph, offset);
+  }
+
+  Color _resolveCellForegroundColor(CellData cellData) {
+    final cellFlags = cellData.flags;
+    final inverse = cellFlags & CellFlags.inverse != 0;
+    var color = inverse
+        ? resolveBackgroundColor(cellData.background)
+        : resolveForegroundColor(cellData.foreground);
+
+    if (cellFlags & CellFlags.faint != 0) {
+      final background = inverse
+          ? resolveForegroundColor(cellData.foreground)
+          : resolveBackgroundColor(cellData.background);
+      color = resolveMonkeyTerminalFaintForegroundColor(
+        foreground: color,
+        background: background,
+      );
+    }
+    return color;
+  }
+
+  @override
+  Color resolveForegroundColor(int cellColor) {
+    final colorType = cellColor & CellColor.typeMask;
+    final colorValue = cellColor & CellColor.valueMask;
+
+    switch (colorType) {
+      case CellColor.normal:
+        return theme.foreground;
+      case CellColor.named:
+      case CellColor.palette:
+        return _palette[colorValue];
+      case CellColor.rgb:
+      default:
+        return Color(colorValue | 0xFF000000);
+    }
+  }
+
+  @override
+  Color resolveBackgroundColor(int cellColor) {
+    final colorType = cellColor & CellColor.typeMask;
+    final colorValue = cellColor & CellColor.valueMask;
+
+    switch (colorType) {
+      case CellColor.normal:
+        return theme.background;
+      case CellColor.named:
+      case CellColor.palette:
+        return _palette[colorValue];
+      case CellColor.rgb:
+      default:
+        return Color(colorValue | 0xFF000000);
+    }
   }
 }
 
@@ -1106,6 +1542,7 @@ class MonkeyRenderTerminal extends RenderBox
     required TerminalStyle textStyle,
     required TextScaler textScaler,
     required TerminalTheme theme,
+    required List<TerminalTextUnderline> inlineUnderlines,
     required FocusNode focusNode,
     required TerminalCursorType cursorType,
     required bool alwaysShowCursor,
@@ -1120,6 +1557,7 @@ class MonkeyRenderTerminal extends RenderBox
        _autoResize = autoResize,
        _resizeBottomInset = resizeBottomInset,
        _liveOutputAutoScroll = liveOutputAutoScroll,
+       _inlineUnderlines = inlineUnderlines,
        _focusNode = focusNode,
        _cursorType = cursorType,
        _alwaysShowCursor = alwaysShowCursor,
@@ -1129,7 +1567,7 @@ class MonkeyRenderTerminal extends RenderBox
          status: SelectionStatus.none,
          hasContent: terminal.buffer.lines.length > 0,
        ),
-       _painter = TerminalPainter(
+       _painter = MonkeyTerminalPainter(
          theme: theme,
          textStyle: textStyle,
          textScaler: textScaler,
@@ -1229,8 +1667,15 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   set theme(TerminalTheme value) {
-    if (value == _painter.theme) return;
+    if (_terminalThemesEqual(value, _painter.theme)) return;
     _painter.theme = value;
+    markNeedsPaint();
+  }
+
+  List<TerminalTextUnderline> _inlineUnderlines;
+  set inlineUnderlines(List<TerminalTextUnderline> value) {
+    if (listEquals(value, _inlineUnderlines)) return;
+    _inlineUnderlines = value;
     markNeedsPaint();
   }
 
@@ -1283,10 +1728,14 @@ class MonkeyRenderTerminal extends RenderBox
 
   bool _isDebouncingKeyboardResize = false;
 
-  ({TerminalSize viewportSize, ({int width, int height}) pixelSize})?
+  ({
+    TerminalSize viewportSize,
+    ({int width, int height}) pixelSize,
+    bool resizeTerminal,
+  })?
   _pendingTerminalResize;
 
-  final TerminalPainter _painter;
+  final MonkeyTerminalPainter _painter;
 
   var _stickToBottom = true;
 
@@ -2092,7 +2541,7 @@ class MonkeyRenderTerminal extends RenderBox
     _onEditableRect?.call(rect, caretRect);
   }
 
-  void _updateViewportSize() {
+  void _updateViewportSize({bool notifyIfUnchanged = false}) {
     final availableWidth = size.width - _padding.horizontal;
     final availableHeight = _viewportHeight;
     if (availableWidth <= _painter.cellSize.width ||
@@ -2109,9 +2558,22 @@ class MonkeyRenderTerminal extends RenderBox
       padding: _padding,
     );
 
-    if (_viewportSize != viewportSize || _viewportPixelSize != pixelSize) {
+    if (_viewportSize != viewportSize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
+    } else if (_viewportPixelSize != pixelSize || notifyIfUnchanged) {
+      _notifyTerminalResizeIfNeeded(
+        viewportSize: viewportSize,
+        pixelSize: pixelSize,
+      );
     }
+  }
+
+  void _refreshTerminalSize() {
+    if (!hasSize) {
+      markNeedsLayout();
+      return;
+    }
+    _updateViewportSize(notifyIfUnchanged: true);
   }
 
   void _resizeTerminalIfNeeded({
@@ -2136,11 +2598,36 @@ class MonkeyRenderTerminal extends RenderBox
       _pendingTerminalResize = (
         viewportSize: nextViewportSize,
         pixelSize: nextPixelSize,
+        resizeTerminal: true,
       );
       return;
     }
 
     _applyTerminalResize(nextViewportSize, nextPixelSize);
+  }
+
+  void _notifyTerminalResizeIfNeeded({
+    required TerminalSize viewportSize,
+    required ({int width, int height}) pixelSize,
+  }) {
+    if (!_autoResize) {
+      return;
+    }
+
+    if (_isDebouncingKeyboardResize) {
+      final pendingResize = _pendingTerminalResize;
+      if (pendingResize != null && pendingResize.resizeTerminal) {
+        return;
+      }
+      _pendingTerminalResize = (
+        viewportSize: viewportSize,
+        pixelSize: pixelSize,
+        resizeTerminal: false,
+      );
+      return;
+    }
+
+    _notifyTerminalResize(viewportSize, pixelSize);
   }
 
   void _applyTerminalResize(
@@ -2150,6 +2637,20 @@ class MonkeyRenderTerminal extends RenderBox
     _viewportSize = viewportSize;
     _viewportPixelSize = pixelSize;
     _terminal.resize(
+      viewportSize.width,
+      viewportSize.height,
+      pixelSize.width,
+      pixelSize.height,
+    );
+  }
+
+  void _notifyTerminalResize(
+    TerminalSize viewportSize,
+    ({int width, int height}) pixelSize,
+  ) {
+    _viewportSize = viewportSize;
+    _viewportPixelSize = pixelSize;
+    _terminal.onResize?.call(
       viewportSize.width,
       viewportSize.height,
       pixelSize.width,
@@ -2170,10 +2671,17 @@ class MonkeyRenderTerminal extends RenderBox
         if (pendingResize == null || !_autoResize) {
           return;
         }
-        _applyTerminalResize(
-          pendingResize.viewportSize,
-          pendingResize.pixelSize,
-        );
+        if (pendingResize.resizeTerminal) {
+          _applyTerminalResize(
+            pendingResize.viewportSize,
+            pendingResize.pixelSize,
+          );
+        } else {
+          _notifyTerminalResize(
+            pendingResize.viewportSize,
+            pendingResize.pixelSize,
+          );
+        }
       },
     );
   }
@@ -2229,14 +2737,7 @@ class MonkeyRenderTerminal extends RenderBox
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      _painter.paintLine(
-        canvas,
-        offset.translate(
-          origin.dx,
-          (i * charHeight + _lineOffset).truncateToDouble(),
-        ),
-        lines[i],
-      );
+      _painter.paintLine(canvas, _linePaintOffset(offset, i), lines[i]);
     }
 
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
@@ -2267,7 +2768,71 @@ class MonkeyRenderTerminal extends RenderBox
       _paintSelection(canvas, selection, effectFirstLine, effectLastLine);
     }
 
+    // Keep link affordances visible over opaque selection/highlight fills while
+    // preserving each cell's own underline styling.
+    _paintInlineUnderlines(canvas, offset, effectFirstLine, effectLastLine);
+
     _paintSelectionHandleLayers(context, offset);
+  }
+
+  Offset _linePaintOffset(Offset offset, int row) => offset.translate(
+    _contentOrigin.dx,
+    (row * _painter.cellSize.height + _lineOffset).truncateToDouble(),
+  );
+
+  void _paintInlineUnderlines(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+  ) {
+    if (_inlineUnderlines.isEmpty) {
+      return;
+    }
+
+    final lines = _terminal.buffer.lines;
+    for (var i = firstLine; i <= lastLine; i++) {
+      final lineUnderlines = _inlineUnderlinesForRow(i);
+      if (lineUnderlines.isEmpty) {
+        continue;
+      }
+
+      _painter.paintLineInlineUnderlines(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+        lineUnderlines,
+      );
+    }
+  }
+
+  List<TerminalTextUnderline> _inlineUnderlinesForRow(int row) {
+    if (_inlineUnderlines.isEmpty) {
+      return const <TerminalTextUnderline>[];
+    }
+
+    final columnCount = _terminal.viewWidth;
+    if (columnCount <= 0) {
+      return const <TerminalTextUnderline>[];
+    }
+
+    final lineUnderlines = <TerminalTextUnderline>[];
+    for (final underline in _inlineUnderlines) {
+      if (underline.row != row) {
+        continue;
+      }
+
+      final startColumn = underline.startColumn.clamp(0, columnCount - 1);
+      final endColumn = underline.endColumn.clamp(0, columnCount - 1);
+      if (startColumn <= endColumn) {
+        lineUnderlines.add((
+          row: row,
+          startColumn: startColumn,
+          endColumn: endColumn,
+        ));
+      }
+    }
+    return lineUnderlines;
   }
 
   BufferRange? get _selectionRangeForPaint {

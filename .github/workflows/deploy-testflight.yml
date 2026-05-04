@@ -199,7 +199,7 @@ jobs:
             const requestedBuildNumber = (process.env.INPUT_BUILD_NUMBER || '').trim();
             const workflowIds = ['deploy-testflight.yml', 'develop.yml'];
             const markerArtifactPattern = /^private-deploy-build-number-(\d+)$/;
-            const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)$/;
+            const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)(?:\.(?:aab|apk|ipa))?$/;
             const maxDiscoveredBuildNumbersPerWorkflow = 20;
             const maxWorkflowRunPages = 3;
 
@@ -357,7 +357,7 @@ jobs:
             const workflowId = 'preview.yml';
             const requiredArtifactNames = [
               `android-unsigned-private-${buildName}-${buildNumber}`,
-              `ios-unsigned-private-${buildName}-${buildNumber}`,
+              `ios-unsigned-private-${buildName}-${buildNumber}.ipa`,
             ];
             const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
             const maxWaitAttempts = 40;
@@ -668,7 +668,7 @@ jobs:
       android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true

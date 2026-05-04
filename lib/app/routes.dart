@@ -21,6 +21,12 @@ abstract final class Routes {
   /// Snippets route.
   static const snippets = 'snippets';
 
+  /// Add snippet route.
+  static const snippetAdd = 'snippet-add';
+
+  /// Edit snippet route.
+  static const snippetEdit = 'snippet-edit';
+
   /// Port forwards route.
   static const portForwards = 'port-forwards';
 
@@ -32,10 +38,4 @@ abstract final class Routes {
 
   /// Upgrade route.
   static const upgrade = 'upgrade';
-
-  /// Theme editor route.
-  static const themeEditor = 'theme-editor';
-
-  /// Theme editor route for new theme.
-  static const themeEditorNew = 'theme-editor-new';
 }

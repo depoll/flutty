@@ -24,7 +24,7 @@ MonkeySSH is not just an SSH pipe with a keyboard attached. It is designed aroun
 - **Saved launch presets** for tools like Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Aider
 - **Per-host startup flows** with working-directory changes, tmux session names, extra arguments, and optional one-tap automation
 - **Tmux integration** for discovering sessions and windows, tracking the active pane path, and launching agents into persistent workspaces
-- **IME keyboard support** so autocorrect, suggestions, and swipe typing behave more like a normal mobile text field, even in a terminal
+- **IME keyboard support** so autocorrect, suggestions, swipe typing, keyboard dictation, and password-friendly prompt input behave more like a normal mobile text field, even in a terminal
 - **Safer command handling** with review prompts for suspicious pasted or auto-run shell text before it is inserted or executed
 - **Remote clipboard sync** so it is easier to move code and commands between your device and the remote machine
 
@@ -33,7 +33,7 @@ MonkeySSH is not just an SSH pipe with a keyboard attached. It is designed aroun
 | Area | What you get |
 | --- | --- |
 | **SSH connections** | Password and key auth, jump hosts, multiple concurrent sessions, host organization, search, favorites |
-| **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, tap-to-show keyboard, and IME-friendly typing with autocorrect and swipe input |
+| **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, tap-to-show keyboard, and IME-friendly typing with autocorrect, swipe, keyboard dictation, and password-friendly prompt input |
 | **Coding workflow** | AI session picker, recent session resume, tmux-aware launch flows, clickable file paths, shared clipboard, safer paste review |
 | **Files** | SFTP browser, upload/download, remote file creation, direct remote text editing, syntax highlighting, path-aware navigation from terminal output |
 | **Automation** | Snippets, variable-aware snippet insertion, host auto-connect commands, saved agent launch presets |
