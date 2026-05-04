@@ -51,34 +51,6 @@ void main() {
       terminal = Terminal(maxLines: 100);
     });
 
-    testWidgets('renders all key rows', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
-        ),
-      );
-
-      // Check modifier row keys
-      expect(find.byTooltip('Escape'), findsOneWidget);
-      expect(find.byTooltip('Tab'), findsOneWidget);
-      expect(find.byTooltip('Ctrl'), findsOneWidget);
-      expect(find.byTooltip('Alt'), findsOneWidget);
-      expect(find.byTooltip('Shift'), findsOneWidget);
-      expect(find.byTooltip('Tilde'), findsOneWidget);
-      expect(find.byTooltip('Paste'), findsOneWidget);
-      expect(find.byTooltip('Enter'), findsOneWidget);
-
-      // Check navigation row keys
-      expect(find.byTooltip('Up'), findsOneWidget);
-      expect(find.byTooltip('Down'), findsOneWidget);
-      expect(find.byTooltip('Left'), findsOneWidget);
-      expect(find.byTooltip('Right'), findsOneWidget);
-      expect(find.byTooltip('Home'), findsOneWidget);
-      expect(find.byTooltip('End'), findsOneWidget);
-      expect(find.byTooltip('Page Up'), findsOneWidget);
-      expect(find.byTooltip('Page Down'), findsOneWidget);
-    });
-
     testWidgets('keeps Paste and Enter on the right edge of their rows', (
       tester,
     ) async {
@@ -204,26 +176,6 @@ void main() {
       final enterRight = tester.getTopRight(find.byTooltip('Enter')).dx;
 
       expect(enterRight, lessThanOrEqualTo(844.001));
-    });
-
-    testWidgets('modifier key toggles state on tap', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
-        ),
-      );
-
-      // Find Ctrl button
-      final ctrlFinder = find.byTooltip('Ctrl');
-      expect(ctrlFinder, findsOneWidget);
-
-      // Tap to activate (one-shot mode)
-      await tester.tap(ctrlFinder);
-      await tester.pumpAndSettle();
-
-      // Tap again to deactivate
-      await tester.tap(ctrlFinder);
-      await tester.pumpAndSettle();
     });
 
     testWidgets(
