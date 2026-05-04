@@ -1009,9 +1009,22 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client);
         const service = TmuxService();
+        final stdoutController = StreamController<Uint8List>();
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          onWrite: (value) {
+            if (value.startsWith('refresh-client ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+                ),
+              );
+            }
+          },
+        );
         final execSessions = Queue<SSHSession>.from([
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
-          _buildOpenExecSession(),
+          controlSession,
         ]);
 
         when(
@@ -1025,12 +1038,18 @@ void main() {
               extraFlags: r'-S /tmp/socket -x 160 \; set status off',
             )
             .listen((_) {});
+        addTearDown(() async {
+          await subscription.cancel();
+          service.clearCache(1);
+          await stdoutController.close();
+        });
         await untilCalled(
           () => client.execute(
             any(that: contains('attach-session')),
             pty: any(named: 'pty'),
           ),
         );
+        await untilCalled(() => controlSession.write(any()));
 
         final command =
             verify(
@@ -1048,8 +1067,6 @@ void main() {
           ),
         );
         expect(command, isNot(contains('set status off')));
-
-        await subscription.cancel();
       },
     );
 
