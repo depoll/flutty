@@ -162,16 +162,8 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Run tests with coverage
-        run: flutter test --no-pub --coverage --no-test-assets --exclude-tags needs-assets --total-shards 4 --shard-index ${{ matrix.shard-index }}
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
-        with:
-          file: coverage/lcov.info
-          flags: unit-shard-${{ matrix.shard-index }}
-          name: unit-shard-${{ matrix.shard-index }}
-          fail_ci_if_error: false
+      - name: Run tests
+        run: flutter test --no-pub --no-test-assets --exclude-tags needs-assets --total-shards 4 --shard-index ${{ matrix.shard-index }}
 
   asset-test:
     name: Test (Assets)
@@ -193,16 +185,8 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Run asset-dependent tests with coverage
-        run: flutter test --no-pub --coverage --tags needs-assets test/app/app_metadata_test.dart
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
-        with:
-          file: coverage/lcov.info
-          flags: unit-assets
-          name: unit-assets
-          fail_ci_if_error: false
+      - name: Run asset-dependent tests
+        run: flutter test --no-pub --tags needs-assets test/app/app_metadata_test.dart
 
   # ---------------------------------------------------------------------------
   # Platform builds — conditional on detected changes.
