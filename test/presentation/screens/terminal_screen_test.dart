@@ -65,6 +65,27 @@ class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
   Future<bool> get enabled async => _enabled;
 }
 
+class _RecordingSftpPage extends StatefulWidget {
+  const _RecordingSftpPage({required this.onOpened});
+
+  final VoidCallback onOpened;
+
+  @override
+  State<_RecordingSftpPage> createState() => _RecordingSftpPageState();
+}
+
+class _RecordingSftpPageState extends State<_RecordingSftpPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onOpened();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const Scaffold(body: Text('SFTP opened'));
+}
+
 class _RecordingLocalNotificationService extends LocalNotificationService {
   final shownNotificationIds = <int>[];
   final clearedNotificationIds = <int>[];
@@ -829,6 +850,71 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('browse files ignores duplicate taps while SFTP is opening', (
+      tester,
+    ) async {
+      var sftpOpenCount = 0;
+      final router = GoRouter(
+        initialLocation:
+            '/terminal/${host.id}?connectionId=${session.connectionId}',
+        routes: [
+          GoRoute(
+            path: '/terminal/:hostId',
+            name: Routes.terminal,
+            builder: (context, state) => TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+          GoRoute(
+            path: '/sftp/:hostId',
+            name: Routes.sftp,
+            builder: (context, state) =>
+                _RecordingSftpPage(onOpened: () => sftpOpenCount += 1),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+            sharedClipboardProvider.overrideWith((ref) async => false),
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final browseFilesButton = find.byTooltip('Browse files');
+      expect(browseFilesButton, findsOneWidget);
+
+      await tester.tap(browseFilesButton);
+      await tester.tap(browseFilesButton);
+      await tester.pumpAndSettle();
+
+      expect(sftpOpenCount, 1);
+      expect(find.text('SFTP opened'), findsOneWidget);
+
+      router.pop();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Browse files'));
+      await tester.pumpAndSettle();
+
+      expect(sftpOpenCount, 2);
     });
 
     testWidgets('shows jump host indicator for tunneled sessions', (
