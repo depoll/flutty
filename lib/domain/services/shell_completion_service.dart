@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'diagnostics_log_service.dart';
-import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 
 /// Type of completion being requested from the side-channel shell.
@@ -122,12 +122,16 @@ class ShellCompletionService {
   /// Creates a shell completion service.
   ShellCompletionService({
     this.timeout = const Duration(milliseconds: 1500),
+    this.interactiveZshTimeout = const Duration(milliseconds: 1000),
     this.maxOutputChars = 12000,
     this.cacheTtl = const Duration(seconds: 2),
   });
 
   /// Maximum time to wait for a completion exec.
   final Duration timeout;
+
+  /// Maximum time to wait for the PTY-backed zsh completion attempt.
+  final Duration interactiveZshTimeout;
 
   /// Maximum stdout characters to buffer from the remote helper.
   final int maxOutputChars;
@@ -184,10 +188,7 @@ class ShellCompletionService {
   ) async {
     final startedAt = DateTime.now();
     final output = await session
-        .runQueuedExec(
-          () => _runCompletionCommand(session, invocation),
-          priority: SshExecPriority.low,
-        )
+        .runQueuedExec(() => _runCompletionCommand(session, invocation))
         .onError<Object>((error, stackTrace) {
           if (staticSuggestions != null) {
             return '';
@@ -218,6 +219,27 @@ class ShellCompletionService {
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
+    if (_shouldTryInteractiveZshCompletion(invocation)) {
+      try {
+        final result = await _runInteractiveZshCompletionCommand(
+          session,
+          invocation,
+        );
+        if (result.didComplete) {
+          return result.output;
+        }
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.debug(
+          'shell_completion',
+          'interactive_zsh_unavailable',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+      }
+    }
+
     final command = buildShellCompletionRemoteCommand(invocation);
     final exec = await session.execute(command);
     try {
@@ -257,6 +279,44 @@ class ShellCompletionService {
     }
   }
 
+  Future<_InteractiveCompletionResult> _runInteractiveZshCompletionCommand(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) async {
+    final command = buildInteractiveZshCompletionRemoteCommand(invocation);
+    final exec = await session.execute(command, pty: const SSHPtyConfig());
+    try {
+      final stdout = StringBuffer();
+      final stdoutFuture = exec.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .forEach((chunk) {
+            if (stdout.length >= maxOutputChars) {
+              return;
+            }
+            final remaining = maxOutputChars - stdout.length;
+            stdout.write(
+              chunk.length <= remaining ? chunk : chunk.substring(0, remaining),
+            );
+          });
+      final stderrFuture = exec.stderr.drain<void>();
+      exec.write(utf8.encode(buildInteractiveZshCompletionInput(invocation)));
+      await exec.stdin.close();
+      await Future.wait<void>([
+        stdoutFuture,
+        stderrFuture,
+        exec.done,
+      ]).timeout(interactiveZshTimeout);
+      final output = stdout.toString();
+      return _InteractiveCompletionResult(
+        output: output,
+        didComplete: _containsInteractiveZshCompletionDoneMarker(output),
+      );
+    } finally {
+      exec.close();
+    }
+  }
+
   void _trimCompletionCache(DateTime now) {
     _cache.removeWhere(
       (key, value) => now.difference(value.createdAt) > cacheTtl,
@@ -281,6 +341,16 @@ class _ShellCompletionCacheEntry {
 
   final DateTime createdAt;
   final List<ShellCompletionSuggestion> suggestions;
+}
+
+class _InteractiveCompletionResult {
+  const _InteractiveCompletionResult({
+    required this.output,
+    required this.didComplete,
+  });
+
+  final String output;
+  final bool didComplete;
 }
 
 String _shellCompletionCacheKey(
@@ -865,6 +935,128 @@ bool _isUnescapedShellTokenChar(String char) {
       char == '~';
 }
 
+const _interactiveZshCompletionDoneMarker = '__FLUTTY_ZSH_NATIVE_DONE__';
+
+bool _shouldTryInteractiveZshCompletion(ShellCompletionInvocation invocation) =>
+    invocation.mode != ShellCompletionMode.command;
+
+bool _containsInteractiveZshCompletionDoneMarker(String output) {
+  for (final rawLine in const LineSplitter().convert(output)) {
+    if (rawLine.replaceAll('\r', '').trim() ==
+        _interactiveZshCompletionDoneMarker) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Builds the remote command that starts a PTY-backed zsh completion shell.
+@visibleForTesting
+String buildInteractiveZshCompletionRemoteCommand(
+  ShellCompletionInvocation invocation,
+) {
+  final cwd = invocation.workingDirectory?.trim();
+  final preferredShell = invocation.shellCommand?.trim() ?? '';
+  final mode = invocation.mode.name;
+  final setupScript = _interactiveZshCompletionSetupScript();
+  return '''
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; stty -echo 2>/dev/null || :; export FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_PREFERRED_SHELL=${_shellQuote(preferredShell)} FLUTTY_MODE=${_shellQuote(mode)}; flutty_shell=\${FLUTTY_PREFERRED_SHELL:-\${SHELL:-}}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in zsh) if [ -x "\$flutty_shell" ]; then flutty_runner=\$flutty_shell; else flutty_runner=\$(command -v zsh 2>/dev/null || :); fi;; *) exit 78;; esac; [ -n "\$flutty_runner" ] || exit 78; if [ -n "\$FLUTTY_CWD" ]; then cd -- "\$FLUTTY_CWD" 2>/dev/null || cd -- "\$HOME" 2>/dev/null || :; fi; flutty_setup=\$(mktemp "\${TMPDIR:-/tmp}/flutty-zsh-completion.XXXXXX") || exit 78; cat >"\$flutty_setup" <<'__FLUTTY_ZSH_COMPLETION_SETUP__'
+$setupScript
+__FLUTTY_ZSH_COMPLETION_SETUP__
+export FLUTTY_ZSH_COMPLETION_SETUP="\$flutty_setup"; exec "\$flutty_runner" -fi
+''';
+}
+
+/// Builds stdin sent to the PTY-backed zsh completion shell.
+@visibleForTesting
+String buildInteractiveZshCompletionInput(
+  ShellCompletionInvocation invocation,
+) {
+  final commandLine = invocation.commandLine;
+  return '''
+source "\$FLUTTY_ZSH_COMPLETION_SETUP" >/dev/null 2>&1 || exit 78
+$commandLine\t''';
+}
+
+String _interactiveZshCompletionSetupScript() =>
+    '''
+source_if_readable() {
+  [ -r "\$1" ] || return 0
+  . "\$1" >/dev/null 2>&1 || :
+}
+TRAPEXIT() {
+  rm -f "\${FLUTTY_ZSH_COMPLETION_SETUP:-}" 2>/dev/null || :
+}
+source_if_readable "\$HOME/.zprofile"
+source_if_readable "\$HOME/.zshrc"
+autoload -Uz compinit
+compinit -C >/dev/null 2>&1 || compinit -u >/dev/null 2>&1 || :
+zstyle ':completion:*' verbose no
+zstyle ':completion:*' group-name ''
+zstyle ':completion:*' format ''
+emit_native_completion_item() {
+  local item=\$1
+  case "\$FLUTTY_MODE" in
+    directory)
+      [ -d "\$item" ] && printf 'directory\\t%s\\n' "\$item"
+      ;;
+    path)
+      if [ -d "\$item" ]; then
+        printf 'directory\\t%s\\n' "\$item"
+      elif [ -e "\$item" ]; then
+        printf 'file\\t%s\\n' "\$item"
+      fi
+      ;;
+    *)
+      if [ -d "\$item" ]; then
+        printf 'directory\\t%s\\n' "\$item"
+      elif [ -e "\$item" ]; then
+        printf 'file\\t%s\\n' "\$item"
+      else
+        printf 'argument\\t%s\\n' "\$item"
+      fi
+      ;;
+  esac
+}
+_flutty_dump_completions() {
+  typeset -ga _flutty_matches
+  _flutty_matches=()
+  compadd() {
+    local -a original_args capture_args out
+    original_args=("\$@")
+    while (( \$# )); do
+      case "\$1" in
+        -O|-A)
+          shift 2
+          ;;
+        -O*|-A*)
+          shift
+          ;;
+        *)
+          capture_args+=("\$1")
+          shift
+          ;;
+      esac
+    done
+    builtin compadd -O out "\${capture_args[@]}" 2>/dev/null || :
+    _flutty_matches+=("\${out[@]}")
+    builtin compadd "\${original_args[@]}" 2>/dev/null
+    local status=\$?
+    return \$status
+  }
+  _main_complete >/dev/null 2>&1 || :
+  print -r -- __FLUTTY_ZSH_NATIVE_START__
+  local item
+  for item in "\${_flutty_matches[@]}"; do
+    emit_native_completion_item "\$item"
+  done
+  print -r -- $_interactiveZshCompletionDoneMarker
+  exit 0
+}
+zle -C _flutty_complete complete-word _flutty_dump_completions
+bindkey "^I" _flutty_complete
+''';
+
 /// Builds the remote shell helper command for a completion invocation.
 @visibleForTesting
 String buildShellCompletionRemoteCommand(ShellCompletionInvocation invocation) {
@@ -1014,125 +1206,6 @@ emit_path_matches() {
   emit_path_fallback "\$mode" "\$token"
 }
 
-emit_native_completion_item() {
-  item=\$1
-  case "\$FLUTTY_MODE" in
-    command)
-      emit_line command "\$item"
-      ;;
-    directory)
-      [ -d "\$item" ] && emit_line directory "\$item"
-      ;;
-    path)
-      if [ -d "\$item" ]; then
-        emit_line directory "\$item"
-      elif [ -e "\$item" ]; then
-        emit_line file "\$item"
-      fi
-      ;;
-    argument)
-      if [ -d "\$item" ]; then
-        emit_line directory "\$item"
-      elif [ -e "\$item" ]; then
-        emit_line file "\$item"
-      else
-        emit_line argument "\$item"
-      fi
-      ;;
-  esac
-}
-
-read_zsh_pty_until() {
-  emulate -L zsh
-  local pty_name=\$1 marker=\$2 chunk output attempts
-  output=
-  attempts=0
-  while (( attempts < 80 )); do
-    if zpty -r -t "\$pty_name" chunk '*'; then
-      output+="\$chunk"
-      [[ "\$output" == *"\$marker"* ]] && break
-    else
-      sleep 0.025
-      attempts=\$((attempts + 1))
-    fi
-  done
-  print -rn -- "\$output"
-  [[ "\$output" == *"\$marker"* ]]
-}
-
-emit_zsh_native_matches() {
-  emulate -L zsh
-  [ -n "\${ZSH_VERSION:-}" ] || return 1
-  zmodload zsh/zpty 2>/dev/null || return 1
-
-  local setup_file pty_name ready_output native_output line in_matches
-  setup_file=\$(mktemp "\${TMPDIR:-/tmp}/flutty-completion.XXXXXX") ||
-    return 1
-  pty_name="_flutty_completion_\$\$"
-  {
-    cat >| "\$setup_file" <<'__FLUTTY_ZSH_COMPLETION_SETUP__'
-source_if_readable() {
-  [ -r "\$1" ] || return 0
-  . "\$1" >/dev/null 2>&1 || :
-}
-source_if_readable "\$HOME/.zprofile"
-source_if_readable "\$HOME/.zshrc"
-autoload -Uz compinit
-compinit -C >/dev/null 2>&1 || compinit -u >/dev/null 2>&1 || :
-zstyle ':completion:*' verbose no
-zstyle ':completion:*' group-name ''
-zstyle ':completion:*' format ''
-_flutty_dump_completions() {
-  typeset -ga _flutty_matches
-  _flutty_matches=()
-  compadd() {
-    local -a out
-    builtin compadd -O out "\$@" 2>/dev/null
-    local status=\$?
-    _flutty_matches+=("\${out[@]}")
-    return \$status
-  }
-  _main_complete >/dev/null 2>&1 || :
-  print -r -- __FLUTTY_ZSH_START__
-  print -rl -- "\${_flutty_matches[@]}"
-  print -r -- __FLUTTY_ZSH_END__
-  exit 0
-}
-zle -C _flutty_complete complete-word _flutty_dump_completions
-bindkey "^I" _flutty_complete
-print -r -- __FLUTTY_ZSH_READY__
-__FLUTTY_ZSH_COMPLETION_SETUP__
-
-    zpty -b "\$pty_name" zsh -fi || return 1
-    zpty -w "\$pty_name" "source \${(q)setup_file}"\$'\\n'
-    ready_output=\$(read_zsh_pty_until "\$pty_name" __FLUTTY_ZSH_READY__) ||
-      return 1
-    zpty -w "\$pty_name" "\$FLUTTY_COMMAND_LINE"\$'\\t'
-    native_output=\$(read_zsh_pty_until "\$pty_name" __FLUTTY_ZSH_END__) ||
-      return 1
-
-    in_matches=0
-    while IFS= read -r line; do
-      line=\${line//\$'\\r'/}
-      case "\$line" in
-        *__FLUTTY_ZSH_START__*)
-          in_matches=1
-          continue
-          ;;
-        *__FLUTTY_ZSH_END__*)
-          break
-          ;;
-      esac
-      (( in_matches )) || continue
-      [ -n "\$line" ] || continue
-      emit_native_completion_item "\$line" || break
-    done <<< "\$native_output"
-  } always {
-    zpty -d "\$pty_name" 2>/dev/null || :
-    rm -f "\$setup_file" 2>/dev/null || :
-  }
-}
-
 emit_bash_programmable_argument_matches() {
   command -v bash >/dev/null 2>&1 || return 1
   bash --noprofile --norc -s <<'__FLUTTY_BASH_COMPLETION__'
@@ -1256,17 +1329,15 @@ case "\$FLUTTY_MODE" in
     fi
     ;;
   argument)
-    if ! emit_zsh_native_matches &&
-        ! emit_dynamic_argument_matches &&
-        [ -n "\$FLUTTY_TOKEN" ]; then
+    if ! emit_dynamic_argument_matches && [ -n "\$FLUTTY_TOKEN" ]; then
       emit_path_matches path "\$FLUTTY_TOKEN"
     fi
     ;;
   directory)
-    emit_zsh_native_matches || emit_path_matches directory "\$FLUTTY_TOKEN"
+    emit_path_matches directory "\$FLUTTY_TOKEN"
     ;;
   path)
-    emit_zsh_native_matches || emit_path_matches path "\$FLUTTY_TOKEN"
+    emit_path_matches path "\$FLUTTY_TOKEN"
     ;;
 esac
 __FLUTTY_COMPLETION__

@@ -215,7 +215,7 @@ const _tmuxDetectionRetrySchedule = <Duration>[
   Duration(milliseconds: 1400),
 ];
 const _shellCompletionDebounce = Duration(milliseconds: 220);
-const _shellCompletionTmuxContextTtl = Duration(milliseconds: 750);
+const _shellCompletionTmuxContextTtl = Duration(seconds: 5);
 const _shellCompletionShellCommands = <String>{
   'ash',
   'bash',
@@ -4067,16 +4067,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ((_tmuxWorkingDirectory?.trim().isNotEmpty ?? false) ||
             (_tmuxCurrentCommand?.trim().isNotEmpty ?? false))) {
       final cachedCommand = _tmuxCurrentCommand?.trim();
-      if (_isUsingAltBuffer &&
+      final cachedShellCommand =
           cachedCommand != null &&
-          cachedCommand.isNotEmpty &&
-          !isShellCompletionTmuxShellCommand(cachedCommand)) {
-        return (
-          canComplete: false,
-          workingDirectory: workingDirectory,
-          shellCommand: cachedCommand,
-        );
-      }
+              isShellCompletionTmuxShellCommand(cachedCommand)
+          ? cachedCommand
+          : null;
       final tmuxWorkingDirectory = _tmuxWorkingDirectory?.trim();
       if (tmuxWorkingDirectory != null && tmuxWorkingDirectory.isNotEmpty) {
         workingDirectory = tmuxWorkingDirectory;
@@ -4084,7 +4079,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (
         canComplete: true,
         workingDirectory: workingDirectory,
-        shellCommand: cachedCommand,
+        shellCommand: cachedShellCommand,
       );
     }
 
@@ -4095,7 +4090,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           .currentPaneContext(
             session,
             tmuxSessionName,
-            priority: SshExecPriority.low,
             extraFlags: _host?.tmuxExtraFlags,
           );
     } on Exception catch (error) {
@@ -4132,20 +4126,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final tmuxCommand = (freshCommand?.isNotEmpty ?? false)
         ? freshCommand
         : _tmuxCurrentCommand;
-    if (_isUsingAltBuffer &&
-        tmuxCommand != null &&
-        !isShellCompletionTmuxShellCommand(tmuxCommand)) {
-      DiagnosticsLogService.instance.debug(
-        'shell_completion',
-        'tmux_non_shell_pane',
-        fields: {'connectionId': session.connectionId},
-      );
-      return (
-        canComplete: false,
-        workingDirectory: workingDirectory,
-        shellCommand: tmuxCommand,
-      );
-    }
+    final tmuxShellCommand =
+        tmuxCommand != null && isShellCompletionTmuxShellCommand(tmuxCommand)
+        ? tmuxCommand
+        : null;
 
     final tmuxWorkingDirectory = _tmuxWorkingDirectory?.trim();
     if (tmuxWorkingDirectory != null && tmuxWorkingDirectory.isNotEmpty) {
@@ -4154,7 +4138,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return (
       canComplete: true,
       workingDirectory: workingDirectory,
-      shellCommand: tmuxCommand,
+      shellCommand: tmuxShellCommand,
     );
   }
 

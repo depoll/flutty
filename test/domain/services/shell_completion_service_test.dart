@@ -294,12 +294,48 @@ void main() {
     expect(command, contains(r'eval "$FLUTTY_COMP_WORDS_ASSIGNMENT"'));
     expect(command, contains(r'_completion_loader "$cmd"'));
     expect(command, contains('emit_dynamic_argument_matches'));
-    expect(command, contains('emit_zsh_native_matches'));
-    expect(command, contains('zpty -b'));
-    expect(command, contains('zle -C _flutty_complete'));
+    expect(command, isNot(contains('zpty -b')));
     expect(command, contains(r'''printf '%s\n' "$item"'''));
     expect(command, contains(r'source_if_readable "$HOME/.bash_profile"'));
     expect(command, contains(r'emit_line command "$item" || break'));
     expect(command, contains("FLUTTY_CWD='/Users/depoll/project'"));
   });
+
+  test(
+    'interactive zsh command drives zle completions through the active shell',
+    () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git c',
+        cursorOffset: 5,
+        token: 'c',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        shellCommand: 'zsh',
+        words: ['git', 'c'],
+        wordIndex: 1,
+        workingDirectory: '/Users/depoll/project',
+      );
+
+      final command = buildInteractiveZshCompletionRemoteCommand(invocation);
+      final input = buildInteractiveZshCompletionInput(invocation);
+
+      expect(command, contains("FLUTTY_PREFERRED_SHELL='zsh'"));
+      expect(
+        command,
+        contains(r'flutty_shell=${FLUTTY_PREFERRED_SHELL:-${SHELL:-}}'),
+      );
+      expect(command, contains('stty -echo'));
+      expect(command, contains("FLUTTY_MODE='argument'"));
+      expect(command, contains('flutty-zsh-completion.'));
+      expect(command, contains(r'source_if_readable "$HOME/.zshrc"'));
+      expect(command, contains('zle -C _flutty_complete'));
+      expect(command, contains('bindkey "^I" _flutty_complete'));
+      expect(command, contains(r'exec "$flutty_runner" -fi'));
+      expect(input, contains(r'source "$FLUTTY_ZSH_COMPLETION_SETUP"'));
+      expect(input, contains('git c\t'));
+      expect(command, contains('__FLUTTY_ZSH_NATIVE_DONE__'));
+      expect(command, contains(r'''printf 'argument\t%s\n' "$item"'''));
+    },
+  );
 }
