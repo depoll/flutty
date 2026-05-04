@@ -1821,7 +1821,7 @@ String buildTmuxRefreshForegroundClientsCommand(
       'done';
 }
 
-/// Builds a command that updates tmux's pane palette, notifies active TUIs, and
+/// Builds a command that updates tmux's pane palette, notifies TUI panes, and
 /// redraws foreground clients.
 @visibleForTesting
 String buildTmuxRefreshTerminalThemeCommand(
@@ -1865,7 +1865,6 @@ String buildTmuxRefreshTerminalThemeCommand(
       '$setPaneColours '
       '$provideClientThemeReports '
       'injected=0; foreground_tui=0; '
-      r'if [ "$active" = 1 ]; then '
       r'case "${pane_command##*/}" in '
       "''|sh|bash|zsh|fish|nu|pwsh|powershell|cmd|cmd.exe|tmux|ssh|mosh|login) foreground_tui=0 ;; "
       '*) foreground_tui=1 ;; '
@@ -1886,7 +1885,6 @@ String buildTmuxRefreshTerminalThemeCommand(
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & ;; '
       'esac ;; '
       'esac; '
-      'fi; '
       'fi; '
       r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
       'done; wait; }; '

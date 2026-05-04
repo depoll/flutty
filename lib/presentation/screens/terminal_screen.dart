@@ -2222,6 +2222,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   static const _tmuxForegroundVerificationInterval = Duration(seconds: 5);
+  static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
+    milliseconds: 150,
+  );
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -2380,6 +2383,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final Set<Timer> _terminalThemeRefreshTimers = <Timer>{};
   bool _isTmuxThemeRefreshRunning = false;
   _TmuxTerminalThemeRefreshRequest? _pendingTmuxThemeRefreshRequest;
+  Timer? _tmuxWindowThemeRefreshDebounceTimer;
+  _TmuxTerminalThemeRefreshRequest? _pendingTmuxWindowThemeRefreshRequest;
   bool _terminalThemeDependencyReloadQueued = false;
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
@@ -3152,6 +3157,72 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange({
+    required SshSession session,
+    required String sessionName,
+    required String reason,
+  }) {
+    if (!_isTmuxActive ||
+        _tmuxStateConnectionId != session.connectionId ||
+        _tmuxSessionName != sessionName ||
+        session.terminal != _terminal) {
+      return;
+    }
+
+    final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+    if (session.terminalTheme == null) {
+      _applyTerminalThemeToSession(
+        theme,
+        session: session,
+        forceRemoteRefresh: true,
+        reason: reason,
+      );
+      return;
+    }
+
+    _pendingTmuxWindowThemeRefreshRequest = _TmuxTerminalThemeRefreshRequest(
+      theme: theme,
+      session: session,
+      sessionName: sessionName,
+      refreshGeneration: _terminalThemeRefreshGeneration,
+      reason: reason,
+      extraFlags: _host?.tmuxExtraFlags,
+    );
+    if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
+      return;
+    }
+
+    late final Timer timer;
+    timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
+        _tmuxWindowThemeRefreshDebounceTimer = null;
+      }
+      final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
+      _pendingTmuxWindowThemeRefreshRequest = null;
+      if (pendingRequest == null ||
+          _tmuxSessionName != pendingRequest.sessionName ||
+          !_isCurrentTerminalThemeRefresh(
+            theme: pendingRequest.theme,
+            session: pendingRequest.session,
+            refreshGeneration: pendingRequest.refreshGeneration,
+          )) {
+        return;
+      }
+      _queueTmuxTerminalThemeRefresh(pendingRequest);
+    });
+    _tmuxWindowThemeRefreshDebounceTimer = timer;
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
   void _scheduleTmuxTerminalThemeRefresh(
     _TmuxTerminalThemeRefreshRequest request, {
     required Duration delay,
@@ -3341,10 +3412,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _cancelTerminalThemeRefreshTimers() {
+    _cancelPendingTmuxWindowThemeRefresh();
     for (final timer in _terminalThemeRefreshTimers) {
       timer.cancel();
     }
     _terminalThemeRefreshTimers.clear();
+  }
+
+  void _cancelPendingTmuxWindowThemeRefresh() {
+    final timer = _tmuxWindowThemeRefreshDebounceTimer;
+    if (timer != null) {
+      timer.cancel();
+      _terminalThemeRefreshTimers.remove(timer);
+    }
+    _tmuxWindowThemeRefreshDebounceTimer = null;
+    _pendingTmuxWindowThemeRefreshRequest = null;
   }
 
   bool _isCurrentTerminalThemeRefresh({
@@ -4545,6 +4627,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _clearTmuxState() {
     _stopTmuxForegroundVerification();
+    _cancelPendingTmuxWindowThemeRefresh();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
@@ -5130,6 +5213,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ref: ref,
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
+      onWindowStateChanged: _handleTmuxWindowStateChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
@@ -5336,6 +5420,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       forceVisibleTmux: forceVisibleTmux,
     );
     _scheduleTerminalSizeRefresh();
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_switched',
+    );
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -5381,6 +5470,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     await _reattachTmuxIfNeeded(session, sessionName);
     _scheduleTerminalSizeRefresh();
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_created',
+    );
   }
 
   /// Closes a tmux window via exec channel.
@@ -5397,6 +5491,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _host?.tmuxExtraFlags,
         );
     _scheduleTerminalSizeRefresh();
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_closed',
+    );
   }
 
   Future<void> _reattachTmuxIfNeeded(
