@@ -208,7 +208,7 @@ void main() {
           maxPerTool: any(named: 'maxPerTool'),
           toolName: any(named: 'toolName'),
         ),
-      ).called(5);
+      ).called(1);
     });
 
     testWidgets('recovers from a transient empty window reload', (

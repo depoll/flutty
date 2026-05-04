@@ -76,7 +76,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   static const _denseTileVisualDensity = VisualDensity(vertical: -2);
   static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
-  static const _prefetchSessionFetchLimit = 6;
   static const _pendingSelectionTimeout = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
@@ -265,9 +264,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     _applyWindows(windows);
-    if (widget.isProUser && _showSessions) {
-      unawaited(_prefetchPreferredSessionProvider(windows: windows));
-    }
   }
 
   void _applyWindows(List<TmuxWindow> windows) {
@@ -432,20 +428,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         );
   }
 
-  Future<void> _prefetchPreferredSessionProvider({
-    List<TmuxWindow>? windows,
-    int maxPerTool = _prefetchSessionFetchLimit,
-  }) async {
-    final toolName = _preferredLaunchTool?.discoveredSessionToolName;
-    if (toolName == null || toolName.isEmpty) return;
-    await _discovery.prefetchSessions(
-      widget.session,
-      workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
-      maxPerTool: maxPerTool,
-      toolName: toolName,
-    );
-  }
-
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
       _pendingWindowReload = true;
@@ -534,9 +516,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         _resetWindowReloadRecovery();
       }
       _applyWindows(windows);
-      if (widget.isProUser && _showSessions) {
-        unawaited(_prefetchPreferredSessionProvider(windows: windows));
-      }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
@@ -880,9 +859,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             // Refresh window list when expanding to get current active state.
             if (!wasExpanded) {
               _loadWindows();
-              if (widget.isProUser && _showSessions) {
-                unawaited(_prefetchPreferredSessionProvider());
-              }
             }
           },
           child: SizedBox(
@@ -1051,9 +1027,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               _hasInitializedSessionProviders = true;
             }
           });
-          if (showSessions) {
-            unawaited(_prefetchPreferredSessionProvider());
-          }
         },
       ),
       if (_hasInitializedSessionProviders)
@@ -1073,14 +1046,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               preferredToolName:
                   _preferredLaunchTool?.discoveredSessionToolName,
             ),
-            loadSessionsForTool: (toolName, maxSessions) =>
-                _discovery.discoverSessionsStream(
-                  widget.session,
-                  workingDirectory:
-                      _resolveRecentSessionScopeWorkingDirectory(),
-                  maxPerTool: maxSessions,
-                  toolName: toolName,
-                ),
+            loadSessions: (maxSessions) => _discovery.discoverSessionsStream(
+              widget.session,
+              workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
+              maxPerTool: maxSessions,
+            ),
             itemBuilder: (context, provider) =>
                 _buildSessionProviderTile(theme, provider),
           ),

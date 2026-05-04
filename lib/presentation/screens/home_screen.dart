@@ -2912,7 +2912,6 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   static const _initialSessionFetchLimit = 24;
-  static const _prefetchSessionFetchLimit = 6;
   static const _tmuxQueryRetryDelay = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
@@ -2999,9 +2998,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final preferredToolName = preset?.tool.discoveredSessionToolName;
     if (_preferredSessionToolName == preferredToolName) return;
     setState(() => _preferredSessionToolName = preferredToolName);
-    if (_showSessions) {
-      unawaited(_prefetchPreferredSessionProvider());
-    }
   }
 
   @override
@@ -3079,25 +3075,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       activeWorkingDirectory: activeWindow?.currentPath,
       sessionWorkingDirectory: session.workingDirectory,
     );
-  }
-
-  Future<void> _prefetchPreferredSessionProvider() async {
-    if (!_hasAgentSessionAccess) return;
-    final toolName = _preferredSessionToolName;
-    if (toolName == null || toolName.isEmpty) return;
-    final session = ref
-        .read(activeSessionsProvider.notifier)
-        .getSession(widget.connectionId);
-    if (session == null) return;
-
-    await ref
-        .read(agentSessionDiscoveryServiceProvider)
-        .prefetchSessions(
-          session,
-          workingDirectory: _resolveRecentSessionScopeWorkingDirectory(session),
-          maxPerTool: _prefetchSessionFetchLimit,
-          toolName: toolName,
-        );
   }
 
   void _scheduleTmuxRetry() {
@@ -3358,9 +3335,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     }
                   });
                   _persistUiState();
-                  if (showSessions) {
-                    unawaited(_prefetchPreferredSessionProvider());
-                  }
                 },
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -3418,13 +3392,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                           const <String>{},
                           preferredToolName: _preferredSessionToolName,
                         ),
-                        loadSessionsForTool: (toolName, maxSessions) => ref
+                        loadSessions: (maxSessions) => ref
                             .read(agentSessionDiscoveryServiceProvider)
                             .discoverSessionsStream(
                               session,
                               workingDirectory: scopeWorkingDirectory,
                               maxPerTool: maxSessions,
-                              toolName: toolName,
                             ),
                         itemBuilder: (context, provider) =>
                             _buildSessionProviderRow(theme, provider),

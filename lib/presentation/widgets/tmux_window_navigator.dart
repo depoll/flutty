@@ -154,7 +154,6 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
   static const _maxSessionsPerTool = 16;
-  static const _prefetchSessionFetchLimit = 6;
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -233,29 +232,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     final preferredLaunchTool = preset?.tool;
     if (_preferredLaunchTool == preferredLaunchTool) return;
     setState(() => _preferredLaunchTool = preferredLaunchTool);
-  }
-
-  Future<void> _prefetchPreferredSessionProvider({
-    List<TmuxWindow>? windows,
-    int maxPerTool = _prefetchSessionFetchLimit,
-  }) async {
-    final toolName = _preferredLaunchTool?.discoveredSessionToolName;
-    if (toolName == null || toolName.isEmpty) return;
-    final activeWindow = (windows ?? _windows)
-        ?.where((window) => window.isActive)
-        .firstOrNull;
-    final scopeWorkingDirectory =
-        widget.scopeWorkingDirectory ??
-        resolveAgentSessionScopeWorkingDirectory(
-          activeWorkingDirectory: activeWindow?.currentPath,
-          sessionWorkingDirectory: widget.session.workingDirectory,
-        );
-    await _discovery.prefetchSessions(
-      widget.session,
-      workingDirectory: scopeWorkingDirectory,
-      maxPerTool: maxPerTool,
-      toolName: toolName,
-    );
   }
 
   Future<void> _loadWindows() async {
@@ -751,9 +727,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               _hasInitializedSessionProviders = true;
             }
           });
-          if (showSessions) {
-            unawaited(_prefetchPreferredSessionProvider());
-          }
         },
       ),
       if (_hasInitializedSessionProviders)
@@ -777,7 +750,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               preferredToolName:
                   _preferredLaunchTool?.discoveredSessionToolName,
             ),
-            loadSessionsForTool: (toolName, maxSessions) {
+            loadSessions: (maxSessions) {
               final activeWindow = _windows
                   ?.where((w) => w.isActive)
                   .firstOrNull;
@@ -791,7 +764,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                 widget.session,
                 workingDirectory: scopeWorkingDirectory,
                 maxPerTool: maxSessions,
-                toolName: toolName,
               );
             },
             itemBuilder: (context, provider) =>
