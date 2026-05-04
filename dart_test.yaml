@@ -1,0 +1,3 @@
+tags:
+  needs-assets:
+    description: Tests that require Flutter's test asset bundle.
