@@ -1038,6 +1038,11 @@ void main() {
               extraFlags: r'-S /tmp/socket -x 160 \; set status off',
             )
             .listen((_) {});
+        addTearDown(() async {
+          await subscription.cancel();
+          service.clearCache(1);
+          await stdoutController.close();
+        });
         await untilCalled(
           () => client.execute(
             any(that: contains('attach-session')),
@@ -1062,9 +1067,6 @@ void main() {
           ),
         );
         expect(command, isNot(contains('set status off')));
-
-        await subscription.cancel();
-        await stdoutController.close();
       },
     );
 

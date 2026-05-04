@@ -136,7 +136,7 @@ jobs:
         run: dart format --set-exit-if-changed .
 
       - name: Analyze code
-        run: flutter analyze --fatal-warnings --no-pub
+        run: flutter analyze --fatal-warnings --fatal-infos --no-pub
 
   test:
     name: Test (Shard ${{ matrix.shard-index }}/4)
@@ -163,7 +163,7 @@ jobs:
         run: flutter pub get
 
       - name: Run tests with coverage
-        run: flutter test --no-pub --coverage --no-test-assets --total-shards 4 --shard-index ${{ matrix.shard-index }}
+        run: flutter test --no-pub --coverage --total-shards 4 --shard-index ${{ matrix.shard-index }}
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
