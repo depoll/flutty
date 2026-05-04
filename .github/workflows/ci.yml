@@ -163,7 +163,7 @@ jobs:
         run: flutter pub get
 
       - name: Run tests with coverage
-        run: flutter test --no-pub --coverage --total-shards 4 --shard-index ${{ matrix.shard-index }}
+        run: flutter test --no-pub --coverage --no-test-assets --exclude-tags needs-assets --total-shards 4 --shard-index ${{ matrix.shard-index }}
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
@@ -171,6 +171,37 @@ jobs:
           file: coverage/lcov.info
           flags: unit-shard-${{ matrix.shard-index }}
           name: unit-shard-${{ matrix.shard-index }}
+          fail_ci_if_error: false
+
+  asset-test:
+    name: Test (Assets)
+    needs: changes
+    if: needs.changes.outputs.run_check == 'true'
+    runs-on: ubicloud-standard-4
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run asset-dependent tests with coverage
+        run: flutter test --no-pub --coverage --tags needs-assets test/app/app_metadata_test.dart
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          file: coverage/lcov.info
+          flags: unit-assets
+          name: unit-assets
           fail_ci_if_error: false
 
   # ---------------------------------------------------------------------------
@@ -406,7 +437,7 @@ jobs:
   ci:
     name: CI
     if: ${{ always() && !cancelled() }}
-    needs: [changes, check, test, build-android, build-ios, build-macos, build-windows, build-linux]
+    needs: [changes, check, test, asset-test, build-android, build-ios, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -415,6 +446,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHECK_RESULT: ${{ needs.check.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          ASSET_TEST_RESULT: ${{ needs.asset-test.result }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
           IOS_RESULT: ${{ needs.build-ios.result }}
           MACOS_RESULT: ${{ needs.build-macos.result }}
@@ -426,6 +458,7 @@ jobs:
             "changes:$CHANGES_RESULT" \
             "check:$CHECK_RESULT" \
             "test:$TEST_RESULT" \
+            "asset-test:$ASSET_TEST_RESULT" \
             "build-android:$ANDROID_RESULT" \
             "build-ios:$IOS_RESULT" \
             "build-macos:$MACOS_RESULT" \
