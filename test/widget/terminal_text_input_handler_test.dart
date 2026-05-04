@@ -1248,13 +1248,6 @@ Map<dynamic, dynamic> _latestTextInputSetClientConfiguration(
   return _textInputConfigurationFromCall(call);
 }
 
-Map<dynamic, dynamic> _latestTextInputUpdateConfiguration(WidgetTester tester) {
-  final call = tester.testTextInput.log.lastWhere(
-    (call) => call.method == 'TextInput.updateConfig',
-  );
-  return _textInputConfigurationFromCall(call);
-}
-
 void main() {
   group('terminalTextLooksLikeSensitiveInputPrompt', () {
     test('detects common password-like prompts', () {
@@ -1337,7 +1330,7 @@ void main() {
       final configuration = _latestTextInputSetClientConfiguration(tester);
       final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
 
-      expect(inputType['name'], 'TextInputType.visiblePassword');
+      expect(inputType['name'], 'TextInputType.text');
       expect(configuration['obscureText'], isTrue);
       expect(configuration['autocorrect'], isFalse);
       expect(configuration['enableSuggestions'], isFalse);
@@ -1346,7 +1339,7 @@ void main() {
       await _disposeTerminalHarness(tester, harness);
     });
 
-    testWidgets('updates the active IME configuration for sensitive input', (
+    testWidgets('restarts the active IME connection for sensitive input', (
       tester,
     ) async {
       final terminal = Terminal();
@@ -1372,10 +1365,22 @@ void main() {
       await tester.pumpWidget(buildHarness(sensitiveInput: true));
       await tester.pump();
 
-      final configuration = _latestTextInputUpdateConfiguration(tester);
+      final configuration = _latestTextInputSetClientConfiguration(tester);
       final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
 
-      expect(inputType['name'], 'TextInputType.visiblePassword');
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.clearClient',
+        ),
+        hasLength(1),
+      );
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.updateConfig',
+        ),
+        isEmpty,
+      );
+      expect(inputType['name'], 'TextInputType.text');
       expect(configuration['obscureText'], isTrue);
       expect(configuration['enableSuggestions'], isFalse);
 

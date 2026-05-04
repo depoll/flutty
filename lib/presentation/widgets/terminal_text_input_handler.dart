@@ -328,6 +328,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   String? _pendingDeleteResetBaselineText;
   int? _pendingDeleteResetBaselineCursorOffset;
   String? _pendingDeleteResetDeletedSuffixText;
+  bool _isInputConnectionShown = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   int _iosBackspaceRunwayLength = 0;
@@ -365,8 +366,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
     if (hasInputConnection &&
-        (widget.keyboardAppearance != oldWidget.keyboardAppearance ||
-            widget.sensitiveInput != oldWidget.sensitiveInput)) {
+        widget.sensitiveInput != oldWidget.sensitiveInput) {
+      _restartInputConnection();
+    } else if (hasInputConnection &&
+        widget.keyboardAppearance != oldWidget.keyboardAppearance) {
       _connection!.updateConfig(_buildTextInputConfiguration());
     }
     if (!_shouldCreateInputConnection) {
@@ -814,6 +817,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (hasInputConnection) {
       _connection?.close();
     }
+    _isInputConnectionShown = false;
   }
 
   void _suppressNextTouchKeyboardRequest() {
@@ -921,10 +925,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      if (show) _connection!.show();
+      if (show) {
+        _connection!.show();
+        _isInputConnectionShown = true;
+      }
     } else {
       _connection = TextInput.attach(this, _buildTextInputConfiguration());
-      if (show) _connection!.show();
+      _isInputConnectionShown = false;
+      if (show) {
+        _connection!.show();
+        _isInputConnectionShown = true;
+      }
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastProcessedUserSelectionWasValid = false;
@@ -949,9 +960,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
         // ignore: avoid_redundant_argument_values
-        inputType: widget.sensitiveInput
-            ? TextInputType.visiblePassword
-            : TextInputType.text,
+        inputType: TextInputType.text,
         // ignore: avoid_redundant_argument_values
         autocorrect: !widget.sensitiveInput,
         // ignore: avoid_redundant_argument_values
@@ -977,6 +986,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
+    _isInputConnectionShown = false;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastProcessedUserSelectionWasValid = false;
@@ -993,6 +1003,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
+  }
+
+  void _restartInputConnection() {
+    final shouldShow = _isInputConnectionShown;
+    _closeInputConnectionIfNeeded();
+    _openInputConnection(show: shouldShow);
   }
 
   // -- Editing state --
