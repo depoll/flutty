@@ -962,6 +962,55 @@ branch refs/heads/main
     });
 
     test(
+      'all-provider discovery skips ACP probes for fast panel loads',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('worktree list --porcelain')) {
+            return _buildExecSession(
+              stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+            );
+          }
+          if (command.contains('~/.local/share/opencode/opencode.db')) {
+            return _buildExecSession(
+              stdout:
+                  'session-1\x1fOpenCode fast path\x1f/Users/depoll/Code/flutty\x1f1770000000\n',
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: '/Users/depoll/Code/flutty',
+        );
+
+        expect(
+          result.sessions.map((session) => session.toolName),
+          contains('OpenCode'),
+        );
+        expect(commands.where((command) => command.contains(' acp')), isEmpty);
+        expect(
+          commands.where(
+            (command) =>
+                command.contains('~/.local/share/opencode/opencode.db'),
+          ),
+          isNotEmpty,
+        );
+      },
+    );
+
+    test(
       'Codex discovery uses resumable UUID instead of rollout filename',
       () async {
         final client = _MockSshClient();

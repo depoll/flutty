@@ -25,7 +25,7 @@ const _remoteFileSnapshotBatchSize = 40;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
-const _acpResponseTimeout = Duration(seconds: 5);
+const _acpResponseTimeout = Duration(seconds: 2);
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -1277,6 +1277,7 @@ class AgentSessionDiscoveryService {
             workingDirectory,
             relatedWorkingDirectories,
             maxPerTool,
+            useAcp: false,
           ),
           _discoverCodexSessions(
             session,
@@ -1289,6 +1290,7 @@ class AgentSessionDiscoveryService {
             workingDirectory,
             relatedWorkingDirectories,
             maxPerTool,
+            useAcp: false,
           ),
           _discoverGeminiSessions(
             session,
@@ -1734,8 +1736,9 @@ class AgentSessionDiscoveryService {
     SshSession session,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
-    int max,
-  ) async {
+    int max, {
+    bool useAcp = true,
+  }) async {
     try {
       final scanLimit = _calculateDiscoveryScanLimit(
         max,
@@ -1743,20 +1746,21 @@ class AgentSessionDiscoveryService {
         minimum: 120,
         maximum: 240,
       );
-      final acpSessions = await _discoverAcpSessions(
-        session,
-        provider: _AcpSessionProvider.copilot,
-        toolName: 'Copilot CLI',
-        workingDirectory: workingDirectory,
-        relatedWorkingDirectories: relatedWorkingDirectories,
-        max: scanLimit,
-      );
-      if (acpSessions != null) {
-        return _ToolDiscoveryResult.success(
-          'Copilot CLI',
-          sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
-          hadError: acpSessions.hadError,
+      if (useAcp) {
+        final acpSessions = await _discoverAcpSessions(
+          session,
+          provider: _AcpSessionProvider.copilot,
+          toolName: 'Copilot CLI',
+          workingDirectory: workingDirectory,
+          max: scanLimit,
         );
+        if (acpSessions != null && acpSessions.sessions.isNotEmpty) {
+          return _ToolDiscoveryResult.success(
+            'Copilot CLI',
+            sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
+            hadError: acpSessions.hadError,
+          );
+        }
       }
 
       final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
@@ -2015,8 +2019,9 @@ class AgentSessionDiscoveryService {
     SshSession session,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
-    int max,
-  ) async {
+    int max, {
+    bool useAcp = true,
+  }) async {
     try {
       final scanLimit = _calculateDiscoveryScanLimit(
         max,
@@ -2024,20 +2029,21 @@ class AgentSessionDiscoveryService {
         maximum: 120,
       );
       var hadError = false;
-      final acpSessions = await _discoverAcpSessions(
-        session,
-        provider: _AcpSessionProvider.openCode,
-        toolName: 'OpenCode',
-        workingDirectory: workingDirectory,
-        relatedWorkingDirectories: relatedWorkingDirectories,
-        max: scanLimit,
-      );
-      if (acpSessions != null) {
-        return _ToolDiscoveryResult.success(
-          'OpenCode',
-          sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
-          hadError: acpSessions.hadError,
+      if (useAcp) {
+        final acpSessions = await _discoverAcpSessions(
+          session,
+          provider: _AcpSessionProvider.openCode,
+          toolName: 'OpenCode',
+          workingDirectory: workingDirectory,
+          max: scanLimit,
         );
+        if (acpSessions != null && acpSessions.sessions.isNotEmpty) {
+          return _ToolDiscoveryResult.success(
+            'OpenCode',
+            sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
+            hadError: acpSessions.hadError,
+          );
+        }
       }
 
       if (workingDirectory != null && workingDirectory.isNotEmpty) {
@@ -2229,25 +2235,17 @@ class AgentSessionDiscoveryService {
         }
       }, priority: SshExecPriority.low);
 
-  List<String?> _acpSessionListWorkingDirectories(
-    String? workingDirectory,
-    Iterable<String> relatedWorkingDirectories,
-  ) {
+  List<String?> _acpSessionListWorkingDirectories(String? workingDirectory) {
     final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
     if (trimmedWorkingDirectory == null) return const <String?>[null];
 
-    final directories = <String>{
-      ...relatedWorkingDirectories
-          .map(_trimWorkingDirectory)
-          .whereType<String>(),
+    final normalizedWorkingDirectory = normalizeWorkingDirectoryForComparison(
       trimmedWorkingDirectory,
-    };
-    return <String>{
-      for (final directory in directories) ...{
-        directory,
-        normalizeWorkingDirectoryForComparison(directory),
-      },
-    }.toList(growable: false);
+    );
+    if (normalizedWorkingDirectory == trimmedWorkingDirectory) {
+      return <String>[trimmedWorkingDirectory];
+    }
+    return <String>[trimmedWorkingDirectory, normalizedWorkingDirectory];
   }
 
   String _buildAcpSessionListCommand(
@@ -2266,44 +2264,19 @@ class AgentSessionDiscoveryService {
     required _AcpSessionProvider provider,
     required String toolName,
     required String? workingDirectory,
-    required List<String> relatedWorkingDirectories,
     required int max,
   }) async {
     final scopedWorkingDirectories = _acpSessionListWorkingDirectories(
       workingDirectory,
-      relatedWorkingDirectories,
     );
     try {
-      final scopedResult = await _listAcpSessions(
+      return await _listAcpSessions(
         session,
         provider: provider,
         toolName: toolName,
         workingDirectory: workingDirectory,
         listWorkingDirectories: scopedWorkingDirectories,
         max: max,
-      );
-      if (scopedResult == null || scopedResult.sessions.isNotEmpty) {
-        return scopedResult;
-      }
-      if (scopedWorkingDirectories.length == 1 &&
-          scopedWorkingDirectories.single == null) {
-        return scopedResult;
-      }
-
-      final unscopedResult = await _listAcpSessions(
-        session,
-        provider: provider,
-        toolName: toolName,
-        workingDirectory: workingDirectory,
-        listWorkingDirectories: const <String?>[null],
-        max: max,
-      );
-      if (unscopedResult == null) {
-        return scopedResult;
-      }
-      return _AcpSessionListResult(
-        sessions: unscopedResult.sessions,
-        hadError: scopedResult.hadError || unscopedResult.hadError,
       );
     } on Object {
       return null;
