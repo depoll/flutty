@@ -340,12 +340,9 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
   }
 
   void _applyDiscoveryResult(DiscoveredSessionsResult result) {
-    final sessionsByTool = <String>{};
-    for (final session in result.sessions) {
-      sessionsByTool.add(session.toolName);
-    }
-    final attemptedTools = result.attemptedTools.toSet();
-    final failedTools = result.failedTools.toSet();
+    final sessionsByTool = result.sessionTools;
+    final attemptedTools = result.attemptedTools;
+    final failedTools = result.failedTools;
 
     for (final toolName in _orderedTools) {
       final sawSessions = sessionsByTool.contains(toolName);

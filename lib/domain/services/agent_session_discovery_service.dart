@@ -107,16 +107,32 @@ List<String> orderedDiscoveredSessionTools(
 /// Discovered session results plus any tool histories that could not be read.
 class DiscoveredSessionsResult {
   /// Creates a new [DiscoveredSessionsResult].
-  DiscoveredSessionsResult({
+  factory DiscoveredSessionsResult({
     required Iterable<ToolSessionInfo> sessions,
     Iterable<String> failedTools = const <String>[],
     Iterable<String> attemptedTools = const <String>[],
-  }) : sessions = List<ToolSessionInfo>.unmodifiable(sessions),
-       failedTools = Set<String>.unmodifiable(failedTools),
-       attemptedTools = Set<String>.unmodifiable(attemptedTools);
+  }) {
+    final sessionList = List<ToolSessionInfo>.unmodifiable(sessions);
+    return DiscoveredSessionsResult._(
+      sessions: sessionList,
+      sessionTools: sessionList.map((session) => session.toolName).toSet(),
+      failedTools: Set<String>.unmodifiable(failedTools),
+      attemptedTools: Set<String>.unmodifiable(attemptedTools),
+    );
+  }
+
+  DiscoveredSessionsResult._({
+    required this.sessions,
+    required Set<String> sessionTools,
+    required this.failedTools,
+    required this.attemptedTools,
+  }) : sessionTools = Set<String>.unmodifiable(sessionTools);
 
   /// The sessions that were discovered successfully.
   final List<ToolSessionInfo> sessions;
+
+  /// Tool names represented by [sessions].
+  final Set<String> sessionTools;
 
   /// Tool names whose session history could not be loaded.
   final Set<String> failedTools;
@@ -1139,7 +1155,6 @@ class AgentSessionDiscoveryService {
     _inFlightDiscoveries[key] = controller.stream;
 
     unawaited(() async {
-      DiscoveredSessionsResult? latestResult;
       try {
         final relatedWorkingDirectories =
             await _resolveRelatedWorkingDirectoriesCached(
@@ -1163,27 +1178,41 @@ class AgentSessionDiscoveryService {
           discoveries.length,
           null,
         );
+        DiscoveredSessionsResult? previewSnapshot;
 
         while (pendingResults.isNotEmpty) {
           final completed = await Future.any(pendingResults.values);
           pendingResults.remove(completed.index)?.ignore();
           completedResults[completed.index] = completed.result;
-          latestResult = _buildDiscoveredSessionsResult(
-            completedResults.whereType<_ToolDiscoveryResult>(),
-            workingDirectory: workingDirectory,
-            relatedWorkingDirectories: relatedWorkingDirectories,
-            maxPerTool: maxPerTool,
-          );
-          _inFlightDiscoverySnapshots[key] = latestResult;
-          controller.add(latestResult);
+          if (toolName == null) {
+            final previewResult = _buildToolDiscoveryPreviewResult(
+              completed.result,
+              workingDirectory: workingDirectory,
+              relatedWorkingDirectories: relatedWorkingDirectories,
+            );
+            previewSnapshot = _mergeDiscoveryPreviewSnapshot(
+              previewSnapshot,
+              previewResult,
+            );
+            _inFlightDiscoverySnapshots[key] = previewSnapshot;
+            controller.add(previewResult);
+            await Future<void>.delayed(Duration.zero);
+          }
         }
 
-        if (latestResult != null) {
-          _discoveryCache[key] = _CachedDiscoveryResult(
-            result: latestResult,
-            cachedAt: _now(),
-          );
-        }
+        final latestResult = _buildDiscoveredSessionsResult(
+          completedResults.whereType<_ToolDiscoveryResult>(),
+          workingDirectory: workingDirectory,
+          relatedWorkingDirectories: relatedWorkingDirectories,
+          maxPerTool: maxPerTool,
+        );
+        _inFlightDiscoverySnapshots[key] = latestResult;
+        controller.add(latestResult);
+
+        _discoveryCache[key] = _CachedDiscoveryResult(
+          result: latestResult,
+          cachedAt: _now(),
+        );
       } on Object catch (error, stackTrace) {
         controller.addError(error, stackTrace);
       } finally {
@@ -1356,6 +1385,84 @@ class AgentSessionDiscoveryService {
       _ToolDiscoveryResult.success(toolName, const <ToolSessionInfo>[]),
     ),
   };
+
+  DiscoveredSessionsResult _buildToolDiscoveryPreviewResult(
+    _ToolDiscoveryResult result, {
+    required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
+  }) {
+    final previewSession = _firstToolDiscoveryPreviewSession(
+      result.sessions,
+      workingDirectory: workingDirectory,
+      relatedWorkingDirectories: relatedWorkingDirectories,
+    );
+    return DiscoveredSessionsResult(
+      sessions: previewSession == null
+          ? const <ToolSessionInfo>[]
+          : <ToolSessionInfo>[previewSession],
+      failedTools:
+          shouldSurfaceDiscoveryFailure(
+            hadError: result.hadError,
+            loadedSessionCount: result.sessions.length,
+          )
+          ? <String>[result.toolName]
+          : const <String>[],
+      attemptedTools: <String>[result.toolName],
+    );
+  }
+
+  ToolSessionInfo? _firstToolDiscoveryPreviewSession(
+    Iterable<ToolSessionInfo> sessions, {
+    required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
+  }) {
+    ToolSessionInfo? unscopedFallback;
+    for (final info in sessions) {
+      final normalized = normalizeDiscoveredSessionInfo(
+        info,
+        activeWorkingDirectory: workingDirectory,
+      );
+      if (normalized == null) continue;
+
+      if (workingDirectory == null || workingDirectory.isEmpty) {
+        return normalized;
+      }
+      if (matchesDiscoveredSessionWorkingDirectory(
+        workingDirectory,
+        normalized.workingDirectory,
+        relatedWorkingDirectories: relatedWorkingDirectories,
+      )) {
+        return normalized;
+      }
+      if (unscopedFallback == null &&
+          (normalized.workingDirectory == null ||
+              normalized.workingDirectory!.isEmpty)) {
+        unscopedFallback = normalized;
+      }
+    }
+    return unscopedFallback;
+  }
+
+  DiscoveredSessionsResult _mergeDiscoveryPreviewSnapshot(
+    DiscoveredSessionsResult? current,
+    DiscoveredSessionsResult next,
+  ) {
+    if (current == null) return next;
+    final sessionsByTool = <String, ToolSessionInfo>{
+      for (final session in current.sessions) session.toolName: session,
+    };
+    for (final session in next.sessions) {
+      sessionsByTool.putIfAbsent(session.toolName, () => session);
+    }
+    return DiscoveredSessionsResult(
+      sessions: sessionsByTool.values,
+      failedTools: <String>{...current.failedTools, ...next.failedTools},
+      attemptedTools: <String>{
+        ...current.attemptedTools,
+        ...next.attemptedTools,
+      },
+    );
+  }
 
   DiscoveredSessionsResult _buildDiscoveredSessionsResult(
     Iterable<_ToolDiscoveryResult> results, {
@@ -1574,7 +1681,7 @@ class AgentSessionDiscoveryService {
       }
       return _ToolDiscoveryResult.success(
         'Claude Code',
-        sortAndLimitDiscoveredSessions(sessions, tailCount),
+        sortAndLimitDiscoveredSessions(sessions, max),
         hadError: hadError,
       );
     } on Object {
@@ -1685,7 +1792,7 @@ class AgentSessionDiscoveryService {
         'Codex',
         sortAndLimitDiscoveredSessions(
           scopedSessions.isNotEmpty ? scopedSessions : sessions,
-          scanLimit,
+          max,
         ),
         hadError: hadError,
       );
@@ -1752,12 +1859,12 @@ class AgentSessionDiscoveryService {
           provider: _AcpSessionProvider.copilot,
           toolName: 'Copilot CLI',
           workingDirectory: workingDirectory,
-          max: scanLimit,
+          max: max,
         );
         if (acpSessions != null && acpSessions.sessions.isNotEmpty) {
           return _ToolDiscoveryResult.success(
             'Copilot CLI',
-            sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
+            sortAndLimitDiscoveredSessions(acpSessions.sessions, max),
             hadError: acpSessions.hadError,
           );
         }
@@ -1861,7 +1968,7 @@ class AgentSessionDiscoveryService {
 
       return _ToolDiscoveryResult.success(
         'Copilot CLI',
-        sortAndLimitDiscoveredSessions(sessions, scanLimit),
+        sortAndLimitDiscoveredSessions(sessions, max),
         hadError: hadError,
       );
     } on Object {
@@ -2005,7 +2112,7 @@ class AgentSessionDiscoveryService {
     }
     return _ToolDiscoveryResult.success(
       'Gemini CLI',
-      sortAndLimitDiscoveredSessions(sessions, scanLimit),
+      sortAndLimitDiscoveredSessions(sessions, max),
       hadError: hadError,
     );
   }
@@ -2035,12 +2142,12 @@ class AgentSessionDiscoveryService {
           provider: _AcpSessionProvider.openCode,
           toolName: 'OpenCode',
           workingDirectory: workingDirectory,
-          max: scanLimit,
+          max: max,
         );
         if (acpSessions != null && acpSessions.sessions.isNotEmpty) {
           return _ToolDiscoveryResult.success(
             'OpenCode',
-            sortAndLimitDiscoveredSessions(acpSessions.sessions, scanLimit),
+            sortAndLimitDiscoveredSessions(acpSessions.sessions, max),
             hadError: acpSessions.hadError,
           );
         }
@@ -2057,7 +2164,7 @@ class AgentSessionDiscoveryService {
             'OpenCode',
             sortAndLimitDiscoveredSessions(
               _parseOpenCodeDbOutput(scopedDbOutput),
-              scanLimit,
+              max,
             ),
           );
         }
@@ -2087,7 +2194,7 @@ class AgentSessionDiscoveryService {
             'OpenCode',
             sortAndLimitDiscoveredSessions(
               scopedSessions.isNotEmpty ? scopedSessions : sessions,
-              scanLimit,
+              max,
             ),
           );
         } on Object {
@@ -2118,7 +2225,7 @@ class AgentSessionDiscoveryService {
           'OpenCode',
           sortAndLimitDiscoveredSessions(
             scopedSessions.isNotEmpty ? scopedSessions : sessions,
-            scanLimit,
+            max,
           ),
           hadError: hadError,
         );

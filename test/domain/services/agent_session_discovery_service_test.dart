@@ -1011,6 +1011,56 @@ branch refs/heads/main
     );
 
     test(
+      'all-provider stream emits lightweight previews before final aggregate',
+      () async {
+        final client = _MockSshClient();
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          if (command.contains('~/.local/share/opencode/opencode.db')) {
+            return _buildExecSession(
+              stdout: List<String>.generate(
+                4,
+                (index) =>
+                    'session-$index\x1fOpenCode $index\x1f/Users/demo/project\x1f${1770000000 - index}',
+              ).join('\n'),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+
+        final results = await discovery
+            .discoverSessionsStream(session, maxPerTool: 2)
+            .toList();
+
+        expect(results, hasLength(greaterThan(1)));
+        expect(
+          results.take(results.length - 1),
+          everyElement(
+            isA<DiscoveredSessionsResult>()
+                .having(
+                  (result) => result.attemptedTools,
+                  'attemptedTools',
+                  hasLength(1),
+                )
+                .having(
+                  (result) => result.sessions,
+                  'sessions',
+                  hasLength(lessThanOrEqualTo(1)),
+                ),
+          ),
+        );
+        expect(results.last.attemptedTools, contains('OpenCode'));
+        expect(results.last.sessions.map((session) => session.sessionId), [
+          'session-0',
+          'session-1',
+        ]);
+      },
+    );
+
+    test(
       'Codex discovery uses resumable UUID instead of rollout filename',
       () async {
         final client = _MockSshClient();
