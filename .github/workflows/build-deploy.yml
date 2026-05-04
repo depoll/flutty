@@ -267,6 +267,21 @@ jobs:
         if: inputs.android-reuse-aab-artifact-name == ''
         run: flutter pub get
 
+      - name: Install Android CMake
+        if: inputs.android-reuse-aab-artifact-name == ''
+        run: |
+          set -euo pipefail
+          ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -z "$ANDROID_SDK" ]; then
+            echo "::error title=Missing Android SDK::ANDROID_HOME or ANDROID_SDK_ROOT must be set."
+            exit 1
+          fi
+          rm -rf "$ANDROID_SDK/cmake/3.22.1"
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          yes | sdkmanager --install 'cmake;3.22.1'
+          set -o pipefail
+
       - name: Validate Android signing secrets
         if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
         env:

@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 
 import 'diagnostics_log_service.dart';
 
-const _maxExecJobsPerConnection = 1;
-const _maxLowPriorityExecJobsPerConnection = 1;
+const _maxExecJobsPerConnection = 4;
+const _maxLowPriorityExecJobsPerConnection = 3;
 
 final _execQueues = <int, _SshExecQueue>{};
 
@@ -22,8 +22,8 @@ enum SshExecPriority {
 /// Runs [operation] through a bounded per-connection SSH exec queue.
 ///
 /// SSH exec channels are single-use, so this does not reuse a channel. Instead,
-/// it serializes short-lived exec channels per connection, preserving room for
-/// the terminal, tmux watcher, SFTP, and other long-lived channels.
+/// it bounds short-lived exec channels per connection, preserving room for the
+/// terminal, tmux watcher, SFTP, and other long-lived channels.
 Future<T> runQueuedSshExec<T>(
   int connectionId,
   Future<T> Function() operation, {
@@ -112,7 +112,6 @@ class _SshExecQueue {
       return _normalJobs.removeFirst();
     }
     if (_lowJobs.isEmpty ||
-        _activeCount > 0 ||
         _activeLowPriorityCount >= _maxLowPriorityExecJobsPerConnection) {
       return null;
     }
