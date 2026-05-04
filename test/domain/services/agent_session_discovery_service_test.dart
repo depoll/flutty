@@ -1014,8 +1014,10 @@ branch refs/heads/main
       'all-provider stream emits lightweight previews before final aggregate',
       () async {
         final client = _MockSshClient();
+        final commands = <String>[];
         when(() => client.execute(any())).thenAnswer((invocation) async {
           final command = invocation.positionalArguments.first as String;
+          commands.add(command);
           if (command.contains('~/.local/share/opencode/opencode.db')) {
             return _buildExecSession(
               stdout: List<String>.generate(
@@ -1055,10 +1057,53 @@ branch refs/heads/main
         expect(results.last.attemptedTools, contains('OpenCode'));
         expect(results.last.sessions.map((session) => session.sessionId), [
           'session-0',
-          'session-1',
         ]);
+        expect(
+          commands.where((command) => command.contains('LIMIT 12;')),
+          isNotEmpty,
+        );
       },
     );
+
+    test('parses large remote snapshots off the UI isolate', () async {
+      final client = _MockSshClient();
+      const geminiPath =
+          '/Users/demo/.gemini/tmp/flutty/chats/session-large.json';
+      final largeSessionJson = jsonEncode({
+        'sessionId': 'session-large',
+        'summary': 'Large Gemini session',
+        'lastUpdated': '2026-04-12T21:29:53.292Z',
+        'kind': 'main',
+        'messages': const <Object?>[],
+        'padding': List<String>.filled(9000, 'x').join(),
+      });
+
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.gemini/tmp')) {
+          return _buildExecSession(stdout: geminiPath);
+        }
+        if (command.contains(geminiPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(geminiPath, largeSessionJson),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'Gemini CLI',
+      );
+
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-large',
+      ]);
+      expect(result.sessions.single.summary, 'Large Gemini session');
+    });
 
     test(
       'Codex discovery uses resumable UUID instead of rollout filename',

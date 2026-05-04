@@ -1167,6 +1167,7 @@ class AgentSessionDiscoveryService {
           relatedWorkingDirectories: relatedWorkingDirectories,
           maxPerTool: maxPerTool,
           toolName: toolName,
+          previewOnly: toolName == null,
         );
         final pendingResults = <int, Future<_IndexedToolDiscoveryResult>>{
           for (var index = 0; index < discoveries.length; index++)
@@ -1299,50 +1300,59 @@ class AgentSessionDiscoveryService {
     required List<String> relatedWorkingDirectories,
     required int maxPerTool,
     required String? toolName,
-  }) => toolName == null
-      ? [
-          _discoverOpenCodeSessions(
-            session,
-            workingDirectory,
-            relatedWorkingDirectories,
-            maxPerTool,
-            useAcp: false,
-          ),
-          _discoverCodexSessions(
-            session,
-            workingDirectory,
-            relatedWorkingDirectories,
-            maxPerTool,
-          ),
-          _discoverCopilotSessions(
-            session,
-            workingDirectory,
-            relatedWorkingDirectories,
-            maxPerTool,
-            useAcp: false,
-          ),
-          _discoverGeminiSessions(
-            session,
-            workingDirectory,
-            relatedWorkingDirectories,
-            maxPerTool,
-          ),
-          _discoverClaudeSessions(
-            session,
-            workingDirectory,
-            relatedWorkingDirectories,
-            maxPerTool,
-          ),
-        ]
-      : [
-          _discoverSessionsForTool(
-            toolName,
-            session,
-            workingDirectory: workingDirectory,
-            relatedWorkingDirectories: relatedWorkingDirectories,
-            maxPerTool: maxPerTool,
-          ),
-        ];
+    required bool previewOnly,
+  }) {
+    final effectiveMaxPerTool = previewOnly ? 1 : maxPerTool;
+    return toolName == null
+        ? [
+            _discoverOpenCodeSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              useAcp: false,
+              previewOnly: previewOnly,
+            ),
+            _discoverCodexSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
+            _discoverCopilotSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              useAcp: false,
+              previewOnly: previewOnly,
+            ),
+            _discoverGeminiSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
+            _discoverClaudeSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
+          ]
+        : [
+            _discoverSessionsForTool(
+              toolName,
+              session,
+              workingDirectory: workingDirectory,
+              relatedWorkingDirectories: relatedWorkingDirectories,
+              maxPerTool: effectiveMaxPerTool,
+            ),
+          ];
+  }
 
   Future<_ToolDiscoveryResult> _discoverSessionsForTool(
     String toolName,
@@ -1544,17 +1554,25 @@ class AgentSessionDiscoveryService {
     SshSession session,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
-    int max,
-  ) async {
+    int max, {
+    bool previewOnly = false,
+  }) async {
     try {
       // Read more lines than needed to account for duplicate sessionIds
       // (e.g. multiple history entries for the same active session).
-      final tailCount = _calculateDiscoveryScanLimit(
-        max,
-        multiplier: 20,
-        minimum: 120,
-        maximum: 400,
-      );
+      final tailCount = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 10,
+              minimum: 24,
+              maximum: 80,
+            )
+          : _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 20,
+              minimum: 120,
+              maximum: 400,
+            );
       final output = await _exec(
         session,
         'tail -n $tailCount ~/.claude/history.jsonl 2>/dev/null',
@@ -1595,7 +1613,16 @@ class AgentSessionDiscoveryService {
           ? scopedHistoryEntries
           : historyEntries;
       final snapshotHistoryEntries = relevantHistoryEntries
-          .take(calculateClaudeMetadataSnapshotLimit(max))
+          .take(
+            previewOnly
+                ? _calculateDiscoveryScanLimit(
+                    max,
+                    multiplier: 4,
+                    minimum: 6,
+                    maximum: 12,
+                  )
+                : calculateClaudeMetadataSnapshotLimit(max),
+          )
           .toList(growable: false);
       final sessionFilesById = await _findClaudeSessionFiles(
         session,
@@ -1606,12 +1633,12 @@ class AgentSessionDiscoveryService {
       final sessionFileHeadSnapshots = await _readRemoteFileSnapshots(
         session,
         sessionFilesById.values,
-        maxLines: 120,
+        maxLines: previewOnly ? 40 : 120,
       );
       final sessionFileTailSnapshots = await _readRemoteFileSnapshots(
         session,
         sessionFilesById.values,
-        maxLines: 120,
+        maxLines: previewOnly ? 40 : 120,
         tail: true,
       );
       final sessions = <ToolSessionInfo>[];
@@ -1696,15 +1723,26 @@ class AgentSessionDiscoveryService {
     SshSession session,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
-    int max,
-  ) async {
+    int max, {
+    bool previewOnly = false,
+  }) async {
     try {
-      final scanLimit = _calculateDiscoveryScanLimit(
-        max,
-        multiplier: 10,
-        maximum: 120,
-      );
-      final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
       final output = await _exec(
         session,
         'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
@@ -1730,7 +1768,7 @@ class AgentSessionDiscoveryService {
       final rolloutSnapshots = await _readRemoteFileSnapshots(
         session,
         recentRolloutPaths,
-        maxLines: 80,
+        maxLines: previewOnly ? 40 : 80,
       );
       final sessions = <ToolSessionInfo>[];
       var hadError = sessionIndex.hadError;
@@ -1845,14 +1883,22 @@ class AgentSessionDiscoveryService {
     List<String> relatedWorkingDirectories,
     int max, {
     bool useAcp = true,
+    bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = _calculateDiscoveryScanLimit(
-        max,
-        multiplier: 20,
-        minimum: 120,
-        maximum: 240,
-      );
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 20,
+              minimum: 120,
+              maximum: 240,
+            );
       if (useAcp) {
         final acpSessions = await _discoverAcpSessions(
           session,
@@ -1870,7 +1916,14 @@ class AgentSessionDiscoveryService {
         }
       }
 
-      final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
       final workspacePaths = await _listCopilotWorkspacePaths(
         session,
         scanLimit,
@@ -1985,14 +2038,16 @@ class AgentSessionDiscoveryService {
     SshSession session,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
-    int max,
-  ) async {
+    int max, {
+    bool previewOnly = false,
+  }) async {
     try {
       return await _discoverGeminiSessionsFromFiles(
         session,
         workingDirectory,
         relatedWorkingDirectories,
         max,
+        previewOnly: previewOnly,
       );
     } on Object {
       return const _ToolDiscoveryResult.failure('Gemini CLI');
@@ -2003,14 +2058,25 @@ class AgentSessionDiscoveryService {
     SshSession session,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
-    int max,
-  ) async {
-    final scanLimit = _calculateDiscoveryScanLimit(
-      max,
-      multiplier: 10,
-      maximum: 120,
-    );
-    final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    final scanLimit = previewOnly
+        ? _calculateDiscoveryScanLimit(
+            max,
+            multiplier: 8,
+            minimum: 24,
+            maximum: 40,
+          )
+        : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+    final metadataReadLimit = previewOnly
+        ? _calculateDiscoveryScanLimit(
+            max,
+            multiplier: 4,
+            minimum: 6,
+            maximum: 12,
+          )
+        : calculateRecentSessionMetadataReadLimit(max);
     final globalCommand =
         r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
         '-path "*/chats/*" -type f '
@@ -2128,13 +2194,17 @@ class AgentSessionDiscoveryService {
     List<String> relatedWorkingDirectories,
     int max, {
     bool useAcp = true,
+    bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = _calculateDiscoveryScanLimit(
-        max,
-        multiplier: 10,
-        maximum: 120,
-      );
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 12,
+              maximum: 24,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
       var hadError = false;
       if (useAcp) {
         final acpSessions = await _discoverAcpSessions(
@@ -2653,30 +2723,7 @@ class AgentSessionDiscoveryService {
       command.write(r'''printf "\n"; done''');
 
       final output = await _exec(session, command.toString());
-      for (final line in output.split('\n')) {
-        if (line.trim().isEmpty) continue;
-        final parts = line.split('\x1f');
-        if (parts.length < 3) continue;
-
-        final path = parts[0].trim();
-        if (path.isEmpty) continue;
-
-        DateTime? modifiedAt;
-        final epoch = int.tryParse(parts[1].trim());
-        if (epoch != null && epoch > 0) {
-          modifiedAt = _dateTimeFromEpoch(epoch);
-        }
-
-        try {
-          final content = utf8.decode(base64Decode(parts[2].trim()));
-          snapshots[path] = _RemoteFileSnapshot(
-            content: content,
-            modifiedAt: modifiedAt,
-          );
-        } on FormatException {
-          continue;
-        }
-      }
+      snapshots.addAll(await _parseRemoteFileSnapshotOutput(output));
     }
     return snapshots;
   }
@@ -2716,9 +2763,7 @@ class AgentSessionDiscoveryService {
     return filesById;
   }
 
-  DateTime _dateTimeFromEpoch(int epoch) => DateTime.fromMillisecondsSinceEpoch(
-    epoch > 9999999999 ? epoch : epoch * 1000,
-  );
+  DateTime _dateTimeFromEpoch(int epoch) => _dateTimeFromEpochValue(epoch);
 
   Future<List<String>> _resolveRelatedWorkingDirectoriesCached(
     SshSession session,
@@ -2999,6 +3044,53 @@ class _RemoteFileSnapshot {
   final String content;
   final DateTime? modifiedAt;
 }
+
+Future<Map<String, _RemoteFileSnapshot>> _parseRemoteFileSnapshotOutput(
+  String output,
+) {
+  if (output.length < 8192) {
+    return Future<Map<String, _RemoteFileSnapshot>>.value(
+      _parseRemoteFileSnapshotOutputSync(output),
+    );
+  }
+  return compute(_parseRemoteFileSnapshotOutputSync, output);
+}
+
+Map<String, _RemoteFileSnapshot> _parseRemoteFileSnapshotOutputSync(
+  String output,
+) {
+  final snapshots = <String, _RemoteFileSnapshot>{};
+  for (final line in output.split('\n')) {
+    if (line.trim().isEmpty) continue;
+    final parts = line.split('\x1f');
+    if (parts.length < 3) continue;
+
+    final path = parts[0].trim();
+    if (path.isEmpty) continue;
+
+    DateTime? modifiedAt;
+    final epoch = int.tryParse(parts[1].trim());
+    if (epoch != null && epoch > 0) {
+      modifiedAt = _dateTimeFromEpochValue(epoch);
+    }
+
+    try {
+      final content = utf8.decode(base64Decode(parts[2].trim()));
+      snapshots[path] = _RemoteFileSnapshot(
+        content: content,
+        modifiedAt: modifiedAt,
+      );
+    } on FormatException {
+      continue;
+    }
+  }
+  return snapshots;
+}
+
+DateTime _dateTimeFromEpochValue(int epoch) =>
+    DateTime.fromMillisecondsSinceEpoch(
+      epoch > 9999999999 ? epoch : epoch * 1000,
+    );
 
 Map<String, dynamic>? _tryDecodeJsonObject(String raw) {
   try {
