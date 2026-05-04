@@ -738,6 +738,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   bool readOnly = false,
   bool deleteDetection = true,
   bool tapToShowKeyboard = true,
+  bool sensitiveInput = false,
   String Function()? resolveTextBeforeCursor,
   TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
   VoidCallback? consumeTerminalKeyModifiers,
@@ -761,6 +762,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
           deleteDetection: deleteDetection,
           readOnly: readOnly,
           tapToShowKeyboard: tapToShowKeyboard,
+          sensitiveInput: sensitiveInput,
           resolveTextBeforeCursor: resolveTextBeforeCursor,
           resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
           consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
@@ -1229,8 +1231,164 @@ Future<void> _expectTextFieldComparisonScenario(
 TextInputClient _terminalTextInputClient(WidgetTester tester) =>
     tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient;
 
+Map<dynamic, dynamic> _textInputConfigurationFromCall(MethodCall call) {
+  final arguments = call.arguments;
+  if (call.method == 'TextInput.setClient') {
+    return (arguments as List<dynamic>)[1]! as Map<dynamic, dynamic>;
+  }
+  return arguments as Map<dynamic, dynamic>;
+}
+
+Map<dynamic, dynamic> _latestTextInputSetClientConfiguration(
+  WidgetTester tester,
+) {
+  final call = tester.testTextInput.log.lastWhere(
+    (call) => call.method == 'TextInput.setClient',
+  );
+  return _textInputConfigurationFromCall(call);
+}
+
 void main() {
+  group('terminalTextLooksLikeSensitiveInputPrompt', () {
+    test('detects common password-like prompts', () {
+      const prompts = [
+        'Password:',
+        '[sudo] password for depoll:',
+        'root@example.com\'s password: ',
+        'Enter passphrase for key \'/Users/depoll/.ssh/id_ed25519\':',
+        'PIN:',
+        'Verification code:',
+        'One-time password:',
+        'Authentication code:',
+      ];
+
+      for (final prompt in prompts) {
+        expect(
+          terminalTextLooksLikeSensitiveInputPrompt(prompt),
+          isTrue,
+          reason: prompt,
+        );
+      }
+    });
+
+    test('only checks the prompt-like text before the cursor', () {
+      expect(
+        terminalTextLooksLikeSensitiveInputPrompt(
+          'Last login: Sun May 3\n\x1B[31mPassword:\x1B[0m ',
+        ),
+        isTrue,
+      );
+      expect(
+        terminalTextLooksLikeSensitiveInputPrompt('Password:\n\$ '),
+        isFalse,
+      );
+    });
+
+    test('ignores non-secret password-related output', () {
+      const lines = [
+        'Password requirements:',
+        'Password policy:',
+        'Password incorrect:',
+        'Password reset:',
+        'passwordless login enabled:',
+        'Last login:',
+        'Enter a username:',
+        null,
+      ];
+
+      for (final line in lines) {
+        expect(
+          terminalTextLooksLikeSensitiveInputPrompt(line),
+          isFalse,
+          reason: '$line',
+        );
+      }
+    });
+  });
+
   group('TerminalTextInputHandler', () {
+    testWidgets(
+      'uses a normal text IME configuration for keyboard voice input',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+        final configuration = _latestTextInputSetClientConfiguration(tester);
+        final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
+
+        expect(inputType['name'], 'TextInputType.text');
+        expect(configuration['autocorrect'], isTrue);
+        expect(configuration['enableSuggestions'], isTrue);
+        expect(configuration['enableIMEPersonalizedLearning'], isTrue);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('uses a password-friendly IME configuration for secrets', (
+      tester,
+    ) async {
+      final harness = await _pumpTerminalHarness(tester, sensitiveInput: true);
+      final configuration = _latestTextInputSetClientConfiguration(tester);
+      final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
+
+      expect(inputType['name'], 'TextInputType.text');
+      expect(configuration['obscureText'], isTrue);
+      expect(configuration['autocorrect'], isFalse);
+      expect(configuration['enableSuggestions'], isFalse);
+      expect(configuration['enableIMEPersonalizedLearning'], isFalse);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets('restarts the active IME connection for sensitive input', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+
+      Widget buildHarness({required bool sensitiveInput}) => MaterialApp(
+        home: Scaffold(
+          body: TerminalTextInputHandler(
+            terminal: terminal,
+            focusNode: focusNode,
+            deleteDetection: true,
+            sensitiveInput: sensitiveInput,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(buildHarness(sensitiveInput: false));
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.log.clear();
+      await tester.pumpWidget(buildHarness(sensitiveInput: true));
+      await tester.pump();
+
+      final configuration = _latestTextInputSetClientConfiguration(tester);
+      final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
+
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.clearClient',
+        ),
+        hasLength(1),
+      );
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.updateConfig',
+        ),
+        isEmpty,
+      );
+      expect(inputType['name'], 'TextInputType.text');
+      expect(configuration['obscureText'], isTrue);
+      expect(configuration['enableSuggestions'], isFalse);
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+      await tester.pump();
+      focusNode.dispose();
+    });
+
     testWidgets('preserves swipe typing context across short pauses', (
       tester,
     ) async {

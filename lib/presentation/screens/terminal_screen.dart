@@ -482,6 +482,41 @@ String _stripTerminalPromptEscapeSequences(String text) => text
     .replaceAll(_csiEscapeSequencePattern, '')
     .replaceAll(_singleCharEscapeSequencePattern, '');
 
+final _terminalSensitivePromptPattern = RegExp(
+  r'\b(?:password|passphrase|pin|otp|one[- ]time(?:\s+password)?|verification(?:\s+code)?|authentication(?:\s+code)?|auth(?:\s+code)?|security(?:\s+code)?)\b[^\r\n]{0,160}[:：]\s*$',
+  caseSensitive: false,
+);
+
+final _terminalPasswordPolicyPromptPattern = RegExp(
+  r'\b(?:password|passphrase)\s+(?:requirements?|policy|rules?|hint|incorrect|invalid|failed|failure|reset|changed|updated)\b',
+  caseSensitive: false,
+);
+
+/// Returns whether the visible terminal text appears to be requesting a secret.
+@visibleForTesting
+bool terminalTextLooksLikeSensitiveInputPrompt(String? textBeforeCursor) {
+  if (textBeforeCursor == null) {
+    return false;
+  }
+
+  final sanitizedText = _stripTerminalPromptEscapeSequences(textBeforeCursor);
+  if (sanitizedText.trimRight().isEmpty) {
+    return false;
+  }
+
+  final lastLine = sanitizedText.split(RegExp(r'[\r\n]')).last.trimRight();
+  if (lastLine.isEmpty || lastLine.length > 220) {
+    return false;
+  }
+
+  final normalizedLine = lastLine.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (_terminalPasswordPolicyPromptPattern.hasMatch(normalizedLine)) {
+    return false;
+  }
+
+  return _terminalSensitivePromptPattern.hasMatch(normalizedLine);
+}
+
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
@@ -2205,6 +2240,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
+  bool _manualSensitiveKeyboardMode = false;
+  bool _detectedSensitiveKeyboardPrompt = false;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   List<KeyboardToolbarSnippet> _keyboardToolbarSnippets =
@@ -2326,6 +2363,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   DateTime? _recentLocalClipboardAt;
   bool _isTerminalSizeRefreshQueued = false;
   bool _terminalWakeLockSetting = false;
+
+  bool get _usesSensitiveKeyboardMode =>
+      _manualSensitiveKeyboardMode || _detectedSensitiveKeyboardPrompt;
 
   // Theme state
   Host? _host;
@@ -2630,21 +2670,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _queueTerminalScrollToBottom();
     }
 
+    if (!mounted) {
+      return;
+    }
+
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
     final terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
-    if (!mounted ||
-        !didTerminalScrollPolicyChange(
-          previousIsUsingAltBuffer: _isUsingAltBuffer,
-          nextIsUsingAltBuffer: isUsingAltBuffer,
-          previousReportsMouseWheel: _terminalReportsMouseWheel,
-          nextReportsMouseWheel: terminalReportsMouseWheel,
-        )) {
+    final scrollPolicyChanged = didTerminalScrollPolicyChange(
+      previousIsUsingAltBuffer: _isUsingAltBuffer,
+      nextIsUsingAltBuffer: isUsingAltBuffer,
+      previousReportsMouseWheel: _terminalReportsMouseWheel,
+      nextReportsMouseWheel: terminalReportsMouseWheel,
+    );
+    final detectedSensitiveKeyboardPrompt =
+        _isMobilePlatform &&
+        terminalTextLooksLikeSensitiveInputPrompt(_terminalTextBeforeCursor());
+    final sensitiveKeyboardPromptChanged =
+        detectedSensitiveKeyboardPrompt != _detectedSensitiveKeyboardPrompt;
+    if (!scrollPolicyChanged && !sensitiveKeyboardPromptChanged) {
       return;
     }
 
     setState(() {
-      _isUsingAltBuffer = isUsingAltBuffer;
-      _terminalReportsMouseWheel = terminalReportsMouseWheel;
+      if (scrollPolicyChanged) {
+        _isUsingAltBuffer = isUsingAltBuffer;
+        _terminalReportsMouseWheel = terminalReportsMouseWheel;
+      }
+      if (sensitiveKeyboardPromptChanged) {
+        _detectedSensitiveKeyboardPrompt = detectedSensitiveKeyboardPrompt;
+      }
     });
   }
 
@@ -4162,6 +4216,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         data == '\n' ? '\r' : data,
       );
 
+      _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _shell?.write(utf8.encode(output));
     };
 
@@ -4202,6 +4257,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _syncTerminalWakeLock([SshConnectionState? connectionState]) {
     _sessionController.syncWakeLock(connectionState);
+  }
+
+  void _clearDetectedSensitiveKeyboardPromptAfterInput(String output) {
+    if (!_detectedSensitiveKeyboardPrompt ||
+        (!output.contains('\r') && !output.contains('\n'))) {
+      return;
+    }
+
+    if (!mounted) {
+      _detectedSensitiveKeyboardPrompt = false;
+      return;
+    }
+
+    setState(() => _detectedSensitiveKeyboardPrompt = false);
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -5603,6 +5672,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } else {
       setState(() {
         _clearTmuxState();
+        _detectedSensitiveKeyboardPrompt = false;
         _isConnecting = false;
         _error = 'Connection closed';
       });
@@ -6085,6 +6155,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     value: 'toggle_tap_keyboard',
                     checked: ref.read(tapToShowKeyboardNotifierProvider),
                     child: const Text('Tap to Show Keyboard'),
+                  ),
+                if (isMobile)
+                  CheckedPopupMenuItem(
+                    value: 'toggle_sensitive_keyboard',
+                    checked: _manualSensitiveKeyboardMode,
+                    child: const Text('Sensitive Keyboard'),
                   ),
                 const PopupMenuDivider(),
                 if (!isMobile)
@@ -6747,6 +6823,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _toolbarController.applySystemKeyboardModifiers,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
+      sensitiveInput: _usesSensitiveKeyboardMode,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard:
           ref.watch(tapToShowKeyboardNotifierProvider) &&
@@ -6949,6 +7026,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);
         await notifier.setEnabled(
           enabled: !ref.read(tapToShowKeyboardNotifierProvider),
+        );
+        break;
+      case 'toggle_sensitive_keyboard':
+        setState(
+          () => _manualSensitiveKeyboardMode = !_manualSensitiveKeyboardMode,
         );
         break;
       case 'native_select':

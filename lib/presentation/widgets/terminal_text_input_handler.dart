@@ -175,10 +175,11 @@ class TerminalTextInputHandlerController {
 /// proper IME configuration for swipe typing.
 ///
 /// The xterm package's built-in [CustomTextEdit] hard-codes
-/// `autocorrect: false` and `enableSuggestions: false`, which causes
-/// most IMEs to drop spaces between swiped words. This widget replaces
-/// that text input handling with `enableSuggestions: true` so swipe
-/// typing works correctly.
+/// `autocorrect: false` and `enableSuggestions: false`, which hides voice
+/// input on some system keyboards and causes most IMEs to drop spaces between
+/// swiped words. This widget replaces that text input handling with a normal
+/// text keyboard configuration so dictation, suggestions, and swipe typing work
+/// correctly.
 ///
 /// The child [TerminalView] should use `hardwareKeyboardOnly: true`.
 class TerminalTextInputHandler extends StatefulWidget {
@@ -198,6 +199,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.consumeTerminalKeyModifiers,
     this.applyTerminalTextInputModifiers,
     this.hasActiveToolbarModifier,
+    this.sensitiveInput = false,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     this.showKeyboardOnFocus,
@@ -253,6 +255,13 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// than visible text. In that case the IME buffer is cleared after sending
   /// the input so that stale suggestions don't accumulate from non-text input.
   final ValueGetter<bool>? hasActiveToolbarModifier;
+
+  /// Whether the terminal appears to be accepting sensitive text.
+  ///
+  /// When true, the platform keyboard is configured like a password field so
+  /// autocorrect, suggestions, dictation, and IME learning stay disabled while
+  /// a remote password/passphrase prompt is active.
+  final bool sensitiveInput;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -319,6 +328,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   String? _pendingDeleteResetBaselineText;
   int? _pendingDeleteResetBaselineCursorOffset;
   String? _pendingDeleteResetDeletedSuffixText;
+  bool _isInputConnectionShown = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   int _iosBackspaceRunwayLength = 0;
@@ -356,6 +366,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
     if (hasInputConnection &&
+        widget.sensitiveInput != oldWidget.sensitiveInput) {
+      _restartInputConnection();
+    } else if (hasInputConnection &&
         widget.keyboardAppearance != oldWidget.keyboardAppearance) {
       _connection!.updateConfig(_buildTextInputConfiguration());
     }
@@ -804,6 +817,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (hasInputConnection) {
       _connection?.close();
     }
+    _isInputConnectionShown = false;
   }
 
   void _suppressNextTouchKeyboardRequest() {
@@ -911,10 +925,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      if (show) _connection!.show();
+      if (show) {
+        _connection!.show();
+        _isInputConnectionShown = true;
+      }
     } else {
       _connection = TextInput.attach(this, _buildTextInputConfiguration());
-      if (show) _connection!.show();
+      _isInputConnectionShown = false;
+      if (show) {
+        _connection!.show();
+        _isInputConnectionShown = true;
+      }
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastProcessedUserSelectionWasValid = false;
@@ -939,15 +960,23 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
         // ignore: avoid_redundant_argument_values
-        autocorrect: false,
+        inputType: TextInputType.text,
+        // ignore: avoid_redundant_argument_values
+        autocorrect: !widget.sensitiveInput,
+        // ignore: avoid_redundant_argument_values
         inputAction: TextInputAction.newline,
         keyboardAppearance: widget.keyboardAppearance,
-        // Enable suggestions so the IME adds spaces between swiped words.
+        // Enable suggestions so the IME offers dictation and adds spaces
+        // between swiped words.
         // ignore: avoid_redundant_argument_values
-        enableSuggestions: true,
+        enableSuggestions: !widget.sensitiveInput,
+        obscureText: widget.sensitiveInput,
         smartDashesType: SmartDashesType.disabled,
         smartQuotesType: SmartQuotesType.disabled,
-        enableIMEPersonalizedLearning: false,
+        // Let the keyboard behave like a normal text field; voice input can
+        // depend on this on third-party IMEs.
+        // ignore: avoid_redundant_argument_values
+        enableIMEPersonalizedLearning: !widget.sensitiveInput,
       );
 
   void _closeInputConnectionIfNeeded() {
@@ -957,6 +986,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
+    _isInputConnectionShown = false;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastProcessedUserSelectionWasValid = false;
@@ -973,6 +1003,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
+  }
+
+  void _restartInputConnection() {
+    final shouldShow = _isInputConnectionShown;
+    _closeInputConnectionIfNeeded();
+    _openInputConnection(show: shouldShow);
   }
 
   // -- Editing state --
