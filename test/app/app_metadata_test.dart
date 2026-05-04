@@ -23,5 +23,5 @@ void main() {
     expect(metadata.appName, 'MonkeySSH β');
     expect(metadata.versionCodename, 'Baboon');
     expect(metadata.versionLabel, '1.2.3 "Baboon" (456)');
-  }, tags: 'needs-assets');
+  });
 }
