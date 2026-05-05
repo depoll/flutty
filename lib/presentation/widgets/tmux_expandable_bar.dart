@@ -997,6 +997,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               );
               showModalBottomSheet<AgentLaunchTool?>(
                 context: context,
+                requestFocus: terminalOverlayRouteRequestFocus(context),
                 builder: (ctx) => TmuxToolPickerSheet(
                   isProUser: widget.isProUser,
                   installedToolsFuture: installedToolsFuture,

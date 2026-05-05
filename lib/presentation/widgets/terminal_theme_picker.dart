@@ -8,6 +8,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/iterm_color_scheme_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import 'terminal_overlay_focus.dart';
 import 'theme_preview_card.dart';
 
 const _liveThemeSearchMinLength = 2;
@@ -403,6 +404,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   void _handleCustomThemeLongPress(TerminalThemeData theme) {
     showModalBottomSheet<void>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -430,6 +432,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   void _confirmDelete(TerminalThemeData theme) {
     showDialog<void>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: const Text('Delete theme?'),
         content: Text('Are you sure you want to delete "${theme.name}"?'),
@@ -1047,12 +1050,16 @@ class _ThemeGridSection extends StatelessWidget {
 }
 
 /// Shows a theme picker dialog and returns the selected theme.
+///
+/// [requestFocus] controls whether the picker route takes focus when shown.
 Future<TerminalThemeData?> showThemePickerDialog({
   required BuildContext context,
   required String? currentThemeId,
+  bool? requestFocus,
 }) async => showModalBottomSheet<TerminalThemeData>(
   context: context,
   isScrollControlled: true,
+  requestFocus: requestFocus,
   useSafeArea: true,
   builder: (context) => DraggableScrollableSheet(
     initialChildSize: 0.85,
