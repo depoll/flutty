@@ -6131,41 +6131,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
+          titleSpacing: 8,
+          title: Row(
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Flexible(
-                    child: Text(
+              _TerminalConnectionStatusIcon(
+                label: connectionLabel,
+                state: connectionState,
+                isConnecting: _isConnecting,
+              ),
+              if (isConnectedThroughJumpHost) ...[
+                const SizedBox(width: 4),
+                const _TerminalJumpHostIndicator(),
+              ],
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
                       _host?.label ?? 'Terminal',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  _TerminalConnectionStatusIcon(
-                    label: connectionLabel,
-                    state: connectionState,
-                    isConnecting: _isConnecting,
-                  ),
-                  if (isConnectedThroughJumpHost) ...[
-                    const SizedBox(width: 4),
-                    const _TerminalJumpHostIndicator(),
+                    if (titleSubtitle.isNotEmpty)
+                      Text(
+                        titleSubtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                   ],
-                ],
-              ),
-              if (titleSubtitle.isNotEmpty)
-                Text(
-                  titleSubtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
                 ),
+              ),
             ],
           ),
           bottom: !_showsTerminalMetadata || statusChips.isEmpty
