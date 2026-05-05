@@ -1190,10 +1190,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
       backgroundColor: theme.colorScheme.surface,
       side: BorderSide(color: theme.colorScheme.outlineVariant),
-      onPressed: () {
-        _clearHighlightedFile();
-        unawaited(_navigateTo(shortcutPath));
-      },
+      onPressed: () => unawaited(_navigateTo(shortcutPath)),
       tooltip: 'Go to $shortcutPath',
     );
   }
@@ -1235,10 +1232,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               child: Row(
                 children: [
                   InkWell(
-                    onTap: () {
-                      _clearHighlightedFile();
-                      unawaited(_navigateTo('/'));
-                    },
+                    onTap: () => unawaited(_navigateTo('/')),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                       child: Text('/'),
@@ -1253,7 +1247,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                     InkWell(
                       onTap: () {
                         final path = '/${parts.sublist(0, i + 1).join('/')}';
-                        _clearHighlightedFile();
                         unawaited(_navigateTo(path));
                       },
                       child: Padding(
