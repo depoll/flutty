@@ -6666,11 +6666,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     setState(() => _sessionThemeOverride = theme);
     _lastBuildAppliedTheme = theme;
-    _applyTerminalThemeToSession(
-      theme,
-      allowRemoteRefresh: false,
-      reason: 'theme_picker_preview',
-    );
+    _applyTerminalThemeToSession(theme, reason: 'theme_picker_preview');
   }
 
   void _restoreThemePickerPreview({
@@ -6679,11 +6675,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) {
     setState(() => _sessionThemeOverride = previousSessionThemeOverride);
     _lastBuildAppliedTheme = previousTheme;
-    _applyTerminalThemeToSession(
-      previousTheme,
-      allowRemoteRefresh: false,
-      reason: 'theme_picker_cancel',
-    );
+    _applyTerminalThemeToSession(previousTheme, reason: 'theme_picker_cancel');
   }
 
   Future<void> _saveThemeToHost(
