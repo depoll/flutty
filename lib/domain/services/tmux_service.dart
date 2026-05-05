@@ -1827,8 +1827,6 @@ String buildTmuxRefreshForegroundClientsCommand(
 const _tmuxThemeRefreshTuiCommandPatterns = <String>[
   'claude',
   'claude-*',
-  'copilot',
-  'copilot-*',
   'codex',
   'codex-*',
   'opencode',
@@ -1840,8 +1838,6 @@ const _tmuxThemeRefreshTuiCommandPatterns = <String>[
 const _tmuxThemeRefreshTuiTitlePatterns = <String>[
   '*Claude*',
   '*claude*',
-  '*Copilot*',
-  '*copilot*',
   '*Codex*',
   '*codex*',
   '*OpenCode*',
@@ -1908,14 +1904,14 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'if [ "$theme_refresh_tui" = 1 ]; then '
       'injected=1; '
       r'case "${pane_command##*/}" in '
-      'copilot|copilot-*|codex|codex-*) '
+      'codex|codex-*) '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
       'opencode|opencode-*) '
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
       '*) '
       r'case "$pane_title" in '
-      '*Copilot*|*copilot*|*Codex*|*codex*) '
+      '*Codex*|*codex*) '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
       '*OpenCode*|*opencode*) '

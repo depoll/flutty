@@ -2209,6 +2209,7 @@ class _TmuxTerminalThemeRefreshRequest {
     required this.refreshGeneration,
     required this.reason,
     required this.extraFlags,
+    this.sendOuterFocusReport = false,
   });
 
   final TerminalThemeData theme;
@@ -2217,6 +2218,7 @@ class _TmuxTerminalThemeRefreshRequest {
   final int refreshGeneration;
   final String reason;
   final String? extraFlags;
+  final bool sendOuterFocusReport;
 }
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
@@ -3166,6 +3168,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         refreshGeneration: refreshGeneration,
         reason: reason,
         extraFlags: _host?.tmuxExtraFlags,
+        sendOuterFocusReport: true,
       ),
       delay: const Duration(milliseconds: 75),
     );
@@ -3346,10 +3349,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fields: {
           'reason': request.reason,
           'connectionId': request.session.connectionId,
+          'sendOuterFocusReport': request.sendOuterFocusReport,
           'shellReady': _shell != null,
           'terminalViewReady': _terminalViewKey.currentState != null,
         },
       );
+      if (request.sendOuterFocusReport) {
+        _refreshTerminalThemeReportsForTui(
+          request.theme,
+          includeThemeModeReport: false,
+          reason: '${request.reason}_tmux_outer_focus',
+        );
+      }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'terminal.theme',
