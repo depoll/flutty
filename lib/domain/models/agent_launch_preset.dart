@@ -357,6 +357,38 @@ String buildAgentToolCommand(
   return commandParts.join(' ');
 }
 
+/// Builds the base shell command for resuming a saved [tool] session.
+String buildAgentResumeCommand(
+  AgentLaunchTool tool,
+  String sessionId, {
+  bool startInYoloMode = false,
+}) {
+  final commandParts = <String>[
+    ..._buildAgentToolEnvironmentAssignments(
+      tool,
+      startInYoloMode: startInYoloMode,
+    ),
+    tool.commandName,
+    if (startInYoloMode) ...tool.yoloArguments,
+    ..._buildAgentResumeArguments(tool, sessionId),
+  ];
+  return commandParts.join(' ');
+}
+
+List<String> _buildAgentResumeArguments(
+  AgentLaunchTool tool,
+  String sessionId,
+) => switch (tool) {
+  AgentLaunchTool.claudeCode => ['--resume', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.copilotCli => ['--resume', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.codex => ['resume', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.geminiCli => ['--resume', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.openCode =>
+    sessionId == '_continue'
+        ? const ['--continue']
+        : ['--session', _quoteShellArgument(sessionId)],
+};
+
 String? _normalizeAgentToolArguments({
   required AgentLaunchTool tool,
   required String? additionalArguments,

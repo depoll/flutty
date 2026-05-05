@@ -21,6 +21,7 @@ import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -2918,6 +2919,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   String? _preferredSessionToolName;
   String? _sessionName;
+  bool _startClisInYoloMode = false;
   bool _queried = false;
   bool _expanded = false;
   bool _showSessions = false;
@@ -2935,7 +2937,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   @override
   void initState() {
     super.initState();
-    unawaited(_loadPreferredSessionToolName());
+    unawaited(_loadHostAgentPreferences());
     _queryTmux();
   }
 
@@ -2948,7 +2950,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final tmuxExtraFlagsChanged =
         oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
     if (connectionChanged) {
-      unawaited(_loadPreferredSessionToolName());
+      unawaited(_loadHostAgentPreferences());
     }
     if (connectionChanged || preferredSessionChanged || tmuxExtraFlagsChanged) {
       _tmuxQueryGeneration++;
@@ -2982,7 +2984,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     super.dispose();
   }
 
-  Future<void> _loadPreferredSessionToolName([int? hostId]) async {
+  Future<void> _loadHostAgentPreferences([int? hostId]) async {
     final resolvedHostId =
         hostId ??
         ref
@@ -2994,12 +2996,22 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final preset = await ref
         .read(agentLaunchPresetServiceProvider)
         .getPresetForHost(resolvedHostId);
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(resolvedHostId);
     if (!mounted) return;
 
     final preferredToolName = preset?.tool.discoveredSessionToolName;
-    if (_preferredSessionToolName == preferredToolName) return;
-    setState(() => _preferredSessionToolName = preferredToolName);
-    if (_showSessions) {
+    final startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
+    final preferredToolChanged = _preferredSessionToolName != preferredToolName;
+    if (!preferredToolChanged && _startClisInYoloMode == startClisInYoloMode) {
+      return;
+    }
+    setState(() {
+      _preferredSessionToolName = preferredToolName;
+      _startClisInYoloMode = startClisInYoloMode;
+    });
+    if (_showSessions && preferredToolChanged) {
       unawaited(_prefetchPreferredSessionProvider());
     }
   }
@@ -3551,7 +3563,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     if (session == null || _sessionName == null) return;
 
     final discovery = ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(info);
+    final command = discovery.buildResumeCommand(
+      info,
+      startInYoloMode: _startClisInYoloMode,
+    );
     final tmux = ref.read(tmuxServiceProvider);
     tmux
         .createWindow(
