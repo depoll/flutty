@@ -14,6 +14,7 @@ import '../../domain/services/tmux_service.dart';
 import 'agent_tool_icon.dart';
 import 'ai_session_picker.dart';
 import 'premium_badge.dart';
+import 'terminal_overlay_focus.dart';
 import 'tmux_window_status_badge.dart';
 
 const _tmuxNavigatorDenseVisualDensity = VisualDensity(vertical: -2);
@@ -60,6 +61,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
   isScrollControlled: true,
+  requestFocus: terminalOverlayRouteRequestFocus(context),
   builder: (context) => _TmuxNavigatorSheet(
     session: session,
     tmuxSessionName: tmuxSessionName,
@@ -483,6 +485,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         .detectInstalledAgentTools(widget.session);
     showModalBottomSheet<void>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => TmuxToolPickerSheet(
         isProUser: widget.isProUser,
         installedToolsFuture: installedToolsFuture,
