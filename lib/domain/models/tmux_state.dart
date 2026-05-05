@@ -379,19 +379,6 @@ class TmuxWindow {
   /// are useful and distinct.
   String? get secondaryTitle {
     final display = displayTitle;
-    final sessionLabel = agentSessionLabel;
-    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
-    if (sessionLabel != null &&
-        sessionTitle != null &&
-        sessionTitle.isNotEmpty &&
-        sessionLabel != display) {
-      return sessionLabel;
-    }
-    final agentTitle = agentContextTitle;
-    if (agentTitle != null && display == agentTitle) {
-      return sessionLabel == display ? null : sessionLabel;
-    }
-
     final normalizedPaneTitle = _normalizedTmuxTitle(
       paneTitle,
       stripPlaceholderPrefix: true,
@@ -400,12 +387,33 @@ class TmuxWindow {
       name,
       stripPlaceholderPrefix: true,
     );
+    final sessionLabel = agentSessionLabel;
+    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
+    if (sessionLabel != null &&
+        sessionTitle != null &&
+        sessionTitle.isNotEmpty &&
+        sessionLabel != display) {
+      if (_titlesMatch(sessionTitle, display) ||
+          _titlesMatch(sessionTitle, normalizedPaneTitle) ||
+          _titlesMatch(sessionTitle, normalizedName)) {
+        return null;
+      }
+      return sessionLabel;
+    }
+    final agentTitle = agentContextTitle;
+    if (agentTitle != null && display == agentTitle) {
+      return sessionLabel == display ? null : sessionLabel;
+    }
+
     if (_isDecoratedVariantOfTitle(name, normalizedPaneTitle)) {
       return null;
     }
     if (normalizedPaneTitle == null ||
         normalizedName == null ||
         normalizedName == normalizedPaneTitle) {
+      return null;
+    }
+    if (_titlesMatch(normalizedName, display)) {
       return null;
     }
     return normalizedName;
@@ -843,6 +851,23 @@ bool _isDecoratedVariantOfTitle(String rawTitle, String? plainTitle) {
   if (trimmed.isEmpty || _hasPlaceholderPrefix(trimmed)) return false;
   final stripped = _stripLeadingDecorativePrefix(trimmed);
   return stripped.isNotEmpty && stripped == plainTitle && trimmed != plainTitle;
+}
+
+bool _titlesMatch(String? left, String? right) {
+  final normalizedLeft = _normalizeTitleForComparison(left);
+  final normalizedRight = _normalizeTitleForComparison(right);
+  return normalizedLeft != null &&
+      normalizedRight != null &&
+      normalizedLeft == normalizedRight;
+}
+
+String? _normalizeTitleForComparison(String? value) {
+  final normalized = _normalizedTmuxTitle(value, stripPlaceholderPrefix: true);
+  if (normalized == null) return null;
+  final comparable = _stripLeadingDecorativePrefix(
+    normalized,
+  ).replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+  return comparable.isEmpty ? null : comparable;
 }
 
 String _stripLeadingDecorativePrefix(String value) {

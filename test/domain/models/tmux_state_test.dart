@@ -338,6 +338,21 @@ void main() {
       expect(window.secondaryTitle, 'Copilot CLI · Fix tmux session labels');
     });
 
+    test('suppresses live session titles that match useful window titles', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        paneTitle: 'Improve Theme Picker Keyboard UX',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Improve Theme Picker Keyboard UX',
+      );
+
+      expect(window.displayTitle, 'Improve Theme Picker Keyboard UX');
+      expect(window.secondaryTitle, isNull);
+    });
+
     test('handles empty command and path', () {
       const line = '1|shell|0||';
       final window = TmuxWindow.fromTmuxFormat(line);
