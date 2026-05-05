@@ -2167,13 +2167,16 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
       'injected=1; '
       r'case "${pane_command##*/}" in '
-      'codex|codex-*) '
+      'codex|codex-*|copilot|copilot-*) '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
       'opencode|opencode-*) '
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
       '*) '
       r'case "$pane_title" in '
+      '*Copilot*|*copilot*) '
+      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
       '*OpenCode*|*opencode*) '
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
       '*) '
@@ -2318,9 +2321,10 @@ String _buildTmuxSendPaneTerminalThemeCommand(
   //
   // OSC 10/11 default color replies are intentionally sent after the private
   // mode report. That gives OpenTUI/OpenCode a complete theme-mode plus default
-  // color cycle even when tmux consumes the outer OSC responses. Codex panes
-  // are routed to the focus-only refresh above because unsolicited mode/color
-  // reports can reset its composer input while the user is typing.
+  // color cycle even when tmux consumes the outer OSC responses. Codex/Copilot
+  // panes are routed to the focus-only refresh above because unsolicited
+  // mode/color reports can reset or appear in their composer input while the
+  // user is typing.
   final focusCommand = forceFocusTransition
       ? _buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)
       : _buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags);

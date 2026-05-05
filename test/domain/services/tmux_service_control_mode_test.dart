@@ -169,9 +169,10 @@ void main() {
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
-      expect(command, contains('codex|codex-*)'));
+      expect(command, contains('codex|codex-*|copilot|copilot-*)'));
       expect(command, contains('opencode|opencode-*)'));
       expect(command, contains(r'case "$pane_title" in'));
+      expect(command, contains('*Copilot*|*copilot*)'));
       expect(command, contains('*OpenCode*|*opencode*)'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
@@ -198,7 +199,9 @@ void main() {
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
-      final codexBranchStart = command.indexOf('codex|codex-*)');
+      final codexBranchStart = command.indexOf(
+        'codex|codex-*|copilot|copilot-*)',
+      );
       final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
       expect(codexBranchStart, isNonNegative);
       expect(opencodeBranchStart, greaterThan(codexBranchStart));
@@ -209,6 +212,16 @@ void main() {
       expect(
         command.indexOf('1b 5b 4f', opencodeBranchStart),
         greaterThan(opencodeBranchStart),
+      );
+      final copilotTitleBranchStart = command.indexOf('*Copilot*|*copilot*)');
+      final openCodeTitleBranchStart = command.indexOf(
+        '*OpenCode*|*opencode*)',
+      );
+      expect(copilotTitleBranchStart, greaterThan(opencodeBranchStart));
+      expect(openCodeTitleBranchStart, greaterThan(copilotTitleBranchStart));
+      expect(
+        command.substring(copilotTitleBranchStart, openCodeTitleBranchStart),
+        isNot(contains('1b 5b 4f')),
       );
       expect(command, contains('sleep 0.25'));
       expect(command, contains('sleep 0.08'));
