@@ -4077,6 +4077,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_filterVisibleShellCompletionsForCurrentInput()) {
       return;
     }
+    _showCachedShellCompletionsIfAvailable();
     _primeShellCompletionHistory();
     _queueShellCompletionRefresh();
   }
@@ -4108,9 +4109,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _primeShellCompletionHistory() {
+    final context = _buildImmediateShellCompletionContext();
+    if (context == null) {
+      return;
+    }
+    final staticSuggestions = buildShellCompletionStaticSuggestions(
+      context.invocation,
+    );
+    if (staticSuggestions != null && context.invocation.token.isEmpty) {
+      return;
+    }
+
+    ref
+        .read(shellCompletionServiceProvider)
+        .primeHistory(context.session, context.invocation);
+  }
+
+  void _showCachedShellCompletionsIfAvailable() {
+    final context = _buildImmediateShellCompletionContext();
+    if (context == null) {
+      return;
+    }
+    final anchor = _resolveTerminalCursorGlobalRect();
+    if (anchor == null) {
+      return;
+    }
+    final suggestions = ref
+        .read(shellCompletionServiceProvider)
+        .cachedHistorySuggestions(context.session, context.invocation);
+    if (suggestions.isEmpty) {
+      return;
+    }
+    _showShellCompletions(
+      invocation: context.invocation,
+      suggestions: suggestions,
+      anchor: anchor,
+    );
+  }
+
+  ({SshSession session, ShellCompletionInvocation invocation})?
+  _buildImmediateShellCompletionContext() {
     final session = _activeSession();
     if (session == null) {
-      return;
+      return null;
     }
 
     final cachedTmuxCommand = _tmuxCurrentCommand?.trim();
@@ -4123,14 +4164,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       shellCommand: shellCommand,
     );
     if (invocation == null) {
-      return;
+      return null;
     }
-    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
-    if (staticSuggestions != null && invocation.token.isEmpty) {
-      return;
-    }
-
-    ref.read(shellCompletionServiceProvider).primeHistory(session, invocation);
+    return (session: session, invocation: invocation);
   }
 
   Future<void> _refreshShellCompletions(int generation) async {

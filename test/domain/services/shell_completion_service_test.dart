@@ -1,7 +1,93 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart' as ssh;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/shell_completion_service.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
+
+class _MockSshClient extends Mock implements ssh.SSHClient {}
+
+class _MockSshExecSession extends Mock implements ssh.SSHSession {}
+
+SshSession _buildShellCompletionSession(
+  ssh.SSHClient client, {
+  required int connectionId,
+  required int hostId,
+}) => SshSession(
+  connectionId: connectionId,
+  hostId: hostId,
+  client: client,
+  config: const SshConnectionConfig(
+    hostname: 'example.com',
+    port: 22,
+    username: 'tester',
+  ),
+);
+
+void _stubHistoryExec(ssh.SSHClient client, List<String> commands) {
+  final exec = _MockSshExecSession();
+  final output = [
+    '__FLUTTY_HISTORY_START__',
+    ...commands.map((command) => 'bash\t$command'),
+    '__FLUTTY_HISTORY_DONE__',
+  ].join('\n');
+  when(() => exec.stdout).thenAnswer(
+    (_) => Stream<Uint8List>.fromIterable([
+      Uint8List.fromList(utf8.encode(output)),
+    ]),
+  );
+  when(() => exec.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
+  when(() => exec.done).thenAnswer((_) => Future<void>.value());
+  when(
+    () => client.execute(any(), pty: any(named: 'pty')),
+  ).thenAnswer((_) async => exec);
+}
+
+class _PendingHistoryExec {
+  _PendingHistoryExec(ssh.SSHClient client) {
+    when(() => exec.stdout).thenAnswer((_) => _stdout.stream);
+    when(() => exec.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
+    when(() => exec.done).thenAnswer((_) => _done.future);
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      _,
+    ) async {
+      if (!started.isCompleted) {
+        started.complete();
+      }
+      return exec;
+    });
+  }
+
+  final _MockSshExecSession exec = _MockSshExecSession();
+  final StreamController<Uint8List> _stdout = StreamController<Uint8List>();
+  final Completer<void> _done = Completer<void>();
+  final Completer<void> started = Completer<void>();
+
+  Future<void> complete(List<String> commands) async {
+    final output = [
+      '__FLUTTY_HISTORY_START__',
+      ...commands.map((command) => 'bash\t$command'),
+      '__FLUTTY_HISTORY_DONE__',
+    ].join('\n');
+    _stdout.add(Uint8List.fromList(utf8.encode(output)));
+    await _stdout.close();
+    if (!_done.isCompleted) {
+      _done.complete();
+    }
+  }
+}
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() {
+    registerFallbackValue(const ssh.SSHPtyConfig());
+  });
+  tearDown(resetQueuedSshExecsForTesting);
+
   group('buildShellCompletionInvocation', () {
     test('uses a captured prompt prefix to isolate the command text', () {
       const prompt = 'depoll@mac-mini ~ % ';
@@ -401,6 +487,117 @@ void main() {
         'tmux new-session -A -s monkeyssh',
       ]);
     });
+
+    test(
+      'service reuses host-cached history while fresh connection loads',
+      () async {
+        final service = ShellCompletionService();
+        final firstClient = _MockSshClient();
+        final secondClient = _MockSshClient();
+        final firstSession = _buildShellCompletionSession(
+          firstClient,
+          connectionId: 1,
+          hostId: 42,
+        );
+        final secondSession = _buildShellCompletionSession(
+          secondClient,
+          connectionId: 2,
+          hostId: 42,
+        );
+        const invocation = ShellCompletionInvocation(
+          commandLine: 'git c',
+          cursorOffset: 5,
+          token: 'c',
+          tokenStart: 4,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          words: ['git', 'c'],
+          wordIndex: 1,
+          workingDirectory: '/Users/depoll/project',
+        );
+
+        _stubHistoryExec(firstClient, ['git commit']);
+        await service.complete(firstSession, invocation);
+
+        final cachedSuggestions = service.cachedHistorySuggestions(
+          secondSession,
+          invocation,
+        );
+        expect(cachedSuggestions.map((suggestion) => suggestion.label), [
+          'commit',
+          'git commit',
+        ]);
+
+        _stubHistoryExec(secondClient, ['git checkout feature/login']);
+        final freshSuggestions = await service.complete(
+          secondSession,
+          invocation,
+        );
+
+        expect(freshSuggestions.map((suggestion) => suggestion.label), [
+          'checkout',
+          'git checkout feature/login',
+        ]);
+        verify(
+          () => secondClient.execute(any(), pty: any(named: 'pty')),
+        ).called(1);
+      },
+    );
+
+    test(
+      'service keeps in-flight history loads scoped to their connection',
+      () async {
+        final service = ShellCompletionService();
+        final firstClient = _MockSshClient();
+        final secondClient = _MockSshClient();
+        final firstSession = _buildShellCompletionSession(
+          firstClient,
+          connectionId: 1,
+          hostId: 42,
+        );
+        final secondSession = _buildShellCompletionSession(
+          secondClient,
+          connectionId: 2,
+          hostId: 42,
+        );
+        const invocation = ShellCompletionInvocation(
+          commandLine: 'git c',
+          cursorOffset: 5,
+          token: 'c',
+          tokenStart: 4,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          words: ['git', 'c'],
+          wordIndex: 1,
+          workingDirectory: '/Users/depoll/project',
+        );
+
+        final pendingExec = _PendingHistoryExec(firstClient);
+        final firstFuture = service.complete(firstSession, invocation);
+        await pendingExec.started.future;
+
+        _stubHistoryExec(secondClient, ['git checkout feature/login']);
+        final secondSuggestions = await service.complete(
+          secondSession,
+          invocation,
+        );
+
+        expect(secondSuggestions.map((suggestion) => suggestion.label), [
+          'checkout',
+          'git checkout feature/login',
+        ]);
+        verify(
+          () => secondClient.execute(any(), pty: any(named: 'pty')),
+        ).called(1);
+
+        await pendingExec.complete(['git commit']);
+        final firstSuggestions = await firstFuture;
+        expect(firstSuggestions.map((suggestion) => suggestion.label), [
+          'commit',
+          'git commit',
+        ]);
+      },
+    );
 
     test('buildShellHistorySuggestions matches patterns around arguments', () {
       const commandLine = 'codex --prompt "try history" --s';

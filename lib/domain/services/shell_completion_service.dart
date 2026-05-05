@@ -228,6 +228,18 @@ class ShellCompletionService {
     );
   }
 
+  /// Returns host-cached shell history suggestions without opening SSH execs.
+  List<ShellCompletionSuggestion> cachedHistorySuggestions(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) {
+    final cached = _validCachedHistory(session, invocation);
+    if (cached == null) {
+      return const <ShellCompletionSuggestion>[];
+    }
+    return _buildPreparedShellHistorySuggestions(cached.commands, invocation);
+  }
+
   Future<List<ShellCompletionSuggestion>> _completeUncached(
     SshSession session,
     ShellCompletionInvocation invocation,
@@ -311,11 +323,14 @@ class ShellCompletionService {
     final key = _shellHistoryCacheKey(session, invocation);
     final now = DateTime.now();
     final cached = _historyCache[key];
-    if (cached != null && now.difference(cached.createdAt) <= historyCacheTtl) {
+    if (cached != null &&
+        cached.connectionId == session.connectionId &&
+        now.difference(cached.createdAt) <= historyCacheTtl) {
       return cached.commands;
     }
 
-    final pending = _historyInFlight[key];
+    final inFlightKey = _shellHistoryInFlightKey(session, invocation);
+    final pending = _historyInFlight[inFlightKey];
     if (pending != null) {
       return pending;
     }
@@ -325,18 +340,31 @@ class ShellCompletionService {
         await _runHistoryCommand(session, invocation),
       ),
     );
-    _historyInFlight[key] = future;
+    _historyInFlight[inFlightKey] = future;
     try {
       final commands = await future;
       _historyCache[key] = _ShellHistoryCacheEntry(
         createdAt: DateTime.now(),
+        connectionId: session.connectionId,
         commands: List<_PreparedShellHistoryCommand>.unmodifiable(commands),
       );
       _trimHistoryCache(now);
       return commands;
     } finally {
-      _historyInFlight.remove(key)?.ignore();
+      _historyInFlight.remove(inFlightKey)?.ignore();
     }
+  }
+
+  _ShellHistoryCacheEntry? _validCachedHistory(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) {
+    final cached = _historyCache[_shellHistoryCacheKey(session, invocation)];
+    if (cached == null ||
+        DateTime.now().difference(cached.createdAt) > historyCacheTtl) {
+      return null;
+    }
+    return cached;
   }
 
   Future<List<String>> _runHistoryCommand(
@@ -539,10 +567,12 @@ class _InteractiveCompletionResult {
 class _ShellHistoryCacheEntry {
   const _ShellHistoryCacheEntry({
     required this.createdAt,
+    required this.connectionId,
     required this.commands,
   });
 
   final DateTime createdAt;
+  final int connectionId;
   final List<_PreparedShellHistoryCommand> commands;
 }
 
@@ -574,6 +604,11 @@ String _shellCompletionCacheKey(
 ].join('\u001f');
 
 String _shellHistoryCacheKey(
+  SshSession session,
+  ShellCompletionInvocation invocation,
+) => [session.hostId, invocation.shellCommand ?? ''].join('\u001f');
+
+String _shellHistoryInFlightKey(
   SshSession session,
   ShellCompletionInvocation invocation,
 ) => [session.connectionId, invocation.shellCommand ?? ''].join('\u001f');
