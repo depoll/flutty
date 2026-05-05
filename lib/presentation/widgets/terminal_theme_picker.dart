@@ -62,6 +62,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   _ThemeFilter _filter = _ThemeFilter.all;
   final TextEditingController _searchController = TextEditingController();
   Timer? _liveSearchDebounceTimer;
+  int _livePreviewGeneration = 0;
 
   @override
   void dispose() {
@@ -204,6 +205,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
 
   void _clearSearch() {
     _liveSearchDebounceTimer?.cancel();
+    _livePreviewGeneration += 1;
     _searchController.clear();
     setState(() {
       _searchQuery = '';
@@ -214,6 +216,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
 
   void _handleSearchChanged(String value) {
     _liveSearchDebounceTimer?.cancel();
+    _livePreviewGeneration += 1;
     final query = value.trim();
     setState(() {
       _searchQuery = value;
@@ -379,13 +382,50 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               schemes: remoteSchemes,
               importingSchemeId: _importingSchemeId,
               previewingScheme: _previewingScheme,
-              onSchemePreviewed: (scheme) =>
-                  setState(() => _previewingScheme = scheme),
+              onSchemePreviewed: _previewLiveScheme,
               onSchemeSelected: _importLiveScheme,
             );
           },
         ),
     ];
+  }
+
+  void _previewLiveScheme(ItermColorSchemeMetadata scheme) {
+    final previewGeneration = _livePreviewGeneration + 1;
+    _livePreviewGeneration = previewGeneration;
+    setState(() => _previewingScheme = scheme);
+    if (!widget.previewOnTap || widget.onThemePreviewed == null) {
+      return;
+    }
+    unawaited(_loadLiveThemePreview(scheme, previewGeneration));
+  }
+
+  Future<void> _loadLiveThemePreview(
+    ItermColorSchemeMetadata scheme,
+    int previewGeneration,
+  ) async {
+    try {
+      final theme = await ref
+          .read(itermColorSchemeServiceProvider)
+          .loadTheme(scheme);
+      if (!mounted ||
+          previewGeneration != _livePreviewGeneration ||
+          _previewingScheme?.id != scheme.id) {
+        return;
+      }
+      widget.onThemePreviewed?.call(theme);
+    } on ItermColorSchemeException catch (error) {
+      if (!mounted ||
+          previewGeneration != _livePreviewGeneration ||
+          _previewingScheme?.id != scheme.id) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not preview ${scheme.name}: ${error.message}'),
+        ),
+      );
+    }
   }
 
   Future<void> _importLiveScheme(ItermColorSchemeMetadata scheme) async {
@@ -1093,6 +1133,7 @@ Future<TerminalThemeData?> showThemePickerDialog({
   bool? requestFocus,
 }) async => showModalBottomSheet<TerminalThemeData>(
   context: context,
+  barrierColor: onThemePreviewed == null ? null : Colors.transparent,
   isScrollControlled: true,
   requestFocus: requestFocus,
   useSafeArea: true,

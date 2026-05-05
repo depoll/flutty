@@ -5,13 +5,25 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/iterm_color_scheme.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
+import 'package:monkeyssh/domain/services/iterm_color_scheme_service.dart';
 import 'package:monkeyssh/domain/services/terminal_theme_service.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_theme_picker.dart';
 import 'package:monkeyssh/presentation/widgets/theme_preview_card.dart';
 
 const _testThemes = [TerminalThemes.defaultDarkTheme, TerminalThemes.dracula];
+const _remoteScheme = ItermColorSchemeMetadata(
+  id: 'iterm2-remote-ocean',
+  name: 'Remote Ocean',
+  path: 'schemes/Remote Ocean.itermcolors',
+);
+final _remoteTheme = TerminalThemes.dracula.copyWith(
+  id: _remoteScheme.id,
+  name: _remoteScheme.name,
+  isCustom: true,
+);
 
 void main() {
   group('TerminalThemePicker', () {
@@ -53,6 +65,31 @@ void main() {
 
       expect(selectedThemes.single.id, TerminalThemes.dracula.id);
       expect(previewedThemes, isEmpty);
+    });
+
+    testWidgets('previews downloadable live themes in preview mode', (
+      tester,
+    ) async {
+      final previewedThemes = <TerminalThemeData>[];
+      final liveSchemeService = _FakeItermColorSchemeService();
+
+      await _pumpPicker(
+        tester,
+        onThemeSelected: (_) {},
+        onThemePreviewed: previewedThemes.add,
+        previewOnTap: true,
+        liveSchemeService: liveSchemeService,
+      );
+
+      await tester.enterText(find.byType(TextField), 'remote');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text(_remoteScheme.name));
+      await tester.pumpAndSettle();
+
+      expect(liveSchemeService.loadedSchemeIds, [_remoteScheme.id]);
+      expect(previewedThemes.single.id, _remoteTheme.id);
     });
 
     testWidgets('dialog stays above keyboard and confirms previewed theme', (
@@ -169,6 +206,14 @@ void main() {
       await tester.tap(find.text('Open picker'));
       await tester.pumpAndSettle();
 
+      final transparentBarrier = tester
+          .widgetList<ModalBarrier>(find.byType(ModalBarrier))
+          .where(
+            (barrier) =>
+                barrier.color == null || barrier.color == Colors.transparent,
+          );
+      expect(transparentBarrier, isNotEmpty);
+
       final sheetTop = tester.getTopLeft(find.byType(BottomSheet)).dy;
       final handleTop = tester
           .getTopLeft(
@@ -187,12 +232,17 @@ Future<void> _pumpPicker(
   WidgetTester tester, {
   required ValueChanged<TerminalThemeData> onThemeSelected,
   ValueChanged<TerminalThemeData>? onThemePreviewed,
+  ItermColorSchemeService? liveSchemeService,
   bool previewOnTap = false,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
         allTerminalThemesProvider.overrideWith((ref) async => _testThemes),
+        if (liveSchemeService != null)
+          itermColorSchemeServiceProvider.overrideWith(
+            (ref) => liveSchemeService,
+          ),
       ],
       child: MaterialApp(
         home: Scaffold(
@@ -211,4 +261,24 @@ Future<void> _pumpPicker(
     ),
   );
   await tester.pumpAndSettle();
+}
+
+class _FakeItermColorSchemeService extends ItermColorSchemeService {
+  final loadedSchemeIds = <String>[];
+  Future<TerminalThemeData>? _pendingTheme;
+
+  @override
+  Future<List<ItermColorSchemeMetadata>> searchSchemes(String query) async => [
+    _remoteScheme,
+  ];
+
+  @override
+  Future<TerminalThemeData> loadTheme(ItermColorSchemeMetadata scheme) async {
+    if (_pendingTheme != null) {
+      return _pendingTheme!;
+    }
+    loadedSchemeIds.add(scheme.id);
+    _pendingTheme = Future.value(_remoteTheme);
+    return _pendingTheme!;
+  }
 }

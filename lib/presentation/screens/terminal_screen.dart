@@ -6611,6 +6611,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
+    await _ensureSelectedThemeCanBeRestored(theme);
+    if (!mounted) {
+      return;
+    }
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
@@ -6675,6 +6679,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
     }
+  }
+
+  Future<void> _ensureSelectedThemeCanBeRestored(
+    TerminalThemeData theme,
+  ) async {
+    if (!theme.isCustom || TerminalThemes.getById(theme.id) != null) {
+      return;
+    }
+    final themeService = ref.read(terminalThemeServiceProvider);
+    final existingTheme = await themeService.getThemeById(theme.id);
+    if (existingTheme != null) {
+      return;
+    }
+    await themeService.saveCustomTheme(theme.copyWith(isCustom: true));
+    ref
+      ..invalidate(allTerminalThemesProvider)
+      ..invalidate(customTerminalThemesProvider);
   }
 
   void _previewThemeFromPicker(TerminalThemeData theme) {
