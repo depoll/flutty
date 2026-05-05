@@ -124,6 +124,7 @@ void main() {
       final command = buildCopilotActiveSessionMetadataCommand(const {42, 88});
 
       expect(command, contains('pane_pids=\'42 88\''));
+      expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
       expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
       expect(command, contains(r'inuse."$pid".lock'));
       expect(command, contains('workspace.yaml'));

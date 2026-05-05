@@ -3490,6 +3490,7 @@ String buildCopilotActiveSessionMetadataCommand(Set<int> panePids) {
   final panePidText = normalizedPanePids.join(' ');
   return '''
 sep=\$(printf "\\037")
+unsetopt nomatch 2>/dev/null || true
 pane_pids=${TmuxService._shellQuote(panePidText)}
 home=\${HOME:-}
 if [ -z "\$home" ]; then
