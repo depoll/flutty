@@ -936,17 +936,30 @@ String? normalizeShellHistoryCommandPattern(String command) {
   }
 
   final patternTokens = <String>[];
+  var trimNextOptionArgument = false;
   for (var index = 0; index < tokens.length; index++) {
     final token = tokens[index];
+    final tokenValue = token.value;
+    if (trimNextOptionArgument) {
+      trimNextOptionArgument = false;
+      if (!_isShellHistoryOptionToken(tokenValue)) {
+        continue;
+      }
+    }
     final optionPattern = _trimShellHistoryOptionValue(token.value);
     if (optionPattern != null) {
       patternTokens.add(optionPattern);
       continue;
     }
+    if (_isShellHistoryOptionToken(tokenValue)) {
+      patternTokens.add(tokenValue);
+      trimNextOptionArgument = true;
+      continue;
+    }
     if (token.wasQuoted && index > 0) {
       continue;
     }
-    patternTokens.add(token.value);
+    patternTokens.add(tokenValue);
   }
 
   if (patternTokens.isEmpty) {
@@ -985,7 +998,7 @@ bool _isSafeHistoryCommand(String command) {
 }
 
 String? _trimShellHistoryOptionValue(String token) {
-  if (!token.startsWith('-') || token == '-') {
+  if (!_isShellHistoryOptionToken(token)) {
     return null;
   }
   final separatorIndex = token.indexOf('=');
@@ -994,6 +1007,9 @@ String? _trimShellHistoryOptionValue(String token) {
   }
   return token.substring(0, separatorIndex);
 }
+
+bool _isShellHistoryOptionToken(String token) =>
+    token.startsWith('-') && token != '-' && token != '--';
 
 class _ShellHistoryToken {
   const _ShellHistoryToken({required this.value, required this.wasQuoted});

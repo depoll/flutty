@@ -792,6 +792,49 @@ void main() {
         isFalse,
       );
     });
+
+    testWidgets('terminal dismiss region ignores popup taps', (tester) async {
+      var dismissCount = 0;
+      var popupTapCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Stack(
+              children: [
+                Positioned.fill(
+                  child: wrapShellCompletionDismissibleTerminal(
+                    onDismiss: () => dismissCount += 1,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => popupTapCount += 1,
+                    child: const SizedBox(
+                      key: ValueKey('completion-popup'),
+                      width: 100,
+                      height: 100,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      await tester.tapAt(const Offset(200, 200));
+      expect(dismissCount, 1);
+      expect(popupTapCount, 0);
+
+      await tester.tapAt(const Offset(50, 50));
+      expect(dismissCount, 1);
+      expect(popupTapCount, 1);
+    });
   });
 
   group('tmux bar safe insets vs. keyboard toolbar', () {

@@ -419,6 +419,18 @@ bool canTerminalOutputTriggerShellCompletion({
   return true;
 }
 
+/// Wraps the terminal layer so pointer downs outside the completion popup can
+/// dismiss the popup while popup taps remain handled by the overlay above it.
+@visibleForTesting
+Widget wrapShellCompletionDismissibleTerminal({
+  required Widget child,
+  required VoidCallback onDismiss,
+}) => Listener(
+  behavior: HitTestBehavior.translucent,
+  onPointerDown: (_) => onDismiss(),
+  child: child,
+);
+
 /// Returns whether a visible shell completion suggestion still matches the
 /// current terminal command line closely enough to apply.
 @visibleForTesting
@@ -7032,7 +7044,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       fit: StackFit.expand,
       clipBehavior: Clip.none,
       children: [
-        child,
+        wrapShellCompletionDismissibleTerminal(
+          onDismiss: () => _hideShellCompletionPopup(resetPromptPrefix: false),
+          child: child,
+        ),
         Positioned.fill(
           child: LayoutBuilder(
             builder: (overlayContext, constraints) {

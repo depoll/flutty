@@ -292,7 +292,13 @@ void main() {
         normalizeShellHistoryCommandPattern(
           'codex --prompt="do something" --sandbox workspace-write',
         ),
-        'codex --prompt --sandbox workspace-write',
+        'codex --prompt --sandbox',
+      );
+      expect(
+        normalizeShellHistoryCommandPattern(
+          'grep -f patterns.txt --exclude "*.dart" lib',
+        ),
+        'grep -f --exclude lib',
       );
       expect(
         normalizeShellHistoryCommandPattern(
