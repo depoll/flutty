@@ -798,8 +798,9 @@ class TmuxService {
 
   void _scheduleAgentSessionMetadataRefresh(
     SshSession session,
-    List<TmuxWindow> windows,
-  ) {
+    List<TmuxWindow> windows, {
+    bool force = false,
+  }) {
     final copilotPanePids = _copilotPanePids(windows);
     if (copilotPanePids.isEmpty) {
       return;
@@ -811,7 +812,8 @@ class TmuxService {
     }
 
     final lastRefresh = _activeAgentSessionMetadataRefreshes[connectionId];
-    if (lastRefresh != null &&
+    if (!force &&
+        lastRefresh != null &&
         DateTime.now().difference(lastRefresh) <
             _activeAgentSessionMetadataFreshTtl) {
       return;
@@ -823,6 +825,7 @@ class TmuxService {
       fields: {
         'connectionId': connectionId,
         'paneCount': copilotPanePids.length,
+        'forced': force,
       },
     );
 
@@ -1413,10 +1416,10 @@ class TmuxService {
     );
   }
 
-  void _applyCachedWindowEvent(
+  void _applyCachedWindowSnapshot(
     SshSession session,
     String sessionName,
-    TmuxWindowChangeEvent event, {
+    TmuxWindowSnapshotEvent event, {
     String? extraFlags,
   }) {
     final key = _TmuxWindowWatchKey(
@@ -1425,10 +1428,19 @@ class TmuxService {
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
     final cachedWindows = _windowSnapshotCache[key];
-    if (cachedWindows == null || cachedWindows.isEmpty) return;
-    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
-      applyTmuxWindowChangeEvent(cachedWindows, event),
-    );
+    final forceAgentMetadataRefresh =
+        shouldForceAgentSessionMetadataRefreshForSnapshot(
+          cachedWindows ?? const <TmuxWindow>[],
+          event.window,
+        );
+    if (cachedWindows != null && cachedWindows.isNotEmpty) {
+      _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
+        applyTmuxWindowChangeEvent(cachedWindows, event),
+      );
+    }
+    _scheduleAgentSessionMetadataRefresh(session, [
+      event.window,
+    ], force: forceAgentMetadataRefresh);
   }
 
   /// Returns the profile source prefix for this session's login shell.
@@ -2590,6 +2602,43 @@ bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
   return notificationPrefixes.any(trimmed.startsWith);
 }
 
+/// Returns whether a live tmux window snapshot should bypass the normal active
+/// session metadata refresh throttle.
+@visibleForTesting
+bool shouldForceAgentSessionMetadataRefreshForSnapshot(
+  Iterable<TmuxWindow> cachedWindows,
+  TmuxWindow snapshot,
+) {
+  if (snapshot.foregroundAgentTool != AgentLaunchTool.copilotCli) {
+    return false;
+  }
+
+  TmuxWindow? existingWindow;
+  for (final cachedWindow in cachedWindows) {
+    if (_isSameTmuxWindowSnapshot(cachedWindow, snapshot)) {
+      existingWindow = cachedWindow;
+      break;
+    }
+  }
+  if (existingWindow == null) {
+    return true;
+  }
+
+  return existingWindow.name != snapshot.name ||
+      existingWindow.paneTitle != snapshot.paneTitle ||
+      existingWindow.panePid != snapshot.panePid ||
+      existingWindow.currentCommand != snapshot.currentCommand ||
+      existingWindow.agentTool != snapshot.agentTool;
+}
+
+bool _isSameTmuxWindowSnapshot(TmuxWindow existing, TmuxWindow snapshot) {
+  final snapshotId = snapshot.id;
+  if (snapshotId != null) {
+    return existing.id == snapshotId;
+  }
+  return existing.index == snapshot.index;
+}
+
 /// Parses a control-mode output [line] into a tmux window change event for
 /// the observer using [subscriptionName].
 @visibleForTesting
@@ -3000,14 +3049,12 @@ class _TmuxWindowChangeObserver {
       if (!_preserveScheduledReloadThroughSnapshots) {
         _cancelScheduledReload();
       }
-      service
-        .._applyCachedWindowEvent(
-          session,
-          sessionName,
-          event,
-          extraFlags: extraFlags,
-        )
-        .._scheduleAgentSessionMetadataRefresh(session, [event.window]);
+      service._applyCachedWindowSnapshot(
+        session,
+        sessionName,
+        event,
+        extraFlags: extraFlags,
+      );
       DiagnosticsLogService.instance.debug(
         'tmux.watch',
         'snapshot_event',

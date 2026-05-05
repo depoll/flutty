@@ -338,7 +338,7 @@ void main() {
       expect(window.secondaryTitle, 'Copilot CLI · Fix tmux session labels');
     });
 
-    test('suppresses live session titles that match useful window titles', () {
+    test('collapses live session titles that match useful window titles', () {
       const window = TmuxWindow(
         index: 1,
         name: 'copilot',
@@ -350,7 +350,7 @@ void main() {
       );
 
       expect(window.displayTitle, 'Improve Theme Picker Keyboard UX');
-      expect(window.secondaryTitle, isNull);
+      expect(window.secondaryTitle, 'Copilot CLI');
     });
 
     test('handles empty command and path', () {

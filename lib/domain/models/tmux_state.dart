@@ -396,7 +396,8 @@ class TmuxWindow {
       if (_titlesMatch(sessionTitle, display) ||
           _titlesMatch(sessionTitle, normalizedPaneTitle) ||
           _titlesMatch(sessionTitle, normalizedName)) {
-        return null;
+        final toolLabel = foregroundAgentTool?.label;
+        return _titlesMatch(toolLabel, display) ? null : toolLabel;
       }
       return sessionLabel;
     }

@@ -153,5 +153,52 @@ updated_at: 2026-05-04T21:29:53.292Z
         expect(metadata[42]?.title, 'User named Copilot session');
       },
     );
+
+    test('forces refresh when a Copilot tmux title changes', () {
+      const existing = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Old title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Old title',
+      );
+      const updated = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'New title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'New title',
+      );
+
+      expect(
+        shouldForceAgentSessionMetadataRefreshForSnapshot(const [
+          existing,
+        ], updated),
+        isTrue,
+      );
+    });
+
+    test('does not force refresh for unchanged Copilot snapshots', () {
+      const existing = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Current title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Current title',
+      );
+
+      expect(
+        shouldForceAgentSessionMetadataRefreshForSnapshot(const [
+          existing,
+        ], existing),
+        isFalse,
+      );
+    });
   });
 }
