@@ -940,6 +940,7 @@ void main() {
 
       expect(find.byTooltip('Connected through jump host'), findsOneWidget);
       expect(find.byIcon(Icons.alt_route), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_outline), findsNothing);
     });
 
     testWidgets(
