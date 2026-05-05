@@ -1294,7 +1294,25 @@ void main() {
     }
 
     testWidgets(
-      'sends only an outer focus report after tmux theme changes',
+      'primes tmux with outer theme reports after attach',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+        await tester.pump(const Duration(milliseconds: 400));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'sends tmux-scoped theme reports after tmux theme changes',
       (tester) async {
         final tmuxService = _MockTmuxService();
         await pumpTmuxScreen(tester, tmuxService);
@@ -1315,9 +1333,10 @@ void main() {
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
-        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
-        expect(writtenShellText, isNot(contains('\x1b]10;')));
-        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, contains('\x1b[?997;1n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1441,6 +1460,12 @@ void main() {
           ),
           contains('\x1b[O\x1b[I'),
         );
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[?997;1n'),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1560,6 +1585,11 @@ void main() {
           ),
           contains('\x1b[O\x1b[I'),
         );
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[?997;2n'));
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1875,14 +1905,16 @@ void main() {
 
         await tester.pump(const Duration(milliseconds: 1));
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 60));
 
         expect(refreshCount, greaterThan(refreshCountBeforeWindowEvent));
-        expect(
-          utf8.decode(
-            shellWrites.expand((chunk) => chunk).toList(growable: false),
-          ),
-          isEmpty,
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
+        expect(writtenShellText, contains('\x1b[?997;2n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

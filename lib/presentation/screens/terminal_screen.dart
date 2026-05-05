@@ -2210,6 +2210,7 @@ class _TmuxTerminalThemeRefreshRequest {
     required this.reason,
     required this.extraFlags,
     this.sendOuterFocusReport = false,
+    this.sendOuterThemeReports = false,
   });
 
   final TerminalThemeData theme;
@@ -2219,6 +2220,7 @@ class _TmuxTerminalThemeRefreshRequest {
   final String reason;
   final String? extraFlags;
   final bool sendOuterFocusReport;
+  final bool sendOuterThemeReports;
 
   _TmuxTerminalThemeRefreshRequest copyWith({
     TerminalThemeData? theme,
@@ -2228,6 +2230,7 @@ class _TmuxTerminalThemeRefreshRequest {
     String? reason,
     String? extraFlags,
     bool? sendOuterFocusReport,
+    bool? sendOuterThemeReports,
   }) => _TmuxTerminalThemeRefreshRequest(
     theme: theme ?? this.theme,
     session: session ?? this.session,
@@ -2236,6 +2239,7 @@ class _TmuxTerminalThemeRefreshRequest {
     reason: reason ?? this.reason,
     extraFlags: extraFlags ?? this.extraFlags,
     sendOuterFocusReport: sendOuterFocusReport ?? this.sendOuterFocusReport,
+    sendOuterThemeReports: sendOuterThemeReports ?? this.sendOuterThemeReports,
   );
 }
 
@@ -3123,6 +3127,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'terminalViewReady': _terminalViewKey.currentState != null,
       },
     );
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeDefaultColorReports: true,
+      reason: 'tmux_prime_outer_theme',
+    );
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
       DiagnosticsLogService.instance.warning(
@@ -3142,6 +3151,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         refreshGeneration: refreshGeneration,
         reason: 'tmux_prime',
         extraFlags: extraFlags,
+        sendOuterThemeReports: true,
       ),
     );
     for (final (:delay, :reason) in const [
@@ -3156,6 +3166,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           refreshGeneration: refreshGeneration,
           reason: reason,
           extraFlags: extraFlags,
+          sendOuterThemeReports: true,
         ),
         delay: delay,
       );
@@ -3187,6 +3198,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         reason: reason,
         extraFlags: _host?.tmuxExtraFlags,
         sendOuterFocusReport: true,
+        sendOuterThemeReports: true,
       ),
       delay: const Duration(milliseconds: 75),
     );
@@ -3230,6 +3242,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       refreshGeneration: _terminalThemeRefreshGeneration,
       reason: reason,
       extraFlags: _host?.tmuxExtraFlags,
+      sendOuterThemeReports: true,
     );
     if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
       return;
@@ -3321,14 +3334,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           session: pendingRequest.session,
           refreshGeneration: pendingRequest.refreshGeneration,
         );
-    if (!preservePendingOuterFocus) {
+    final preservePendingOuterTheme =
+        pendingRequest != null &&
+        pendingRequest.sendOuterThemeReports &&
+        _isCurrentTerminalThemeRefresh(
+          theme: pendingRequest.theme,
+          session: pendingRequest.session,
+          refreshGeneration: pendingRequest.refreshGeneration,
+        );
+    if (!preservePendingOuterFocus && !preservePendingOuterTheme) {
       return request;
     }
     return request.copyWith(
-      reason: request.sendOuterFocusReport
+      reason: request.sendOuterFocusReport || request.sendOuterThemeReports
           ? request.reason
           : pendingRequest.reason,
-      sendOuterFocusReport: true,
+      sendOuterFocusReport:
+          request.sendOuterFocusReport || preservePendingOuterFocus,
+      sendOuterThemeReports:
+          request.sendOuterThemeReports || preservePendingOuterTheme,
     );
   }
 
@@ -3398,6 +3422,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'reason': request.reason,
             'connectionId': request.session.connectionId,
             'sendOuterFocusReport': request.sendOuterFocusReport,
+            'sendOuterThemeReports': request.sendOuterThemeReports,
           },
         );
         return;
@@ -3409,11 +3434,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'reason': request.reason,
           'connectionId': request.session.connectionId,
           'sendOuterFocusReport': request.sendOuterFocusReport,
+          'sendOuterThemeReports': request.sendOuterThemeReports,
           'shellReady': _shell != null,
           'terminalViewReady': _terminalViewKey.currentState != null,
         },
       );
-      if (request.sendOuterFocusReport) {
+      if (request.sendOuterThemeReports) {
+        _refreshTerminalThemeReportsForTui(
+          request.theme,
+          includeDefaultColorReports: true,
+          reason: '${request.reason}_tmux_outer_theme',
+        );
+        _scheduleTerminalThemeRefreshForTui(
+          theme: request.theme,
+          session: request.session,
+          refreshGeneration: request.refreshGeneration,
+          delay: const Duration(milliseconds: 225),
+          includeThemeModeReport: false,
+          includeDefaultColorReports: true,
+          includeFocusReport: false,
+          reason: '${request.reason}_tmux_outer_defaults_late',
+        );
+        _scheduleTerminalThemeRefreshForTui(
+          theme: request.theme,
+          session: request.session,
+          refreshGeneration: request.refreshGeneration,
+          delay: const Duration(milliseconds: 300),
+          includeThemeModeReport: false,
+          reason: '${request.reason}_tmux_outer_focus_late',
+        );
+      } else if (request.sendOuterFocusReport) {
         _refreshTerminalThemeReportsForTui(
           request.theme,
           includeThemeModeReport: false,
