@@ -613,6 +613,26 @@ void main() {
       );
     });
 
+    test('applies printable completion input before remote echo arrives', () {
+      final snapshot = applyShellCompletionOutputToSnapshot(
+        snapshot: (text: 'depoll@host % git ', cursorOffset: 18),
+        output: 'c',
+      );
+
+      expect(snapshot.text, 'depoll@host % git c');
+      expect(snapshot.cursorOffset, 19);
+    });
+
+    test('applies completion backspace before remote echo arrives', () {
+      final snapshot = applyShellCompletionOutputToSnapshot(
+        snapshot: (text: 'depoll@host % git c', cursorOffset: 19),
+        output: '\x7F',
+      );
+
+      expect(snapshot.text, 'depoll@host % git ');
+      expect(snapshot.cursorOffset, 18);
+    });
+
     test(
       'rejects stale shell completion taps when token no longer matches',
       () {

@@ -1871,6 +1871,27 @@ String applyTerminalInputDelta({
   return currentText.replaceRange(deleteStart, cursorOffset, appendedText);
 }
 
+/// Applies shell-completion-triggering terminal output to a command snapshot.
+@visibleForTesting
+({String text, int cursorOffset}) applyShellCompletionOutputToSnapshot({
+  required ({String text, int cursorOffset}) snapshot,
+  required String output,
+}) {
+  final cursorOffset = min(max(snapshot.cursorOffset, 0), snapshot.text.length);
+  if (output == '\x7F' || output == '\b') {
+    final deleteStart = cursorOffset > 0 ? cursorOffset - 1 : 0;
+    return (
+      text: snapshot.text.replaceRange(deleteStart, cursorOffset, ''),
+      cursorOffset: deleteStart,
+    );
+  }
+
+  return (
+    text: snapshot.text.replaceRange(cursorOffset, cursorOffset, output),
+    cursorOffset: cursorOffset + output.length,
+  );
+}
+
 @visibleForTesting
 /// Resolves how much of a terminal row snapshot should remain after trimming.
 int resolveTerminalLineSnapshotTextLength({
@@ -2557,6 +2578,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
+  ({String text, int cursorOffset})? _shellCompletionOptimisticSnapshot;
   ShellCompletionInvocation? _shellCompletionSourceInvocation;
   List<ShellCompletionSuggestion> _shellCompletionSourceSuggestions =
       const <ShellCompletionSuggestion>[];
@@ -2898,6 +2920,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _onTerminalStateChanged() {
     _nativeSelectionSnapshotCache = null;
     _terminalContentGeneration++;
+    _syncShellCompletionOptimisticSnapshotWithTerminal();
     if (_isNativeSelectionMode && !_hasExpandedNativeOverlaySelection) {
       _refreshNativeOverlayText(preserveSelection: true);
     }
@@ -4073,7 +4096,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _shellCompletionPromptPrefix ??= _terminalTextBeforeCursor();
+    _trackShellCompletionOptimisticInput(output);
     if (_filterVisibleShellCompletionsForCurrentInput()) {
       return;
     }
@@ -4089,6 +4112,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isTmuxActive: _isTmuxActive,
         showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
       );
+
+  void _trackShellCompletionOptimisticInput(String output) {
+    final terminalSnapshot = _buildWrappedTerminalCommandSnapshot();
+    if (terminalSnapshot == null) {
+      _shellCompletionOptimisticSnapshot = null;
+      return;
+    }
+
+    _shellCompletionPromptPrefix ??= terminalSnapshot.text.substring(
+      0,
+      terminalSnapshot.cursorOffset,
+    );
+    final snapshot = _shellCompletionOptimisticSnapshot ?? terminalSnapshot;
+    _shellCompletionOptimisticSnapshot = applyShellCompletionOutputToSnapshot(
+      snapshot: snapshot,
+      output: output,
+    );
+  }
+
+  void _syncShellCompletionOptimisticSnapshotWithTerminal() {
+    final optimisticSnapshot = _shellCompletionOptimisticSnapshot;
+    if (optimisticSnapshot == null) {
+      return;
+    }
+    final terminalSnapshot = _buildWrappedTerminalCommandSnapshot();
+    if (terminalSnapshot == null) {
+      return;
+    }
+    if (terminalSnapshot.text == optimisticSnapshot.text &&
+        terminalSnapshot.cursorOffset == optimisticSnapshot.cursorOffset) {
+      _shellCompletionOptimisticSnapshot = null;
+    }
+  }
 
   void _queueShellCompletionRefresh({bool resetAnchorRetries = true}) {
     if (!ref.read(shellCompletionsNotifierProvider)) {
@@ -4405,7 +4461,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _showsNativeSelectionOverlay) {
       return null;
     }
-    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    final snapshot =
+        _shellCompletionOptimisticSnapshot ??
+        _buildWrappedTerminalCommandSnapshot();
     if (snapshot == null) {
       return null;
     }
@@ -4486,6 +4544,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionAnchorRetryCount = 0;
     if (resetPromptPrefix) {
       _shellCompletionPromptPrefix = null;
+      _shellCompletionOptimisticSnapshot = null;
     }
     if (_shellCompletionInvocation == null &&
         _shellCompletionSuggestions.isEmpty &&
