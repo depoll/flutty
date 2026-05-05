@@ -119,7 +119,7 @@ class TmuxService {
       _execChannelBackoffs.containsKey(connectionId);
 
   /// Clears tmux caches and disposes active watchers for a connection.
-  Future<void> clearCache(int connectionId) {
+  Future<void> clearCache(int connectionId) async {
     DiagnosticsLogService.instance.info(
       'tmux.cache',
       'clear',
@@ -132,12 +132,12 @@ class TmuxService {
     );
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
-    _tmuxPathRequests.remove(connectionId);
+    _tmuxPathRequests.remove(connectionId)?.ignore();
     _hasSessionRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
     _installedAgentToolsCache.remove(connectionId);
-    _installedAgentToolRequests.remove(connectionId);
+    _installedAgentToolRequests.remove(connectionId)?.ignore();
     _execChannelBackoffs.remove(connectionId);
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
@@ -155,7 +155,9 @@ class TmuxService {
         observerDisposals.add(observer.dispose());
       }
     }
-    return Future.wait(observerDisposals).then((_) {});
+    if (observerDisposals.isNotEmpty) {
+      await Future.wait(observerDisposals);
+    }
   }
 
   // ── Detection ──────────────────────────────────────────────────────────
@@ -2299,7 +2301,7 @@ const _tmuxWindowSubscriptionFormat =
 
 const _tmuxControlModeClientFlags = 'ignore-size,no-output';
 const _tmuxControlModeDetachInput = 'detach-client -P\n\n';
-const _tmuxControlModeWaitExitInput = '\n';
+const _tmuxControlModeExitAcknowledgeInput = '\n';
 const _tmuxControlModeShutdownTimeout = Duration(seconds: 1);
 
 /// Builds the tmux control-mode attach command used for live window updates.
@@ -2591,9 +2593,10 @@ class _TmuxWindowChangeObserver {
   Timer? _restartTimer;
   Timer? _heartbeatTimer;
   SSHSession? _controlSession;
+  Future<void>? _startFuture;
+  Future<void>? _disposeFuture;
   final _controlCommandQueue = Queue<_TmuxControlCommandRequest>();
   _TmuxControlCommandRequest? _activeControlCommand;
-  bool _starting = false;
   bool _disposed = false;
   bool _preserveScheduledReloadThroughSnapshots = false;
   int _restartAttempts = 0;
@@ -2675,9 +2678,25 @@ class _TmuxWindowChangeObserver {
     }
   }
 
-  Future<void> _ensureStarted() async {
-    if (_disposed || _starting || _controlSession != null) return;
-    _starting = true;
+  Future<void> _ensureStarted() {
+    if (_disposed || _controlSession != null) return Future<void>.value();
+    final existingStart = _startFuture;
+    if (existingStart != null) {
+      return existingStart;
+    }
+    final startFuture = _startControlSession();
+    _startFuture = startFuture;
+    unawaited(
+      startFuture.whenComplete(() {
+        if (identical(_startFuture, startFuture)) {
+          _startFuture = null;
+        }
+      }),
+    );
+    return startFuture;
+  }
+
+  Future<void> _startControlSession() async {
     DiagnosticsLogService.instance.info(
       'tmux.watch',
       'start',
@@ -2688,6 +2707,9 @@ class _TmuxWindowChangeObserver {
     );
     try {
       await service._cacheTmuxPath(session);
+      if (_disposed) {
+        return;
+      }
       final execSession = await service._openExec(
         session,
         service._wrapCommand(
@@ -2703,7 +2725,10 @@ class _TmuxWindowChangeObserver {
         pty: const SSHPtyConfig(),
       );
       if (_disposed) {
-        execSession.close();
+        await _shutdownControlSession(
+          execSession,
+          shutdownInput: _tmuxControlModeDetachInput,
+        );
         return;
       }
 
@@ -2733,8 +2758,6 @@ class _TmuxWindowChangeObserver {
       );
     } on Object catch (error, stackTrace) {
       _handleControlFailure(error, stackTrace);
-    } finally {
-      _starting = false;
     }
   }
 
@@ -2778,7 +2801,7 @@ class _TmuxWindowChangeObserver {
         'control_exit',
         fields: {'connectionId': session.connectionId},
       );
-      _handleControlClosed(shutdownInput: _tmuxControlModeWaitExitInput);
+      _handleControlClosed(shutdownInput: _tmuxControlModeExitAcknowledgeInput);
       return;
     }
     final event = parseTmuxWindowChangeEventFromControlLine(
@@ -3127,7 +3150,9 @@ class _TmuxWindowChangeObserver {
     }
   }
 
-  Future<void> dispose() async {
+  Future<void> dispose() => _disposeFuture ??= _dispose();
+
+  Future<void> _dispose() async {
     if (_disposed) return;
     DiagnosticsLogService.instance.info(
       'tmux.watch',
@@ -3138,6 +3163,10 @@ class _TmuxWindowChangeObserver {
     _stopHeartbeat();
     _restartTimer?.cancel();
     _restartTimer = null;
+    final startFuture = _startFuture;
+    if (startFuture != null) {
+      await startFuture;
+    }
     await _cleanupControlSession(shutdownInput: _tmuxControlModeDetachInput);
     if (!_controller.isClosed) {
       await _controller.close();

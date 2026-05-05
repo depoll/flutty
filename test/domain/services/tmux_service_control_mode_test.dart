@@ -1126,6 +1126,133 @@ void main() {
       },
     );
 
+    test(
+      'clearCache waits for disposal that subscription cancel started',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 74);
+        const service = TmuxService();
+        final stdoutController = StreamController<Uint8List>();
+        final stdinCloseCompleter = Completer<void>();
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          stdinClose: stdinCloseCompleter.future,
+          onWrite: (value) {
+            if (value.startsWith('refresh-client ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+                ),
+              );
+            }
+          },
+        );
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          controlSession,
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          if (!stdinCloseCompleter.isCompleted) {
+            stdinCloseCompleter.complete();
+          }
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(() => controlSession.write(any()));
+
+        await subscription.cancel();
+        await Future<void>.delayed(Duration.zero);
+
+        var clearCacheCompleted = false;
+        final clearCacheFuture = service.clearCache(74).then((_) {
+          clearCacheCompleted = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+
+        expect(clearCacheCompleted, isFalse);
+
+        stdinCloseCompleter.complete();
+        await clearCacheFuture;
+
+        expect(clearCacheCompleted, isTrue);
+        verify(controlSession.close).called(1);
+      },
+    );
+
+    test(
+      'clearCache waits for a starting watcher and detaches it after open',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 75);
+        const service = TmuxService();
+        final stdoutController = StreamController<Uint8List>.broadcast();
+        final controlOpenCompleter = Completer<SSHSession>();
+        final writes = <String>[];
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          onWrite: writes.add,
+        );
+        var executeCalls = 0;
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) {
+          executeCalls += 1;
+          final command = invocation.positionalArguments.single as String;
+          if (command.contains('command -v tmux')) {
+            return Future.value(
+              _buildOpenExecSession(
+                stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}',
+              ),
+            );
+          }
+          expect(command, contains('attach-session'));
+          return controlOpenCompleter.future;
+        });
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          if (!controlOpenCompleter.isCompleted) {
+            controlOpenCompleter.complete(controlSession);
+          }
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(
+          () => client.execute(
+            any(that: contains('attach-session')),
+            pty: any(named: 'pty'),
+          ),
+        );
+
+        var clearCacheCompleted = false;
+        final clearCacheFuture = service.clearCache(75).then((_) {
+          clearCacheCompleted = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+
+        expect(clearCacheCompleted, isFalse);
+
+        controlOpenCompleter.complete(controlSession);
+        await clearCacheFuture;
+
+        expect(clearCacheCompleted, isTrue);
+        expect(writes, contains('detach-client -P\n\n'));
+        expect(executeCalls, 2);
+        verify(controlSession.close).called(1);
+      },
+    );
+
     test('selectWindow uses an active control-mode watcher', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 70);
@@ -1897,11 +2024,12 @@ SSHSession _buildInteractiveExecSession({
   void Function(String)? onWrite,
   String stderr = '',
   Future<void>? done,
+  Future<void>? stdinClose,
 }) {
   final session = _MockExecSession();
   final doneFuture = done ?? Completer<void>().future;
   final stdinSink = _MockByteSink();
-  when(stdinSink.close).thenAnswer((_) async {});
+  when(stdinSink.close).thenAnswer((_) => stdinClose ?? Future<void>.value());
   when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
   when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
   when(() => session.done).thenAnswer((_) => doneFuture);
