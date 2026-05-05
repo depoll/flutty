@@ -51,6 +51,7 @@ import '../widgets/ai_session_picker.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
 import '../widgets/terminal_text_input_handler.dart';
@@ -2428,6 +2429,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // when it resumes if the OS killed the socket.
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
+  bool _restoreKeyboardAfterAppResume = false;
 
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
@@ -5921,10 +5923,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
+      _restoreKeyboardAfterAppResume =
+          _restoreKeyboardAfterAppResume ||
+          _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
       _wasBackgrounded = true;
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
+      final shouldRestoreKeyboard = _restoreKeyboardAfterAppResume;
+      _restoreKeyboardAfterAppResume = false;
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
       _scheduleTerminalSizeRefresh();
@@ -5944,6 +5951,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
+      _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
     }
   }
 
@@ -6231,6 +6239,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             PopupMenuButton<String>(
               onSelected: _handleMenuAction,
+              requestFocus: terminalOverlayRouteRequestFocus(context),
               itemBuilder: (context) => [
                 const PopupMenuItem(
                   value: 'snippets',
@@ -6476,6 +6485,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
   }
 
+  bool _temporarilyDismissTerminalKeyboard() {
+    if (!_isMobilePlatform) {
+      return false;
+    }
+    final shouldRestore = _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+    return shouldRestore;
+  }
+
+  bool get _shouldRestoreTerminalKeyboardAfterTemporaryDismissal =>
+      _isMobilePlatform &&
+      _terminalFocusNode.hasFocus &&
+      _terminalTextInputController.isKeyboardVisible;
+
+  void _restoreTemporarilyDismissedTerminalKeyboard(bool shouldRestore) {
+    if (!shouldRestore || !mounted) {
+      return;
+    }
+    _restoreTerminalFocus(forceShowSystemKeyboard: true);
+  }
+
   void _handleKeyboardToolbarKeyPressed() {
     _followLiveOutput();
     _terminalTextInputController.clearImeBuffer();
@@ -6556,6 +6587,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final theme = await showThemePickerDialog(
       context: context,
       currentThemeId: currentId,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
     );
 
     if (theme != null && mounted) {
@@ -7075,16 +7107,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sftpBrowserLastPathsProvider,
       )[(hostId: widget.hostId, connectionId: connectionId)];
       final initialPath = rememberedPath ?? cwd;
-      await context.pushNamed<String>(
-        Routes.sftp,
-        pathParameters: {'hostId': widget.hostId.toString()},
-        queryParameters: _buildSftpBrowserQueryParameters(
-          connectionId: connectionId,
-          initialPath: initialPath,
-          workingDirectory: cwd,
-          tmuxPaneDirectory: tmuxPaneDirectory,
-        ),
-      );
+      final shouldRestoreKeyboard = _temporarilyDismissTerminalKeyboard();
+      try {
+        await context.pushNamed<String>(
+          Routes.sftp,
+          pathParameters: {'hostId': widget.hostId.toString()},
+          queryParameters: _buildSftpBrowserQueryParameters(
+            connectionId: connectionId,
+            initialPath: initialPath,
+            workingDirectory: cwd,
+            tmuxPaneDirectory: tmuxPaneDirectory,
+          ),
+        );
+      } finally {
+        _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+      }
     },
   );
 
@@ -8685,21 +8722,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             return;
           }
 
-          final result = await context.pushNamed<String>(
-            Routes.sftp,
-            pathParameters: {'hostId': widget.hostId.toString()},
-            queryParameters: _buildSftpBrowserQueryParameters(
-              connectionId: connectionId,
-              initialPath: verifiedPath,
-              workingDirectory: cwd,
-              tmuxPaneDirectory: tmuxPaneDirectory,
-            ),
-          );
-          if (!mounted || result == null) {
-            return;
+          final shouldRestoreKeyboard = _temporarilyDismissTerminalKeyboard();
+          String? result;
+          try {
+            result = await context.pushNamed<String>(
+              Routes.sftp,
+              pathParameters: {'hostId': widget.hostId.toString()},
+              queryParameters: _buildSftpBrowserQueryParameters(
+                connectionId: connectionId,
+                initialPath: verifiedPath,
+                workingDirectory: cwd,
+                tmuxPaneDirectory: tmuxPaneDirectory,
+              ),
+            );
+          } finally {
+            _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
           }
 
-          _showTerminalLinkMessage(result);
+          if (mounted && result != null) {
+            _showTerminalLinkMessage(result);
+          }
         },
       );
 
@@ -9548,6 +9590,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final confirmed = await showDialog<bool>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: Text(title),
         content: SingleChildScrollView(
@@ -9906,6 +9949,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         >(
           context: context,
           isScrollControlled: true,
+          requestFocus: terminalOverlayRouteRequestFocus(context),
           builder: (context) => DraggableScrollableSheet(
             maxChildSize: 0.8,
             minChildSize: 0.3,
@@ -10097,6 +10141,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) async {
     final decision = await showDialog<_AutoConnectReviewDecision>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: const Text('Review imported auto-connect command'),
         content: _buildCommandReviewContent(
@@ -10134,6 +10179,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) async {
     final confirmed = await showDialog<bool>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: Text(title),
         content: _buildCommandReviewContent(review: review, message: message),
