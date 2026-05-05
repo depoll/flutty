@@ -2424,6 +2424,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
+  late final TmuxService _tmuxService;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -2579,6 +2580,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'hasInitialTmuxWindow': widget.initialTmuxWindowIndex != null,
       },
     );
+    _tmuxService = ref.read(tmuxServiceProvider);
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -5793,7 +5795,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       if (connectionId != null) {
         unawaited(
-          _sessionsNotifier?.handleUnexpectedDisconnect(
+          _cleanupUnexpectedDisconnect(
             connectionId,
             message: 'Connection closed',
           ),
@@ -5817,14 +5819,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     // Clean up the session state regardless of background/foreground.
     if (connectionId != null) {
-      ref.read(tmuxServiceProvider).clearCache(connectionId);
       unawaited(
-        _sessionsNotifier?.handleUnexpectedDisconnect(
+        _cleanupUnexpectedDisconnect(
           connectionId,
           message: 'Connection closed',
         ),
       );
     }
+  }
+
+  Future<void> _cleanupUnexpectedDisconnect(
+    int connectionId, {
+    required String message,
+  }) async {
+    await _tmuxService.clearCache(connectionId);
+    await _sessionsNotifier?.handleUnexpectedDisconnect(
+      connectionId,
+      message: message,
+    );
   }
 
   Future<void> _disconnect() async {
@@ -5836,7 +5848,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _doneSubscription = null;
     _shell = null;
     if (connectionId != null) {
-      ref.read(tmuxServiceProvider).clearCache(connectionId);
+      await _tmuxService.clearCache(connectionId);
       await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
@@ -5870,7 +5882,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _doneSubscription = null;
       _shell = null;
       if (previousConnectionId != null) {
-        ref.read(tmuxServiceProvider).clearCache(previousConnectionId);
+        await _tmuxService.clearCache(previousConnectionId);
         await _sessionsNotifier?.disconnect(previousConnectionId);
       }
       if (!mounted) {

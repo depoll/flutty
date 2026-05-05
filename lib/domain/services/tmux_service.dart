@@ -118,8 +118,8 @@ class TmuxService {
   static bool hasExecChannelBackoffEntry(int connectionId) =>
       _execChannelBackoffs.containsKey(connectionId);
 
-  /// Clears the cached tmux path for a connection.
-  void clearCache(int connectionId) {
+  /// Clears tmux caches and disposes active watchers for a connection.
+  Future<void> clearCache(int connectionId) {
     DiagnosticsLogService.instance.info(
       'tmux.cache',
       'clear',
@@ -148,9 +148,14 @@ class TmuxService {
     final observerKeys = _windowObservers.keys
         .where((key) => key.connectionId == connectionId)
         .toList(growable: false);
+    final observerDisposals = <Future<void>>[];
     for (final key in observerKeys) {
-      unawaited(_windowObservers.remove(key)?.dispose());
+      final observer = _windowObservers.remove(key);
+      if (observer != null) {
+        observerDisposals.add(observer.dispose());
+      }
     }
+    return Future.wait(observerDisposals).then((_) {});
   }
 
   // ── Detection ──────────────────────────────────────────────────────────
@@ -2292,9 +2297,16 @@ const _tmuxWindowSubscriptionFormat =
     '#{@flutty_agent_tool}$tmuxWindowFieldSeparator'
     '#{window_id}';
 
-const _tmuxControlModeClientFlags = 'ignore-size,no-output,wait-exit';
+const _tmuxControlModeClientFlags = 'ignore-size,no-output';
+const _tmuxControlModeDetachInput = 'detach-client -P\n\n';
+const _tmuxControlModeWaitExitInput = '\n';
+const _tmuxControlModeShutdownTimeout = Duration(seconds: 1);
 
 /// Builds the tmux control-mode attach command used for live window updates.
+///
+/// Intentionally omits tmux's `wait-exit` client flag. On an unexpected SSH
+/// disconnect there is no client left to send the empty line `wait-exit`
+/// requires, so the remote control-mode client can linger indefinitely.
 @visibleForTesting
 String buildTmuxControlModeAttachCommand(
   String sessionName, {
@@ -2566,8 +2578,14 @@ class _TmuxWindowChangeObserver {
   final DateTime Function() _now;
   final StreamController<TmuxWindowChangeEvent> _controller;
 
+  // Cancelled in _cleanupControlSession().
+  // ignore: cancel_subscriptions
   StreamSubscription<String>? _stdoutSubscription;
+  // Cancelled in _cleanupControlSession().
+  // ignore: cancel_subscriptions
   StreamSubscription<String>? _stderrSubscription;
+  // Cancelled in _cleanupControlSession().
+  // ignore: cancel_subscriptions
   StreamSubscription<void>? _doneSubscription;
   Timer? _debounceTimer;
   Timer? _restartTimer;
@@ -2760,7 +2778,7 @@ class _TmuxWindowChangeObserver {
         'control_exit',
         fields: {'connectionId': session.connectionId},
       );
-      _handleControlClosed();
+      _handleControlClosed(shutdownInput: _tmuxControlModeWaitExitInput);
       return;
     }
     final event = parseTmuxWindowChangeEventFromControlLine(
@@ -2959,23 +2977,32 @@ class _TmuxWindowChangeObserver {
         'errorType': error.runtimeType,
       },
     );
-    _cleanupControlSession(error, stackTrace);
+    unawaited(
+      _cleanupControlSession(
+        commandError: error,
+        stackTrace: stackTrace,
+        shutdownInput: _tmuxControlModeDetachInput,
+      ),
+    );
     _scheduleRestart(
       channelOpenFailure: shouldBackOffTmuxExecChannelAfterFailure(error),
     );
   }
 
-  void _handleControlClosed() {
+  void _handleControlClosed({String? shutdownInput}) {
     DiagnosticsLogService.instance.info(
       'tmux.watch',
       'control_closed',
       fields: {'connectionId': session.connectionId},
     );
-    _cleanupControlSession(
-      const TmuxCommandException(
-        'tmux control channel closed before command completed',
+    unawaited(
+      _cleanupControlSession(
+        commandError: const TmuxCommandException(
+          'tmux control channel closed before command completed',
+        ),
+        stackTrace: StackTrace.current,
+        shutdownInput: shutdownInput,
       ),
-      StackTrace.current,
     );
     _scheduleRestart();
   }
@@ -3044,22 +3071,60 @@ class _TmuxWindowChangeObserver {
     }
   }
 
-  void _cleanupControlSession([Object? commandError, StackTrace? stackTrace]) {
+  Future<void> _cleanupControlSession({
+    Object? commandError,
+    StackTrace? stackTrace,
+    String? shutdownInput,
+  }) {
     _stopHeartbeat();
     _cancelScheduledReload();
     _failControlCommands(
       commandError ?? const _TmuxControlCommandUnavailable(),
       stackTrace ?? StackTrace.current,
     );
-    unawaited(_stdoutSubscription?.cancel());
-    unawaited(_stderrSubscription?.cancel());
-    unawaited(_doneSubscription?.cancel());
+    final stdoutSubscription = _stdoutSubscription;
+    final stderrSubscription = _stderrSubscription;
+    final doneSubscription = _doneSubscription;
     _stdoutSubscription = null;
     _stderrSubscription = null;
     _doneSubscription = null;
-    _controlSession?.close();
+    final controlSession = _controlSession;
     _controlSession = null;
     _lastControlActivity = null;
+    return Future.wait([
+      if (stdoutSubscription != null) stdoutSubscription.cancel(),
+      if (stderrSubscription != null) stderrSubscription.cancel(),
+      if (doneSubscription != null) doneSubscription.cancel(),
+      if (controlSession != null)
+        _shutdownControlSession(controlSession, shutdownInput: shutdownInput),
+    ]).then((_) {});
+  }
+
+  Future<void> _shutdownControlSession(
+    SSHSession controlSession, {
+    String? shutdownInput,
+  }) async {
+    try {
+      if (shutdownInput != null) {
+        try {
+          controlSession.write(utf8.encode(shutdownInput));
+          await controlSession.stdin.close().timeout(
+            _tmuxControlModeShutdownTimeout,
+          );
+        } on Object catch (error) {
+          DiagnosticsLogService.instance.warning(
+            'tmux.watch',
+            'shutdown_input_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'errorType': error.runtimeType,
+            },
+          );
+        }
+      }
+    } finally {
+      controlSession.close();
+    }
   }
 
   Future<void> dispose() async {
@@ -3073,7 +3138,7 @@ class _TmuxWindowChangeObserver {
     _stopHeartbeat();
     _restartTimer?.cancel();
     _restartTimer = null;
-    _cleanupControlSession();
+    await _cleanupControlSession(shutdownInput: _tmuxControlModeDetachInput);
     if (!_controller.isClosed) {
       await _controller.close();
     }
