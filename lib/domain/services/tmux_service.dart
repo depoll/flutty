@@ -3000,12 +3000,14 @@ class _TmuxWindowChangeObserver {
       if (!_preserveScheduledReloadThroughSnapshots) {
         _cancelScheduledReload();
       }
-      service._applyCachedWindowEvent(
-        session,
-        sessionName,
-        event,
-        extraFlags: extraFlags,
-      );
+      service
+        .._applyCachedWindowEvent(
+          session,
+          sessionName,
+          event,
+          extraFlags: extraFlags,
+        )
+        .._scheduleAgentSessionMetadataRefresh(session, [event.window]);
       DiagnosticsLogService.instance.debug(
         'tmux.watch',
         'snapshot_event',
