@@ -6088,18 +6088,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       connectionState,
       isConnecting: _isConnecting,
     );
+    final activeSession = _connectionId == null
+        ? null
+        : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
     final isConnectedThroughJumpHost =
         connectionState == SshConnectionState.connected &&
-        _connectionId != null &&
-        ref
-                .read(activeSessionsProvider.notifier)
-                .getSession(_connectionId!)
-                ?.config
-                .jumpHost !=
-            null;
-    final connectionStatusLabel = isConnectedThroughJumpHost
-        ? 'Connected through jump host'
-        : connectionLabel;
+        (_observedSession ?? activeSession)?.config.jumpHost != null;
     final connectionIdentity = formatTerminalConnectionIdentity(
       username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
       hostname: _redactStoreScreenshotIdentities
@@ -6153,11 +6147,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ),
                   const SizedBox(width: 6),
                   _TerminalConnectionStatusIcon(
-                    label: connectionStatusLabel,
+                    label: connectionLabel,
                     state: connectionState,
                     isConnecting: _isConnecting,
-                    isConnectedThroughJumpHost: isConnectedThroughJumpHost,
                   ),
+                  if (isConnectedThroughJumpHost) ...[
+                    const SizedBox(width: 4),
+                    const _TerminalJumpHostIndicator(),
+                  ],
                 ],
               ),
               if (titleSubtitle.isNotEmpty)
@@ -10306,19 +10303,13 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
     required this.label,
     required this.state,
     required this.isConnecting,
-    required this.isConnectedThroughJumpHost,
   });
 
   final String label;
   final SshConnectionState state;
   final bool isConnecting;
-  final bool isConnectedThroughJumpHost;
 
   IconData get _icon {
-    if (isConnectedThroughJumpHost) {
-      return Icons.alt_route;
-    }
-
     if (isConnecting &&
         (state == SshConnectionState.disconnected ||
             state == SshConnectionState.connecting)) {
@@ -10341,10 +10332,6 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
   }
 
   Color _color(ColorScheme colorScheme) {
-    if (isConnectedThroughJumpHost) {
-      return colorScheme.secondary;
-    }
-
     if (isConnecting &&
         (state == SshConnectionState.disconnected ||
             state == SshConnectionState.connecting)) {
@@ -10375,6 +10362,24 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
         message: label,
         excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
+      ),
+    );
+  }
+}
+
+class _TerminalJumpHostIndicator extends StatelessWidget {
+  const _TerminalJumpHostIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      label: 'Connected through jump host',
+      child: Tooltip(
+        message: 'Connected through jump host',
+        excludeFromSemantics: true,
+        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
       ),
     );
   }
