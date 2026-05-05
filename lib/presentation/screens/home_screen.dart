@@ -2949,9 +2949,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         oldWidget.preferredSessionName != widget.preferredSessionName;
     final tmuxExtraFlagsChanged =
         oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
-    if (connectionChanged) {
-      unawaited(_loadHostAgentPreferences());
-    }
+    unawaited(_loadHostAgentPreferences());
     if (connectionChanged || preferredSessionChanged || tmuxExtraFlagsChanged) {
       _tmuxQueryGeneration++;
       _tmuxRetryTimer?.cancel();
@@ -3132,6 +3130,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
+    unawaited(_loadHostAgentPreferences(session.hostId));
 
     final tmux = ref.read(tmuxServiceProvider);
     final preferredSessionName = widget.preferredSessionName?.trim();
@@ -3552,9 +3551,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     );
   }
 
-  void _resumeSession(ToolSessionInfo info) {
+  Future<void> _resumeSession(ToolSessionInfo info) async {
     if (!_hasAgentSessionAccess) {
-      unawaited(_handleLockedAiSessionsTap());
+      await _handleLockedAiSessionsTap();
       return;
     }
     final session = ref
@@ -3562,13 +3561,18 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .getSession(widget.connectionId);
     if (session == null || _sessionName == null) return;
 
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(session.hostId);
+    if (!mounted) return;
+
     final discovery = ref.read(agentSessionDiscoveryServiceProvider);
     final command = discovery.buildResumeCommand(
       info,
-      startInYoloMode: _startClisInYoloMode,
+      startInYoloMode: cliLaunchPreferences.startInYoloMode,
     );
-    final tmux = ref.read(tmuxServiceProvider);
-    tmux
+    await ref
+        .read(tmuxServiceProvider)
         .createWindow(
           session,
           _sessionName!,
@@ -3576,9 +3580,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           name: info.toolName,
           workingDirectory: info.workingDirectory,
           extraFlags: widget.tmuxExtraFlags,
-        )
-        .then((_) => widget.onTap())
-        .ignore();
+        );
+    if (mounted) {
+      widget.onTap();
+    }
   }
 
   Future<void> _showSessionPickerForTool(
@@ -3605,7 +3610,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           ),
     );
     if (!mounted || selected == null) return;
-    _resumeSession(selected);
+    _runTmuxPreviewAction(_resumeSession(selected));
   }
 
   Widget _buildSessionProviderRow(
