@@ -24,6 +24,10 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
   const TerminalThemePicker({
     required this.selectedThemeId,
     required this.onThemeSelected,
+    this.currentSelectionLabel,
+    this.onThemePreviewed,
+    this.previewOnTap = false,
+    this.scrollController,
     super.key,
   });
 
@@ -32,6 +36,18 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 
   /// Called when a theme is selected.
   final ValueChanged<TerminalThemeData> onThemeSelected;
+
+  /// Label shown above the selected theme preview.
+  final String? currentSelectionLabel;
+
+  /// Called when a theme should be previewed without closing the picker.
+  final ValueChanged<TerminalThemeData>? onThemePreviewed;
+
+  /// Whether tapping an installed theme previews it instead of selecting it.
+  final bool previewOnTap;
+
+  /// Optional scroll controller supplied by a surrounding draggable sheet.
+  final ScrollController? scrollController;
 
   @override
   ConsumerState<TerminalThemePicker> createState() =>
@@ -46,6 +62,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   _ThemeFilter _filter = _ThemeFilter.all;
   final TextEditingController _searchController = TextEditingController();
   Timer? _liveSearchDebounceTimer;
+  int _livePreviewGeneration = 0;
 
   @override
   void dispose() {
@@ -78,6 +95,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         : null;
 
     return NestedScrollView(
+      controller: widget.scrollController,
       headerSliverBuilder: (context, innerBoxIsScrolled) => [
         // Currently selected preview (always visible)
         if (currentTheme != null)
@@ -86,7 +104,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: _CurrentSelectionPreview(
                 theme: currentTheme,
-                onTap: () => widget.onThemeSelected(currentTheme),
+                label: widget.currentSelectionLabel ?? 'Currently Selected',
               ),
             ),
           ),
@@ -187,6 +205,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
 
   void _clearSearch() {
     _liveSearchDebounceTimer?.cancel();
+    _livePreviewGeneration += 1;
     _searchController.clear();
     setState(() {
       _searchQuery = '';
@@ -197,6 +216,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
 
   void _handleSearchChanged(String value) {
     _liveSearchDebounceTimer?.cancel();
+    _livePreviewGeneration += 1;
     final query = value.trim();
     setState(() {
       _searchQuery = value;
@@ -255,13 +275,14 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       children: [
         if (customThemes.isNotEmpty) ...[
           const _SectionHeader(title: 'Custom Themes'),
           _ThemeGridSection(
             themes: customThemes,
             selectedThemeId: widget.selectedThemeId,
-            onThemeSelected: widget.onThemeSelected,
+            onThemeSelected: _handleThemeActivated,
             onLongPress: _handleCustomThemeLongPress,
           ),
           const SizedBox(height: 16),
@@ -271,7 +292,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           _ThemeGridSection(
             themes: darkThemes,
             selectedThemeId: widget.selectedThemeId,
-            onThemeSelected: widget.onThemeSelected,
+            onThemeSelected: _handleThemeActivated,
           ),
           const SizedBox(height: 16),
         ],
@@ -280,7 +301,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           _ThemeGridSection(
             themes: lightThemes,
             selectedThemeId: widget.selectedThemeId,
-            onThemeSelected: widget.onThemeSelected,
+            onThemeSelected: _handleThemeActivated,
           ),
         ],
         ..._buildLiveRepositorySection(
@@ -291,6 +312,14 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         const SizedBox(height: 24),
       ],
     );
+  }
+
+  void _handleThemeActivated(TerminalThemeData theme) {
+    if (!widget.previewOnTap) {
+      widget.onThemeSelected(theme);
+      return;
+    }
+    widget.onThemePreviewed?.call(theme);
   }
 
   List<Widget> _buildLiveRepositorySection({
@@ -353,13 +382,50 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               schemes: remoteSchemes,
               importingSchemeId: _importingSchemeId,
               previewingScheme: _previewingScheme,
-              onSchemePreviewed: (scheme) =>
-                  setState(() => _previewingScheme = scheme),
+              onSchemePreviewed: _previewLiveScheme,
               onSchemeSelected: _importLiveScheme,
             );
           },
         ),
     ];
+  }
+
+  void _previewLiveScheme(ItermColorSchemeMetadata scheme) {
+    final previewGeneration = _livePreviewGeneration + 1;
+    _livePreviewGeneration = previewGeneration;
+    setState(() => _previewingScheme = scheme);
+    if (!widget.previewOnTap || widget.onThemePreviewed == null) {
+      return;
+    }
+    unawaited(_loadLiveThemePreview(scheme, previewGeneration));
+  }
+
+  Future<void> _loadLiveThemePreview(
+    ItermColorSchemeMetadata scheme,
+    int previewGeneration,
+  ) async {
+    try {
+      final theme = await ref
+          .read(itermColorSchemeServiceProvider)
+          .loadTheme(scheme);
+      if (!mounted ||
+          previewGeneration != _livePreviewGeneration ||
+          _previewingScheme?.id != scheme.id) {
+        return;
+      }
+      widget.onThemePreviewed?.call(theme);
+    } on ItermColorSchemeException catch (error) {
+      if (!mounted ||
+          previewGeneration != _livePreviewGeneration ||
+          _previewingScheme?.id != scheme.id) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not preview ${scheme.name}: ${error.message}'),
+        ),
+      );
+    }
   }
 
   Future<void> _importLiveScheme(ItermColorSchemeMetadata scheme) async {
@@ -917,10 +983,10 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _CurrentSelectionPreview extends StatelessWidget {
-  const _CurrentSelectionPreview({required this.theme, required this.onTap});
+  const _CurrentSelectionPreview({required this.theme, required this.label});
 
   final TerminalThemeData theme;
-  final VoidCallback onTap;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -975,7 +1041,7 @@ class _CurrentSelectionPreview extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Currently Selected',
+                  label,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: colorScheme.primary,
                     fontWeight: FontWeight.w600,
@@ -1019,30 +1085,35 @@ class _ThemeGridSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Use responsive grid based on screen width
-    final screenWidth = MediaQuery.of(context).size.width;
-    final crossAxisCount = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
     final resolvedSelectedThemeId = selectedThemeId == null
         ? null
         : TerminalThemes.resolveThemeId(selectedThemeId!);
 
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: crossAxisCount,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 0.9,
-      ),
-      itemCount: themes.length,
-      itemBuilder: (context, index) {
-        final theme = themes[index];
-        return ThemePreviewCard(
-          theme: theme,
-          isSelected: theme.id == resolvedSelectedThemeId,
-          onTap: () => onThemeSelected(theme),
-          onLongPress: onLongPress != null ? () => onLongPress!(theme) : null,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final crossAxisCount = width < 420 ? 2 : (width < 720 ? 3 : 4);
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 0.9,
+          ),
+          itemCount: themes.length,
+          itemBuilder: (context, index) {
+            final theme = themes[index];
+            return ThemePreviewCard(
+              theme: theme,
+              isSelected: theme.id == resolvedSelectedThemeId,
+              onTap: () => onThemeSelected(theme),
+              onLongPress: onLongPress != null
+                  ? () => onLongPress!(theme)
+                  : null,
+            );
+          },
         );
       },
     );
@@ -1051,58 +1122,197 @@ class _ThemeGridSection extends StatelessWidget {
 
 /// Shows a theme picker dialog and returns the selected theme.
 ///
+/// When [onThemePreviewed] is supplied, installed themes preview on tap and the
+/// user confirms the previewed theme with an explicit action.
+///
 /// [requestFocus] controls whether the picker route takes focus when shown.
 Future<TerminalThemeData?> showThemePickerDialog({
   required BuildContext context,
   required String? currentThemeId,
+  ValueChanged<TerminalThemeData>? onThemePreviewed,
   bool? requestFocus,
 }) async => showModalBottomSheet<TerminalThemeData>(
   context: context,
+  barrierColor: onThemePreviewed == null ? null : Colors.transparent,
   isScrollControlled: true,
   requestFocus: requestFocus,
   useSafeArea: true,
-  builder: (context) => DraggableScrollableSheet(
-    initialChildSize: 0.85,
-    minChildSize: 0.5,
-    maxChildSize: 0.95,
-    expand: false,
-    builder: (context, scrollController) => Column(
-      children: [
-        // Handle bar
-        Container(
-          margin: const EdgeInsets.only(top: 12),
-          width: 40,
-          height: 4,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.outline,
-            borderRadius: BorderRadius.circular(2),
+  builder: (context) => _TerminalThemePickerBottomSheet(
+    currentThemeId: currentThemeId,
+    onThemePreviewed: onThemePreviewed,
+  ),
+);
+
+class _TerminalThemePickerBottomSheet extends StatefulWidget {
+  const _TerminalThemePickerBottomSheet({
+    required this.currentThemeId,
+    required this.onThemePreviewed,
+  });
+
+  final String? currentThemeId;
+  final ValueChanged<TerminalThemeData>? onThemePreviewed;
+
+  @override
+  State<_TerminalThemePickerBottomSheet> createState() =>
+      _TerminalThemePickerBottomSheetState();
+}
+
+class _TerminalThemePickerBottomSheetState
+    extends State<_TerminalThemePickerBottomSheet> {
+  TerminalThemeData? _previewTheme;
+
+  bool get _usesLivePreview => widget.onThemePreviewed != null;
+
+  @override
+  Widget build(BuildContext context) {
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    final keyboardVisible = viewInsets.bottom > 0;
+    final initialChildSize = _resolveInitialChildSize(
+      keyboardVisible: keyboardVisible,
+    );
+    final minChildSize = _usesLivePreview ? 0.38 : 0.5;
+    final maxChildSize = _usesLivePreview && !keyboardVisible ? 0.74 : 0.95;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableHeight = constraints.maxHeight > viewInsets.bottom
+            ? constraints.maxHeight - viewInsets.bottom
+            : constraints.maxHeight;
+        return AnimatedPadding(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          padding: EdgeInsets.only(bottom: viewInsets.bottom),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: availableHeight),
+            child: DraggableScrollableSheet(
+              initialChildSize: initialChildSize,
+              minChildSize: minChildSize,
+              maxChildSize: maxChildSize,
+              expand: false,
+              builder: (context, scrollController) => Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.outline,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                      child: const SizedBox(
+                        key: ValueKey('terminal-theme-picker-handle'),
+                        width: 40,
+                        height: 4,
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Text(
+                          _usesLivePreview ? 'Preview Theme' : 'Select Theme',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: TerminalThemePicker(
+                      selectedThemeId:
+                          _previewTheme?.id ?? widget.currentThemeId,
+                      currentSelectionLabel: _previewTheme == null
+                          ? 'Currently Selected'
+                          : 'Previewing',
+                      onThemeSelected: _selectTheme,
+                      onThemePreviewed: _previewThemeInTerminal,
+                      previewOnTap: _usesLivePreview,
+                      scrollController: scrollController,
+                    ),
+                  ),
+                  if (_usesLivePreview)
+                    _ThemePreviewActionBar(
+                      previewTheme: _previewTheme,
+                      onCancel: () => Navigator.pop(context),
+                      onUseTheme: _previewTheme == null
+                          ? null
+                          : () => Navigator.pop(context, _previewTheme),
+                    ),
+                ],
+              ),
+            ),
           ),
+        );
+      },
+    );
+  }
+
+  double _resolveInitialChildSize({required bool keyboardVisible}) {
+    if (!_usesLivePreview) {
+      return 0.85;
+    }
+    return keyboardVisible ? 0.95 : 0.58;
+  }
+
+  void _previewThemeInTerminal(TerminalThemeData theme) {
+    setState(() => _previewTheme = theme);
+    widget.onThemePreviewed?.call(theme);
+  }
+
+  void _selectTheme(TerminalThemeData theme) => Navigator.pop(context, theme);
+}
+
+class _ThemePreviewActionBar extends StatelessWidget {
+  const _ThemePreviewActionBar({
+    required this.previewTheme,
+    required this.onCancel,
+    required this.onUseTheme,
+  });
+
+  final TerminalThemeData? previewTheme;
+  final VoidCallback onCancel;
+  final VoidCallback? onUseTheme;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final themeName = previewTheme?.name;
+    return SafeArea(
+      top: false,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
         ),
-        // Title
-        Padding(
-          padding: const EdgeInsets.all(16),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           child: Row(
             children: [
-              Text(
-                'Select Theme',
-                style: Theme.of(context).textTheme.titleLarge,
+              Expanded(
+                child: Text(
+                  themeName == null
+                      ? 'Tap a theme to preview it on this terminal.'
+                      : 'Previewing $themeName',
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
               ),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () => Navigator.pop(context),
+              const SizedBox(width: 12),
+              TextButton(onPressed: onCancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: onUseTheme,
+                child: const Text('Use Theme'),
               ),
             ],
           ),
         ),
-        // Picker
-        Expanded(
-          child: TerminalThemePicker(
-            selectedThemeId: currentThemeId,
-            onThemeSelected: (theme) => Navigator.pop(context, theme),
-          ),
-        ),
-      ],
-    ),
-  ),
-);
+      ),
+    );
+  }
+}
