@@ -726,10 +726,11 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
         currentPatternTokens: currentPatternTokens,
       );
 
-  final tokenSuggestions = <ShellCompletionSuggestion>[];
-  final exactSuggestions = <ShellCompletionSuggestion>[];
+  final tokenSuggestions = <_RankedShellHistorySuggestion>[];
+  final exactSuggestions = <_RankedShellHistorySuggestion>[];
   final seenExactCommands = <String>{};
   final seenPatternTokens = <String>{};
+  var recencyRank = 0;
   for (final rawCommand in historyCommands.reversed) {
     if (tokenSuggestions.length < invocation.maxSuggestions) {
       final historyPatternTokens = _normalizeShellHistoryCommandPatternTokens(
@@ -743,48 +744,92 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
       );
       if (patternToken != null && seenPatternTokens.add(patternToken)) {
         tokenSuggestions.add(
-          ShellCompletionSuggestion(
-            label: patternToken,
-            replacement: escapeShellCompletionToken(patternToken),
-            replacementStart: invocation.tokenStart,
-            replacementEnd: invocation.cursorOffset,
-            kind: ShellCompletionSuggestionKind.history,
-            commitSuffix: ' ',
+          _RankedShellHistorySuggestion(
+            suggestion: ShellCompletionSuggestion(
+              label: patternToken,
+              replacement: escapeShellCompletionToken(patternToken),
+              replacementStart: invocation.tokenStart,
+              replacementEnd: invocation.cursorOffset,
+              kind: ShellCompletionSuggestionKind.history,
+              commitSuffix: ' ',
+            ),
+            tokenCount: 1,
+            recencyRank: recencyRank,
           ),
         );
       }
     }
 
-    if (exactSuggestions.length < invocation.maxSuggestions) {
-      final exactCommand = _decodeShellHistoryCommand(rawCommand).trim();
-      if (_isSafeHistoryCommand(exactCommand) &&
-          exactCommand != typedCommand &&
-          exactCommand.startsWith(typedCommand) &&
-          seenExactCommands.add(exactCommand)) {
-        exactSuggestions.add(
-          ShellCompletionSuggestion(
+    final exactCommand = _decodeShellHistoryCommand(rawCommand).trim();
+    if (_isSafeHistoryCommand(exactCommand) &&
+        exactCommand != typedCommand &&
+        exactCommand.startsWith(typedCommand) &&
+        seenExactCommands.add(exactCommand)) {
+      exactSuggestions.add(
+        _RankedShellHistorySuggestion(
+          suggestion: ShellCompletionSuggestion(
             label: exactCommand,
             replacement: exactCommand,
             replacementStart: 0,
             replacementEnd: invocation.cursorOffset,
             kind: ShellCompletionSuggestionKind.history,
           ),
-        );
-      }
+          tokenCount: _shellHistorySuggestionTokenCount(exactCommand),
+          recencyRank: recencyRank,
+        ),
+      );
     }
 
+    recencyRank += 1;
     if (tokenSuggestions.length >= invocation.maxSuggestions) {
       break;
     }
   }
 
+  tokenSuggestions.sort(_compareRankedShellHistorySuggestions);
+  exactSuggestions.sort(_compareRankedShellHistorySuggestions);
   final suggestions = <ShellCompletionSuggestion>[
-    ...tokenSuggestions,
-    ...exactSuggestions,
+    ...tokenSuggestions.map((ranked) => ranked.suggestion),
+    ...exactSuggestions.map((ranked) => ranked.suggestion),
   ];
   return suggestions.length <= invocation.maxSuggestions
       ? suggestions
       : suggestions.sublist(0, invocation.maxSuggestions);
+}
+
+class _RankedShellHistorySuggestion {
+  const _RankedShellHistorySuggestion({
+    required this.suggestion,
+    required this.tokenCount,
+    required this.recencyRank,
+  });
+
+  final ShellCompletionSuggestion suggestion;
+  final int tokenCount;
+  final int recencyRank;
+}
+
+int _compareRankedShellHistorySuggestions(
+  _RankedShellHistorySuggestion a,
+  _RankedShellHistorySuggestion b,
+) {
+  final tokenCountComparison = a.tokenCount.compareTo(b.tokenCount);
+  if (tokenCountComparison != 0) {
+    return tokenCountComparison;
+  }
+  return a.recencyRank.compareTo(b.recencyRank);
+}
+
+int _shellHistorySuggestionTokenCount(String command) {
+  final tokenState = parseShellCompletionToken(command, command.length);
+  if (tokenState != null && tokenState.words.isNotEmpty) {
+    return tokenState.words.length;
+  }
+  return command
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((word) => word.isNotEmpty)
+      .length;
 }
 
 bool _doesShellHistoryCurrentTokenParticipateInPattern({

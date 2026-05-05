@@ -324,7 +324,7 @@ void main() {
     });
 
     test(
-      'buildShellHistorySuggestions returns recency-ordered exacts and tokens',
+      'buildShellHistorySuggestions prefers shorter exacts after tokens',
       () {
         const invocation = ShellCompletionInvocation(
           commandLine: 'git c',
@@ -339,6 +339,7 @@ void main() {
         );
 
         final suggestions = buildShellHistorySuggestions([
+          'git commit',
           'git commit -m "old message"',
           'git status',
           'git checkout feature/login',
@@ -349,6 +350,7 @@ void main() {
         expect(suggestions.map((suggestion) => suggestion.label), [
           'checkout',
           'commit',
+          'git commit',
           'git checkout feature/login',
           'git commit -m "new message"',
           'git commit -m "old message"',
@@ -360,7 +362,7 @@ void main() {
         expect(suggestions.first.commitSuffix, ' ');
         expect(suggestions[2].replacementStart, 0);
         expect(suggestions[2].replacementEnd, 5);
-        expect(suggestions[2].replacement, 'git checkout feature/login');
+        expect(suggestions[2].replacement, 'git commit');
       },
     );
 
