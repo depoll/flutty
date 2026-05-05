@@ -161,10 +161,18 @@ void main() {
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
-      expect(command, contains(r'[ "$alternate" = 1 ]'));
-      expect(command, contains(r'[ "$foreground_tui" = 1 ]'));
+      expect(command, isNot(contains(r'[ "$alternate" = 1 ]')));
+      expect(command, contains(r'[ "$theme_refresh_tui" = 1 ]'));
       expect(command, contains(r'case "${pane_command##*/}" in'));
-      expect(command, contains("''|sh|bash|zsh|fish"));
+      expect(command, contains('theme_refresh_tui=0'));
+      expect(command, contains('claude|claude-*'));
+      expect(command, contains('copilot|copilot-*'));
+      expect(command, contains('codex|codex-*'));
+      expect(command, contains('opencode|opencode-*'));
+      expect(command, contains('gemini|gemini-*'));
+      expect(command, contains('*Codex*|*codex*'));
+      expect(command, isNot(contains('foreground_tui=1')));
+      expect(command, isNot(contains(r'[ "$active" = 1 ]')));
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
@@ -174,6 +182,12 @@ void main() {
       expect(command, contains('*OpenCode*|*opencode*)'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
+      expect(
+        command,
+        contains(
+          buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
+        ),
+      );
       expect(
         command,
         contains(

@@ -1821,8 +1821,37 @@ String buildTmuxRefreshForegroundClientsCommand(
       'done';
 }
 
-/// Builds a command that updates tmux's pane palette, notifies TUI panes, and
-/// redraws foreground clients.
+// Only write synthetic reports directly into panes for known theme-aware TUIs.
+// Short-lived commands such as `git` can hand those bytes to the next shell
+// prompt, where zsh/bash treat OSC response fragments as commands/paths.
+const _tmuxThemeRefreshTuiCommandPatterns = <String>[
+  'claude',
+  'claude-*',
+  'copilot',
+  'copilot-*',
+  'codex',
+  'codex-*',
+  'opencode',
+  'opencode-*',
+  'gemini',
+  'gemini-*',
+];
+
+const _tmuxThemeRefreshTuiTitlePatterns = <String>[
+  '*Claude*',
+  '*claude*',
+  '*Copilot*',
+  '*copilot*',
+  '*Codex*',
+  '*codex*',
+  '*OpenCode*',
+  '*opencode*',
+  '*Gemini*',
+  '*gemini*',
+];
+
+/// Builds a command that updates tmux's pane palette, notifies theme-aware TUI
+/// panes, and redraws foreground clients.
 @visibleForTesting
 String buildTmuxRefreshTerminalThemeCommand(
   String sessionName,
@@ -1830,6 +1859,11 @@ String buildTmuxRefreshTerminalThemeCommand(
   String? extraFlags,
 }) {
   const sep = r'${SEP}';
+  final themeRefreshTuiCommandPatterns = _tmuxThemeRefreshTuiCommandPatterns
+      .join('|');
+  final themeRefreshTuiTitlePatterns = _tmuxThemeRefreshTuiTitlePatterns.join(
+    '|',
+  );
   final listPanes = TmuxService._tmuxCommand(
     'list-panes -s -t ${TmuxService._shellQuote(sessionName)} -F ',
     extraFlags: extraFlags,
@@ -1864,12 +1898,14 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       '$provideClientThemeReports '
-      'injected=0; foreground_tui=0; '
+      'injected=0; theme_refresh_tui=0; '
       r'case "${pane_command##*/}" in '
-      "''|sh|bash|zsh|fish|nu|pwsh|powershell|cmd|cmd.exe|tmux|ssh|mosh|login) foreground_tui=0 ;; "
-      '*) foreground_tui=1 ;; '
+      '$themeRefreshTuiCommandPatterns) theme_refresh_tui=1 ;; '
       'esac; '
-      r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
+      r'case "$pane_title" in '
+      '$themeRefreshTuiTitlePatterns) theme_refresh_tui=1 ;; '
+      'esac; '
+      r'if [ "$theme_refresh_tui" = 1 ]; then '
       'injected=1; '
       r'case "${pane_command##*/}" in '
       'codex|codex-*) '
@@ -1879,6 +1915,9 @@ String buildTmuxRefreshTerminalThemeCommand(
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
       '*) '
       r'case "$pane_title" in '
+      '*Codex*|*codex*) '
+      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
       '*OpenCode*|*opencode*) '
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
       '*) '
@@ -1975,6 +2014,7 @@ String _buildTmuxProvideClientThemeReportsCommand(
   String? extraFlags,
 }) {
   final reports = [
+    buildTerminalThemeModeReport(isDark: theme.isDark),
     buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
     buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
   ].whereType<String>().toList(growable: false);

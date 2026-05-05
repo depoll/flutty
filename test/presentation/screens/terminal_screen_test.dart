@@ -1573,6 +1573,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
 
         final refreshCountBeforeWindowEvent = refreshCount;
+        shellWrites.clear();
         windowEvents.add(
           const TmuxWindowSnapshotEvent(
             TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: true),
@@ -1587,6 +1588,12 @@ void main() {
         await tester.pump();
 
         expect(refreshCount, greaterThan(refreshCountBeforeWindowEvent));
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          isEmpty,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
