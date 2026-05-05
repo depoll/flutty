@@ -23,6 +23,7 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
   const TerminalThemePicker({
     required this.selectedThemeId,
     required this.onThemeSelected,
+    this.currentSelectionLabel,
     this.onThemePreviewed,
     this.previewOnTap = false,
     this.scrollController,
@@ -34,6 +35,9 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 
   /// Called when a theme is selected.
   final ValueChanged<TerminalThemeData> onThemeSelected;
+
+  /// Label shown above the selected theme preview.
+  final String? currentSelectionLabel;
 
   /// Called when a theme should be previewed without closing the picker.
   final ValueChanged<TerminalThemeData>? onThemePreviewed;
@@ -98,9 +102,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: _CurrentSelectionPreview(
                 theme: currentTheme,
-                label: widget.previewOnTap
-                    ? 'Previewing'
-                    : 'Currently Selected',
+                label: widget.currentSelectionLabel ?? 'Currently Selected',
               ),
             ),
           ),
@@ -1117,6 +1119,11 @@ class _TerminalThemePickerBottomSheetState
   Widget build(BuildContext context) {
     final viewInsets = MediaQuery.viewInsetsOf(context);
     final keyboardVisible = viewInsets.bottom > 0;
+    final initialChildSize = _resolveInitialChildSize(
+      keyboardVisible: keyboardVisible,
+    );
+    final minChildSize = _usesLivePreview ? 0.38 : 0.5;
+    final maxChildSize = _usesLivePreview && !keyboardVisible ? 0.74 : 0.95;
     return LayoutBuilder(
       builder: (context, constraints) {
         final availableHeight = constraints.maxHeight > viewInsets.bottom
@@ -1126,11 +1133,12 @@ class _TerminalThemePickerBottomSheetState
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
           padding: EdgeInsets.only(bottom: viewInsets.bottom),
-          child: SizedBox(
-            height: availableHeight,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: availableHeight),
             child: DraggableScrollableSheet(
-              initialChildSize: keyboardVisible ? 1 : 0.85,
-              minChildSize: keyboardVisible ? 0.72 : 0.5,
+              initialChildSize: initialChildSize,
+              minChildSize: minChildSize,
+              maxChildSize: maxChildSize,
               expand: false,
               builder: (context, scrollController) => Column(
                 children: [
@@ -1141,7 +1149,11 @@ class _TerminalThemePickerBottomSheetState
                         color: Theme.of(context).colorScheme.outline,
                         borderRadius: BorderRadius.circular(2),
                       ),
-                      child: const SizedBox(width: 40, height: 4),
+                      child: const SizedBox(
+                        key: ValueKey('terminal-theme-picker-handle'),
+                        width: 40,
+                        height: 4,
+                      ),
                     ),
                   ),
                   Padding(
@@ -1164,6 +1176,9 @@ class _TerminalThemePickerBottomSheetState
                     child: TerminalThemePicker(
                       selectedThemeId:
                           _previewTheme?.id ?? widget.currentThemeId,
+                      currentSelectionLabel: _previewTheme == null
+                          ? 'Currently Selected'
+                          : 'Previewing',
                       onThemeSelected: _selectTheme,
                       onThemePreviewed: _previewThemeInTerminal,
                       previewOnTap: _usesLivePreview,
@@ -1185,6 +1200,13 @@ class _TerminalThemePickerBottomSheetState
         );
       },
     );
+  }
+
+  double _resolveInitialChildSize({required bool keyboardVisible}) {
+    if (!_usesLivePreview) {
+      return 0.85;
+    }
+    return keyboardVisible ? 0.95 : 0.58;
   }
 
   void _previewThemeInTerminal(TerminalThemeData theme) {

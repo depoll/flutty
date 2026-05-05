@@ -9,6 +9,7 @@ import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/terminal_theme_service.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_theme_picker.dart';
+import 'package:monkeyssh/presentation/widgets/theme_preview_card.dart';
 
 const _testThemes = [TerminalThemes.defaultDarkTheme, TerminalThemes.dracula];
 
@@ -104,12 +105,17 @@ void main() {
             (widget) => widget.padding == const EdgeInsets.only(bottom: 240),
           );
       expect(keyboardPadding, isNotEmpty);
+      expect(find.text('Currently Selected'), findsOneWidget);
       expect(
         find.text('Tap a theme to preview it on this terminal.'),
         findsOneWidget,
       );
 
-      await tester.tap(find.text(TerminalThemes.dracula.name));
+      final draculaCard = find.widgetWithText(
+        ThemePreviewCard,
+        TerminalThemes.dracula.name,
+      );
+      await tester.tapAt(tester.getTopLeft(draculaCard) + const Offset(24, 24));
       await tester.pumpAndSettle();
 
       expect(previewedThemes.single.id, TerminalThemes.dracula.id);
@@ -122,6 +128,57 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(selectedTheme?.id, TerminalThemes.dracula.id);
+    });
+
+    testWidgets('preview dialog peeks over the terminal without blank chrome', (
+      tester,
+    ) async {
+      tester.view
+        ..physicalSize = const Size(390, 844)
+        ..devicePixelRatio = 1;
+      addTearDown(() {
+        tester.view
+          ..resetPhysicalSize()
+          ..resetDevicePixelRatio();
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            allTerminalThemesProvider.overrideWith((ref) async => _testThemes),
+          ],
+          child: MaterialApp(
+            home: Builder(
+              builder: (context) => ElevatedButton(
+                onPressed: () {
+                  unawaited(
+                    showThemePickerDialog(
+                      context: context,
+                      currentThemeId: TerminalThemes.defaultDarkTheme.id,
+                      onThemePreviewed: (_) {},
+                    ),
+                  );
+                },
+                child: const Text('Open picker'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open picker'));
+      await tester.pumpAndSettle();
+
+      final sheetTop = tester.getTopLeft(find.byType(BottomSheet)).dy;
+      final handleTop = tester
+          .getTopLeft(
+            find.byKey(const ValueKey('terminal-theme-picker-handle')),
+          )
+          .dy;
+
+      expect(sheetTop, greaterThan(300));
+      expect(handleTop - sheetTop, lessThan(24));
+      expect(find.text('Currently Selected'), findsOneWidget);
     });
   });
 }
