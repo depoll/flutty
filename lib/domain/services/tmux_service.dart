@@ -79,10 +79,16 @@ class TmuxService {
   static final _windowListRequests =
       <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
   static final _windowSnapshotCache = <_TmuxWindowWatchKey, List<TmuxWindow>>{};
+  static final _activeAgentSessionMetadataCache =
+      <int, Map<int, ({String sessionId, String? title})>>{};
+  static final _activeAgentSessionMetadataRequests = <int, Future<void>>{};
+  static final _activeAgentSessionMetadataRequestTokens = <int, Object>{};
+  static final _activeAgentSessionMetadataRefreshes = <int, DateTime>{};
   static final _execChannelBackoffs = <int, _TmuxExecChannelBackoff>{};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
+  static const _activeAgentSessionMetadataFreshTtl = Duration(seconds: 5);
   static final RegExp _execDoneMarkerLinePattern = RegExp(
     '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
   );
@@ -139,6 +145,10 @@ class TmuxService {
     );
     _installedAgentToolsCache.remove(connectionId);
     _installedAgentToolRequests.remove(connectionId);
+    _activeAgentSessionMetadataCache.remove(connectionId);
+    _activeAgentSessionMetadataRequests.remove(connectionId);
+    _activeAgentSessionMetadataRequestTokens.remove(connectionId);
+    _activeAgentSessionMetadataRefreshes.remove(connectionId);
     _execChannelBackoffs.remove(connectionId);
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
@@ -720,7 +730,10 @@ class TmuxService {
         TmuxWindow.fromTmuxFormat,
       ).toList(growable: false);
       final windows = List<TmuxWindow>.unmodifiable(
-        await _enrichWindowsWithAgentSessionMetadata(session, parsedWindows),
+        _enrichWindowsWithCachedAgentSessionMetadata(
+          session.connectionId,
+          parsedWindows,
+        ),
       );
       if (windows.isNotEmpty) {
         _cacheWindowSnapshot(
@@ -729,6 +742,7 @@ class TmuxService {
           windows,
           extraFlags: extraFlags,
         );
+        _scheduleAgentSessionMetadataRefresh(session, windows);
       }
       DiagnosticsLogService.instance.info(
         'tmux.query',
@@ -768,76 +782,193 @@ class TmuxService {
     }
   }
 
-  Future<List<TmuxWindow>> _enrichWindowsWithAgentSessionMetadata(
-    SshSession session,
+  List<TmuxWindow> _enrichWindowsWithCachedAgentSessionMetadata(
+    int connectionId,
     List<TmuxWindow> windows,
-  ) async {
-    final copilotPanePids = windows
-        .where(
-          (window) =>
-              window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-              window.panePid != null,
-        )
-        .map((window) => window.panePid!)
-        .toSet();
-    if (copilotPanePids.isEmpty) {
+  ) {
+    final metadataByPanePid = _activeAgentSessionMetadataCache[connectionId];
+    if (metadataByPanePid == null || metadataByPanePid.isEmpty) {
       return windows;
     }
+    return _applyAgentSessionMetadataToWindows(
+      windows,
+      metadataByPanePid,
+    ).windows;
+  }
 
+  void _scheduleAgentSessionMetadataRefresh(
+    SshSession session,
+    List<TmuxWindow> windows,
+  ) {
+    final copilotPanePids = _copilotPanePids(windows);
+    if (copilotPanePids.isEmpty) {
+      return;
+    }
+
+    final connectionId = session.connectionId;
+    if (_activeAgentSessionMetadataRequests.containsKey(connectionId)) {
+      return;
+    }
+
+    final lastRefresh = _activeAgentSessionMetadataRefreshes[connectionId];
+    if (lastRefresh != null &&
+        DateTime.now().difference(lastRefresh) <
+            _activeAgentSessionMetadataFreshTtl) {
+      return;
+    }
+
+    DiagnosticsLogService.instance.debug(
+      'tmux.agent',
+      'active_session_metadata_start',
+      fields: {
+        'connectionId': connectionId,
+        'paneCount': copilotPanePids.length,
+      },
+    );
+
+    final requestToken = Object();
+    _activeAgentSessionMetadataRequestTokens[connectionId] = requestToken;
+    late final Future<void> request;
+    request = _refreshActiveAgentSessionMetadata(session, requestToken)
+        .whenComplete(() {
+          if (identical(
+            _activeAgentSessionMetadataRequests[connectionId],
+            request,
+          )) {
+            _activeAgentSessionMetadataRequests.remove(connectionId);
+            _activeAgentSessionMetadataRequestTokens.remove(connectionId);
+          }
+        });
+    _activeAgentSessionMetadataRequests[connectionId] = request;
+    unawaited(request);
+  }
+
+  Future<void> _refreshActiveAgentSessionMetadata(
+    SshSession session,
+    Object requestToken,
+  ) async {
+    final connectionId = session.connectionId;
     try {
-      DiagnosticsLogService.instance.debug(
-        'tmux.agent',
-        'active_session_metadata_start',
-        fields: {
-          'connectionId': session.connectionId,
-          'paneCount': copilotPanePids.length,
-        },
-      );
       final output = await _exec(
         session,
         buildCopilotActiveSessionMetadataCommand(),
         priority: SshExecPriority.low,
-      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
+      );
+      if (!identical(
+        _activeAgentSessionMetadataRequestTokens[connectionId],
+        requestToken,
+      )) {
+        return;
+      }
+      _activeAgentSessionMetadataRefreshes[connectionId] = DateTime.now();
+      final panePids = _cachedCopilotPanePids(connectionId);
       final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
         output,
-        copilotPanePids,
+        panePids,
       );
-      if (metadataByPanePid.isEmpty) {
-        return windows;
-      }
+      _activeAgentSessionMetadataCache[connectionId] = metadataByPanePid;
       DiagnosticsLogService.instance.info(
         'tmux.agent',
         'active_session_metadata_complete',
         fields: {
-          'connectionId': session.connectionId,
+          'connectionId': connectionId,
+          'paneCount': panePids.length,
           'matchCount': metadataByPanePid.length,
         },
       );
-      return windows
-          .map((window) {
-            final panePid = window.panePid;
-            final metadata = panePid == null
-                ? null
-                : metadataByPanePid[panePid];
-            if (metadata == null) {
-              return window;
-            }
-            return window.copyWith(
-              activeAgentSessionId: metadata.sessionId,
-              agentSessionTitle: metadata.title,
-            );
-          })
-          .toList(growable: false);
+      _applyActiveAgentSessionMetadataToCachedWindows(
+        connectionId,
+        metadataByPanePid,
+      );
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
         'active_session_metadata_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
+        fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
       );
-      return windows;
+    }
+  }
+
+  Set<int> _cachedCopilotPanePids(int connectionId) {
+    final panePids = <int>{};
+    for (final entry in _windowSnapshotCache.entries) {
+      if (entry.key.connectionId != connectionId) continue;
+      panePids.addAll(_copilotPanePids(entry.value));
+    }
+    return panePids;
+  }
+
+  Set<int> _copilotPanePids(Iterable<TmuxWindow> windows) => windows
+      .where(
+        (window) =>
+            window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+            window.panePid != null,
+      )
+      .map((window) => window.panePid!)
+      .toSet();
+
+  ({List<TmuxWindow> windows, bool changed})
+  _applyAgentSessionMetadataToWindows(
+    List<TmuxWindow> windows,
+    Map<int, ({String sessionId, String? title})> metadataByPanePid,
+  ) {
+    var changed = false;
+    final enriched = windows
+        .map((window) {
+          final panePid = window.panePid;
+          final metadata = panePid == null ? null : metadataByPanePid[panePid];
+          if (metadata == null) {
+            return window;
+          }
+          if (window.activeAgentSessionId == metadata.sessionId &&
+              window.agentSessionTitle == metadata.title) {
+            return window;
+          }
+          changed = true;
+          return window.copyWith(
+            activeAgentSessionId: metadata.sessionId,
+            agentSessionTitle: metadata.title,
+          );
+        })
+        .toList(growable: false);
+    return (windows: changed ? enriched : windows, changed: changed);
+  }
+
+  void _applyActiveAgentSessionMetadataToCachedWindows(
+    int connectionId,
+    Map<int, ({String sessionId, String? title})> metadataByPanePid,
+  ) {
+    if (metadataByPanePid.isEmpty) {
+      return;
+    }
+    for (final entry in _windowSnapshotCache.entries.toList(growable: false)) {
+      final key = entry.key;
+      if (key.connectionId != connectionId) continue;
+      final currentWindows = entry.value;
+      final result = _applyAgentSessionMetadataToWindows(
+        currentWindows,
+        metadataByPanePid,
+      );
+      if (!result.changed) {
+        continue;
+      }
+      final enrichedWindows = List<TmuxWindow>.unmodifiable(result.windows);
+      _windowSnapshotCache[key] = enrichedWindows;
+
+      final observer = _windowObservers[key];
+      if (observer == null) {
+        continue;
+      }
+      for (var i = 0; i < enrichedWindows.length; i++) {
+        final currentWindow = i < currentWindows.length
+            ? currentWindows[i]
+            : null;
+        final enrichedWindow = enrichedWindows[i];
+        if (currentWindow == enrichedWindow) {
+          continue;
+        }
+        observer._emitEvent(TmuxWindowSnapshotEvent(enrichedWindow));
+      }
     }
   }
 
