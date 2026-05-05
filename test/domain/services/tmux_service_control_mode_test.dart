@@ -150,37 +150,63 @@ void main() {
       expect(
         command,
         contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_title}',
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{pane_start_command}${SEP}#{@flutty_agent_tool}',
         ),
       );
       expect(
         command,
         contains(
-          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title',
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_start_command agent_metadata',
         ),
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
       expect(command, isNot(contains(r'[ "$alternate" = 1 ]')));
-      expect(command, contains(r'[ "$theme_refresh_tui" = 1 ]'));
-      expect(command, contains(r'case "${pane_command##*/}" in'));
-      expect(command, contains('theme_refresh_tui=0'));
+      expect(command, isNot(contains(r'[ "$theme_refresh_tui" = 1 ]')));
+      expect(command, isNot(contains('theme_refresh_tui=0')));
+      expect(command, contains('flutty_set_agent_tool_from_command_name'));
+      expect(command, contains('flutty_set_agent_tool_from_exact_name'));
+      expect(command, contains('flutty_set_agent_tool_from_command_text'));
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$agent_metadata"'),
+      );
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_command_name "$pane_command"'),
+      );
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$window_name"'),
+      );
+      expect(
+        command,
+        contains(
+          r'flutty_set_agent_tool_from_command_text "$pane_start_command"',
+        ),
+      );
       expect(command, contains('claude|claude-*'));
-      expect(command, isNot(contains('copilot|copilot-*')));
+      expect(command, contains('copilot|copilot-*'));
       expect(command, contains('codex|codex-*'));
       expect(command, contains('opencode|opencode-*'));
       expect(command, contains('gemini|gemini-*'));
+      expect(command, isNot(contains('#{pane_title}')));
+      expect(command, isNot(contains(r'case "$pane_title" in')));
       expect(command, isNot(contains('*Copilot*|*copilot*')));
-      expect(command, contains('*Codex*|*codex*'));
+      expect(command, isNot(contains('*Codex*|*codex*')));
+      expect(command, isNot(contains('*OpenCode*|*opencode*')));
       expect(command, isNot(contains('foreground_tui=1')));
       expect(command, isNot(contains(r'[ "$active" = 1 ]')));
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
-      expect(command, contains('codex|codex-*)'));
-      expect(command, contains('opencode|opencode-*)'));
-      expect(command, contains(r'case "$pane_title" in'));
-      expect(command, contains('*OpenCode*|*opencode*)'));
+      expect(command, contains(r'case "$agent_tool" in'));
+      expect(command, contains('codex)'));
+      expect(command, contains('opencode|claude|gemini)'));
+      final directBranchStart = command.indexOf(r'case "$agent_tool" in');
+      expect(directBranchStart, isNonNegative);
+      final directBranch = command.substring(directBranchStart);
+      expect(directBranch, isNot(contains('copilot)')));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
       expect(
@@ -212,16 +238,18 @@ void main() {
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
-      final codexBranchStart = command.indexOf('codex|codex-*)');
-      final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
+      final codexBranchStart = directBranch.indexOf('codex)');
+      final opencodeBranchStart = directBranch.indexOf(
+        'opencode|claude|gemini)',
+      );
       expect(codexBranchStart, isNonNegative);
       expect(opencodeBranchStart, greaterThan(codexBranchStart));
       expect(
-        command.substring(codexBranchStart, opencodeBranchStart),
+        directBranch.substring(codexBranchStart, opencodeBranchStart),
         isNot(contains('1b 5b 4f')),
       );
       expect(
-        command.indexOf('1b 5b 4f', opencodeBranchStart),
+        directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
         greaterThan(opencodeBranchStart),
       );
       expect(command, contains('sleep 0.25'));
@@ -237,8 +265,8 @@ void main() {
       expect(command, contains('1b 5d 31 30 3b'));
       expect(command, contains('1b 5d 31 31 3b'));
       expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(9));
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(9));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(3));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(3));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),

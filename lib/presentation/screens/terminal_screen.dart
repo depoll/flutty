@@ -2219,6 +2219,24 @@ class _TmuxTerminalThemeRefreshRequest {
   final String reason;
   final String? extraFlags;
   final bool sendOuterFocusReport;
+
+  _TmuxTerminalThemeRefreshRequest copyWith({
+    TerminalThemeData? theme,
+    SshSession? session,
+    String? sessionName,
+    int? refreshGeneration,
+    String? reason,
+    String? extraFlags,
+    bool? sendOuterFocusReport,
+  }) => _TmuxTerminalThemeRefreshRequest(
+    theme: theme ?? this.theme,
+    session: session ?? this.session,
+    sessionName: sessionName ?? this.sessionName,
+    refreshGeneration: refreshGeneration ?? this.refreshGeneration,
+    reason: reason ?? this.reason,
+    extraFlags: extraFlags ?? this.extraFlags,
+    sendOuterFocusReport: sendOuterFocusReport ?? this.sendOuterFocusReport,
+  );
 }
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
@@ -3271,7 +3289,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     if (_isTmuxThemeRefreshRunning) {
-      _pendingTmuxThemeRefreshRequest = request;
+      _pendingTmuxThemeRefreshRequest = _mergePendingTmuxThemeRefreshRequest(
+        request,
+      );
       DiagnosticsLogService.instance.debug(
         'terminal.theme',
         'tmux_refresh_queued',
@@ -3287,6 +3307,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _isTmuxThemeRefreshRunning = true;
     unawaited(_runQueuedTmuxTerminalThemeRefresh(request));
+  }
+
+  _TmuxTerminalThemeRefreshRequest _mergePendingTmuxThemeRefreshRequest(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) {
+    final pendingRequest = _pendingTmuxThemeRefreshRequest;
+    final preservePendingOuterFocus =
+        pendingRequest != null &&
+        pendingRequest.sendOuterFocusReport &&
+        _isCurrentTerminalThemeRefresh(
+          theme: pendingRequest.theme,
+          session: pendingRequest.session,
+          refreshGeneration: pendingRequest.refreshGeneration,
+        );
+    if (!preservePendingOuterFocus) {
+      return request;
+    }
+    return request.copyWith(
+      reason: request.sendOuterFocusReport
+          ? request.reason
+          : pendingRequest.reason,
+      sendOuterFocusReport: true,
+    );
   }
 
   Future<void> _runQueuedTmuxTerminalThemeRefresh(

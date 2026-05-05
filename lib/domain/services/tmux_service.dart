@@ -1821,31 +1821,6 @@ String buildTmuxRefreshForegroundClientsCommand(
       'done';
 }
 
-// Only write synthetic reports directly into panes for known theme-aware TUIs.
-// Short-lived commands such as `git` can hand those bytes to the next shell
-// prompt, where zsh/bash treat OSC response fragments as commands/paths.
-const _tmuxThemeRefreshTuiCommandPatterns = <String>[
-  'claude',
-  'claude-*',
-  'codex',
-  'codex-*',
-  'opencode',
-  'opencode-*',
-  'gemini',
-  'gemini-*',
-];
-
-const _tmuxThemeRefreshTuiTitlePatterns = <String>[
-  '*Claude*',
-  '*claude*',
-  '*Codex*',
-  '*codex*',
-  '*OpenCode*',
-  '*opencode*',
-  '*Gemini*',
-  '*gemini*',
-];
-
 /// Builds a command that updates tmux's pane palette, notifies theme-aware TUI
 /// panes, and redraws foreground clients.
 @visibleForTesting
@@ -1855,11 +1830,6 @@ String buildTmuxRefreshTerminalThemeCommand(
   String? extraFlags,
 }) {
   const sep = r'${SEP}';
-  final themeRefreshTuiCommandPatterns = _tmuxThemeRefreshTuiCommandPatterns
-      .join('|');
-  final themeRefreshTuiTitlePatterns = _tmuxThemeRefreshTuiTitlePatterns.join(
-    '|',
-  );
   final listPanes = TmuxService._tmuxCommand(
     'list-panes -s -t ${TmuxService._shellQuote(sessionName)} -F ',
     extraFlags: extraFlags,
@@ -1869,8 +1839,11 @@ String buildTmuxRefreshTerminalThemeCommand(
     theme,
     extraFlags: extraFlags,
   );
-  final provideClientThemeReports = _buildTmuxProvideClientThemeReportsCommand(
+  final loadThemeReportClients = _buildTmuxLoadThemeReportClientsCommand(
     sessionName,
+    extraFlags: extraFlags,
+  );
+  final provideClientThemeReports = _buildTmuxProvideClientThemeReportsCommand(
     theme,
     extraFlags: extraFlags,
   );
@@ -1888,39 +1861,55 @@ String buildTmuxRefreshTerminalThemeCommand(
 
   return r'SEP=$(printf "\037"); '
       '$enableFocusEvents 2>/dev/null || true; '
-      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{pane_title}" '
+      '$loadThemeReportClients '
+      'flutty_set_agent_tool_from_command_name() { '
+      r'case "${1##*/}" in '
+      'claude|claude-*) agent_tool=claude ;; '
+      'copilot|copilot-*) agent_tool=copilot ;; '
+      'codex|codex-*) agent_tool=codex ;; '
+      'opencode|opencode-*) agent_tool=opencode ;; '
+      'gemini|gemini-*) agent_tool=gemini ;; '
+      'esac; }; '
+      'flutty_set_agent_tool_from_exact_name() { '
+      r'case "${1##*/}" in '
+      'claude|Claude) agent_tool=claude ;; '
+      'copilot|Copilot) agent_tool=copilot ;; '
+      'codex|Codex) agent_tool=codex ;; '
+      'opencode|OpenCode) agent_tool=opencode ;; '
+      'gemini|Gemini) agent_tool=gemini ;; '
+      'esac; }; '
+      'flutty_set_agent_tool_from_command_text() { '
+      r'command_text=$1; '
+      'while :; do '
+      r'case "$command_text" in '
+      r'cd\ *\&\&\ *) command_text=${command_text#*&& } ;; '
+      r'[A-Za-z_]*=*\ *) command_text=${command_text#* } ;; '
+      '*) break ;; '
+      'esac; '
+      'done; '
+      r'first_token=${command_text%% *}; '
+      r'flutty_set_agent_tool_from_command_name "$first_token"; '
+      '}; '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{window_name}$sep#{pane_start_command}$sep#{@flutty_agent_tool}" '
       '2>/dev/null | '
-      r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title; do '
+      r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_start_command agent_metadata; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       '$provideClientThemeReports '
-      'injected=0; theme_refresh_tui=0; '
-      r'case "${pane_command##*/}" in '
-      '$themeRefreshTuiCommandPatterns) theme_refresh_tui=1 ;; '
-      'esac; '
-      r'case "$pane_title" in '
-      '$themeRefreshTuiTitlePatterns) theme_refresh_tui=1 ;; '
-      'esac; '
-      r'if [ "$theme_refresh_tui" = 1 ]; then '
+      'agent_tool=; injected=0; '
+      r'flutty_set_agent_tool_from_exact_name "$agent_metadata"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_command_name "$pane_command"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$window_name"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_command_text "$pane_start_command"; '
+      r'case "$agent_tool" in '
+      'codex) '
       'injected=1; '
-      r'case "${pane_command##*/}" in '
-      'codex|codex-*) '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      'opencode|opencode-*) '
+      'opencode|claude|gemini) '
+      'injected=1; '
       '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
-      '*) '
-      r'case "$pane_title" in '
-      '*Codex*|*codex*) '
-      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
-      '2>/dev/null || true ) & ;; '
-      '*OpenCode*|*opencode*) '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
-      '*) '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & ;; '
-      'esac ;; '
       'esac; '
-      'fi; '
       r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
       'done; wait; }; '
       '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
@@ -2004,8 +1993,21 @@ String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
       '$optionName ${TmuxService._shellQuote(hexColor)}';
 }
 
+String _buildTmuxLoadThemeReportClientsCommand(
+  String sessionName, {
+  String? extraFlags,
+}) {
+  final listClients = TmuxService._tmuxCommand(
+    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return r'flutty_theme_report_clients=$( '
+      '$listClients"#{client_name}" 2>/dev/null || true '
+      ');';
+}
+
 String _buildTmuxProvideClientThemeReportsCommand(
-  String sessionName,
   TerminalThemeData theme, {
   String? extraFlags,
 }) {
@@ -2018,12 +2020,6 @@ String _buildTmuxProvideClientThemeReportsCommand(
     return '';
   }
 
-  const sep = r'${SEP}';
-  final listClients = TmuxService._tmuxCommand(
-    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
-    extraFlags: extraFlags,
-    forceUtf8: true,
-  );
   final refreshReports = reports
       .map((report) {
         final reportCommand = TmuxService._tmuxCommand(
@@ -2036,9 +2032,8 @@ String _buildTmuxProvideClientThemeReportsCommand(
       })
       .join(' ');
 
-  return '$listClients"#{client_name}$sep#{client_control_mode}" '
-      '2>/dev/null | '
-      r'while IFS="$SEP" read -r client _control; do '
+  return r'printf "%s\n" "$flutty_theme_report_clients" | '
+      'while IFS= read -r client; do '
       r'[ -n "$client" ] || continue; '
       '$refreshReports '
       'done;';

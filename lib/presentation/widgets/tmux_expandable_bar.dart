@@ -261,6 +261,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _windowReloadGeneration += 1;
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
+    final shouldNotifyThemeRefresh = _shouldNotifyThemeRefreshForWindowChange(
+      currentWindows,
+      windows,
+    );
     DiagnosticsLogService.instance.debug(
       'tmux.ui',
       'bar_snapshot_applied',
@@ -270,7 +274,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     _applyWindows(windows);
-    _notifyWindowStateChanged();
+    if (shouldNotifyThemeRefresh) {
+      _notifyWindowStateChanged();
+    }
     if (widget.isProUser && _showSessions) {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
     }
@@ -279,6 +285,58 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void _notifyWindowStateChanged() {
     widget.onWindowStateChanged?.call(widget.session, widget.tmuxSessionName);
   }
+
+  bool _shouldNotifyThemeRefreshForWindowChange(
+    List<TmuxWindow> previousWindows,
+    List<TmuxWindow> nextWindows,
+  ) {
+    if (previousWindows.length != nextWindows.length) {
+      return true;
+    }
+    for (final nextWindow in nextWindows) {
+      final previousWindow = previousWindows
+          .where(
+            (window) => _isSameTmuxWindowForThemeRefresh(window, nextWindow),
+          )
+          .firstOrNull;
+      if (previousWindow == null ||
+          _themeRefreshWindowIdentity(previousWindow) !=
+              _themeRefreshWindowIdentity(nextWindow)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isSameTmuxWindowForThemeRefresh(
+    TmuxWindow previousWindow,
+    TmuxWindow nextWindow,
+  ) {
+    final nextId = nextWindow.id;
+    if (nextId != null) {
+      return previousWindow.id == nextId;
+    }
+    return previousWindow.index == nextWindow.index;
+  }
+
+  ({
+    AgentLaunchTool? agentTool,
+    String? currentCommand,
+    String? id,
+    int index,
+    bool isActive,
+    String name,
+    String? paneStartCommand,
+  })
+  _themeRefreshWindowIdentity(TmuxWindow window) => (
+    agentTool: window.agentTool,
+    currentCommand: window.currentCommand,
+    id: window.id,
+    index: window.index,
+    isActive: window.isActive,
+    name: window.name,
+    paneStartCommand: window.paneStartCommand,
+  );
 
   void _applyWindows(List<TmuxWindow> windows) {
     // Detect new alerts that weren't in the previous window list.
