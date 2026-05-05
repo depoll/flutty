@@ -338,6 +338,22 @@ void main() {
       expect(window.secondaryTitle, 'Copilot CLI · Fix tmux session labels');
     });
 
+    test('copyWith can clear live agent session metadata', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Fix tmux session labels',
+      );
+
+      final cleared = window.copyWith(clearActiveAgentSessionMetadata: true);
+
+      expect(cleared.activeAgentSessionId, isNull);
+      expect(cleared.agentSessionTitle, isNull);
+    });
+
     test('collapses live session titles that match useful window titles', () {
       const window = TmuxWindow(
         index: 1,

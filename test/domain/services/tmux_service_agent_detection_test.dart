@@ -120,39 +120,38 @@ void main() {
   });
 
   group('Copilot active session metadata', () {
-    test('command scans session-scoped lock files', () {
-      final command = buildCopilotActiveSessionMetadataCommand();
+    test('command checks only locks for Copilot descendants of pane PIDs', () {
+      final command = buildCopilotActiveSessionMetadataCommand(const {42, 88});
 
-      expect(command, contains('.copilot/session-state/*/inuse.*.lock'));
+      expect(command, contains('pane_pids=\'42 88\''));
+      expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
+      expect(command, contains(r'inuse."$pid".lock'));
       expect(command, contains('workspace.yaml'));
-      expect(command, contains(r'ps -p "$pid" -o args='));
-      expect(command, contains(r'ps -p "$current" -o ppid='));
+      expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
+      expect(command, isNot(contains(r'ps -p "$pid"')));
     });
 
-    test(
-      'parses live session titles by matching descendant process chains',
-      () {
-        const sep = tmuxWindowFieldSeparator;
-        final workspaceYaml = base64Encode(
-          utf8.encode('''
+    test('parses live session titles by matched pane PID', () {
+      const sep = tmuxWindowFieldSeparator;
+      final workspaceYaml = base64Encode(
+        utf8.encode('''
 id: session-1
 name: User named Copilot session
 cwd: /Users/depoll/Code/flutty
 updated_at: 2026-05-04T21:29:53.292Z
 '''),
-        );
+      );
 
-        final metadata = parseCopilotActiveSessionMetadataOutput(
-          'session-1${sep}50122${sep}50122,42,1$sep$workspaceYaml\n'
-          'session-2${sep}99999${sep}99999,77,1$sep\n',
-          const {42, 88},
-        );
+      final metadata = parseCopilotActiveSessionMetadataOutput(
+        'session-1${sep}50122${sep}42$sep$workspaceYaml\n'
+        'session-2${sep}99999${sep}77$sep\n',
+        const {42, 88},
+      );
 
-        expect(metadata.keys, [42]);
-        expect(metadata[42]?.sessionId, 'session-1');
-        expect(metadata[42]?.title, 'User named Copilot session');
-      },
-    );
+      expect(metadata.keys, [42]);
+      expect(metadata[42]?.sessionId, 'session-1');
+      expect(metadata[42]?.title, 'User named Copilot session');
+    });
 
     test('forces refresh when a Copilot tmux title changes', () {
       const existing = TmuxWindow(

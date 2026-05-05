@@ -224,6 +224,7 @@ class TmuxWindow {
     AgentLaunchTool? agentTool,
     String? activeAgentSessionId,
     String? agentSessionTitle,
+    bool clearActiveAgentSessionMetadata = false,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
     index: index,
@@ -237,8 +238,12 @@ class TmuxWindow {
     paneTitle: paneTitle ?? this.paneTitle,
     paneStartCommand: paneStartCommand ?? this.paneStartCommand,
     agentTool: agentTool ?? this.agentTool,
-    activeAgentSessionId: activeAgentSessionId ?? this.activeAgentSessionId,
-    agentSessionTitle: agentSessionTitle ?? this.agentSessionTitle,
+    activeAgentSessionId: clearActiveAgentSessionMetadata
+        ? null
+        : activeAgentSessionId ?? this.activeAgentSessionId,
+    agentSessionTitle: clearActiveAgentSessionMetadata
+        ? null
+        : agentSessionTitle ?? this.agentSessionTitle,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
