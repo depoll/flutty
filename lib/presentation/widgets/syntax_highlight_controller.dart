@@ -35,9 +35,10 @@ class SyntaxHighlightController extends TextEditingController {
   /// Highlight.js theme map (class name → [TextStyle]).
   Map<String, TextStyle> theme;
 
-  // Cached spans keyed on the raw text value so we only re-highlight on edits.
+  // Cached highlight children keyed on the raw text value so base styles can
+  // change without re-tokenizing unchanged text.
   String? _cachedText;
-  TextSpan? _cachedSpan;
+  List<TextSpan>? _cachedChildren;
 
   @override
   TextSpan buildTextSpan({
@@ -70,8 +71,9 @@ class SyntaxHighlightController extends TextEditingController {
     }
 
     // Return cached result when the text has not changed.
-    if (source == _cachedText && _cachedSpan != null) {
-      return TextSpan(style: style, children: [_cachedSpan!]);
+    final cachedChildren = _cachedChildren;
+    if (source == _cachedText && cachedChildren != null) {
+      return TextSpan(style: style, children: cachedChildren);
     }
 
     try {
@@ -85,13 +87,11 @@ class SyntaxHighlightController extends TextEditingController {
         );
       }
 
-      final highlighted = TextSpan(
-        style: style,
-        children: _convertNodes(nodes),
-      );
+      final highlightedChildren = _convertNodes(nodes);
+      final highlighted = TextSpan(style: style, children: highlightedChildren);
 
       _cachedText = source;
-      _cachedSpan = highlighted;
+      _cachedChildren = highlightedChildren;
       return highlighted;
     } on Object {
       // If the highlighter fails for any reason, fall through to plain text.
@@ -130,6 +130,6 @@ class SyntaxHighlightController extends TextEditingController {
   /// re-highlight from scratch.
   void invalidateHighlightCache() {
     _cachedText = null;
-    _cachedSpan = null;
+    _cachedChildren = null;
   }
 }

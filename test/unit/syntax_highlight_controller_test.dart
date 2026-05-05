@@ -67,10 +67,35 @@ void main() {
         withComposing: false,
       );
 
-      // On the second call the cached highlighted span is reused as the
-      // single child of the returned wrapper, so it must be identical to
-      // the first span that was originally returned.
-      expect(span2.children!.first, same(span1));
+      // On the second call the cached highlighted children are reused.
+      expect(span2.children, same(span1.children));
+    });
+
+    test('uses latest base style with cached highlighted children', () {
+      controller = SyntaxHighlightController(
+        theme: const {
+          'keyword': TextStyle(color: Color(0xFFFF00FF)),
+          'string': TextStyle(color: Color(0xFF00FF00)),
+        },
+        text: 'void main() { print("hello"); }',
+        language: 'dart',
+      );
+
+      final smallSpan = controller.buildTextSpan(
+        context: _FakeBuildContext(),
+        style: const TextStyle(fontSize: 12),
+        withComposing: false,
+      );
+      final largeSpan = controller.buildTextSpan(
+        context: _FakeBuildContext(),
+        style: const TextStyle(fontSize: 20),
+        withComposing: false,
+      );
+
+      expect(smallSpan.style!.fontSize, 12);
+      expect(largeSpan.style!.fontSize, 20);
+      expect(largeSpan.children, same(smallSpan.children));
+      _expectChildrenDoNotSetFontSize(largeSpan, 12);
     });
 
     test('re-highlights after text changes', () {
@@ -132,8 +157,8 @@ void main() {
         withComposing: false,
       );
 
-      // After cache invalidation, the inner span objects should differ.
-      expect(identical(span1.children!.first, span2.children!.first), isFalse);
+      // After cache invalidation, the cached children should differ.
+      expect(identical(span1.children, span2.children), isFalse);
     });
 
     test('handles language change at runtime', () {
@@ -205,3 +230,12 @@ void main() {
 /// Minimal fake [BuildContext] for testing [buildTextSpan] which does not
 /// use the context for syntax-highlighting purposes.
 class _FakeBuildContext extends Fake implements BuildContext {}
+
+void _expectChildrenDoNotSetFontSize(TextSpan span, double fontSize) {
+  for (final child in span.children ?? const <InlineSpan>[]) {
+    if (child is TextSpan) {
+      expect(child.style?.fontSize, isNot(fontSize));
+      _expectChildrenDoNotSetFontSize(child, fontSize);
+    }
+  }
+}
