@@ -50,11 +50,17 @@ class TmuxService {
   const TmuxService({
     Duration execOpenTimeout = const Duration(seconds: 10),
     Duration execOutputTimeout = const Duration(seconds: 10),
+    Duration agentSessionMetadataRefreshDebounce = const Duration(
+      milliseconds: 150,
+    ),
   }) : _execOpenTimeout = execOpenTimeout,
-       _execOutputTimeout = execOutputTimeout;
+       _execOutputTimeout = execOutputTimeout,
+       _agentSessionMetadataRefreshDebounce =
+           agentSessionMetadataRefreshDebounce;
 
   final Duration _execOpenTimeout;
   final Duration _execOutputTimeout;
+  final Duration _agentSessionMetadataRefreshDebounce;
 
   /// Cached tmux binary paths per SSH session (by connectionId).
   static final Map<int, String> _tmuxPathCache = {};
@@ -84,6 +90,11 @@ class TmuxService {
   static final _activeAgentSessionMetadataRequests = <int, Future<void>>{};
   static final _activeAgentSessionMetadataRequestTokens = <int, Object>{};
   static final _activeAgentSessionMetadataRequestPanePids = <int, Set<int>>{};
+  static final _activeAgentSessionMetadataDebounceTimers = <int, Timer>{};
+  static final _activeAgentSessionMetadataDebouncedSessions =
+      <int, SshSession>{};
+  static final _activeAgentSessionMetadataDebouncedPanePids = <int, Set<int>>{};
+  static final _activeAgentSessionMetadataDebouncedForced = <int, bool>{};
   static final _activeAgentSessionMetadataPendingPanePids = <int, Set<int>>{};
   static final _activeAgentSessionMetadataPendingForced = <int, bool>{};
   static final _activeAgentSessionMetadataRefreshes = <int, DateTime>{};
@@ -152,6 +163,10 @@ class TmuxService {
     _activeAgentSessionMetadataRequests.remove(connectionId);
     _activeAgentSessionMetadataRequestTokens.remove(connectionId);
     _activeAgentSessionMetadataRequestPanePids.remove(connectionId);
+    _activeAgentSessionMetadataDebounceTimers.remove(connectionId)?.cancel();
+    _activeAgentSessionMetadataDebouncedSessions.remove(connectionId);
+    _activeAgentSessionMetadataDebouncedPanePids.remove(connectionId);
+    _activeAgentSessionMetadataDebouncedForced.remove(connectionId);
     _activeAgentSessionMetadataPendingPanePids.remove(connectionId);
     _activeAgentSessionMetadataPendingForced.remove(connectionId);
     _activeAgentSessionMetadataRefreshes.remove(connectionId);
@@ -824,6 +839,51 @@ class TmuxService {
     bool force = false,
   }) {
     final connectionId = session.connectionId;
+    final debouncedPanePids =
+        (_activeAgentSessionMetadataDebouncedPanePids[connectionId] ?? <int>{})
+          ..addAll(copilotPanePids);
+    _activeAgentSessionMetadataDebouncedPanePids[connectionId] =
+        debouncedPanePids;
+    _activeAgentSessionMetadataDebouncedSessions[connectionId] = session;
+    _activeAgentSessionMetadataDebouncedForced[connectionId] =
+        (_activeAgentSessionMetadataDebouncedForced[connectionId] ?? false) ||
+        force;
+
+    if (_activeAgentSessionMetadataDebounceTimers.containsKey(connectionId)) {
+      return;
+    }
+
+    _activeAgentSessionMetadataDebounceTimers[connectionId] = Timer(
+      _agentSessionMetadataRefreshDebounce,
+      () {
+        _activeAgentSessionMetadataDebounceTimers.remove(connectionId);
+        final queuedPanePids = _activeAgentSessionMetadataDebouncedPanePids
+            .remove(connectionId);
+        final queuedSession = _activeAgentSessionMetadataDebouncedSessions
+            .remove(connectionId);
+        final queuedForced =
+            _activeAgentSessionMetadataDebouncedForced.remove(connectionId) ??
+            false;
+        if (queuedPanePids == null ||
+            queuedPanePids.isEmpty ||
+            queuedSession == null) {
+          return;
+        }
+        _startAgentSessionMetadataRefreshForPanePids(
+          queuedSession,
+          queuedPanePids,
+          force: queuedForced,
+        );
+      },
+    );
+  }
+
+  void _startAgentSessionMetadataRefreshForPanePids(
+    SshSession session,
+    Set<int> copilotPanePids, {
+    bool force = false,
+  }) {
+    final connectionId = session.connectionId;
     if (_activeAgentSessionMetadataRequests.containsKey(connectionId)) {
       final activePanePids =
           _activeAgentSessionMetadataRequestPanePids[connectionId] ??
@@ -838,7 +898,10 @@ class TmuxService {
               ..addAll(copilotPanePids);
         _activeAgentSessionMetadataPendingPanePids[connectionId] =
             pendingPanePids;
-        _activeAgentSessionMetadataPendingForced[connectionId] = true;
+        _activeAgentSessionMetadataPendingForced[connectionId] =
+            (_activeAgentSessionMetadataPendingForced[connectionId] ?? false) ||
+            force ||
+            hasNewPanePids;
       }
       return;
     }
@@ -884,7 +947,7 @@ class TmuxService {
                 _activeAgentSessionMetadataPendingForced.remove(connectionId) ??
                 false;
             if (pendingPanePids != null && pendingPanePids.isNotEmpty) {
-              _scheduleAgentSessionMetadataRefreshForPanePids(
+              _startAgentSessionMetadataRefreshForPanePids(
                 session,
                 pendingPanePids,
                 force: pendingForced,

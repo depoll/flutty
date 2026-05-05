@@ -531,6 +531,53 @@ void main() {
         verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
       },
     );
+
+    test('listWindows debounces Copilot metadata refresh bursts', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 34);
+      const service = TmuxService(
+        agentSessionMetadataRefreshDebounce: Duration(milliseconds: 30),
+      );
+      final commands = <String>[];
+      final windowLines = Queue<String>.of([
+        _tmuxWindowLine(id: '@42', panePid: 42, title: 'First'),
+        _tmuxWindowLine(id: '@88', panePid: 88, title: 'Second'),
+      ]);
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('list-windows')) {
+          return _buildOpenExecSession(
+            stdout: '${windowLines.removeFirst()}\n${_doneMarker()}',
+          );
+        }
+        return _buildOpenExecSession(stdout: _doneMarker());
+      });
+
+      try {
+        await service.listWindows(session, 'main');
+        await service.listWindows(session, 'main');
+
+        expect(
+          commands.where(_isCopilotMetadataCommand),
+          isEmpty,
+          reason: 'metadata refresh should wait for the debounce window',
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        final metadataCommands = commands
+            .where(_isCopilotMetadataCommand)
+            .toList(growable: false);
+        expect(metadataCommands, hasLength(1));
+        expect(metadataCommands.single, contains("pane_pids='42 88'"));
+      } finally {
+        service.clearCache(session.connectionId);
+      }
+    });
   });
 
   group('parseTmuxWindowChangeEventFromControlLine', () {
@@ -1800,6 +1847,28 @@ SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
         username: 'tester',
       ),
     );
+
+String _tmuxWindowLine({
+  required String id,
+  required int panePid,
+  String title = 'Title',
+}) => [
+  '0',
+  'copilot',
+  '1',
+  'copilot',
+  '/tmp/project',
+  '*',
+  title,
+  '100',
+  'copilot',
+  '',
+  id,
+  '$panePid',
+].join(tmuxWindowFieldSeparator);
+
+bool _isCopilotMetadataCommand(String command) =>
+    command.contains('ps -eo pid=,ppid=,comm=,args=');
 
 class _MockSshClient extends Mock implements SSHClient {}
 
