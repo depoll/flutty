@@ -1,13 +1,49 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
+  group('AgentToolIcon', () {
+    testWidgets('renders a branded svg for a known tool name', (tester) async {
+      await tester.pumpWidget(_wrap(const AgentToolIcon(toolName: 'Codex')));
+
+      expect(find.byType(SvgPicture), findsOneWidget);
+      expect(find.byIcon(Icons.smart_toy_outlined), findsNothing);
+    });
+
+    testWidgets('renders a branded svg for a known tool enum', (tester) async {
+      await tester.pumpWidget(
+        _wrap(const AgentToolIcon(tool: AgentLaunchTool.copilotCli)),
+      );
+
+      expect(find.byType(SvgPicture), findsOneWidget);
+      expect(find.byIcon(Icons.smart_toy_outlined), findsNothing);
+    });
+
+    testWidgets('falls back to a Material icon for unknown tools', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          const AgentToolIcon(
+            toolName: 'Unknown CLI',
+            fallbackIcon: Icons.terminal,
+          ),
+        ),
+      );
+
+      expect(find.byType(SvgPicture), findsNothing);
+      expect(find.byIcon(Icons.terminal), findsOneWidget);
+    });
+  });
+
   group('TmuxToolPickerSheet', () {
     testWidgets('shows loading indicator while detection is pending', (
       tester,
@@ -32,7 +68,7 @@ void main() {
       expect(find.text('Empty window'), findsOneWidget);
 
       completer.complete({AgentLaunchTool.claudeCode});
-      await tester.pumpAndSettle();
+      await tester.pump();
       expect(find.text('Detecting installed CLIs…'), findsNothing);
     });
 
@@ -50,7 +86,7 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('Claude Code'), findsOneWidget);
       expect(find.text('Codex'), findsOneWidget);
@@ -74,7 +110,7 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('No supported CLIs found on PATH.'), findsOneWidget);
       expect(find.text('Empty window'), findsOneWidget);
@@ -95,7 +131,7 @@ void main() {
             ),
           ),
         );
-        await tester.pumpAndSettle();
+        await tester.pump();
 
         for (final tool in AgentLaunchTool.values) {
           expect(find.text(tool.label), findsOneWidget);
@@ -116,7 +152,7 @@ void main() {
         ),
       );
       completer.completeError(StateError('detection failed'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('No supported CLIs found on PATH.'), findsNothing);
       for (final tool in AgentLaunchTool.values) {
@@ -138,7 +174,7 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       await tester.tap(find.text('Claude Code'));
       expect(chosen, AgentLaunchTool.claudeCode);
@@ -161,7 +197,7 @@ void main() {
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(
         tester.getTopLeft(find.text('Codex')).dy,

@@ -52,6 +52,7 @@ import '../widgets/ai_session_picker.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
 import '../widgets/terminal_text_input_handler.dart';
@@ -2323,6 +2324,8 @@ bool didTerminalScrollPolicyChange({
     previousIsUsingAltBuffer != nextIsUsingAltBuffer ||
     previousReportsMouseWheel != nextReportsMouseWheel;
 
+enum _TerminalExclusiveAction { sftpBrowser, tmuxNavigator }
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -2400,6 +2403,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   static const _tmuxForegroundVerificationInterval = Duration(seconds: 5);
+  static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
+    milliseconds: 150,
+  );
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -2476,6 +2482,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Offset? _pendingTerminalPathTapDownPosition;
   Duration? _pendingTerminalPathTapDownTimestamp;
   String? _recentlyOpenedTerminalPathTap;
+  final Set<_TerminalExclusiveAction> _exclusiveTerminalActions =
+      <_TerminalExclusiveAction>{};
   int? _pendingTerminalDoubleTapPointer;
   Offset? _pendingTerminalDoubleTapDownPosition;
   Duration? _pendingTerminalDoubleTapDownTimestamp;
@@ -2563,6 +2571,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _usesSensitiveKeyboardMode =>
       _manualSensitiveKeyboardMode || _detectedSensitiveKeyboardPrompt;
 
+  bool _isExclusiveTerminalActionRunning(_TerminalExclusiveAction action) =>
+      _exclusiveTerminalActions.contains(action);
+
+  Future<void> _runExclusiveTerminalAction(
+    _TerminalExclusiveAction action,
+    Future<void> Function() run,
+  ) async {
+    if (_isExclusiveTerminalActionRunning(action)) {
+      return;
+    }
+
+    setState(() => _exclusiveTerminalActions.add(action));
+    try {
+      await run();
+    } finally {
+      if (mounted) {
+        setState(() => _exclusiveTerminalActions.remove(action));
+      } else {
+        _exclusiveTerminalActions.remove(action);
+      }
+    }
+  }
+
   // Theme state
   Host? _host;
   AgentLaunchPreset? _autoConnectAgentPreset;
@@ -2576,6 +2607,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final Set<Timer> _terminalThemeRefreshTimers = <Timer>{};
   bool _isTmuxThemeRefreshRunning = false;
   _TmuxTerminalThemeRefreshRequest? _pendingTmuxThemeRefreshRequest;
+  Timer? _tmuxWindowThemeRefreshDebounceTimer;
+  _TmuxTerminalThemeRefreshRequest? _pendingTmuxWindowThemeRefreshRequest;
   bool _terminalThemeDependencyReloadQueued = false;
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
@@ -2592,6 +2625,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // when it resumes if the OS killed the socket.
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
+  bool _restoreKeyboardAfterAppResume = false;
 
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
@@ -3362,6 +3396,72 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange({
+    required SshSession session,
+    required String sessionName,
+    required String reason,
+  }) {
+    if (!_isTmuxActive ||
+        _tmuxStateConnectionId != session.connectionId ||
+        _tmuxSessionName != sessionName ||
+        session.terminal != _terminal) {
+      return;
+    }
+
+    final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+    if (session.terminalTheme == null) {
+      _applyTerminalThemeToSession(
+        theme,
+        session: session,
+        forceRemoteRefresh: true,
+        reason: reason,
+      );
+      return;
+    }
+
+    _pendingTmuxWindowThemeRefreshRequest = _TmuxTerminalThemeRefreshRequest(
+      theme: theme,
+      session: session,
+      sessionName: sessionName,
+      refreshGeneration: _terminalThemeRefreshGeneration,
+      reason: reason,
+      extraFlags: _host?.tmuxExtraFlags,
+    );
+    if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
+      return;
+    }
+
+    late final Timer timer;
+    timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
+        _tmuxWindowThemeRefreshDebounceTimer = null;
+      }
+      final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
+      _pendingTmuxWindowThemeRefreshRequest = null;
+      if (pendingRequest == null ||
+          _tmuxSessionName != pendingRequest.sessionName ||
+          !_isCurrentTerminalThemeRefresh(
+            theme: pendingRequest.theme,
+            session: pendingRequest.session,
+            refreshGeneration: pendingRequest.refreshGeneration,
+          )) {
+        return;
+      }
+      _queueTmuxTerminalThemeRefresh(pendingRequest);
+    });
+    _tmuxWindowThemeRefreshDebounceTimer = timer;
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
   void _scheduleTmuxTerminalThemeRefresh(
     _TmuxTerminalThemeRefreshRequest request, {
     required Duration delay,
@@ -3551,10 +3651,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _cancelTerminalThemeRefreshTimers() {
+    _cancelPendingTmuxWindowThemeRefresh();
     for (final timer in _terminalThemeRefreshTimers) {
       timer.cancel();
     }
     _terminalThemeRefreshTimers.clear();
+  }
+
+  void _cancelPendingTmuxWindowThemeRefresh() {
+    final timer = _tmuxWindowThemeRefreshDebounceTimer;
+    if (timer != null) {
+      timer.cancel();
+      _terminalThemeRefreshTimers.remove(timer);
+    }
+    _tmuxWindowThemeRefreshDebounceTimer = null;
+    _pendingTmuxWindowThemeRefreshRequest = null;
   }
 
   bool _isCurrentTerminalThemeRefresh({
@@ -5190,6 +5301,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _clearTmuxState() {
     _stopTmuxForegroundVerification();
+    _cancelPendingTmuxWindowThemeRefresh();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
@@ -5786,6 +5898,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ref: ref,
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
+      onWindowStateChanged: _handleTmuxWindowStateChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
@@ -5865,39 +5978,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   /// Opens the tmux window navigator bottom sheet and handles the
   /// selected action.
-  Future<void> _openTmuxNavigator() async {
-    final connectionId = _connectionId;
-    if (connectionId == null || _tmuxSessionName == null) return;
+  Future<void> _openTmuxNavigator() => _runExclusiveTerminalAction(
+    _TerminalExclusiveAction.tmuxNavigator,
+    () async {
+      final connectionId = _connectionId;
+      if (connectionId == null || _tmuxSessionName == null) return;
 
-    final session = _sessionsNotifier?.getSession(connectionId);
-    if (session == null) return;
+      final session = _sessionsNotifier?.getSession(connectionId);
+      if (session == null) return;
 
-    final monetizationState =
-        ref.read(monetizationStateProvider).asData?.value ??
-        ref.read(monetizationServiceProvider).currentState;
-    final isProUser = monetizationState.allowsFeature(
-      MonetizationFeature.agentLaunchPresets,
-    );
+      final monetizationState =
+          ref.read(monetizationStateProvider).asData?.value ??
+          ref.read(monetizationServiceProvider).currentState;
+      final isProUser = monetizationState.allowsFeature(
+        MonetizationFeature.agentLaunchPresets,
+      );
 
-    final action = await showTmuxNavigator(
-      context: context,
-      ref: ref,
-      session: session,
-      tmuxSessionName: _tmuxSessionName!,
-      tmuxExtraFlags: _host?.tmuxExtraFlags,
-      isProUser: isProUser,
-      startClisInYoloMode: _startClisInYoloMode,
-      scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
-        liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
-        tmuxWorkingDirectory: _tmuxWorkingDirectory,
-        sessionWorkingDirectory: session.workingDirectory,
-      ),
-    );
+      final action = await showTmuxNavigator(
+        context: context,
+        ref: ref,
+        session: session,
+        tmuxSessionName: _tmuxSessionName!,
+        tmuxExtraFlags: _host?.tmuxExtraFlags,
+        isProUser: isProUser,
+        startClisInYoloMode: _startClisInYoloMode,
+        scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
+          liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
+          tmuxWorkingDirectory: _tmuxWorkingDirectory,
+          sessionWorkingDirectory: session.workingDirectory,
+        ),
+      );
 
-    if (!mounted || action == null) return;
+      if (!mounted || action == null) return;
 
-    await _performTmuxNavigatorAction(session, action);
-  }
+      await _performTmuxNavigatorAction(session, action);
+    },
+  );
 
   Future<void> _performTmuxNavigatorAction(
     SshSession session,
@@ -5994,6 +6110,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       forceVisibleTmux: forceVisibleTmux,
     );
     _scheduleTerminalSizeRefresh();
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_switched',
+    );
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -6041,6 +6162,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionTmuxContextRefreshedAt = null;
     await _reattachTmuxIfNeeded(session, sessionName);
     _scheduleTerminalSizeRefresh();
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_created',
+    );
   }
 
   /// Closes a tmux window via exec channel.
@@ -6059,6 +6185,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     _scheduleTerminalSizeRefresh();
+    _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+      session: session,
+      sessionName: sessionName,
+      reason: 'tmux_window_closed',
+    );
   }
 
   Future<void> _reattachTmuxIfNeeded(
@@ -6457,10 +6588,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
+      _restoreKeyboardAfterAppResume =
+          _restoreKeyboardAfterAppResume ||
+          _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
       _wasBackgrounded = true;
       _stopSharedClipboardSync();
       _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
+      final shouldRestoreKeyboard = _restoreKeyboardAfterAppResume;
+      _restoreKeyboardAfterAppResume = false;
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
       _scheduleTerminalSizeRefresh();
@@ -6480,6 +6616,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
+      _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
     }
   }
 
@@ -6620,6 +6757,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ?.config
                 .jumpHost !=
             null;
+    final connectionStatusLabel = isConnectedThroughJumpHost
+        ? 'Connected through jump host'
+        : connectionLabel;
     final connectionIdentity = formatTerminalConnectionIdentity(
       username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
       hostname: _redactStoreScreenshotIdentities
@@ -6640,6 +6780,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
+    final isOpeningSftpBrowser = _isExclusiveTerminalActionRunning(
+      _TerminalExclusiveAction.sftpBrowser,
+    );
+    final isOpeningTmuxNavigator = _isExclusiveTerminalActionRunning(
+      _TerminalExclusiveAction.tmuxNavigator,
+    );
 
     return PopScope(
       canPop: !_isTmuxBarExpanded,
@@ -6667,14 +6813,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ),
                   const SizedBox(width: 6),
                   _TerminalConnectionStatusIcon(
-                    label: connectionLabel,
+                    label: connectionStatusLabel,
                     state: connectionState,
                     isConnecting: _isConnecting,
+                    isConnectedThroughJumpHost: isConnectedThroughJumpHost,
                   ),
-                  if (isConnectedThroughJumpHost) ...[
-                    const SizedBox(width: 4),
-                    const _TerminalJumpHostIndicator(),
-                  ],
                 ],
               ),
               if (titleSubtitle.isNotEmpty)
@@ -6717,13 +6860,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 connectionState == SshConnectionState.connected)
               IconButton(
                 icon: const Icon(Icons.window_outlined),
-                onPressed: _connectionId == null ? null : _openTmuxNavigator,
+                onPressed: _connectionId == null || isOpeningTmuxNavigator
+                    ? null
+                    : _openTmuxNavigator,
                 tooltip: 'tmux windows',
               ),
             IconButton(
               icon: const Icon(Icons.folder_outlined),
               onPressed:
                   _connectionId == null ||
+                      isOpeningSftpBrowser ||
                       connectionState != SshConnectionState.connected
                   ? null
                   : () => unawaited(_openConnectionFileBrowser()),
@@ -6758,6 +6904,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             PopupMenuButton<String>(
               onSelected: _handleMenuAction,
+              requestFocus: terminalOverlayRouteRequestFocus(context),
               itemBuilder: (context) => [
                 const PopupMenuItem(
                   value: 'snippets',
@@ -7008,6 +7155,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
   }
 
+  bool _temporarilyDismissTerminalKeyboard() {
+    if (!_isMobilePlatform) {
+      return false;
+    }
+    final shouldRestore = _shouldRestoreTerminalKeyboardAfterTemporaryDismissal;
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+    return shouldRestore;
+  }
+
+  bool get _shouldRestoreTerminalKeyboardAfterTemporaryDismissal =>
+      _isMobilePlatform &&
+      _terminalFocusNode.hasFocus &&
+      _terminalTextInputController.isKeyboardVisible;
+
+  void _restoreTemporarilyDismissedTerminalKeyboard(bool shouldRestore) {
+    if (!shouldRestore || !mounted) {
+      return;
+    }
+    _restoreTerminalFocus(forceShowSystemKeyboard: true);
+  }
+
   void _handleKeyboardToolbarKeyPressed() {
     _followLiveOutput();
     _terminalTextInputController.clearImeBuffer();
@@ -7252,6 +7421,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final theme = await showThemePickerDialog(
       context: context,
       currentThemeId: currentId,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
     );
 
     if (theme != null && mounted) {
@@ -7757,38 +7927,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalStyle.fromTextStyle(textStyle);
   }
 
-  Future<void> _openConnectionFileBrowser() async {
-    final connectionId = _connectionId;
-    if (connectionId == null) {
-      return;
-    }
+  Future<void> _openConnectionFileBrowser() => _runExclusiveTerminalAction(
+    _TerminalExclusiveAction.sftpBrowser,
+    () async {
+      final connectionId = _connectionId;
+      if (connectionId == null) {
+        return;
+      }
 
-    final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
-    if (!mounted) {
-      return;
-    }
+      final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
+      if (!mounted) {
+        return;
+      }
 
-    // Prefer the last browser directory when opening from the toolbar. The
-    // terminal cwd remains available for relative path resolution and as a
-    // quick-jump inside the browser.
-    final cwd = _workingDirectoryPath;
-    final rememberedPath = ref.read(
-      sftpBrowserLastPathsProvider,
-    )[(hostId: widget.hostId, connectionId: connectionId)];
-    final initialPath = rememberedPath ?? cwd;
-    unawaited(
-      context.pushNamed<String>(
-        Routes.sftp,
-        pathParameters: {'hostId': widget.hostId.toString()},
-        queryParameters: _buildSftpBrowserQueryParameters(
-          connectionId: connectionId,
-          initialPath: initialPath,
-          workingDirectory: cwd,
-          tmuxPaneDirectory: tmuxPaneDirectory,
-        ),
-      ),
-    );
-  }
+      // Prefer the last browser directory when opening from the toolbar. The
+      // terminal cwd remains available for relative path resolution and as a
+      // quick-jump inside the browser.
+      final cwd = _workingDirectoryPath;
+      final rememberedPath = ref.read(
+        sftpBrowserLastPathsProvider,
+      )[(hostId: widget.hostId, connectionId: connectionId)];
+      final initialPath = rememberedPath ?? cwd;
+      final shouldRestoreKeyboard = _temporarilyDismissTerminalKeyboard();
+      try {
+        await context.pushNamed<String>(
+          Routes.sftp,
+          pathParameters: {'hostId': widget.hostId.toString()},
+          queryParameters: _buildSftpBrowserQueryParameters(
+            connectionId: connectionId,
+            initialPath: initialPath,
+            workingDirectory: cwd,
+            tmuxPaneDirectory: tmuxPaneDirectory,
+          ),
+        );
+      } finally {
+        _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+      }
+    },
+  );
 
   Map<String, String> _buildSftpBrowserQueryParameters({
     int? connectionId,
@@ -9378,41 +9554,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showTerminalLinkMessage('Could not open $link');
   }
 
-  Future<void> _openTerminalFilePath(String path) async {
-    final normalizedPath = trimTerminalFilePathCandidate(path);
-    if (!isSupportedTerminalFilePath(normalizedPath)) {
-      _showTerminalLinkMessage('Could not open $path');
-      return;
-    }
+  Future<void> _openTerminalFilePath(String path) =>
+      _runExclusiveTerminalAction(
+        _TerminalExclusiveAction.sftpBrowser,
+        () async {
+          final normalizedPath = trimTerminalFilePathCandidate(path);
+          if (!isSupportedTerminalFilePath(normalizedPath)) {
+            _showTerminalLinkMessage('Could not open $path');
+            return;
+          }
 
-    final verifiedPath = await _resolveVerifiedTerminalFilePath(normalizedPath);
-    if (!mounted || verifiedPath == null) {
-      return;
-    }
+          final verifiedPath = await _resolveVerifiedTerminalFilePath(
+            normalizedPath,
+          );
+          if (!mounted || verifiedPath == null) {
+            return;
+          }
 
-    final connectionId = _connectionId;
-    final cwd = _workingDirectoryPath;
-    final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
-    if (!mounted) {
-      return;
-    }
+          final connectionId = _connectionId;
+          final cwd = _workingDirectoryPath;
+          final tmuxPaneDirectory = await _resolveCurrentTmuxPaneDirectory();
+          if (!mounted) {
+            return;
+          }
 
-    final result = await context.pushNamed<String>(
-      Routes.sftp,
-      pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: _buildSftpBrowserQueryParameters(
-        connectionId: connectionId,
-        initialPath: verifiedPath,
-        workingDirectory: cwd,
-        tmuxPaneDirectory: tmuxPaneDirectory,
-      ),
-    );
-    if (!mounted || result == null) {
-      return;
-    }
+          final shouldRestoreKeyboard = _temporarilyDismissTerminalKeyboard();
+          String? result;
+          try {
+            result = await context.pushNamed<String>(
+              Routes.sftp,
+              pathParameters: {'hostId': widget.hostId.toString()},
+              queryParameters: _buildSftpBrowserQueryParameters(
+                connectionId: connectionId,
+                initialPath: verifiedPath,
+                workingDirectory: cwd,
+                tmuxPaneDirectory: tmuxPaneDirectory,
+              ),
+            );
+          } finally {
+            _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+          }
 
-    _showTerminalLinkMessage(result);
-  }
+          if (mounted && result != null) {
+            _showTerminalLinkMessage(result);
+          }
+        },
+      );
 
   Future<void> _createSnippetFromSelection() async {
     final text = _currentTerminalSelectionText();
@@ -10259,6 +10446,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final confirmed = await showDialog<bool>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: Text(title),
         content: SingleChildScrollView(
@@ -10617,6 +10805,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         >(
           context: context,
           isScrollControlled: true,
+          requestFocus: terminalOverlayRouteRequestFocus(context),
           builder: (context) => DraggableScrollableSheet(
             maxChildSize: 0.8,
             minChildSize: 0.3,
@@ -10808,6 +10997,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) async {
     final decision = await showDialog<_AutoConnectReviewDecision>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: const Text('Review imported auto-connect command'),
         content: _buildCommandReviewContent(
@@ -10845,6 +11035,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) async {
     final confirmed = await showDialog<bool>(
       context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: Text(title),
         content: _buildCommandReviewContent(review: review, message: message),
@@ -10916,13 +11107,19 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
     required this.label,
     required this.state,
     required this.isConnecting,
+    required this.isConnectedThroughJumpHost,
   });
 
   final String label;
   final SshConnectionState state;
   final bool isConnecting;
+  final bool isConnectedThroughJumpHost;
 
   IconData get _icon {
+    if (isConnectedThroughJumpHost) {
+      return Icons.alt_route;
+    }
+
     if (isConnecting &&
         (state == SshConnectionState.disconnected ||
             state == SshConnectionState.connecting)) {
@@ -10945,6 +11142,10 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
   }
 
   Color _color(ColorScheme colorScheme) {
+    if (isConnectedThroughJumpHost) {
+      return colorScheme.secondary;
+    }
+
     if (isConnecting &&
         (state == SshConnectionState.disconnected ||
             state == SshConnectionState.connecting)) {
@@ -10975,24 +11176,6 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
         message: label,
         excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
-      ),
-    );
-  }
-}
-
-class _TerminalJumpHostIndicator extends StatelessWidget {
-  const _TerminalJumpHostIndicator();
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Semantics(
-      label: 'Connected through jump host',
-      child: Tooltip(
-        message: 'Connected through jump host',
-        excludeFromSemantics: true,
-        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
       ),
     );
   }

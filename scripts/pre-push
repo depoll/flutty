@@ -14,6 +14,6 @@ echo 'Running analyzer...'
 flutter analyze --fatal-warnings --fatal-infos --no-pub
 
 echo 'Skipping full test suite in pre-push; run targeted tests for changed behavior locally.'
-echo 'CI runs the full test suite with coverage.'
+echo 'CI runs the full test suite.'
 
 echo 'Pre-push checks passed!'

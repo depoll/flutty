@@ -1,12 +1,59 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
+
+const _proMonetizationState = MonetizationState(
+  billingAvailability: MonetizationBillingAvailability.available,
+  entitlements: MonetizationEntitlements.pro(),
+  offers: [],
+  debugUnlockAvailable: false,
+  debugUnlocked: false,
+);
+
+final _onePixelPngBytes = Uint8List.fromList(
+  base64Decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luzp0wAAAABJRU5ErkJggg==',
+  ),
+);
+
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockSftpClient extends Mock implements SftpClient {}
+
+class _MockSftpFile extends Mock implements SftpFile {}
+
+class _MockMonetizationService extends Mock implements MonetizationService {}
+
+class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
+  _TestActiveSessionsNotifier(this.session);
+
+  final SshSession session;
+
+  @override
+  Map<int, SshConnectionState> build() => <int, SshConnectionState>{
+    session.connectionId: SshConnectionState.connected,
+  };
+
+  @override
+  SshSession? getSession(int connectionId) =>
+      connectionId == session.connectionId ? session : null;
+
+  @override
+  Future<void> syncBackgroundStatus() async {}
+}
 
 void main() {
   group('SFTP path helpers', () {
@@ -39,18 +86,15 @@ void main() {
       );
     });
 
-    test(
-      'requested files open their parent directory and highlight the file',
-      () {
-        expect(
-          resolveRequestedSftpNavigationTarget(
-            '/var/log/app.log',
-            isDirectory: false,
-          ),
-          (directoryPath: '/var/log', highlightedFileName: 'app.log'),
-        );
-      },
-    );
+    test('requested files target their parent directory and file row', () {
+      expect(
+        resolveRequestedSftpNavigationTarget(
+          '/var/log/app.log',
+          isDirectory: false,
+        ),
+        (directoryPath: '/var/log', highlightedFileName: 'app.log'),
+      );
+    });
 
     test('location shortcuts normalize and de-duplicate paths', () {
       expect(
@@ -426,13 +470,105 @@ void main() {
 
       expect(find.text('Could not play video preview'), findsOneWidget);
       expect(find.text('Unsupported codec'), findsOneWidget);
-      expect(find.text('/home/depoll/screen-recording.mp4'), findsOneWidget);
+      expect(
+        find.text('/home/depoll/screen-recording.mp4'),
+        findsAtLeastNWidgets(1),
+      );
       expect(find.text('42 B'), findsOneWidget);
       expect(find.text('video/mp4'), findsOneWidget);
       expect(find.text('Cached copy'), findsOneWidget);
       expect(find.text('Save copy'), findsOneWidget);
       expect(find.text('Open/Share'), findsOneWidget);
     });
+
+    testWidgets(
+      'requested image files open directly and return to a highlighted row',
+      (tester) async {
+        final sshClient = _MockSshClient();
+        final sftp = _MockSftpClient();
+        final remoteFile = _MockSftpFile();
+        final monetizationService = _MockMonetizationService();
+        final session = SshSession(
+          connectionId: 7,
+          hostId: 1,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'demo.example.com',
+            port: 22,
+            username: 'demo',
+          ),
+        );
+
+        when(
+          () => monetizationService.currentState,
+        ).thenReturn(_proMonetizationState);
+        when(sshClient.sftp).thenAnswer((_) async => sftp);
+        when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+        when(() => sftp.stat('/home/demo/picture.png')).thenAnswer(
+          (_) async => SftpFileAttrs(
+            size: _onePixelPngBytes.length,
+            mode: const SftpFileMode.value(1 << 15),
+          ),
+        );
+        when(() => sftp.listdir('/home/demo')).thenAnswer(
+          (_) async => [
+            SftpName(
+              filename: 'picture.png',
+              longname: 'picture.png',
+              attr: SftpFileAttrs(
+                size: _onePixelPngBytes.length,
+                mode: const SftpFileMode.value(1 << 15),
+              ),
+            ),
+          ],
+        );
+        when(
+          () => sftp.open('/home/demo/picture.png'),
+        ).thenAnswer((_) async => remoteFile);
+        when(
+          () => remoteFile.readBytes(length: any(named: 'length')),
+        ).thenAnswer((_) async => _onePixelPngBytes);
+        when(remoteFile.close).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+            ],
+            child: const MaterialApp(
+              home: SftpScreen(
+                hostId: 1,
+                connectionId: 7,
+                initialPath: '/home/demo/picture.png',
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('/home/demo/picture.png'), findsOneWidget);
+
+        Navigator.of(tester.element(find.text('/home/demo/picture.png'))).pop();
+        await tester.pumpAndSettle();
+
+        final tile = tester.widget<ListTile>(
+          find.ancestor(
+            of: find.text('picture.png'),
+            matching: find.byType(ListTile),
+          ),
+        );
+        expect(tile.tileColor, isNotNull);
+        verify(() => sftp.open('/home/demo/picture.png')).called(1);
+      },
+    );
 
     testWidgets('video preview deletes cached files when closed', (
       tester,

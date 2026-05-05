@@ -156,6 +156,9 @@ class TerminalTextInputHandlerController {
     _state?.requestKeyboard();
   }
 
+  /// Whether the handler currently expects the soft keyboard to be visible.
+  bool get isKeyboardVisible => _state?._isInputConnectionShown ?? false;
+
   /// Clears the transient IME buffer after external terminal actions.
   ///
   /// This is used for toolbar-driven keys like arrows, Home/End, Enter, Tab,
@@ -2710,6 +2713,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _isInputConnectionShown = false;
     _stopHardwareKeyRepeat();
     _cancelDeferredTrailingBackspaceImeClear();
     _invalidatePendingEditingUpdates();

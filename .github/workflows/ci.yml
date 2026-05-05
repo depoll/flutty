@@ -109,15 +109,15 @@ jobs:
       - name: Skip heavy CI
         run: echo "No Flutter-relevant changes detected; CI is a no-op."
 
-  # Combined analyze + format + test for Flutter-relevant changes. One Flutter
-  # SDK setup instead of two saves ~1.5 min of runner time per CI run.
+  # Formatting and analyzer checks for Flutter-relevant changes. Tests run in a
+  # separate sharded matrix so the largest per-commit step can fan out.
   # ---------------------------------------------------------------------------
   check:
-    name: Analyze, Format & Test
+    name: Analyze & Format
     needs: changes
     if: needs.changes.outputs.run_check == 'true'
     runs-on: ubicloud-standard-4
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -136,16 +136,34 @@ jobs:
         run: dart format --set-exit-if-changed .
 
       - name: Analyze code
-        run: flutter analyze --fatal-warnings
+        run: flutter analyze --fatal-warnings --fatal-infos --no-pub
 
-      - name: Run tests with coverage
-        run: flutter test --coverage
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+  test:
+    name: Test (Shard ${{ matrix.shard-index }}/4)
+    needs: changes
+    if: needs.changes.outputs.run_check == 'true'
+    runs-on: ubicloud-standard-4
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard-index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          file: coverage/lcov.info
-          fail_ci_if_error: false
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run tests
+        run: flutter test --no-pub --total-shards 4 --shard-index ${{ matrix.shard-index }}
 
   # ---------------------------------------------------------------------------
   # Platform builds — conditional on detected changes.
@@ -374,13 +392,13 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Gate job — the single required status check for branch protection.
-  # Passes when check succeeds and all triggered builds pass; correctly ignores
+  # Passes when checks/tests succeed and all triggered builds pass; correctly ignores
   # builds that were skipped because the platform was unchanged.
   # ---------------------------------------------------------------------------
   ci:
     name: CI
     if: ${{ always() && !cancelled() }}
-    needs: [changes, check, build-android, build-ios, build-macos, build-windows, build-linux]
+    needs: [changes, check, test, build-android, build-ios, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -388,6 +406,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHECK_RESULT: ${{ needs.check.result }}
+          TEST_RESULT: ${{ needs.test.result }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
           IOS_RESULT: ${{ needs.build-ios.result }}
           MACOS_RESULT: ${{ needs.build-macos.result }}
@@ -398,6 +417,7 @@ jobs:
           for name_result in \
             "changes:$CHANGES_RESULT" \
             "check:$CHECK_RESULT" \
+            "test:$TEST_RESULT" \
             "build-android:$ANDROID_RESULT" \
             "build-ios:$IOS_RESULT" \
             "build-macos:$MACOS_RESULT" \

@@ -20,6 +20,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.onExpandedChanged,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
+    this.onWindowStateChanged,
     this.onWindowLoadStalled,
     super.key,
   });
@@ -56,6 +57,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Called when the expanded/collapsed state changes.
   final ValueChanged<bool> onExpandedChanged;
+
+  final void Function(SshSession session, String sessionName)?
+  onWindowStateChanged;
 
   final Future<void> Function(SshSession session, String sessionName)?
   onWindowLoadStalled;
@@ -241,6 +245,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         },
       );
       _loadWindows();
+      _notifyWindowStateChanged();
       return;
     }
     final currentWindows = _windows;
@@ -265,9 +270,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     _applyWindows(windows);
+    _notifyWindowStateChanged();
     if (widget.isProUser && _showSessions) {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
     }
+  }
+
+  void _notifyWindowStateChanged() {
+    widget.onWindowStateChanged?.call(widget.session, widget.tmuxSessionName);
   }
 
   void _applyWindows(List<TmuxWindow> windows) {
@@ -987,6 +997,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               );
               showModalBottomSheet<AgentLaunchTool?>(
                 context: context,
+                requestFocus: terminalOverlayRouteRequestFocus(context),
                 builder: (ctx) => TmuxToolPickerSheet(
                   isProUser: widget.isProUser,
                   installedToolsFuture: installedToolsFuture,

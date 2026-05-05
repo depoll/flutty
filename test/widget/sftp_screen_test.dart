@@ -206,6 +206,26 @@ void main() {
       expect(find.byIcon(Icons.close), findsOneWidget);
     });
 
+    testWidgets('shows the full remote path in the editor app bar', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            filePath: '/home/demo/project/notes.txt',
+            controller: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Edit /home/demo/project/notes.txt'), findsOneWidget);
+    });
+
     testWidgets('close affordance warns before discarding unsaved edits', (
       tester,
     ) async {
