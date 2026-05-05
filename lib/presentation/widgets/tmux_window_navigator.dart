@@ -998,11 +998,18 @@ class TmuxToolPickerSheet extends StatelessWidget {
                         ),
                       );
                     }
-                    final installed = snapshot.data;
+                    final Iterable<AgentLaunchTool> availableTools;
+                    if (installedToolsFuture == null) {
+                      availableTools = _allTools;
+                    } else if (snapshot.hasError) {
+                      availableTools = const <AgentLaunchTool>[];
+                    } else {
+                      final installed =
+                          snapshot.data ?? const <AgentLaunchTool>{};
+                      availableTools = _allTools.where(installed.contains);
+                    }
                     final tools = _orderedAgentLaunchTools(
-                      installed != null
-                          ? _allTools.where(installed.contains)
-                          : _allTools,
+                      availableTools,
                       preferredTool: preferredTool,
                     );
                     if (tools.isEmpty) {
