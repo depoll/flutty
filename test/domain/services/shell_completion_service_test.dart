@@ -321,10 +321,16 @@ void main() {
         ),
         'git checkout feature/login',
       );
+      expect(
+        normalizeShellHistoryCommandPattern(
+          'tmux%20new-session%20-A%20-s%20monkeyssh',
+        ),
+        isNull,
+      );
     });
 
     test(
-      'buildShellHistorySuggestions prefers shorter exacts after tokens',
+      'buildShellHistorySuggestions ranks by token count frequency and recency',
       () {
         const invocation = ShellCompletionInvocation(
           commandLine: 'git c',
@@ -340,17 +346,23 @@ void main() {
 
         final suggestions = buildShellHistorySuggestions([
           'git commit',
+          'git checkout feature/login',
           'git commit -m "old message"',
-          'git status',
-          'git checkout feature/login',
+          'git cherry-pick abc',
+          'git clean -fd',
           'git commit -m "new message"',
-          'git checkout feature/login',
+          'git cherry-pick abc',
+          'git commit -m "new message"',
         ], invocation);
 
         expect(suggestions.map((suggestion) => suggestion.label), [
-          'checkout',
           'commit',
+          'cherry-pick',
+          'clean',
+          'checkout',
           'git commit',
+          'git cherry-pick abc',
+          'git clean -fd',
           'git checkout feature/login',
           'git commit -m "new message"',
           'git commit -m "old message"',
@@ -358,13 +370,37 @@ void main() {
         expect(suggestions.first.kind, ShellCompletionSuggestionKind.history);
         expect(suggestions.first.replacementStart, 4);
         expect(suggestions.first.replacementEnd, 5);
-        expect(suggestions.first.replacement, 'checkout');
+        expect(suggestions.first.replacement, 'commit');
         expect(suggestions.first.commitSuffix, ' ');
-        expect(suggestions[2].replacementStart, 0);
-        expect(suggestions[2].replacementEnd, 5);
-        expect(suggestions[2].replacement, 'git commit');
+        expect(suggestions[4].replacementStart, 0);
+        expect(suggestions[4].replacementEnd, 5);
+        expect(suggestions[4].replacement, 'git commit');
       },
     );
+
+    test('buildShellHistorySuggestions filters encoded command names', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'tmu',
+        cursorOffset: 3,
+        token: 'tmu',
+        tokenStart: 0,
+        mode: ShellCompletionMode.command,
+        words: ['tmu'],
+        workingDirectory: '/Users/depoll/project',
+      );
+
+      final suggestions = buildShellHistorySuggestions([
+        'tmux%20new-session%20-A%20-s%20monkeyssh',
+        'tmux new-session -A -s monkeyssh',
+        'tmux',
+        'tmux',
+      ], invocation);
+
+      expect(suggestions.map((suggestion) => suggestion.label), [
+        'tmux',
+        'tmux new-session -A -s monkeyssh',
+      ]);
+    });
 
     test('buildShellHistorySuggestions matches patterns around arguments', () {
       const commandLine = 'codex --prompt "try history" --s';
