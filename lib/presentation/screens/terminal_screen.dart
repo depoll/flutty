@@ -4077,6 +4077,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_filterVisibleShellCompletionsForCurrentInput()) {
       return;
     }
+    _primeShellCompletionHistory();
     _queueShellCompletionRefresh();
   }
 
@@ -4104,6 +4105,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       unawaited(_refreshShellCompletions(generation));
     });
+  }
+
+  void _primeShellCompletionHistory() {
+    final session = _activeSession();
+    if (session == null) {
+      return;
+    }
+
+    final cachedTmuxCommand = _tmuxCurrentCommand?.trim();
+    final shellCommand =
+        _isTmuxActive && isShellCompletionTmuxShellCommand(cachedTmuxCommand)
+        ? cachedTmuxCommand
+        : null;
+    final invocation = _buildCurrentShellCompletionInvocation(
+      workingDirectory: _workingDirectoryPath,
+      shellCommand: shellCommand,
+    );
+    if (invocation == null) {
+      return;
+    }
+    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
+    if (staticSuggestions != null && invocation.token.isEmpty) {
+      return;
+    }
+
+    ref.read(shellCompletionServiceProvider).primeHistory(session, invocation);
   }
 
   Future<void> _refreshShellCompletions(int generation) async {

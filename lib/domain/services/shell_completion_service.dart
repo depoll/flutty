@@ -165,8 +165,8 @@ class ShellCompletionService {
       <String, Future<List<ShellCompletionSuggestion>>>{};
   final Map<String, _ShellHistoryCacheEntry> _historyCache =
       <String, _ShellHistoryCacheEntry>{};
-  final Map<String, Future<List<String>>> _historyInFlight =
-      <String, Future<List<String>>>{};
+  final Map<String, Future<List<_PreparedShellHistoryCommand>>>
+  _historyInFlight = <String, Future<List<_PreparedShellHistoryCommand>>>{};
 
   /// Runs a completion query for [invocation].
   Future<List<ShellCompletionSuggestion>> complete(
@@ -209,6 +209,23 @@ class ShellCompletionService {
     } finally {
       _inFlight.remove(cacheKey)?.ignore();
     }
+  }
+
+  /// Starts loading shell history for [invocation] without waiting for results.
+  void primeHistory(SshSession session, ShellCompletionInvocation invocation) {
+    unawaited(
+      _loadShellHistory(session, invocation).onError<Object>((error, _) {
+        DiagnosticsLogService.instance.debug(
+          'shell_completion',
+          'history_prime_unavailable',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        return const <_PreparedShellHistoryCommand>[];
+      }),
+    );
   }
 
   Future<List<ShellCompletionSuggestion>> _completeUncached(
@@ -273,7 +290,7 @@ class ShellCompletionService {
   ) async {
     try {
       final history = await _loadShellHistory(session, invocation);
-      return buildShellHistorySuggestions(history, invocation);
+      return _buildPreparedShellHistorySuggestions(history, invocation);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'shell_completion',
@@ -287,7 +304,7 @@ class ShellCompletionService {
     }
   }
 
-  Future<List<String>> _loadShellHistory(
+  Future<List<_PreparedShellHistoryCommand>> _loadShellHistory(
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
@@ -304,14 +321,16 @@ class ShellCompletionService {
     }
 
     final future = session.runQueuedExec(
-      () => _runHistoryCommand(session, invocation),
+      () async => _prepareShellHistoryCommands(
+        await _runHistoryCommand(session, invocation),
+      ),
     );
     _historyInFlight[key] = future;
     try {
       final commands = await future;
       _historyCache[key] = _ShellHistoryCacheEntry(
         createdAt: DateTime.now(),
-        commands: List<String>.unmodifiable(commands),
+        commands: List<_PreparedShellHistoryCommand>.unmodifiable(commands),
       );
       _trimHistoryCache(now);
       return commands;
@@ -524,7 +543,19 @@ class _ShellHistoryCacheEntry {
   });
 
   final DateTime createdAt;
-  final List<String> commands;
+  final List<_PreparedShellHistoryCommand> commands;
+}
+
+class _PreparedShellHistoryCommand {
+  const _PreparedShellHistoryCommand({
+    required this.command,
+    required this.patternTokens,
+    required this.tokenCount,
+  });
+
+  final String command;
+  final List<String>? patternTokens;
+  final int tokenCount;
 }
 
 String _shellCompletionCacheKey(
@@ -713,6 +744,14 @@ List<ShellCompletionSuggestion>? buildShellCompletionStaticSuggestions(
 List<ShellCompletionSuggestion> buildShellHistorySuggestions(
   List<String> historyCommands,
   ShellCompletionInvocation invocation,
+) => _buildPreparedShellHistorySuggestions(
+  _prepareShellHistoryCommands(historyCommands),
+  invocation,
+);
+
+List<ShellCompletionSuggestion> _buildPreparedShellHistorySuggestions(
+  List<_PreparedShellHistoryCommand> historyCommands,
+  ShellCompletionInvocation invocation,
 ) {
   final typedCommand = invocation.commandLine.substring(
     0,
@@ -734,12 +773,9 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
   final tokenSuggestions = <String, _RankedShellHistorySuggestion>{};
   final exactSuggestions = <String, _RankedShellHistorySuggestion>{};
   var recencyRank = 0;
-  for (final rawCommand in historyCommands.reversed) {
-    final historyPatternTokens = _normalizeShellHistoryCommandPatternTokens(
-      rawCommand,
-    );
+  for (final historyCommand in historyCommands.reversed) {
     final patternToken = _nextShellHistoryPatternToken(
-      historyPatternTokens: historyPatternTokens,
+      historyPatternTokens: historyCommand.patternTokens,
       currentPatternTokens: currentPatternTokens,
       currentTokenParticipatesInPattern: currentTokenParticipatesInPattern,
       hasCurrentToken: invocation.token.isNotEmpty,
@@ -764,9 +800,8 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
       );
     }
 
-    final exactCommand = _decodeShellHistoryCommand(rawCommand).trim();
-    if (_isSafeHistoryCommand(exactCommand) &&
-        exactCommand != typedCommand &&
+    final exactCommand = historyCommand.command;
+    if (exactCommand != typedCommand &&
         exactCommand.startsWith(typedCommand) &&
         !tokenSuggestions.containsKey(exactCommand)) {
       exactSuggestions.update(
@@ -780,7 +815,7 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
             replacementEnd: invocation.cursorOffset,
             kind: ShellCompletionSuggestionKind.history,
           ),
-          tokenCount: _shellHistorySuggestionTokenCount(exactCommand),
+          tokenCount: historyCommand.tokenCount,
           frequency: 1,
           recencyRank: recencyRank,
         ),
@@ -848,18 +883,6 @@ int _compareRankedShellHistorySuggestions(
     return frequencyComparison;
   }
   return a.recencyRank.compareTo(b.recencyRank);
-}
-
-int _shellHistorySuggestionTokenCount(String command) {
-  final tokenState = parseShellCompletionToken(command, command.length);
-  if (tokenState != null && tokenState.words.isNotEmpty) {
-    return tokenState.words.length;
-  }
-  return command
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((word) => word.isNotEmpty)
-      .length;
 }
 
 bool _doesShellHistoryCurrentTokenParticipateInPattern({
@@ -1177,7 +1200,12 @@ List<String>? _normalizeShellHistoryCommandPatternTokens(String command) {
   if (tokens == null || tokens.isEmpty) {
     return null;
   }
+  return _normalizeShellHistoryCommandPatternTokensFromTokens(tokens);
+}
 
+List<String>? _normalizeShellHistoryCommandPatternTokensFromTokens(
+  List<_ShellHistoryToken> tokens,
+) {
   final patternTokens = <String>[];
   var trimNextOptionArgument = false;
   for (var index = 0; index < tokens.length; index++) {
@@ -1211,6 +1239,35 @@ List<String>? _normalizeShellHistoryCommandPatternTokens(String command) {
   return patternTokens;
 }
 
+List<_PreparedShellHistoryCommand> _prepareShellHistoryCommands(
+  List<String> commands,
+) {
+  final preparedCommands = <_PreparedShellHistoryCommand>[];
+  for (final command in commands) {
+    final preparedCommand = _prepareShellHistoryCommand(command);
+    if (preparedCommand != null) {
+      preparedCommands.add(preparedCommand);
+    }
+  }
+  return List<_PreparedShellHistoryCommand>.unmodifiable(preparedCommands);
+}
+
+_PreparedShellHistoryCommand? _prepareShellHistoryCommand(String command) {
+  final decoded = _decodeShellHistoryCommand(command).trim();
+  if (!_isSafeHistoryCommand(decoded)) {
+    return null;
+  }
+  final tokens = _parseShellHistoryCommandTokens(decoded);
+  if (tokens == null || tokens.isEmpty) {
+    return null;
+  }
+  return _PreparedShellHistoryCommand(
+    command: decoded,
+    patternTokens: _normalizeShellHistoryCommandPatternTokensFromTokens(tokens),
+    tokenCount: tokens.length,
+  );
+}
+
 String _decodeShellHistoryCommand(String command) {
   if (command.startsWith(': ')) {
     final separatorIndex = command.indexOf(';');
@@ -1238,10 +1295,11 @@ bool _isSafeHistoryCommand(String command) {
 }
 
 bool _looksLikeUrlEncodedShellCommand(String command) {
-  final tokenState = parseShellCompletionToken(command, command.length);
-  final firstToken = tokenState != null && tokenState.words.isNotEmpty
-      ? tokenState.words.first
-      : command.split(' ').first;
+  var end = 0;
+  while (end < command.length && !_isShellCompletionWhitespace(command[end])) {
+    end += 1;
+  }
+  final firstToken = command.substring(0, end);
   return _urlEncodedShellWhitespacePattern.hasMatch(firstToken);
 }
 
