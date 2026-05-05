@@ -399,13 +399,13 @@ int _calculateDiscoveryScanLimit(
 }
 
 /// Parses Copilot CLI workspace metadata from `workspace.yaml`.
-@visibleForTesting
 ({String? summary, String? workingDirectory, DateTime? updatedAt})
 parseCopilotWorkspaceYamlMetadata(String raw) {
   final lines = const LineSplitter().convert(raw);
   String? summary;
   String? workingDirectory;
   DateTime? updatedAt;
+  String? name;
   String? repository;
   String? branch;
 
@@ -425,6 +425,13 @@ parseCopilotWorkspaceYamlMetadata(String raw) {
       ).firstMatch(line);
       if (updatedAtMatch != null) {
         updatedAt = DateTime.tryParse(updatedAtMatch.group(1)!.trim());
+      }
+    }
+
+    if (name == null) {
+      final nameMatch = RegExp(r'^name:\s*(.+)\s*$').firstMatch(line);
+      if (nameMatch != null) {
+        name = nameMatch.group(1)!.trim();
       }
     }
 
@@ -475,9 +482,12 @@ parseCopilotWorkspaceYamlMetadata(String raw) {
   }
 
   if (summary == null) {
+    final nameSummary = name?.trim();
     final repositorySummary = repository?.trim();
     final branchSummary = branch?.trim();
-    if (repositorySummary != null &&
+    if (nameSummary != null && nameSummary.isNotEmpty) {
+      summary = _summarizeSessionText(nameSummary);
+    } else if (repositorySummary != null &&
         repositorySummary.isNotEmpty &&
         branchSummary != null &&
         branchSummary.isNotEmpty) {

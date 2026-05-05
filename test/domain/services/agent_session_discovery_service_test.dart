@@ -655,6 +655,17 @@ updated_at: 2026-04-14T01:02:03.000Z
       expect(metadata.updatedAt, DateTime.parse('2026-04-14T01:02:03.000Z'));
     });
 
+    test('prefers user-provided session names when summary is missing', () {
+      final metadata = parseCopilotWorkspaceYamlMetadata('''
+id: example
+name: Fix active session labels
+repository: depollsoft/MonkeySSH
+branch: main
+''');
+
+      expect(metadata.summary, 'Fix active session labels');
+    });
+
     test('normalizes inline summary text to a single display line', () {
       final metadata = parseCopilotWorkspaceYamlMetadata('''
 summary:   Add   PR preview   commit list   

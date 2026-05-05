@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
+import 'agent_session_discovery_service.dart';
 import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
@@ -714,8 +715,12 @@ class TmuxService {
         extraFlags: extraFlags,
         forceUtf8: true,
       );
+      final parsedWindows = _parseLines(
+        output,
+        TmuxWindow.fromTmuxFormat,
+      ).toList(growable: false);
       final windows = List<TmuxWindow>.unmodifiable(
-        _parseLines(output, TmuxWindow.fromTmuxFormat),
+        await _enrichWindowsWithAgentSessionMetadata(session, parsedWindows),
       );
       if (windows.isNotEmpty) {
         _cacheWindowSnapshot(
@@ -760,6 +765,79 @@ class TmuxService {
         return cachedWindows;
       }
       rethrow;
+    }
+  }
+
+  Future<List<TmuxWindow>> _enrichWindowsWithAgentSessionMetadata(
+    SshSession session,
+    List<TmuxWindow> windows,
+  ) async {
+    final copilotPanePids = windows
+        .where(
+          (window) =>
+              window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+              window.panePid != null,
+        )
+        .map((window) => window.panePid!)
+        .toSet();
+    if (copilotPanePids.isEmpty) {
+      return windows;
+    }
+
+    try {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'active_session_metadata_start',
+        fields: {
+          'connectionId': session.connectionId,
+          'paneCount': copilotPanePids.length,
+        },
+      );
+      final output = await _exec(
+        session,
+        buildCopilotActiveSessionMetadataCommand(),
+        priority: SshExecPriority.low,
+      ).timeout(const Duration(seconds: 2), onTimeout: () => '');
+      final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
+        output,
+        copilotPanePids,
+      );
+      if (metadataByPanePid.isEmpty) {
+        return windows;
+      }
+      DiagnosticsLogService.instance.info(
+        'tmux.agent',
+        'active_session_metadata_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'matchCount': metadataByPanePid.length,
+        },
+      );
+      return windows
+          .map((window) {
+            final panePid = window.panePid;
+            final metadata = panePid == null
+                ? null
+                : metadataByPanePid[panePid];
+            if (metadata == null) {
+              return window;
+            }
+            return window.copyWith(
+              activeAgentSessionId: metadata.sessionId,
+              agentSessionTitle: metadata.title,
+            );
+          })
+          .toList(growable: false);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'active_session_metadata_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return windows;
     }
   }
 
@@ -1735,6 +1813,9 @@ String _diagnosticTmuxCommandKind(String command) {
   if (command.contains('list-clients')) {
     return 'list_clients';
   }
+  if (command.contains('.copilot/session-state')) {
+    return 'active_session_metadata';
+  }
   if (command.contains('select-window')) {
     return 'select_window';
   }
@@ -2286,7 +2367,8 @@ const _tmuxWindowSubscriptionFormat =
     '#{window_activity}$tmuxWindowFieldSeparator'
     '#{pane_start_command}$tmuxWindowFieldSeparator'
     '#{@flutty_agent_tool}$tmuxWindowFieldSeparator'
-    '#{window_id}';
+    '#{window_id}$tmuxWindowFieldSeparator'
+    '#{pane_pid}';
 
 const _tmuxControlModeClientFlags = 'ignore-size,no-output,wait-exit';
 
@@ -3132,4 +3214,95 @@ Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
     if (tool != null) installed.add(tool);
   }
   return installed;
+}
+
+/// Builds a shell command that maps live Copilot CLI lock files to session
+/// metadata.
+///
+/// The output is Unit Separator-delimited:
+/// `session_id<US>copilot_pid<US>ancestor_pid_csv<US>workspace_yaml_base64`.
+@visibleForTesting
+String buildCopilotActiveSessionMetadataCommand() => r'''
+sep=$(printf "\037")
+for lock in "${HOME:-~}"/.copilot/session-state/*/inuse.*.lock; do
+  [ -e "$lock" ] || continue
+  file=${lock##*/}
+  pid=${file#inuse.}
+  pid=${pid%.lock}
+  case "$pid" in ''|*[!0-9]*) continue ;; esac
+  kill -0 "$pid" 2>/dev/null || continue
+  args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+  case "$args" in *copilot*) ;; *) continue ;; esac
+  chain=
+  current=$pid
+  seen=0
+  while [ -n "$current" ] && [ "$current" != "0" ] && [ "$seen" -lt 64 ]; do
+    case "$current" in ''|*[!0-9]*) break ;; esac
+    chain="${chain:+$chain,}$current"
+    current=$(ps -p "$current" -o ppid= 2>/dev/null | tr -d ' ')
+    seen=$((seen + 1))
+  done
+  dir=${lock%/*}
+  session_id=${dir##*/}
+  workspace=$dir/workspace.yaml
+  workspace_data=
+  if [ -r "$workspace" ] && command -v base64 >/dev/null 2>&1; then
+    workspace_data=$(base64 < "$workspace" 2>/dev/null | tr -d '\r\n')
+  fi
+  printf '%s%s%s%s%s%s%s\n' \
+    "$session_id" "$sep" "$pid" "$sep" "$chain" "$sep" "$workspace_data"
+done
+''';
+
+/// Parses [buildCopilotActiveSessionMetadataCommand] output and returns live
+/// Copilot session metadata keyed by tmux pane PID.
+@visibleForTesting
+Map<int, ({String sessionId, String? title})>
+parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
+  if (output.trim().isEmpty || panePids.isEmpty) {
+    return const <int, ({String sessionId, String? title})>{};
+  }
+
+  final metadataByPanePid = <int, ({String sessionId, String? title})>{};
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trimRight();
+    if (line.isEmpty) continue;
+    final fields = line.split(tmuxWindowFieldSeparator);
+    if (fields.length < 3) continue;
+
+    final sessionId = fields[0].trim();
+    if (sessionId.isEmpty) continue;
+
+    final chainPids = fields[2]
+        .split(',')
+        .map((value) => int.tryParse(value.trim()))
+        .whereType<int>()
+        .toSet();
+    final lockPid = int.tryParse(fields[1].trim());
+    if (lockPid != null) {
+      chainPids.add(lockPid);
+    }
+    if (chainPids.isEmpty) continue;
+
+    final title = fields.length > 3
+        ? _copilotSessionTitleFromWorkspaceBase64(fields[3])
+        : null;
+    final metadata = (sessionId: sessionId, title: title);
+    for (final panePid in panePids) {
+      if (!chainPids.contains(panePid)) continue;
+      metadataByPanePid.putIfAbsent(panePid, () => metadata);
+    }
+  }
+  return metadataByPanePid;
+}
+
+String? _copilotSessionTitleFromWorkspaceBase64(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return null;
+  try {
+    final decoded = utf8.decode(base64Decode(trimmed));
+    return parseCopilotWorkspaceYamlMetadata(decoded).summary;
+  } on Object {
+    return null;
+  }
 }

@@ -1663,6 +1663,9 @@ String _diagnosticSshCommandKind(String command) {
   if (trimmed.contains('__flutty_agent_discovery_exec_done__')) {
     return 'agent_session_discovery';
   }
+  if (trimmed.contains('.copilot/session-state')) {
+    return 'active_session_metadata';
+  }
   if (trimmed.contains('command -v')) {
     return 'command_detection';
   }

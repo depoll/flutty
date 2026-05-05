@@ -94,7 +94,8 @@ void main() {
           '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
           '#{pane_start_command}$sep'
           '#{@flutty_agent_tool}$sep'
-          "#{window_id}'",
+          '#{window_id}$sep'
+          "#{pane_pid}'",
         );
       },
     );
@@ -536,6 +537,7 @@ void main() {
         'sleep 30',
         'gemini',
         '@12',
+        '4321',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
@@ -551,6 +553,7 @@ void main() {
       expect(snapshot.window.paneStartCommand, 'sleep 30');
       expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
       expect(snapshot.window.id, '@12');
+      expect(snapshot.window.panePid, 4321);
     });
 
     test('normalizes the wrapped first control-mode line', () {

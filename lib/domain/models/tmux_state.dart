@@ -80,12 +80,15 @@ class TmuxWindow {
     required this.name,
     required this.isActive,
     this.id,
+    this.panePid,
     this.currentCommand,
     this.currentPath,
     this.flags,
     this.paneTitle,
     this.paneStartCommand,
     this.agentTool,
+    this.activeAgentSessionId,
+    this.agentSessionTitle,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
@@ -96,7 +99,7 @@ class TmuxWindow {
   /// Separator-delimited:
   /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
   /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool<US>`
-  /// `window_id`
+  /// `window_id<US>pane_pid`
   ///
   /// Legacy pipe-delimited snapshots are still accepted for older tests and
   /// stale control-mode messages.
@@ -116,6 +119,7 @@ class TmuxWindow {
       id: fields.length > 10 && isValidTmuxWindowId(fields[10])
           ? fields[10]
           : null,
+      panePid: fields.length > 11 ? int.tryParse(fields[11]) : null,
       currentCommand: fields.length > 3 ? _nonEmpty(fields[3]) : null,
       currentPath: fields.length > 4 ? _nonEmpty(fields[4]) : null,
       flags: fields.length > 5 ? _nonEmpty(fields[5]) : null,
@@ -133,6 +137,9 @@ class TmuxWindow {
 
   /// The stable tmux window ID (for example `@7`), when reported.
   final String? id;
+
+  /// The tmux pane's root process ID, when reported.
+  final int? panePid;
 
   /// The window name (often set by the running program or user).
   final String name;
@@ -157,6 +164,13 @@ class TmuxWindow {
 
   /// App-provided agent tool metadata stored on the tmux window, if available.
   final AgentLaunchTool? agentTool;
+
+  /// Live coding-agent session id observed from process metadata, if available.
+  final String? activeAgentSessionId;
+
+  /// Live coding-agent session title observed from process metadata, if
+  /// available.
+  final String? agentSessionTitle;
 
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
@@ -199,6 +213,7 @@ class TmuxWindow {
   /// Returns a copy of this window with selectively overridden fields.
   TmuxWindow copyWith({
     String? id,
+    int? panePid,
     bool? isActive,
     String? name,
     String? currentCommand,
@@ -207,10 +222,13 @@ class TmuxWindow {
     String? paneTitle,
     String? paneStartCommand,
     AgentLaunchTool? agentTool,
+    String? activeAgentSessionId,
+    String? agentSessionTitle,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
     index: index,
     id: id ?? this.id,
+    panePid: panePid ?? this.panePid,
     name: name ?? this.name,
     isActive: isActive ?? this.isActive,
     currentCommand: currentCommand ?? this.currentCommand,
@@ -219,6 +237,8 @@ class TmuxWindow {
     paneTitle: paneTitle ?? this.paneTitle,
     paneStartCommand: paneStartCommand ?? this.paneStartCommand,
     agentTool: agentTool ?? this.agentTool,
+    activeAgentSessionId: activeAgentSessionId ?? this.activeAgentSessionId,
+    agentSessionTitle: agentSessionTitle ?? this.agentSessionTitle,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
@@ -226,6 +246,8 @@ class TmuxWindow {
 
   /// A best-effort coding-agent session identifier found in tmux metadata.
   String? get agentSessionId {
+    final activeId = activeAgentSessionId;
+    if (activeId != null && activeId.isNotEmpty) return activeId;
     final tool = foregroundAgentTool;
     if (tool == null) return null;
     return _agentSessionIdFromCommand(paneStartCommand, tool: tool);
@@ -233,6 +255,11 @@ class TmuxWindow {
 
   /// Short coding-agent session label suitable for secondary UI text.
   String? get agentSessionLabel {
+    final title = _normalizedTmuxTitle(agentSessionTitle);
+    if (title != null && title.isNotEmpty) {
+      final tool = foregroundAgentTool;
+      return tool == null ? title : '${tool.label} · $title';
+    }
     final id = agentSessionId;
     if (id == null || id.isEmpty) return null;
     return 'session ${_shortenSessionId(id)}';
@@ -242,6 +269,10 @@ class TmuxWindow {
   String? get agentContextTitle {
     final tool = foregroundAgentTool;
     if (tool == null) return null;
+    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
+    if (sessionTitle != null && sessionTitle.isNotEmpty) {
+      return '${tool.label} · $sessionTitle';
+    }
     final context = _windowContextLabelFromPath(currentPath);
     if (context != null) {
       return '${tool.label} · $context';
@@ -348,9 +379,17 @@ class TmuxWindow {
   /// are useful and distinct.
   String? get secondaryTitle {
     final display = displayTitle;
+    final sessionLabel = agentSessionLabel;
+    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
+    if (sessionLabel != null &&
+        sessionTitle != null &&
+        sessionTitle.isNotEmpty &&
+        sessionLabel != display) {
+      return sessionLabel;
+    }
     final agentTitle = agentContextTitle;
     if (agentTitle != null && display == agentTitle) {
-      return agentSessionLabel;
+      return sessionLabel == display ? null : sessionLabel;
     }
 
     final normalizedPaneTitle = _normalizedTmuxTitle(
@@ -403,6 +442,7 @@ class TmuxWindow {
       other is TmuxWindow &&
           index == other.index &&
           id == other.id &&
+          panePid == other.panePid &&
           name == other.name &&
           isActive == other.isActive &&
           currentCommand == other.currentCommand &&
@@ -411,6 +451,8 @@ class TmuxWindow {
           paneTitle == other.paneTitle &&
           paneStartCommand == other.paneStartCommand &&
           agentTool == other.agentTool &&
+          activeAgentSessionId == other.activeAgentSessionId &&
+          agentSessionTitle == other.agentSessionTitle &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -418,6 +460,7 @@ class TmuxWindow {
   int get hashCode => Object.hash(
     index,
     id,
+    panePid,
     name,
     isActive,
     currentCommand,
@@ -426,6 +469,8 @@ class TmuxWindow {
     paneTitle,
     paneStartCommand,
     agentTool,
+    activeAgentSessionId,
+    agentSessionTitle,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
@@ -475,7 +520,10 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
       if (existingIndex == -1) {
         updated.add(window);
       } else {
-        updated[existingIndex] = window;
+        updated[existingIndex] = _preserveActiveAgentSessionMetadata(
+          updated[existingIndex],
+          window,
+        );
       }
       updated.sort((a, b) => a.index.compareTo(b.index));
       return updated;
@@ -488,6 +536,28 @@ bool _isSameTmuxWindow(TmuxWindow existing, TmuxWindow updated) {
     return existing.id == updatedId;
   }
   return existing.index == updated.index;
+}
+
+TmuxWindow _preserveActiveAgentSessionMetadata(
+  TmuxWindow existing,
+  TmuxWindow updated,
+) {
+  if (updated.activeAgentSessionId != null ||
+      updated.agentSessionTitle != null) {
+    return updated;
+  }
+  if (existing.activeAgentSessionId == null &&
+      existing.agentSessionTitle == null) {
+    return updated;
+  }
+  if (existing.panePid != updated.panePid ||
+      existing.foregroundAgentTool != updated.foregroundAgentTool) {
+    return updated;
+  }
+  return updated.copyWith(
+    activeAgentSessionId: existing.activeAgentSessionId,
+    agentSessionTitle: existing.agentSessionTitle,
+  );
 }
 
 /// Resolves the tmux window list after a full reload query.
@@ -731,6 +801,7 @@ bool _isUnhelpfulAgentTitle(
   final lowered = _normalizeAgentTitleForComparison(value);
   if (lowered.isEmpty) return true;
   if (_agentTitleAliases(tool).contains(lowered)) return true;
+  if (_isLikelyDefaultHostTitle(value)) return true;
 
   final loweredContext = contextLabel?.trim().toLowerCase();
   if (loweredContext != null &&

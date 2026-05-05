@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
@@ -114,5 +117,41 @@ void main() {
       expect(agentToolForBinaryName('vim'), isNull);
       expect(agentToolForBinaryName(''), isNull);
     });
+  });
+
+  group('Copilot active session metadata', () {
+    test('command scans session-scoped lock files', () {
+      final command = buildCopilotActiveSessionMetadataCommand();
+
+      expect(command, contains('.copilot/session-state/*/inuse.*.lock'));
+      expect(command, contains('workspace.yaml'));
+      expect(command, contains(r'ps -p "$pid" -o args='));
+      expect(command, contains(r'ps -p "$current" -o ppid='));
+    });
+
+    test(
+      'parses live session titles by matching descendant process chains',
+      () {
+        const sep = tmuxWindowFieldSeparator;
+        final workspaceYaml = base64Encode(
+          utf8.encode('''
+id: session-1
+name: User named Copilot session
+cwd: /Users/depoll/Code/flutty
+updated_at: 2026-05-04T21:29:53.292Z
+'''),
+        );
+
+        final metadata = parseCopilotActiveSessionMetadataOutput(
+          'session-1${sep}50122${sep}50122,42,1$sep$workspaceYaml\n'
+          'session-2${sep}99999${sep}99999,77,1$sep\n',
+          const {42, 88},
+        );
+
+        expect(metadata.keys, [42]);
+        expect(metadata[42]?.sessionId, 'session-1');
+        expect(metadata[42]?.title, 'User named Copilot session');
+      },
+    );
   });
 }
