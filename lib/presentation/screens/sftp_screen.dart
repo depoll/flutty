@@ -795,6 +795,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _navigateTo(String path) async {
+    _clearHighlightedFile();
     if (path == _currentPath) {
       return;
     }
@@ -805,6 +806,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _navigateUp() async {
+    _clearHighlightedFile();
     if (_currentPath == '/') {
       return;
     }
@@ -816,6 +818,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _goBack() async {
+    _clearHighlightedFile();
     if (_pathHistory.length <= 1) {
       return;
     }
@@ -926,16 +929,51 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       if (!mounted) {
         return true;
       }
-      setState(() {
-        _highlightedDirectoryPath = navigationTarget.directoryPath;
-        _highlightedFileName = fileName;
-      });
-      _queueScrollHighlightedFileIntoView();
+      _highlightFile(navigationTarget.directoryPath, fileName);
+      await _openFileFromRequestedPath(matchingEntry);
       return true;
     }
 
     _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
     return false;
+  }
+
+  Future<void> _openFileFromRequestedPath(SftpName file) async {
+    switch (resolveSftpFileTapIntent(
+      isDirectory: file.attr.isDirectory,
+      filename: file.filename,
+    )) {
+      case SftpFileTapIntent.navigate:
+        return;
+      case SftpFileTapIntent.preview:
+        await _previewImageFile(file);
+      case SftpFileTapIntent.previewVideo:
+        await _previewVideoFile(file);
+      case SftpFileTapIntent.edit:
+        await _editTextFile(file);
+    }
+    if (!mounted) {
+      return;
+    }
+    _highlightFile(_currentPath, file.filename);
+  }
+
+  void _highlightFile(String directoryPath, String fileName) {
+    setState(() {
+      _highlightedDirectoryPath = directoryPath;
+      _highlightedFileName = fileName;
+    });
+    _queueScrollHighlightedFileIntoView();
+  }
+
+  void _clearHighlightedFile() {
+    if (_highlightedFileName == null && _highlightedDirectoryPath == null) {
+      return;
+    }
+    setState(() {
+      _highlightedDirectoryPath = null;
+      _highlightedFileName = null;
+    });
   }
 
   void _closeRequestedPathWithError(String message) {
@@ -1045,12 +1083,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: () => _loadDirectory(_currentPath),
+            onPressed: () {
+              _clearHighlightedFile();
+              unawaited(_loadDirectory(_currentPath));
+            },
             tooltip: 'Refresh',
           ),
           IconButton(
             icon: const Icon(Icons.create_new_folder),
-            onPressed: _showCreateDirectoryDialog,
+            onPressed: () {
+              _clearHighlightedFile();
+              unawaited(_showCreateDirectoryDialog());
+            },
             tooltip: 'New folder',
           ),
         ],
@@ -1063,7 +1107,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _showUploadDialog,
+        onPressed: () {
+          _clearHighlightedFile();
+          unawaited(_showUploadDialog());
+        },
         tooltip: 'Upload files',
         child: const Icon(Icons.upload_file),
       ),
@@ -1143,7 +1190,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
       backgroundColor: theme.colorScheme.surface,
       side: BorderSide(color: theme.colorScheme.outlineVariant),
-      onPressed: () => unawaited(_navigateTo(shortcutPath)),
+      onPressed: () {
+        _clearHighlightedFile();
+        unawaited(_navigateTo(shortcutPath));
+      },
       tooltip: 'Go to $shortcutPath',
     );
   }
@@ -1185,7 +1235,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               child: Row(
                 children: [
                   InkWell(
-                    onTap: () => unawaited(_navigateTo('/')),
+                    onTap: () {
+                      _clearHighlightedFile();
+                      unawaited(_navigateTo('/'));
+                    },
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                       child: Text('/'),
@@ -1200,6 +1253,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                     InkWell(
                       onTap: () {
                         final path = '/${parts.sublist(0, i + 1).join('/')}';
+                        _clearHighlightedFile();
                         unawaited(_navigateTo(path));
                       },
                       child: Padding(
@@ -1274,6 +1328,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     return RefreshIndicator(
       onRefresh: () async {
+        _clearHighlightedFile();
         await _loadDirectory(_currentPath);
       },
       child: ListView.builder(
@@ -1300,6 +1355,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   void _handleFileTap(SftpName file) {
+    _clearHighlightedFile();
     switch (resolveSftpFileTapIntent(
       isDirectory: file.attr.isDirectory,
       filename: file.filename,
@@ -1316,6 +1372,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   void _showFileOptions(SftpName file) {
+    _clearHighlightedFile();
     final previewKind = resolveSftpPreviewKind(
       isDirectory: file.attr.isDirectory,
       filename: file.filename,
@@ -1718,7 +1775,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         MaterialPageRoute(
           fullscreenDialog: true,
           builder: (context) => _RemoteImageViewerScreen(
-            fileName: file.filename,
+            remotePath: remotePath,
             bytes: bytes,
             isSvg: isSvgFileName(file.filename),
           ),
@@ -2085,6 +2142,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           fullscreenDialog: true,
           builder: (context) => RemoteTextEditorScreen(
             fileName: file.filename,
+            filePath: remotePath,
             controller: controller,
             terminalTheme: editorTheme,
             fontFamily: fontFamily,
@@ -2657,7 +2715,12 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     final controller = _controller;
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.fileName)),
+      appBar: AppBar(
+        title: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Text(widget.remotePath),
+        ),
+      ),
       body: error != null
           ? _buildErrorBody(context, error)
           : controller == null || !controller.value.isInitialized
@@ -2919,19 +2982,24 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
 
 class _RemoteImageViewerScreen extends StatelessWidget {
   const _RemoteImageViewerScreen({
-    required this.fileName,
+    required this.remotePath,
     required this.bytes,
     required this.isSvg,
   });
 
-  final String fileName;
+  final String remotePath;
   final Uint8List bytes;
   final bool isSvg;
 
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
-    appBar: AppBar(title: Text(fileName)),
+    appBar: AppBar(
+      title: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Text(remotePath),
+      ),
+    ),
     body: InteractiveViewer(
       maxScale: 8,
       minScale: 0.5,

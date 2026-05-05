@@ -310,12 +310,14 @@ List<int> computeRemoteEditorLineStartOffsets(String text) {
 Widget buildRemoteTextEditorScreenForTesting({
   required String fileName,
   required TextEditingController controller,
+  String? filePath,
   ScrollController? horizontalScrollController,
   TerminalThemeData? terminalTheme,
   String fontFamily = 'monospace',
   double initialFontSize = 14,
 }) => RemoteTextEditorScreen(
   fileName: fileName,
+  filePath: filePath,
   controller: controller,
   horizontalScrollController: horizontalScrollController,
   terminalTheme: terminalTheme,
@@ -347,6 +349,7 @@ class RemoteTextEditorScreen extends StatefulWidget {
     required this.controller,
     required this.fontFamily,
     required this.initialFontSize,
+    this.filePath,
     this.horizontalScrollController,
     this.terminalTheme,
     super.key,
@@ -354,6 +357,9 @@ class RemoteTextEditorScreen extends StatefulWidget {
 
   /// File name shown in the app bar.
   final String fileName;
+
+  /// Full remote path shown in the app bar when available.
+  final String? filePath;
 
   /// Text controller for the editable content.
   final TextEditingController controller;
@@ -817,6 +823,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     );
     final lineHeight = _measureLineHeight(context, editorTextStyle);
     final caretPosition = _caretPosition;
+    final title = 'Edit ${widget.filePath ?? widget.fileName}';
 
     return Theme(
       data: theme.copyWith(
@@ -841,7 +848,10 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
               tooltip: 'Close editor',
               onPressed: () => unawaited(Navigator.of(context).maybePop()),
             ),
-            title: Text('Edit ${widget.fileName}'),
+            title: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Text(title),
+            ),
             actions: [
               if (_showDesktopZoomButtons(theme.platform))
                 IconButton(
