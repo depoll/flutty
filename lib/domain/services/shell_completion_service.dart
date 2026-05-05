@@ -679,24 +679,59 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
   if (typedCommand.trim().isEmpty) {
     return const <ShellCompletionSuggestion>[];
   }
+  final currentPatternTokens = _normalizeShellHistoryCommandPatternTokens(
+    typedCommand,
+  );
+  final currentTokenParticipatesInPattern =
+      invocation.token.isEmpty ||
+      _doesShellHistoryCurrentTokenParticipateInPattern(
+        invocation: invocation,
+        currentPatternTokens: currentPatternTokens,
+      );
 
   final suggestions = <ShellCompletionSuggestion>[];
-  final seen = <String>{};
+  final seenExactCommands = <String>{};
+  final seenPatternTokens = <String>{};
   for (final rawCommand in historyCommands.reversed) {
-    final pattern = normalizeShellHistoryCommandPattern(rawCommand);
-    if (pattern == null ||
-        pattern == typedCommand ||
-        !pattern.startsWith(typedCommand) ||
-        !seen.add(pattern)) {
+    final exactCommand = _decodeShellHistoryCommand(rawCommand).trim();
+    if (_isSafeHistoryCommand(exactCommand) &&
+        exactCommand != typedCommand &&
+        exactCommand.startsWith(typedCommand) &&
+        seenExactCommands.add(exactCommand)) {
+      suggestions.add(
+        ShellCompletionSuggestion(
+          label: exactCommand,
+          replacement: exactCommand,
+          replacementStart: 0,
+          replacementEnd: invocation.cursorOffset,
+          kind: ShellCompletionSuggestionKind.history,
+        ),
+      );
+      if (suggestions.length >= invocation.maxSuggestions) {
+        break;
+      }
+    }
+
+    final historyPatternTokens = _normalizeShellHistoryCommandPatternTokens(
+      rawCommand,
+    );
+    final patternToken = _nextShellHistoryPatternToken(
+      historyPatternTokens: historyPatternTokens,
+      currentPatternTokens: currentPatternTokens,
+      currentTokenParticipatesInPattern: currentTokenParticipatesInPattern,
+      hasCurrentToken: invocation.token.isNotEmpty,
+    );
+    if (patternToken == null || !seenPatternTokens.add(patternToken)) {
       continue;
     }
     suggestions.add(
       ShellCompletionSuggestion(
-        label: pattern,
-        replacement: pattern,
-        replacementStart: 0,
+        label: patternToken,
+        replacement: escapeShellCompletionToken(patternToken),
+        replacementStart: invocation.tokenStart,
         replacementEnd: invocation.cursorOffset,
         kind: ShellCompletionSuggestionKind.history,
+        commitSuffix: ' ',
       ),
     );
     if (suggestions.length >= invocation.maxSuggestions) {
@@ -705,6 +740,81 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
   }
 
   return suggestions;
+}
+
+bool _doesShellHistoryCurrentTokenParticipateInPattern({
+  required ShellCompletionInvocation invocation,
+  required List<String>? currentPatternTokens,
+}) {
+  if (currentPatternTokens == null || currentPatternTokens.isEmpty) {
+    return false;
+  }
+  final patternToken =
+      _trimShellHistoryOptionValue(invocation.token) ??
+      normalizeShellCompletionToken(invocation.token);
+  return currentPatternTokens.last == patternToken;
+}
+
+String? _nextShellHistoryPatternToken({
+  required List<String>? historyPatternTokens,
+  required List<String>? currentPatternTokens,
+  required bool currentTokenParticipatesInPattern,
+  required bool hasCurrentToken,
+}) {
+  if (historyPatternTokens == null ||
+      currentPatternTokens == null ||
+      historyPatternTokens.isEmpty ||
+      currentPatternTokens.isEmpty) {
+    return null;
+  }
+
+  if (hasCurrentToken) {
+    if (!currentTokenParticipatesInPattern ||
+        currentPatternTokens.length > historyPatternTokens.length) {
+      return null;
+    }
+    final prefixLength = currentPatternTokens.length - 1;
+    if (!_shellHistoryPatternPrefixMatches(
+      historyPatternTokens,
+      currentPatternTokens,
+      prefixLength,
+    )) {
+      return null;
+    }
+    final candidate = historyPatternTokens[prefixLength];
+    final currentToken = currentPatternTokens.last;
+    if (candidate == currentToken || !candidate.startsWith(currentToken)) {
+      return null;
+    }
+    return candidate;
+  }
+
+  if (currentPatternTokens.length >= historyPatternTokens.length ||
+      !_shellHistoryPatternPrefixMatches(
+        historyPatternTokens,
+        currentPatternTokens,
+        currentPatternTokens.length,
+      )) {
+    return null;
+  }
+  return historyPatternTokens[currentPatternTokens.length];
+}
+
+bool _shellHistoryPatternPrefixMatches(
+  List<String> historyPatternTokens,
+  List<String> currentPatternTokens,
+  int length,
+) {
+  if (currentPatternTokens.length < length ||
+      historyPatternTokens.length < length) {
+    return false;
+  }
+  for (var index = 0; index < length; index++) {
+    if (historyPatternTokens[index] != currentPatternTokens[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 List<String>? _staticSubcommandsFor(String? commandName) =>
@@ -923,8 +1033,21 @@ bool _containsShellQuote(String token) =>
     token.contains("'") || token.contains('"');
 
 /// Normalizes a shell history command into a reusable command pattern.
-@visibleForTesting
 String? normalizeShellHistoryCommandPattern(String command) {
+  final patternTokens = _normalizeShellHistoryCommandPatternTokens(command);
+  if (patternTokens == null) {
+    return null;
+  }
+
+  final pattern = patternTokens
+      .where((token) => token.isNotEmpty)
+      .map(escapeShellCompletionToken)
+      .join(' ')
+      .trim();
+  return pattern.isEmpty || pattern.length > 512 ? null : pattern;
+}
+
+List<String>? _normalizeShellHistoryCommandPatternTokens(String command) {
   final decoded = _decodeShellHistoryCommand(command).trim();
   if (!_isSafeHistoryCommand(decoded)) {
     return null;
@@ -965,13 +1088,7 @@ String? normalizeShellHistoryCommandPattern(String command) {
   if (patternTokens.isEmpty) {
     return null;
   }
-
-  final pattern = patternTokens
-      .where((token) => token.isNotEmpty)
-      .map(escapeShellCompletionToken)
-      .join(' ')
-      .trim();
-  return pattern.isEmpty || pattern.length > 512 ? null : pattern;
+  return patternTokens;
 }
 
 String _decodeShellHistoryCommand(String command) {

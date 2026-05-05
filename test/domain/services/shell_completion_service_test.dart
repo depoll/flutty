@@ -308,34 +308,68 @@ void main() {
       );
     });
 
-    test('buildShellHistorySuggestions replaces and filters full commands', () {
+    test(
+      'buildShellHistorySuggestions returns recency-ordered exacts and tokens',
+      () {
+        const invocation = ShellCompletionInvocation(
+          commandLine: 'git c',
+          cursorOffset: 5,
+          token: 'c',
+          tokenStart: 4,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          words: ['git', 'c'],
+          wordIndex: 1,
+          workingDirectory: '/Users/depoll/project',
+        );
+
+        final suggestions = buildShellHistorySuggestions([
+          'git commit -m "old message"',
+          'git status',
+          'git checkout feature/login',
+          'git commit -m "new message"',
+          'git checkout feature/login',
+        ], invocation);
+
+        expect(suggestions.map((suggestion) => suggestion.label), [
+          'git checkout feature/login',
+          'checkout',
+          'git commit -m "new message"',
+          'commit',
+          'git commit -m "old message"',
+        ]);
+        expect(suggestions.first.kind, ShellCompletionSuggestionKind.history);
+        expect(suggestions.first.replacementStart, 0);
+        expect(suggestions.first.replacementEnd, 5);
+        expect(suggestions.first.replacement, 'git checkout feature/login');
+        expect(suggestions[1].replacementStart, 4);
+        expect(suggestions[1].replacementEnd, 5);
+        expect(suggestions[1].replacement, 'checkout');
+        expect(suggestions[1].commitSuffix, ' ');
+      },
+    );
+
+    test('buildShellHistorySuggestions matches patterns around arguments', () {
+      const commandLine = 'codex --prompt "try history" --s';
       const invocation = ShellCompletionInvocation(
-        commandLine: 'git c',
-        cursorOffset: 5,
-        token: 'c',
-        tokenStart: 4,
+        commandLine: commandLine,
+        cursorOffset: commandLine.length,
+        token: '--s',
+        tokenStart: 29,
         mode: ShellCompletionMode.argument,
-        commandName: 'git',
-        words: ['git', 'c'],
-        wordIndex: 1,
+        commandName: 'codex',
+        words: ['codex', '--prompt', '"try history"', '--s'],
+        wordIndex: 3,
         workingDirectory: '/Users/depoll/project',
       );
 
       final suggestions = buildShellHistorySuggestions([
-        'git commit -m "do something"',
-        'git checkout feature/login',
-        'git status',
-        'git checkout feature/login',
+        'codex --prompt="do something" --sandbox workspace-write',
       ], invocation);
 
-      expect(suggestions.map((suggestion) => suggestion.label), [
-        'git checkout feature/login',
-        'git commit -m',
-      ]);
-      expect(suggestions.first.kind, ShellCompletionSuggestionKind.history);
-      expect(suggestions.first.replacementStart, 0);
-      expect(suggestions.first.replacementEnd, 5);
-      expect(suggestions.first.replacement, 'git checkout feature/login');
+      expect(suggestions.map((suggestion) => suggestion.label), ['--sandbox']);
+      expect(suggestions.single.replacementStart, 29);
+      expect(suggestions.single.replacement, '--sandbox');
     });
 
     test('history remote command reads the preferred shell history file', () {

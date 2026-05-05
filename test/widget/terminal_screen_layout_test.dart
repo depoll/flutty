@@ -750,11 +750,12 @@ void main() {
         kind: ShellCompletionSuggestionKind.history,
       );
       const commitSuggestion = ShellCompletionSuggestion(
-        label: 'git commit -m',
-        replacement: 'git commit -m',
-        replacementStart: 0,
+        label: 'commit',
+        replacement: 'commit',
+        replacementStart: 4,
         replacementEnd: 5,
         kind: ShellCompletionSuggestionKind.history,
+        commitSuffix: ' ',
       );
 
       final filtered = filterShellCompletionSuggestionsForCurrentInput(
@@ -790,6 +791,43 @@ void main() {
           suggestion: checkoutSuggestion,
         ),
         isFalse,
+      );
+    });
+
+    test('keeps history pattern tokens after ignored arguments', () {
+      const originalInvocation = ShellCompletionInvocation(
+        commandLine: 'codex --prompt ',
+        cursorOffset: 15,
+        token: '',
+        tokenStart: 15,
+        mode: ShellCompletionMode.argument,
+        commandName: 'codex',
+        workingDirectory: '/repo',
+      );
+      const sandboxSuggestion = ShellCompletionSuggestion(
+        label: '--sandbox',
+        replacement: '--sandbox',
+        replacementStart: 15,
+        replacementEnd: 15,
+        kind: ShellCompletionSuggestionKind.history,
+        commitSuffix: ' ',
+      );
+
+      expect(
+        shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: const ShellCompletionInvocation(
+            commandLine: 'codex --prompt "try history" --s',
+            cursorOffset: 32,
+            token: '--s',
+            tokenStart: 29,
+            mode: ShellCompletionMode.argument,
+            commandName: 'codex',
+            workingDirectory: '/repo',
+          ),
+          suggestion: sandboxSuggestion,
+        ),
+        isTrue,
       );
     });
 

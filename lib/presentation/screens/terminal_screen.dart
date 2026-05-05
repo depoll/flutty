@@ -445,8 +445,29 @@ bool shouldAcceptShellCompletionSuggestion({
   if (suggestion.kind == ShellCompletionSuggestionKind.history) {
     if (currentInvocation.workingDirectory !=
             originalInvocation.workingDirectory ||
-        currentInvocation.shellCommand != originalInvocation.shellCommand ||
-        currentInvocation.cursorOffset < suggestion.replacementStart) {
+        currentInvocation.shellCommand != originalInvocation.shellCommand) {
+      return false;
+    }
+    if (suggestion.replacementStart != 0) {
+      final originalPatternPrefix = normalizeShellHistoryCommandPattern(
+        originalInvocation.commandLine.substring(
+          0,
+          originalInvocation.tokenStart,
+        ),
+      );
+      final currentPatternPrefix = normalizeShellHistoryCommandPattern(
+        currentInvocation.commandLine.substring(
+          0,
+          currentInvocation.tokenStart,
+        ),
+      );
+      return currentInvocation.commandName == originalInvocation.commandName &&
+          currentPatternPrefix == originalPatternPrefix &&
+          normalizeShellCompletionToken(
+            suggestion.replacement,
+          ).startsWith(currentInvocation.token);
+    }
+    if (currentInvocation.cursorOffset < suggestion.replacementStart) {
       return false;
     }
     final currentCommand = currentInvocation.commandLine.substring(
@@ -4297,8 +4318,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     var deleteCount = invocation.cursorOffset - suggestion.replacementStart;
     if (currentInvocation != null &&
         suggestion.kind == ShellCompletionSuggestionKind.history) {
-      deleteCount =
-          currentInvocation.cursorOffset - suggestion.replacementStart;
+      final replacementStart = suggestion.replacementStart == 0
+          ? suggestion.replacementStart
+          : currentInvocation.tokenStart;
+      deleteCount = currentInvocation.cursorOffset - replacementStart;
     } else if (currentInvocation != null &&
         currentInvocation.mode == invocation.mode &&
         currentInvocation.tokenStart == invocation.tokenStart) {
