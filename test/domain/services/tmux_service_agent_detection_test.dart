@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
@@ -126,27 +124,22 @@ void main() {
       expect(command, contains('pane_pids=\'42 88\''));
       expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
       expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
-      expect(command, contains(r'inuse."$pid".lock'));
+      expect(command, contains('lock_rows='));
+      expect(command, contains('inuse.*.lock'));
+      expect(command, contains(r'awk -F "$sep" -v wanted="$pid"'));
       expect(command, contains('workspace.yaml'));
       expect(command, contains(r'if [ -d "$state_dir" ]; then'));
       expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
+      expect(command, isNot(contains(r'inuse."$pid".lock')));
       expect(command, isNot(contains(r'ps -p "$pid"')));
       expect(command, isNot(contains('exit 0')));
     });
 
     test('parses live session titles by matched pane PID', () {
       const sep = tmuxWindowFieldSeparator;
-      final workspaceYaml = base64Encode(
-        utf8.encode('''
-id: session-1
-name: User named Copilot session
-cwd: /Users/depoll/Code/flutty
-updated_at: 2026-05-04T21:29:53.292Z
-'''),
-      );
 
       final metadata = parseCopilotActiveSessionMetadataOutput(
-        'session-1${sep}50122${sep}42$sep$workspaceYaml\n'
+        'session-1${sep}50122${sep}42${sep}User named Copilot session\n'
         'session-2${sep}99999${sep}77$sep\n',
         const {42, 88},
       );

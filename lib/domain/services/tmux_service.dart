@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
-import 'agent_session_discovery_service.dart';
 import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
@@ -3542,7 +3541,7 @@ Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
 /// matching those descendant PIDs.
 ///
 /// The output is Unit Separator-delimited:
-/// `session_id<US>copilot_pid<US>matched_pane_pid<US>workspace_yaml_base64`.
+/// `session_id<US>copilot_pid<US>matched_pane_pid<US>session_title`.
 @visibleForTesting
 String buildCopilotActiveSessionMetadataCommand(Set<int> panePids) {
   final normalizedPanePids =
@@ -3561,13 +3560,32 @@ if [ -z "\$home" ]; then
 fi
 state_dir=\$home/.copilot/session-state
 if [ -d "\$state_dir" ]; then
-  ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
-  if [ -n "\$ps_output" ]; then
-    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" '
+  lock_pids=
+  lock_rows=
+  for lock in "\$state_dir"/*/inuse.*.lock; do
+    [ -e "\$lock" ] || continue
+    file=\${lock##*/}
+    pid=\${file#inuse.}
+    pid=\${pid%.lock}
+    case "\$pid" in ''|*[!0-9]*) continue ;; esac
+    dir=\${lock%/*}
+    lock_pids="\${lock_pids:+\$lock_pids }\$pid"
+    lock_rows="\$lock_rows\$pid\$sep\$dir
+"
+  done
+  if [ -n "\$lock_pids" ]; then
+    ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
+  fi
+  if [ -n "\${ps_output:-}" ]; then
+    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v locks="\$lock_pids" '
 BEGIN {
   split(panes, pane_values, " ")
   for (i in pane_values) {
     if (pane_values[i] ~ /^[0-9]+\$/) target[pane_values[i]] = 1
+  }
+  split(locks, lock_values, " ")
+  for (i in lock_values) {
+    if (lock_values[i] ~ /^[0-9]+\$/) lock_pid[lock_values[i]] = 1
   }
 }
 {
@@ -3581,7 +3599,8 @@ BEGIN {
   command[pid] = tolower(comm " " args)
 }
 END {
-  for (pid in parent) {
+  for (pid in lock_pid) {
+    if (!(pid in parent)) continue
     if (command[pid] !~ /copilot/) continue
     current = pid
     seen = 0
@@ -3597,18 +3616,21 @@ END {
 }' | while read pane_pid pid; do
       case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
       case "\$pid" in ''|*[!0-9]*) continue ;; esac
-      for lock in "\$state_dir"/*/inuse."\$pid".lock; do
-        [ -e "\$lock" ] || continue
-        dir=\${lock%/*}
-        session_id=\${dir##*/}
-        workspace=\$dir/workspace.yaml
-        workspace_data=
-        if [ -r "\$workspace" ] && command -v base64 >/dev/null 2>&1; then
-          workspace_data=\$(base64 < "\$workspace" 2>/dev/null | tr -d '\\r\\n')
-        fi
-        printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$workspace_data"
-        break
-      done
+      dir=\$(printf '%s' "\$lock_rows" | awk -F "\$sep" -v wanted="\$pid" '\$1 == wanted { print \$2; exit }')
+      [ -n "\$dir" ] || continue
+      session_id=\${dir##*/}
+      workspace=\$dir/workspace.yaml
+      title=
+      if [ -r "\$workspace" ]; then
+        title=\$(awk '
+/^[[:space:]]*name:[[:space:]]*/ {
+  sub(/^[[:space:]]*name:[[:space:]]*/, "")
+  print
+  exit
+}
+' "\$workspace" 2>/dev/null | tr -d '\\r' | tr "\\037" " ")
+      fi
+      printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$title"
     done
   fi
 fi
@@ -3646,7 +3668,7 @@ parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
     if (chainPids.isEmpty) continue;
 
     final title = fields.length > 3
-        ? _copilotSessionTitleFromWorkspaceBase64(fields[3])
+        ? _copilotSessionTitleFromMetadataField(fields[3])
         : null;
     final metadata = (sessionId: sessionId, title: title);
     for (final panePid in panePids) {
@@ -3657,13 +3679,8 @@ parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
   return metadataByPanePid;
 }
 
-String? _copilotSessionTitleFromWorkspaceBase64(String value) {
+String? _copilotSessionTitleFromMetadataField(String value) {
   final trimmed = value.trim();
   if (trimmed.isEmpty) return null;
-  try {
-    final decoded = utf8.decode(base64Decode(trimmed));
-    return parseCopilotWorkspaceYamlMetadata(decoded).summary;
-  } on Object {
-    return null;
-  }
+  return trimmed;
 }
