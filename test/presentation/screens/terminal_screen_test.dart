@@ -940,7 +940,17 @@ void main() {
 
       expect(find.byTooltip('Connected through jump host'), findsOneWidget);
       expect(find.byIcon(Icons.alt_route), findsOneWidget);
-      expect(find.byIcon(Icons.check_circle_outline), findsNothing);
+      expect(find.byTooltip('Connected'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+      final titleLeft = tester.getTopLeft(find.text('Terminal test host')).dx;
+      expect(
+        tester.getCenter(find.byIcon(Icons.check_circle_outline)).dx,
+        lessThan(titleLeft),
+      );
+      expect(
+        tester.getCenter(find.byIcon(Icons.alt_route)).dx,
+        lessThan(titleLeft),
+      );
     });
 
     testWidgets(
