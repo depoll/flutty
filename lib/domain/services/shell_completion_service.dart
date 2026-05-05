@@ -561,6 +561,43 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
     terminalCursorOffset: terminalCursorOffset,
     promptPrefix: promptPrefix,
   );
+  final invocation = _buildShellCompletionInvocationFromCommandSnapshot(
+    commandSnapshot: commandSnapshot,
+    workingDirectory: workingDirectory,
+    shellCommand: shellCommand,
+    maxSuggestions: maxSuggestions,
+  );
+  if (promptPrefix == null ||
+      commandSnapshot == null ||
+      commandSnapshot.commandLine.trim().isEmpty) {
+    return invocation;
+  }
+
+  final fallbackSnapshot = resolveShellCompletionCommandLine(
+    terminalText: terminalText,
+    terminalCursorOffset: terminalCursorOffset,
+  );
+  if (fallbackSnapshot == null ||
+      fallbackSnapshot.cursorOffset <= commandSnapshot.cursorOffset ||
+      terminalCursorOffset - fallbackSnapshot.cursorOffset <= 0) {
+    return invocation;
+  }
+
+  final fallbackInvocation = _buildShellCompletionInvocationFromCommandSnapshot(
+    commandSnapshot: fallbackSnapshot,
+    workingDirectory: workingDirectory,
+    shellCommand: shellCommand,
+    maxSuggestions: maxSuggestions,
+  );
+  return fallbackInvocation ?? invocation;
+}
+
+ShellCompletionInvocation? _buildShellCompletionInvocationFromCommandSnapshot({
+  required ({String commandLine, int cursorOffset})? commandSnapshot,
+  required String? workingDirectory,
+  required String? shellCommand,
+  required int maxSuggestions,
+}) {
   if (commandSnapshot == null) {
     return null;
   }
@@ -689,57 +726,65 @@ List<ShellCompletionSuggestion> buildShellHistorySuggestions(
         currentPatternTokens: currentPatternTokens,
       );
 
-  final suggestions = <ShellCompletionSuggestion>[];
+  final tokenSuggestions = <ShellCompletionSuggestion>[];
+  final exactSuggestions = <ShellCompletionSuggestion>[];
   final seenExactCommands = <String>{};
   final seenPatternTokens = <String>{};
   for (final rawCommand in historyCommands.reversed) {
-    final exactCommand = _decodeShellHistoryCommand(rawCommand).trim();
-    if (_isSafeHistoryCommand(exactCommand) &&
-        exactCommand != typedCommand &&
-        exactCommand.startsWith(typedCommand) &&
-        seenExactCommands.add(exactCommand)) {
-      suggestions.add(
-        ShellCompletionSuggestion(
-          label: exactCommand,
-          replacement: exactCommand,
-          replacementStart: 0,
-          replacementEnd: invocation.cursorOffset,
-          kind: ShellCompletionSuggestionKind.history,
-        ),
+    if (tokenSuggestions.length < invocation.maxSuggestions) {
+      final historyPatternTokens = _normalizeShellHistoryCommandPatternTokens(
+        rawCommand,
       );
-      if (suggestions.length >= invocation.maxSuggestions) {
-        break;
+      final patternToken = _nextShellHistoryPatternToken(
+        historyPatternTokens: historyPatternTokens,
+        currentPatternTokens: currentPatternTokens,
+        currentTokenParticipatesInPattern: currentTokenParticipatesInPattern,
+        hasCurrentToken: invocation.token.isNotEmpty,
+      );
+      if (patternToken != null && seenPatternTokens.add(patternToken)) {
+        tokenSuggestions.add(
+          ShellCompletionSuggestion(
+            label: patternToken,
+            replacement: escapeShellCompletionToken(patternToken),
+            replacementStart: invocation.tokenStart,
+            replacementEnd: invocation.cursorOffset,
+            kind: ShellCompletionSuggestionKind.history,
+            commitSuffix: ' ',
+          ),
+        );
       }
     }
 
-    final historyPatternTokens = _normalizeShellHistoryCommandPatternTokens(
-      rawCommand,
-    );
-    final patternToken = _nextShellHistoryPatternToken(
-      historyPatternTokens: historyPatternTokens,
-      currentPatternTokens: currentPatternTokens,
-      currentTokenParticipatesInPattern: currentTokenParticipatesInPattern,
-      hasCurrentToken: invocation.token.isNotEmpty,
-    );
-    if (patternToken == null || !seenPatternTokens.add(patternToken)) {
-      continue;
+    if (exactSuggestions.length < invocation.maxSuggestions) {
+      final exactCommand = _decodeShellHistoryCommand(rawCommand).trim();
+      if (_isSafeHistoryCommand(exactCommand) &&
+          exactCommand != typedCommand &&
+          exactCommand.startsWith(typedCommand) &&
+          seenExactCommands.add(exactCommand)) {
+        exactSuggestions.add(
+          ShellCompletionSuggestion(
+            label: exactCommand,
+            replacement: exactCommand,
+            replacementStart: 0,
+            replacementEnd: invocation.cursorOffset,
+            kind: ShellCompletionSuggestionKind.history,
+          ),
+        );
+      }
     }
-    suggestions.add(
-      ShellCompletionSuggestion(
-        label: patternToken,
-        replacement: escapeShellCompletionToken(patternToken),
-        replacementStart: invocation.tokenStart,
-        replacementEnd: invocation.cursorOffset,
-        kind: ShellCompletionSuggestionKind.history,
-        commitSuffix: ' ',
-      ),
-    );
-    if (suggestions.length >= invocation.maxSuggestions) {
+
+    if (tokenSuggestions.length >= invocation.maxSuggestions) {
       break;
     }
   }
 
-  return suggestions;
+  final suggestions = <ShellCompletionSuggestion>[
+    ...tokenSuggestions,
+    ...exactSuggestions,
+  ];
+  return suggestions.length <= invocation.maxSuggestions
+      ? suggestions
+      : suggestions.sublist(0, invocation.maxSuggestions);
 }
 
 bool _doesShellHistoryCurrentTokenParticipateInPattern({

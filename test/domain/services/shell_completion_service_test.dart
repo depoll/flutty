@@ -32,6 +32,21 @@ void main() {
       expect(invocation.mode, ShellCompletionMode.command);
     });
 
+    test('recovers from a prompt prefix that captured command text', () {
+      final invocation = buildShellCompletionInvocation(
+        terminalText: 'tester@host ~/project % git ch',
+        terminalCursorOffset: 'tester@host ~/project % git ch'.length,
+        promptPrefix: 'tester@host ~/project % git ',
+      );
+
+      expect(invocation, isNotNull);
+      expect(invocation!.commandLine, 'git ch');
+      expect(invocation.commandName, 'git');
+      expect(invocation.token, 'ch');
+      expect(invocation.tokenStart, 4);
+      expect(invocation.mode, ShellCompletionMode.argument);
+    });
+
     test('resolves cd arguments as directory completions', () {
       final invocation = buildShellCompletionInvocation(
         terminalText: 'tester@host ~ % cd Ser',
@@ -332,20 +347,20 @@ void main() {
         ], invocation);
 
         expect(suggestions.map((suggestion) => suggestion.label), [
-          'git checkout feature/login',
           'checkout',
-          'git commit -m "new message"',
           'commit',
+          'git checkout feature/login',
+          'git commit -m "new message"',
           'git commit -m "old message"',
         ]);
         expect(suggestions.first.kind, ShellCompletionSuggestionKind.history);
-        expect(suggestions.first.replacementStart, 0);
+        expect(suggestions.first.replacementStart, 4);
         expect(suggestions.first.replacementEnd, 5);
-        expect(suggestions.first.replacement, 'git checkout feature/login');
-        expect(suggestions[1].replacementStart, 4);
-        expect(suggestions[1].replacementEnd, 5);
-        expect(suggestions[1].replacement, 'checkout');
-        expect(suggestions[1].commitSuffix, ' ');
+        expect(suggestions.first.replacement, 'checkout');
+        expect(suggestions.first.commitSuffix, ' ');
+        expect(suggestions[2].replacementStart, 0);
+        expect(suggestions[2].replacementEnd, 5);
+        expect(suggestions[2].replacement, 'git checkout feature/login');
       },
     );
 

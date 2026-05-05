@@ -215,6 +215,7 @@ const _tmuxDetectionRetrySchedule = <Duration>[
   Duration(milliseconds: 1400),
 ];
 const _shellCompletionDebounce = Duration(milliseconds: 220);
+const _shellCompletionMaxAnchorRetries = 2;
 const _shellCompletionTmuxContextTtl = Duration(seconds: 5);
 const _shellCompletionShellCommands = <String>{
   'ash',
@@ -2557,6 +2558,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Rect? _shellCompletionAnchorGlobalRect;
   String? _shellCompletionInFlightRequestKey;
   bool _shellCompletionRefreshAfterInFlight = false;
+  int _shellCompletionAnchorRetryCount = 0;
 
   bool get _usesSensitiveKeyboardMode =>
       _manualSensitiveKeyboardMode || _detectedSensitiveKeyboardPrompt;
@@ -3970,14 +3972,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
       );
 
-  void _queueShellCompletionRefresh() {
+  void _queueShellCompletionRefresh({bool resetAnchorRetries = true}) {
     if (!ref.read(shellCompletionsNotifierProvider)) {
       _hideShellCompletionPopup();
       return;
     }
+    if (resetAnchorRetries) {
+      _shellCompletionAnchorRetryCount = 0;
+    }
     _shellCompletionDebounceTimer?.cancel();
     final generation = ++_shellCompletionGeneration;
     _shellCompletionDebounceTimer = Timer(_shellCompletionDebounce, () {
+      if (generation == _shellCompletionGeneration) {
+        _shellCompletionDebounceTimer = null;
+      }
       unawaited(_refreshShellCompletions(generation));
     });
   }
@@ -4022,8 +4030,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       shellCommand: shellCompletionContext.shellCommand,
     );
     final anchor = _resolveTerminalCursorGlobalRect();
-    if (invocation == null || anchor == null) {
+    if (invocation == null) {
       _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
+    if (anchor == null) {
+      if (_shellCompletionAnchorRetryCount < _shellCompletionMaxAnchorRetries) {
+        _shellCompletionAnchorRetryCount += 1;
+        _queueShellCompletionRefreshAfterFrame(generation);
+      } else {
+        _hideShellCompletionPopup(resetPromptPrefix: false);
+      }
       return;
     }
 
@@ -4077,6 +4094,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _queueShellCompletionRefresh();
       }
     }
+  }
+
+  void _queueShellCompletionRefreshAfterFrame(int generation) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          generation != _shellCompletionGeneration ||
+          !ref.read(shellCompletionsNotifierProvider)) {
+        return;
+      }
+      _queueShellCompletionRefresh(resetAnchorRetries: false);
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   String _shellCompletionRequestKey(
@@ -4265,6 +4294,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _shellCompletionInvocation = invocation;
       _shellCompletionSuggestions = suggestions;
       _shellCompletionAnchorGlobalRect = anchor;
+      _shellCompletionAnchorRetryCount = 0;
     });
   }
 
@@ -4274,6 +4304,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionGeneration += 1;
     _shellCompletionInFlightRequestKey = null;
     _shellCompletionRefreshAfterInFlight = false;
+    _shellCompletionAnchorRetryCount = 0;
     if (resetPromptPrefix) {
       _shellCompletionPromptPrefix = null;
     }
