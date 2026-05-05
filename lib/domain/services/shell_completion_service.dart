@@ -25,6 +25,9 @@ enum ShellCompletionMode {
 
 /// Type of a single shell completion suggestion.
 enum ShellCompletionSuggestionKind {
+  /// A command pattern from shell history.
+  history,
+
   /// A command name.
   command,
 
@@ -123,8 +126,11 @@ class ShellCompletionService {
   ShellCompletionService({
     this.timeout = const Duration(milliseconds: 1500),
     this.interactiveZshTimeout = const Duration(milliseconds: 1000),
+    this.historyTimeout = const Duration(milliseconds: 800),
     this.maxOutputChars = 12000,
+    this.maxHistoryOutputChars = 80000,
     this.cacheTtl = const Duration(seconds: 2),
+    this.historyCacheTtl = const Duration(minutes: 5),
   });
 
   /// Maximum time to wait for a completion exec.
@@ -133,16 +139,29 @@ class ShellCompletionService {
   /// Maximum time to wait for the PTY-backed zsh completion attempt.
   final Duration interactiveZshTimeout;
 
+  /// Maximum time to wait while loading shell history.
+  final Duration historyTimeout;
+
   /// Maximum stdout characters to buffer from the remote helper.
   final int maxOutputChars;
 
+  /// Maximum stdout characters to buffer from the remote history helper.
+  final int maxHistoryOutputChars;
+
   /// How long exact completion requests can be reused.
   final Duration cacheTtl;
+
+  /// How long shell history snapshots can be reused.
+  final Duration historyCacheTtl;
 
   final Map<String, _ShellCompletionCacheEntry> _cache =
       <String, _ShellCompletionCacheEntry>{};
   final Map<String, Future<List<ShellCompletionSuggestion>>> _inFlight =
       <String, Future<List<ShellCompletionSuggestion>>>{};
+  final Map<String, _ShellHistoryCacheEntry> _historyCache =
+      <String, _ShellHistoryCacheEntry>{};
+  final Map<String, Future<List<String>>> _historyInFlight =
+      <String, Future<List<String>>>{};
 
   /// Runs a completion query for [invocation].
   Future<List<ShellCompletionSuggestion>> complete(
@@ -153,6 +172,7 @@ class ShellCompletionService {
     if (staticSuggestions != null && invocation.token.isEmpty) {
       return staticSuggestions;
     }
+    final allowShellFallback = invocation.token.isNotEmpty;
 
     final cacheKey = _shellCompletionCacheKey(session, invocation);
     final cached = _cache[cacheKey];
@@ -166,7 +186,12 @@ class ShellCompletionService {
       return pending;
     }
 
-    final future = _completeUncached(session, invocation, staticSuggestions);
+    final future = _completeUncached(
+      session,
+      invocation,
+      staticSuggestions,
+      allowShellFallback: allowShellFallback,
+    );
     _inFlight[cacheKey] = future;
     try {
       final suggestions = await future;
@@ -184,9 +209,31 @@ class ShellCompletionService {
   Future<List<ShellCompletionSuggestion>> _completeUncached(
     SshSession session,
     ShellCompletionInvocation invocation,
-    List<ShellCompletionSuggestion>? staticSuggestions,
-  ) async {
+    List<ShellCompletionSuggestion>? staticSuggestions, {
+    required bool allowShellFallback,
+  }) async {
     final startedAt = DateTime.now();
+    final historySuggestions = await _completeFromHistory(session, invocation);
+    if (historySuggestions.isNotEmpty) {
+      final duration = DateTime.now().difference(startedAt);
+      if (duration >= const Duration(milliseconds: 350)) {
+        DiagnosticsLogService.instance.debug(
+          'shell_completion',
+          'history_request_complete',
+          fields: {
+            'connectionId': session.connectionId,
+            'mode': invocation.mode.name,
+            'durationMs': duration.inMilliseconds,
+            'suggestionCount': historySuggestions.length,
+          },
+        );
+      }
+      return historySuggestions;
+    }
+    if (!allowShellFallback) {
+      return const <ShellCompletionSuggestion>[];
+    }
+
     final output = await session
         .runQueuedExec(() => _runCompletionCommand(session, invocation))
         .onError<Object>((error, stackTrace) {
@@ -213,6 +260,101 @@ class ShellCompletionService {
       );
     }
     return resolvedSuggestions;
+  }
+
+  Future<List<ShellCompletionSuggestion>> _completeFromHistory(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) async {
+    try {
+      final history = await _loadShellHistory(session, invocation);
+      return buildShellHistorySuggestions(history, invocation);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'shell_completion',
+        'history_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return const <ShellCompletionSuggestion>[];
+    }
+  }
+
+  Future<List<String>> _loadShellHistory(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) async {
+    final key = _shellHistoryCacheKey(session, invocation);
+    final now = DateTime.now();
+    final cached = _historyCache[key];
+    if (cached != null && now.difference(cached.createdAt) <= historyCacheTtl) {
+      return cached.commands;
+    }
+
+    final pending = _historyInFlight[key];
+    if (pending != null) {
+      return pending;
+    }
+
+    final future = session.runQueuedExec(
+      () => _runHistoryCommand(session, invocation),
+    );
+    _historyInFlight[key] = future;
+    try {
+      final commands = await future;
+      _historyCache[key] = _ShellHistoryCacheEntry(
+        createdAt: DateTime.now(),
+        commands: List<String>.unmodifiable(commands),
+      );
+      _trimHistoryCache(now);
+      return commands;
+    } finally {
+      _historyInFlight.remove(key)?.ignore();
+    }
+  }
+
+  Future<List<String>> _runHistoryCommand(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) async {
+    final command = buildShellHistoryRemoteCommand(invocation);
+    final exec = await session.execute(command);
+    try {
+      final stdout = StringBuffer();
+      final stdoutFuture = exec.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .forEach((chunk) {
+            if (stdout.length >= maxHistoryOutputChars) {
+              return;
+            }
+            final remaining = maxHistoryOutputChars - stdout.length;
+            stdout.write(
+              chunk.length <= remaining ? chunk : chunk.substring(0, remaining),
+            );
+          });
+      final stderrFuture = exec.stderr.drain<void>();
+      await Future.wait<void>([
+        stdoutFuture,
+        stderrFuture,
+        exec.done,
+      ]).timeout(historyTimeout);
+      return parseShellHistoryOutput(stdout.toString());
+    } on TimeoutException {
+      DiagnosticsLogService.instance.debug(
+        'shell_completion',
+        'history_timeout',
+        fields: {
+          'connectionId': session.connectionId,
+          'timeoutMs': historyTimeout.inMilliseconds,
+        },
+      );
+      rethrow;
+    } finally {
+      exec.close();
+    }
   }
 
   Future<String> _runCompletionCommand(
@@ -331,6 +473,23 @@ class ShellCompletionService {
       _cache.remove(key);
     }
   }
+
+  void _trimHistoryCache(DateTime now) {
+    _historyCache.removeWhere(
+      (key, value) => now.difference(value.createdAt) > historyCacheTtl,
+    );
+    const maxEntries = 24;
+    if (_historyCache.length <= maxEntries) {
+      return;
+    }
+    final overflow = _historyCache.length - maxEntries;
+    final keysToRemove = _historyCache.keys
+        .take(overflow)
+        .toList(growable: false);
+    for (final key in keysToRemove) {
+      _historyCache.remove(key);
+    }
+  }
 }
 
 class _ShellCompletionCacheEntry {
@@ -353,6 +512,16 @@ class _InteractiveCompletionResult {
   final bool didComplete;
 }
 
+class _ShellHistoryCacheEntry {
+  const _ShellHistoryCacheEntry({
+    required this.createdAt,
+    required this.commands,
+  });
+
+  final DateTime createdAt;
+  final List<String> commands;
+}
+
 String _shellCompletionCacheKey(
   SshSession session,
   ShellCompletionInvocation invocation,
@@ -367,6 +536,11 @@ String _shellCompletionCacheKey(
   invocation.token,
   invocation.maxSuggestions,
 ].join('\u001f');
+
+String _shellHistoryCacheKey(
+  SshSession session,
+  ShellCompletionInvocation invocation,
+) => [session.connectionId, invocation.shellCommand ?? ''].join('\u001f');
 
 /// Provider for [ShellCompletionService].
 final shellCompletionServiceProvider = Provider<ShellCompletionService>(
@@ -417,11 +591,6 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
   final normalizedToken = normalizeShellCompletionToken(tokenState.token);
 
   if (mode == ShellCompletionMode.command && normalizedToken.length < 2) {
-    return null;
-  }
-  if (normalizedToken.isEmpty &&
-      (mode != ShellCompletionMode.argument ||
-          _staticSubcommandsFor(commandName) == null)) {
     return null;
   }
 
@@ -487,6 +656,47 @@ List<ShellCompletionSuggestion>? buildShellCompletionStaticSuggestions(
         replacementEnd: invocation.cursorOffset,
         kind: ShellCompletionSuggestionKind.command,
         commitSuffix: ' ',
+      ),
+    );
+    if (suggestions.length >= invocation.maxSuggestions) {
+      break;
+    }
+  }
+
+  return suggestions;
+}
+
+/// Builds command-line suggestions from normalized shell history patterns.
+@visibleForTesting
+List<ShellCompletionSuggestion> buildShellHistorySuggestions(
+  List<String> historyCommands,
+  ShellCompletionInvocation invocation,
+) {
+  final typedCommand = invocation.commandLine.substring(
+    0,
+    invocation.cursorOffset,
+  );
+  if (typedCommand.trim().isEmpty) {
+    return const <ShellCompletionSuggestion>[];
+  }
+
+  final suggestions = <ShellCompletionSuggestion>[];
+  final seen = <String>{};
+  for (final rawCommand in historyCommands.reversed) {
+    final pattern = normalizeShellHistoryCommandPattern(rawCommand);
+    if (pattern == null ||
+        pattern == typedCommand ||
+        !pattern.startsWith(typedCommand) ||
+        !seen.add(pattern)) {
+      continue;
+    }
+    suggestions.add(
+      ShellCompletionSuggestion(
+        label: pattern,
+        replacement: pattern,
+        replacementStart: 0,
+        replacementEnd: invocation.cursorOffset,
+        kind: ShellCompletionSuggestionKind.history,
       ),
     );
     if (suggestions.length >= invocation.maxSuggestions) {
@@ -712,6 +922,147 @@ bool _isShellCompletionWhitespace(String char) =>
 bool _containsShellQuote(String token) =>
     token.contains("'") || token.contains('"');
 
+/// Normalizes a shell history command into a reusable command pattern.
+@visibleForTesting
+String? normalizeShellHistoryCommandPattern(String command) {
+  final decoded = _decodeShellHistoryCommand(command).trim();
+  if (!_isSafeHistoryCommand(decoded)) {
+    return null;
+  }
+
+  final tokens = _parseShellHistoryCommandTokens(decoded);
+  if (tokens == null || tokens.isEmpty) {
+    return null;
+  }
+
+  final patternTokens = <String>[];
+  for (var index = 0; index < tokens.length; index++) {
+    final token = tokens[index];
+    final optionPattern = _trimShellHistoryOptionValue(token.value);
+    if (optionPattern != null) {
+      patternTokens.add(optionPattern);
+      continue;
+    }
+    if (token.wasQuoted && index > 0) {
+      continue;
+    }
+    patternTokens.add(token.value);
+  }
+
+  if (patternTokens.isEmpty) {
+    return null;
+  }
+
+  final pattern = patternTokens
+      .where((token) => token.isNotEmpty)
+      .map(escapeShellCompletionToken)
+      .join(' ')
+      .trim();
+  return pattern.isEmpty || pattern.length > 512 ? null : pattern;
+}
+
+String _decodeShellHistoryCommand(String command) {
+  if (command.startsWith(': ')) {
+    final separatorIndex = command.indexOf(';');
+    if (separatorIndex >= 0 && separatorIndex + 1 < command.length) {
+      return command.substring(separatorIndex + 1);
+    }
+  }
+  return command;
+}
+
+bool _isSafeHistoryCommand(String command) {
+  if (command.isEmpty || command.length > 1024) {
+    return false;
+  }
+  for (var index = 0; index < command.length; index++) {
+    final codeUnit = command.codeUnitAt(index);
+    if (codeUnit < 0x20 || codeUnit == 0x7F) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String? _trimShellHistoryOptionValue(String token) {
+  if (!token.startsWith('-') || token == '-') {
+    return null;
+  }
+  final separatorIndex = token.indexOf('=');
+  if (separatorIndex <= 1) {
+    return null;
+  }
+  return token.substring(0, separatorIndex);
+}
+
+class _ShellHistoryToken {
+  const _ShellHistoryToken({required this.value, required this.wasQuoted});
+
+  final String value;
+  final bool wasQuoted;
+}
+
+List<_ShellHistoryToken>? _parseShellHistoryCommandTokens(String command) {
+  final tokens = <_ShellHistoryToken>[];
+  final builder = StringBuffer();
+  var inWord = false;
+  var quote = '';
+  var escaped = false;
+  var tokenWasQuoted = false;
+
+  void finishToken() {
+    if (!inWord) {
+      return;
+    }
+    tokens.add(
+      _ShellHistoryToken(value: builder.toString(), wasQuoted: tokenWasQuoted),
+    );
+    builder.clear();
+    inWord = false;
+    tokenWasQuoted = false;
+  }
+
+  for (var index = 0; index < command.length; index++) {
+    final char = command[index];
+    if (escaped) {
+      builder.write(char);
+      escaped = false;
+      continue;
+    }
+    if (char == r'\') {
+      inWord = true;
+      escaped = true;
+      continue;
+    }
+    if (quote.isNotEmpty) {
+      if (char == quote) {
+        quote = '';
+      } else {
+        builder.write(char);
+      }
+      continue;
+    }
+    if (char == "'" || char == '"') {
+      inWord = true;
+      quote = char;
+      tokenWasQuoted = true;
+      continue;
+    }
+    if (_isShellCompletionWhitespace(char)) {
+      finishToken();
+      continue;
+    }
+    inWord = true;
+    builder.write(char);
+  }
+
+  if (escaped || quote.isNotEmpty) {
+    return null;
+  }
+  finishToken();
+  return tokens;
+}
+
 /// Removes simple backslash escapes from a shell token.
 String normalizeShellCompletionToken(String token) {
   final builder = StringBuffer();
@@ -873,9 +1224,10 @@ int _completionSuggestionScore(ShellCompletionSuggestion suggestion) {
     return 1;
   }
   return switch (suggestion.kind) {
-    ShellCompletionSuggestionKind.command => 2,
-    ShellCompletionSuggestionKind.directory => 3,
-    ShellCompletionSuggestionKind.file => 4,
+    ShellCompletionSuggestionKind.history => 2,
+    ShellCompletionSuggestionKind.command => 3,
+    ShellCompletionSuggestionKind.directory => 4,
+    ShellCompletionSuggestionKind.file => 5,
   };
 }
 
@@ -936,6 +1288,7 @@ bool _isUnescapedShellTokenChar(String char) {
 }
 
 const _interactiveZshCompletionDoneMarker = '__FLUTTY_ZSH_NATIVE_DONE__';
+const _shellHistoryDoneMarker = '__FLUTTY_HISTORY_DONE__';
 
 bool _shouldTryInteractiveZshCompletion(ShellCompletionInvocation invocation) =>
     invocation.mode != ShellCompletionMode.command;
@@ -948,6 +1301,67 @@ bool _containsInteractiveZshCompletionDoneMarker(String output) {
     }
   }
   return false;
+}
+
+/// Builds the remote command that reads recent shell history.
+@visibleForTesting
+String buildShellHistoryRemoteCommand(ShellCompletionInvocation invocation) {
+  final preferredShell = invocation.shellCommand?.trim() ?? '';
+  return '''
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_PREFERRED_SHELL=${_shellQuote(preferredShell)}; flutty_shell=\${FLUTTY_PREFERRED_SHELL:-\${SHELL:-}}; flutty_shell_name=\${flutty_shell##*/}; emit_history_file() { flutty_source=\$1; flutty_path=\$2; [ -r "\$flutty_path" ] || return 0; tail -n 1200 "\$flutty_path" 2>/dev/null | while IFS= read -r flutty_line; do printf '%s\\t%s\\n' "\$flutty_source" "\$flutty_line"; done; }; printf '__FLUTTY_HISTORY_START__\\n'; case "\$flutty_shell_name" in zsh) emit_history_file zsh "\${HISTFILE:-\$HOME/.zsh_history}";; bash) emit_history_file bash "\${HISTFILE:-\$HOME/.bash_history}";; fish) emit_history_file fish "\${XDG_DATA_HOME:-\$HOME/.local/share}/fish/fish_history";; *) emit_history_file zsh "\$HOME/.zsh_history"; emit_history_file bash "\$HOME/.bash_history"; emit_history_file fish "\${XDG_DATA_HOME:-\$HOME/.local/share}/fish/fish_history";; esac; printf '$_shellHistoryDoneMarker\\n'
+''';
+}
+
+/// Parses recent shell history emitted by [buildShellHistoryRemoteCommand].
+@visibleForTesting
+List<String> parseShellHistoryOutput(String output) {
+  final commands = <String>[];
+  var scannedLineCount = 0;
+  for (final rawLine in const LineSplitter().convert(output)) {
+    scannedLineCount += 1;
+    if (scannedLineCount > 1600) {
+      break;
+    }
+    final line = rawLine.replaceAll('\r', '');
+    if (line.isEmpty ||
+        line == '__FLUTTY_HISTORY_START__' ||
+        line == _shellHistoryDoneMarker) {
+      continue;
+    }
+    final separatorIndex = line.indexOf('\t');
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    final source = line.substring(0, separatorIndex);
+    final value = line.substring(separatorIndex + 1);
+    final command = _historyCommandFromSource(source, value);
+    if (command != null) {
+      commands.add(command);
+    }
+  }
+  return commands;
+}
+
+String? _historyCommandFromSource(String source, String value) {
+  final command = switch (source) {
+    'zsh' => _decodeShellHistoryCommand(value),
+    'bash' => value,
+    'fish' => _decodeFishHistoryCommand(value),
+    _ => null,
+  };
+  if (command == null) {
+    return null;
+  }
+  final trimmed = command.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+String? _decodeFishHistoryCommand(String value) {
+  const prefix = '- cmd: ';
+  if (!value.startsWith(prefix)) {
+    return null;
+  }
+  return value.substring(prefix.length).replaceAll(r'\n', ' ');
 }
 
 /// Builds the remote command that starts a PTY-backed zsh completion shell.

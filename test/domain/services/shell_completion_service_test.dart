@@ -55,13 +55,18 @@ void main() {
       expect(invocation, isNull);
     });
 
-    test('does not request dynamic argument completions for empty tokens', () {
+    test('allows empty argument tokens for history-only completions', () {
       final argumentInvocation = buildShellCompletionInvocation(
         terminalText: 'tester@host ~ % git ',
         terminalCursorOffset: 'tester@host ~ % git '.length,
       );
 
-      expect(argumentInvocation, isNull);
+      expect(argumentInvocation, isNotNull);
+      expect(argumentInvocation!.commandLine, 'git ');
+      expect(argumentInvocation.commandName, 'git');
+      expect(argumentInvocation.token, isEmpty);
+      expect(argumentInvocation.tokenStart, 4);
+      expect(argumentInvocation.mode, ShellCompletionMode.argument);
     });
 
     test('requests shell-native argument completions for typed tokens', () {
@@ -82,13 +87,18 @@ void main() {
       expect(argumentInvocation.wordIndex, 1);
     });
 
-    test('does not request all directories after an empty cd token', () {
+    test('allows empty directory tokens for history-only completions', () {
       final directoryInvocation = buildShellCompletionInvocation(
         terminalText: 'tester@host ~ % cd ',
         terminalCursorOffset: 'tester@host ~ % cd '.length,
       );
 
-      expect(directoryInvocation, isNull);
+      expect(directoryInvocation, isNotNull);
+      expect(directoryInvocation!.commandLine, 'cd ');
+      expect(directoryInvocation.commandName, 'cd');
+      expect(directoryInvocation.token, isEmpty);
+      expect(directoryInvocation.tokenStart, 3);
+      expect(directoryInvocation.mode, ShellCompletionMode.directory);
     });
 
     test('allows known fallback subcommands after an empty argument token', () {
@@ -251,6 +261,97 @@ void main() {
       expect(suggestions.single.replacement, 'attach');
       expect(suggestions.single.replacementStart, 5);
       expect(suggestions.single.commitSuffix, ' ');
+    });
+  });
+
+  group('shell history suggestions', () {
+    test('parseShellHistoryOutput reads bash, zsh, and fish commands', () {
+      final commands = parseShellHistoryOutput(
+        [
+          '__FLUTTY_HISTORY_START__',
+          'bash\tgit status',
+          'zsh\t: 1777870000:0;git checkout feature/login',
+          r'fish	- cmd: git commit\n--amend',
+          '__FLUTTY_HISTORY_DONE__',
+        ].join('\n'),
+      );
+
+      expect(commands, [
+        'git status',
+        'git checkout feature/login',
+        'git commit --amend',
+      ]);
+    });
+
+    test('normalizes history entries into trimmed command patterns', () {
+      expect(
+        normalizeShellHistoryCommandPattern('git commit -m "do something"'),
+        'git commit -m',
+      );
+      expect(
+        normalizeShellHistoryCommandPattern(
+          'codex --prompt="do something" --sandbox workspace-write',
+        ),
+        'codex --prompt --sandbox workspace-write',
+      );
+      expect(
+        normalizeShellHistoryCommandPattern(
+          ': 1777870000:0;git checkout feature/login',
+        ),
+        'git checkout feature/login',
+      );
+    });
+
+    test('buildShellHistorySuggestions replaces and filters full commands', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git c',
+        cursorOffset: 5,
+        token: 'c',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        words: ['git', 'c'],
+        wordIndex: 1,
+        workingDirectory: '/Users/depoll/project',
+      );
+
+      final suggestions = buildShellHistorySuggestions([
+        'git commit -m "do something"',
+        'git checkout feature/login',
+        'git status',
+        'git checkout feature/login',
+      ], invocation);
+
+      expect(suggestions.map((suggestion) => suggestion.label), [
+        'git checkout feature/login',
+        'git commit -m',
+      ]);
+      expect(suggestions.first.kind, ShellCompletionSuggestionKind.history);
+      expect(suggestions.first.replacementStart, 0);
+      expect(suggestions.first.replacementEnd, 5);
+      expect(suggestions.first.replacement, 'git checkout feature/login');
+    });
+
+    test('history remote command reads the preferred shell history file', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git c',
+        cursorOffset: 5,
+        token: 'c',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        shellCommand: '/bin/zsh',
+        words: ['git', 'c'],
+        wordIndex: 1,
+        workingDirectory: '/Users/depoll/project',
+      );
+
+      final command = buildShellHistoryRemoteCommand(invocation);
+
+      expect(command, contains("FLUTTY_PREFERRED_SHELL='/bin/zsh'"));
+      expect(command, contains(r'tail -n 1200 "$flutty_path"'));
+      expect(command, contains(r'${HISTFILE:-$HOME/.zsh_history}'));
+      expect(command, contains('__FLUTTY_HISTORY_DONE__'));
     });
   });
 

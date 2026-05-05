@@ -1656,7 +1656,8 @@ String _diagnosticSshCommandKind(String command) {
   final trimmed = command.trimLeft();
   if (trimmed.contains('FLUTTY_MODE=') ||
       trimmed.contains('__FLUTTY_COMPLETION__') ||
-      trimmed.contains('__FLUTTY_ZSH_NATIVE_DONE__')) {
+      trimmed.contains('__FLUTTY_ZSH_NATIVE_DONE__') ||
+      trimmed.contains('__FLUTTY_HISTORY_DONE__')) {
     return 'shell_completion';
   }
   if (trimmed.startsWith('tmux ') ||

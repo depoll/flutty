@@ -430,6 +430,19 @@ bool shouldAcceptShellCompletionSuggestion({
   if (currentInvocation == null) {
     return true;
   }
+  if (suggestion.kind == ShellCompletionSuggestionKind.history) {
+    if (currentInvocation.workingDirectory !=
+            originalInvocation.workingDirectory ||
+        currentInvocation.shellCommand != originalInvocation.shellCommand ||
+        currentInvocation.cursorOffset < suggestion.replacementStart) {
+      return false;
+    }
+    final currentCommand = currentInvocation.commandLine.substring(
+      0,
+      currentInvocation.cursorOffset,
+    );
+    return suggestion.replacement.startsWith(currentCommand);
+  }
   if (currentInvocation.mode != originalInvocation.mode ||
       currentInvocation.tokenStart != originalInvocation.tokenStart ||
       currentInvocation.workingDirectory !=
@@ -4271,6 +4284,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var deleteCount = invocation.cursorOffset - suggestion.replacementStart;
     if (currentInvocation != null &&
+        suggestion.kind == ShellCompletionSuggestionKind.history) {
+      deleteCount =
+          currentInvocation.cursorOffset - suggestion.replacementStart;
+    } else if (currentInvocation != null &&
         currentInvocation.mode == invocation.mode &&
         currentInvocation.tokenStart == invocation.tokenStart) {
       deleteCount =
@@ -7155,6 +7172,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   IconData _shellCompletionIcon(ShellCompletionSuggestionKind kind) =>
       switch (kind) {
+        ShellCompletionSuggestionKind.history => Icons.history_rounded,
         ShellCompletionSuggestionKind.command => Icons.terminal_rounded,
         ShellCompletionSuggestionKind.directory => Icons.folder_outlined,
         ShellCompletionSuggestionKind.file => Icons.insert_drive_file_outlined,

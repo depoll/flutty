@@ -731,6 +731,67 @@ void main() {
 
       expect(filtered, [attachSuggestion]);
     });
+
+    test('filters history suggestions across later command tokens', () {
+      const originalInvocation = ShellCompletionInvocation(
+        commandLine: 'git c',
+        cursorOffset: 5,
+        token: 'c',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        workingDirectory: '/repo',
+      );
+      const checkoutSuggestion = ShellCompletionSuggestion(
+        label: 'git checkout feature/login',
+        replacement: 'git checkout feature/login',
+        replacementStart: 0,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.history,
+      );
+      const commitSuggestion = ShellCompletionSuggestion(
+        label: 'git commit -m',
+        replacement: 'git commit -m',
+        replacementStart: 0,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.history,
+      );
+
+      final filtered = filterShellCompletionSuggestionsForCurrentInput(
+        originalInvocation: originalInvocation,
+        currentInvocation: const ShellCompletionInvocation(
+          commandLine: 'git checkout f',
+          cursorOffset: 14,
+          token: 'f',
+          tokenStart: 13,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          workingDirectory: '/repo',
+        ),
+        suggestions: const <ShellCompletionSuggestion>[
+          checkoutSuggestion,
+          commitSuggestion,
+        ],
+      );
+
+      expect(filtered, [checkoutSuggestion]);
+      expect(
+        shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: const ShellCompletionInvocation(
+            commandLine: 'git switch',
+            cursorOffset: 10,
+            token: 'switch',
+            tokenStart: 4,
+            mode: ShellCompletionMode.argument,
+            commandName: 'git',
+            workingDirectory: '/repo',
+          ),
+          suggestion: checkoutSuggestion,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('tmux bar safe insets vs. keyboard toolbar', () {
