@@ -8,6 +8,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/iterm_color_scheme_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import 'terminal_overlay_focus.dart';
 import 'theme_preview_card.dart';
 
 const _liveThemeSearchMinLength = 2;
@@ -403,7 +404,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   void _handleCustomThemeLongPress(TerminalThemeData theme) {
     showModalBottomSheet<void>(
       context: context,
-      requestFocus: false,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -431,7 +432,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   void _confirmDelete(TerminalThemeData theme) {
     showDialog<void>(
       context: context,
-      requestFocus: false,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
         title: const Text('Delete theme?'),
         content: Text('Are you sure you want to delete "${theme.name}"?'),
