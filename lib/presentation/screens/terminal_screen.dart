@@ -3386,6 +3386,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             request.theme,
             extraFlags: request.extraFlags,
           );
+      if (!_isCurrentTerminalThemeRefresh(
+        theme: request.theme,
+        session: request.session,
+        refreshGeneration: request.refreshGeneration,
+      )) {
+        DiagnosticsLogService.instance.debug(
+          'terminal.theme',
+          'tmux_refresh_stale',
+          fields: {
+            'reason': request.reason,
+            'connectionId': request.session.connectionId,
+            'sendOuterFocusReport': request.sendOuterFocusReport,
+          },
+        );
+        return;
+      }
       DiagnosticsLogService.instance.info(
         'terminal.theme',
         'tmux_refresh_complete',

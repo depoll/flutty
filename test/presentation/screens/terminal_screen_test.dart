@@ -1446,6 +1446,125 @@ void main() {
     );
 
     testWidgets(
+      'does not send stale outer focus after superseded tmux theme refresh',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final refreshCompleters = <Completer<void>>[];
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@8', name: 'shell', isActive: true),
+          TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: false),
+        ];
+
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) {
+          final completer = Completer<void>();
+          refreshCompleters.add(completer);
+          return completer.future;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+
+        expect(refreshCompleters, hasLength(1));
+
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.light);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+
+        refreshCompleters.first.complete();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+
+        expect(refreshCompleters, hasLength(2));
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          isEmpty,
+        );
+
+        refreshCompleters[1].complete();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[O\x1b[I'),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'tmux alert notifications clear legacy index IDs when stable IDs exist',
       (tester) async {
         final tmuxService = _MockTmuxService();
