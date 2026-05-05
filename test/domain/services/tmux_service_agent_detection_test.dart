@@ -127,8 +127,10 @@ void main() {
       expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
       expect(command, contains(r'inuse."$pid".lock'));
       expect(command, contains('workspace.yaml'));
+      expect(command, contains(r'if [ -d "$state_dir" ]; then'));
       expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
       expect(command, isNot(contains(r'ps -p "$pid"')));
+      expect(command, isNot(contains('exit 0')));
     });
 
     test('parses live session titles by matched pane PID', () {

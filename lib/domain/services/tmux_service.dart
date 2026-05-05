@@ -3492,10 +3492,10 @@ if [ -z "\$home" ]; then
   home=~
 fi
 state_dir=\$home/.copilot/session-state
-[ -d "\$state_dir" ] || exit 0
-ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
-[ -n "\$ps_output" ] || exit 0
-printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" '
+if [ -d "\$state_dir" ]; then
+  ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
+  if [ -n "\$ps_output" ]; then
+    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" '
 BEGIN {
   split(panes, pane_values, " ")
   for (i in pane_values) {
@@ -3527,21 +3527,23 @@ END {
     }
   }
 }' | while read pane_pid pid; do
-  case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
-  case "\$pid" in ''|*[!0-9]*) continue ;; esac
-  for lock in "\$state_dir"/*/inuse."\$pid".lock; do
-  [ -e "\$lock" ] || continue
-  dir=\${lock%/*}
-  session_id=\${dir##*/}
-  workspace=\$dir/workspace.yaml
-  workspace_data=
-  if [ -r "\$workspace" ] && command -v base64 >/dev/null 2>&1; then
-    workspace_data=\$(base64 < "\$workspace" 2>/dev/null | tr -d '\\r\\n')
+      case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
+      case "\$pid" in ''|*[!0-9]*) continue ;; esac
+      for lock in "\$state_dir"/*/inuse."\$pid".lock; do
+        [ -e "\$lock" ] || continue
+        dir=\${lock%/*}
+        session_id=\${dir##*/}
+        workspace=\$dir/workspace.yaml
+        workspace_data=
+        if [ -r "\$workspace" ] && command -v base64 >/dev/null 2>&1; then
+          workspace_data=\$(base64 < "\$workspace" 2>/dev/null | tr -d '\\r\\n')
+        fi
+        printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$workspace_data"
+        break
+      done
+    done
   fi
-  printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$workspace_data"
-    break
-  done
-done
+fi
 ''';
 }
 
