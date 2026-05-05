@@ -19,17 +19,14 @@ void main() {
   });
 
   group('control mode command builders', () {
-    test(
-      'attach command starts tmux in control mode with safe client flags',
-      () {
-        expect(
-          buildTmuxControlModeAttachCommand('dev\'s session'),
-          'tmux -CC attach-session -f '
-          'ignore-size,no-output,wait-exit '
-          "-t 'dev'\"'\"'s session'",
-        );
-      },
-    );
+    test('attach command starts tmux in control mode without wait-exit', () {
+      expect(
+        buildTmuxControlModeAttachCommand('dev\'s session'),
+        'tmux -CC attach-session -f '
+        'ignore-size,no-output '
+        "-t 'dev'\"'\"'s session'",
+      );
+    });
 
     test(
       'attach command includes reusable tmux client flags when provided',
@@ -40,7 +37,7 @@ void main() {
             extraFlags: '-x 160 -S /tmp/tmux-socket -n editor',
           ),
           "tmux -S '/tmp/tmux-socket' -CC attach-session -f "
-          'ignore-size,no-output,wait-exit '
+          'ignore-size,no-output '
           "-t 'main'",
         );
       },
@@ -1053,7 +1050,7 @@ void main() {
             .listen((_) {});
         addTearDown(() async {
           await subscription.cancel();
-          service.clearCache(1);
+          await service.clearCache(1);
           await stdoutController.close();
         });
         await untilCalled(
@@ -1076,10 +1073,183 @@ void main() {
           command,
           contains(
             "/usr/bin/tmux -u -S '/tmp/socket' -CC attach-session -f "
-            'ignore-size,no-output,wait-exit ',
+            'ignore-size,no-output ',
           ),
         );
         expect(command, isNot(contains('set status off')));
+      },
+    );
+
+    test(
+      'clearCache detaches an active control-mode watcher before closing it',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 73);
+        const service = TmuxService();
+        final stdoutController = StreamController<Uint8List>();
+        final writes = <String>[];
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          onWrite: (value) {
+            writes.add(value);
+            if (value.startsWith('refresh-client ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+                ),
+              );
+            }
+          },
+        );
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          controlSession,
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(() => controlSession.write(any()));
+
+        await service.clearCache(73);
+
+        expect(writes, contains('detach-client -P\n\n'));
+        verify(controlSession.close).called(1);
+      },
+    );
+
+    test(
+      'clearCache waits for disposal that subscription cancel started',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 74);
+        const service = TmuxService();
+        final stdoutController = StreamController<Uint8List>();
+        final stdinCloseCompleter = Completer<void>();
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          stdinClose: stdinCloseCompleter.future,
+          onWrite: (value) {
+            if (value.startsWith('refresh-client ')) {
+              scheduleMicrotask(
+                () => stdoutController.add(
+                  _utf8Bytes('%begin 1 1 0\n%end 1 1 0\n'),
+                ),
+              );
+            }
+          },
+        );
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          controlSession,
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          if (!stdinCloseCompleter.isCompleted) {
+            stdinCloseCompleter.complete();
+          }
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(() => controlSession.write(any()));
+
+        await subscription.cancel();
+        await Future<void>.delayed(Duration.zero);
+
+        var clearCacheCompleted = false;
+        final clearCacheFuture = service.clearCache(74).then((_) {
+          clearCacheCompleted = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+
+        expect(clearCacheCompleted, isFalse);
+
+        stdinCloseCompleter.complete();
+        await clearCacheFuture;
+
+        expect(clearCacheCompleted, isTrue);
+        verify(controlSession.close).called(1);
+      },
+    );
+
+    test(
+      'clearCache waits for a starting watcher and detaches it after open',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 75);
+        const service = TmuxService();
+        final stdoutController = StreamController<Uint8List>.broadcast();
+        final controlOpenCompleter = Completer<SSHSession>();
+        final writes = <String>[];
+        final controlSession = _buildInteractiveExecSession(
+          stdoutController: stdoutController,
+          onWrite: writes.add,
+        );
+        var executeCalls = 0;
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) {
+          executeCalls += 1;
+          final command = invocation.positionalArguments.single as String;
+          if (command.contains('command -v tmux')) {
+            return Future.value(
+              _buildOpenExecSession(
+                stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}',
+              ),
+            );
+          }
+          expect(command, contains('attach-session'));
+          return controlOpenCompleter.future;
+        });
+
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        addTearDown(() async {
+          if (!controlOpenCompleter.isCompleted) {
+            controlOpenCompleter.complete(controlSession);
+          }
+          await subscription.cancel();
+          await stdoutController.close();
+        });
+        await untilCalled(
+          () => client.execute(
+            any(that: contains('attach-session')),
+            pty: any(named: 'pty'),
+          ),
+        );
+
+        var clearCacheCompleted = false;
+        final clearCacheFuture = service.clearCache(75).then((_) {
+          clearCacheCompleted = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+
+        expect(clearCacheCompleted, isFalse);
+
+        controlOpenCompleter.complete(controlSession);
+        await clearCacheFuture;
+
+        expect(clearCacheCompleted, isTrue);
+        expect(writes, contains('detach-client -P\n\n'));
+        expect(executeCalls, 2);
+        verify(controlSession.close).called(1);
       },
     );
 
@@ -1275,7 +1445,7 @@ void main() {
             .watchWindowChanges(session, 'main')
             .listen((_) {});
         addTearDown(() async {
-          service.clearCache(72);
+          await service.clearCache(72);
           await subscription.cancel();
           await stdoutController.close();
         });
@@ -1642,7 +1812,7 @@ void main() {
         expect(TmuxService.hasInstalledAgentToolsCacheEntry(60), isTrue);
 
         // Clear and verify the cache entry is gone.
-        service.clearCache(60);
+        await service.clearCache(60);
         expect(TmuxService.hasInstalledAgentToolsCacheEntry(60), isFalse);
 
         // A subsequent call must re-probe via SSH rather than serve stale data.
@@ -1676,7 +1846,7 @@ void main() {
         expect(TmuxService.hasTmuxPathCacheEntry(61), isTrue);
 
         // Clear and verify the cache entry is gone.
-        service.clearCache(61);
+        await service.clearCache(61);
         expect(TmuxService.hasTmuxPathCacheEntry(61), isFalse);
 
         // A subsequent call must re-probe the tmux binary path.
@@ -1723,7 +1893,7 @@ void main() {
         expect(TmuxService.hasWindowSnapshotCacheEntry(62), isTrue);
 
         // After clearCache the snapshot is gone.
-        service.clearCache(62);
+        await service.clearCache(62);
         expect(TmuxService.hasWindowSnapshotCacheEntry(62), isFalse);
       },
     );
@@ -1747,7 +1917,7 @@ void main() {
         expect(TmuxService.hasExecChannelBackoffEntry(63), isTrue);
 
         // clearCache must remove the backoff so the next open is attempted.
-        service.clearCache(63);
+        await service.clearCache(63);
         expect(TmuxService.hasExecChannelBackoffEntry(63), isFalse);
       },
     );
@@ -1775,12 +1945,12 @@ void main() {
         expect(TmuxService.hasInstalledAgentToolsCacheEntry(65), isTrue);
 
         // Clearing A must not affect B.
-        service.clearCache(64);
+        await service.clearCache(64);
         expect(TmuxService.hasInstalledAgentToolsCacheEntry(64), isFalse);
         expect(TmuxService.hasInstalledAgentToolsCacheEntry(65), isTrue);
 
         // Clean up B.
-        service.clearCache(65);
+        await service.clearCache(65);
       },
     );
   });
@@ -1801,6 +1971,8 @@ SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockExecSession extends Mock implements SSHSession {}
+
+class _MockByteSink extends Mock implements StreamSink<Uint8List> {}
 
 const _execDoneMarker = '__flutty_tmux_exec_done__';
 
@@ -1852,12 +2024,16 @@ SSHSession _buildInteractiveExecSession({
   void Function(String)? onWrite,
   String stderr = '',
   Future<void>? done,
+  Future<void>? stdinClose,
 }) {
   final session = _MockExecSession();
   final doneFuture = done ?? Completer<void>().future;
+  final stdinSink = _MockByteSink();
+  when(stdinSink.close).thenAnswer((_) => stdinClose ?? Future<void>.value());
   when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
   when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
   when(() => session.done).thenAnswer((_) => doneFuture);
+  when(() => session.stdin).thenAnswer((_) => stdinSink);
   when(session.close).thenAnswer(_ignoreInvocation);
   when(() => session.write(any())).thenAnswer((invocation) {
     final data = invocation.positionalArguments.single as List<int>;

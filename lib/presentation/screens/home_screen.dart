@@ -891,7 +891,7 @@ enum _HostContextAction {
 }
 
 Future<void> _disconnectConnection(WidgetRef ref, int connectionId) async {
-  ref.read(tmuxServiceProvider).clearCache(connectionId);
+  await ref.read(tmuxServiceProvider).clearCache(connectionId);
   await ref.read(activeSessionsProvider.notifier).disconnect(connectionId);
 }
 
