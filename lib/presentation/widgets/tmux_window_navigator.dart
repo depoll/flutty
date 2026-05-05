@@ -502,7 +502,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   void _resumeSession(ToolSessionInfo info) {
-    final command = _discovery.buildResumeCommand(info);
+    final command = _discovery.buildResumeCommand(
+      info,
+      startInYoloMode: widget.startClisInYoloMode,
+    );
     Navigator.pop(
       context,
       TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),

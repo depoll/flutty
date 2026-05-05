@@ -368,6 +368,104 @@ void main() {
       ).called(5);
     });
 
+    testWidgets('passes host yolo mode when resuming an AI session', (
+      tester,
+    ) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const tmuxSessionName = 'main';
+      const codexSession = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: 'codex-session',
+        workingDirectory: '/home/demo/project',
+        summary: 'Resume codex work',
+      );
+      TmuxNavigatorAction? selectedAction;
+
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.detectInstalledAgentTools(session),
+      ).thenAnswer((_) async => const <AgentLaunchTool>{});
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.listWindows(session, tmuxSessionName),
+      ).thenAnswer((_) async => windows);
+      when(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      ).thenAnswer((invocation) {
+        final toolName = invocation.namedArguments[#toolName] as String?;
+        return Stream<DiscoveredSessionsResult>.value(
+          DiscoveredSessionsResult(
+            sessions: toolName == 'Codex'
+                ? const <ToolSessionInfo>[codexSession]
+                : const <ToolSessionInfo>[],
+            attemptedTools: toolName == null ? const <String>[] : [toolName],
+          ),
+        );
+      });
+      when(
+        () => discoveryService.buildResumeCommand(
+          codexSession,
+          startInYoloMode: true,
+        ),
+      ).thenReturn("codex --yolo resume 'codex-session'");
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: tmuxSessionName,
+        startClisInYoloMode: true,
+        onActionSelected: (action) => selectedAction = action,
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Recent AI Sessions'));
+      await tester.pump();
+      await tester.tap(find.text('Recent AI Sessions'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Codex'));
+      await tester.pump();
+      await tester.tap(find.text('Codex'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Resume codex work'));
+      await tester.pumpAndSettle();
+
+      expect(selectedAction, isA<TmuxResumeSessionAction>());
+      final resumeAction = selectedAction! as TmuxResumeSessionAction;
+      expect(resumeAction.resumeCommand, "codex --yolo resume 'codex-session'");
+      expect(resumeAction.workingDirectory, '/home/demo/project');
+      verify(
+        () => discoveryService.buildResumeCommand(
+          codexSession,
+          startInYoloMode: true,
+        ),
+      ).called(1);
+    });
+
     testWidgets('recovers from a transient empty window reload', (
       tester,
     ) async {
@@ -514,6 +612,8 @@ Future<void> _pumpNavigatorHost(
   required AgentSessionDiscoveryService discoveryService,
   required SshSession session,
   required String tmuxSessionName,
+  bool startClisInYoloMode = false,
+  ValueChanged<TmuxNavigatorAction?>? onActionSelected,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -536,8 +636,8 @@ Future<void> _pumpNavigatorHost(
                     session: session,
                     tmuxSessionName: tmuxSessionName,
                     isProUser: true,
-                    startClisInYoloMode: false,
-                  ),
+                    startClisInYoloMode: startClisInYoloMode,
+                  ).then((action) => onActionSelected?.call(action)),
                 );
               },
               child: const Text('Open'),

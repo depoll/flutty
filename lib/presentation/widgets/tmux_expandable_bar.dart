@@ -588,7 +588,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   void _resumeSession(ToolSessionInfo info) {
     final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(info);
+    final command = discovery.buildResumeCommand(
+      info,
+      startInYoloMode: widget.startClisInYoloMode,
+    );
     final wasExpanded = _expanded;
     setState(() => _expanded = false);
     if (wasExpanded) {
