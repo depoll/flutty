@@ -150,13 +150,13 @@ void main() {
       expect(
         command,
         contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{pane_start_command}${SEP}#{@flutty_agent_tool}',
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{pane_title}${SEP}#{pane_start_command}${SEP}#{@flutty_agent_tool}',
         ),
       );
       expect(
         command,
         contains(
-          r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_start_command agent_metadata',
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_title pane_start_command agent_metadata',
         ),
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
@@ -181,6 +181,10 @@ void main() {
       );
       expect(
         command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$pane_title"'),
+      );
+      expect(
+        command,
         contains(
           r'flutty_set_agent_tool_from_command_text "$pane_start_command"',
         ),
@@ -190,7 +194,6 @@ void main() {
       expect(command, contains('codex|codex-*'));
       expect(command, contains('opencode|opencode-*'));
       expect(command, contains('gemini|gemini-*'));
-      expect(command, isNot(contains('#{pane_title}')));
       expect(command, isNot(contains(r'case "$pane_title" in')));
       expect(command, isNot(contains('*Copilot*|*copilot*')));
       expect(command, isNot(contains('*Codex*|*codex*')));
@@ -209,6 +212,9 @@ void main() {
       expect(directBranch, isNot(contains('copilot)')));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
+      expect(command, contains(r'#{client_control_mode}${SEP}#{client_name}'));
+      expect(command, contains(r'while IFS="$SEP" read -r control client'));
+      expect(command, contains(r'[ "$control" = 0 ] || continue;'));
       expect(
         command,
         contains(

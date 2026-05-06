@@ -320,8 +320,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   ({
-    AgentLaunchTool? agentTool,
     String? currentCommand,
+    AgentLaunchTool? foregroundAgentTool,
     String? id,
     int index,
     bool isActive,
@@ -329,8 +329,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     String? paneStartCommand,
   })
   _themeRefreshWindowIdentity(TmuxWindow window) => (
-    agentTool: window.agentTool,
     currentCommand: window.currentCommand,
+    foregroundAgentTool: window.foregroundAgentTool,
     id: window.id,
     index: window.index,
     isActive: window.isActive,

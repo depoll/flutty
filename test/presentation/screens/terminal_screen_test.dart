@@ -1895,19 +1895,40 @@ void main() {
         shellWrites.clear();
         windowEvents.add(
           const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 0,
+              id: '@8',
+              name: 'shell',
+              isActive: true,
+              paneTitle: 'Copilot',
+              lastActivityEpochSeconds: 123,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 60));
+
+        expect(refreshCount, greaterThan(refreshCountBeforeWindowEvent));
+        final refreshCountAfterTitleAgent = refreshCount;
+
+        shellWrites.clear();
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
             TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: true),
           ),
         );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 149));
 
-        expect(refreshCount, refreshCountBeforeWindowEvent);
+        expect(refreshCount, refreshCountAfterTitleAgent);
 
         await tester.pump(const Duration(milliseconds: 1));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
-        expect(refreshCount, greaterThan(refreshCountBeforeWindowEvent));
+        expect(refreshCount, greaterThan(refreshCountAfterTitleAgent));
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );

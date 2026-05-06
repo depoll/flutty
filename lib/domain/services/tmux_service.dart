@@ -1872,11 +1872,11 @@ String buildTmuxRefreshTerminalThemeCommand(
       'esac; }; '
       'flutty_set_agent_tool_from_exact_name() { '
       r'case "${1##*/}" in '
-      'claude|Claude) agent_tool=claude ;; '
-      'copilot|Copilot) agent_tool=copilot ;; '
+      r'claude|Claude|Claude\ Code|claude\ code) agent_tool=claude ;; '
+      r'copilot|Copilot|Copilot\ CLI|copilot\ cli|GitHub\ Copilot|github\ copilot) agent_tool=copilot ;; '
       'codex|Codex) agent_tool=codex ;; '
-      'opencode|OpenCode) agent_tool=opencode ;; '
-      'gemini|Gemini) agent_tool=gemini ;; '
+      r'opencode|OpenCode|Open\ Code|open\ code) agent_tool=opencode ;; '
+      r'gemini|Gemini|Gemini\ CLI|gemini\ cli) agent_tool=gemini ;; '
       'esac; }; '
       'flutty_set_agent_tool_from_command_text() { '
       r'command_text=$1; '
@@ -1890,9 +1890,9 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'first_token=${command_text%% *}; '
       r'flutty_set_agent_tool_from_command_name "$first_token"; '
       '}; '
-      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{window_name}$sep#{pane_start_command}$sep#{@flutty_agent_tool}" '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{window_name}$sep#{pane_title}$sep#{pane_start_command}$sep#{@flutty_agent_tool}" '
       '2>/dev/null | '
-      r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_start_command agent_metadata; do '
+      r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_title pane_start_command agent_metadata; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       '$provideClientThemeReports '
@@ -1900,6 +1900,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'flutty_set_agent_tool_from_exact_name "$agent_metadata"; '
       r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_command_name "$pane_command"; '
       r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$window_name"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$pane_title"; '
       r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_command_text "$pane_start_command"; '
       r'case "$agent_tool" in '
       'codex) '
@@ -1997,13 +1998,19 @@ String _buildTmuxLoadThemeReportClientsCommand(
   String sessionName, {
   String? extraFlags,
 }) {
+  const sep = r'${SEP}';
   final listClients = TmuxService._tmuxCommand(
     'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
   return r'flutty_theme_report_clients=$( '
-      '$listClients"#{client_name}" 2>/dev/null || true '
+      '$listClients"#{client_control_mode}$sep#{client_name}" 2>/dev/null | '
+      r'while IFS="$SEP" read -r control client; do '
+      r'[ "$control" = 0 ] || continue; '
+      r'[ -n "$client" ] || continue; '
+      r'printf "%s\n" "$client"; '
+      'done '
       ');';
 }
 
