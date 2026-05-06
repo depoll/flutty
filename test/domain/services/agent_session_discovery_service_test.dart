@@ -590,6 +590,23 @@ branch refs/heads/fix/session-resumption
         "codex resume '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d'",
       );
     });
+
+    test('adds yolo mode when resuming supported sessions', () {
+      const info = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d',
+        workingDirectory: '/Users/depoll/Code/flutty',
+      );
+
+      expect(
+        AgentSessionDiscoveryService().buildResumeCommand(
+          info,
+          startInYoloMode: true,
+        ),
+        "cd '/Users/depoll/Code/flutty' && "
+        "codex --yolo resume '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d'",
+      );
+    });
   });
 
   group('compareDiscoveredSessionsByRecency', () {

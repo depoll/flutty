@@ -35,6 +35,62 @@ void main() {
     });
   });
 
+  group('buildAgentResumeCommand', () {
+    test('adds yolo flags for supported resume commands', () {
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.claudeCode,
+          'claude-session',
+          startInYoloMode: true,
+        ),
+        "claude --dangerously-skip-permissions --resume 'claude-session'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.copilotCli,
+          'copilot-session',
+          startInYoloMode: true,
+        ),
+        "copilot --yolo --resume 'copilot-session'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.codex,
+          'codex-session',
+          startInYoloMode: true,
+        ),
+        "codex --yolo resume 'codex-session'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.geminiCli,
+          'gemini-session',
+          startInYoloMode: true,
+        ),
+        "gemini --yolo --resume 'gemini-session'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.openCode,
+          'opencode-session',
+          startInYoloMode: true,
+        ),
+        r"""OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode --session 'opencode-session'""",
+      );
+    });
+
+    test('preserves OpenCode continue resume command in yolo mode', () {
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.openCode,
+          '_continue',
+          startInYoloMode: true,
+        ),
+        r'OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode --continue',
+      );
+    });
+  });
+
   group('agentLaunchToolForCommandText', () {
     test('detects tools in wrapped shell commands', () {
       expect(

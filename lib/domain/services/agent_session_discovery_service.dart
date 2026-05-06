@@ -5,6 +5,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
@@ -274,6 +275,16 @@ String? _directorySummaryFallback(
 
 String _pathLastSegment(String path) =>
     path.split('/').where((segment) => segment.isNotEmpty).lastOrNull ?? path;
+
+AgentLaunchTool? _agentLaunchToolForSessionToolName(String toolName) {
+  final normalizedToolName = toolName.trim();
+  for (final tool in AgentLaunchTool.values) {
+    if (tool.discoveredSessionToolName == normalizedToolName) {
+      return tool;
+    }
+  }
+  return null;
+}
 
 String _truncateSessionIdValue(String id) {
   if (id.length <= 12) return id;
@@ -1542,18 +1553,18 @@ class AgentSessionDiscoveryService {
   ///
   /// If the session has a [ToolSessionInfo.workingDirectory], the command
   /// `cd`s there first so the CLI finds its project context.
-  String buildResumeCommand(ToolSessionInfo info) {
-    final resume = switch (info.toolName) {
-      'Claude Code' => 'claude --resume ${_shellQuote(info.sessionId)}',
-      'Codex' => 'codex resume ${_shellQuote(info.sessionId)}',
-      'Copilot CLI' => 'copilot --resume ${_shellQuote(info.sessionId)}',
-      'Gemini CLI' => 'gemini --resume ${_shellQuote(info.sessionId)}',
-      'OpenCode' =>
-        info.sessionId == '_continue'
-            ? 'opencode --continue'
-            : 'opencode --session ${_shellQuote(info.sessionId)}',
-      _ => info.toolName.toLowerCase(),
-    };
+  String buildResumeCommand(
+    ToolSessionInfo info, {
+    bool startInYoloMode = false,
+  }) {
+    final tool = _agentLaunchToolForSessionToolName(info.toolName);
+    final resume = tool == null
+        ? info.toolName.toLowerCase()
+        : buildAgentResumeCommand(
+            tool,
+            info.sessionId,
+            startInYoloMode: startInYoloMode,
+          );
 
     final dir = info.workingDirectory;
     if (dir != null && dir.isNotEmpty) {

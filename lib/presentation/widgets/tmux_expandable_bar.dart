@@ -567,7 +567,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   void _resumeSession(ToolSessionInfo info) {
     final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(info);
+    final command = discovery.buildResumeCommand(
+      info,
+      startInYoloMode: widget.startClisInYoloMode,
+    );
     final wasExpanded = _expanded;
     setState(() => _expanded = false);
     if (wasExpanded) {
@@ -593,6 +596,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
     if (!mounted || selected == null) return;
     _resumeSession(selected);
+  }
+
+  Future<void> _showNewWindowPicker() async {
+    final installedToolsFuture = _tmux.detectInstalledAgentTools(
+      widget.session,
+    );
+    final action = await showTmuxNewWindowPicker(
+      context: context,
+      isProUser: widget.isProUser,
+      startClisInYoloMode: widget.startClisInYoloMode,
+      installedToolsFuture: installedToolsFuture,
+      preferredTool: _preferredLaunchTool,
+    );
+    if (!mounted || action == null) {
+      return;
+    }
+    await widget.onAction(action);
   }
 
   int _tmuxAlertNotificationId(
@@ -968,36 +988,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               if (wasExpanded) {
                 widget.onExpandedChanged(false);
               }
-              final installedToolsFuture = _tmux.detectInstalledAgentTools(
-                widget.session,
-              );
-              showModalBottomSheet<AgentLaunchTool?>(
-                context: context,
-                requestFocus: terminalOverlayRouteRequestFocus(context),
-                builder: (ctx) => TmuxToolPickerSheet(
-                  isProUser: widget.isProUser,
-                  installedToolsFuture: installedToolsFuture,
-                  preferredTool: _preferredLaunchTool,
-                  onToolSelected: (tool) => Navigator.pop(ctx, tool),
-                  onEmptyWindow: () {
-                    Navigator.pop(ctx);
-                    widget.onAction(const TmuxNewWindowAction());
-                  },
-                ),
-              ).then((tool) {
-                if (!mounted || tool == null) {
-                  return;
-                }
-                widget.onAction(
-                  TmuxNewWindowAction(
-                    command: buildAgentToolCommand(
-                      tool,
-                      startInYoloMode: widget.startClisInYoloMode,
-                    ),
-                    windowName: tool.commandName,
-                  ),
-                );
-              });
+              unawaited(_showNewWindowPicker());
             },
           ),
           if (widget.isProUser) ...[
