@@ -212,7 +212,7 @@ void main() {
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
       expect(command, contains(r'#{client_control_mode}${SEP}#{client_name}'));
       expect(command, contains(r'while IFS="$SEP" read -r control client'));
-      expect(command, contains(r'[ "$control" = 0 ] || continue;'));
+      expect(command, contains(r'[ "$control" = 1 ] || continue;'));
       expect(
         command,
         contains(
