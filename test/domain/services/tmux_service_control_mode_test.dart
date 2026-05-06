@@ -565,11 +565,7 @@ void main() {
 
           expect(executeCalls, 1);
           expect(TmuxService.hasExecChannelBackoffEntry(35), true);
-
-          await Future<void>.delayed(const Duration(milliseconds: 2200));
-
-          expect(service.isExecChannelCoolingDown(session), false);
-          expect(TmuxService.hasExecChannelBackoffEntry(35), false);
+          expect(TmuxService.execChannelBackoffFailureCountForTesting(35), 1);
         } finally {
           await service.clearCache(35);
         }

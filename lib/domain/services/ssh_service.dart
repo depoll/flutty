@@ -2379,7 +2379,7 @@ class SshSession {
       DiagnosticsLogService.instance.info(
         'ssh.sftp',
         'open_success',
-        fields: {'connectionId': connectionId},
+        fields: {'connectionId': connectionId, 'hostId': hostId},
       );
       return sftpClient;
     } on Object catch (error) {
@@ -2388,6 +2388,7 @@ class SshSession {
         'open_failed',
         fields: {
           'connectionId': connectionId,
+          'hostId': hostId,
           ..._diagnosticSshExecErrorFields(error),
         },
       );

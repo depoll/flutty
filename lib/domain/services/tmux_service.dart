@@ -154,6 +154,11 @@ class TmuxService {
   static bool hasExecChannelBackoffEntry(int connectionId) =>
       _execChannelBackoffs.containsKey(connectionId);
 
+  /// Returns the exec-channel failure count for [connectionId], if any.
+  @visibleForTesting
+  static int? execChannelBackoffFailureCountForTesting(int connectionId) =>
+      _execChannelBackoffs[connectionId]?.failureCount;
+
   /// Clears tmux caches and disposes active watchers for a connection.
   Future<void> clearCache(int connectionId) async {
     DiagnosticsLogService.instance.info(
