@@ -3129,7 +3129,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     _refreshTerminalThemeReportsForTui(
       theme,
-      includeDefaultColorReports: true,
+      includeColorReports: true,
       reason: 'tmux_prime_outer_theme',
     );
     final tmuxSessionName = _tmuxSessionName;
@@ -3442,7 +3442,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (request.sendOuterThemeReports) {
         _refreshTerminalThemeReportsForTui(
           request.theme,
-          includeDefaultColorReports: true,
+          includeColorReports: true,
           reason: '${request.reason}_tmux_outer_theme',
         );
         _scheduleTerminalThemeRefreshForTui(
@@ -3451,9 +3451,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           refreshGeneration: request.refreshGeneration,
           delay: const Duration(milliseconds: 225),
           includeThemeModeReport: false,
-          includeDefaultColorReports: true,
+          includeColorReports: true,
           includeFocusReport: false,
-          reason: '${request.reason}_tmux_outer_defaults_late',
+          reason: '${request.reason}_tmux_outer_colors_late',
         );
         _scheduleTerminalThemeRefreshForTui(
           theme: request.theme,

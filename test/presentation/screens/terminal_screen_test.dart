@@ -1305,7 +1305,7 @@ void main() {
         );
         expect(writtenShellText, contains('\x1b]10;'));
         expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b]4;0;'));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
@@ -1336,7 +1336,7 @@ void main() {
         expect(writtenShellText, contains('\x1b[?997;1n'));
         expect(writtenShellText, contains('\x1b]10;'));
         expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b]4;0;'));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1914,7 +1914,7 @@ void main() {
         expect(writtenShellText, contains('\x1b[?997;2n'));
         expect(writtenShellText, contains('\x1b]10;'));
         expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
+        expect(writtenShellText, contains('\x1b]4;0;'));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
