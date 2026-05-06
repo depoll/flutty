@@ -270,14 +270,24 @@ class TmuxWindow {
     return 'session ${_shortenSessionId(id)}';
   }
 
-  /// Fallback title for agent windows whose pane title is generic or stale.
+  /// Live coding-agent session title suitable for primary UI text.
+  String? get agentSessionDisplayTitle {
+    final title = _normalizedTmuxTitle(agentSessionTitle);
+    if (title == null || title.isEmpty) return null;
+    final tool = foregroundAgentTool;
+    return tool == null ? title : '${tool.label} · $title';
+  }
+
+  /// Agent-aware title, preferring live session metadata when available.
   String? get agentContextTitle {
+    final sessionTitle = agentSessionDisplayTitle;
+    if (sessionTitle != null) return sessionTitle;
+    return _agentFallbackContextTitle;
+  }
+
+  String? get _agentFallbackContextTitle {
     final tool = foregroundAgentTool;
     if (tool == null) return null;
-    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
-    if (sessionTitle != null && sessionTitle.isNotEmpty) {
-      return '${tool.label} · $sessionTitle';
-    }
     final context = _windowContextLabelFromPath(currentPath);
     if (context != null) {
       return '${tool.label} · $context';
@@ -289,8 +299,14 @@ class TmuxWindow {
     return tool.label;
   }
 
-  /// A short display title — prefers the richest usable tmux title.
+  /// A short display title — prefers live session metadata, then tmux titles.
   String get displayTitle {
+    final sessionTitle = agentSessionDisplayTitle;
+    if (sessionTitle != null) return sessionTitle;
+    return _tmuxDisplayTitle;
+  }
+
+  String get _tmuxDisplayTitle {
     final normalizedPaneTitle = _normalizedTmuxTitle(
       paneTitle,
       stripPlaceholderPrefix: true,
@@ -303,7 +319,7 @@ class TmuxWindow {
       currentCommand,
       stripPlaceholderPrefix: true,
     );
-    final agentTitle = agentContextTitle;
+    final agentTitle = _agentFallbackContextTitle;
     final foregroundTool = foregroundAgentTool;
     if (agentTitle != null &&
         foregroundTool != null &&
@@ -340,6 +356,8 @@ class TmuxWindow {
   /// command (for example `copilot` or `claude`), prefer the richer pane title
   /// instead so the collapsed handle still distinguishes agent sessions.
   String get handleTitle {
+    final sessionTitle = agentSessionDisplayTitle;
+    if (sessionTitle != null) return sessionTitle;
     final normalizedPaneTitle = _normalizedTmuxTitle(
       paneTitle,
       stripPlaceholderPrefix: true,
@@ -352,7 +370,7 @@ class TmuxWindow {
       currentCommand,
       stripPlaceholderPrefix: true,
     );
-    final agentTitle = agentContextTitle;
+    final agentTitle = _agentFallbackContextTitle;
     final foregroundTool = foregroundAgentTool;
     if (agentTitle != null &&
         foregroundTool != null &&
@@ -384,6 +402,18 @@ class TmuxWindow {
   /// are useful and distinct.
   String? get secondaryTitle {
     final display = displayTitle;
+    final sessionDisplayTitle = agentSessionDisplayTitle;
+    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
+    if (sessionDisplayTitle != null) {
+      final tmuxTitle = _tmuxDisplayTitle;
+      final fallbackAgentTitle = _agentFallbackContextTitle;
+      if (_titlesMatch(tmuxTitle, display) ||
+          _titlesMatch(tmuxTitle, sessionTitle) ||
+          _titlesMatch(tmuxTitle, fallbackAgentTitle)) {
+        return null;
+      }
+      return tmuxTitle;
+    }
     final normalizedPaneTitle = _normalizedTmuxTitle(
       paneTitle,
       stripPlaceholderPrefix: true,
@@ -393,7 +423,6 @@ class TmuxWindow {
       stripPlaceholderPrefix: true,
     );
     final sessionLabel = agentSessionLabel;
-    final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
     if (sessionLabel != null &&
         sessionTitle != null &&
         sessionTitle.isNotEmpty &&

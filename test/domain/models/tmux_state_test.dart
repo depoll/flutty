@@ -334,8 +334,9 @@ void main() {
         agentSessionTitle: 'Fix tmux session labels',
       );
 
-      expect(window.displayTitle, 'Editing main.dart');
-      expect(window.secondaryTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.displayTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.handleTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.secondaryTitle, 'Editing main.dart');
     });
 
     test('copyWith can clear live agent session metadata', () {
@@ -365,8 +366,15 @@ void main() {
         agentSessionTitle: 'Improve Theme Picker Keyboard UX',
       );
 
-      expect(window.displayTitle, 'Improve Theme Picker Keyboard UX');
-      expect(window.secondaryTitle, 'Copilot CLI');
+      expect(
+        window.displayTitle,
+        'Copilot CLI · Improve Theme Picker Keyboard UX',
+      );
+      expect(
+        window.handleTitle,
+        'Copilot CLI · Improve Theme Picker Keyboard UX',
+      );
+      expect(window.secondaryTitle, isNull);
     });
 
     test('handles empty command and path', () {
