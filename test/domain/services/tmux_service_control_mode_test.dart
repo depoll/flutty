@@ -202,12 +202,12 @@ void main() {
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
       expect(command, contains(r'case "$agent_tool" in'));
+      expect(command, contains('copilot)'));
       expect(command, contains('codex)'));
       expect(command, contains('opencode|claude|gemini)'));
       final directBranchStart = command.indexOf(r'case "$agent_tool" in');
       expect(directBranchStart, isNonNegative);
       final directBranch = command.substring(directBranchStart);
-      expect(directBranch, isNot(contains('copilot)')));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
       expect(command, contains(r'#{client_control_mode}${SEP}#{client_name}'));
@@ -241,12 +241,26 @@ void main() {
       );
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
+      final copilotBranchStart = directBranch.indexOf('copilot)');
       final codexBranchStart = directBranch.indexOf('codex)');
       final opencodeBranchStart = directBranch.indexOf(
         'opencode|claude|gemini)',
       );
-      expect(codexBranchStart, isNonNegative);
+      expect(copilotBranchStart, isNonNegative);
+      expect(codexBranchStart, greaterThan(copilotBranchStart));
       expect(opencodeBranchStart, greaterThan(codexBranchStart));
+      expect(
+        directBranch.substring(copilotBranchStart, codexBranchStart),
+        contains('1b 5b 3f 39 39 37 3b 31 6e'),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, opencodeBranchStart),
+        isNot(contains('1b 5b 3f 39 39 37')),
+      );
+      expect(
+        directBranch.substring(opencodeBranchStart),
+        isNot(contains('1b 5b 3f 39 39 37')),
+      );
       expect(
         directBranch.substring(codexBranchStart, opencodeBranchStart),
         isNot(contains('1b 5b 4f')),
@@ -271,7 +285,7 @@ void main() {
       }
       expect(
         command,
-        isNot(contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37')),
+        contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),
       );
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 31')));

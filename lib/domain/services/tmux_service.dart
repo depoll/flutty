@@ -2395,6 +2395,12 @@ String buildTmuxRefreshTerminalThemeCommand(
       r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$pane_title"; '
       r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_command_text "$pane_start_command"; '
       r'case "$agent_tool" in '
+      'copilot) '
+      'injected=1; '
+      '( ${_buildTmuxSendPaneThemeModeReportCommand(theme, extraFlags: extraFlags)} '
+      '2>/dev/null || true; sleep 0.05; '
+      '${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
       'codex) '
       'injected=1; '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
@@ -2546,15 +2552,26 @@ String _buildTmuxSendPaneFocusTransitionCommand({String? extraFlags}) =>
     '2>/dev/null || true; sleep 0.12; '
     '${_buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags)}';
 
+String _buildTmuxSendPaneThemeModeReportCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) => _buildTmuxSendPaneReportCommand(
+  buildTerminalThemeModeReport(isDark: theme.isDark),
+  extraFlags: extraFlags,
+);
+
 String _buildTmuxSendPaneFocusReportCommand(
   String report, {
   String? extraFlags,
-}) => TmuxService._tmuxCommand(
-  r'send-keys -t "$pane" -H '
-  '${_formatTmuxSendKeysHexArguments(report)}',
-  extraFlags: extraFlags,
-  forceUtf8: true,
-);
+}) => _buildTmuxSendPaneReportCommand(report, extraFlags: extraFlags);
+
+String _buildTmuxSendPaneReportCommand(String report, {String? extraFlags}) =>
+    TmuxService._tmuxCommand(
+      r'send-keys -t "$pane" -H '
+      '${_formatTmuxSendKeysHexArguments(report)}',
+      extraFlags: extraFlags,
+      forceUtf8: true,
+    );
 
 String _formatTmuxSendKeysHexArguments(String input) =>
     input.codeUnits.map(_formatTmuxSendKeysHexArgument).join(' ');
