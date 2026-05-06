@@ -303,6 +303,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.autoResize = true,
     this.backgroundOpacity = 1,
     this.focusNode,
+    this.cursorFocusNode,
     this.autofocus = false,
     this.onTapDown,
     this.onTapUp,
@@ -364,6 +365,12 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// An optional focus node to use as the focus node for this widget.
   final FocusNode? focusNode;
+
+  /// Optional focus node used only for cursor focus painting.
+  ///
+  /// This is useful when a parent widget owns text input focus while this
+  /// widget still owns pointer and hardware-keyboard focus handling.
+  final FocusNode? cursorFocusNode;
 
   /// True if this widget will be selected as the initial focus when no other
   /// node in its scope is currently focused.
@@ -672,6 +679,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   @override
   Widget build(BuildContext context) {
+    final cursorFocusNode = widget.cursorFocusNode ?? _focusNode;
     final mediaQuery = MediaQuery.of(context);
     final terminalViewportPadding = resolveTerminalViewportPadding(
       mediaQuery,
@@ -702,7 +710,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
           theme: widget.theme,
           inlineUnderlines: widget.inlineUnderlines,
-          focusNode: _focusNode,
+          focusNode: cursorFocusNode,
           cursorType: widget.cursorType,
           alwaysShowCursor: widget.alwaysShowCursor,
           onEditableRect: _onEditableRect,

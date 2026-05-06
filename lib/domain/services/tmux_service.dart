@@ -1208,32 +1208,51 @@ class TmuxService {
   Future<String?> currentPanePath(
     SshSession session,
     String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+    String? extraFlags,
+  }) async => (await currentPaneContext(
+    session,
+    sessionName,
+    priority: priority,
+    extraFlags: extraFlags,
+  ))?.currentPath;
+
+  /// Returns active pane metadata for [sessionName], if tmux reports it.
+  Future<TmuxPaneContext?> currentPaneContext(
+    SshSession session,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
     String? extraFlags,
   }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.query',
-      'current_pane_path_start',
+      'current_pane_context_start',
       fields: {'connectionId': session.connectionId},
     );
     try {
       final output = await _execTmuxCommand(
         session,
         sessionName,
-        "display-message -p -t ${_shellQuote('$sessionName:')} "
-        "'#{pane_current_path}'",
+        'display-message -p -t ${_shellQuote('$sessionName:')} '
+        '${_shellQuote('#{pane_current_path}$tmuxWindowFieldSeparator#{pane_current_command}')}',
         extraFlags: extraFlags,
+        priority: priority,
       );
-      final path = parseTmuxCurrentPanePath(output);
-      DiagnosticsLogService.instance.info(
+      final context = parseTmuxCurrentPaneContext(output);
+      DiagnosticsLogService.instance.debug(
         'tmux.query',
-        'current_pane_path_complete',
-        fields: {'connectionId': session.connectionId, 'hasPath': path != null},
+        'current_pane_context_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasPath': context?.currentPath != null,
+          'hasCommand': context?.currentCommand != null,
+        },
       );
-      return path;
+      return context;
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.query',
-        'current_pane_path_failed',
+        'current_pane_context_failed',
         fields: {
           'connectionId': session.connectionId,
           'errorType': error.runtimeType,
@@ -2240,14 +2259,31 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
 
 /// Parses the current pane path reported by `tmux display-message`.
 @visibleForTesting
-String? parseTmuxCurrentPanePath(String output) {
+String? parseTmuxCurrentPanePath(String output) =>
+    parseTmuxCurrentPaneContext(output)?.currentPath;
+
+/// Parses current pane metadata reported by `tmux display-message`.
+@visibleForTesting
+TmuxPaneContext? parseTmuxCurrentPaneContext(String output) {
   for (final rawLine in output.split('\n')) {
     final line = rawLine.trim();
     if (line.isNotEmpty) {
-      return line;
+      final fields = line.split(tmuxWindowFieldSeparator);
+      final path = _nonEmptyTmuxPaneField(fields.first);
+      final command = fields.length > 1
+          ? _nonEmptyTmuxPaneField(fields[1])
+          : null;
+      if (path != null || command != null) {
+        return TmuxPaneContext(currentPath: path, currentCommand: command);
+      }
     }
   }
   return null;
+}
+
+String? _nonEmptyTmuxPaneField(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 /// Builds a command that redraws all non-control tmux clients for a session.
