@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
@@ -113,6 +114,86 @@ void main() {
     test('returns null for unknown binaries', () {
       expect(agentToolForBinaryName('vim'), isNull);
       expect(agentToolForBinaryName(''), isNull);
+    });
+  });
+
+  group('Copilot active session metadata', () {
+    test('command checks only locks for Copilot descendants of pane PIDs', () {
+      final command = buildCopilotActiveSessionMetadataCommand(const {42, 88});
+
+      expect(command, contains('pane_pids=\'42 88\''));
+      expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
+      expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
+      expect(command, contains('lock_rows='));
+      expect(command, contains('inuse.*.lock'));
+      expect(command, contains(r'awk -F "$sep" -v wanted="$pid"'));
+      expect(command, contains('workspace.yaml'));
+      expect(command, contains(r'if [ -d "$state_dir" ]; then'));
+      expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
+      expect(command, isNot(contains(r'inuse."$pid".lock')));
+      expect(command, isNot(contains(r'ps -p "$pid"')));
+      expect(command, isNot(contains('exit 0')));
+    });
+
+    test('parses live session titles by matched pane PID', () {
+      const sep = tmuxWindowFieldSeparator;
+
+      final metadata = parseCopilotActiveSessionMetadataOutput(
+        'session-1${sep}50122${sep}42${sep}User named Copilot session\n'
+        'session-2${sep}99999${sep}77$sep\n',
+        const {42, 88},
+      );
+
+      expect(metadata.keys, [42]);
+      expect(metadata[42]?.sessionId, 'session-1');
+      expect(metadata[42]?.title, 'User named Copilot session');
+    });
+
+    test('forces refresh when a Copilot tmux title changes', () {
+      const existing = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Old title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Old title',
+      );
+      const updated = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'New title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'New title',
+      );
+
+      expect(
+        shouldForceAgentSessionMetadataRefreshForSnapshot(const [
+          existing,
+        ], updated),
+        isTrue,
+      );
+    });
+
+    test('does not force refresh for unchanged Copilot snapshots', () {
+      const existing = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Current title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Current title',
+      );
+
+      expect(
+        shouldForceAgentSessionMetadataRefreshForSnapshot(const [
+          existing,
+        ], existing),
+        isFalse,
+      );
     });
   });
 }

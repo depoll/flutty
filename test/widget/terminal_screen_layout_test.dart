@@ -123,6 +123,32 @@ void main() {
       );
     });
 
+    test('uses the live agent session title as the handle primary value', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(
+          index: 1,
+          name: 'copilot',
+          isActive: true,
+          currentCommand: 'copilot',
+          paneTitle: 'Editing main.dart',
+          activeAgentSessionId: 'session-1',
+          agentSessionTitle: 'Fix tmux session labels',
+        ),
+      ];
+
+      expect(
+        resolveTmuxBarActiveWindowTitle(windows),
+        'Copilot CLI · Fix tmux session labels',
+      );
+      expect(
+        resolveTmuxBarHandleLabel(
+          'workspace',
+          activeWindowTitle: resolveTmuxBarActiveWindowTitle(windows),
+        ),
+        'workspace · Copilot CLI · Fix tmux session labels',
+      );
+    });
+
     test('optimistically shows the tapped tmux window as active', () {
       const windows = <TmuxWindow>[
         TmuxWindow(index: 0, name: 'shell', isActive: true, paneTitle: 'Shell'),
