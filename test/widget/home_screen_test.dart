@@ -12,8 +12,14 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
+import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
@@ -28,6 +34,11 @@ class _MockSnippetRepository extends Mock implements SnippetRepository {}
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockTmuxService extends Mock implements TmuxService {}
+
+class _MockAgentSessionDiscoveryService extends Mock
+    implements AgentSessionDiscoveryService {}
+
+class _MockMonetizationService extends Mock implements MonetizationService {}
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   @override
@@ -205,9 +216,18 @@ ActiveConnection _buildActiveConnection({
   ),
 );
 
+const _proMonetizationState = MonetizationState(
+  billingAvailability: MonetizationBillingAvailability.available,
+  entitlements: MonetizationEntitlements.pro(),
+  offers: [],
+  debugUnlockAvailable: false,
+  debugUnlocked: false,
+);
+
 void main() {
   setUpAll(() {
     registerFallbackValue(<int>[]);
+    registerFallbackValue(MonetizationFeature.agentLaunchPresets);
   });
 
   Widget buildMobileHomeScreen({
@@ -694,6 +714,168 @@ void main() {
       () => tmuxService.listWindows(session, 'work', extraFlags: newFlags),
     ).called(1);
   });
+
+  testWidgets(
+    'home tmux badge uses latest host yolo preference when resuming a session',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settingsService = SettingsService(db);
+      final cliLaunchPreferencesService = HostCliLaunchPreferencesService(
+        settingsService,
+      );
+      final tmuxService = _MockTmuxService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final monetizationService = _MockMonetizationService();
+      final sshClient = _MockSshClient();
+
+      final host = _buildHost(
+        id: 1,
+        label: 'Alpha',
+        sortOrder: 0,
+        tmuxSessionName: 'work',
+      );
+      final session = SshSession(
+        connectionId: 7,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'alpha.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      );
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(connectionId: 7, hostId: host.id),
+        ],
+        initialSessions: [session],
+      );
+      const codexSession = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: 'codex-session',
+        workingDirectory: '/home/demo/project',
+        summary: 'Resume codex work',
+      );
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(
+        () => monetizationService.states,
+      ).thenAnswer((_) => Stream.value(_proMonetizationState));
+      when(
+        monetizationService.initialize,
+      ).thenAnswer((_) => Future<void>.value());
+      when(
+        () => monetizationService.canUseFeature(any()),
+      ).thenAnswer((_) async => true);
+      when(
+        () => tmuxService.watchWindowChanges(session, 'work'),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(() => tmuxService.listWindows(session, 'work')).thenAnswer(
+        (_) async => const <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+        ],
+      );
+      when(
+        () => tmuxService.createWindow(
+          session,
+          'work',
+          command: any(named: 'command'),
+          name: any(named: 'name'),
+          workingDirectory: any(named: 'workingDirectory'),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
+      when(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      ).thenAnswer((invocation) {
+        final toolName = invocation.namedArguments[#toolName] as String?;
+        return Stream<DiscoveredSessionsResult>.value(
+          DiscoveredSessionsResult(
+            sessions: toolName == 'Codex'
+                ? const <ToolSessionInfo>[codexSession]
+                : const <ToolSessionInfo>[],
+            attemptedTools: toolName == null ? const <String>[] : [toolName],
+          ),
+        );
+      });
+      when(
+        () => discoveryService.buildResumeCommand(
+          codexSession,
+          startInYoloMode: true,
+        ),
+      ).thenReturn("codex --yolo resume 'codex-session'");
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            settingsServiceProvider.overrideWithValue(settingsService),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith((ref) => Stream.value([host])),
+            tmuxServiceProvider.overrideWithValue(tmuxService),
+            agentSessionDiscoveryServiceProvider.overrideWithValue(
+              discoveryService,
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Connections').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('work · 1 windows'), findsOneWidget);
+
+      await cliLaunchPreferencesService.setPreferencesForHost(
+        host.id,
+        const HostCliLaunchPreferences(startInYoloMode: true),
+      );
+
+      await tester.tap(find.text('work · 1 windows'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(find.text('AI Sessions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(find.text('Codex'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(find.text('Resume codex work'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      verify(
+        () => discoveryService.buildResumeCommand(
+          codexSession,
+          startInYoloMode: true,
+        ),
+      ).called(1);
+      verify(
+        () => tmuxService.createWindow(
+          session,
+          'work',
+          command: "codex --yolo resume 'codex-session'",
+          name: 'Codex',
+          workingDirectory: '/home/demo/project',
+          extraFlags: null,
+        ),
+      ).called(1);
+    },
+  );
 
   testWidgets('returns to Hosts when the last active connection disappears', (
     tester,

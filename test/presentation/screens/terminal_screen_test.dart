@@ -21,6 +21,7 @@ import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
@@ -50,6 +51,9 @@ class _MockTmuxService extends Mock implements TmuxService {
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
 }
+
+class _MockAgentSessionDiscoveryService extends Mock
+    implements AgentSessionDiscoveryService {}
 
 class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
   final toggleCalls = <bool>[];
@@ -940,7 +944,17 @@ void main() {
 
       expect(find.byTooltip('Connected through jump host'), findsOneWidget);
       expect(find.byIcon(Icons.alt_route), findsOneWidget);
-      expect(find.byIcon(Icons.check_circle_outline), findsNothing);
+      expect(find.byTooltip('Connected'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
+      final titleLeft = tester.getTopLeft(find.text('Terminal test host')).dx;
+      expect(
+        tester.getCenter(find.byIcon(Icons.check_circle_outline)).dx,
+        lessThan(titleLeft),
+      );
+      expect(
+        tester.getCenter(find.byIcon(Icons.alt_route)).dx,
+        lessThan(titleLeft),
+      );
     });
 
     testWidgets(
@@ -1231,8 +1245,10 @@ void main() {
 
     Future<void> pumpTmuxScreen(
       WidgetTester tester,
-      _MockTmuxService tmuxService,
-    ) async {
+      _MockTmuxService tmuxService, {
+      SettingsService? settingsServiceOverride,
+      AgentSessionDiscoveryService? agentSessionDiscoveryServiceOverride,
+    }) async {
       const tmuxSessionName = 'work';
       const windows = <TmuxWindow>[
         TmuxWindow(index: 0, name: 'shell', isActive: true),
@@ -1277,6 +1293,14 @@ void main() {
               () => _TestActiveSessionsNotifier(session),
             ),
             tmuxServiceProvider.overrideWithValue(tmuxService),
+            if (settingsServiceOverride != null)
+              settingsServiceProvider.overrideWithValue(
+                settingsServiceOverride,
+              ),
+            if (agentSessionDiscoveryServiceOverride != null)
+              agentSessionDiscoveryServiceProvider.overrideWithValue(
+                agentSessionDiscoveryServiceOverride,
+              ),
           ],
           child: MaterialApp(
             home: TerminalScreen(
@@ -2635,6 +2659,108 @@ void main() {
 
         expect(dismissRegion, findsNothing);
         expect(tester.widget<PopScope<Object?>>(popScope).canPop, isTrue);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'tmux bar passes host yolo mode when resuming an AI session',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final discoveryService = _MockAgentSessionDiscoveryService();
+        final settingsService = SettingsService(db);
+        final cliLaunchPreferencesService = HostCliLaunchPreferencesService(
+          settingsService,
+        );
+        const codexSession = ToolSessionInfo(
+          toolName: 'Codex',
+          sessionId: 'codex-session',
+          workingDirectory: '/home/demo/project',
+          summary: 'Resume codex work',
+        );
+
+        await cliLaunchPreferencesService.setPreferencesForHost(
+          host.id,
+          const HostCliLaunchPreferences(startInYoloMode: true),
+        );
+        when(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: any(named: 'workingDirectory'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.hasForegroundClientOrThrow(
+            session,
+            'work',
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => discoveryService.discoverSessionsStream(
+            session,
+            workingDirectory: any(named: 'workingDirectory'),
+            maxPerTool: any(named: 'maxPerTool'),
+            toolName: any(named: 'toolName'),
+          ),
+        ).thenAnswer((invocation) {
+          final toolName = invocation.namedArguments[#toolName] as String?;
+          return Stream<DiscoveredSessionsResult>.value(
+            DiscoveredSessionsResult(
+              sessions: toolName == 'Codex'
+                  ? const <ToolSessionInfo>[codexSession]
+                  : const <ToolSessionInfo>[],
+              attemptedTools: toolName == null ? const <String>[] : [toolName],
+            ),
+          );
+        });
+        when(
+          () => discoveryService.buildResumeCommand(
+            codexSession,
+            startInYoloMode: true,
+          ),
+        ).thenReturn("codex --yolo resume 'codex-session'");
+
+        await pumpTmuxScreen(
+          tester,
+          tmuxService,
+          settingsServiceOverride: settingsService,
+          agentSessionDiscoveryServiceOverride: discoveryService,
+        );
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.ensureVisible(find.text('AI Sessions'));
+        await tester.tap(find.text('AI Sessions'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.ensureVisible(find.text('Codex'));
+        await tester.tap(find.text('Codex'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(find.text('Resume codex work'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        verify(
+          () => discoveryService.buildResumeCommand(
+            codexSession,
+            startInYoloMode: true,
+          ),
+        ).called(1);
+        verify(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            command: "codex --yolo resume 'codex-session'",
+            workingDirectory: '/home/demo/project',
+          ),
+        ).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

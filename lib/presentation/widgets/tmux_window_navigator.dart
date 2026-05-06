@@ -73,6 +73,39 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   ),
 );
 
+/// Shows the tmux new-window picker bottom sheet.
+Future<TmuxNewWindowAction?> showTmuxNewWindowPicker({
+  required BuildContext context,
+  required bool isProUser,
+  required bool startClisInYoloMode,
+  Future<Set<AgentLaunchTool>>? installedToolsFuture,
+  AgentLaunchTool? preferredTool,
+}) => showModalBottomSheet<TmuxNewWindowAction>(
+  context: context,
+  isScrollControlled: true,
+  requestFocus: terminalOverlayRouteRequestFocus(context),
+  builder: (context) => TmuxToolPickerSheet(
+    isProUser: isProUser,
+    installedToolsFuture: installedToolsFuture,
+    preferredTool: preferredTool,
+    onToolSelected: (tool) {
+      Navigator.pop(
+        context,
+        TmuxNewWindowAction(
+          command: buildAgentToolCommand(
+            tool,
+            startInYoloMode: startClisInYoloMode,
+          ),
+          windowName: tool.commandName,
+        ),
+      );
+    },
+    onEmptyWindow: () {
+      Navigator.pop(context, const TmuxNewWindowAction());
+    },
+  ),
+);
+
 /// An action selected from the tmux navigator.
 sealed class TmuxNavigatorAction {
   /// Creates a new [TmuxNavigatorAction].
@@ -156,7 +189,6 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
   static const _maxSessionsPerTool = 16;
-  static const _prefetchSessionFetchLimit = 6;
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -235,29 +267,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     final preferredLaunchTool = preset?.tool;
     if (_preferredLaunchTool == preferredLaunchTool) return;
     setState(() => _preferredLaunchTool = preferredLaunchTool);
-  }
-
-  Future<void> _prefetchPreferredSessionProvider({
-    List<TmuxWindow>? windows,
-    int maxPerTool = _prefetchSessionFetchLimit,
-  }) async {
-    final toolName = _preferredLaunchTool?.discoveredSessionToolName;
-    if (toolName == null || toolName.isEmpty) return;
-    final activeWindow = (windows ?? _windows)
-        ?.where((window) => window.isActive)
-        .firstOrNull;
-    final scopeWorkingDirectory =
-        widget.scopeWorkingDirectory ??
-        resolveAgentSessionScopeWorkingDirectory(
-          activeWorkingDirectory: activeWindow?.currentPath,
-          sessionWorkingDirectory: widget.session.workingDirectory,
-        );
-    await _discovery.prefetchSessions(
-      widget.session,
-      workingDirectory: scopeWorkingDirectory,
-      maxPerTool: maxPerTool,
-      toolName: toolName,
-    );
   }
 
   Future<void> _loadWindows() async {
@@ -469,7 +478,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   void _resumeSession(ToolSessionInfo info) {
-    final command = _discovery.buildResumeCommand(info);
+    final command = _discovery.buildResumeCommand(
+      info,
+      startInYoloMode: widget.startClisInYoloMode,
+    );
     Navigator.pop(
       context,
       TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
@@ -504,32 +516,20 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     _resumeSession(selected);
   }
 
-  void _showNewWindowPicker() {
+  Future<void> _showNewWindowPicker() async {
     final installedToolsFuture = _installedToolsFuture ??= _tmux
         .detectInstalledAgentTools(widget.session);
-    showModalBottomSheet<void>(
+    final action = await showTmuxNewWindowPicker(
       context: context,
-      requestFocus: terminalOverlayRouteRequestFocus(context),
-      builder: (context) => TmuxToolPickerSheet(
-        isProUser: widget.isProUser,
-        installedToolsFuture: installedToolsFuture,
-        preferredTool: _preferredLaunchTool,
-        onToolSelected: (tool) {
-          Navigator.pop(context);
-          _createNewWindow(
-            command: buildAgentToolCommand(
-              tool,
-              startInYoloMode: widget.startClisInYoloMode,
-            ),
-            name: tool.commandName,
-          );
-        },
-        onEmptyWindow: () {
-          Navigator.pop(context);
-          _createNewWindow();
-        },
-      ),
+      isProUser: widget.isProUser,
+      startClisInYoloMode: widget.startClisInYoloMode,
+      installedToolsFuture: installedToolsFuture,
+      preferredTool: _preferredLaunchTool,
     );
+    if (!mounted || action == null) {
+      return;
+    }
+    _createNewWindow(command: action.command, name: action.windowName);
   }
 
   @override
@@ -610,7 +610,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     ),
                     title: const Text('New Window'),
                     dense: true,
-                    onTap: _showNewWindowPicker,
+                    onTap: () => unawaited(_showNewWindowPicker()),
                   ),
                   // Recent AI Sessions
                   if (widget.isProUser) ...[
@@ -739,7 +739,16 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           color: theme.colorScheme.onSurfaceVariant,
         ),
         title: const Row(
-          children: [Text('Recent AI Sessions'), Spacer(), PremiumBadge()],
+          children: [
+            Expanded(
+              child: Text(
+                'Recent AI Sessions',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            SizedBox(width: 8),
+            PremiumBadge(),
+          ],
         ),
         trailing: Icon(
           _showSessions ? Icons.expand_less : Icons.expand_more,
@@ -754,9 +763,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               _hasInitializedSessionProviders = true;
             }
           });
-          if (showSessions) {
-            unawaited(_prefetchPreferredSessionProvider());
-          }
         },
       ),
       if (_hasInitializedSessionProviders)
@@ -780,7 +786,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               preferredToolName:
                   _preferredLaunchTool?.discoveredSessionToolName,
             ),
-            loadSessionsForTool: (toolName, maxSessions) {
+            loadSessions: (maxSessions) {
               final activeWindow = _windows
                   ?.where((w) => w.isActive)
                   .firstOrNull;
@@ -794,7 +800,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                 widget.session,
                 workingDirectory: scopeWorkingDirectory,
                 maxPerTool: maxSessions,
-                toolName: toolName,
               );
             },
             itemBuilder: (context, provider) =>
@@ -910,111 +915,134 @@ class TmuxToolPickerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final screenHeight = MediaQuery.sizeOf(context).height;
-    final maxSheetHeight = math.min(
+    final mediaQuery = MediaQuery.of(context);
+    final screenHeight = mediaQuery.size.height;
+    final viewInsets = mediaQuery.viewInsets;
+    final visibleHeight = screenHeight > viewInsets.bottom
+        ? screenHeight - viewInsets.bottom
+        : screenHeight;
+    final preferredSheetHeight = math.min(
       screenHeight * _tmuxToolPickerMaxHeightFactor,
       _tmuxToolPickerMaxHeightCap,
     );
+    final maxSheetHeight = math.min(visibleHeight, preferredSheetHeight);
 
-    return SafeArea(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxSheetHeight),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Text('New Window', style: theme.textTheme.titleMedium),
-              ),
-              FutureBuilder<Set<AgentLaunchTool>>(
-                future: installedToolsFuture,
-                builder: (context, snapshot) {
-                  if (installedToolsFuture != null &&
-                      snapshot.connectionState != ConnectionState.done) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator.adaptive(
-                              strokeWidth: 2,
-                            ),
-                          ),
-                          SizedBox(width: 12),
-                          Text('Detecting installed CLIs…'),
-                        ],
-                      ),
-                    );
-                  }
-                  final installed = snapshot.data;
-                  final tools = _orderedAgentLaunchTools(
-                    installed != null
-                        ? _allTools.where(installed.contains)
-                        : _allTools,
-                    preferredTool: preferredTool,
-                  );
-                  if (tools.isEmpty) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      child: Text(
-                        'No supported CLIs found on PATH.',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    );
-                  }
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final tool in tools)
-                        ListTile(
-                          visualDensity: _tmuxNavigatorDenseVisualDensity,
-                          minTileHeight: 42,
-                          contentPadding: _tmuxNavigatorTilePadding,
-                          horizontalTitleGap: 12,
-                          minLeadingWidth: 20,
-                          leading: TmuxToolPickerSheet._iconForTool(
-                            tool,
-                            theme,
-                          ),
-                          title: Text(tool.label),
-                          trailing: !isProUser ? const PremiumBadge() : null,
-                          enabled: isProUser,
-                          onTap: () => onToolSelected(tool),
-                        ),
-                    ],
-                  );
-                },
-              ),
-              const Divider(height: 1),
-              ListTile(
-                visualDensity: _tmuxNavigatorDenseVisualDensity,
-                minTileHeight: 42,
-                contentPadding: _tmuxNavigatorTilePadding,
-                horizontalTitleGap: 12,
-                minLeadingWidth: 20,
-                leading: Icon(
-                  Icons.terminal,
-                  color: theme.colorScheme.onSurfaceVariant,
-                  size: 18,
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: viewInsets.bottom),
+      child: SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxSheetHeight),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Text('New Window', style: theme.textTheme.titleMedium),
                 ),
-                title: const Text('Empty window'),
-                onTap: onEmptyWindow,
-              ),
-              const SizedBox(height: 8),
-            ],
+                FutureBuilder<Set<AgentLaunchTool>>(
+                  future: installedToolsFuture,
+                  builder: (context, snapshot) {
+                    if (installedToolsFuture != null &&
+                        snapshot.connectionState != ConnectionState.done) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator.adaptive(
+                                strokeWidth: 2,
+                              ),
+                            ),
+                            SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Detecting installed CLIs…',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    final Iterable<AgentLaunchTool> availableTools;
+                    if (installedToolsFuture == null) {
+                      availableTools = _allTools;
+                    } else if (snapshot.hasError) {
+                      availableTools = const <AgentLaunchTool>[];
+                    } else {
+                      final installed =
+                          snapshot.data ?? const <AgentLaunchTool>{};
+                      availableTools = _allTools.where(installed.contains);
+                    }
+                    final tools = _orderedAgentLaunchTools(
+                      availableTools,
+                      preferredTool: preferredTool,
+                    );
+                    if (tools.isEmpty) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        child: Text(
+                          'No supported CLIs found on PATH.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      );
+                    }
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final tool in tools)
+                          ListTile(
+                            visualDensity: _tmuxNavigatorDenseVisualDensity,
+                            minTileHeight: 42,
+                            contentPadding: _tmuxNavigatorTilePadding,
+                            horizontalTitleGap: 12,
+                            minLeadingWidth: 20,
+                            leading: TmuxToolPickerSheet._iconForTool(
+                              tool,
+                              theme,
+                            ),
+                            title: Text(tool.label),
+                            trailing: !isProUser ? const PremiumBadge() : null,
+                            enabled: isProUser,
+                            onTap: () => onToolSelected(tool),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  visualDensity: _tmuxNavigatorDenseVisualDensity,
+                  minTileHeight: 42,
+                  contentPadding: _tmuxNavigatorTilePadding,
+                  horizontalTitleGap: 12,
+                  minLeadingWidth: 20,
+                  leading: Icon(
+                    Icons.terminal,
+                    color: theme.colorScheme.onSurfaceVariant,
+                    size: 18,
+                  ),
+                  title: const Text('Empty window'),
+                  onTap: onEmptyWindow,
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
           ),
         ),
       ),

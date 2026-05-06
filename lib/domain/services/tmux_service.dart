@@ -49,11 +49,17 @@ class TmuxService {
   const TmuxService({
     Duration execOpenTimeout = const Duration(seconds: 10),
     Duration execOutputTimeout = const Duration(seconds: 10),
+    Duration agentSessionMetadataRefreshDebounce = const Duration(
+      milliseconds: 150,
+    ),
   }) : _execOpenTimeout = execOpenTimeout,
-       _execOutputTimeout = execOutputTimeout;
+       _execOutputTimeout = execOutputTimeout,
+       _agentSessionMetadataRefreshDebounce =
+           agentSessionMetadataRefreshDebounce;
 
   final Duration _execOpenTimeout;
   final Duration _execOutputTimeout;
+  final Duration _agentSessionMetadataRefreshDebounce;
 
   /// Cached tmux binary paths per SSH session (by connectionId).
   static final Map<int, String> _tmuxPathCache = {};
@@ -78,10 +84,24 @@ class TmuxService {
   static final _windowListRequests =
       <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
   static final _windowSnapshotCache = <_TmuxWindowWatchKey, List<TmuxWindow>>{};
+  static final _activeAgentSessionMetadataCache =
+      <int, Map<int, ({String sessionId, String? title})>>{};
+  static final _activeAgentSessionMetadataRequests = <int, Future<void>>{};
+  static final _activeAgentSessionMetadataRequestTokens = <int, Object>{};
+  static final _activeAgentSessionMetadataRequestPanePids = <int, Set<int>>{};
+  static final _activeAgentSessionMetadataDebounceTimers = <int, Timer>{};
+  static final _activeAgentSessionMetadataDebouncedSessions =
+      <int, SshSession>{};
+  static final _activeAgentSessionMetadataDebouncedPanePids = <int, Set<int>>{};
+  static final _activeAgentSessionMetadataDebouncedForced = <int, bool>{};
+  static final _activeAgentSessionMetadataPendingPanePids = <int, Set<int>>{};
+  static final _activeAgentSessionMetadataPendingForced = <int, bool>{};
+  static final _activeAgentSessionMetadataRefreshes = <int, DateTime>{};
   static final _execChannelBackoffs = <int, _TmuxExecChannelBackoff>{};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
+  static const _activeAgentSessionMetadataFreshTtl = Duration(seconds: 5);
   static final RegExp _execDoneMarkerLinePattern = RegExp(
     '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
   );
@@ -118,8 +138,8 @@ class TmuxService {
   static bool hasExecChannelBackoffEntry(int connectionId) =>
       _execChannelBackoffs.containsKey(connectionId);
 
-  /// Clears the cached tmux path for a connection.
-  void clearCache(int connectionId) {
+  /// Clears tmux caches and disposes active watchers for a connection.
+  Future<void> clearCache(int connectionId) async {
     DiagnosticsLogService.instance.info(
       'tmux.cache',
       'clear',
@@ -132,12 +152,23 @@ class TmuxService {
     );
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
-    _tmuxPathRequests.remove(connectionId);
+    _tmuxPathRequests.remove(connectionId)?.ignore();
     _hasSessionRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
     _installedAgentToolsCache.remove(connectionId);
-    _installedAgentToolRequests.remove(connectionId);
+    _installedAgentToolRequests.remove(connectionId)?.ignore();
+    _activeAgentSessionMetadataCache.remove(connectionId);
+    _activeAgentSessionMetadataRequests.remove(connectionId)?.ignore();
+    _activeAgentSessionMetadataRequestTokens.remove(connectionId);
+    _activeAgentSessionMetadataRequestPanePids.remove(connectionId);
+    _activeAgentSessionMetadataDebounceTimers.remove(connectionId)?.cancel();
+    _activeAgentSessionMetadataDebouncedSessions.remove(connectionId);
+    _activeAgentSessionMetadataDebouncedPanePids.remove(connectionId);
+    _activeAgentSessionMetadataDebouncedForced.remove(connectionId);
+    _activeAgentSessionMetadataPendingPanePids.remove(connectionId);
+    _activeAgentSessionMetadataPendingForced.remove(connectionId);
+    _activeAgentSessionMetadataRefreshes.remove(connectionId);
     _execChannelBackoffs.remove(connectionId);
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
@@ -148,8 +179,15 @@ class TmuxService {
     final observerKeys = _windowObservers.keys
         .where((key) => key.connectionId == connectionId)
         .toList(growable: false);
+    final observerDisposals = <Future<void>>[];
     for (final key in observerKeys) {
-      unawaited(_windowObservers.remove(key)?.dispose());
+      final observer = _windowObservers.remove(key);
+      if (observer != null) {
+        observerDisposals.add(observer.dispose());
+      }
+    }
+    if (observerDisposals.isNotEmpty) {
+      await Future.wait(observerDisposals);
     }
   }
 
@@ -714,8 +752,15 @@ class TmuxService {
         extraFlags: extraFlags,
         forceUtf8: true,
       );
+      final parsedWindows = _parseLines(
+        output,
+        TmuxWindow.fromTmuxFormat,
+      ).toList(growable: false);
       final windows = List<TmuxWindow>.unmodifiable(
-        _parseLines(output, TmuxWindow.fromTmuxFormat),
+        _enrichWindowsWithCachedAgentSessionMetadata(
+          session.connectionId,
+          parsedWindows,
+        ),
       );
       if (windows.isNotEmpty) {
         _cacheWindowSnapshot(
@@ -724,6 +769,7 @@ class TmuxService {
           windows,
           extraFlags: extraFlags,
         );
+        _scheduleAgentSessionMetadataRefresh(session, windows);
       }
       DiagnosticsLogService.instance.info(
         'tmux.query',
@@ -760,6 +806,312 @@ class TmuxService {
         return cachedWindows;
       }
       rethrow;
+    }
+  }
+
+  List<TmuxWindow> _enrichWindowsWithCachedAgentSessionMetadata(
+    int connectionId,
+    List<TmuxWindow> windows,
+  ) {
+    final metadataByPanePid = _activeAgentSessionMetadataCache[connectionId];
+    if (metadataByPanePid == null || metadataByPanePid.isEmpty) {
+      return windows;
+    }
+    return _applyAgentSessionMetadataToWindows(
+      windows,
+      metadataByPanePid,
+    ).windows;
+  }
+
+  void _scheduleAgentSessionMetadataRefresh(
+    SshSession session,
+    List<TmuxWindow> windows, {
+    bool force = false,
+  }) {
+    final copilotPanePids = _copilotPanePids(windows);
+    if (copilotPanePids.isEmpty) {
+      return;
+    }
+    _scheduleAgentSessionMetadataRefreshForPanePids(
+      session,
+      copilotPanePids,
+      force: force,
+    );
+  }
+
+  void _scheduleAgentSessionMetadataRefreshForPanePids(
+    SshSession session,
+    Set<int> copilotPanePids, {
+    bool force = false,
+  }) {
+    final connectionId = session.connectionId;
+    final debouncedPanePids =
+        (_activeAgentSessionMetadataDebouncedPanePids[connectionId] ?? <int>{})
+          ..addAll(copilotPanePids);
+    _activeAgentSessionMetadataDebouncedPanePids[connectionId] =
+        debouncedPanePids;
+    _activeAgentSessionMetadataDebouncedSessions[connectionId] = session;
+    _activeAgentSessionMetadataDebouncedForced[connectionId] =
+        (_activeAgentSessionMetadataDebouncedForced[connectionId] ?? false) ||
+        force;
+
+    if (_activeAgentSessionMetadataDebounceTimers.containsKey(connectionId)) {
+      return;
+    }
+
+    _activeAgentSessionMetadataDebounceTimers[connectionId] = Timer(
+      _agentSessionMetadataRefreshDebounce,
+      () {
+        _activeAgentSessionMetadataDebounceTimers.remove(connectionId);
+        final queuedPanePids = _activeAgentSessionMetadataDebouncedPanePids
+            .remove(connectionId);
+        final queuedSession = _activeAgentSessionMetadataDebouncedSessions
+            .remove(connectionId);
+        final queuedForced =
+            _activeAgentSessionMetadataDebouncedForced.remove(connectionId) ??
+            false;
+        if (queuedPanePids == null ||
+            queuedPanePids.isEmpty ||
+            queuedSession == null) {
+          return;
+        }
+        _startAgentSessionMetadataRefreshForPanePids(
+          queuedSession,
+          queuedPanePids,
+          force: queuedForced,
+        );
+      },
+    );
+  }
+
+  void _startAgentSessionMetadataRefreshForPanePids(
+    SshSession session,
+    Set<int> copilotPanePids, {
+    bool force = false,
+  }) {
+    final connectionId = session.connectionId;
+    if (_activeAgentSessionMetadataRequests.containsKey(connectionId)) {
+      final activePanePids =
+          _activeAgentSessionMetadataRequestPanePids[connectionId] ??
+          const <int>{};
+      final hasNewPanePids = copilotPanePids.any(
+        (panePid) => !activePanePids.contains(panePid),
+      );
+      if (force || hasNewPanePids) {
+        final pendingPanePids =
+            (_activeAgentSessionMetadataPendingPanePids[connectionId] ??
+                  <int>{})
+              ..addAll(copilotPanePids);
+        _activeAgentSessionMetadataPendingPanePids[connectionId] =
+            pendingPanePids;
+        _activeAgentSessionMetadataPendingForced[connectionId] =
+            (_activeAgentSessionMetadataPendingForced[connectionId] ?? false) ||
+            force ||
+            hasNewPanePids;
+      }
+      return;
+    }
+
+    final lastRefresh = _activeAgentSessionMetadataRefreshes[connectionId];
+    if (!force &&
+        lastRefresh != null &&
+        DateTime.now().difference(lastRefresh) <
+            _activeAgentSessionMetadataFreshTtl) {
+      return;
+    }
+
+    DiagnosticsLogService.instance.debug(
+      'tmux.agent',
+      'active_session_metadata_start',
+      fields: {
+        'connectionId': connectionId,
+        'paneCount': copilotPanePids.length,
+        'forced': force,
+      },
+    );
+
+    final requestToken = Object();
+    _activeAgentSessionMetadataRequestTokens[connectionId] = requestToken;
+    _activeAgentSessionMetadataRequestPanePids[connectionId] = copilotPanePids;
+    late final Future<void> request;
+    request =
+        _refreshActiveAgentSessionMetadata(
+          session,
+          requestToken,
+          copilotPanePids,
+        ).whenComplete(() {
+          if (identical(
+            _activeAgentSessionMetadataRequests[connectionId],
+            request,
+          )) {
+            _activeAgentSessionMetadataRequests.remove(connectionId);
+            _activeAgentSessionMetadataRequestTokens.remove(connectionId);
+            _activeAgentSessionMetadataRequestPanePids.remove(connectionId);
+            final pendingPanePids = _activeAgentSessionMetadataPendingPanePids
+                .remove(connectionId);
+            final pendingForced =
+                _activeAgentSessionMetadataPendingForced.remove(connectionId) ??
+                false;
+            if (pendingPanePids != null && pendingPanePids.isNotEmpty) {
+              _startAgentSessionMetadataRefreshForPanePids(
+                session,
+                pendingPanePids,
+                force: pendingForced,
+              );
+            }
+          }
+        });
+    _activeAgentSessionMetadataRequests[connectionId] = request;
+    unawaited(request);
+  }
+
+  Future<void> _refreshActiveAgentSessionMetadata(
+    SshSession session,
+    Object requestToken,
+    Set<int> panePids,
+  ) async {
+    final connectionId = session.connectionId;
+    try {
+      final output = await _exec(
+        session,
+        buildCopilotActiveSessionMetadataCommand(panePids),
+        priority: SshExecPriority.low,
+      );
+      if (!identical(
+        _activeAgentSessionMetadataRequestTokens[connectionId],
+        requestToken,
+      )) {
+        return;
+      }
+      _activeAgentSessionMetadataRefreshes[connectionId] = DateTime.now();
+      final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
+        output,
+        panePids,
+      );
+      final nextMetadataByPanePid =
+          Map<int, ({String sessionId, String? title})>.of(
+            _activeAgentSessionMetadataCache[connectionId] ?? const {},
+          );
+      for (final panePid in panePids) {
+        nextMetadataByPanePid.remove(panePid);
+      }
+      nextMetadataByPanePid.addAll(metadataByPanePid);
+      _activeAgentSessionMetadataCache[connectionId] = nextMetadataByPanePid;
+      DiagnosticsLogService.instance.info(
+        'tmux.agent',
+        'active_session_metadata_complete',
+        fields: {
+          'connectionId': connectionId,
+          'paneCount': panePids.length,
+          'matchCount': metadataByPanePid.length,
+        },
+      );
+      _applyActiveAgentSessionMetadataToCachedWindows(
+        connectionId,
+        nextMetadataByPanePid,
+        refreshedPanePids: panePids,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'active_session_metadata_failed',
+        fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
+      );
+    }
+  }
+
+  Set<int> _copilotPanePids(Iterable<TmuxWindow> windows) => windows
+      .where(
+        (window) =>
+            window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+            window.panePid != null,
+      )
+      .map((window) => window.panePid!)
+      .toSet();
+
+  ({List<TmuxWindow> windows, bool changed})
+  _applyAgentSessionMetadataToWindows(
+    List<TmuxWindow> windows,
+    Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+    Set<int>? refreshedPanePids,
+  }) {
+    var changed = false;
+    final enriched = windows
+        .map((window) {
+          final panePid = window.panePid;
+          if (panePid != null &&
+              window.foregroundAgentTool != AgentLaunchTool.copilotCli) {
+            if (window.activeAgentSessionId != null ||
+                window.agentSessionTitle != null) {
+              changed = true;
+              return window.copyWith(clearActiveAgentSessionMetadata: true);
+            }
+            return window;
+          }
+          final metadata = panePid == null ? null : metadataByPanePid[panePid];
+          if (metadata == null) {
+            if (panePid != null &&
+                refreshedPanePids != null &&
+                refreshedPanePids.contains(panePid) &&
+                (window.activeAgentSessionId != null ||
+                    window.agentSessionTitle != null)) {
+              changed = true;
+              return window.copyWith(clearActiveAgentSessionMetadata: true);
+            }
+            return window;
+          }
+          if (window.activeAgentSessionId == metadata.sessionId &&
+              window.agentSessionTitle == metadata.title) {
+            return window;
+          }
+          changed = true;
+          return window.copyWith(
+            activeAgentSessionId: metadata.sessionId,
+            agentSessionTitle: metadata.title,
+          );
+        })
+        .toList(growable: false);
+    return (windows: changed ? enriched : windows, changed: changed);
+  }
+
+  void _applyActiveAgentSessionMetadataToCachedWindows(
+    int connectionId,
+    Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+    Set<int>? refreshedPanePids,
+  }) {
+    if (metadataByPanePid.isEmpty &&
+        (refreshedPanePids == null || refreshedPanePids.isEmpty)) {
+      return;
+    }
+    for (final entry in _windowSnapshotCache.entries.toList(growable: false)) {
+      final key = entry.key;
+      if (key.connectionId != connectionId) continue;
+      final currentWindows = entry.value;
+      final result = _applyAgentSessionMetadataToWindows(
+        currentWindows,
+        metadataByPanePid,
+        refreshedPanePids: refreshedPanePids,
+      );
+      if (!result.changed) {
+        continue;
+      }
+      final enrichedWindows = List<TmuxWindow>.unmodifiable(result.windows);
+      _windowSnapshotCache[key] = enrichedWindows;
+
+      final observer = _windowObservers[key];
+      if (observer == null) {
+        continue;
+      }
+      for (var i = 0; i < enrichedWindows.length; i++) {
+        final currentWindow = i < currentWindows.length
+            ? currentWindows[i]
+            : null;
+        final enrichedWindow = enrichedWindows[i];
+        if (currentWindow == enrichedWindow) {
+          continue;
+        }
+        observer._emitEvent(TmuxWindowSnapshotEvent(enrichedWindow));
+      }
     }
   }
 
@@ -1204,10 +1556,10 @@ class TmuxService {
     );
   }
 
-  void _applyCachedWindowEvent(
+  void _applyCachedWindowSnapshot(
     SshSession session,
     String sessionName,
-    TmuxWindowChangeEvent event, {
+    TmuxWindowSnapshotEvent event, {
     String? extraFlags,
   }) {
     final key = _TmuxWindowWatchKey(
@@ -1216,10 +1568,19 @@ class TmuxService {
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
     final cachedWindows = _windowSnapshotCache[key];
-    if (cachedWindows == null || cachedWindows.isEmpty) return;
-    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
-      applyTmuxWindowChangeEvent(cachedWindows, event),
-    );
+    final forceAgentMetadataRefresh =
+        shouldForceAgentSessionMetadataRefreshForSnapshot(
+          cachedWindows ?? const <TmuxWindow>[],
+          event.window,
+        );
+    if (cachedWindows != null && cachedWindows.isNotEmpty) {
+      _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
+        applyTmuxWindowChangeEvent(cachedWindows, event),
+      );
+    }
+    _scheduleAgentSessionMetadataRefresh(session, [
+      event.window,
+    ], force: forceAgentMetadataRefresh);
   }
 
   /// Returns the profile source prefix for this session's login shell.
@@ -1734,6 +2095,9 @@ String _diagnosticTmuxCommandKind(String command) {
   }
   if (command.contains('list-clients')) {
     return 'list_clients';
+  }
+  if (command.contains('.copilot/session-state')) {
+    return 'active_session_metadata';
   }
   if (command.contains('select-window')) {
     return 'select_window';
@@ -2323,11 +2687,19 @@ const _tmuxWindowSubscriptionFormat =
     '#{window_activity}$tmuxWindowFieldSeparator'
     '#{pane_start_command}$tmuxWindowFieldSeparator'
     '#{@flutty_agent_tool}$tmuxWindowFieldSeparator'
-    '#{window_id}';
+    '#{window_id}$tmuxWindowFieldSeparator'
+    '#{pane_pid}';
 
-const _tmuxControlModeClientFlags = 'ignore-size,no-output,wait-exit';
+const _tmuxControlModeClientFlags = 'ignore-size,no-output';
+const _tmuxControlModeDetachInput = 'detach-client -P\n\n';
+const _tmuxControlModeExitAcknowledgeInput = '\n';
+const _tmuxControlModeShutdownTimeout = Duration(seconds: 1);
 
 /// Builds the tmux control-mode attach command used for live window updates.
+///
+/// Intentionally omits tmux's `wait-exit` client flag. On an unexpected SSH
+/// disconnect there is no client left to send the empty line `wait-exit`
+/// requires, so the remote control-mode client can linger indefinitely.
 @visibleForTesting
 String buildTmuxControlModeAttachCommand(
   String sessionName, {
@@ -2412,6 +2784,43 @@ bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
     '%window-close ',
   ];
   return notificationPrefixes.any(trimmed.startsWith);
+}
+
+/// Returns whether a live tmux window snapshot should bypass the normal active
+/// session metadata refresh throttle.
+@visibleForTesting
+bool shouldForceAgentSessionMetadataRefreshForSnapshot(
+  Iterable<TmuxWindow> cachedWindows,
+  TmuxWindow snapshot,
+) {
+  if (snapshot.foregroundAgentTool != AgentLaunchTool.copilotCli) {
+    return false;
+  }
+
+  TmuxWindow? existingWindow;
+  for (final cachedWindow in cachedWindows) {
+    if (_isSameTmuxWindowSnapshot(cachedWindow, snapshot)) {
+      existingWindow = cachedWindow;
+      break;
+    }
+  }
+  if (existingWindow == null) {
+    return true;
+  }
+
+  return existingWindow.name != snapshot.name ||
+      existingWindow.paneTitle != snapshot.paneTitle ||
+      existingWindow.panePid != snapshot.panePid ||
+      existingWindow.currentCommand != snapshot.currentCommand ||
+      existingWindow.agentTool != snapshot.agentTool;
+}
+
+bool _isSameTmuxWindowSnapshot(TmuxWindow existing, TmuxWindow snapshot) {
+  final snapshotId = snapshot.id;
+  if (snapshotId != null) {
+    return existing.id == snapshotId;
+  }
+  return existing.index == snapshot.index;
 }
 
 /// Parses a control-mode output [line] into a tmux window change event for
@@ -2599,16 +3008,23 @@ class _TmuxWindowChangeObserver {
   final DateTime Function() _now;
   final StreamController<TmuxWindowChangeEvent> _controller;
 
+  // Cancelled in _cleanupControlSession().
+  // ignore: cancel_subscriptions
   StreamSubscription<String>? _stdoutSubscription;
+  // Cancelled in _cleanupControlSession().
+  // ignore: cancel_subscriptions
   StreamSubscription<String>? _stderrSubscription;
+  // Cancelled in _cleanupControlSession().
+  // ignore: cancel_subscriptions
   StreamSubscription<void>? _doneSubscription;
   Timer? _debounceTimer;
   Timer? _restartTimer;
   Timer? _heartbeatTimer;
   SSHSession? _controlSession;
+  Future<void>? _startFuture;
+  Future<void>? _disposeFuture;
   final _controlCommandQueue = Queue<_TmuxControlCommandRequest>();
   _TmuxControlCommandRequest? _activeControlCommand;
-  bool _starting = false;
   bool _disposed = false;
   bool _preserveScheduledReloadThroughSnapshots = false;
   int _restartAttempts = 0;
@@ -2690,9 +3106,25 @@ class _TmuxWindowChangeObserver {
     }
   }
 
-  Future<void> _ensureStarted() async {
-    if (_disposed || _starting || _controlSession != null) return;
-    _starting = true;
+  Future<void> _ensureStarted() {
+    if (_disposed || _controlSession != null) return Future<void>.value();
+    final existingStart = _startFuture;
+    if (existingStart != null) {
+      return existingStart;
+    }
+    final startFuture = _startControlSession();
+    _startFuture = startFuture;
+    unawaited(
+      startFuture.whenComplete(() {
+        if (identical(_startFuture, startFuture)) {
+          _startFuture = null;
+        }
+      }),
+    );
+    return startFuture;
+  }
+
+  Future<void> _startControlSession() async {
     DiagnosticsLogService.instance.info(
       'tmux.watch',
       'start',
@@ -2703,6 +3135,9 @@ class _TmuxWindowChangeObserver {
     );
     try {
       await service._cacheTmuxPath(session);
+      if (_disposed) {
+        return;
+      }
       final execSession = await service._openExec(
         session,
         service._wrapCommand(
@@ -2718,7 +3153,10 @@ class _TmuxWindowChangeObserver {
         pty: const SSHPtyConfig(),
       );
       if (_disposed) {
-        execSession.close();
+        await _shutdownControlSession(
+          execSession,
+          shutdownInput: _tmuxControlModeDetachInput,
+        );
         return;
       }
 
@@ -2748,8 +3186,6 @@ class _TmuxWindowChangeObserver {
       );
     } on Object catch (error, stackTrace) {
       _handleControlFailure(error, stackTrace);
-    } finally {
-      _starting = false;
     }
   }
 
@@ -2793,7 +3229,7 @@ class _TmuxWindowChangeObserver {
         'control_exit',
         fields: {'connectionId': session.connectionId},
       );
-      _handleControlClosed();
+      _handleControlClosed(shutdownInput: _tmuxControlModeExitAcknowledgeInput);
       return;
     }
     final event = parseTmuxWindowChangeEventFromControlLine(
@@ -2824,7 +3260,7 @@ class _TmuxWindowChangeObserver {
       if (!_preserveScheduledReloadThroughSnapshots) {
         _cancelScheduledReload();
       }
-      service._applyCachedWindowEvent(
+      service._applyCachedWindowSnapshot(
         session,
         sessionName,
         event,
@@ -2992,23 +3428,32 @@ class _TmuxWindowChangeObserver {
         'errorType': error.runtimeType,
       },
     );
-    _cleanupControlSession(error, stackTrace);
+    unawaited(
+      _cleanupControlSession(
+        commandError: error,
+        stackTrace: stackTrace,
+        shutdownInput: _tmuxControlModeDetachInput,
+      ),
+    );
     _scheduleRestart(
       channelOpenFailure: shouldBackOffTmuxExecChannelAfterFailure(error),
     );
   }
 
-  void _handleControlClosed() {
+  void _handleControlClosed({String? shutdownInput}) {
     DiagnosticsLogService.instance.info(
       'tmux.watch',
       'control_closed',
       fields: {'connectionId': session.connectionId},
     );
-    _cleanupControlSession(
-      const TmuxCommandException(
-        'tmux control channel closed before command completed',
+    unawaited(
+      _cleanupControlSession(
+        commandError: const TmuxCommandException(
+          'tmux control channel closed before command completed',
+        ),
+        stackTrace: StackTrace.current,
+        shutdownInput: shutdownInput,
       ),
-      StackTrace.current,
     );
     _scheduleRestart();
   }
@@ -3077,25 +3522,65 @@ class _TmuxWindowChangeObserver {
     }
   }
 
-  void _cleanupControlSession([Object? commandError, StackTrace? stackTrace]) {
+  Future<void> _cleanupControlSession({
+    Object? commandError,
+    StackTrace? stackTrace,
+    String? shutdownInput,
+  }) {
     _stopHeartbeat();
     _cancelScheduledReload();
     _failControlCommands(
       commandError ?? const _TmuxControlCommandUnavailable(),
       stackTrace ?? StackTrace.current,
     );
-    unawaited(_stdoutSubscription?.cancel());
-    unawaited(_stderrSubscription?.cancel());
-    unawaited(_doneSubscription?.cancel());
+    final stdoutSubscription = _stdoutSubscription;
+    final stderrSubscription = _stderrSubscription;
+    final doneSubscription = _doneSubscription;
     _stdoutSubscription = null;
     _stderrSubscription = null;
     _doneSubscription = null;
-    _controlSession?.close();
+    final controlSession = _controlSession;
     _controlSession = null;
     _lastControlActivity = null;
+    return Future.wait([
+      if (stdoutSubscription != null) stdoutSubscription.cancel(),
+      if (stderrSubscription != null) stderrSubscription.cancel(),
+      if (doneSubscription != null) doneSubscription.cancel(),
+      if (controlSession != null)
+        _shutdownControlSession(controlSession, shutdownInput: shutdownInput),
+    ]).then((_) {});
   }
 
-  Future<void> dispose() async {
+  Future<void> _shutdownControlSession(
+    SSHSession controlSession, {
+    String? shutdownInput,
+  }) async {
+    try {
+      if (shutdownInput != null) {
+        try {
+          controlSession.write(utf8.encode(shutdownInput));
+          await controlSession.stdin.close().timeout(
+            _tmuxControlModeShutdownTimeout,
+          );
+        } on Object catch (error) {
+          DiagnosticsLogService.instance.warning(
+            'tmux.watch',
+            'shutdown_input_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'errorType': error.runtimeType,
+            },
+          );
+        }
+      }
+    } finally {
+      controlSession.close();
+    }
+  }
+
+  Future<void> dispose() => _disposeFuture ??= _dispose();
+
+  Future<void> _dispose() async {
     if (_disposed) return;
     DiagnosticsLogService.instance.info(
       'tmux.watch',
@@ -3106,7 +3591,11 @@ class _TmuxWindowChangeObserver {
     _stopHeartbeat();
     _restartTimer?.cancel();
     _restartTimer = null;
-    _cleanupControlSession();
+    final startFuture = _startFuture;
+    if (startFuture != null) {
+      await startFuture;
+    }
+    await _cleanupControlSession(shutdownInput: _tmuxControlModeDetachInput);
     if (!_controller.isClosed) {
       await _controller.close();
     }
@@ -3169,4 +3658,156 @@ Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
     if (tool != null) installed.add(tool);
   }
   return installed;
+}
+
+/// Builds a shell command that maps live Copilot CLI lock files to session
+/// metadata.
+///
+/// The command starts from known tmux pane PIDs, takes one process-tree
+/// snapshot, finds descendant Copilot processes, and only checks lock files
+/// matching those descendant PIDs.
+///
+/// The output is Unit Separator-delimited:
+/// `session_id<US>copilot_pid<US>matched_pane_pid<US>session_title`.
+@visibleForTesting
+String buildCopilotActiveSessionMetadataCommand(Set<int> panePids) {
+  final normalizedPanePids =
+      panePids.where((panePid) => panePid > 0).toSet().toList()..sort();
+  if (normalizedPanePids.isEmpty) {
+    return ':';
+  }
+  final panePidText = normalizedPanePids.join(' ');
+  return '''
+sep=\$(printf "\\037")
+unsetopt nomatch 2>/dev/null || true
+pane_pids=${TmuxService._shellQuote(panePidText)}
+home=\${HOME:-}
+if [ -z "\$home" ]; then
+  home=~
+fi
+state_dir=\$home/.copilot/session-state
+if [ -d "\$state_dir" ]; then
+  lock_pids=
+  lock_rows=
+  for lock in "\$state_dir"/*/inuse.*.lock; do
+    [ -e "\$lock" ] || continue
+    file=\${lock##*/}
+    pid=\${file#inuse.}
+    pid=\${pid%.lock}
+    case "\$pid" in ''|*[!0-9]*) continue ;; esac
+    dir=\${lock%/*}
+    lock_pids="\${lock_pids:+\$lock_pids }\$pid"
+    lock_rows="\$lock_rows\$pid\$sep\$dir
+"
+  done
+  if [ -n "\$lock_pids" ]; then
+    ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
+  fi
+  if [ -n "\${ps_output:-}" ]; then
+    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v locks="\$lock_pids" '
+BEGIN {
+  split(panes, pane_values, " ")
+  for (i in pane_values) {
+    if (pane_values[i] ~ /^[0-9]+\$/) target[pane_values[i]] = 1
+  }
+  split(locks, lock_values, " ")
+  for (i in lock_values) {
+    if (lock_values[i] ~ /^[0-9]+\$/) lock_pid[lock_values[i]] = 1
+  }
+}
+{
+  pid = \$1
+  ppid = \$2
+  comm = \$3
+  if (pid !~ /^[0-9]+\$/ || ppid !~ /^[0-9]+\$/) next
+  args = \$0
+  sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+[[:space:]]*/, "", args)
+  parent[pid] = ppid
+  command[pid] = tolower(comm " " args)
+}
+END {
+  for (pid in lock_pid) {
+    if (!(pid in parent)) continue
+    if (command[pid] !~ /copilot/) continue
+    current = pid
+    seen = 0
+    while (current != "" && current != "0" && seen < 128) {
+      if (current in target) {
+        print current " " pid
+        break
+      }
+      current = parent[current]
+      seen++
+    }
+  }
+}' | while read pane_pid pid; do
+      case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
+      case "\$pid" in ''|*[!0-9]*) continue ;; esac
+      dir=\$(printf '%s' "\$lock_rows" | awk -F "\$sep" -v wanted="\$pid" '\$1 == wanted { print \$2; exit }')
+      [ -n "\$dir" ] || continue
+      session_id=\${dir##*/}
+      workspace=\$dir/workspace.yaml
+      title=
+      if [ -r "\$workspace" ]; then
+        title=\$(awk '
+/^[[:space:]]*name:[[:space:]]*/ {
+  sub(/^[[:space:]]*name:[[:space:]]*/, "")
+  print
+  exit
+}
+' "\$workspace" 2>/dev/null | tr -d '\\r' | tr "\\037" " ")
+      fi
+      printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$title"
+    done
+  fi
+fi
+''';
+}
+
+/// Parses [buildCopilotActiveSessionMetadataCommand] output and returns live
+/// Copilot session metadata keyed by tmux pane PID.
+@visibleForTesting
+Map<int, ({String sessionId, String? title})>
+parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
+  if (output.trim().isEmpty || panePids.isEmpty) {
+    return const <int, ({String sessionId, String? title})>{};
+  }
+
+  final metadataByPanePid = <int, ({String sessionId, String? title})>{};
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trimRight();
+    if (line.isEmpty) continue;
+    final fields = line.split(tmuxWindowFieldSeparator);
+    if (fields.length < 3) continue;
+
+    final sessionId = fields[0].trim();
+    if (sessionId.isEmpty) continue;
+
+    final chainPids = fields[2]
+        .split(',')
+        .map((value) => int.tryParse(value.trim()))
+        .whereType<int>()
+        .toSet();
+    final lockPid = int.tryParse(fields[1].trim());
+    if (lockPid != null) {
+      chainPids.add(lockPid);
+    }
+    if (chainPids.isEmpty) continue;
+
+    final title = fields.length > 3
+        ? _copilotSessionTitleFromMetadataField(fields[3])
+        : null;
+    final metadata = (sessionId: sessionId, title: title);
+    for (final panePid in panePids) {
+      if (!chainPids.contains(panePid)) continue;
+      metadataByPanePid.putIfAbsent(panePid, () => metadata);
+    }
+  }
+  return metadataByPanePid;
+}
+
+String? _copilotSessionTitleFromMetadataField(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return null;
+  return trimmed;
 }

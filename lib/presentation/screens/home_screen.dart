@@ -21,6 +21,7 @@ import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -891,7 +892,7 @@ enum _HostContextAction {
 }
 
 Future<void> _disconnectConnection(WidgetRef ref, int connectionId) async {
-  ref.read(tmuxServiceProvider).clearCache(connectionId);
+  await ref.read(tmuxServiceProvider).clearCache(connectionId);
   await ref.read(activeSessionsProvider.notifier).disconnect(connectionId);
 }
 
@@ -2918,6 +2919,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   String? _preferredSessionToolName;
   String? _sessionName;
+  bool _startClisInYoloMode = false;
   bool _queried = false;
   bool _expanded = false;
   bool _showSessions = false;
@@ -2935,7 +2937,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   @override
   void initState() {
     super.initState();
-    unawaited(_loadPreferredSessionToolName());
+    unawaited(_loadHostAgentPreferences());
     _queryTmux();
   }
 
@@ -2947,9 +2949,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         oldWidget.preferredSessionName != widget.preferredSessionName;
     final tmuxExtraFlagsChanged =
         oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
-    if (connectionChanged) {
-      unawaited(_loadPreferredSessionToolName());
-    }
+    unawaited(_loadHostAgentPreferences());
     if (connectionChanged || preferredSessionChanged || tmuxExtraFlagsChanged) {
       _tmuxQueryGeneration++;
       _tmuxRetryTimer?.cancel();
@@ -2982,7 +2982,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     super.dispose();
   }
 
-  Future<void> _loadPreferredSessionToolName([int? hostId]) async {
+  Future<void> _loadHostAgentPreferences([int? hostId]) async {
     final resolvedHostId =
         hostId ??
         ref
@@ -2994,12 +2994,22 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final preset = await ref
         .read(agentLaunchPresetServiceProvider)
         .getPresetForHost(resolvedHostId);
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(resolvedHostId);
     if (!mounted) return;
 
     final preferredToolName = preset?.tool.discoveredSessionToolName;
-    if (_preferredSessionToolName == preferredToolName) return;
-    setState(() => _preferredSessionToolName = preferredToolName);
-    if (_showSessions) {
+    final startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
+    final preferredToolChanged = _preferredSessionToolName != preferredToolName;
+    if (!preferredToolChanged && _startClisInYoloMode == startClisInYoloMode) {
+      return;
+    }
+    setState(() {
+      _preferredSessionToolName = preferredToolName;
+      _startClisInYoloMode = startClisInYoloMode;
+    });
+    if (_showSessions && preferredToolChanged) {
       unawaited(_prefetchPreferredSessionProvider());
     }
   }
@@ -3120,6 +3130,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
+    unawaited(_loadHostAgentPreferences(session.hostId));
 
     final tmux = ref.read(tmuxServiceProvider);
     final preferredSessionName = widget.preferredSessionName?.trim();
@@ -3418,13 +3429,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                           const <String>{},
                           preferredToolName: _preferredSessionToolName,
                         ),
-                        loadSessionsForTool: (toolName, maxSessions) => ref
+                        loadSessions: (maxSessions) => ref
                             .read(agentSessionDiscoveryServiceProvider)
                             .discoverSessionsStream(
                               session,
                               workingDirectory: scopeWorkingDirectory,
                               maxPerTool: maxSessions,
-                              toolName: toolName,
                             ),
                         itemBuilder: (context, provider) =>
                             _buildSessionProviderRow(theme, provider),
@@ -3540,9 +3550,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     );
   }
 
-  void _resumeSession(ToolSessionInfo info) {
+  Future<void> _resumeSession(ToolSessionInfo info) async {
     if (!_hasAgentSessionAccess) {
-      unawaited(_handleLockedAiSessionsTap());
+      await _handleLockedAiSessionsTap();
       return;
     }
     final session = ref
@@ -3550,10 +3560,18 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .getSession(widget.connectionId);
     if (session == null || _sessionName == null) return;
 
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(session.hostId);
+    if (!mounted) return;
+
     final discovery = ref.read(agentSessionDiscoveryServiceProvider);
-    final command = discovery.buildResumeCommand(info);
-    final tmux = ref.read(tmuxServiceProvider);
-    tmux
+    final command = discovery.buildResumeCommand(
+      info,
+      startInYoloMode: cliLaunchPreferences.startInYoloMode,
+    );
+    await ref
+        .read(tmuxServiceProvider)
         .createWindow(
           session,
           _sessionName!,
@@ -3561,9 +3579,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           name: info.toolName,
           workingDirectory: info.workingDirectory,
           extraFlags: widget.tmuxExtraFlags,
-        )
-        .then((_) => widget.onTap())
-        .ignore();
+        );
+    if (mounted) {
+      widget.onTap();
+    }
   }
 
   Future<void> _showSessionPickerForTool(
@@ -3590,7 +3609,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           ),
     );
     if (!mounted || selected == null) return;
-    _resumeSession(selected);
+    _runTmuxPreviewAction(_resumeSession(selected));
   }
 
   Widget _buildSessionProviderRow(
@@ -3669,6 +3688,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.displayTitle;
+    final secondaryTitle = window.secondaryTitle;
     final iconColor = window.isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
@@ -3724,18 +3744,34 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             ),
             // Title — truncated.
             Expanded(
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: window.isActive
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurface,
-                  fontWeight: window.isActive
-                      ? FontWeight.bold
-                      : FontWeight.normal,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: window.isActive
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.onSurface,
+                      fontWeight: window.isActive
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                  if (secondaryTitle != null)
+                    Text(
+                      secondaryTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontSize: 10,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
               ),
             ),
             Padding(

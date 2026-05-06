@@ -139,7 +139,7 @@ void main() {
       },
     );
 
-    testWidgets('falls back to all tools when detection fails', (tester) async {
+    testWidgets('shows fallback message when detection fails', (tester) async {
       final completer = Completer<Set<AgentLaunchTool>>();
       await tester.pumpWidget(
         _wrap(
@@ -154,9 +154,10 @@ void main() {
       completer.completeError(StateError('detection failed'));
       await tester.pump();
 
-      expect(find.text('No supported CLIs found on PATH.'), findsNothing);
+      expect(find.text('No supported CLIs found on PATH.'), findsOneWidget);
+      expect(find.text('Empty window'), findsOneWidget);
       for (final tool in AgentLaunchTool.values) {
-        expect(find.text(tool.label), findsOneWidget);
+        expect(find.text(tool.label), findsNothing);
       }
     });
 
