@@ -2362,7 +2362,32 @@ class SshSession {
   }) => runQueuedSshExec(connectionId, operation, priority: priority);
 
   /// Start an SFTP session.
-  Future<SftpClient> sftp() => client.sftp();
+  Future<SftpClient> sftp() async {
+    DiagnosticsLogService.instance.info(
+      'ssh.sftp',
+      'open_start',
+      fields: {'connectionId': connectionId, 'hostId': hostId},
+    );
+    try {
+      final sftpClient = await client.sftp();
+      DiagnosticsLogService.instance.info(
+        'ssh.sftp',
+        'open_success',
+        fields: {'connectionId': connectionId},
+      );
+      return sftpClient;
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.error(
+        'ssh.sftp',
+        'open_failed',
+        fields: {
+          'connectionId': connectionId,
+          ..._diagnosticSshExecErrorFields(error),
+        },
+      );
+      rethrow;
+    }
+  }
 
   /// Start a local port forward tunnel.
   ///

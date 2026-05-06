@@ -36,6 +36,17 @@ class TmuxCommandException implements Exception {
   String toString() => message;
 }
 
+class _TmuxExecChannelCoolingDownException implements Exception {
+  _TmuxExecChannelCoolingDownException(this.cooldownUntil);
+
+  final DateTime cooldownUntil;
+
+  @override
+  String toString() =>
+      'Tmux exec channel is cooling down until '
+      '${cooldownUntil.toIso8601String()}';
+}
+
 /// Introspects and controls tmux sessions on remote hosts via SSH exec
 /// channels.
 ///
@@ -890,6 +901,20 @@ class TmuxService {
     bool force = false,
   }) {
     final connectionId = session.connectionId;
+    final cooldownUntil = _execChannelCooldownUntil(session);
+    if (cooldownUntil != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'active_session_metadata_deferred',
+        fields: {
+          'connectionId': connectionId,
+          'paneCount': copilotPanePids.length,
+          'forced': force,
+          'remainingMs': _remainingExecChannelCooldownMs(cooldownUntil),
+        },
+      );
+      return;
+    }
     if (_activeAgentSessionMetadataRequests.containsKey(connectionId)) {
       final activePanePids =
           _activeAgentSessionMetadataRequestPanePids[connectionId] ??
@@ -1012,6 +1037,9 @@ class TmuxService {
         refreshedPanePids: panePids,
       );
     } on Object catch (error) {
+      if (shouldBackOffTmuxExecChannelAfterFailure(error)) {
+        _activeAgentSessionMetadataRefreshes[connectionId] = DateTime.now();
+      }
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
         'active_session_metadata_failed',
@@ -1122,6 +1150,31 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
+    final cachedPath = _cachedCurrentPanePath(
+      session,
+      sessionName,
+      extraFlags: extraFlags,
+    );
+    if (cachedPath != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'current_pane_path_cached',
+        fields: {'connectionId': session.connectionId},
+      );
+      return cachedPath;
+    }
+    final cooldownUntil = _execChannelCooldownUntil(session);
+    if (cooldownUntil != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'current_pane_path_deferred',
+        fields: {
+          'connectionId': session.connectionId,
+          'remainingMs': _remainingExecChannelCooldownMs(cooldownUntil),
+        },
+      );
+      return null;
+    }
     DiagnosticsLogService.instance.debug(
       'tmux.query',
       'current_pane_path_start',
@@ -1153,6 +1206,23 @@ class TmuxService {
       );
       return null;
     }
+  }
+
+  String? _cachedCurrentPanePath(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) {
+    final windows =
+        _windowSnapshotCache[_TmuxWindowWatchKey(
+          connectionId: session.connectionId,
+          sessionName: sessionName,
+          extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
+        )];
+    if (windows == null || windows.isEmpty) {
+      return null;
+    }
+    return windows.where((window) => window.isActive).firstOrNull?.currentPath;
   }
 
   /// Returns whether [sessionName] is attached in the primary SSH terminal.
@@ -1496,19 +1566,27 @@ class TmuxService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
-  bool _isExecChannelCoolingDown(SshSession session) {
+  DateTime? _execChannelCooldownUntil(SshSession session) {
     final backoff = _execChannelBackoffs[session.connectionId];
-    if (backoff == null) return false;
+    if (backoff == null) return null;
     if (backoff.cooldownUntil.isAfter(DateTime.now())) {
-      return true;
+      return backoff.cooldownUntil;
     }
     _execChannelBackoffs.remove(session.connectionId);
-    return false;
+    return null;
   }
+
+  bool _isExecChannelCoolingDown(SshSession session) =>
+      _execChannelCooldownUntil(session) != null;
 
   /// Returns whether optional SSH exec-channel work should be deferred.
   bool isExecChannelCoolingDown(SshSession session) =>
       _isExecChannelCoolingDown(session);
+
+  int _remainingExecChannelCooldownMs(DateTime cooldownUntil) {
+    final remainingMs = cooldownUntil.difference(DateTime.now()).inMilliseconds;
+    return remainingMs < 0 ? 0 : remainingMs;
+  }
 
   void _recordExecChannelFailure(int connectionId, Object error) {
     final failureCount =
@@ -1628,6 +1706,20 @@ class TmuxService {
     String command, {
     SSHPtyConfig? pty,
   }) async {
+    final cooldownUntil = _execChannelCooldownUntil(session);
+    if (cooldownUntil != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'open_deferred_during_backoff',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': _diagnosticTmuxCommandKind(command),
+          'remainingMs': _remainingExecChannelCooldownMs(cooldownUntil),
+          'pty': pty != null,
+        },
+      );
+      throw _TmuxExecChannelCoolingDownException(cooldownUntil);
+    }
     DiagnosticsLogService.instance.debug(
       'tmux.exec',
       'open_start',
@@ -2041,7 +2133,9 @@ class _TmuxExecChannelBackoff {
 /// Returns whether a failed tmux exec open should trigger channel backoff.
 @visibleForTesting
 bool shouldBackOffTmuxExecChannelAfterFailure(Object error) =>
-    error is SSHChannelOpenError || error is TimeoutException;
+    error is SSHChannelOpenError ||
+    error is TimeoutException ||
+    error is _TmuxExecChannelCoolingDownException;
 
 /// Returns whether stale tmux windows are safer than failing a refresh.
 @visibleForTesting

@@ -260,21 +260,57 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _windowReloadGeneration += 1;
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
+    final shouldNotifyWindowStateChanged =
+        _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
     DiagnosticsLogService.instance.debug(
       'tmux.ui',
       'bar_snapshot_applied',
       fields: {
         'connectionId': widget.session.connectionId,
         'windowCount': windows.length,
+        'themeRefreshNeeded': shouldNotifyWindowStateChanged,
       },
     );
     _applyWindows(windows);
-    _notifyWindowStateChanged();
+    if (shouldNotifyWindowStateChanged) {
+      _notifyWindowStateChanged();
+    }
   }
 
   void _notifyWindowStateChanged() {
     widget.onWindowStateChanged?.call(widget.session, widget.tmuxSessionName);
   }
+
+  bool _shouldRefreshTmuxThemeAfterWindowChange(
+    List<TmuxWindow> previousWindows,
+    List<TmuxWindow> nextWindows,
+  ) {
+    final previousActiveWindow = previousWindows
+        .where((window) => window.isActive)
+        .firstOrNull;
+    final nextActiveWindow = nextWindows
+        .where((window) => window.isActive)
+        .firstOrNull;
+    if (previousActiveWindow == null || nextActiveWindow == null) {
+      return previousActiveWindow != nextActiveWindow;
+    }
+    if (_tmuxWindowRefreshIdentity(previousActiveWindow) !=
+        _tmuxWindowRefreshIdentity(nextActiveWindow)) {
+      return true;
+    }
+    return previousActiveWindow.panePid != nextActiveWindow.panePid ||
+        previousActiveWindow.foregroundAgentTool !=
+            nextActiveWindow.foregroundAgentTool ||
+        previousActiveWindow.currentCommand !=
+            nextActiveWindow.currentCommand ||
+        previousActiveWindow.paneTitle != nextActiveWindow.paneTitle ||
+        previousActiveWindow.name != nextActiveWindow.name ||
+        previousActiveWindow.paneStartCommand !=
+            nextActiveWindow.paneStartCommand;
+  }
+
+  Object _tmuxWindowRefreshIdentity(TmuxWindow window) =>
+      window.id ?? (index: window.index);
 
   void _applyWindows(List<TmuxWindow> windows) {
     // Detect new alerts that weren't in the previous window list.

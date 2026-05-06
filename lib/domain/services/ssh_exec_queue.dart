@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 
 import 'diagnostics_log_service.dart';
 
-const _maxExecJobsPerConnection = 4;
-const _maxLowPriorityExecJobsPerConnection = 3;
+const _maxExecJobsPerConnection = 2;
+const _maxLowPriorityExecJobsPerConnection = 1;
 
 final _execQueues = <int, _SshExecQueue>{};
 
