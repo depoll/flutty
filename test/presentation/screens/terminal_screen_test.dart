@@ -826,6 +826,75 @@ void main() {
       expect(wakelockPlatform.toggleCalls.last, false);
     });
 
+    testWidgets('stale terminal screens do not clear current input callbacks', (
+      tester,
+    ) async {
+      final visibleScreens = ValueNotifier(<String>['first']);
+      addTearDown(visibleScreens.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+            themeModeNotifierProvider.overrideWith(
+              () => _TestThemeModeNotifier(ThemeMode.light),
+            ),
+            sharedClipboardProvider.overrideWith((ref) async => false),
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+          ],
+          child: MaterialApp(
+            home: ValueListenableBuilder<List<String>>(
+              valueListenable: visibleScreens,
+              builder: (context, screenKeys, _) => Stack(
+                children: [
+                  for (final screenKey in screenKeys)
+                    TerminalScreen(
+                      key: ValueKey(screenKey),
+                      hostId: host.id,
+                      connectionId: session.connectionId,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final firstOutputHandler = session.terminal!.onOutput;
+      expect(firstOutputHandler, isNotNull);
+
+      visibleScreens.value = <String>['first', 'second'];
+      await tester.pump();
+      await tester.pump();
+
+      final currentOutputHandler = session.terminal!.onOutput;
+      expect(currentOutputHandler, isNotNull);
+      expect(identical(currentOutputHandler, firstOutputHandler), isFalse);
+
+      visibleScreens.value = <String>['second'];
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        identical(session.terminal!.onOutput, currentOutputHandler),
+        isTrue,
+      );
+
+      shellWrites.clear();
+      session.terminal!.onOutput?.call('x');
+
+      expect(utf8.decode(shellWrites.expand((chunk) => chunk).toList()), 'x');
+    });
+
     testWidgets('terminal overflow menu omits standalone copy action', (
       tester,
     ) async {
