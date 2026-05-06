@@ -190,9 +190,6 @@ TextEditingValue _editingValue(String text, {required int selectionOffset}) =>
       ),
     );
 
-int _rgbCellColor(Color color) =>
-    CellColor.rgb | (color.toARGB32() & CellColor.valueMask);
-
 void main() {
   setUpAll(() {
     registerFallbackValue(const SSHPtyConfig());
@@ -1120,45 +1117,6 @@ void main() {
         expect(
           session.terminalTheme?.id,
           monkey_themes.TerminalThemes.defaultDarkThemeId,
-        );
-      },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
-    );
-
-    testWidgets(
-      'remaps stale explicit theme RGB cells when theme mode changes',
-      (tester) async {
-        await pumpScreen(tester);
-        final terminal = session.terminal!
-          ..write(
-            '\x1b[38;2;'
-            '13;43;40'
-            'm'
-            '\x1b[48;2;'
-            '235;243;242'
-            'mX\x1b[0m',
-          );
-
-        final container = ProviderScope.containerOf(
-          tester.element(find.byType(TerminalScreen)),
-        );
-        await container
-            .read(themeModeNotifierProvider.notifier)
-            .setThemeMode(ThemeMode.dark);
-        await tester.pump();
-
-        final line = terminal.buffer.lines[0];
-        expect(
-          line.getForeground(0),
-          _rgbCellColor(
-            monkey_themes.TerminalThemes.defaultDarkTheme.foreground,
-          ),
-        );
-        expect(
-          line.getBackground(0),
-          _rgbCellColor(
-            monkey_themes.TerminalThemes.defaultDarkTheme.background,
-          ),
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),

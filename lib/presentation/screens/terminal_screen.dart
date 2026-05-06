@@ -3231,9 +3231,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final didThemeChange =
         previousTheme != null &&
         !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
-    if (didThemeChange) {
-      _remapTerminalBufferThemeRgbColors(previousTheme, theme, reason: reason);
-    }
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
       targetSession,
     );
@@ -3273,85 +3270,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
   }
-
-  void _remapTerminalBufferThemeRgbColors(
-    TerminalThemeData previousTheme,
-    TerminalThemeData nextTheme, {
-    required String reason,
-  }) {
-    final colorMap = _terminalThemeRgbColorMap(previousTheme, nextTheme);
-    if (colorMap.isEmpty) {
-      return;
-    }
-
-    var changedCells = 0;
-    final lines = _terminal.buffer.lines;
-    for (var row = 0; row < lines.length; row += 1) {
-      final line = lines[row];
-      for (var column = 0; column < line.length; column += 1) {
-        final foreground = line.getForeground(column);
-        final remappedForeground = colorMap[foreground];
-        if (remappedForeground != null) {
-          line.setForeground(column, remappedForeground);
-          changedCells += 1;
-        }
-
-        final background = line.getBackground(column);
-        final remappedBackground = colorMap[background];
-        if (remappedBackground != null) {
-          line.setBackground(column, remappedBackground);
-          changedCells += 1;
-        }
-      }
-    }
-
-    if (changedCells == 0) {
-      return;
-    }
-
-    DiagnosticsLogService.instance.info(
-      'terminal.theme',
-      'buffer_rgb_remapped',
-      fields: {
-        'reason': reason,
-        'connectionId': _connectionId,
-        'changedCells': changedCells,
-      },
-    );
-    _terminal.notifyListeners();
-  }
-
-  Map<int, int> _terminalThemeRgbColorMap(
-    TerminalThemeData previousTheme,
-    TerminalThemeData nextTheme,
-  ) {
-    final map = <int, int>{};
-
-    void add(Color previous, Color next) {
-      final previousColor = _terminalRgbCellColor(previous);
-      final nextColor = _terminalRgbCellColor(next);
-      if (previousColor != nextColor) {
-        map.putIfAbsent(previousColor, () => nextColor);
-      }
-    }
-
-    add(previousTheme.foreground, nextTheme.foreground);
-    add(previousTheme.background, nextTheme.background);
-    add(previousTheme.cursor, nextTheme.cursor);
-    add(previousTheme.readableSelection, nextTheme.readableSelection);
-    for (var index = 0; index < 16; index += 1) {
-      final previousColor = terminalThemePaletteColor(previousTheme, index);
-      final nextColor = terminalThemePaletteColor(nextTheme, index);
-      if (previousColor != null && nextColor != null) {
-        add(previousColor, nextColor);
-      }
-    }
-
-    return map;
-  }
-
-  int _terminalRgbCellColor(Color color) =>
-      CellColor.rgb | (color.toARGB32() & CellColor.valueMask);
 
   void _refreshTerminalThemeForTui(
     TerminalThemeData theme,
