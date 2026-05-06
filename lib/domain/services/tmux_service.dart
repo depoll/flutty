@@ -2020,9 +2020,8 @@ String _buildTmuxProvideClientThemeReportsCommand(
 }) {
   final reports = [
     buildTerminalThemeModeReport(isDark: theme.isDark),
-    buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
-    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
-  ].whereType<String>().toList(growable: false);
+    buildTerminalThemeRefreshReports(theme),
+  ].where((report) => report.isNotEmpty).toList(growable: false);
   if (reports.isEmpty) {
     return '';
   }

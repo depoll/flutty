@@ -270,7 +270,11 @@ void main() {
       );
       expect(command, contains('1b 5d 31 30 3b'));
       expect(command, contains('1b 5d 31 31 3b'));
-      expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
+      expect(
+        command,
+        contains(buildTerminalThemeRefreshReports(TerminalThemes.dracula)),
+      );
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
       expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(3));
       expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(3));
       expect(
