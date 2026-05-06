@@ -139,14 +139,14 @@ void main() {
 
       expect(
         resolveTmuxBarActiveWindowTitle(windows),
-        'Copilot CLI · Fix tmux session labels',
+        'Fix tmux session labels',
       );
       expect(
         resolveTmuxBarHandleLabel(
           'workspace',
           activeWindowTitle: resolveTmuxBarActiveWindowTitle(windows),
         ),
-        'workspace · Copilot CLI · Fix tmux session labels',
+        'workspace · Fix tmux session labels',
       );
     });
 

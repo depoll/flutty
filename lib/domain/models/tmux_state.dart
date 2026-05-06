@@ -287,8 +287,7 @@ class TmuxWindow {
   String? get agentSessionDisplayTitle {
     final title = _normalizedTmuxTitle(agentSessionTitle);
     if (title == null || title.isEmpty) return null;
-    final tool = foregroundAgentTool;
-    return tool == null ? title : '${tool.label} · $title';
+    return title;
   }
 
   /// Agent-aware title, preferring live session metadata when available.
@@ -418,14 +417,20 @@ class TmuxWindow {
     final sessionDisplayTitle = agentSessionDisplayTitle;
     final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
     if (sessionDisplayTitle != null) {
-      final tmuxTitle = _tmuxDisplayTitle;
-      final fallbackAgentTitle = _agentFallbackContextTitle;
-      if (_titlesMatch(tmuxTitle, display) ||
-          _titlesMatch(tmuxTitle, sessionTitle) ||
-          _titlesMatch(tmuxTitle, fallbackAgentTitle)) {
-        return null;
+      final toolLabel = foregroundAgentTool?.label;
+      final tmuxTitle = _tmuxSecondaryTitleForAgentSession;
+      final secondaryParts = <String>[
+        if (toolLabel != null && !_titlesMatch(toolLabel, display)) toolLabel,
+        if (tmuxTitle != null &&
+            !_titlesMatch(tmuxTitle, display) &&
+            !_titlesMatch(tmuxTitle, sessionTitle) &&
+            !_titlesMatch(tmuxTitle, toolLabel))
+          tmuxTitle,
+      ];
+      if (secondaryParts.isNotEmpty) {
+        return secondaryParts.join(' · ');
       }
-      return tmuxTitle;
+      return null;
     }
     final normalizedPaneTitle = _normalizedTmuxTitle(
       paneTitle,
@@ -465,6 +470,23 @@ class TmuxWindow {
       return null;
     }
     return normalizedName;
+  }
+
+  String? get _tmuxSecondaryTitleForAgentSession {
+    final tmuxTitle = _tmuxDisplayTitle;
+    final fallbackAgentTitle = _agentFallbackContextTitle;
+    if (_titlesMatch(tmuxTitle, fallbackAgentTitle)) return null;
+
+    final foregroundTool = foregroundAgentTool;
+    if (foregroundTool != null &&
+        _isUnhelpfulAgentTitle(
+          tmuxTitle,
+          tool: foregroundTool,
+          contextLabel: _windowContextLabelFromPath(currentPath),
+        )) {
+      return null;
+    }
+    return tmuxTitle;
   }
 
   /// A human-readable status label for display.

@@ -318,9 +318,9 @@ void main() {
       );
 
       expect(window.agentSessionId, '12345678-1234-1234-1234-1234567890ab');
-      expect(window.displayTitle, 'Copilot CLI · Fix tmux session labels');
-      expect(window.handleTitle, 'Copilot CLI · Fix tmux session labels');
-      expect(window.secondaryTitle, isNull);
+      expect(window.displayTitle, 'Fix tmux session labels');
+      expect(window.handleTitle, 'Fix tmux session labels');
+      expect(window.secondaryTitle, 'Copilot CLI');
     });
 
     test('shows live session titles alongside useful window titles', () {
@@ -334,9 +334,9 @@ void main() {
         agentSessionTitle: 'Fix tmux session labels',
       );
 
-      expect(window.displayTitle, 'Copilot CLI · Fix tmux session labels');
-      expect(window.handleTitle, 'Copilot CLI · Fix tmux session labels');
-      expect(window.secondaryTitle, 'Editing main.dart');
+      expect(window.displayTitle, 'Fix tmux session labels');
+      expect(window.handleTitle, 'Fix tmux session labels');
+      expect(window.secondaryTitle, 'Copilot CLI · Editing main.dart');
     });
 
     test('copyWith can clear live agent session metadata', () {
@@ -366,15 +366,9 @@ void main() {
         agentSessionTitle: 'Improve Theme Picker Keyboard UX',
       );
 
-      expect(
-        window.displayTitle,
-        'Copilot CLI · Improve Theme Picker Keyboard UX',
-      );
-      expect(
-        window.handleTitle,
-        'Copilot CLI · Improve Theme Picker Keyboard UX',
-      );
-      expect(window.secondaryTitle, isNull);
+      expect(window.displayTitle, 'Improve Theme Picker Keyboard UX');
+      expect(window.handleTitle, 'Improve Theme Picker Keyboard UX');
+      expect(window.secondaryTitle, 'Copilot CLI');
     });
 
     test('handles empty command and path', () {

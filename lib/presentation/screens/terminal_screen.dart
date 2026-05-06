@@ -208,6 +208,9 @@ double resolveTmuxBarMaxContentHeight(
 }
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
+const _terminalOverflowMenuScreenPadding = 8.0;
+const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
+const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
 const _tmuxDetectionRetrySchedule = <Duration>[
   Duration.zero,
   Duration(milliseconds: 150),
@@ -245,6 +248,26 @@ const _shellCompletionShellCommands = <String>{
 @visibleForTesting
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
     skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
+
+/// Resolves the terminal overflow menu height when the mobile keyboard is up.
+@visibleForTesting
+double? resolveTerminalOverflowMenuMaxHeight({
+  required MediaQueryData mediaQuery,
+  required bool isMobilePlatform,
+  double? anchorTop,
+}) {
+  final keyboardInset = mediaQuery.viewInsets.bottom;
+  if (!isMobilePlatform || keyboardInset <= 0) {
+    return null;
+  }
+
+  final visibleBottom = mediaQuery.size.height - keyboardInset;
+  final effectiveAnchorTop =
+      anchorTop ?? mediaQuery.padding.top + kToolbarHeight;
+  final maxHeight =
+      visibleBottom - effectiveAnchorTop - _terminalOverflowMenuScreenPadding;
+  return maxHeight > 0 ? maxHeight : null;
+}
 
 /// Returns whether tmux detection should keep the terminal's current tmux UI.
 ///
@@ -2514,6 +2537,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
   StreamSubscription<String>? _shellStdoutSubscription;
+  Terminal? _terminalWithOwnedCallbacks;
+  void Function(String)? _terminalOutputHandler;
+  void Function(int, int, int, int)? _terminalResizeHandler;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -2721,6 +2747,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
   bool _restoreKeyboardAfterAppResume = false;
+  final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
 
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
@@ -2751,6 +2778,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
   );
+
+  BoxConstraints? _terminalOverflowMenuConstraints({
+    required BuildContext context,
+    required bool isMobilePlatform,
+  }) {
+    final mediaQuery = MediaQuery.of(context);
+    final anchorTop = _terminalOverflowMenuAnchorTop(context);
+    final maxHeight = resolveTerminalOverflowMenuMaxHeight(
+      mediaQuery: mediaQuery,
+      isMobilePlatform: isMobilePlatform,
+      anchorTop: anchorTop,
+    );
+    if (maxHeight == null) {
+      return null;
+    }
+
+    return BoxConstraints(
+      minWidth: _terminalOverflowMenuMinWidth,
+      maxWidth: _terminalOverflowMenuMaxWidth,
+      maxHeight: maxHeight,
+    );
+  }
+
+  double? _terminalOverflowMenuAnchorTop(BuildContext context) {
+    final anchorContext = _terminalOverflowMenuButtonKey.currentContext;
+    if (anchorContext == null) {
+      return null;
+    }
+    final anchorRenderObject = anchorContext.findRenderObject();
+    final overlayRenderObject = Navigator.of(
+      context,
+    ).overlay?.context.findRenderObject();
+    if (anchorRenderObject is! RenderBox ||
+        overlayRenderObject is! RenderBox ||
+        !anchorRenderObject.attached ||
+        !overlayRenderObject.attached) {
+      return null;
+    }
+
+    return anchorRenderObject
+        .localToGlobal(Offset.zero, ancestor: overlayRenderObject)
+        .dy;
+  }
 
   bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
     isNativeSelectionMode: _isNativeSelectionMode,
@@ -4959,6 +5029,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _promptOutputImeResetTimer = null;
     _hideShellCompletionPopup();
+    _clearOwnedTerminalCallbacks();
     _shell = null;
     // Allow the build-path safety-net call to fire once for the new session.
     _lastBuildAppliedTheme = null;
@@ -5174,6 +5245,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   /// Wire terminal onOutput/onResize callbacks for this screen instance.
   void _wireTerminalCallbacks(SshSession session) {
+    _clearOwnedTerminalCallbacks();
+
     // Listen for shell close events.
     _doneSubscription = session.shellDoneStream.listen((_) {
       DiagnosticsLogService.instance.warning(
@@ -5203,7 +5276,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
 
-    _terminal.onOutput = (data) {
+    void handleTerminalOutput(String data) {
       // On iOS/Android soft keyboards, Return sends a lone '\n' via
       // textInput(), but SSH expects '\r'. The proper
       // keyInput(TerminalKey.enter) path already produces '\r', so we
@@ -5216,9 +5289,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
       _shell?.write(utf8.encode(output));
-    };
+    }
 
-    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+    _terminalOutputHandler = handleTerminalOutput;
+    _terminal.onOutput = handleTerminalOutput;
+
+    void handleTerminalResize(
+      int width,
+      int height,
+      int pixelWidth,
+      int pixelHeight,
+    ) {
       session.updateTerminalWindowMetrics(
         columns: width,
         rows: height,
@@ -5226,7 +5307,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelHeight: pixelHeight,
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
-    };
+    }
+
+    _terminalResizeHandler = handleTerminalResize;
+    _terminal.onResize = handleTerminalResize;
+    _terminalWithOwnedCallbacks = _terminal;
+  }
+
+  void _clearOwnedTerminalCallbacks() {
+    final terminal = _terminalWithOwnedCallbacks;
+    final outputHandler = _terminalOutputHandler;
+    if (terminal != null &&
+        outputHandler != null &&
+        identical(terminal.onOutput, outputHandler)) {
+      terminal.onOutput = null;
+    }
+    _terminalOutputHandler = null;
+
+    final resizeHandler = _terminalResizeHandler;
+    if (terminal != null &&
+        resizeHandler != null &&
+        identical(terminal.onResize, resizeHandler)) {
+      terminal.onResize = null;
+    }
+    _terminalResizeHandler = null;
+    _terminalWithOwnedCallbacks = null;
   }
 
   void _scheduleTerminalSizeRefresh() {
@@ -6811,10 +6916,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
-    _terminal
-      ..removeListener(_onTerminalStateChanged)
-      ..onOutput = null
-      ..onResize = null;
+    _clearOwnedTerminalCallbacks();
+    _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
       ..removeListener(_onSelectionChanged)
       ..dispose();
@@ -7152,8 +7255,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show extra keys',
             ),
             PopupMenuButton<String>(
+              key: _terminalOverflowMenuButtonKey,
               onSelected: _handleMenuAction,
               requestFocus: terminalOverlayRouteRequestFocus(context),
+              constraints: _terminalOverflowMenuConstraints(
+                context: context,
+                isMobilePlatform: isMobile,
+              ),
               itemBuilder: (context) => [
                 const PopupMenuItem(
                   value: 'snippets',
