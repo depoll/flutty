@@ -207,6 +207,9 @@ double resolveTmuxBarMaxContentHeight(
 }
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
+const _terminalOverflowMenuScreenPadding = 8.0;
+const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
+const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
 const _tmuxDetectionRetrySchedule = <Duration>[
   Duration.zero,
   Duration(milliseconds: 150),
@@ -219,6 +222,26 @@ const _tmuxDetectionRetrySchedule = <Duration>[
 @visibleForTesting
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
     skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
+
+/// Resolves the terminal overflow menu height when the mobile keyboard is up.
+@visibleForTesting
+double? resolveTerminalOverflowMenuMaxHeight({
+  required MediaQueryData mediaQuery,
+  required bool isMobilePlatform,
+  double? anchorTop,
+}) {
+  final keyboardInset = mediaQuery.viewInsets.bottom;
+  if (!isMobilePlatform || keyboardInset <= 0) {
+    return null;
+  }
+
+  final visibleBottom = mediaQuery.size.height - keyboardInset;
+  final effectiveAnchorTop =
+      anchorTop ?? mediaQuery.padding.top + kToolbarHeight;
+  final maxHeight =
+      visibleBottom - effectiveAnchorTop - _terminalOverflowMenuScreenPadding;
+  return maxHeight > 0 ? maxHeight : null;
+}
 
 /// Returns whether tmux detection should keep the terminal's current tmux UI.
 ///
@@ -2434,6 +2457,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
   bool _restoreKeyboardAfterAppResume = false;
+  final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
 
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
@@ -2464,6 +2488,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
   );
+
+  BoxConstraints? _terminalOverflowMenuConstraints({
+    required BuildContext context,
+    required bool isMobilePlatform,
+  }) {
+    final mediaQuery = MediaQuery.of(context);
+    final anchorTop = _terminalOverflowMenuAnchorTop(context);
+    final maxHeight = resolveTerminalOverflowMenuMaxHeight(
+      mediaQuery: mediaQuery,
+      isMobilePlatform: isMobilePlatform,
+      anchorTop: anchorTop,
+    );
+    if (maxHeight == null) {
+      return null;
+    }
+
+    return BoxConstraints(
+      minWidth: _terminalOverflowMenuMinWidth,
+      maxWidth: _terminalOverflowMenuMaxWidth,
+      maxHeight: maxHeight,
+    );
+  }
+
+  double? _terminalOverflowMenuAnchorTop(BuildContext context) {
+    final anchorContext = _terminalOverflowMenuButtonKey.currentContext;
+    if (anchorContext == null) {
+      return null;
+    }
+    final anchorRenderObject = anchorContext.findRenderObject();
+    final overlayRenderObject = Navigator.of(
+      context,
+    ).overlay?.context.findRenderObject();
+    if (anchorRenderObject is! RenderBox ||
+        overlayRenderObject is! RenderBox ||
+        !anchorRenderObject.attached ||
+        !overlayRenderObject.attached) {
+      return null;
+    }
+
+    return anchorRenderObject
+        .localToGlobal(Offset.zero, ancestor: overlayRenderObject)
+        .dy;
+  }
 
   bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
     isNativeSelectionMode: _isNativeSelectionMode,
@@ -6288,8 +6355,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show extra keys',
             ),
             PopupMenuButton<String>(
+              key: _terminalOverflowMenuButtonKey,
               onSelected: _handleMenuAction,
               requestFocus: terminalOverlayRouteRequestFocus(context),
+              constraints: _terminalOverflowMenuConstraints(
+                context: context,
+                isMobilePlatform: isMobile,
+              ),
               itemBuilder: (context) => [
                 const PopupMenuItem(
                   value: 'snippets',

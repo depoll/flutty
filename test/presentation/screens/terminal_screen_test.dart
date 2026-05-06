@@ -297,6 +297,41 @@ void main() {
       expect(selectedText, isNull);
     });
 
+    test(
+      'limits mobile terminal overflow menu to the visible keyboard area',
+      () {
+        const mediaQuery = MediaQueryData(
+          size: Size(390, 844),
+          viewInsets: EdgeInsets.only(bottom: 320),
+        );
+
+        expect(
+          resolveTerminalOverflowMenuMaxHeight(
+            mediaQuery: mediaQuery,
+            isMobilePlatform: true,
+            anchorTop: 120,
+          ),
+          396,
+        );
+        expect(
+          resolveTerminalOverflowMenuMaxHeight(
+            mediaQuery: mediaQuery,
+            isMobilePlatform: false,
+            anchorTop: 120,
+          ),
+          isNull,
+        );
+        expect(
+          resolveTerminalOverflowMenuMaxHeight(
+            mediaQuery: const MediaQueryData(size: Size(390, 844)),
+            isMobilePlatform: true,
+            anchorTop: 120,
+          ),
+          isNull,
+        );
+      },
+    );
+
     test('adds create snippet action after copy in terminal menu', () {
       var didCreateSnippet = false;
 
@@ -2657,6 +2692,51 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.text('Snippets'), findsOneWidget);
+        expect(tester.testTextInput.isVisible, isTrue);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'terminal overflow menu stays above the visible mobile keyboard',
+      (tester) async {
+        tester.view
+          ..physicalSize = const Size(390, 844)
+          ..devicePixelRatio = 1
+          ..viewInsets = const FakeViewPadding(bottom: 500);
+        addTearDown(() {
+          tester.view
+            ..resetPhysicalSize()
+            ..resetDevicePixelRatio()
+            ..resetViewInsets();
+        });
+
+        await pumpScreen(tester);
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+
+        const keyboardTop = 844 - 500;
+        final menuScrollable = find.ancestor(
+          of: find.text('Snippets'),
+          matching: find.byType(SingleChildScrollView),
+        );
+        expect(menuScrollable, findsOneWidget);
+        expect(
+          tester.getBottomLeft(menuScrollable).dy,
+          lessThanOrEqualTo(keyboardTop),
+        );
+
+        await tester.drag(menuScrollable, const Offset(0, -320));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Disconnect'), findsOneWidget);
+        expect(
+          tester.getBottomLeft(find.text('Disconnect')).dy,
+          lessThanOrEqualTo(keyboardTop),
+        );
         expect(tester.testTextInput.isVisible, isTrue);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
