@@ -659,6 +659,47 @@ void main() {
       expect(snapshot.cursorOffset, 18);
     });
 
+    test('uses compact terminal-sized shell completion rows', () {
+      expect(resolveShellCompletionPopupRowHeight(14), 28);
+      expect(resolveShellCompletionPopupRowHeight(20), 35);
+    });
+
+    test('places shell completion popup above a low cursor line', () {
+      final layout = resolveShellCompletionPopupLayout(
+        overlaySize: const Size(400, 600),
+        anchor: const Rect.fromLTWH(100, 550, 10, 20),
+        suggestionCount: 5,
+        rowHeight: 28,
+      );
+
+      expect(layout.maxHeight, 146);
+      expect(layout.top + layout.maxHeight, lessThanOrEqualTo(546));
+    });
+
+    test('places shell completion popup below a high cursor line', () {
+      final layout = resolveShellCompletionPopupLayout(
+        overlaySize: const Size(400, 600),
+        anchor: const Rect.fromLTWH(100, 20, 10, 20),
+        suggestionCount: 5,
+        rowHeight: 28,
+      );
+
+      expect(layout.maxHeight, 146);
+      expect(layout.top, greaterThanOrEqualTo(44));
+    });
+
+    test('shrinks shell completion popup rather than covering cursor line', () {
+      final layout = resolveShellCompletionPopupLayout(
+        overlaySize: const Size(400, 180),
+        anchor: const Rect.fromLTWH(100, 70, 10, 20),
+        suggestionCount: 5,
+        rowHeight: 28,
+      );
+
+      expect(layout.top, 94);
+      expect(layout.maxHeight, 78);
+    });
+
     test(
       'rejects stale shell completion taps when token no longer matches',
       () {

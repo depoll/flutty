@@ -421,6 +421,62 @@ bool canTerminalOutputTriggerShellCompletion({
   return true;
 }
 
+/// Resolves the compact row height for shell completion popup entries.
+@visibleForTesting
+double resolveShellCompletionPopupRowHeight(double terminalFontSize) =>
+    max(28, terminalFontSize * 1.75).toDouble();
+
+double _nonNegativeDouble(double value) => value < 0 ? 0 : value;
+
+/// Resolves shell completion popup bounds without covering the cursor line.
+@visibleForTesting
+({double left, double top, double width, double maxHeight})
+resolveShellCompletionPopupLayout({
+  required Size overlaySize,
+  required Rect anchor,
+  required int suggestionCount,
+  required double rowHeight,
+  double horizontalMargin = 12,
+  double verticalMargin = 8,
+  double anchorGap = 4,
+  double popupVerticalPadding = 6,
+  double minWidth = 220,
+  double maxWidth = 340,
+  int maxVisibleRows = 5,
+}) {
+  final availableWidth = _nonNegativeDouble(
+    overlaySize.width - (horizontalMargin * 2),
+  );
+  final width = min(
+    availableWidth,
+    min(maxWidth, max(minWidth, availableWidth)),
+  );
+  final maxLeft = max(
+    horizontalMargin,
+    overlaySize.width - width - horizontalMargin,
+  );
+  final left = anchor.left.clamp(horizontalMargin, maxLeft);
+
+  final visibleCount = max(1, min(suggestionCount, maxVisibleRows));
+  final desiredHeight = (visibleCount * rowHeight) + popupVerticalPadding;
+  final availableAbove = _nonNegativeDouble(
+    anchor.top - anchorGap - verticalMargin,
+  );
+  final availableBelow = _nonNegativeDouble(
+    overlaySize.height - anchor.bottom - anchorGap - verticalMargin,
+  );
+  final placeAbove =
+      availableAbove >= desiredHeight ||
+      (availableBelow < desiredHeight && availableAbove > availableBelow);
+  final availableHeight = placeAbove ? availableAbove : availableBelow;
+  final maxHeight = min(desiredHeight, availableHeight);
+  final top = placeAbove
+      ? anchor.top - anchorGap - maxHeight
+      : anchor.bottom + anchorGap;
+
+  return (left: left, top: top, width: width, maxHeight: maxHeight);
+}
+
 /// Wraps the terminal layer so pointer downs outside the completion popup can
 /// dismiss the popup while popup taps remain handled by the overlay above it.
 @visibleForTesting
@@ -7392,6 +7448,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Widget child, {
     required ThemeData theme,
     required TerminalThemeData terminalTheme,
+    required TextStyle terminalTextStyle,
   }) {
     final suggestions = _shellCompletionSuggestions;
     final anchorGlobalRect = _shellCompletionAnchorGlobalRect;
@@ -7419,48 +7476,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 overlayObject.globalToLocal(anchorGlobalRect.topLeft),
                 overlayObject.globalToLocal(anchorGlobalRect.bottomRight),
               );
-              const horizontalMargin = 12.0;
-              const rowHeight = 44.0;
-              const popupPadding = 6.0;
-              final visibleCount = min(suggestions.length, 5);
-              final popupHeight = (visibleCount * rowHeight) + popupPadding;
-              final popupWidth = min(
-                360,
-                max(220, constraints.maxWidth - (horizontalMargin * 2)),
-              ).toDouble();
-              final maxLeft = max(
-                horizontalMargin,
-                constraints.maxWidth - popupWidth - horizontalMargin,
+              final rowHeight = resolveShellCompletionPopupRowHeight(
+                terminalTextStyle.fontSize ?? 14,
               );
-              final left = anchor.left < horizontalMargin
-                  ? horizontalMargin
-                  : anchor.left > maxLeft
-                  ? maxLeft
-                  : anchor.left;
-              final preferredTop = anchor.top >= popupHeight + 12
-                  ? anchor.top - popupHeight - 8
-                  : anchor.bottom + 8;
-              final maxTop = max(
-                8,
-                constraints.maxHeight - popupHeight - 8,
-              ).toDouble();
-              final top = preferredTop < 8
-                  ? 8.0
-                  : preferredTop > maxTop
-                  ? maxTop
-                  : preferredTop;
+              final layout = resolveShellCompletionPopupLayout(
+                overlaySize: Size(constraints.maxWidth, constraints.maxHeight),
+                anchor: anchor,
+                suggestionCount: suggestions.length,
+                rowHeight: rowHeight,
+              );
+
+              if (layout.width <= 0 || layout.maxHeight <= 0) {
+                return const SizedBox.shrink();
+              }
 
               return Stack(
                 children: [
                   Positioned(
-                    left: left,
-                    top: top,
-                    width: popupWidth,
+                    left: layout.left,
+                    top: layout.top,
+                    width: layout.width,
                     child: _buildShellCompletionPopup(
                       theme: theme,
                       terminalTheme: terminalTheme,
                       suggestions: suggestions,
                       rowHeight: rowHeight,
+                      maxHeight: layout.maxHeight,
+                      textStyle: terminalTextStyle,
                     ),
                   ),
                 ],
@@ -7477,14 +7519,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required TerminalThemeData terminalTheme,
     required List<ShellCompletionSuggestion> suggestions,
     required double rowHeight,
+    required double maxHeight,
+    required TextStyle textStyle,
   }) {
     final popupColor = Color.alphaBlend(
       theme.colorScheme.surfaceTint.withValues(alpha: 0.08),
       theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.96),
     );
-    final textStyle = theme.textTheme.titleMedium?.copyWith(
+    final completionTextStyle = textStyle.copyWith(
       color: theme.colorScheme.onSurface,
-      fontFamily: _host?.terminalFontFamily,
     );
 
     return Material(
@@ -7499,7 +7542,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       clipBehavior: Clip.antiAlias,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: (rowHeight * 5) + 6),
+        constraints: BoxConstraints(maxHeight: maxHeight),
         child: ListView.separated(
           padding: const EdgeInsets.symmetric(vertical: 3),
           shrinkWrap: true,
@@ -7516,21 +7559,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               child: SizedBox(
                 height: rowHeight,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: Row(
                     children: [
                       Icon(
                         _shellCompletionIcon(suggestion.kind),
-                        size: 18,
+                        size: min(
+                          18,
+                          max(14, (textStyle.fontSize ?? 14) + 1),
+                        ).toDouble(),
                         color: terminalTheme.foreground.withValues(alpha: 0.76),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           suggestion.label,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: textStyle,
+                          style: completionTextStyle,
                         ),
                       ),
                     ],
@@ -7846,7 +7892,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hostFont = _host?.terminalFontFamily;
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
-    final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
+    final terminalFlutterTextStyle = _getTerminalFlutterTextStyle(
+      fontFamily,
+      fontSize,
+    );
+    final terminalTextStyle = TerminalStyle.fromTextStyle(
+      terminalFlutterTextStyle,
+    );
     final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
     final terminalPathLinksEnabled = ref.watch(
       terminalPathLinksNotifierProvider,
@@ -7968,6 +8020,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminalView,
       theme: theme,
       terminalTheme: terminalTheme,
+      terminalTextStyle: terminalFlutterTextStyle,
     );
 
     if (!isMobile) {
@@ -8104,14 +8157,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Resolves the terminal text style for the given font family and size.
-  TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
-    final textStyle = resolveMonospaceTextStyle(
-      fontFamily,
-      platform: Theme.of(context).platform,
-      fontSize: fontSize,
-    );
-    return TerminalStyle.fromTextStyle(textStyle);
-  }
+  TextStyle _getTerminalFlutterTextStyle(String fontFamily, double fontSize) =>
+      resolveMonospaceTextStyle(
+        fontFamily,
+        platform: Theme.of(context).platform,
+        fontSize: fontSize,
+      );
 
   Future<void> _openConnectionFileBrowser() => _runExclusiveTerminalAction(
     _TerminalExclusiveAction.sftpBrowser,
