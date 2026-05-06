@@ -421,6 +421,22 @@ bool canTerminalOutputTriggerShellCompletion({
   return true;
 }
 
+/// Returns whether completions should use the current terminal as a shell prompt.
+@visibleForTesting
+bool isShellCompletionPromptContext({
+  required TerminalShellStatus? shellStatus,
+  required bool isTmuxActive,
+  required String? tmuxCurrentCommand,
+}) {
+  if (isTmuxActive) {
+    final command = tmuxCurrentCommand?.trim();
+    return command != null &&
+        command.isNotEmpty &&
+        isShellCompletionTmuxShellCommand(command);
+  }
+  return shellStatus != TerminalShellStatus.runningCommand;
+}
+
 /// Resolves the compact row height for shell completion popup entries.
 @visibleForTesting
 double resolveShellCompletionPopupRowHeight(double terminalFontSize) =>
@@ -4153,6 +4169,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _hideShellCompletionPopup();
       return;
     }
+    if (_hasKnownNonShellCompletionContext()) {
+      _hideShellCompletionPopup();
+      return;
+    }
 
     _trackShellCompletionOptimisticInput(output);
     if (_filterVisibleShellCompletionsForCurrentInput()) {
@@ -4170,6 +4190,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isTmuxActive: _isTmuxActive,
         showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
       );
+
+  bool _hasKnownNonShellCompletionContext() {
+    if (_isTmuxActive) {
+      final command = _tmuxCurrentCommand?.trim();
+      return command != null &&
+          command.isNotEmpty &&
+          !isShellCompletionTmuxShellCommand(command);
+    }
+    return _shellStatus == TerminalShellStatus.runningCommand;
+  }
 
   void _trackShellCompletionOptimisticInput(String output) {
     final terminalSnapshot = _buildWrappedTerminalCommandSnapshot();
@@ -4298,6 +4328,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final cachedInvocation = _buildCurrentShellCompletionInvocation(
       workingDirectory: _workingDirectoryPath,
+      requirePromptContext: false,
     );
     if (cachedInvocation == null) {
       _hideShellCompletionPopup(resetPromptPrefix: false);
@@ -4421,7 +4452,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final tmuxSessionName = _isTmuxActive ? _tmuxSessionName : null;
     if (tmuxSessionName == null) {
       return (
-        canComplete: true,
+        canComplete: isShellCompletionPromptContext(
+          shellStatus: _shellStatus,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
         workingDirectory: workingDirectory,
         shellCommand: null,
       );
@@ -4432,14 +4467,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _shellCompletionTmuxContextConnectionId == session.connectionId &&
         _shellCompletionTmuxContextSessionName == tmuxSessionName &&
         DateTime.now().difference(cachedAt) <= _shellCompletionTmuxContextTtl &&
-        ((_tmuxWorkingDirectory?.trim().isNotEmpty ?? false) ||
-            (_tmuxCurrentCommand?.trim().isNotEmpty ?? false))) {
+        (_tmuxCurrentCommand?.trim().isNotEmpty ?? false)) {
       final cachedCommand = _tmuxCurrentCommand?.trim();
       final cachedShellCommand =
           cachedCommand != null &&
               isShellCompletionTmuxShellCommand(cachedCommand)
           ? cachedCommand
           : null;
+      if (cachedShellCommand == null) {
+        return (
+          canComplete: false,
+          workingDirectory: workingDirectory,
+          shellCommand: null,
+        );
+      }
       final tmuxWorkingDirectory = _tmuxWorkingDirectory?.trim();
       if (tmuxWorkingDirectory != null && tmuxWorkingDirectory.isNotEmpty) {
         workingDirectory = tmuxWorkingDirectory;
@@ -4477,9 +4518,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         shellCommand: null,
       );
     }
+    if (tmuxPaneContext == null) {
+      return (
+        canComplete: false,
+        workingDirectory: workingDirectory,
+        shellCommand: null,
+      );
+    }
 
-    final freshWorkingDirectory = tmuxPaneContext?.currentPath?.trim();
-    final freshCommand = tmuxPaneContext?.currentCommand?.trim();
+    final freshWorkingDirectory = tmuxPaneContext.currentPath?.trim();
+    final freshCommand = tmuxPaneContext.currentCommand?.trim();
     _shellCompletionTmuxContextRefreshedAt = DateTime.now();
     _shellCompletionTmuxContextConnectionId = session.connectionId;
     _shellCompletionTmuxContextSessionName = tmuxSessionName;
@@ -4504,7 +4552,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       workingDirectory = tmuxWorkingDirectory;
     }
     return (
-      canComplete: true,
+      canComplete: tmuxShellCommand != null,
       workingDirectory: workingDirectory,
       shellCommand: tmuxShellCommand,
     );
@@ -4513,10 +4561,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ShellCompletionInvocation? _buildCurrentShellCompletionInvocation({
     required String? workingDirectory,
     String? shellCommand,
+    bool requirePromptContext = true,
   }) {
     if (!ref.read(shellCompletionsNotifierProvider) ||
         (_isUsingAltBuffer && !_isTmuxActive) ||
         _showsNativeSelectionOverlay) {
+      return null;
+    }
+    if (requirePromptContext &&
+        !isShellCompletionPromptContext(
+          shellStatus: _shellStatus,
+          isTmuxActive: _isTmuxActive,
+          tmuxCurrentCommand: shellCommand ?? _tmuxCurrentCommand,
+        )) {
       return null;
     }
     final snapshot =

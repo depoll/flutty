@@ -639,6 +639,57 @@ void main() {
       );
     });
 
+    test('allows completions only in shell prompt contexts', () {
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.prompt,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
+        isTrue,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.editingCommand,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
+        isTrue,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.runningCommand,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
+        isFalse,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.runningCommand,
+          isTmuxActive: true,
+          tmuxCurrentCommand: 'zsh',
+        ),
+        isTrue,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.prompt,
+          isTmuxActive: true,
+          tmuxCurrentCommand: 'codex',
+        ),
+        isFalse,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.prompt,
+          isTmuxActive: true,
+          tmuxCurrentCommand: null,
+        ),
+        isFalse,
+      );
+    });
+
     test('applies printable completion input before remote echo arrives', () {
       final snapshot = applyShellCompletionOutputToSnapshot(
         snapshot: (text: 'depoll@host % git ', cursorOffset: 18),
