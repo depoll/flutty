@@ -1240,24 +1240,24 @@ class TmuxService {
     SshExecPriority priority = SshExecPriority.normal,
     String? extraFlags,
   }) async {
-    final cachedPath = _cachedCurrentPanePath(
+    final cachedContext = _cachedCurrentPaneContext(
       session,
       sessionName,
       extraFlags: extraFlags,
     );
-    if (cachedPath != null) {
+    if (cachedContext != null) {
       DiagnosticsLogService.instance.debug(
         'tmux.query',
-        'current_pane_path_cached',
+        'current_pane_context_cached',
         fields: {'connectionId': session.connectionId},
       );
-      return cachedPath;
+      return cachedContext;
     }
     final execCooldown = _execChannelCooldownRemaining(session);
     if (execCooldown != null) {
       DiagnosticsLogService.instance.debug(
         'tmux.query',
-        'current_pane_path_deferred',
+        'current_pane_context_deferred',
         fields: {
           'connectionId': session.connectionId,
           'remainingMs': execCooldown.inMilliseconds,
@@ -1303,7 +1303,7 @@ class TmuxService {
     }
   }
 
-  String? _cachedCurrentPanePath(
+  TmuxPaneContext? _cachedCurrentPaneContext(
     SshSession session,
     String sessionName, {
     String? extraFlags,
@@ -1317,7 +1317,15 @@ class TmuxService {
     if (windows == null || windows.isEmpty) {
       return null;
     }
-    return windows.where((window) => window.isActive).firstOrNull?.currentPath;
+    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
+    final currentPath = activeWindow?.currentPath;
+    if (currentPath == null) {
+      return null;
+    }
+    return TmuxPaneContext(
+      currentPath: currentPath,
+      currentCommand: activeWindow?.currentCommand,
+    );
   }
 
   /// Returns whether [sessionName] is attached in the primary SSH terminal.

@@ -596,8 +596,11 @@ void main() {
         await service.listWindows(session, 'main');
 
         final path = await service.currentPanePath(session, 'main');
+        final context = await service.currentPaneContext(session, 'main');
 
         expect(path, '/tmp/project');
+        expect(context?.currentPath, '/tmp/project');
+        expect(context?.currentCommand, 'copilot');
         expect(executeCalls, 1);
       } finally {
         await service.clearCache(37);
