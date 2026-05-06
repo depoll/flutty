@@ -2243,6 +2243,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
   StreamSubscription<String>? _shellStdoutSubscription;
+  Terminal? _terminalWithOwnedCallbacks;
+  void Function(String)? _terminalOutputHandler;
+  void Function(int, int, int, int)? _terminalResizeHandler;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -4080,6 +4083,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
     _promptOutputImeResetTimer = null;
+    _clearOwnedTerminalCallbacks();
     _shell = null;
     // Allow the build-path safety-net call to fire once for the new session.
     _lastBuildAppliedTheme = null;
@@ -4295,6 +4299,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   /// Wire terminal onOutput/onResize callbacks for this screen instance.
   void _wireTerminalCallbacks(SshSession session) {
+    _clearOwnedTerminalCallbacks();
+
     // Listen for shell close events.
     _doneSubscription = session.shellDoneStream.listen((_) {
       DiagnosticsLogService.instance.warning(
@@ -4324,7 +4330,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
 
-    _terminal.onOutput = (data) {
+    void handleTerminalOutput(String data) {
       // On iOS/Android soft keyboards, Return sends a lone '\n' via
       // textInput(), but SSH expects '\r'. The proper
       // keyInput(TerminalKey.enter) path already produces '\r', so we
@@ -4336,9 +4342,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _shell?.write(utf8.encode(output));
-    };
+    }
 
-    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+    _terminalOutputHandler = handleTerminalOutput;
+    _terminal.onOutput = handleTerminalOutput;
+
+    void handleTerminalResize(
+      int width,
+      int height,
+      int pixelWidth,
+      int pixelHeight,
+    ) {
       session.updateTerminalWindowMetrics(
         columns: width,
         rows: height,
@@ -4346,7 +4360,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelHeight: pixelHeight,
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
-    };
+    }
+
+    _terminalResizeHandler = handleTerminalResize;
+    _terminal.onResize = handleTerminalResize;
+    _terminalWithOwnedCallbacks = _terminal;
+  }
+
+  void _clearOwnedTerminalCallbacks() {
+    final terminal = _terminalWithOwnedCallbacks;
+    final outputHandler = _terminalOutputHandler;
+    if (terminal != null &&
+        outputHandler != null &&
+        identical(terminal.onOutput, outputHandler)) {
+      terminal.onOutput = null;
+    }
+    _terminalOutputHandler = null;
+
+    final resizeHandler = _terminalResizeHandler;
+    if (terminal != null &&
+        resizeHandler != null &&
+        identical(terminal.onResize, resizeHandler)) {
+      terminal.onResize = null;
+    }
+    _terminalResizeHandler = null;
+    _terminalWithOwnedCallbacks = null;
   }
 
   void _scheduleTerminalSizeRefresh() {
@@ -5911,10 +5949,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
-    _terminal
-      ..removeListener(_onTerminalStateChanged)
-      ..onOutput = null
-      ..onResize = null;
+    _clearOwnedTerminalCallbacks();
+    _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
       ..removeListener(_onSelectionChanged)
       ..dispose();
