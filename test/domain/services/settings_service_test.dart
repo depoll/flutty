@@ -183,6 +183,7 @@ void main() {
       expect(SettingKeys.terminalColorScheme, 'terminal_color_scheme');
       expect(SettingKeys.cursorStyle, 'cursor_style');
       expect(SettingKeys.bellSound, 'bell_sound');
+      expect(SettingKeys.shellCompletions, 'shell_completions');
       expect(SettingKeys.hapticFeedback, 'haptic_feedback');
       expect(SettingKeys.keyboardToolbar, 'keyboard_toolbar');
       expect(SettingKeys.autoReconnect, 'auto_reconnect');
@@ -347,6 +348,26 @@ void main() {
       test('returns true by default', () async {
         final result = await container.read(bellSoundProvider.future);
         expect(result, isTrue);
+      });
+    });
+
+    group('shellCompletionsNotifierProvider', () {
+      test('defaults to enabled and persists changes', () async {
+        final notifier = container.read(
+          shellCompletionsNotifierProvider.notifier,
+        );
+
+        expect(container.read(shellCompletionsNotifierProvider), isTrue);
+
+        await notifier.setEnabled(enabled: false);
+
+        expect(container.read(shellCompletionsNotifierProvider), isFalse);
+        expect(
+          await container
+              .read(settingsServiceProvider)
+              .getBool(SettingKeys.shellCompletions, defaultValue: true),
+          isFalse,
+        );
       });
     });
 
