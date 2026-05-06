@@ -217,6 +217,8 @@ const _tmuxDetectionRetrySchedule = <Duration>[
   Duration(milliseconds: 350),
   Duration(milliseconds: 700),
   Duration(milliseconds: 1400),
+  Duration(milliseconds: 2800),
+  Duration(milliseconds: 5600),
 ];
 const _shellCompletionDebounce = Duration(milliseconds: 220);
 const _shellCompletionMaxAnchorRetries = 2;
@@ -5980,12 +5982,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!active) {
           confirmedTmuxActive = false;
           hadDetectionFailure = false;
-          if (candidateSessionName == null &&
-              foregroundSessionName == null &&
-              !hadVisibleOrPrimedTmuxState &&
-              !mayPreserveExistingTmuxState) {
-            break;
-          }
           continue;
         }
         confirmedTmuxActive = true;

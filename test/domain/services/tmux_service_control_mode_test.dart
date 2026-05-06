@@ -407,6 +407,7 @@ void main() {
       final execSessions = Queue<SSHSession>.of([
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         _buildOpenExecSession(stdout: _doneMarker()),
+        _buildOpenExecSession(stdout: _doneMarker()),
       ]);
 
       when(
@@ -438,9 +439,43 @@ void main() {
       );
     });
 
+    test(
+      'foregroundSessionNameOrThrow falls back to direct tmux session',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 23);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: _doneMarker()),
+          _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final sessionName = await service.foregroundSessionNameOrThrow(session);
+
+        expect(sessionName, 'work');
+        verify(
+          () => client.execute(
+            any(that: contains('list-clients')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(that: contains('display-message')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+      },
+    );
+
     test('currentSessionName returns the foreground tmux client', () async {
       final client = _MockSshClient();
-      final session = _buildSession(client, connectionId: 23);
+      final session = _buildSession(client, connectionId: 24);
       const service = TmuxService();
       final execSessions = Queue<SSHSession>.of([
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),

@@ -319,15 +319,24 @@ class TmuxService {
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .firstOrNull;
+    final attachedSessionName =
+        sessionName ??
+        await _directCurrentSessionName(
+          session,
+          priority: priority,
+          extraFlags: extraFlags,
+        );
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'foreground_session_complete',
       fields: {
         'connectionId': session.connectionId,
-        'active': sessionName != null,
+        'active': attachedSessionName != null,
+        'usedDirectFallback':
+            sessionName == null && attachedSessionName != null,
       },
     );
-    return sessionName;
+    return attachedSessionName;
   }
 
   /// Returns `true` if tmux is installed on the remote host.
@@ -568,14 +577,33 @@ class TmuxService {
       return foregroundName;
     }
 
+    final directName = await _directCurrentSessionName(
+      session,
+      extraFlags: extraFlags,
+    );
+    if (directName != null) return directName;
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'current_session_unavailable',
+      fields: {'connectionId': session.connectionId},
+    );
+    return null;
+  }
+
+  Future<String?> _directCurrentSessionName(
+    SshSession session, {
+    String? extraFlags,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
     try {
-      // Direct approach — works if the exec channel is inside tmux.
+      // Direct approach — works if the exec channel is itself inside tmux.
       final output = await _exec(
         session,
         _tmuxCommand(
           "display-message -p '#{session_name}'",
           extraFlags: extraFlags,
         ),
+        priority: priority,
       );
       final name = output.trim();
       if (name.isNotEmpty) {
@@ -595,13 +623,7 @@ class TmuxService {
           'errorType': error.runtimeType,
         },
       );
-      // Fall through to an unavailable result.
     }
-    DiagnosticsLogService.instance.info(
-      'tmux.query',
-      'current_session_unavailable',
-      fields: {'connectionId': session.connectionId},
-    );
     return null;
   }
 

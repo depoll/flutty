@@ -1422,6 +1422,92 @@ void main() {
     }
 
     testWidgets(
+      'keeps probing for tmux after an initial inactive result',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true),
+        ];
+        var foregroundSessionCalls = 0;
+        var themeRefreshCount = 0;
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async {
+          foregroundSessionCalls += 1;
+          return foregroundSessionCalls == 1 ? null : tmuxSessionName;
+        });
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {
+          themeRefreshCount += 1;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
+
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pump();
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
+        expect(themeRefreshCount, greaterThanOrEqualTo(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'primes tmux with outer theme reports after attach',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -2394,7 +2480,7 @@ void main() {
         await tester.pump();
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
 
-        await tester.pump(const Duration(seconds: 3));
+        await tester.pump(const Duration(seconds: 12));
 
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
         expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
