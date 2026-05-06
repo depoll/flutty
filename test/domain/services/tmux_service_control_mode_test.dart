@@ -159,19 +159,20 @@ void main() {
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
-      expect(command, isNot(contains(r'[ "$alternate" = 1 ]')));
+      expect(command, contains(r'[ "$alternate" = 1 ]'));
       expect(command, isNot(contains(r'[ "$theme_refresh_tui" = 1 ]')));
       expect(command, isNot(contains('theme_refresh_tui=0')));
       expect(command, contains('flutty_set_agent_tool_from_command_name'));
       expect(command, contains('flutty_set_agent_tool_from_exact_name'));
       expect(command, contains('flutty_set_agent_tool_from_command_text'));
-      expect(
-        command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$agent_metadata"'),
-      );
+      expect(command, contains(r'current_agent_tool=$agent_tool'));
       expect(
         command,
         contains(r'flutty_set_agent_tool_from_command_name "$pane_command"'),
+      );
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$agent_metadata"'),
       );
       expect(
         command,
@@ -201,13 +202,22 @@ void main() {
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
+      expect(
+        command,
+        contains(
+          r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
+        ),
+      );
       expect(command, contains(r'case "$agent_tool" in'));
       expect(command, contains('copilot)'));
       expect(command, contains('codex)'));
       expect(command, contains('opencode|claude|gemini)'));
-      final directBranchStart = command.indexOf(r'case "$agent_tool" in');
+      final directBranchStart = command.indexOf(
+        r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
+      );
       expect(directBranchStart, isNonNegative);
       final directBranch = command.substring(directBranchStart);
+      expect(directBranch.indexOf(r'case "$agent_tool" in'), greaterThan(0));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
       expect(command, contains(r'#{client_control_mode}${SEP}#{client_name}'));
