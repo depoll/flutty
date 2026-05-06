@@ -2500,7 +2500,7 @@ String _buildTmuxLoadThemeReportClientsCommand(
   return r'flutty_theme_report_clients=$( '
       '$listClients"#{client_control_mode}$sep#{client_name}" 2>/dev/null | '
       r'while IFS="$SEP" read -r control client; do '
-      r'[ "$control" = 1 ] || continue; '
+      r'[ "$control" = 0 ] || continue; '
       r'[ -n "$client" ] || continue; '
       r'printf "%s\n" "$client"; '
       'done '
