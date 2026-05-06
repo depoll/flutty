@@ -3486,8 +3486,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ///
   /// This priming sends tmux-scoped client responses + tmux pane palette update
   /// + foreground-client redraw that a theme switch would. It also writes the
-  /// theme-mode/default-color reports to the outer tmux client so tmux updates
-  /// its own terminal cache and notifies panes that requested theme updates.
+  /// full theme reports to the outer tmux client so tmux updates its own
+  /// terminal cache and notifies panes that requested theme updates.
   void _primeTmuxTerminalTheme(SshSession session) {
     if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
       return;
@@ -3506,7 +3506,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     _refreshTerminalThemeReportsForTui(
       theme,
-      includeDefaultColorReports: true,
+      includeColorReports: true,
       reason: 'tmux_prime_outer_theme',
     );
     final tmuxSessionName = _tmuxSessionName;
@@ -3847,18 +3847,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (request.sendOuterThemeReports) {
       _refreshTerminalThemeReportsForTui(
         request.theme,
-        includeDefaultColorReports: true,
+        includeColorReports: true,
         reason: '${outerRefreshReason}_tmux_outer_theme',
       );
       _scheduleTerminalThemeRefreshForTui(
         theme: request.theme,
         session: request.session,
         refreshGeneration: request.refreshGeneration,
-        delay: const Duration(milliseconds: 225),
-        includeThemeModeReport: false,
-        includeDefaultColorReports: true,
-        includeFocusReport: false,
-        reason: '${outerRefreshReason}_tmux_outer_defaults_late',
+        delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
+        reason: '${outerRefreshReason}_tmux_outer_theme_late',
       );
       _scheduleTerminalThemeRefreshForTui(
         theme: request.theme,
