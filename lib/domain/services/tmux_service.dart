@@ -94,6 +94,11 @@ class TmuxService {
       <int, SshSession>{};
   static final _activeAgentSessionMetadataDebouncedPanePids = <int, Set<int>>{};
   static final _activeAgentSessionMetadataDebouncedForced = <int, bool>{};
+  static final _activeAgentSessionMetadataCooldownTimers = <int, Timer>{};
+  static final _activeAgentSessionMetadataCooldownSessions =
+      <int, SshSession>{};
+  static final _activeAgentSessionMetadataCooldownPanePids = <int, Set<int>>{};
+  static final _activeAgentSessionMetadataCooldownForced = <int, bool>{};
   static final _activeAgentSessionMetadataPendingPanePids = <int, Set<int>>{};
   static final _activeAgentSessionMetadataPendingForced = <int, bool>{};
   static final _activeAgentSessionMetadataRefreshes = <int, DateTime>{};
@@ -166,6 +171,10 @@ class TmuxService {
     _activeAgentSessionMetadataDebouncedSessions.remove(connectionId);
     _activeAgentSessionMetadataDebouncedPanePids.remove(connectionId);
     _activeAgentSessionMetadataDebouncedForced.remove(connectionId);
+    _activeAgentSessionMetadataCooldownTimers.remove(connectionId)?.cancel();
+    _activeAgentSessionMetadataCooldownSessions.remove(connectionId);
+    _activeAgentSessionMetadataCooldownPanePids.remove(connectionId);
+    _activeAgentSessionMetadataCooldownForced.remove(connectionId);
     _activeAgentSessionMetadataPendingPanePids.remove(connectionId);
     _activeAgentSessionMetadataPendingForced.remove(connectionId);
     _activeAgentSessionMetadataRefreshes.remove(connectionId);
@@ -920,6 +929,17 @@ class TmuxService {
       return;
     }
 
+    final execCooldown = _execChannelCooldownRemaining(session);
+    if (execCooldown != null) {
+      _deferAgentSessionMetadataRefreshForExecCooldown(
+        session,
+        copilotPanePids,
+        force: force,
+        cooldown: execCooldown,
+      );
+      return;
+    }
+
     DiagnosticsLogService.instance.debug(
       'tmux.agent',
       'active_session_metadata_start',
@@ -939,6 +959,7 @@ class TmuxService {
           session,
           requestToken,
           copilotPanePids,
+          force: force,
         ).whenComplete(() {
           if (identical(
             _activeAgentSessionMetadataRequests[connectionId],
@@ -968,8 +989,9 @@ class TmuxService {
   Future<void> _refreshActiveAgentSessionMetadata(
     SshSession session,
     Object requestToken,
-    Set<int> panePids,
-  ) async {
+    Set<int> panePids, {
+    required bool force,
+  }) async {
     final connectionId = session.connectionId;
     try {
       final output = await _exec(
@@ -1017,7 +1039,73 @@ class TmuxService {
         'active_session_metadata_failed',
         fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
       );
+      final execCooldown = shouldBackOffTmuxExecChannelAfterFailure(error)
+          ? _execChannelCooldownRemaining(session)
+          : null;
+      if (execCooldown != null) {
+        _deferAgentSessionMetadataRefreshForExecCooldown(
+          session,
+          panePids,
+          force: force,
+          cooldown: execCooldown,
+        );
+      }
     }
+  }
+
+  void _deferAgentSessionMetadataRefreshForExecCooldown(
+    SshSession session,
+    Set<int> panePids, {
+    required bool force,
+    required Duration cooldown,
+  }) {
+    final connectionId = session.connectionId;
+    final pendingPanePids =
+        (_activeAgentSessionMetadataCooldownPanePids[connectionId] ?? <int>{})
+          ..addAll(panePids);
+    _activeAgentSessionMetadataCooldownPanePids[connectionId] = pendingPanePids;
+    _activeAgentSessionMetadataCooldownSessions[connectionId] = session;
+    _activeAgentSessionMetadataCooldownForced[connectionId] =
+        (_activeAgentSessionMetadataCooldownForced[connectionId] ?? false) ||
+        force;
+
+    if (_activeAgentSessionMetadataCooldownTimers.containsKey(connectionId)) {
+      return;
+    }
+
+    DiagnosticsLogService.instance.debug(
+      'tmux.agent',
+      'active_session_metadata_deferred',
+      fields: {
+        'connectionId': connectionId,
+        'paneCount': panePids.length,
+        'forced': force,
+        'delayMs': cooldown.inMilliseconds,
+      },
+    );
+    _activeAgentSessionMetadataCooldownTimers[connectionId] = Timer(
+      cooldown,
+      () {
+        _activeAgentSessionMetadataCooldownTimers.remove(connectionId);
+        final queuedPanePids = _activeAgentSessionMetadataCooldownPanePids
+            .remove(connectionId);
+        final queuedSession = _activeAgentSessionMetadataCooldownSessions
+            .remove(connectionId);
+        final queuedForced =
+            _activeAgentSessionMetadataCooldownForced.remove(connectionId) ??
+            false;
+        if (queuedPanePids == null ||
+            queuedPanePids.isEmpty ||
+            queuedSession == null) {
+          return;
+        }
+        _scheduleAgentSessionMetadataRefreshForPanePids(
+          queuedSession,
+          queuedPanePids,
+          force: queuedForced,
+        );
+      },
+    );
   }
 
   Set<int> _copilotPanePids(Iterable<TmuxWindow> windows) => windows
@@ -1496,15 +1584,19 @@ class TmuxService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
-  bool _isExecChannelCoolingDown(SshSession session) {
+  Duration? _execChannelCooldownRemaining(SshSession session) {
     final backoff = _execChannelBackoffs[session.connectionId];
-    if (backoff == null) return false;
-    if (backoff.cooldownUntil.isAfter(DateTime.now())) {
-      return true;
+    if (backoff == null) return null;
+    final remaining = backoff.cooldownUntil.difference(DateTime.now());
+    if (remaining > Duration.zero) {
+      return remaining;
     }
     _execChannelBackoffs.remove(session.connectionId);
-    return false;
+    return null;
   }
+
+  bool _isExecChannelCoolingDown(SshSession session) =>
+      _execChannelCooldownRemaining(session) != null;
 
   /// Returns whether optional SSH exec-channel work should be deferred.
   bool isExecChannelCoolingDown(SshSession session) =>

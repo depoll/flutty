@@ -575,6 +575,67 @@ void main() {
         await service.clearCache(session.connectionId);
       }
     });
+
+    test('Copilot metadata refreshes wait for exec channel backoff', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 35);
+      const service = TmuxService(
+        agentSessionMetadataRefreshDebounce: Duration(milliseconds: 10),
+      );
+      var metadataAttempts = 0;
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('list-windows')) {
+          return _buildOpenExecSession(
+            stdout:
+                '${_tmuxWindowLine(id: '@42', panePid: 42)}\n${_doneMarker()}',
+          );
+        }
+        if (_isCopilotMetadataCommand(command)) {
+          metadataAttempts += 1;
+          if (metadataAttempts == 1) {
+            return Future<SSHSession>.error(
+              SSHChannelOpenError(2, 'open failed'),
+            );
+          }
+          return _buildOpenExecSession(stdout: _doneMarker());
+        }
+        return _buildOpenExecSession(stdout: _doneMarker());
+      });
+
+      try {
+        await service.listWindows(session, 'main');
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(metadataAttempts, 1);
+        expect(
+          TmuxService.hasExecChannelBackoffEntry(session.connectionId),
+          true,
+        );
+
+        await service.listWindows(session, 'main');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+
+        expect(
+          metadataAttempts,
+          1,
+          reason: 'metadata refreshes should not hammer SSH during backoff',
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 1800));
+
+        expect(metadataAttempts, 2);
+        expect(
+          TmuxService.hasExecChannelBackoffEntry(session.connectionId),
+          false,
+        );
+      } finally {
+        await service.clearCache(session.connectionId);
+      }
+    });
   });
 
   group('parseTmuxWindowChangeEventFromControlLine', () {
