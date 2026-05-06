@@ -1050,9 +1050,14 @@ class TmuxService {
         'active_session_metadata_failed',
         fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
       );
-      final execCooldown = shouldBackOffTmuxExecChannelAfterFailure(error)
-          ? _execChannelCooldownRemaining(session)
-          : null;
+      final Duration? execCooldown;
+      if (error is _TmuxExecChannelCoolingDownException) {
+        execCooldown = error.cooldownRemaining;
+      } else if (shouldBackOffTmuxExecChannelAfterFailure(error)) {
+        execCooldown = _execChannelCooldownRemaining(session);
+      } else {
+        execCooldown = null;
+      }
       if (execCooldown != null) {
         _deferAgentSessionMetadataRefreshForExecCooldown(
           session,
@@ -2197,17 +2202,19 @@ class _TmuxExecChannelBackoff {
   final DateTime cooldownUntil;
 }
 
-/// Returns whether a failed tmux exec open should trigger channel backoff.
+/// Returns whether a failed tmux exec open should create or extend backoff.
 @visibleForTesting
 bool shouldBackOffTmuxExecChannelAfterFailure(Object error) =>
-    error is SSHChannelOpenError ||
-    error is TimeoutException ||
+    error is SSHChannelOpenError || error is TimeoutException;
+
+bool _shouldTreatTmuxExecChannelAsUnavailable(Object error) =>
+    shouldBackOffTmuxExecChannelAfterFailure(error) ||
     error is _TmuxExecChannelCoolingDownException;
 
 /// Returns whether stale tmux windows are safer than failing a refresh.
 @visibleForTesting
 bool shouldUseCachedTmuxWindowsAfterListFailure(Object error) =>
-    shouldBackOffTmuxExecChannelAfterFailure(error);
+    _shouldTreatTmuxExecChannelAsUnavailable(error);
 
 /// Resolves the tmux exec channel cooldown after repeated open failures.
 @visibleForTesting
@@ -3564,7 +3571,7 @@ class _TmuxWindowChangeObserver {
       ),
     );
     _scheduleRestart(
-      channelOpenFailure: shouldBackOffTmuxExecChannelAfterFailure(error),
+      channelOpenFailure: _shouldTreatTmuxExecChannelAsUnavailable(error),
     );
   }
 

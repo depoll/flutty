@@ -3413,6 +3413,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    var outerRefreshReason = '${request.reason}_tmux_complete_outer';
     try {
       final tmux = ref.read(tmuxServiceProvider);
       DiagnosticsLogService.instance.info(
@@ -3434,6 +3435,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'connectionId': request.session.connectionId,
           },
         );
+        outerRefreshReason = '${request.reason}_tmux_deferred_outer';
       } else {
         await tmux.refreshTerminalTheme(
           request.session,
@@ -3462,6 +3464,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
+      outerRefreshReason = '${request.reason}_tmux_failed_outer';
     }
 
     if (!_isCurrentTerminalThemeRefresh(
@@ -3474,7 +3477,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _refreshTerminalThemeReportsForTui(
       request.theme,
       includeColorReports: true,
-      reason: '${request.reason}_tmux_complete_outer',
+      reason: outerRefreshReason,
     );
     _scheduleTerminalThemeRefreshForTui(
       theme: request.theme,
@@ -3482,7 +3485,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       refreshGeneration: request.refreshGeneration,
       delay: const Duration(milliseconds: 25),
       includeColorReports: true,
-      reason: '${request.reason}_tmux_complete_outer_25ms',
+      reason: '${outerRefreshReason}_25ms',
     );
     _scheduleTerminalThemeRefreshForTui(
       theme: request.theme,
@@ -3490,7 +3493,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       refreshGeneration: request.refreshGeneration,
       delay: const Duration(milliseconds: 275),
       includeColorReports: true,
-      reason: '${request.reason}_tmux_complete_outer_275ms',
+      reason: '${outerRefreshReason}_275ms',
     );
   }
 
