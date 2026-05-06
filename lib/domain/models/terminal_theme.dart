@@ -18,15 +18,24 @@ String buildTerminalThemeModeReport({required bool isDark}) =>
 /// ANSI palette caches. Other color-query replies (for example OSC 12/17/19)
 /// are only sent when explicitly queried, because tmux does not consume them as
 /// cache updates and unsolicited replies can reach the foreground pane.
-String buildTerminalThemeRefreshReports(TerminalThemeData theme) {
-  final paletteArgs = <String>[
-    for (var index = 0; index < 16; index += 1) ...['$index', '?'],
-  ];
-  return [
-    buildTerminalThemeDefaultColorReports(theme),
-    buildTerminalThemeOscResponse(theme: theme, code: '4', args: paletteArgs),
-  ].whereType<String>().join();
-}
+String buildTerminalThemeRefreshReports(TerminalThemeData theme) =>
+    buildTerminalThemeRefreshReportList(theme).join();
+
+/// Builds safe unsolicited color reports as individual escape sequences.
+///
+/// tmux's `refresh-client -r` consumes one report escape sequence per call, so
+/// callers that feed reports through tmux commands should send these entries
+/// separately instead of concatenating them first.
+List<String> buildTerminalThemeRefreshReportList(TerminalThemeData theme) => [
+  buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
+  buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
+  for (var index = 0; index < 16; index += 1)
+    buildTerminalThemeOscResponse(
+      theme: theme,
+      code: '4',
+      args: ['$index', '?'],
+    ),
+].whereType<String>().toList(growable: false);
 
 /// Builds unsolicited default foreground/background reports.
 ///

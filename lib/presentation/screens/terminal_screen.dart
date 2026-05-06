@@ -3110,9 +3110,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// refreshed.
   ///
   /// This priming sends tmux-scoped client responses + tmux pane palette update
-  /// + foreground-client redraw that a theme switch would. It also wakes
-  /// theme-aware foreground panes because tmux may be detected after a TUI has
-  /// already cached stale default colors.
+  /// + foreground-client redraw that a theme switch would. It wakes theme-aware
+  /// foreground panes after the cache update because tmux may be detected after
+  /// a TUI has already cached stale default colors.
   void _primeTmuxTerminalTheme(SshSession session) {
     if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
       return;
@@ -3128,11 +3128,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'shellReady': _shell != null,
         'terminalViewReady': _terminalViewKey.currentState != null,
       },
-    );
-    _refreshTerminalThemeReportsForTui(
-      theme,
-      includeColorReports: true,
-      reason: 'tmux_prime_outer_theme',
     );
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
@@ -3441,21 +3436,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'terminalViewReady': _terminalViewKey.currentState != null,
         },
       );
-      if (request.sendOuterThemeReports) {
+      if (request.sendOuterThemeReports || request.sendOuterFocusReport) {
         _refreshTerminalThemeReportsForTui(
           request.theme,
-          includeColorReports: true,
-          reason: '${request.reason}_tmux_outer_theme',
-        );
-        _scheduleTerminalThemeRefreshForTui(
-          theme: request.theme,
-          session: request.session,
-          refreshGeneration: request.refreshGeneration,
-          delay: const Duration(milliseconds: 225),
           includeThemeModeReport: false,
-          includeColorReports: true,
-          includeFocusReport: false,
-          reason: '${request.reason}_tmux_outer_colors_late',
+          reason: '${request.reason}_tmux_outer_focus',
         );
         _scheduleTerminalThemeRefreshForTui(
           theme: request.theme,
@@ -3464,12 +3449,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           delay: const Duration(milliseconds: 300),
           includeThemeModeReport: false,
           reason: '${request.reason}_tmux_outer_focus_late',
-        );
-      } else if (request.sendOuterFocusReport) {
-        _refreshTerminalThemeReportsForTui(
-          request.theme,
-          includeThemeModeReport: false,
-          reason: '${request.reason}_tmux_outer_focus',
         );
       }
     } on Object catch (error) {

@@ -2273,7 +2273,8 @@ String buildTmuxRefreshTerminalThemeCommand(
       '2>/dev/null || true ) & ;; '
       'opencode|claude|gemini) '
       'injected=1; '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
+      '( ${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
       'esac; '
       r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
       'done; wait; }; '
@@ -2384,7 +2385,7 @@ String _buildTmuxProvideClientThemeReportsCommand(
 }) {
   final reports = [
     buildTerminalThemeModeReport(isDark: theme.isDark),
-    buildTerminalThemeRefreshReports(theme),
+    ...buildTerminalThemeRefreshReportList(theme),
   ].where((report) => report.isNotEmpty).toList(growable: false);
   if (reports.isEmpty) {
     return '';
@@ -2407,56 +2408,6 @@ String _buildTmuxProvideClientThemeReportsCommand(
       r'[ -n "$client" ] || continue; '
       '$refreshReports '
       'done;';
-}
-
-String _buildTmuxSendPaneTerminalThemeCommand(
-  TerminalThemeData theme, {
-  String? extraFlags,
-  bool forceFocusTransition = false,
-  bool includeLateFocusTransition = false,
-}) {
-  final themeModeReport = buildTerminalThemeModeReport(isDark: theme.isDark);
-  final defaultColorReports = buildTerminalThemeDefaultColorReports(theme);
-  // Do not inject unsolicited OSC 4 palette replies into the pane. Apps such
-  // as Codex can treat palette replies they did not request as user input; the
-  // tmux pane palette update above ensures any subsequent OSC 4 query sees
-  // fresh colors without writing palette bytes to the foreground app.
-  //
-  // OSC 10/11 default color replies are intentionally sent after the private
-  // mode report. That gives OpenTUI/OpenCode a complete theme-mode plus default
-  // color cycle even when tmux consumes the outer OSC responses. Codex panes
-  // are routed to the focus-only refresh above because unsolicited mode/color
-  // reports can reset its composer input while the user is typing.
-  final focusCommand = forceFocusTransition
-      ? _buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)
-      : _buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags);
-  final lateFocusCommand = includeLateFocusTransition
-      ? ' sleep 0.08; '
-            '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
-            '2>/dev/null || true;'
-      : '';
-  final modeCommand = TmuxService._tmuxCommand(
-    r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments(themeModeReport)}',
-    extraFlags: extraFlags,
-    forceUtf8: true,
-  );
-  final directColorCommand = TmuxService._tmuxCommand(
-    r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments(defaultColorReports)}',
-    extraFlags: extraFlags,
-    forceUtf8: true,
-  );
-  return '$focusCommand 2>/dev/null || true; '
-      'sleep 0.25; '
-      '$modeCommand 2>/dev/null || true;'
-      ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;'
-      ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;'
-      ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;'
-      '$lateFocusCommand';
 }
 
 String _buildTmuxSendPaneFocusRefreshCommand({String? extraFlags}) =>

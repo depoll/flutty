@@ -239,7 +239,6 @@ void main() {
           ),
         ),
       );
-      expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
       final codexBranchStart = directBranch.indexOf('codex)');
@@ -256,25 +255,29 @@ void main() {
         directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
         greaterThan(opencodeBranchStart),
       );
-      expect(command, contains('sleep 0.25'));
-      expect(command, contains('sleep 0.08'));
+      expect(command, isNot(contains('sleep 0.25')));
+      final tmuxCacheReports = [
+        buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
+        ...buildTerminalThemeRefreshReportList(TerminalThemes.dracula),
+      ];
       expect(
-        command.indexOf('1b 5b 49'),
-        lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
+        RegExp(
+          r'refresh-client -t "\$client" -r "\$pane":',
+        ).allMatches(command),
+        hasLength(tmuxCacheReports.length),
       );
-      expect(
-        command.indexOf('1b 5b 3f 39 39 37 3b 31 6e'),
-        lessThan(command.indexOf('1b 5d 31 30 3b')),
-      );
-      expect(command, contains('1b 5d 31 30 3b'));
-      expect(command, contains('1b 5d 31 31 3b'));
+      for (final report in tmuxCacheReports) {
+        expect(command, contains(report));
+      }
       expect(
         command,
-        contains(buildTerminalThemeRefreshReports(TerminalThemes.dracula)),
+        isNot(contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37')),
       );
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 31')));
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(3));
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(3));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), isEmpty);
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
