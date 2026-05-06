@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
@@ -598,6 +599,417 @@ void main() {
         ),
         isFalse,
       );
+    });
+
+    test('identifies shell-like tmux foreground commands for completions', () {
+      expect(isShellCompletionTmuxShellCommand('zsh'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('/bin/bash'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('-fish'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('vim'), isFalse);
+      expect(isShellCompletionTmuxShellCommand(null), isFalse);
+    });
+
+    test('allows shell completion triggers inside active tmux alt buffer', () {
+      expect(
+        canTerminalOutputTriggerShellCompletion(
+          output: 'g',
+          isUsingAltBuffer: true,
+          isTmuxActive: true,
+          showsNativeSelectionOverlay: false,
+        ),
+        isTrue,
+      );
+      expect(
+        canTerminalOutputTriggerShellCompletion(
+          output: 'g',
+          isUsingAltBuffer: true,
+          isTmuxActive: false,
+          showsNativeSelectionOverlay: false,
+        ),
+        isFalse,
+      );
+      expect(
+        canTerminalOutputTriggerShellCompletion(
+          output: '\r',
+          isUsingAltBuffer: true,
+          isTmuxActive: true,
+          showsNativeSelectionOverlay: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('allows completions only in shell prompt contexts', () {
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.prompt,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
+        isTrue,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.editingCommand,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
+        isTrue,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.runningCommand,
+          isTmuxActive: false,
+          tmuxCurrentCommand: null,
+        ),
+        isFalse,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.runningCommand,
+          isTmuxActive: true,
+          tmuxCurrentCommand: 'zsh',
+        ),
+        isTrue,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.prompt,
+          isTmuxActive: true,
+          tmuxCurrentCommand: 'codex',
+        ),
+        isFalse,
+      );
+      expect(
+        isShellCompletionPromptContext(
+          shellStatus: TerminalShellStatus.prompt,
+          isTmuxActive: true,
+          tmuxCurrentCommand: null,
+        ),
+        isFalse,
+      );
+    });
+
+    test('applies printable completion input before remote echo arrives', () {
+      final snapshot = applyShellCompletionOutputToSnapshot(
+        snapshot: (text: 'depoll@host % git ', cursorOffset: 18),
+        output: 'c',
+      );
+
+      expect(snapshot.text, 'depoll@host % git c');
+      expect(snapshot.cursorOffset, 19);
+    });
+
+    test('applies completion backspace before remote echo arrives', () {
+      final snapshot = applyShellCompletionOutputToSnapshot(
+        snapshot: (text: 'depoll@host % git c', cursorOffset: 19),
+        output: '\x7F',
+      );
+
+      expect(snapshot.text, 'depoll@host % git ');
+      expect(snapshot.cursorOffset, 18);
+    });
+
+    test('uses compact terminal-sized shell completion rows', () {
+      expect(resolveShellCompletionPopupRowHeight(14), 28);
+      expect(resolveShellCompletionPopupRowHeight(20), 35);
+    });
+
+    test('places shell completion popup above a low cursor line', () {
+      final layout = resolveShellCompletionPopupLayout(
+        overlaySize: const Size(400, 600),
+        anchor: const Rect.fromLTWH(100, 550, 10, 20),
+        suggestionCount: 5,
+        rowHeight: 28,
+      );
+
+      expect(layout.maxHeight, 146);
+      expect(layout.top + layout.maxHeight, lessThanOrEqualTo(546));
+    });
+
+    test('places shell completion popup below a high cursor line', () {
+      final layout = resolveShellCompletionPopupLayout(
+        overlaySize: const Size(400, 600),
+        anchor: const Rect.fromLTWH(100, 20, 10, 20),
+        suggestionCount: 5,
+        rowHeight: 28,
+      );
+
+      expect(layout.maxHeight, 146);
+      expect(layout.top, greaterThanOrEqualTo(44));
+    });
+
+    test('shrinks shell completion popup rather than covering cursor line', () {
+      final layout = resolveShellCompletionPopupLayout(
+        overlaySize: const Size(400, 180),
+        anchor: const Rect.fromLTWH(100, 70, 10, 20),
+        suggestionCount: 5,
+        rowHeight: 28,
+      );
+
+      expect(layout.top, 94);
+      expect(layout.maxHeight, 78);
+    });
+
+    test(
+      'rejects stale shell completion taps when token no longer matches',
+      () {
+        const originalInvocation = ShellCompletionInvocation(
+          commandLine: 'git c',
+          cursorOffset: 5,
+          token: 'c',
+          tokenStart: 4,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          workingDirectory: '/repo',
+        );
+        const suggestion = ShellCompletionSuggestion(
+          label: 'checkout',
+          replacement: 'checkout',
+          replacementStart: 4,
+          replacementEnd: 5,
+          kind: ShellCompletionSuggestionKind.file,
+        );
+
+        expect(
+          shouldAcceptShellCompletionSuggestion(
+            originalInvocation: originalInvocation,
+            currentInvocation: const ShellCompletionInvocation(
+              commandLine: 'git ch',
+              cursorOffset: 6,
+              token: 'ch',
+              tokenStart: 4,
+              mode: ShellCompletionMode.argument,
+              commandName: 'git',
+              workingDirectory: '/repo',
+            ),
+            suggestion: suggestion,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldAcceptShellCompletionSuggestion(
+            originalInvocation: originalInvocation,
+            currentInvocation: const ShellCompletionInvocation(
+              commandLine: 'git cx',
+              cursorOffset: 6,
+              token: 'cx',
+              tokenStart: 4,
+              mode: ShellCompletionMode.argument,
+              commandName: 'git',
+              workingDirectory: '/repo',
+            ),
+            suggestion: suggestion,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldAcceptShellCompletionSuggestion(
+            originalInvocation: originalInvocation,
+            currentInvocation: null,
+            suggestion: suggestion,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('accepts and filters empty-token argument suggestions', () {
+      const originalInvocation = ShellCompletionInvocation(
+        commandLine: 'tmux ',
+        cursorOffset: 5,
+        token: '',
+        tokenStart: 5,
+        mode: ShellCompletionMode.argument,
+        commandName: 'tmux',
+        workingDirectory: '/repo',
+      );
+      const attachSuggestion = ShellCompletionSuggestion(
+        label: 'tmux attach',
+        replacement: 'attach',
+        replacementStart: 5,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.command,
+        commitSuffix: ' ',
+      );
+      const newSuggestion = ShellCompletionSuggestion(
+        label: 'tmux new',
+        replacement: 'new',
+        replacementStart: 5,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.command,
+        commitSuffix: ' ',
+      );
+
+      expect(
+        shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: originalInvocation,
+          suggestion: attachSuggestion,
+        ),
+        isTrue,
+      );
+
+      final filtered = filterShellCompletionSuggestionsForCurrentInput(
+        originalInvocation: originalInvocation,
+        currentInvocation: const ShellCompletionInvocation(
+          commandLine: 'tmux a',
+          cursorOffset: 6,
+          token: 'a',
+          tokenStart: 5,
+          mode: ShellCompletionMode.argument,
+          commandName: 'tmux',
+          workingDirectory: '/repo',
+        ),
+        suggestions: const <ShellCompletionSuggestion>[
+          attachSuggestion,
+          newSuggestion,
+        ],
+      );
+
+      expect(filtered, [attachSuggestion]);
+    });
+
+    test('filters history suggestions across later command tokens', () {
+      const originalInvocation = ShellCompletionInvocation(
+        commandLine: 'git c',
+        cursorOffset: 5,
+        token: 'c',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        workingDirectory: '/repo',
+      );
+      const checkoutSuggestion = ShellCompletionSuggestion(
+        label: 'git checkout feature/login',
+        replacement: 'git checkout feature/login',
+        replacementStart: 0,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.history,
+      );
+      const commitSuggestion = ShellCompletionSuggestion(
+        label: 'commit',
+        replacement: 'commit',
+        replacementStart: 4,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.history,
+        commitSuffix: ' ',
+      );
+
+      final filtered = filterShellCompletionSuggestionsForCurrentInput(
+        originalInvocation: originalInvocation,
+        currentInvocation: const ShellCompletionInvocation(
+          commandLine: 'git checkout f',
+          cursorOffset: 14,
+          token: 'f',
+          tokenStart: 13,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          workingDirectory: '/repo',
+        ),
+        suggestions: const <ShellCompletionSuggestion>[
+          checkoutSuggestion,
+          commitSuggestion,
+        ],
+      );
+
+      expect(filtered, [checkoutSuggestion]);
+      expect(
+        shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: const ShellCompletionInvocation(
+            commandLine: 'git switch',
+            cursorOffset: 10,
+            token: 'switch',
+            tokenStart: 4,
+            mode: ShellCompletionMode.argument,
+            commandName: 'git',
+            workingDirectory: '/repo',
+          ),
+          suggestion: checkoutSuggestion,
+        ),
+        isFalse,
+      );
+    });
+
+    test('keeps history pattern tokens after ignored arguments', () {
+      const originalInvocation = ShellCompletionInvocation(
+        commandLine: 'codex --prompt ',
+        cursorOffset: 15,
+        token: '',
+        tokenStart: 15,
+        mode: ShellCompletionMode.argument,
+        commandName: 'codex',
+        workingDirectory: '/repo',
+      );
+      const sandboxSuggestion = ShellCompletionSuggestion(
+        label: '--sandbox',
+        replacement: '--sandbox',
+        replacementStart: 15,
+        replacementEnd: 15,
+        kind: ShellCompletionSuggestionKind.history,
+        commitSuffix: ' ',
+      );
+
+      expect(
+        shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: const ShellCompletionInvocation(
+            commandLine: 'codex --prompt "try history" --s',
+            cursorOffset: 32,
+            token: '--s',
+            tokenStart: 29,
+            mode: ShellCompletionMode.argument,
+            commandName: 'codex',
+            workingDirectory: '/repo',
+          ),
+          suggestion: sandboxSuggestion,
+        ),
+        isTrue,
+      );
+    });
+
+    testWidgets('terminal dismiss region ignores popup taps', (tester) async {
+      var dismissCount = 0;
+      var popupTapCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Stack(
+              children: [
+                Positioned.fill(
+                  child: wrapShellCompletionDismissibleTerminal(
+                    onDismiss: () => dismissCount += 1,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => popupTapCount += 1,
+                    child: const SizedBox(
+                      key: ValueKey('completion-popup'),
+                      width: 100,
+                      height: 100,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      await tester.tapAt(const Offset(200, 200));
+      expect(dismissCount, 1);
+      expect(popupTapCount, 0);
+
+      await tester.tapAt(const Offset(50, 50));
+      expect(dismissCount, 1);
+      expect(popupTapCount, 1);
     });
   });
 

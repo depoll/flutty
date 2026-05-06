@@ -620,6 +620,7 @@ class _TerminalSection extends ConsumerWidget {
     final terminalPathLinkUnderlines = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final shellCompletions = ref.watch(shellCompletionsNotifierProvider);
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final sharedClipboardLocalRead = ref.watch(
       sharedClipboardLocalReadNotifierProvider,
@@ -725,6 +726,21 @@ class _TerminalSection extends ConsumerWidget {
                       .setEnabled(enabled: value);
                 }
               : null,
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.auto_awesome_motion_outlined),
+          title: const Text('Shell completion popups'),
+          subtitle: const Text(
+            'Show command and path suggestions while typing at a shell prompt',
+          ),
+          value: shellCompletions,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(shellCompletionsNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
         ),
         SwitchListTile(
           secondary: const Icon(Icons.content_paste_go_outlined),
@@ -1526,6 +1542,7 @@ class _ImportExportSection extends ConsumerWidget {
         ..invalidate(fontFamilyNotifierProvider)
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
+        ..invalidate(shellCompletionsNotifierProvider)
         ..invalidate(sharedClipboardNotifierProvider)
         ..invalidate(sharedClipboardProvider)
         ..invalidate(terminalThemeSettingsProvider)
