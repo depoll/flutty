@@ -897,9 +897,9 @@ void main() {
 
       await pumpEventQueue();
 
-      expect(started, [0, 1, 2]);
-      expect(activeQueuedSshExecCountForTesting(9), 3);
-      expect(pendingQueuedSshExecCountForTesting(9), 0);
+      expect(started, [0, 1]);
+      expect(activeQueuedSshExecCountForTesting(9), 2);
+      expect(pendingQueuedSshExecCountForTesting(9), 1);
 
       for (var index = 0; index < completers.length; index++) {
         completers[index].complete(index);

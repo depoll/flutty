@@ -586,6 +586,80 @@ void main() {
       },
     );
 
+    test(
+      'tmux exec opens are deferred while channel backoff is active',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 35);
+        const service = TmuxService();
+        var executeCalls = 0;
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          executeCalls += 1;
+          return Future<SSHSession>.error(
+            SSHChannelOpenError(2, 'open failed'),
+          );
+        });
+
+        try {
+          await expectLater(
+            service.listWindows(session, 'main'),
+            throwsA(isA<SSHChannelOpenError>()),
+          );
+          await Future<void>.delayed(Duration.zero);
+
+          await expectLater(
+            service.listWindows(session, 'main'),
+            throwsA(
+              predicate<Object>(
+                (error) => error is! SSHChannelOpenError,
+                'does not open another SSH channel',
+              ),
+            ),
+          );
+
+          expect(executeCalls, 1);
+          expect(TmuxService.hasExecChannelBackoffEntry(35), true);
+          expect(TmuxService.execChannelBackoffFailureCountForTesting(35), 1);
+        } finally {
+          await service.clearCache(35);
+        }
+      },
+    );
+
+    test('currentPanePath reuses cached active window snapshots', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 37);
+      const service = TmuxService();
+      var executeCalls = 0;
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        executeCalls += 1;
+        return _buildOpenExecSession(
+          stdout:
+              '${_tmuxWindowLine(id: '@77', panePid: 77)}\n${_doneMarker()}',
+        );
+      });
+
+      try {
+        await service.listWindows(session, 'main');
+
+        final path = await service.currentPanePath(session, 'main');
+        final context = await service.currentPaneContext(session, 'main');
+
+        expect(path, '/tmp/project');
+        expect(context?.currentPath, '/tmp/project');
+        expect(context?.currentCommand, 'copilot');
+        expect(executeCalls, 1);
+      } finally {
+        await service.clearCache(37);
+      }
+    });
+
     test('listWindows debounces Copilot metadata refresh bursts', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 34);
@@ -1000,17 +1074,21 @@ void main() {
   group('tmux exec recovery', () {
     test('listWindows propagates exec channel open timeouts', () async {
       final client = _MockSshClient();
-      final session = _buildSession(client);
+      final session = _buildSession(client, connectionId: 36);
       const service = TmuxService(execOpenTimeout: Duration(milliseconds: 1));
 
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) => Completer<SSHSession>().future);
 
-      await expectLater(
-        service.listWindows(session, 'main'),
-        throwsA(isA<TimeoutException>()),
-      );
+      try {
+        await expectLater(
+          service.listWindows(session, 'main'),
+          throwsA(isA<TimeoutException>()),
+        );
+      } finally {
+        await service.clearCache(36);
+      }
     });
 
     test(

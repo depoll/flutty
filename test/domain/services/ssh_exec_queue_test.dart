@@ -19,16 +19,16 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, [0, 1, 2, 3]);
-    expect(activeQueuedSshExecCountForTesting(1), 4);
-    expect(pendingQueuedSshExecCountForTesting(1), 1);
+    expect(startedJobs, [0, 1]);
+    expect(activeQueuedSshExecCountForTesting(1), 2);
+    expect(pendingQueuedSshExecCountForTesting(1), 3);
 
     completers[0].complete(0);
     await pumpEventQueue();
 
-    expect(startedJobs, [0, 1, 2, 3, 4]);
-    expect(activeQueuedSshExecCountForTesting(1), 4);
-    expect(pendingQueuedSshExecCountForTesting(1), 0);
+    expect(startedJobs, [0, 1, 2]);
+    expect(activeQueuedSshExecCountForTesting(1), 2);
+    expect(pendingQueuedSshExecCountForTesting(1), 2);
 
     for (var index = 1; index < completers.length; index++) {
       completers[index].complete(index);
@@ -52,9 +52,9 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2']);
-    expect(activeQueuedSshExecCountForTesting(2), 3);
-    expect(pendingQueuedSshExecCountForTesting(2), 1);
+    expect(startedJobs, ['low-0']);
+    expect(activeQueuedSshExecCountForTesting(2), 1);
+    expect(pendingQueuedSshExecCountForTesting(2), 3);
 
     final normalFuture = runQueuedSshExec(2, () {
       startedJobs.add('normal');
@@ -63,19 +63,19 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2', 'normal']);
-    expect(activeQueuedSshExecCountForTesting(2), 4);
-    expect(pendingQueuedSshExecCountForTesting(2), 1);
+    expect(startedJobs, ['low-0', 'normal']);
+    expect(activeQueuedSshExecCountForTesting(2), 2);
+    expect(pendingQueuedSshExecCountForTesting(2), 3);
 
     normal.complete('normal');
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2', 'normal']);
+    expect(startedJobs, ['low-0', 'normal']);
 
     lows[0].complete('low-0');
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2', 'normal', 'low-3']);
+    expect(startedJobs, ['low-0', 'normal', 'low-1']);
 
     for (var index = 1; index < lows.length; index++) {
       lows[index].complete('low-$index');
@@ -105,9 +105,9 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2']);
-    expect(activeQueuedSshExecCountForTesting(3), 3);
-    expect(pendingQueuedSshExecCountForTesting(3), 1);
+    expect(startedJobs, ['low-0']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+    expect(pendingQueuedSshExecCountForTesting(3), 3);
 
     final normalFuture = runQueuedSshExec(3, () {
       startedJobs.add('normal');
@@ -116,19 +116,19 @@ void main() {
 
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2', 'normal']);
-    expect(activeQueuedSshExecCountForTesting(3), 4);
-    expect(pendingQueuedSshExecCountForTesting(3), 1);
+    expect(startedJobs, ['low-0', 'normal']);
+    expect(activeQueuedSshExecCountForTesting(3), 2);
+    expect(pendingQueuedSshExecCountForTesting(3), 3);
 
     normal.complete('normal');
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2', 'normal']);
+    expect(startedJobs, ['low-0', 'normal']);
 
     lows[0].complete('low-0');
     await pumpEventQueue();
 
-    expect(startedJobs, ['low-0', 'low-1', 'low-2', 'normal', 'low-3']);
+    expect(startedJobs, ['low-0', 'normal', 'low-1']);
 
     for (var index = 1; index < lows.length; index++) {
       lows[index].complete('low-$index');

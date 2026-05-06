@@ -2138,6 +2138,97 @@ void main() {
     );
 
     testWidgets(
+      'does not refresh tmux theme for inactive window activity snapshots',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@8', name: 'shell', isActive: true),
+          TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: false),
+        ];
+        var refreshCount = 0;
+
+        addTearDown(windowEvents.close);
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {
+          refreshCount += 1;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        final refreshCountBeforeWindowEvent = refreshCount;
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              id: '@9',
+              name: 'agent',
+              isActive: false,
+              lastActivityEpochSeconds: 123,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+
+        expect(refreshCount, refreshCountBeforeWindowEvent);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'keeps a primed tmux bar visible after transient detection failure',
       (tester) async {
         final tmuxService = _MockTmuxService();

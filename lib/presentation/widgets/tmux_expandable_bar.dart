@@ -260,20 +260,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _windowReloadGeneration += 1;
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
-    final shouldNotifyThemeRefresh = _shouldNotifyThemeRefreshForWindowChange(
-      currentWindows,
-      windows,
-    );
+    final shouldNotifyWindowStateChanged =
+        _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
     DiagnosticsLogService.instance.debug(
       'tmux.ui',
       'bar_snapshot_applied',
       fields: {
         'connectionId': widget.session.connectionId,
         'windowCount': windows.length,
+        'themeRefreshNeeded': shouldNotifyWindowStateChanged,
       },
     );
     _applyWindows(windows);
-    if (shouldNotifyThemeRefresh) {
+    if (shouldNotifyWindowStateChanged) {
       _notifyWindowStateChanged();
     }
   }
@@ -282,7 +281,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     widget.onWindowStateChanged?.call(widget.session, widget.tmuxSessionName);
   }
 
-  bool _shouldNotifyThemeRefreshForWindowChange(
+  bool _shouldRefreshTmuxThemeAfterWindowChange(
     List<TmuxWindow> previousWindows,
     List<TmuxWindow> nextWindows,
   ) {
@@ -296,8 +295,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           )
           .firstOrNull;
       if (previousWindow == null ||
-          _themeRefreshWindowIdentity(previousWindow) !=
-              _themeRefreshWindowIdentity(nextWindow)) {
+          _tmuxWindowRefreshIdentity(previousWindow) !=
+              _tmuxWindowRefreshIdentity(nextWindow)) {
         return true;
       }
     }
@@ -322,15 +321,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     int index,
     bool isActive,
     String name,
+    int? panePid,
     String? paneStartCommand,
   })
-  _themeRefreshWindowIdentity(TmuxWindow window) => (
+  _tmuxWindowRefreshIdentity(TmuxWindow window) => (
     currentCommand: window.currentCommand,
     foregroundAgentTool: window.foregroundAgentTool,
     id: window.id,
     index: window.index,
     isActive: window.isActive,
     name: window.name,
+    panePid: window.panePid,
     paneStartCommand: window.paneStartCommand,
   );
 

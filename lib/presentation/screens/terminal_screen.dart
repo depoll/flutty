@@ -3768,7 +3768,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    var outerRefreshReason = request.reason;
+    var tmuxCommandDeferred = false;
     try {
+      final tmux = ref.read(tmuxServiceProvider);
       DiagnosticsLogService.instance.info(
         'terminal.theme',
         'tmux_refresh_start',
@@ -3779,72 +3782,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'terminalViewReady': _terminalViewKey.currentState != null,
         },
       );
-      await ref
-          .read(tmuxServiceProvider)
-          .refreshTerminalTheme(
-            request.session,
-            request.sessionName,
-            request.theme,
-            extraFlags: request.extraFlags,
-          );
-      if (!_isCurrentTerminalThemeRefresh(
-        theme: request.theme,
-        session: request.session,
-        refreshGeneration: request.refreshGeneration,
-      )) {
+      if (tmux.isExecChannelCoolingDown(request.session)) {
         DiagnosticsLogService.instance.debug(
           'terminal.theme',
-          'tmux_refresh_stale',
+          'tmux_refresh_deferred',
+          fields: {
+            'reason': request.reason,
+            'connectionId': request.session.connectionId,
+          },
+        );
+        tmuxCommandDeferred = true;
+        outerRefreshReason = '${request.reason}_tmux_deferred';
+      } else {
+        await tmux.refreshTerminalTheme(
+          request.session,
+          request.sessionName,
+          request.theme,
+          extraFlags: request.extraFlags,
+        );
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'tmux_refresh_complete',
           fields: {
             'reason': request.reason,
             'connectionId': request.session.connectionId,
             'sendOuterFocusReport': request.sendOuterFocusReport,
             'sendOuterThemeReports': request.sendOuterThemeReports,
+            'shellReady': _shell != null,
+            'terminalViewReady': _terminalViewKey.currentState != null,
           },
-        );
-        return;
-      }
-      DiagnosticsLogService.instance.info(
-        'terminal.theme',
-        'tmux_refresh_complete',
-        fields: {
-          'reason': request.reason,
-          'connectionId': request.session.connectionId,
-          'sendOuterFocusReport': request.sendOuterFocusReport,
-          'sendOuterThemeReports': request.sendOuterThemeReports,
-          'shellReady': _shell != null,
-          'terminalViewReady': _terminalViewKey.currentState != null,
-        },
-      );
-      if (request.sendOuterThemeReports) {
-        _refreshTerminalThemeReportsForTui(
-          request.theme,
-          includeDefaultColorReports: true,
-          reason: '${request.reason}_tmux_outer_theme',
-        );
-        _scheduleTerminalThemeRefreshForTui(
-          theme: request.theme,
-          session: request.session,
-          refreshGeneration: request.refreshGeneration,
-          delay: const Duration(milliseconds: 225),
-          includeThemeModeReport: false,
-          includeDefaultColorReports: true,
-          includeFocusReport: false,
-          reason: '${request.reason}_tmux_outer_defaults_late',
-        );
-        _scheduleTerminalThemeRefreshForTui(
-          theme: request.theme,
-          session: request.session,
-          refreshGeneration: request.refreshGeneration,
-          delay: const Duration(milliseconds: 300),
-          includeThemeModeReport: false,
-          reason: '${request.reason}_tmux_outer_focus_late',
-        );
-      } else if (request.sendOuterFocusReport) {
-        _refreshTerminalThemeReportsForTui(
-          request.theme,
-          includeThemeModeReport: false,
-          reason: '${request.reason}_tmux_outer_focus',
         );
       }
     } on Object catch (error) {
@@ -3856,6 +3822,57 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'connectionId': request.session.connectionId,
           'errorType': error.runtimeType,
         },
+      );
+      outerRefreshReason = '${request.reason}_tmux_failed';
+    }
+
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      DiagnosticsLogService.instance.debug(
+        'terminal.theme',
+        'tmux_refresh_stale',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'sendOuterFocusReport': request.sendOuterFocusReport,
+          'sendOuterThemeReports': request.sendOuterThemeReports,
+          'tmuxCommandDeferred': tmuxCommandDeferred,
+        },
+      );
+      return;
+    }
+    if (request.sendOuterThemeReports) {
+      _refreshTerminalThemeReportsForTui(
+        request.theme,
+        includeDefaultColorReports: true,
+        reason: '${outerRefreshReason}_tmux_outer_theme',
+      );
+      _scheduleTerminalThemeRefreshForTui(
+        theme: request.theme,
+        session: request.session,
+        refreshGeneration: request.refreshGeneration,
+        delay: const Duration(milliseconds: 225),
+        includeThemeModeReport: false,
+        includeDefaultColorReports: true,
+        includeFocusReport: false,
+        reason: '${outerRefreshReason}_tmux_outer_defaults_late',
+      );
+      _scheduleTerminalThemeRefreshForTui(
+        theme: request.theme,
+        session: request.session,
+        refreshGeneration: request.refreshGeneration,
+        delay: const Duration(milliseconds: 300),
+        includeThemeModeReport: false,
+        reason: '${outerRefreshReason}_tmux_outer_focus_late',
+      );
+    } else if (request.sendOuterFocusReport) {
+      _refreshTerminalThemeReportsForTui(
+        request.theme,
+        includeThemeModeReport: false,
+        reason: '${outerRefreshReason}_tmux_outer_focus',
       );
     }
   }
@@ -5771,12 +5788,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _tmuxForegroundVerificationInFlight = true;
     try {
-      final foregroundSessionName = await ref
-          .read(tmuxServiceProvider)
-          .foregroundSessionNameOrThrow(
-            session,
-            extraFlags: _host?.tmuxExtraFlags,
-          );
+      final tmux = ref.read(tmuxServiceProvider);
+      if (tmux.isExecChannelCoolingDown(session)) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'foreground_verify_deferred',
+          fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
+      final foregroundSessionName = await tmux.foregroundSessionNameOrThrow(
+        session,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
       if (!mounted ||
           generation != _tmuxForegroundVerificationGeneration ||
           _connectionId != session.connectionId ||
