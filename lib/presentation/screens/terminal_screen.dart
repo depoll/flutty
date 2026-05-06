@@ -2642,6 +2642,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
+  late final TmuxService _tmuxService;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -2797,6 +2798,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'hasInitialTmuxWindow': widget.initialTmuxWindowIndex != null,
       },
     );
+    _tmuxService = ref.read(tmuxServiceProvider);
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -6578,7 +6580,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       if (connectionId != null) {
         unawaited(
-          _sessionsNotifier?.handleUnexpectedDisconnect(
+          _cleanupUnexpectedDisconnect(
             connectionId,
             message: 'Connection closed',
           ),
@@ -6602,14 +6604,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     // Clean up the session state regardless of background/foreground.
     if (connectionId != null) {
-      ref.read(tmuxServiceProvider).clearCache(connectionId);
       unawaited(
-        _sessionsNotifier?.handleUnexpectedDisconnect(
+        _cleanupUnexpectedDisconnect(
           connectionId,
           message: 'Connection closed',
         ),
       );
     }
+  }
+
+  Future<void> _cleanupUnexpectedDisconnect(
+    int connectionId, {
+    required String message,
+  }) async {
+    await _tmuxService.clearCache(connectionId);
+    await _sessionsNotifier?.handleUnexpectedDisconnect(
+      connectionId,
+      message: message,
+    );
   }
 
   Future<void> _disconnect() async {
@@ -6621,7 +6633,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _doneSubscription = null;
     _shell = null;
     if (connectionId != null) {
-      ref.read(tmuxServiceProvider).clearCache(connectionId);
+      await _tmuxService.clearCache(connectionId);
       await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
@@ -6655,7 +6667,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _doneSubscription = null;
       _shell = null;
       if (previousConnectionId != null) {
-        ref.read(tmuxServiceProvider).clearCache(previousConnectionId);
+        await _tmuxService.clearCache(previousConnectionId);
         await _sessionsNotifier?.disconnect(previousConnectionId);
       }
       if (!mounted) {
@@ -6875,18 +6887,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       connectionState,
       isConnecting: _isConnecting,
     );
+    final activeSession = _connectionId == null
+        ? null
+        : ref.read(activeSessionsProvider.notifier).getSession(_connectionId!);
     final isConnectedThroughJumpHost =
         connectionState == SshConnectionState.connected &&
-        _connectionId != null &&
-        ref
-                .read(activeSessionsProvider.notifier)
-                .getSession(_connectionId!)
-                ?.config
-                .jumpHost !=
-            null;
-    final connectionStatusLabel = isConnectedThroughJumpHost
-        ? 'Connected through jump host'
-        : connectionLabel;
+        (_observedSession ?? activeSession)?.config.jumpHost != null;
     final connectionIdentity = formatTerminalConnectionIdentity(
       username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
       hostname: _redactStoreScreenshotIdentities
@@ -6924,38 +6930,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
+          titleSpacing: 8,
+          title: Row(
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Flexible(
-                    child: Text(
+              _TerminalConnectionStatusIcon(
+                label: connectionLabel,
+                state: connectionState,
+                isConnecting: _isConnecting,
+              ),
+              if (isConnectedThroughJumpHost) ...[
+                const SizedBox(width: 4),
+                const _TerminalJumpHostIndicator(),
+              ],
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
                       _host?.label ?? 'Terminal',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  _TerminalConnectionStatusIcon(
-                    label: connectionStatusLabel,
-                    state: connectionState,
-                    isConnecting: _isConnecting,
-                    isConnectedThroughJumpHost: isConnectedThroughJumpHost,
-                  ),
-                ],
-              ),
-              if (titleSubtitle.isNotEmpty)
-                Text(
-                  titleSubtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
+                    if (titleSubtitle.isNotEmpty)
+                      Text(
+                        titleSubtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
           bottom: !_showsTerminalMetadata || statusChips.isEmpty
@@ -7660,11 +7669,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     setState(() => _sessionThemeOverride = theme);
     _lastBuildAppliedTheme = theme;
-    _applyTerminalThemeToSession(
-      theme,
-      allowRemoteRefresh: false,
-      reason: 'theme_picker_preview',
-    );
+    _applyTerminalThemeToSession(theme, reason: 'theme_picker_preview');
   }
 
   void _restoreThemePickerPreview({
@@ -7673,11 +7678,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) {
     setState(() => _sessionThemeOverride = previousSessionThemeOverride);
     _lastBuildAppliedTheme = previousTheme;
-    _applyTerminalThemeToSession(
-      previousTheme,
-      allowRemoteRefresh: false,
-      reason: 'theme_picker_cancel',
-    );
+    _applyTerminalThemeToSession(previousTheme, reason: 'theme_picker_cancel');
   }
 
   Future<void> _saveThemeToHost(
@@ -11292,19 +11293,13 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
     required this.label,
     required this.state,
     required this.isConnecting,
-    required this.isConnectedThroughJumpHost,
   });
 
   final String label;
   final SshConnectionState state;
   final bool isConnecting;
-  final bool isConnectedThroughJumpHost;
 
   IconData get _icon {
-    if (isConnectedThroughJumpHost) {
-      return Icons.alt_route;
-    }
-
     if (isConnecting &&
         (state == SshConnectionState.disconnected ||
             state == SshConnectionState.connecting)) {
@@ -11327,10 +11322,6 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
   }
 
   Color _color(ColorScheme colorScheme) {
-    if (isConnectedThroughJumpHost) {
-      return colorScheme.secondary;
-    }
-
     if (isConnecting &&
         (state == SshConnectionState.disconnected ||
             state == SshConnectionState.connecting)) {
@@ -11361,6 +11352,24 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
         message: label,
         excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
+      ),
+    );
+  }
+}
+
+class _TerminalJumpHostIndicator extends StatelessWidget {
+  const _TerminalJumpHostIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      label: 'Connected through jump host',
+      child: Tooltip(
+        message: 'Connected through jump host',
+        excludeFromSemantics: true,
+        child: Icon(Icons.alt_route, size: 18, color: colorScheme.secondary),
       ),
     );
   }
