@@ -273,6 +273,16 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Disable iOS code signing for CI
+        run: |
+          cat >> ios/Flutter/Release.xcconfig <<'EOF'
+          DEVELOPMENT_TEAM = 0000000000
+          CODE_SIGNING_ALLOWED = NO
+          CODE_SIGNING_REQUIRED = NO
+          CODE_SIGN_IDENTITY =
+          EXPANDED_CODE_SIGN_IDENTITY =
+          EOF
+
       - name: Build iOS (no codesign)
         run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons --split-debug-info=.debug-info
 

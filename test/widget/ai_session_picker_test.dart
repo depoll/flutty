@@ -57,14 +57,11 @@ void main() {
 
   group('AiSessionProviderList', () {
     testWidgets('live updates provider rows in place', (tester) async {
-      final claudeController = StreamController<DiscoveredSessionsResult>();
-      final codexController = StreamController<DiscoveredSessionsResult>();
+      final controller = StreamController<DiscoveredSessionsResult>();
+      var loadCount = 0;
       addTearDown(() async {
-        if (!claudeController.isClosed) {
-          await claudeController.close();
-        }
-        if (!codexController.isClosed) {
-          await codexController.close();
+        if (!controller.isClosed) {
+          await controller.close();
         }
       });
 
@@ -72,12 +69,9 @@ void main() {
         _wrap(
           AiSessionProviderList(
             orderedTools: const ['Claude Code', 'Codex'],
-            loadSessionsForTool: (toolName, _) => switch (toolName) {
-              'Claude Code' => claudeController.stream,
-              'Codex' => codexController.stream,
-              _ => Stream<DiscoveredSessionsResult>.value(
-                DiscoveredSessionsResult(sessions: const []),
-              ),
+            loadSessions: (_) {
+              loadCount += 1;
+              return controller.stream;
             },
             itemBuilder: (context, provider) => Text(
               '${provider.toolName}|${provider.compactStatusLabel}|'
@@ -90,8 +84,9 @@ void main() {
 
       expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
       expect(find.text('Codex|loading|loading|ok'), findsOneWidget);
+      expect(loadCount, 1);
 
-      codexController.add(
+      controller.add(
         DiscoveredSessionsResult(
           sessions: const <ToolSessionInfo>[
             ToolSessionInfo(
@@ -108,34 +103,23 @@ void main() {
       expect(find.text('Codex|ready|idle|ok'), findsOneWidget);
       expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
 
-      await codexController.close();
-      await tester.pump();
-
-      expect(find.text('Codex|ready|idle|ok'), findsOneWidget);
-      expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
-
-      claudeController.add(
+      controller.add(
         DiscoveredSessionsResult(
           sessions: const <ToolSessionInfo>[],
           attemptedTools: const <String>{'Claude Code'},
         ),
       );
-      await claudeController.close();
+      await tester.pump();
       await tester.pump();
 
       expect(find.text('Claude Code|no recent|idle|ok'), findsOneWidget);
     });
 
     testWidgets('keeps the visible provider order stable', (tester) async {
-      final controllers = <String, StreamController<DiscoveredSessionsResult>>{
-        'Claude Code': StreamController<DiscoveredSessionsResult>(),
-        'Codex': StreamController<DiscoveredSessionsResult>(),
-      };
+      final controller = StreamController<DiscoveredSessionsResult>();
       addTearDown(() async {
-        for (final controller in controllers.values) {
-          if (!controller.isClosed) {
-            await controller.close();
-          }
+        if (!controller.isClosed) {
+          await controller.close();
         }
       });
 
@@ -156,8 +140,7 @@ void main() {
                 ),
                 AiSessionProviderList(
                   orderedTools: orderedTools,
-                  loadSessionsForTool: (toolName, _) =>
-                      controllers[toolName]!.stream,
+                  loadSessions: (_) => controller.stream,
                   itemBuilder: (context, provider) => Text(
                     provider.toolName,
                     key: ValueKey<String>(provider.toolName),
@@ -190,15 +173,11 @@ void main() {
     });
 
     testWidgets('only rebuilds the provider row that changed', (tester) async {
-      final claudeController = StreamController<DiscoveredSessionsResult>();
-      final codexController = StreamController<DiscoveredSessionsResult>();
+      final controller = StreamController<DiscoveredSessionsResult>();
       final buildCounts = <String, int>{};
       addTearDown(() async {
-        if (!claudeController.isClosed) {
-          await claudeController.close();
-        }
-        if (!codexController.isClosed) {
-          await codexController.close();
+        if (!controller.isClosed) {
+          await controller.close();
         }
       });
 
@@ -206,13 +185,7 @@ void main() {
         _wrap(
           AiSessionProviderList(
             orderedTools: const ['Claude Code', 'Codex'],
-            loadSessionsForTool: (toolName, _) => switch (toolName) {
-              'Claude Code' => claudeController.stream,
-              'Codex' => codexController.stream,
-              _ => Stream<DiscoveredSessionsResult>.value(
-                DiscoveredSessionsResult(sessions: const []),
-              ),
-            },
+            loadSessions: (_) => controller.stream,
             itemBuilder: (context, provider) {
               buildCounts.update(
                 provider.toolName,
@@ -230,7 +203,7 @@ void main() {
 
       expect(buildCounts, {'Claude Code': 1, 'Codex': 1});
 
-      codexController.add(
+      controller.add(
         DiscoveredSessionsResult(
           sessions: const <ToolSessionInfo>[
             ToolSessionInfo(
@@ -246,7 +219,7 @@ void main() {
 
       expect(buildCounts, {'Claude Code': 1, 'Codex': 2});
 
-      codexController.add(
+      controller.add(
         DiscoveredSessionsResult(
           sessions: const <ToolSessionInfo>[
             ToolSessionInfo(

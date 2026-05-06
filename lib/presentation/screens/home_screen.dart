@@ -3429,13 +3429,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                           const <String>{},
                           preferredToolName: _preferredSessionToolName,
                         ),
-                        loadSessionsForTool: (toolName, maxSessions) => ref
+                        loadSessions: (maxSessions) => ref
                             .read(agentSessionDiscoveryServiceProvider)
                             .discoverSessionsStream(
                               session,
                               workingDirectory: scopeWorkingDirectory,
                               maxPerTool: maxSessions,
-                              toolName: toolName,
                             ),
                         itemBuilder: (context, provider) =>
                             _buildSessionProviderRow(theme, provider),
@@ -3689,6 +3688,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.displayTitle;
+    final secondaryTitle = window.secondaryTitle;
     final iconColor = window.isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
@@ -3744,18 +3744,34 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             ),
             // Title — truncated.
             Expanded(
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: window.isActive
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurface,
-                  fontWeight: window.isActive
-                      ? FontWeight.bold
-                      : FontWeight.normal,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: window.isActive
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.onSurface,
+                      fontWeight: window.isActive
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                  if (secondaryTitle != null)
+                    Text(
+                      secondaryTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontSize: 10,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
               ),
             ),
             Padding(

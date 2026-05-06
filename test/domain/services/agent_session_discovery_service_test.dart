@@ -34,7 +34,83 @@ SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
   final session = _MockExecSession();
   when(() => session.stdout).thenAnswer((_) => _utf8Stream(stdout));
   when(() => session.stderr).thenAnswer((_) => _utf8Stream(stderr));
+  when(() => session.write(any())).thenAnswer(_ignoreInvocation);
   when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
+
+SSHSession _buildOpenMarkerExecSession({String stdout = ''}) {
+  final session = _MockExecSession();
+  final stdoutController = StreamController<Uint8List>();
+  final stderrController = StreamController<Uint8List>();
+
+  scheduleMicrotask(() {
+    stdoutController.add(
+      Uint8List.fromList(
+        utf8.encode('$stdout\n__flutty_agent_discovery_exec_done__:0\n'),
+      ),
+    );
+  });
+
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => stderrController.stream);
+  when(() => session.write(any())).thenAnswer(_ignoreInvocation);
+  when(session.close).thenAnswer((_) {
+    if (!stdoutController.isClosed) unawaited(stdoutController.close());
+    if (!stderrController.isClosed) unawaited(stderrController.close());
+  });
+  return session;
+}
+
+SSHSession _buildAcpSessionListExecSession({
+  required List<Map<String, Object?>> sessions,
+  bool supportsList = true,
+}) {
+  final session = _MockExecSession();
+  final stdoutController = StreamController<Uint8List>();
+  final stderrController = StreamController<Uint8List>();
+
+  void send(Map<String, Object?> payload) {
+    stdoutController.add(
+      Uint8List.fromList(utf8.encode('${jsonEncode(payload)}\n')),
+    );
+  }
+
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => stderrController.stream);
+  when(() => session.write(any())).thenAnswer((invocation) {
+    final bytes = invocation.positionalArguments.first as Uint8List;
+    final decoded = jsonDecode(utf8.decode(bytes).trim());
+    if (decoded is! Map<String, dynamic>) return;
+    final id = decoded['id'] as int;
+    switch (decoded['method']) {
+      case 'initialize':
+        send({
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': {
+            'protocolVersion': 1,
+            'agentCapabilities': {
+              'sessionCapabilities': {
+                if (supportsList) 'list': <String, Object?>{},
+              },
+            },
+          },
+        });
+        return;
+      case 'session/list':
+        send({
+          'jsonrpc': '2.0',
+          'id': id,
+          'result': {'sessions': sessions},
+        });
+        return;
+    }
+  });
+  when(session.close).thenAnswer((_) {
+    if (!stdoutController.isClosed) unawaited(stdoutController.close());
+    if (!stderrController.isClosed) unawaited(stderrController.close());
+  });
   return session;
 }
 
@@ -42,6 +118,10 @@ String _remoteSnapshotLine(String path, String content, {int mtime = 0}) =>
     '$path\x1f$mtime\x1f${base64Encode(utf8.encode(content))}\n';
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(Uint8List(0));
+  });
+
   group('normalizeWorkingDirectoryForComparison', () {
     test('strips worktree branch segments from comparable paths', () {
       expect(
@@ -592,6 +672,17 @@ updated_at: 2026-04-14T01:02:03.000Z
       expect(metadata.updatedAt, DateTime.parse('2026-04-14T01:02:03.000Z'));
     });
 
+    test('prefers user-provided session names when summary is missing', () {
+      final metadata = parseCopilotWorkspaceYamlMetadata('''
+id: example
+name: Fix active session labels
+repository: depollsoft/MonkeySSH
+branch: main
+''');
+
+      expect(metadata.summary, 'Fix active session labels');
+    });
+
     test('normalizes inline summary text to a single display line', () {
       final metadata = parseCopilotWorkspaceYamlMetadata('''
 summary:   Add   PR preview   commit list   
@@ -784,7 +875,324 @@ cwd: /tmp/demo
     });
   });
 
+  group('parseAcpSessionListResult', () {
+    test('maps ACP session/list metadata to tool session info', () {
+      final sessions = parseAcpSessionListResult('OpenCode', {
+        'sessions': [
+          {
+            'sessionId': 'ses_123',
+            'cwd': '/Users/depoll/Code/flutty',
+            'title': 'Fix ACP discovery',
+            'updatedAt': '2026-05-04T05:48:19.955Z',
+          },
+        ],
+      });
+
+      expect(sessions, hasLength(1));
+      expect(sessions.single.toolName, 'OpenCode');
+      expect(sessions.single.sessionId, 'ses_123');
+      expect(sessions.single.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(sessions.single.summary, 'Fix ACP discovery');
+      expect(
+        sessions.single.lastActive,
+        DateTime.parse('2026-05-04T05:48:19.955Z'),
+      );
+    });
+  });
+
   group('discoverSessionsStream caching', () {
+    test('Copilot discovery uses ACP session/list when available', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+          );
+        }
+        if (command.contains('copilot --acp')) {
+          return _buildAcpSessionListExecSession(
+            sessions: const [
+              {
+                'sessionId': '12345678-1234-1234-1234-1234567890ab',
+                'cwd': '/Users/depoll/Code/flutty',
+                'title': 'Fix tmux ACP discovery',
+                'updatedAt': '2026-05-04T05:48:19.955Z',
+              },
+            ],
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: '/Users/depoll/Code/flutty',
+        toolName: 'Copilot CLI',
+      );
+
+      expect(result.sessions, hasLength(1));
+      expect(result.sessions.single.toolName, 'Copilot CLI');
+      expect(
+        result.sessions.single.sessionId,
+        '12345678-1234-1234-1234-1234567890ab',
+      );
+      expect(result.sessions.single.summary, 'Fix tmux ACP discovery');
+      expect(
+        commands.where((command) => command.contains('copilot --acp')),
+        hasLength(1),
+      );
+      expect(
+        commands.where((command) => command.contains('workspace.yaml')),
+        isEmpty,
+      );
+    });
+
+    test('OpenCode discovery uses ACP session/list when available', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+          );
+        }
+        if (command.contains('opencode acp')) {
+          return _buildAcpSessionListExecSession(
+            sessions: const [
+              {
+                'sessionId': 'ses_123',
+                'cwd': '/Users/depoll/Code/flutty',
+                'title': 'Review tmux panel',
+                'updatedAt': '2026-05-04T05:48:19.955Z',
+              },
+            ],
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: '/Users/depoll/Code/flutty',
+        toolName: 'OpenCode',
+      );
+
+      expect(result.sessions, hasLength(1));
+      expect(result.sessions.single.toolName, 'OpenCode');
+      expect(result.sessions.single.sessionId, 'ses_123');
+      expect(result.sessions.single.summary, 'Review tmux panel');
+      expect(
+        commands.where((command) => command.contains('opencode acp')),
+        hasLength(1),
+      );
+      expect(
+        commands.where(
+          (command) => command.contains('opencode session list --format json'),
+        ),
+        isEmpty,
+      );
+    });
+
+    test(
+      'all-provider discovery skips ACP probes for fast panel loads',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('worktree list --porcelain')) {
+            return _buildExecSession(
+              stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+            );
+          }
+          if (command.contains('~/.local/share/opencode/opencode.db')) {
+            return _buildExecSession(
+              stdout:
+                  'session-1\x1fOpenCode fast path\x1f/Users/depoll/Code/flutty\x1f1770000000\n',
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: '/Users/depoll/Code/flutty',
+        );
+
+        expect(
+          result.sessions.map((session) => session.toolName),
+          contains('OpenCode'),
+        );
+        expect(commands.where((command) => command.contains(' acp')), isEmpty);
+        expect(
+          commands.where(
+            (command) =>
+                command.contains('~/.local/share/opencode/opencode.db'),
+          ),
+          isNotEmpty,
+        );
+      },
+    );
+
+    test(
+      'all-provider stream emits lightweight previews before final aggregate',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('~/.local/share/opencode/opencode.db')) {
+            return _buildExecSession(
+              stdout: List<String>.generate(
+                4,
+                (index) =>
+                    'session-$index\x1fOpenCode $index\x1f/Users/demo/project\x1f${1770000000 - index}',
+              ).join('\n'),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+
+        final results = await discovery
+            .discoverSessionsStream(session, maxPerTool: 2)
+            .toList();
+
+        expect(results, hasLength(greaterThan(1)));
+        expect(
+          results.take(results.length - 1),
+          everyElement(
+            isA<DiscoveredSessionsResult>()
+                .having(
+                  (result) => result.attemptedTools,
+                  'attemptedTools',
+                  hasLength(1),
+                )
+                .having(
+                  (result) => result.sessions,
+                  'sessions',
+                  hasLength(lessThanOrEqualTo(1)),
+                ),
+          ),
+        );
+        expect(results.last.attemptedTools, contains('OpenCode'));
+        expect(results.last.sessions.map((session) => session.sessionId), [
+          'session-0',
+        ]);
+        expect(
+          commands.where((command) => command.contains('LIMIT 12;')),
+          isNotEmpty,
+        );
+      },
+    );
+
+    test('parses large remote snapshots off the UI isolate', () async {
+      final client = _MockSshClient();
+      const geminiPath =
+          '/Users/demo/.gemini/tmp/flutty/chats/session-large.json';
+      final largeSessionJson = jsonEncode({
+        'sessionId': 'session-large',
+        'summary': 'Large Gemini session',
+        'lastUpdated': '2026-04-12T21:29:53.292Z',
+        'kind': 'main',
+        'messages': const <Object?>[],
+        'padding': List<String>.filled(9000, 'x').join(),
+      });
+
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.gemini/tmp')) {
+          return _buildExecSession(stdout: geminiPath);
+        }
+        if (command.contains(geminiPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(geminiPath, largeSessionJson),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'Gemini CLI',
+      );
+
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-large',
+      ]);
+      expect(result.sessions.single.summary, 'Large Gemini session');
+    });
+
+    test('returns when SSH exec stdout stays open after done marker', () async {
+      final client = _MockSshClient();
+      const geminiPath =
+          '/Users/demo/.gemini/tmp/flutty/chats/session-open.json';
+      final sessionJson = jsonEncode({
+        'sessionId': 'session-open',
+        'summary': 'Open stream Gemini session',
+        'lastUpdated': '2026-04-12T21:29:53.292Z',
+        'kind': 'main',
+        'messages': const <Object?>[],
+      });
+
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.gemini/tmp')) {
+          return _buildOpenMarkerExecSession(stdout: geminiPath);
+        }
+        if (command.contains(geminiPath)) {
+          return _buildOpenMarkerExecSession(
+            stdout: _remoteSnapshotLine(geminiPath, sessionJson),
+          );
+        }
+        return _buildOpenMarkerExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery
+          .discoverSessions(session, toolName: 'Gemini CLI')
+          .timeout(const Duration(seconds: 2));
+
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-open',
+      ]);
+    });
+
     test(
       'Codex discovery uses resumable UUID instead of rollout filename',
       () async {

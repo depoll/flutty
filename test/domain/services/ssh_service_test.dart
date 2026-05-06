@@ -897,21 +897,13 @@ void main() {
 
       await pumpEventQueue();
 
-      expect(started, [0]);
-      expect(activeQueuedSshExecCountForTesting(9), 1);
-      expect(pendingQueuedSshExecCountForTesting(9), 2);
-
-      completers[0].complete(0);
-      await pumpEventQueue();
-
-      expect(started, [0, 1]);
-
-      completers[1].complete(1);
-      await pumpEventQueue();
-
       expect(started, [0, 1, 2]);
+      expect(activeQueuedSshExecCountForTesting(9), 3);
+      expect(pendingQueuedSshExecCountForTesting(9), 0);
 
-      completers[2].complete(2);
+      for (var index = 0; index < completers.length; index++) {
+        completers[index].complete(index);
+      }
 
       expect(await Future.wait(futures), [0, 1, 2]);
     });

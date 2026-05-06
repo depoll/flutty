@@ -64,11 +64,13 @@ void main() {
         'vim main.dart',
         '',
         '@8',
+        '4321',
       ].join(sep);
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 0);
       expect(window.id, '@8');
+      expect(window.panePid, 4321);
       expect(window.name, 'vim');
       expect(window.isActive, true);
       expect(window.currentCommand, 'vim');
@@ -303,6 +305,78 @@ void main() {
       expect(window.secondaryTitle, 'session rollout-...');
     });
 
+    test('shows live agent session titles when available', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: 'localhost',
+        activeAgentSessionId: '12345678-1234-1234-1234-1234567890ab',
+        agentSessionTitle: 'Fix tmux session labels',
+      );
+
+      expect(window.agentSessionId, '12345678-1234-1234-1234-1234567890ab');
+      expect(window.displayTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.handleTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('shows live session titles alongside useful window titles', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        paneTitle: 'Editing main.dart',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Fix tmux session labels',
+      );
+
+      expect(window.displayTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.handleTitle, 'Copilot CLI · Fix tmux session labels');
+      expect(window.secondaryTitle, 'Editing main.dart');
+    });
+
+    test('copyWith can clear live agent session metadata', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Fix tmux session labels',
+      );
+
+      final cleared = window.copyWith(clearActiveAgentSessionMetadata: true);
+
+      expect(cleared.activeAgentSessionId, isNull);
+      expect(cleared.agentSessionTitle, isNull);
+    });
+
+    test('collapses live session titles that match useful window titles', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        paneTitle: 'Improve Theme Picker Keyboard UX',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Improve Theme Picker Keyboard UX',
+      );
+
+      expect(
+        window.displayTitle,
+        'Copilot CLI · Improve Theme Picker Keyboard UX',
+      );
+      expect(
+        window.handleTitle,
+        'Copilot CLI · Improve Theme Picker Keyboard UX',
+      );
+      expect(window.secondaryTitle, isNull);
+    });
+
     test('handles empty command and path', () {
       const line = '1|shell|0||';
       final window = TmuxWindow.fromTmuxFormat(line);
@@ -470,6 +544,39 @@ void main() {
       );
 
       expect(updated.map((window) => window.index).toList(), [0, 2]);
+    });
+
+    test('preserves live agent session metadata across tmux snapshots', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(
+          index: 1,
+          id: '@7',
+          panePid: 42,
+          name: 'copilot',
+          isActive: true,
+          currentCommand: 'copilot',
+          activeAgentSessionId: 'session-1',
+          agentSessionTitle: 'Fix tmux session labels',
+        ),
+      ];
+
+      final updated = applyTmuxWindowChangeEvent(
+        windows,
+        const TmuxWindowSnapshotEvent(
+          TmuxWindow(
+            index: 1,
+            id: '@7',
+            panePid: 42,
+            name: 'copilot',
+            isActive: true,
+            currentCommand: 'copilot',
+            paneTitle: 'localhost',
+          ),
+        ),
+      );
+
+      expect(updated.single.activeAgentSessionId, 'session-1');
+      expect(updated.single.agentSessionTitle, 'Fix tmux session labels');
     });
   });
 

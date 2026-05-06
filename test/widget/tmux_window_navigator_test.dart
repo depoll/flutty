@@ -365,7 +365,7 @@ void main() {
           maxPerTool: any(named: 'maxPerTool'),
           toolName: any(named: 'toolName'),
         ),
-      ).called(5);
+      ).called(1);
     });
 
     testWidgets('passes host yolo mode when resuming an AI session', (
