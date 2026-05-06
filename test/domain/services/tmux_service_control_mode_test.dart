@@ -282,7 +282,7 @@ void main() {
       expect(command, isNot(contains('sleep 0.25')));
       final tmuxCacheReports = [
         buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
-        ...buildTerminalThemeRefreshReportList(TerminalThemes.dracula),
+        buildTerminalThemeRefreshReports(TerminalThemes.dracula),
       ];
       expect(
         RegExp(
@@ -293,6 +293,12 @@ void main() {
       for (final report in tmuxCacheReports) {
         expect(command, contains(report));
       }
+      expect(
+        command,
+        contains(
+          buildTerminalThemeRefreshReportList(TerminalThemes.dracula).join(),
+        ),
+      );
       expect(
         command,
         contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),

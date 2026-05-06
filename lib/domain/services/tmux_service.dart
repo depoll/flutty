@@ -2611,7 +2611,7 @@ String _buildTmuxProvideClientThemeReportsCommand(
 }) {
   final reports = [
     buildTerminalThemeModeReport(isDark: theme.isDark),
-    ...buildTerminalThemeRefreshReportList(theme),
+    buildTerminalThemeRefreshReports(theme),
   ].where((report) => report.isNotEmpty).toList(growable: false);
   if (reports.isEmpty) {
     return '';

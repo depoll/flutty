@@ -23,9 +23,10 @@ String buildTerminalThemeRefreshReports(TerminalThemeData theme) =>
 
 /// Builds safe unsolicited color reports as individual escape sequences.
 ///
-/// tmux's `refresh-client -r` consumes one report escape sequence per call, so
-/// callers that feed reports through tmux commands should send these entries
-/// separately instead of concatenating them first.
+/// These entries are useful for tests and call sites that need to inspect or
+/// schedule individual reports. tmux cache refreshes should use the batched
+/// [buildTerminalThemeRefreshReports] payload so the palette update is applied
+/// atomically for a pane/client pair.
 List<String> buildTerminalThemeRefreshReportList(TerminalThemeData theme) => [
   buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
   buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
