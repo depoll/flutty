@@ -2587,7 +2587,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
-  bool _manualSensitiveKeyboardMode = false;
   bool _detectedSensitiveKeyboardPrompt = false;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
@@ -2731,9 +2730,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _shellCompletionInFlightRequestKey;
   bool _shellCompletionRefreshAfterInFlight = false;
   int _shellCompletionAnchorRetryCount = 0;
-
-  bool get _usesSensitiveKeyboardMode =>
-      _manualSensitiveKeyboardMode || _detectedSensitiveKeyboardPrompt;
 
   bool _isExclusiveTerminalActionRunning(_TerminalExclusiveAction action) =>
       _exclusiveTerminalActions.contains(action);
@@ -7494,12 +7490,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     checked: ref.read(tapToShowKeyboardNotifierProvider),
                     child: const Text('Tap to Show Keyboard'),
                   ),
-                if (isMobile)
-                  CheckedPopupMenuItem(
-                    value: 'toggle_sensitive_keyboard',
-                    checked: _manualSensitiveKeyboardMode,
-                    child: const Text('Sensitive Keyboard'),
-                  ),
                 CheckedPopupMenuItem(
                   value: 'toggle_shell_completions',
                   checked: ref.read(shellCompletionsNotifierProvider),
@@ -8407,7 +8397,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _toolbarController.applySystemKeyboardModifiers,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
-      sensitiveInput: _usesSensitiveKeyboardMode,
+      sensitiveInput: _detectedSensitiveKeyboardPrompt,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard:
           ref.watch(tapToShowKeyboardNotifierProvider) &&
@@ -8621,11 +8611,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);
         await notifier.setEnabled(
           enabled: !ref.read(tapToShowKeyboardNotifierProvider),
-        );
-        break;
-      case 'toggle_sensitive_keyboard':
-        setState(
-          () => _manualSensitiveKeyboardMode = !_manualSensitiveKeyboardMode,
         );
         break;
       case 'toggle_shell_completions':
