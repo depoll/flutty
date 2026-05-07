@@ -148,31 +148,87 @@ void main() {
       expect(
         command,
         contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_title}',
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{pane_title}${SEP}#{pane_start_command}${SEP}#{@flutty_agent_tool}',
         ),
       );
       expect(
         command,
         contains(
-          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title',
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_title pane_start_command agent_metadata',
         ),
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
       expect(command, contains(r'[ "$alternate" = 1 ]'));
-      expect(command, contains(r'[ "$foreground_tui" = 1 ]'));
-      expect(command, contains(r'case "${pane_command##*/}" in'));
-      expect(command, contains("''|sh|bash|zsh|fish"));
+      expect(command, isNot(contains(r'[ "$theme_refresh_tui" = 1 ]')));
+      expect(command, isNot(contains('theme_refresh_tui=0')));
+      expect(command, contains('flutty_set_agent_tool_from_command_name'));
+      expect(command, contains('flutty_set_agent_tool_from_exact_name'));
+      expect(command, contains('flutty_set_agent_tool_from_command_text'));
+      expect(command, contains(r'current_agent_tool=$agent_tool'));
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_command_name "$pane_command"'),
+      );
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$agent_metadata"'),
+      );
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$window_name"'),
+      );
+      expect(
+        command,
+        contains(r'flutty_set_agent_tool_from_exact_name "$pane_title"'),
+      );
+      expect(
+        command,
+        contains(
+          r'flutty_set_agent_tool_from_command_text "$pane_start_command"',
+        ),
+      );
+      expect(command, contains('claude|claude-*'));
+      expect(command, contains('copilot|copilot-*'));
+      expect(command, contains('codex|codex-*'));
+      expect(command, contains('opencode|opencode-*'));
+      expect(command, contains('gemini|gemini-*'));
+      expect(command, isNot(contains(r'case "$pane_title" in')));
+      expect(command, isNot(contains('*Copilot*|*copilot*')));
+      expect(command, isNot(contains('*Codex*|*codex*')));
+      expect(command, isNot(contains('*OpenCode*|*opencode*')));
+      expect(command, isNot(contains('foreground_tui=1')));
+      expect(command, isNot(contains(r'[ "$active" = 1 ]')));
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
-      expect(command, contains('codex|codex-*|copilot|copilot-*)'));
-      expect(command, contains('opencode|opencode-*)'));
-      expect(command, contains(r'case "$pane_title" in'));
-      expect(command, contains('*Copilot*|*copilot*)'));
-      expect(command, contains('*OpenCode*|*opencode*)'));
+      expect(
+        command,
+        contains(
+          r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
+        ),
+      );
+      expect(command, contains(r'case "$agent_tool" in'));
+      expect(command, contains('copilot)'));
+      expect(command, contains('codex)'));
+      expect(command, contains('opencode|claude|gemini)'));
+      final directBranchStart = command.indexOf(
+        r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
+      );
+      expect(directBranchStart, isNonNegative);
+      final directBranch = command.substring(directBranchStart);
+      expect(directBranch.indexOf(r'case "$agent_tool" in'), greaterThan(0));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains(r'refresh-client -t "$client" -r "$pane":'));
+      expect(command, contains(r'#{client_control_mode}${SEP}#{client_name}'));
+      expect(command, contains(r'while IFS="$SEP" read -r control client'));
+      expect(command, contains(r'[ "$control" = 0 ] || continue;'));
+      expect(
+        command,
+        contains(
+          buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
+        ),
+      );
       expect(
         command,
         contains(
@@ -193,48 +249,65 @@ void main() {
           ),
         ),
       );
-      expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
-      final codexBranchStart = command.indexOf(
-        'codex|codex-*|copilot|copilot-*)',
+      final copilotBranchStart = directBranch.indexOf('copilot)');
+      final codexBranchStart = directBranch.indexOf('codex)');
+      final opencodeBranchStart = directBranch.indexOf(
+        'opencode|claude|gemini)',
       );
-      final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
-      expect(codexBranchStart, isNonNegative);
+      expect(copilotBranchStart, isNonNegative);
+      expect(codexBranchStart, greaterThan(copilotBranchStart));
       expect(opencodeBranchStart, greaterThan(codexBranchStart));
       expect(
-        command.substring(codexBranchStart, opencodeBranchStart),
+        directBranch.substring(copilotBranchStart, codexBranchStart),
+        contains('1b 5b 3f 39 39 37 3b 31 6e'),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, opencodeBranchStart),
+        isNot(contains('1b 5b 3f 39 39 37')),
+      );
+      expect(
+        directBranch.substring(opencodeBranchStart),
+        isNot(contains('1b 5b 3f 39 39 37')),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, opencodeBranchStart),
         isNot(contains('1b 5b 4f')),
       );
       expect(
-        command.indexOf('1b 5b 4f', opencodeBranchStart),
+        directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
         greaterThan(opencodeBranchStart),
       );
-      final copilotTitleBranchStart = command.indexOf('*Copilot*|*copilot*)');
-      final openCodeTitleBranchStart = command.indexOf(
-        '*OpenCode*|*opencode*)',
-      );
-      expect(copilotTitleBranchStart, greaterThan(opencodeBranchStart));
-      expect(openCodeTitleBranchStart, greaterThan(copilotTitleBranchStart));
+      expect(command, isNot(contains('sleep 0.25')));
+      final tmuxCacheReports = [
+        buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
+        buildTerminalThemeRefreshReports(TerminalThemes.dracula),
+      ];
       expect(
-        command.substring(copilotTitleBranchStart, openCodeTitleBranchStart),
-        isNot(contains('1b 5b 4f')),
+        RegExp(
+          r'refresh-client -t "\$client" -r "\$pane":',
+        ).allMatches(command),
+        hasLength(tmuxCacheReports.length),
       );
-      expect(command, contains('sleep 0.25'));
-      expect(command, contains('sleep 0.08'));
+      for (final report in tmuxCacheReports) {
+        expect(command, contains(report));
+      }
       expect(
-        command.indexOf('1b 5b 49'),
-        lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
+        command,
+        contains(
+          buildTerminalThemeRefreshReportList(TerminalThemes.dracula).join(),
+        ),
       );
       expect(
-        command.indexOf('1b 5b 3f 39 39 37 3b 31 6e'),
-        lessThan(command.indexOf('1b 5d 31 30 3b')),
+        command,
+        contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),
       );
-      expect(command, contains('1b 5d 31 30 3b'));
-      expect(command, contains('1b 5d 31 31 3b'));
-      expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(9));
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(9));
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 31')));
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), isEmpty);
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
@@ -334,6 +407,7 @@ void main() {
       final execSessions = Queue<SSHSession>.of([
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         _buildOpenExecSession(stdout: _doneMarker()),
+        _buildOpenExecSession(stdout: _doneMarker()),
       ]);
 
       when(
@@ -365,9 +439,43 @@ void main() {
       );
     });
 
+    test(
+      'foregroundSessionNameOrThrow falls back to direct tmux session',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 23);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: _doneMarker()),
+          _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final sessionName = await service.foregroundSessionNameOrThrow(session);
+
+        expect(sessionName, 'work');
+        verify(
+          () => client.execute(
+            any(that: contains('list-clients')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(that: contains('display-message')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+      },
+    );
+
     test('currentSessionName returns the foreground tmux client', () async {
       final client = _MockSshClient();
-      final session = _buildSession(client, connectionId: 23);
+      final session = _buildSession(client, connectionId: 24);
       const service = TmuxService();
       final execSessions = Queue<SSHSession>.of([
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
