@@ -20,5 +20,9 @@ selected window. MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to
 the selected PTY.
 
+When `attach` finds an existing server from a different helper version, it asks
+before restarting that session. Choosing no attaches to the running server
+best-effort so app updates do not silently discard in-progress windows.
+
 The initial target matrix is POSIX-first: Linux and macOS on amd64 and arm64.
 Windows support is a later ConPTY-backed follow-up.
