@@ -8,6 +8,7 @@ import '../../domain/commands/save_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
@@ -17,6 +18,12 @@ import '../providers/entity_list_providers.dart';
 enum HostStartupMode {
   /// Do nothing after the SSH connection opens.
   none,
+
+  /// Let MonkeySSH choose a remote window backend.
+  muxAuto,
+
+  /// Open or attach to a MonkeyMux session after connecting.
+  monkeyMux,
 
   /// Open or attach to a tmux session after connecting.
   tmux,
@@ -36,10 +43,28 @@ extension HostStartupModePresentation on HostStartupMode {
   /// Human-readable label used in the startup mode dropdown.
   String get label => switch (this) {
     HostStartupMode.none => 'Do nothing',
+    HostStartupMode.muxAuto => 'Terminal windows',
+    HostStartupMode.monkeyMux => 'MonkeyMux',
     HostStartupMode.tmux => 'Open tmux session',
     HostStartupMode.agent => 'Launch coding agent',
     HostStartupMode.customCommand => 'Run custom command',
     HostStartupMode.snippet => 'Run saved snippet',
+  };
+
+  /// Whether this mode opens a persistent remote window session.
+  bool get usesRemoteMultiplexer => switch (this) {
+    HostStartupMode.muxAuto ||
+    HostStartupMode.monkeyMux ||
+    HostStartupMode.tmux => true,
+    _ => false,
+  };
+
+  /// Backend value persisted for remote-window startup modes.
+  RemoteMuxBackend? get remoteMuxBackend => switch (this) {
+    HostStartupMode.muxAuto => RemoteMuxBackend.auto,
+    HostStartupMode.monkeyMux => RemoteMuxBackend.monkeyMux,
+    HostStartupMode.tmux => RemoteMuxBackend.tmux,
+    _ => null,
   };
 }
 
@@ -343,11 +368,15 @@ class HostEditViewModel extends Notifier<HostEditState> {
     switch (draft.selectedStartupMode) {
       case HostStartupMode.none:
         return null;
+      case HostStartupMode.muxAuto:
+      case HostStartupMode.monkeyMux:
       case HostStartupMode.tmux:
         if (draft.tmuxSession.trim().isEmpty) {
-          return const HostEditValidationIssue(
+          return HostEditValidationIssue(
             target: HostEditValidationTarget.tmuxSession,
-            message: 'Fix tmux session name to save this host',
+            message: draft.selectedStartupMode == HostStartupMode.tmux
+                ? 'Fix tmux session name to save this host'
+                : 'Fix terminal window session name to save this host',
           );
         }
         return null;
@@ -450,22 +479,42 @@ class HostEditViewModel extends Notifier<HostEditState> {
     final tmuxWorkingDirectory = draft.tmuxWorkingDirectory.trim();
     final tmuxExtraFlags = draft.tmuxExtraFlags.trim();
 
-    final normalizedTmuxSessionName = switch (draft.selectedStartupMode) {
-      HostStartupMode.tmux => tmuxSessionName.isEmpty ? null : tmuxSessionName,
-      HostStartupMode.none => null,
-      _ => hasAutomationAccess ? null : existingHost?.tmuxSessionName,
-    };
-    final normalizedTmuxWorkingDirectory = switch (draft.selectedStartupMode) {
-      HostStartupMode.tmux =>
-        tmuxWorkingDirectory.isEmpty ? null : tmuxWorkingDirectory,
-      HostStartupMode.none => null,
-      _ => hasAutomationAccess ? null : existingHost?.tmuxWorkingDirectory,
+    final normalizedTmuxSessionName =
+        switch (draft.selectedStartupMode.usesRemoteMultiplexer) {
+          true => tmuxSessionName.isEmpty ? null : tmuxSessionName,
+          false => switch (draft.selectedStartupMode) {
+            HostStartupMode.none => null,
+            _ => hasAutomationAccess ? null : existingHost?.tmuxSessionName,
+          },
+        };
+    final normalizedRemoteMuxBackend =
+        switch (draft.selectedStartupMode.usesRemoteMultiplexer) {
+          true => draft.selectedStartupMode.remoteMuxBackend,
+          false => switch (draft.selectedStartupMode) {
+            HostStartupMode.none => null,
+            _ =>
+              hasAutomationAccess
+                  ? null
+                  : RemoteMuxBackendPresentation.fromStorageValue(
+                      existingHost?.remoteMuxBackend,
+                    ),
+          },
+        };
+    final normalizedTmuxWorkingDirectory = switch (draft
+        .selectedStartupMode
+        .usesRemoteMultiplexer) {
+      true => tmuxWorkingDirectory.isEmpty ? null : tmuxWorkingDirectory,
+      false => switch (draft.selectedStartupMode) {
+        HostStartupMode.none => null,
+        _ => hasAutomationAccess ? null : existingHost?.tmuxWorkingDirectory,
+      },
     };
     final normalizedTmuxExtraFlags = switch (draft.selectedStartupMode) {
       HostStartupMode.tmux => resolveTmuxExtraFlags(
         extraFlags: tmuxExtraFlags,
         disableStatusBar: draft.disableTmuxStatusBar,
       ),
+      HostStartupMode.muxAuto || HostStartupMode.monkeyMux => null,
       HostStartupMode.none => null,
       _ => hasAutomationAccess ? null : existingHost?.tmuxExtraFlags,
     };
@@ -475,6 +524,8 @@ class HostEditViewModel extends Notifier<HostEditState> {
     late final bool autoConnectRequiresConfirmation;
     switch (draft.selectedStartupMode) {
       case HostStartupMode.none:
+      case HostStartupMode.muxAuto:
+      case HostStartupMode.monkeyMux:
       case HostStartupMode.tmux:
         normalizedAutoConnectCommand = null;
         normalizedAutoConnectSnippetId = null;
@@ -556,6 +607,7 @@ class HostEditViewModel extends Notifier<HostEditState> {
       tmuxSessionName: normalizedTmuxSessionName,
       tmuxWorkingDirectory: normalizedTmuxWorkingDirectory,
       tmuxExtraFlags: normalizedTmuxExtraFlags,
+      remoteMuxBackend: normalizedRemoteMuxBackend,
       isFavorite: draft.isFavorite,
     );
   }
@@ -573,6 +625,8 @@ class HostEditViewModel extends Notifier<HostEditState> {
       return SaveAgentPreset(preset);
     }
     if (draft.selectedStartupMode == HostStartupMode.none ||
+        draft.selectedStartupMode == HostStartupMode.muxAuto ||
+        draft.selectedStartupMode == HostStartupMode.monkeyMux ||
         draft.selectedStartupMode == HostStartupMode.tmux ||
         ((draft.selectedStartupMode == HostStartupMode.customCommand ||
                 draft.selectedStartupMode == HostStartupMode.snippet) &&

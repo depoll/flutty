@@ -2306,6 +2306,17 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _remoteMuxBackendMeta = const VerificationMeta(
+    'remoteMuxBackend',
+  );
+  @override
+  late final GeneratedColumn<String> remoteMuxBackend = GeneratedColumn<String>(
+    'remote_mux_backend',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _sortOrderMeta = const VerificationMeta(
     'sortOrder',
   );
@@ -2346,6 +2357,7 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     tmuxSessionName,
     tmuxWorkingDirectory,
     tmuxExtraFlags,
+    remoteMuxBackend,
     sortOrder,
   ];
   @override
@@ -2555,6 +2567,15 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
       );
     }
+    if (data.containsKey('remote_mux_backend')) {
+      context.handle(
+        _remoteMuxBackendMeta,
+        remoteMuxBackend.isAcceptableOrUnknown(
+          data['remote_mux_backend']!,
+          _remoteMuxBackendMeta,
+        ),
+      );
+    }
     if (data.containsKey('sort_order')) {
       context.handle(
         _sortOrderMeta,
@@ -2674,6 +2695,10 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.string,
         data['${effectivePrefix}tmux_extra_flags'],
       ),
+      remoteMuxBackend: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}remote_mux_backend'],
+      ),
       sortOrder: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}sort_order'],
@@ -2774,6 +2799,12 @@ class Host extends DataClass implements Insertable<Host> {
   /// Extra tmux flags appended to the generated `tmux new-session` command.
   final String? tmuxExtraFlags;
 
+  /// Remote multiplexer backend used with [tmuxSessionName].
+  ///
+  /// Null preserves legacy behavior and means tmux when [tmuxSessionName] is
+  /// populated.
+  final String? remoteMuxBackend;
+
   /// Display order within the hosts list.
   final int sortOrder;
   const Host({
@@ -2803,6 +2834,7 @@ class Host extends DataClass implements Insertable<Host> {
     this.tmuxSessionName,
     this.tmuxWorkingDirectory,
     this.tmuxExtraFlags,
+    this.remoteMuxBackend,
     required this.sortOrder,
   });
   @override
@@ -2870,6 +2902,9 @@ class Host extends DataClass implements Insertable<Host> {
     if (!nullToAbsent || tmuxExtraFlags != null) {
       map['tmux_extra_flags'] = Variable<String>(tmuxExtraFlags);
     }
+    if (!nullToAbsent || remoteMuxBackend != null) {
+      map['remote_mux_backend'] = Variable<String>(remoteMuxBackend);
+    }
     map['sort_order'] = Variable<int>(sortOrder);
     return map;
   }
@@ -2934,6 +2969,9 @@ class Host extends DataClass implements Insertable<Host> {
       tmuxExtraFlags: tmuxExtraFlags == null && nullToAbsent
           ? const Value.absent()
           : Value(tmuxExtraFlags),
+      remoteMuxBackend: remoteMuxBackend == null && nullToAbsent
+          ? const Value.absent()
+          : Value(remoteMuxBackend),
       sortOrder: Value(sortOrder),
     );
   }
@@ -2986,6 +3024,7 @@ class Host extends DataClass implements Insertable<Host> {
         json['tmuxWorkingDirectory'],
       ),
       tmuxExtraFlags: serializer.fromJson<String?>(json['tmuxExtraFlags']),
+      remoteMuxBackend: serializer.fromJson<String?>(json['remoteMuxBackend']),
       sortOrder: serializer.fromJson<int>(json['sortOrder']),
     );
   }
@@ -3021,6 +3060,7 @@ class Host extends DataClass implements Insertable<Host> {
       'tmuxSessionName': serializer.toJson<String?>(tmuxSessionName),
       'tmuxWorkingDirectory': serializer.toJson<String?>(tmuxWorkingDirectory),
       'tmuxExtraFlags': serializer.toJson<String?>(tmuxExtraFlags),
+      'remoteMuxBackend': serializer.toJson<String?>(remoteMuxBackend),
       'sortOrder': serializer.toJson<int>(sortOrder),
     };
   }
@@ -3052,6 +3092,7 @@ class Host extends DataClass implements Insertable<Host> {
     Value<String?> tmuxSessionName = const Value.absent(),
     Value<String?> tmuxWorkingDirectory = const Value.absent(),
     Value<String?> tmuxExtraFlags = const Value.absent(),
+    Value<String?> remoteMuxBackend = const Value.absent(),
     int? sortOrder,
   }) => Host(
     id: id ?? this.id,
@@ -3101,6 +3142,9 @@ class Host extends DataClass implements Insertable<Host> {
     tmuxExtraFlags: tmuxExtraFlags.present
         ? tmuxExtraFlags.value
         : this.tmuxExtraFlags,
+    remoteMuxBackend: remoteMuxBackend.present
+        ? remoteMuxBackend.value
+        : this.remoteMuxBackend,
     sortOrder: sortOrder ?? this.sortOrder,
   );
   Host copyWithCompanion(HostsCompanion data) {
@@ -3158,6 +3202,9 @@ class Host extends DataClass implements Insertable<Host> {
       tmuxExtraFlags: data.tmuxExtraFlags.present
           ? data.tmuxExtraFlags.value
           : this.tmuxExtraFlags,
+      remoteMuxBackend: data.remoteMuxBackend.present
+          ? data.remoteMuxBackend.value
+          : this.remoteMuxBackend,
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
@@ -3193,6 +3240,7 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('tmuxSessionName: $tmuxSessionName, ')
           ..write('tmuxWorkingDirectory: $tmuxWorkingDirectory, ')
           ..write('tmuxExtraFlags: $tmuxExtraFlags, ')
+          ..write('remoteMuxBackend: $remoteMuxBackend, ')
           ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
@@ -3226,6 +3274,7 @@ class Host extends DataClass implements Insertable<Host> {
     tmuxSessionName,
     tmuxWorkingDirectory,
     tmuxExtraFlags,
+    remoteMuxBackend,
     sortOrder,
   ]);
   @override
@@ -3259,6 +3308,7 @@ class Host extends DataClass implements Insertable<Host> {
           other.tmuxSessionName == this.tmuxSessionName &&
           other.tmuxWorkingDirectory == this.tmuxWorkingDirectory &&
           other.tmuxExtraFlags == this.tmuxExtraFlags &&
+          other.remoteMuxBackend == this.remoteMuxBackend &&
           other.sortOrder == this.sortOrder);
 }
 
@@ -3289,6 +3339,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<String?> tmuxSessionName;
   final Value<String?> tmuxWorkingDirectory;
   final Value<String?> tmuxExtraFlags;
+  final Value<String?> remoteMuxBackend;
   final Value<int> sortOrder;
   const HostsCompanion({
     this.id = const Value.absent(),
@@ -3317,6 +3368,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.tmuxSessionName = const Value.absent(),
     this.tmuxWorkingDirectory = const Value.absent(),
     this.tmuxExtraFlags = const Value.absent(),
+    this.remoteMuxBackend = const Value.absent(),
     this.sortOrder = const Value.absent(),
   });
   HostsCompanion.insert({
@@ -3346,6 +3398,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.tmuxSessionName = const Value.absent(),
     this.tmuxWorkingDirectory = const Value.absent(),
     this.tmuxExtraFlags = const Value.absent(),
+    this.remoteMuxBackend = const Value.absent(),
     this.sortOrder = const Value.absent(),
   }) : label = Value(label),
        hostname = Value(hostname),
@@ -3377,6 +3430,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<String>? tmuxSessionName,
     Expression<String>? tmuxWorkingDirectory,
     Expression<String>? tmuxExtraFlags,
+    Expression<String>? remoteMuxBackend,
     Expression<int>? sortOrder,
   }) {
     return RawValuesInsertable({
@@ -3414,6 +3468,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
       if (tmuxWorkingDirectory != null)
         'tmux_working_directory': tmuxWorkingDirectory,
       if (tmuxExtraFlags != null) 'tmux_extra_flags': tmuxExtraFlags,
+      if (remoteMuxBackend != null) 'remote_mux_backend': remoteMuxBackend,
       if (sortOrder != null) 'sort_order': sortOrder,
     });
   }
@@ -3445,6 +3500,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<String?>? tmuxSessionName,
     Value<String?>? tmuxWorkingDirectory,
     Value<String?>? tmuxExtraFlags,
+    Value<String?>? remoteMuxBackend,
     Value<int>? sortOrder,
   }) {
     return HostsCompanion(
@@ -3476,6 +3532,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
       tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
       tmuxWorkingDirectory: tmuxWorkingDirectory ?? this.tmuxWorkingDirectory,
       tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
+      remoteMuxBackend: remoteMuxBackend ?? this.remoteMuxBackend,
       sortOrder: sortOrder ?? this.sortOrder,
     );
   }
@@ -3573,6 +3630,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
     if (tmuxExtraFlags.present) {
       map['tmux_extra_flags'] = Variable<String>(tmuxExtraFlags.value);
     }
+    if (remoteMuxBackend.present) {
+      map['remote_mux_backend'] = Variable<String>(remoteMuxBackend.value);
+    }
     if (sortOrder.present) {
       map['sort_order'] = Variable<int>(sortOrder.value);
     }
@@ -3610,6 +3670,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('tmuxSessionName: $tmuxSessionName, ')
           ..write('tmuxWorkingDirectory: $tmuxWorkingDirectory, ')
           ..write('tmuxExtraFlags: $tmuxExtraFlags, ')
+          ..write('remoteMuxBackend: $remoteMuxBackend, ')
           ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
@@ -6721,6 +6782,7 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<String?> tmuxSessionName,
       Value<String?> tmuxWorkingDirectory,
       Value<String?> tmuxExtraFlags,
+      Value<String?> remoteMuxBackend,
       Value<int> sortOrder,
     });
 typedef $$HostsTableUpdateCompanionBuilder =
@@ -6751,6 +6813,7 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<String?> tmuxSessionName,
       Value<String?> tmuxWorkingDirectory,
       Value<String?> tmuxExtraFlags,
+      Value<String?> remoteMuxBackend,
       Value<int> sortOrder,
     });
 
@@ -6967,6 +7030,11 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<String> get tmuxExtraFlags => $composableBuilder(
     column: $table.tmuxExtraFlags,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get remoteMuxBackend => $composableBuilder(
+    column: $table.remoteMuxBackend,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -7213,6 +7281,11 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get remoteMuxBackend => $composableBuilder(
+    column: $table.remoteMuxBackend,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get sortOrder => $composableBuilder(
     column: $table.sortOrder,
     builder: (column) => ColumnOrderings(column),
@@ -7409,6 +7482,11 @@ class $$HostsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get remoteMuxBackend => $composableBuilder(
+    column: $table.remoteMuxBackend,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<int> get sortOrder =>
       $composableBuilder(column: $table.sortOrder, builder: (column) => column);
 
@@ -7591,6 +7669,7 @@ class $$HostsTableTableManager
                 Value<String?> tmuxSessionName = const Value.absent(),
                 Value<String?> tmuxWorkingDirectory = const Value.absent(),
                 Value<String?> tmuxExtraFlags = const Value.absent(),
+                Value<String?> remoteMuxBackend = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion(
                 id: id,
@@ -7620,6 +7699,7 @@ class $$HostsTableTableManager
                 tmuxSessionName: tmuxSessionName,
                 tmuxWorkingDirectory: tmuxWorkingDirectory,
                 tmuxExtraFlags: tmuxExtraFlags,
+                remoteMuxBackend: remoteMuxBackend,
                 sortOrder: sortOrder,
               ),
           createCompanionCallback:
@@ -7651,6 +7731,7 @@ class $$HostsTableTableManager
                 Value<String?> tmuxSessionName = const Value.absent(),
                 Value<String?> tmuxWorkingDirectory = const Value.absent(),
                 Value<String?> tmuxExtraFlags = const Value.absent(),
+                Value<String?> remoteMuxBackend = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion.insert(
                 id: id,
@@ -7680,6 +7761,7 @@ class $$HostsTableTableManager
                 tmuxSessionName: tmuxSessionName,
                 tmuxWorkingDirectory: tmuxWorkingDirectory,
                 tmuxExtraFlags: tmuxExtraFlags,
+                remoteMuxBackend: remoteMuxBackend,
                 sortOrder: sortOrder,
               ),
           withReferenceMapper: (p0) => p0

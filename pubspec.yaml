@@ -97,6 +97,7 @@ flutter:
   
   assets:
     - assets/icons/
+    - assets/monkeymux/
     - assets/version_codenames.json
   #   - assets/icons/
   #   - assets/fonts/

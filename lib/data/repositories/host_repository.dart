@@ -177,6 +177,10 @@ class HostRepository {
         autoConnectRequiresConfirmation: Value(
           host.autoConnectRequiresConfirmation,
         ),
+        tmuxSessionName: Value(host.tmuxSessionName),
+        tmuxWorkingDirectory: Value(host.tmuxWorkingDirectory),
+        tmuxExtraFlags: Value(host.tmuxExtraFlags),
+        remoteMuxBackend: Value(host.remoteMuxBackend),
       ),
     );
 
