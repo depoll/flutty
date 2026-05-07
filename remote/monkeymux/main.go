@@ -202,19 +202,16 @@ func attachCommand(args []string) {
 func controlCommand(args []string) {
 	fs := flag.NewFlagSet("control", flag.ExitOnError)
 	jsonMode := fs.Bool("json", false, "use newline-delimited JSON")
-	cwd := fs.String("cwd", "", "initial working directory")
+	_ = fs.String("cwd", "", "ignored; only attach starts sessions")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 || !*jsonMode {
 		usageAndExit()
 	}
 	session := fs.Arg(0)
-	if err := ensureServer(session, *cwd); err != nil {
-		fatal(err)
-	}
 
 	conn, err := dialSession(session)
 	if err != nil {
-		fatal(err)
+		fatal(fmt.Errorf("monkeymux session %q is not running; attach before opening control", session))
 	}
 	defer conn.Close()
 
@@ -300,6 +297,7 @@ func ensureServer(session string, cwd string) error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	cmd.Env = inheritedEnvironment(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -390,7 +388,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		cwd = expanded
 	}
 
-	shell := loginShellPath()
+	shell := defaultShellPath()
 	cmd := shellCommand(shell)
 	name := filepath.Base(shell)
 	if len(options.args) > 0 {
@@ -405,7 +403,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Env = terminalEnvironment(os.Environ(), shell)
+	cmd.Env = inheritedEnvironment(os.Environ())
 
 	s.mu.Lock()
 	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
@@ -994,7 +992,7 @@ func (s *muxServer) isClosed() bool {
 	return s.closed
 }
 
-func loginShellPath() string {
+func defaultShellPath() string {
 	shell := os.Getenv("SHELL")
 	if strings.TrimSpace(shell) == "" {
 		return "/bin/sh"
@@ -1003,35 +1001,12 @@ func loginShellPath() string {
 }
 
 func shellCommand(shell string) *exec.Cmd {
-	cmd := exec.Command(shell)
-	// Use the user's login shell so their profile owns PATH/tool setup.
-	cmd.Args[0] = "-" + filepath.Base(shell)
-	return cmd
+	return exec.Command(shell)
 }
 
-func terminalEnvironment(base []string, shell string) []string {
-	env := map[string]string{}
-	for _, item := range base {
-		key, value, ok := strings.Cut(item, "=")
-		if !ok || strings.TrimSpace(key) == "" {
-			continue
-		}
-		env[key] = value
-	}
-	if strings.TrimSpace(shell) != "" {
-		env["SHELL"] = shell
-	}
-	if strings.TrimSpace(env["TERM"]) == "" {
-		env["TERM"] = "xterm-256color"
-	}
-	if strings.TrimSpace(env["COLORTERM"]) == "" {
-		env["COLORTERM"] = "truecolor"
-	}
-
-	result := make([]string, 0, len(env))
-	for key, value := range env {
-		result = append(result, key+"="+value)
-	}
+func inheritedEnvironment(base []string) []string {
+	result := make([]string, len(base))
+	copy(result, base)
 	return result
 }
 
