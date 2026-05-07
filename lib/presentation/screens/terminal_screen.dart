@@ -2317,6 +2317,24 @@ String buildSnippetNameFromTerminalSelection(String text) {
   return 'Terminal selection';
 }
 
+/// Resolves the active terminal selection text, preferring the xterm
+/// controller's selection but falling back to the SelectionArea's content
+/// when system selection (mobile) owns the selection.
+@visibleForTesting
+String? resolveTerminalSelectionPlainText({
+  required String? terminalControllerSelectionText,
+  required String? systemSelectionPlainText,
+}) {
+  if (terminalControllerSelectionText != null &&
+      terminalControllerSelectionText.isNotEmpty) {
+    return terminalControllerSelectionText;
+  }
+  if (systemSelectionPlainText != null && systemSelectionPlainText.isNotEmpty) {
+    return systemSelectionPlainText;
+  }
+  return null;
+}
+
 /// Whether a polled remote clipboard value should replace the local clipboard.
 @visibleForTesting
 bool shouldApplyRemoteClipboardTextToLocal({
@@ -10096,11 +10114,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return text.isEmpty ? null : text;
     }
     final selection = _terminalController.selection;
-    if (selection == null) {
+    final terminalControllerText = selection == null
+        ? null
+        : trimTerminalSelectionText(_terminal.buffer.getText(selection));
+    return resolveTerminalSelectionPlainText(
+      terminalControllerSelectionText: terminalControllerText,
+      systemSelectionPlainText: _readSystemSelectionPlainText(),
+    );
+  }
+
+  // Reads the live system selection from the terminal's render object. This is
+  // the source of truth on mobile (`useSystemSelection: true`), where Flutter's
+  // SelectionArea owns the selection rather than the xterm controller.
+  String? _readSystemSelectionPlainText() {
+    final state = _terminalViewKey.currentState;
+    if (state == null) {
       return null;
     }
-    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
-    return text.isEmpty ? null : text;
+    try {
+      return state.renderTerminal.getSelectedContent()?.plainText;
+    } on Object {
+      return null;
+    }
   }
 
   Future<void> _lookUpTerminalSelectionText(String text) async {

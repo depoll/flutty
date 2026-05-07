@@ -403,6 +403,50 @@ void main() {
       );
     });
 
+    test('prefers terminal controller selection over system selection', () {
+      expect(
+        resolveTerminalSelectionPlainText(
+          terminalControllerSelectionText: 'controller text',
+          systemSelectionPlainText: 'system text',
+        ),
+        'controller text',
+      );
+    });
+
+    test('falls back to system selection text when controller is empty', () {
+      expect(
+        resolveTerminalSelectionPlainText(
+          terminalControllerSelectionText: null,
+          systemSelectionPlainText: 'system text',
+        ),
+        'system text',
+      );
+      expect(
+        resolveTerminalSelectionPlainText(
+          terminalControllerSelectionText: '',
+          systemSelectionPlainText: 'system text',
+        ),
+        'system text',
+      );
+    });
+
+    test('returns null when no selection text is available', () {
+      expect(
+        resolveTerminalSelectionPlainText(
+          terminalControllerSelectionText: null,
+          systemSelectionPlainText: null,
+        ),
+        isNull,
+      );
+      expect(
+        resolveTerminalSelectionPlainText(
+          terminalControllerSelectionText: '',
+          systemSelectionPlainText: '',
+        ),
+        isNull,
+      );
+    });
+
     test('hides terminal selection toolbar when action throws', () {
       var didHideToolbar = false;
 
@@ -959,6 +1003,47 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets(
+      'overflow menu shows Create Snippet when system selection has text',
+      (tester) async {
+        session.terminal!.write('echo hello\n');
+        await pumpScreen(tester);
+        await tester.pump();
+
+        Finder createSnippetItem() => find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> &&
+              widget.value == 'create_snippet',
+        );
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+        expect(createSnippetItem(), findsNothing);
+
+        await tester.tapAt(const Offset(2, 2));
+        await tester.pumpAndSettle();
+
+        final state = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = state.renderTerminal;
+        renderTerminal.dispatchSelectionEvent(
+          SelectWordSelectionEvent(
+            globalPosition: renderTerminal.localToGlobal(
+              renderTerminal.getOffset(const CellOffset(0, 0)) +
+                  renderTerminal.cellSize.center(Offset.zero),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+        expect(createSnippetItem(), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     testWidgets('browse files ignores duplicate taps while SFTP is opening', (
       tester,
