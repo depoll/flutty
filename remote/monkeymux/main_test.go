@@ -3,52 +3,36 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 )
 
-func TestTerminalEnvironmentSetsSafeTerminalDefaults(t *testing.T) {
-	env := terminalEnvironment([]string{"PATH=/usr/bin", "USER=test"}, "/bin/zsh")
-	values := envMap(env)
+func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
+	base := []string{
+		"PATH=/custom/bin:/usr/bin",
+		"TERM=screen-256color",
+		"COLORTERM=24bit",
+		"SHELL=/bin/zsh",
+		"EMPTY=",
+		"PATH=/second-path-entry",
+	}
 
-	if got := values["TERM"]; got != "xterm-256color" {
-		t.Fatalf("TERM = %q, want xterm-256color", got)
+	env := inheritedEnvironment(base)
+
+	if !reflect.DeepEqual(env, base) {
+		t.Fatalf("environment = %#v, want exact pass-through %#v", env, base)
 	}
-	if got := values["COLORTERM"]; got != "truecolor" {
-		t.Fatalf("COLORTERM = %q, want truecolor", got)
-	}
-	if got := values["SHELL"]; got != "/bin/zsh" {
-		t.Fatalf("SHELL = %q, want /bin/zsh", got)
-	}
-	if got := values["PATH"]; got != "/usr/bin" {
-		t.Fatalf("PATH = %q, want preserved profile-owned value", got)
+	env[0] = "PATH=/changed"
+	if base[0] == env[0] {
+		t.Fatal("inherited environment aliases source slice")
 	}
 }
 
-func TestTerminalEnvironmentPreservesTerminalValues(t *testing.T) {
-	env := terminalEnvironment(
-		[]string{"TERM=screen-256color", "COLORTERM=24bit", "PATH=/custom/bin"},
-		"/bin/bash",
-	)
-	values := envMap(env)
+func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
+	env := inheritedEnvironment([]string{"USER=test"})
 
-	if got := values["TERM"]; got != "screen-256color" {
-		t.Fatalf("TERM = %q, want screen-256color", got)
-	}
-	if got := values["COLORTERM"]; got != "24bit" {
-		t.Fatalf("COLORTERM = %q, want 24bit", got)
-	}
-	if got := values["PATH"]; got != "/custom/bin" {
-		t.Fatalf("PATH = %q, want preserved custom value", got)
-	}
-}
-
-func TestTerminalEnvironmentDoesNotGuessMissingPath(t *testing.T) {
-	env := terminalEnvironment([]string{"USER=test"}, "/bin/zsh")
-	values := envMap(env)
-
-	if _, ok := values["PATH"]; ok {
-		t.Fatalf("PATH = %q, want profile-owned PATH to remain unset", values["PATH"])
+	if !reflect.DeepEqual(env, []string{"USER=test"}) {
+		t.Fatalf("environment = %#v, want no synthesized values", env)
 	}
 }
 
@@ -75,29 +59,18 @@ func TestExpandHomePath(t *testing.T) {
 	}
 }
 
-func TestShellCommandStartsLoginShell(t *testing.T) {
+func TestShellCommandUsesPlainShell(t *testing.T) {
 	cmd := shellCommand("/bin/zsh")
 
-	if got := cmd.Args[0]; got != "-zsh" {
-		t.Fatalf("argv0 = %q, want -zsh", got)
+	if got := cmd.Args[0]; got != "/bin/zsh" {
+		t.Fatalf("argv0 = %q, want plain shell argv0", got)
 	}
 }
 
-func TestLoginShellPathFallsBackToSh(t *testing.T) {
+func TestDefaultShellPathFallsBackToSh(t *testing.T) {
 	t.Setenv("SHELL", "")
 
-	if got := loginShellPath(); got != "/bin/sh" {
-		t.Fatalf("login shell path = %q, want /bin/sh", got)
+	if got := defaultShellPath(); got != "/bin/sh" {
+		t.Fatalf("default shell path = %q, want /bin/sh", got)
 	}
-}
-
-func envMap(env []string) map[string]string {
-	result := map[string]string{}
-	for _, item := range env {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			result[key] = value
-		}
-	}
-	return result
 }
