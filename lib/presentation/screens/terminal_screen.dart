@@ -3465,6 +3465,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.isUsingAltBuffer ||
       _terminal.mouseMode != MouseMode.none;
 
+  /// Whether outer-tmux theme/focus reports are safe to push through the SSH
+  /// stream right now.
+  ///
+  /// tmux normally consumes outer OSC theme reports for its own pane cache,
+  /// but if the user has detached the tmux client (or tmux exited entirely)
+  /// while the screen still believes [_isTmuxActive] is true, those bytes
+  /// reach a bare shell and become typed input. Reuses the same foreground
+  /// TUI signals as [_shouldRefreshPlainTerminalTui]: if no app has enabled
+  /// any of the modes a real TUI uses, the foreground is almost certainly a
+  /// shell prompt.
+  bool _isOuterTuiSignalingActive(SshSession session) =>
+      _shouldRefreshPlainTerminalTui(session);
+
   bool get _isTerminalThemeRefreshViewReady {
     final terminalViewWidget = _terminalViewKey.currentWidget;
     return _terminalViewKey.currentState != null &&
@@ -3847,6 +3860,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     if (request.sendOuterThemeReports) {
+      if (!_isOuterTuiSignalingActive(request.session)) {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'tmux_outer_reports_skipped',
+          fields: {
+            'reason': '${outerRefreshReason}_no_foreground_tui',
+            'connectionId': request.session.connectionId,
+            'colorSchemeUpdatesMode':
+                request.session.terminalColorSchemeUpdatesMode,
+            'focusMode': _terminal.reportFocusMode,
+            'altBuffer': _terminal.isUsingAltBuffer,
+            'mouseMode': _terminal.mouseMode != MouseMode.none,
+          },
+        );
+        return;
+      }
       _refreshTerminalThemeReportsForTui(
         request.theme,
         includeColorReports: true,
@@ -3869,6 +3898,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         reason: '${outerRefreshReason}_tmux_outer_focus_late',
       );
     } else if (request.sendOuterFocusReport) {
+      if (!_isOuterTuiSignalingActive(request.session)) {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'tmux_outer_focus_skipped',
+          fields: {
+            'reason': '${outerRefreshReason}_no_foreground_tui',
+            'connectionId': request.session.connectionId,
+            'colorSchemeUpdatesMode':
+                request.session.terminalColorSchemeUpdatesMode,
+            'focusMode': _terminal.reportFocusMode,
+            'altBuffer': _terminal.isUsingAltBuffer,
+            'mouseMode': _terminal.mouseMode != MouseMode.none,
+          },
+        );
+        return;
+      }
       _refreshTerminalThemeReportsForTui(
         request.theme,
         includeThemeModeReport: false,
@@ -3896,6 +3941,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         refreshGeneration: refreshGeneration,
       )) {
+        return;
+      }
+      if (_isTmuxActive &&
+          _tmuxStateConnectionId == session.connectionId &&
+          !_isOuterTuiSignalingActive(session)) {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'tmux_outer_late_skipped',
+          fields: {
+            'reason': reason,
+            'connectionId': session.connectionId,
+            'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+            'focusMode': _terminal.reportFocusMode,
+            'altBuffer': _terminal.isUsingAltBuffer,
+            'mouseMode': _terminal.mouseMode != MouseMode.none,
+          },
+        );
         return;
       }
       _refreshTerminalThemeReportsForTui(

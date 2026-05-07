@@ -1352,12 +1352,22 @@ void main() {
       _MockTmuxService tmuxService, {
       SettingsService? settingsServiceOverride,
       AgentSessionDiscoveryService? agentSessionDiscoveryServiceOverride,
+      bool simulateAttachedTuiSignals = false,
     }) async {
       const tmuxSessionName = 'work';
       const windows = <TmuxWindow>[
         TmuxWindow(index: 0, name: 'shell', isActive: true),
         TmuxWindow(index: 1, name: 'agent', isActive: false),
       ];
+
+      if (simulateAttachedTuiSignals) {
+        // Real tmux clients enable focus reports + alt buffer on attach. The
+        // outer reports gate uses these to skip pushing OSC bytes through SSH
+        // when the foreground is a bare shell, so tests that exercise the
+        // attached-tmux happy path need the same signals to be visible before
+        // the prime/refresh paths fire on initial pumps.
+        session.terminal!.write('\x1b[?1004h');
+      }
 
       when(
         () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -1511,7 +1521,11 @@ void main() {
       'primes tmux with outer theme reports after attach',
       (tester) async {
         final tmuxService = _MockTmuxService();
-        await pumpTmuxScreen(tester, tmuxService);
+        await pumpTmuxScreen(
+          tester,
+          tmuxService,
+          simulateAttachedTuiSignals: true,
+        );
         await tester.pump(const Duration(milliseconds: 400));
 
         final writtenShellText = utf8.decode(
@@ -1530,7 +1544,11 @@ void main() {
       'sends outer tmux theme reports after theme changes',
       (tester) async {
         final tmuxService = _MockTmuxService();
-        await pumpTmuxScreen(tester, tmuxService);
+        await pumpTmuxScreen(
+          tester,
+          tmuxService,
+          simulateAttachedTuiSignals: true,
+        );
         shellWrites.clear();
 
         final container = ProviderScope.containerOf(
@@ -1558,6 +1576,40 @@ void main() {
     );
 
     testWidgets(
+      'does not leak outer tmux theme reports to a bare shell after detach',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+
+        // tmux attach has been torn down (no focus tracking, alt buffer, mouse
+        // mode, or DEC 2031 subscription), so OSC theme reports would land on
+        // a bare zsh prompt and be echoed back as typed input. Even though
+        // tmux state is still primed locally, the gate on foreground TUI
+        // signals must suppress the outer reports entirely.
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'preserves outer focus after coalesced tmux window refreshes',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -1570,6 +1622,10 @@ void main() {
         ];
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -1709,6 +1765,10 @@ void main() {
           TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: false),
         ];
 
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -1941,6 +2001,10 @@ void main() {
             0x7fffffff;
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
@@ -2096,6 +2160,10 @@ void main() {
         var refreshCount = 0;
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -2236,6 +2304,10 @@ void main() {
         var refreshCount = 0;
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
