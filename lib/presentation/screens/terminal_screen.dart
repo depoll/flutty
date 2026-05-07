@@ -677,6 +677,166 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     .firstOrNull
     ?.foregroundAgentTool;
 
+/// RGB aliases for full-color cells that were rendered from a stale terminal
+/// theme before a foreground app adopted the active theme.
+@visibleForTesting
+class TerminalThemeRgbColorAliases {
+  const TerminalThemeRgbColorAliases._({required Map<int, int> colorMap})
+    : _colorMap = colorMap;
+
+  final Map<int, int> _colorMap;
+
+  int? _remapForeground(int cellColor) => _remapRgbCellColor(cellColor);
+
+  int? _remapBackground(int cellColor) => _remapRgbCellColor(cellColor);
+
+  int? _remapRgbCellColor(int cellColor) {
+    if (!_isRgbCellColor(cellColor)) {
+      return null;
+    }
+    return _colorMap[cellColor];
+  }
+}
+
+/// Builds RGB aliases from [previousTheme] to [nextTheme].
+///
+/// Terminal-aware TUIs sometimes render theme colors as explicit RGB values
+/// instead of ANSI/default colors. When they miss a live theme update, those
+/// explicit RGB cells no longer follow the terminal palette. This map is exact
+/// so unrelated truecolor output stays untouched.
+@visibleForTesting
+TerminalThemeRgbColorAliases buildTerminalThemeRgbColorAliases({
+  required TerminalThemeData previousTheme,
+  required TerminalThemeData nextTheme,
+}) {
+  final colorMap = <int, int>{};
+  final ambiguousSourceColors = <int>{};
+
+  void addColorPair(Color previous, Color next) {
+    _addRgbAlias(
+      colorMap,
+      ambiguousSourceColors,
+      previous.toARGB32() & CellColor.valueMask,
+      next.toARGB32() & CellColor.valueMask,
+    );
+  }
+
+  addColorPair(previousTheme.foreground, nextTheme.foreground);
+  addColorPair(previousTheme.background, nextTheme.background);
+  addColorPair(previousTheme.cursor, nextTheme.cursor);
+  addColorPair(previousTheme.selection, nextTheme.selection);
+  final previousSearchHitBackground = previousTheme.searchHitBackground;
+  final nextSearchHitBackground = nextTheme.searchHitBackground;
+  if (previousSearchHitBackground != null && nextSearchHitBackground != null) {
+    addColorPair(previousSearchHitBackground, nextSearchHitBackground);
+  }
+  final previousSearchHitBackgroundCurrent =
+      previousTheme.searchHitBackgroundCurrent;
+  final nextSearchHitBackgroundCurrent = nextTheme.searchHitBackgroundCurrent;
+  if (previousSearchHitBackgroundCurrent != null &&
+      nextSearchHitBackgroundCurrent != null) {
+    addColorPair(
+      previousSearchHitBackgroundCurrent,
+      nextSearchHitBackgroundCurrent,
+    );
+  }
+  final previousSearchHitForeground = previousTheme.searchHitForeground;
+  final nextSearchHitForeground = nextTheme.searchHitForeground;
+  if (previousSearchHitForeground != null && nextSearchHitForeground != null) {
+    addColorPair(previousSearchHitForeground, nextSearchHitForeground);
+  }
+
+  for (var index = 0; index < 16; index += 1) {
+    final previousColor = terminalThemePaletteColor(previousTheme, index);
+    final nextColor = terminalThemePaletteColor(nextTheme, index);
+    if (previousColor != null && nextColor != null) {
+      addColorPair(previousColor, nextColor);
+    }
+  }
+  _addMonkeySshCopilotThemeRgbAliases(
+    colorMap,
+    previousTheme: previousTheme,
+    nextTheme: nextTheme,
+  );
+
+  return TerminalThemeRgbColorAliases._(
+    colorMap: Map<int, int>.unmodifiable(colorMap),
+  );
+}
+
+/// Applies [aliases] to every RGB cell in [terminal] and returns the number of
+/// cell attributes that changed.
+@visibleForTesting
+int remapTerminalThemeRgbColorsInBuffer(
+  Terminal terminal,
+  TerminalThemeRgbColorAliases aliases,
+) {
+  var changedCells = 0;
+  final lines = terminal.buffer.lines;
+  for (var row = 0; row < lines.length; row += 1) {
+    final line = lines[row];
+    for (var column = 0; column < line.length; column += 1) {
+      final foreground = line.getForeground(column);
+      final remappedForeground = aliases._remapForeground(foreground);
+      if (remappedForeground != null && remappedForeground != foreground) {
+        line.setForeground(column, remappedForeground);
+        changedCells += 1;
+      }
+
+      final background = line.getBackground(column);
+      final remappedBackground = aliases._remapBackground(background);
+      if (remappedBackground != null && remappedBackground != background) {
+        line.setBackground(column, remappedBackground);
+        changedCells += 1;
+      }
+    }
+  }
+  return changedCells;
+}
+
+void _addMonkeySshCopilotThemeRgbAliases(
+  Map<int, int> colorMap, {
+  required TerminalThemeData previousTheme,
+  required TerminalThemeData nextTheme,
+}) {
+  final ambiguousSourceColors = <int>{};
+  if (previousTheme.id == 'monkeyssh-light' &&
+      nextTheme.id == 'monkeyssh-dark') {
+    _addRgbAlias(colorMap, ambiguousSourceColors, 0x243E3B, 0xBECDCB);
+    _addRgbAlias(colorMap, ambiguousSourceColors, 0x516764, 0x8D9C9C);
+  } else if (previousTheme.id == 'monkeyssh-dark' &&
+      nextTheme.id == 'monkeyssh-light') {
+    _addRgbAlias(colorMap, ambiguousSourceColors, 0xBECDCB, 0x243E3B);
+    _addRgbAlias(colorMap, ambiguousSourceColors, 0x8D9C9C, 0x516764);
+  }
+}
+
+void _addRgbAlias(
+  Map<int, int> colorMap,
+  Set<int> ambiguousSourceColors,
+  int previousRgb,
+  int nextRgb,
+) {
+  final previousCellColor = CellColor.rgb | previousRgb;
+  final nextCellColor = CellColor.rgb | nextRgb;
+  if (previousCellColor == nextCellColor ||
+      ambiguousSourceColors.contains(previousCellColor)) {
+    return;
+  }
+  final existingCellColor = colorMap[previousCellColor];
+  if (existingCellColor == null) {
+    colorMap[previousCellColor] = nextCellColor;
+    return;
+  }
+  if (existingCellColor != nextCellColor) {
+    colorMap.remove(previousCellColor);
+    ambiguousSourceColors.add(previousCellColor);
+  }
+}
+
+bool _isRgbCellColor(int cellColor) =>
+    cellColor & CellColor.typeMask == CellColor.rgb;
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting
@@ -2597,6 +2757,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   int? _tmuxStateConnectionId;
+  int? _pendingTmuxDetectionConnectionId;
+  AgentLaunchTool? _tmuxForegroundAgentTool;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -2755,6 +2917,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   _TmuxTerminalThemeRefreshRequest? _pendingTmuxThemeRefreshRequest;
   Timer? _tmuxWindowThemeRefreshDebounceTimer;
   _TmuxTerminalThemeRefreshRequest? _pendingTmuxWindowThemeRefreshRequest;
+  TerminalThemeRgbColorAliases? _activeTerminalThemeRgbColorAliases;
+  bool _isApplyingTerminalThemeRgbColorAliases = false;
   bool _terminalThemeDependencyReloadQueued = false;
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
@@ -3090,6 +3254,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _onTerminalStateChanged() {
     _nativeSelectionSnapshotCache = null;
     _terminalContentGeneration++;
+    _applyActiveTerminalThemeRgbColorAliases(
+      reason: 'terminal_output',
+      notifyTerminal: false,
+    );
     _syncShellCompletionOptimisticSnapshotWithTerminal();
     if (_isNativeSelectionMode && !_hasExpandedNativeOverlaySelection) {
       _refreshNativeOverlayText(preserveSelection: true);
@@ -3233,6 +3401,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final didThemeChange =
         previousTheme != null &&
         !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
+    if (didThemeChange) {
+      _configureTerminalThemeRgbColorAliases(
+        previousTheme,
+        theme,
+        targetSession,
+        reason: reason,
+      );
+    }
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
       targetSession,
     );
@@ -3270,6 +3446,90 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (willRefresh) {
       _refreshTerminalThemeForTui(theme, targetSession, reason: reason);
       return;
+    }
+  }
+
+  void _configureTerminalThemeRgbColorAliases(
+    TerminalThemeData previousTheme,
+    TerminalThemeData nextTheme,
+    SshSession session, {
+    required String reason,
+  }) {
+    final shouldRetain = _shouldRetainTerminalThemeRgbColorAliases(session);
+    final shouldAlias = _shouldAliasTerminalThemeRgbColors(session);
+    _activeTerminalThemeRgbColorAliases = shouldRetain
+        ? buildTerminalThemeRgbColorAliases(
+            previousTheme: previousTheme,
+            nextTheme: nextTheme,
+          )
+        : null;
+    if (!shouldAlias) {
+      return;
+    }
+
+    _applyActiveTerminalThemeRgbColorAliases(
+      reason: reason,
+      notifyTerminal: true,
+    );
+  }
+
+  bool _shouldRetainTerminalThemeRgbColorAliases(SshSession session) =>
+      _shouldAliasTerminalThemeRgbColors(session) ||
+      _pendingTmuxDetectionConnectionId == session.connectionId;
+
+  bool _shouldAliasTerminalThemeRgbColors(SshSession session) {
+    if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
+      return false;
+    }
+    final activeTool =
+        _tmuxForegroundAgentTool ??
+        agentLaunchToolForCommandName(_tmuxCurrentCommand) ??
+        agentLaunchToolForCommandText(_tmuxCurrentCommand);
+    return activeTool == AgentLaunchTool.copilotCli;
+  }
+
+  void _applyActiveTerminalThemeRgbColorAliases({
+    required String reason,
+    required bool notifyTerminal,
+  }) {
+    final aliases = _activeTerminalThemeRgbColorAliases;
+    if (aliases == null || _isApplyingTerminalThemeRgbColorAliases) {
+      return;
+    }
+    final connectionId = _connectionId;
+    final session = connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(connectionId);
+    if (session == null || !_shouldAliasTerminalThemeRgbColors(session)) {
+      if (session == null ||
+          !_shouldRetainTerminalThemeRgbColorAliases(session)) {
+        _activeTerminalThemeRgbColorAliases = null;
+      }
+      return;
+    }
+
+    _isApplyingTerminalThemeRgbColorAliases = true;
+    late final int changedCells;
+    try {
+      changedCells = remapTerminalThemeRgbColorsInBuffer(_terminal, aliases);
+    } finally {
+      _isApplyingTerminalThemeRgbColorAliases = false;
+    }
+    if (changedCells == 0) {
+      return;
+    }
+
+    DiagnosticsLogService.instance.debug(
+      'terminal.theme',
+      'rgb_aliases_applied',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'changedCells': changedCells,
+      },
+    );
+    if (notifyTerminal) {
+      _terminal.notifyListeners();
     }
   }
 
@@ -4695,6 +4955,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (freshCommand != null && freshCommand.isNotEmpty) {
       _tmuxCurrentCommand = freshCommand;
+      _tmuxForegroundAgentTool =
+          agentLaunchToolForCommandName(freshCommand) ??
+          agentLaunchToolForCommandText(freshCommand);
     }
 
     final tmuxCommand = (freshCommand?.isNotEmpty ?? false)
@@ -5741,6 +6004,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isTmuxActive = false;
     _tmuxSessionName = null;
     _tmuxStateConnectionId = null;
+    _pendingTmuxDetectionConnectionId = null;
+    _tmuxForegroundAgentTool = null;
+    _activeTerminalThemeRgbColorAliases = null;
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
@@ -5856,6 +6122,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
     final detectionGeneration = ++_tmuxDetectionGeneration;
+    _pendingTmuxDetectionConnectionId = session.connectionId;
     final host = _host;
     final preferredSessionName = _preferredTmuxSessionName(host);
     final tmuxStateBelongsToSession =
@@ -5906,6 +6173,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
           _tmuxWorkingDirectory = preferredWorkingDirectory;
           _tmuxCurrentCommand = null;
+          _tmuxForegroundAgentTool = null;
           _shellCompletionTmuxContextRefreshedAt = null;
         } else if (!mayPreserveExistingTmuxState) {
           _stopTmuxForegroundVerification();
@@ -5915,6 +6183,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
           _tmuxCurrentCommand = null;
+          _tmuxForegroundAgentTool = null;
+          _activeTerminalThemeRgbColorAliases = null;
           _shellCompletionTmuxContextRefreshedAt = null;
         }
       });
@@ -6038,11 +6308,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         var tmuxLaunchCwd = preferredWorkingDirectory;
         var tmuxCwd = preferredWorkingDirectory;
         String? tmuxCurrentCommand;
+        AgentLaunchTool? tmuxForegroundAgentTool;
         try {
           final activeWindow = windows.where((w) => w.isActive).firstOrNull;
           tmuxLaunchCwd ??= activeWindow?.currentPath;
           tmuxCwd ??= activeWindow?.currentPath;
           tmuxCurrentCommand = activeWindow?.currentCommand;
+          tmuxForegroundAgentTool = activeWindow?.foregroundAgentTool;
         } on Object {
           // Non-critical — path resolution will fall back to OSC 7.
         }
@@ -6060,10 +6332,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
           _tmuxCurrentCommand = tmuxCurrentCommand;
+          _tmuxForegroundAgentTool = tmuxForegroundAgentTool;
           _connectionOpenedWorkingDirectory ??= normalizeSftpAbsolutePath(
             tmuxLaunchCwd,
           );
         });
+        _applyActiveTerminalThemeRgbColorAliases(
+          reason: 'tmux_detection_success',
+          notifyTerminal: true,
+        );
         _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
@@ -6161,6 +6438,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(_clearTmuxState);
       }
       return false;
+    } finally {
+      if (detectionGeneration == _tmuxDetectionGeneration &&
+          _pendingTmuxDetectionConnectionId == session.connectionId) {
+        _pendingTmuxDetectionConnectionId = null;
+      }
     }
   }
 
@@ -6539,6 +6821,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // OSC 7 or the next tmux query.
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
+    _tmuxForegroundAgentTool = null;
+    _activeTerminalThemeRgbColorAliases = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     await _reattachTmuxIfNeeded(
       session,
@@ -6595,6 +6879,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
+    _tmuxForegroundAgentTool = null;
+    _activeTerminalThemeRgbColorAliases = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     await _reattachTmuxIfNeeded(session, sessionName);
     _scheduleTerminalSizeRefresh();
@@ -6619,6 +6905,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _host?.tmuxExtraFlags,
         );
     _tmuxCurrentCommand = null;
+    _tmuxForegroundAgentTool = null;
+    _activeTerminalThemeRgbColorAliases = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
@@ -8514,7 +8802,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _tmuxCurrentCommand = paneCommand == null || paneCommand.isEmpty
             ? null
             : paneCommand;
+        _tmuxForegroundAgentTool =
+            agentLaunchToolForCommandName(_tmuxCurrentCommand) ??
+            agentLaunchToolForCommandText(_tmuxCurrentCommand);
       });
+      _applyActiveTerminalThemeRgbColorAliases(
+        reason: 'tmux_pane_context',
+        notifyTerminal: true,
+      );
     }
     return paneDirectory;
   }
