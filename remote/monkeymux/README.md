@@ -15,5 +15,10 @@ windows inherit the environment from the shell that launched `attach` exactly,
 so profile-managed values such as `PATH`, `TERM`, and tool-specific variables
 remain user-owned instead of being synthesized by MonkeyMux.
 
+Window switching and reconnect repaint from a bounded raw byte history for the
+selected window. MonkeyMux still does not parse terminal state; the history is
+only a best-effort direct replay so the foreground terminal visibly moves to
+the selected PTY.
+
 The initial target matrix is POSIX-first: Linux and macOS on amd64 and arm64.
 Windows support is a later ConPTY-backed follow-up.
