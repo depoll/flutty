@@ -285,32 +285,55 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     List<TmuxWindow> previousWindows,
     List<TmuxWindow> nextWindows,
   ) {
-    final previousActiveWindow = previousWindows
-        .where((window) => window.isActive)
-        .firstOrNull;
-    final nextActiveWindow = nextWindows
-        .where((window) => window.isActive)
-        .firstOrNull;
-    if (previousActiveWindow == null || nextActiveWindow == null) {
-      return previousActiveWindow != nextActiveWindow;
-    }
-    if (_tmuxWindowRefreshIdentity(previousActiveWindow) !=
-        _tmuxWindowRefreshIdentity(nextActiveWindow)) {
+    if (previousWindows.length != nextWindows.length) {
       return true;
     }
-    return previousActiveWindow.panePid != nextActiveWindow.panePid ||
-        previousActiveWindow.foregroundAgentTool !=
-            nextActiveWindow.foregroundAgentTool ||
-        previousActiveWindow.currentCommand !=
-            nextActiveWindow.currentCommand ||
-        previousActiveWindow.paneTitle != nextActiveWindow.paneTitle ||
-        previousActiveWindow.name != nextActiveWindow.name ||
-        previousActiveWindow.paneStartCommand !=
-            nextActiveWindow.paneStartCommand;
+    for (final nextWindow in nextWindows) {
+      final previousWindow = previousWindows
+          .where(
+            (window) => _isSameTmuxWindowForThemeRefresh(window, nextWindow),
+          )
+          .firstOrNull;
+      if (previousWindow == null ||
+          _tmuxWindowRefreshIdentity(previousWindow) !=
+              _tmuxWindowRefreshIdentity(nextWindow)) {
+        return true;
+      }
+    }
+    return false;
   }
 
-  Object _tmuxWindowRefreshIdentity(TmuxWindow window) =>
-      window.id ?? (index: window.index);
+  bool _isSameTmuxWindowForThemeRefresh(
+    TmuxWindow previousWindow,
+    TmuxWindow nextWindow,
+  ) {
+    final nextId = nextWindow.id;
+    if (nextId != null) {
+      return previousWindow.id == nextId;
+    }
+    return previousWindow.index == nextWindow.index;
+  }
+
+  ({
+    String? currentCommand,
+    AgentLaunchTool? foregroundAgentTool,
+    String? id,
+    int index,
+    bool isActive,
+    String name,
+    int? panePid,
+    String? paneStartCommand,
+  })
+  _tmuxWindowRefreshIdentity(TmuxWindow window) => (
+    currentCommand: window.currentCommand,
+    foregroundAgentTool: window.foregroundAgentTool,
+    id: window.id,
+    index: window.index,
+    isActive: window.isActive,
+    name: window.name,
+    panePid: window.panePid,
+    paneStartCommand: window.paneStartCommand,
+  );
 
   void _applyWindows(List<TmuxWindow> windows) {
     // Detect new alerts that weren't in the previous window list.

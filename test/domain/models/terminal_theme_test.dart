@@ -299,12 +299,19 @@ void main() {
         const theme = TerminalThemes.githubLightDefault;
 
         final reports = buildTerminalThemeRefreshReports(theme);
+        final reportList = buildTerminalThemeRefreshReportList(theme);
 
+        expect(reports, reportList.join());
+        expect(reportList, hasLength(18));
         expect(reports, contains('\x1b]10;rgb:1f1f/2323/2828\x1b\\'));
         expect(reports, contains('\x1b]11;rgb:ffff/ffff/ffff\x1b\\'));
         expect(reports, contains('\x1b]4;0;rgb:2424/2929/2f2f\x1b\\'));
         expect(reports, contains('\x1b]4;8;rgb:5757/6060/6a6a\x1b\\'));
         expect(reports, contains('\x1b]4;15;rgb:8c8c/9595/9f9f\x1b\\'));
+        expect(
+          reportList.where((report) => report.startsWith('\x1b]4;')),
+          hasLength(16),
+        );
         expect(reports, isNot(contains('\x1b]12;')));
         expect(reports, isNot(contains('\x1b]17;')));
         expect(reports, isNot(contains('\x1b]19;')));

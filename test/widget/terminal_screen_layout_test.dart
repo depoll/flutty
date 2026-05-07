@@ -307,6 +307,8 @@ void main() {
           Duration(milliseconds: 350),
           Duration(milliseconds: 700),
           Duration(milliseconds: 1400),
+          Duration(milliseconds: 2800),
+          Duration(milliseconds: 5600),
         ]);
         expect(
           resolveTmuxDetectionRetrySchedule(skipDelay: true),

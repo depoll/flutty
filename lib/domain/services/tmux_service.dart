@@ -319,15 +319,24 @@ class TmuxService {
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .firstOrNull;
+    final attachedSessionName =
+        sessionName ??
+        await _directCurrentSessionName(
+          session,
+          priority: priority,
+          extraFlags: extraFlags,
+        );
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'foreground_session_complete',
       fields: {
         'connectionId': session.connectionId,
-        'active': sessionName != null,
+        'active': attachedSessionName != null,
+        'usedDirectFallback':
+            sessionName == null && attachedSessionName != null,
       },
     );
-    return sessionName;
+    return attachedSessionName;
   }
 
   /// Returns `true` if tmux is installed on the remote host.
@@ -568,14 +577,33 @@ class TmuxService {
       return foregroundName;
     }
 
+    final directName = await _directCurrentSessionName(
+      session,
+      extraFlags: extraFlags,
+    );
+    if (directName != null) return directName;
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'current_session_unavailable',
+      fields: {'connectionId': session.connectionId},
+    );
+    return null;
+  }
+
+  Future<String?> _directCurrentSessionName(
+    SshSession session, {
+    String? extraFlags,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
     try {
-      // Direct approach — works if the exec channel is inside tmux.
+      // Direct approach — works if the exec channel is itself inside tmux.
       final output = await _exec(
         session,
         _tmuxCommand(
           "display-message -p '#{session_name}'",
           extraFlags: extraFlags,
         ),
+        priority: priority,
       );
       final name = output.trim();
       if (name.isNotEmpty) {
@@ -595,13 +623,7 @@ class TmuxService {
           'errorType': error.runtimeType,
         },
       );
-      // Fall through to an unavailable result.
     }
-    DiagnosticsLogService.instance.info(
-      'tmux.query',
-      'current_session_unavailable',
-      fields: {'connectionId': session.connectionId},
-    );
     return null;
   }
 
@@ -2402,8 +2424,8 @@ String buildTmuxRefreshForegroundClientsCommand(
       'done';
 }
 
-/// Builds a command that updates tmux's pane palette, notifies TUI panes, and
-/// redraws foreground clients.
+/// Builds a command that updates tmux's pane palette, notifies theme-aware TUI
+/// panes, and redraws foreground clients.
 @visibleForTesting
 String buildTmuxRefreshTerminalThemeCommand(
   String sessionName,
@@ -2420,8 +2442,11 @@ String buildTmuxRefreshTerminalThemeCommand(
     theme,
     extraFlags: extraFlags,
   );
-  final provideClientThemeReports = _buildTmuxProvideClientThemeReportsCommand(
+  final loadThemeReportClients = _buildTmuxLoadThemeReportClientsCommand(
     sessionName,
+    extraFlags: extraFlags,
+  );
+  final provideClientThemeReports = _buildTmuxProvideClientThemeReportsCommand(
     theme,
     extraFlags: extraFlags,
   );
@@ -2439,35 +2464,64 @@ String buildTmuxRefreshTerminalThemeCommand(
 
   return r'SEP=$(printf "\037"); '
       '$enableFocusEvents 2>/dev/null || true; '
-      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{pane_title}" '
+      '$loadThemeReportClients '
+      'flutty_set_agent_tool_from_command_name() { '
+      r'case "${1##*/}" in '
+      'claude|claude-*) agent_tool=claude ;; '
+      'copilot|copilot-*) agent_tool=copilot ;; '
+      'codex|codex-*) agent_tool=codex ;; '
+      'opencode|opencode-*) agent_tool=opencode ;; '
+      'gemini|gemini-*) agent_tool=gemini ;; '
+      'esac; }; '
+      'flutty_set_agent_tool_from_exact_name() { '
+      r'case "${1##*/}" in '
+      r'claude|Claude|Claude\ Code|claude\ code) agent_tool=claude ;; '
+      r'copilot|Copilot|Copilot\ CLI|copilot\ cli|GitHub\ Copilot|github\ copilot) agent_tool=copilot ;; '
+      'codex|Codex) agent_tool=codex ;; '
+      r'opencode|OpenCode|Open\ Code|open\ code) agent_tool=opencode ;; '
+      r'gemini|Gemini|Gemini\ CLI|gemini\ cli) agent_tool=gemini ;; '
+      'esac; }; '
+      'flutty_set_agent_tool_from_command_text() { '
+      r'command_text=$1; '
+      'while :; do '
+      r'case "$command_text" in '
+      r'cd\ *\&\&\ *) command_text=${command_text#*&& } ;; '
+      r'[A-Za-z_]*=*\ *) command_text=${command_text#* } ;; '
+      '*) break ;; '
+      'esac; '
+      'done; '
+      r'first_token=${command_text%% *}; '
+      r'flutty_set_agent_tool_from_command_name "$first_token"; '
+      '}; '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{window_name}$sep#{pane_title}$sep#{pane_start_command}$sep#{@flutty_agent_tool}" '
       '2>/dev/null | '
-      r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title; do '
+      r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_title pane_start_command agent_metadata; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       '$provideClientThemeReports '
-      'injected=0; foreground_tui=0; '
-      r'case "${pane_command##*/}" in '
-      "''|sh|bash|zsh|fish|nu|pwsh|powershell|cmd|cmd.exe|tmux|ssh|mosh|login) foreground_tui=0 ;; "
-      '*) foreground_tui=1 ;; '
-      'esac; '
-      r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
+      'agent_tool=; current_agent_tool=; injected=0; '
+      r'flutty_set_agent_tool_from_command_name "$pane_command"; '
+      r'current_agent_tool=$agent_tool; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$agent_metadata"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$window_name"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_exact_name "$pane_title"; '
+      r'[ -n "$agent_tool" ] || flutty_set_agent_tool_from_command_text "$pane_start_command"; '
+      r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then '
+      r'case "$agent_tool" in '
+      'copilot) '
       'injected=1; '
-      r'case "${pane_command##*/}" in '
-      'codex|codex-*|copilot|copilot-*) '
+      '( ${_buildTmuxSendPaneThemeModeReportCommand(theme, extraFlags: extraFlags)} '
+      '2>/dev/null || true; sleep 0.05; '
+      '${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
+      'codex) '
+      'injected=1; '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      'opencode|opencode-*) '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
-      '*) '
-      r'case "$pane_title" in '
-      '*Copilot*|*copilot*) '
-      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      'opencode|claude|gemini) '
+      'injected=1; '
+      '( ${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      '*OpenCode*|*opencode*) '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
-      '*) '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & ;; '
-      'esac ;; '
       'esac; '
       'fi; '
       r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
@@ -2553,25 +2607,38 @@ String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
       '$optionName ${TmuxService._shellQuote(hexColor)}';
 }
 
-String _buildTmuxProvideClientThemeReportsCommand(
-  String sessionName,
-  TerminalThemeData theme, {
+String _buildTmuxLoadThemeReportClientsCommand(
+  String sessionName, {
   String? extraFlags,
 }) {
-  final reports = [
-    buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
-    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
-  ].whereType<String>().toList(growable: false);
-  if (reports.isEmpty) {
-    return '';
-  }
-
   const sep = r'${SEP}';
   final listClients = TmuxService._tmuxCommand(
     'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
+  return r'flutty_theme_report_clients=$( '
+      '$listClients"#{client_control_mode}$sep#{client_name}" 2>/dev/null | '
+      r'while IFS="$SEP" read -r control client; do '
+      r'[ "$control" = 0 ] || continue; '
+      r'[ -n "$client" ] || continue; '
+      r'printf "%s\n" "$client"; '
+      'done '
+      ');';
+}
+
+String _buildTmuxProvideClientThemeReportsCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) {
+  final reports = [
+    buildTerminalThemeModeReport(isDark: theme.isDark),
+    buildTerminalThemeRefreshReports(theme),
+  ].where((report) => report.isNotEmpty).toList(growable: false);
+  if (reports.isEmpty) {
+    return '';
+  }
+
   final refreshReports = reports
       .map((report) {
         final reportCommand = TmuxService._tmuxCommand(
@@ -2584,63 +2651,11 @@ String _buildTmuxProvideClientThemeReportsCommand(
       })
       .join(' ');
 
-  return '$listClients"#{client_name}$sep#{client_control_mode}" '
-      '2>/dev/null | '
-      r'while IFS="$SEP" read -r client _control; do '
+  return r'printf "%s\n" "$flutty_theme_report_clients" | '
+      'while IFS= read -r client; do '
       r'[ -n "$client" ] || continue; '
       '$refreshReports '
       'done;';
-}
-
-String _buildTmuxSendPaneTerminalThemeCommand(
-  TerminalThemeData theme, {
-  String? extraFlags,
-  bool forceFocusTransition = false,
-  bool includeLateFocusTransition = false,
-}) {
-  final themeModeReport = buildTerminalThemeModeReport(isDark: theme.isDark);
-  final defaultColorReports = buildTerminalThemeDefaultColorReports(theme);
-  // Do not inject unsolicited OSC 4 palette replies into the pane. Apps such
-  // as Codex can treat palette replies they did not request as user input; the
-  // tmux pane palette update above ensures any subsequent OSC 4 query sees
-  // fresh colors without writing palette bytes to the foreground app.
-  //
-  // OSC 10/11 default color replies are intentionally sent after the private
-  // mode report. That gives OpenTUI/OpenCode a complete theme-mode plus default
-  // color cycle even when tmux consumes the outer OSC responses. Codex/Copilot
-  // panes are routed to the focus-only refresh above because unsolicited
-  // mode/color reports can reset or appear in their composer input while the
-  // user is typing.
-  final focusCommand = forceFocusTransition
-      ? _buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)
-      : _buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags);
-  final lateFocusCommand = includeLateFocusTransition
-      ? ' sleep 0.08; '
-            '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
-            '2>/dev/null || true;'
-      : '';
-  final modeCommand = TmuxService._tmuxCommand(
-    r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments(themeModeReport)}',
-    extraFlags: extraFlags,
-    forceUtf8: true,
-  );
-  final directColorCommand = TmuxService._tmuxCommand(
-    r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments(defaultColorReports)}',
-    extraFlags: extraFlags,
-    forceUtf8: true,
-  );
-  return '$focusCommand 2>/dev/null || true; '
-      'sleep 0.25; '
-      '$modeCommand 2>/dev/null || true;'
-      ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;'
-      ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;'
-      ' sleep 0.08; '
-      '$directColorCommand 2>/dev/null || true;'
-      '$lateFocusCommand';
 }
 
 String _buildTmuxSendPaneFocusRefreshCommand({String? extraFlags}) =>
@@ -2651,15 +2666,26 @@ String _buildTmuxSendPaneFocusTransitionCommand({String? extraFlags}) =>
     '2>/dev/null || true; sleep 0.12; '
     '${_buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags)}';
 
+String _buildTmuxSendPaneThemeModeReportCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) => _buildTmuxSendPaneReportCommand(
+  buildTerminalThemeModeReport(isDark: theme.isDark),
+  extraFlags: extraFlags,
+);
+
 String _buildTmuxSendPaneFocusReportCommand(
   String report, {
   String? extraFlags,
-}) => TmuxService._tmuxCommand(
-  r'send-keys -t "$pane" -H '
-  '${_formatTmuxSendKeysHexArguments(report)}',
-  extraFlags: extraFlags,
-  forceUtf8: true,
-);
+}) => _buildTmuxSendPaneReportCommand(report, extraFlags: extraFlags);
+
+String _buildTmuxSendPaneReportCommand(String report, {String? extraFlags}) =>
+    TmuxService._tmuxCommand(
+      r'send-keys -t "$pane" -H '
+      '${_formatTmuxSendKeysHexArguments(report)}',
+      extraFlags: extraFlags,
+      forceUtf8: true,
+    );
 
 String _formatTmuxSendKeysHexArguments(String input) =>
     input.codeUnits.map(_formatTmuxSendKeysHexArgument).join(' ');
