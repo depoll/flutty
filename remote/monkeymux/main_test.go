@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,9 +151,62 @@ func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	}
 }
 
+func TestPromptForServerUpdateDefaultsToKeepingExistingSession(t *testing.T) {
+	var output bytes.Buffer
+	status := runningServerStatus{version: "0.1.0"}
+
+	if promptForServerUpdate(strings.NewReader("\n"), &output, "main", status) {
+		t.Fatal("empty prompt response updated server")
+	}
+	if got := output.String(); !strings.Contains(got, "update skipped") {
+		t.Fatalf("prompt output = %q, want skipped message", got)
+	}
+}
+
+func TestPromptForServerUpdateAcceptsYes(t *testing.T) {
+	var output bytes.Buffer
+	status := runningServerStatus{version: "0.1.0"}
+
+	if !promptForServerUpdate(strings.NewReader("yes\n"), &output, "main", status) {
+		t.Fatal("yes prompt response did not update server")
+	}
+}
+
+func TestPromptForServerUpdateSkipsOnReadError(t *testing.T) {
+	var output bytes.Buffer
+	status := runningServerStatus{version: "0.1.0"}
+
+	if promptForServerUpdate(errReader{}, &output, "main", status) {
+		t.Fatal("failed prompt read updated server")
+	}
+	if got := output.String(); !strings.Contains(got, "update skipped") {
+		t.Fatalf("prompt output = %q, want skipped message", got)
+	}
+}
+
+func TestRunningServerStatusSupportsCapability(t *testing.T) {
+	status := runningServerStatus{
+		version:      "0.1.0",
+		capabilities: []string{"attach", "shutdown"},
+	}
+
+	if !status.supportsCapability("shutdown") {
+		t.Fatal("expected shutdown capability")
+	}
+	if status.supportsCapability("missing") {
+		t.Fatal("unexpected missing capability")
+	}
+}
+
 type recordingConn struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 func (c *recordingConn) Read([]byte) (int, error) {

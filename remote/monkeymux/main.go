@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion        = "0.1.0"
+	monkeyMuxVersion        = "0.1.1"
 	defaultColumns          = 80
 	defaultRows             = 24
 	socketTimeout           = 2 * time.Second
@@ -47,6 +47,7 @@ var capabilities = []string{
 	"active-context",
 	"inject-input",
 	"focus-hint",
+	"shutdown",
 }
 
 type controlMessage struct {
@@ -102,6 +103,7 @@ type muxServer struct {
 	windows    []*muxWindow
 	activeID   string
 	nextID     int
+	listener   net.Listener
 	attachConn net.Conn
 	attachMu   sync.Mutex
 	controls   map[*controlClient]struct{}
@@ -280,9 +282,30 @@ func gcCommand() {
 }
 
 func ensureServer(session string, cwd string) error {
-	if conn, err := dialSession(session); err == nil {
-		_ = conn.Close()
-		return nil
+	if status, err := queryRunningServerStatus(session); err == nil {
+		if status.version == monkeyMuxVersion {
+			return nil
+		}
+		if !promptForServerUpdate(os.Stdin, os.Stderr, session, status) {
+			return nil
+		}
+		if !status.supportsCapability("shutdown") {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: running session cannot be updated safely; continuing with helper %s\r\n",
+				status.displayVersion(),
+			)
+			return nil
+		}
+		requestServerShutdown(session)
+		if !waitForServerExit(session, 2*time.Second) {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: running session did not exit; continuing with helper %s\r\n",
+				status.displayVersion(),
+			)
+			return nil
+		}
 	}
 
 	socket, err := socketPath(session)
@@ -341,6 +364,7 @@ func serveSession(session string, cwd string) error {
 	_ = os.Chmod(socket, 0o600)
 
 	server := newMuxServer(session)
+	server.listener = listener
 	if _, err := server.createWindow(createWindowOptions{cwd: cwd}); err != nil {
 		return err
 	}
@@ -741,6 +765,9 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
 		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
+	case "shutdown":
+		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
+		go s.close()
 	default:
 		client.sendError(request, fmt.Errorf("unsupported command %q", request.Type))
 	}
@@ -1018,6 +1045,8 @@ func (s *muxServer) close() {
 		return
 	}
 	s.closed = true
+	listener := s.listener
+	s.listener = nil
 	attach := s.attachConn
 	s.attachConn = nil
 	controls := make([]*controlClient, 0, len(s.controls))
@@ -1027,6 +1056,9 @@ func (s *muxServer) close() {
 	windows := append([]*muxWindow(nil), s.windows...)
 	s.mu.Unlock()
 
+	if listener != nil {
+		_ = listener.Close()
+	}
 	if attach != nil {
 		_ = attach.Close()
 	}
@@ -1047,6 +1079,114 @@ func (s *muxServer) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
+}
+
+type runningServerStatus struct {
+	version      string
+	capabilities []string
+}
+
+func (s runningServerStatus) displayVersion() string {
+	if strings.TrimSpace(s.version) == "" {
+		return "unknown"
+	}
+	return s.version
+}
+
+func (s runningServerStatus) supportsCapability(capability string) bool {
+	for _, value := range s.capabilities {
+		if value == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func promptForServerUpdate(
+	reader io.Reader,
+	writer io.Writer,
+	session string,
+	status runningServerStatus,
+) bool {
+	fmt.Fprintf(
+		writer,
+		"\r\nMonkeyMux session %q is running with helper %s; this app includes helper %s.\r\n"+
+			"Update now? This will close existing MonkeyMux windows for this session. [y/N] ",
+		session,
+		status.displayVersion(),
+		monkeyMuxVersion,
+	)
+	answer, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil {
+		fmt.Fprint(writer, "\r\nmonkeymux: update skipped; continuing existing session.\r\n")
+		return false
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer == "y" || answer == "yes" {
+		return true
+	}
+	fmt.Fprint(writer, "monkeymux: update skipped; continuing existing session.\r\n")
+	return false
+}
+
+func queryRunningServerStatus(session string) (runningServerStatus, error) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return runningServerStatus{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return runningServerStatus{}, err
+	}
+	var hello controlResponse
+	if err := dec.Decode(&hello); err != nil {
+		return runningServerStatus{}, err
+	}
+	return runningServerStatus{
+		version:      hello.Version,
+		capabilities: hello.Capabilities,
+	}, nil
+}
+
+func requestServerShutdown(session string) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return
+	}
+	var ignored controlResponse
+	if err := dec.Decode(&ignored); err != nil {
+		return
+	}
+	_ = enc.Encode(controlMessage{
+		ID:      strconv.FormatInt(time.Now().UnixNano(), 10),
+		Type:    "shutdown",
+		Session: session,
+	})
+}
+
+func waitForServerExit(session string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := dialSession(session)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 func defaultShellPath() string {
