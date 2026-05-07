@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion        = "0.1.1"
+	monkeyMuxVersion        = "0.1.2"
 	defaultColumns          = 80
 	defaultRows             = 24
 	socketTimeout           = 2 * time.Second
@@ -289,22 +289,23 @@ func ensureServer(session string, cwd string) error {
 		if !promptForServerUpdate(os.Stdin, os.Stderr, session, status) {
 			return nil
 		}
-		if !status.supportsCapability("shutdown") {
+		if status.supportsCapability("shutdown") {
+			requestServerShutdown(session)
+			if !waitForServerExit(session, 2*time.Second) {
+				fmt.Fprintf(
+					os.Stderr,
+					"monkeymux: running session did not exit; continuing with helper %s\r\n",
+					status.displayVersion(),
+				)
+				return nil
+			}
+		} else {
 			fmt.Fprintf(
 				os.Stderr,
-				"monkeymux: running session cannot be updated safely; continuing with helper %s\r\n",
+				"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
 				status.displayVersion(),
+				monkeyMuxVersion,
 			)
-			return nil
-		}
-		requestServerShutdown(session)
-		if !waitForServerExit(session, 2*time.Second) {
-			fmt.Fprintf(
-				os.Stderr,
-				"monkeymux: running session did not exit; continuing with helper %s\r\n",
-				status.displayVersion(),
-			)
-			return nil
 		}
 	}
 
@@ -1110,12 +1111,22 @@ func promptForServerUpdate(
 ) bool {
 	fmt.Fprintf(
 		writer,
-		"\r\nMonkeyMux session %q is running with helper %s; this app includes helper %s.\r\n"+
-			"Update now? This will close existing MonkeyMux windows for this session. [y/N] ",
+		"\r\nMonkeyMux session %q is running with helper %s; this app includes helper %s.\r\n",
 		session,
 		status.displayVersion(),
 		monkeyMuxVersion,
 	)
+	if status.supportsCapability("shutdown") {
+		fmt.Fprint(
+			writer,
+			"Update now? This will close existing MonkeyMux windows for this session. [y/N] ",
+		)
+	} else {
+		fmt.Fprint(
+			writer,
+			"Update now? This old helper cannot close itself; updating may abandon existing MonkeyMux windows. [y/N] ",
+		)
+	}
 	answer, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil {
 		fmt.Fprint(writer, "\r\nmonkeymux: update skipped; continuing existing session.\r\n")
