@@ -26,11 +26,14 @@ import (
 )
 
 const (
-	monkeyMuxVersion = "0.1.0"
-	defaultColumns   = 80
-	defaultRows      = 24
-	socketTimeout    = 2 * time.Second
+	monkeyMuxVersion        = "0.1.0"
+	defaultColumns          = 80
+	defaultRows             = 24
+	socketTimeout           = 2 * time.Second
+	windowHistoryLimitBytes = 1024 * 1024
 )
+
+const activeWindowReplayPrefix = "\x1b[?1049l\x1b[?25h\x1b[0m\x1b[H\x1b[2J"
 
 var capabilities = []string{
 	"attach",
@@ -100,6 +103,7 @@ type muxServer struct {
 	activeID   string
 	nextID     int
 	attachConn net.Conn
+	attachMu   sync.Mutex
 	controls   map[*controlClient]struct{}
 	closed     bool
 }
@@ -112,6 +116,7 @@ type muxWindow struct {
 	command      string
 	pty          *os.File
 	cmd          *exec.Cmd
+	history      []byte
 	lastActivity time.Time
 	alert        bool
 	closed       bool
@@ -480,6 +485,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		return
 	}
 	window.lastActivity = time.Now()
+	window.appendHistoryLocked(chunk)
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
@@ -491,13 +497,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	s.mu.Unlock()
 
 	if shouldWrite {
-		if _, err := attach.Write(chunk); err != nil {
-			s.mu.Lock()
-			if s.attachConn == attach {
-				s.attachConn = nil
-			}
-			s.mu.Unlock()
-		}
+		s.writeAttach(attach, chunk)
 	}
 
 	s.broadcast(controlResponse{
@@ -566,6 +566,7 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 }
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
+	var replay []byte
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -576,7 +577,9 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.height = hello.Height
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
+	replay = s.activeReplayLocked()
 	s.mu.Unlock()
+	s.writeAttach(conn, replay)
 	s.broadcastWindowList("active_window_changed")
 
 	defer func() {
@@ -832,6 +835,8 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 }
 
 func (s *muxServer) selectWindow(windowID string) error {
+	var attach net.Conn
+	var replay []byte
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
@@ -841,7 +846,10 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.activeID = windowID
 	window.alert = false
 	s.resizeActiveLocked(s.width, s.height)
+	attach = s.attachConn
+	replay = s.replayBytesLocked(window)
 	s.mu.Unlock()
+	s.writeAttach(attach, replay)
 	s.broadcastWindowList("active_window_changed")
 	return nil
 }
@@ -879,13 +887,44 @@ func (s *muxServer) resize(width int, height int) {
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
-	if window == nil || window.closed {
+	if window == nil || window.closed || window.pty == nil {
 		return
 	}
 	_ = pty.Setsize(window.pty, &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
+}
+
+func (s *muxServer) activeReplayLocked() []byte {
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		return nil
+	}
+	return s.replayBytesLocked(window)
+}
+
+func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	replay := make([]byte, 0, len(activeWindowReplayPrefix)+len(window.history))
+	replay = append(replay, activeWindowReplayPrefix...)
+	replay = append(replay, window.history...)
+	return replay
+}
+
+func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
+	if conn == nil || len(data) == 0 {
+		return
+	}
+	s.attachMu.Lock()
+	_, err := conn.Write(data)
+	s.attachMu.Unlock()
+	if err != nil {
+		s.mu.Lock()
+		if s.attachConn == conn {
+			s.attachConn = nil
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *muxServer) writeActive(data []byte) {
@@ -933,6 +972,24 @@ func (s *muxServer) windowByIDLocked(windowID string) *muxWindow {
 		}
 	}
 	return nil
+}
+
+func (w *muxWindow) appendHistoryLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	if len(chunk) >= windowHistoryLimitBytes {
+		w.history = append(
+			w.history[:0],
+			chunk[len(chunk)-windowHistoryLimitBytes:]...,
+		)
+		return
+	}
+	w.history = append(w.history, chunk...)
+	if overflow := len(w.history) - windowHistoryLimitBytes; overflow > 0 {
+		copy(w.history, w.history[overflow:])
+		w.history = w.history[:windowHistoryLimitBytes]
+	}
 }
 
 func (s *muxServer) clearAlertsLocked(activeID string) {
