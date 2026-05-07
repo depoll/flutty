@@ -960,6 +960,34 @@ void main() {
       );
     });
 
+    testWidgets(
+      'mobile terminal overflow menu omits sensitive keyboard action',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.widgetWithText(
+            CheckedPopupMenuItem<String>,
+            'Tap to Show Keyboard',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byWidgetPredicate(
+            (widget) =>
+                widget is CheckedPopupMenuItem<String> &&
+                widget.value == 'toggle_sensitive_keyboard',
+          ),
+          findsNothing,
+        );
+        expect(find.text('Sensitive Keyboard'), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
     testWidgets('browse files ignores duplicate taps while SFTP is opening', (
       tester,
     ) async {
