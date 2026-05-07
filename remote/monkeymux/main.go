@@ -386,10 +386,13 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		if current, err := os.Getwd(); err == nil {
 			cwd = current
 		}
+	} else if expanded, err := expandHomePath(cwd); err == nil {
+		cwd = expanded
 	}
 
-	cmd := shellCommand()
-	name := filepath.Base(cmd.Path)
+	shell := loginShellPath()
+	cmd := shellCommand(shell)
+	name := filepath.Base(shell)
 	if len(options.args) > 0 {
 		cmd = exec.Command(options.args[0], options.args[1:]...)
 		name = filepath.Base(options.args[0])
@@ -402,7 +405,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Env = os.Environ()
+	cmd.Env = terminalEnvironment(os.Environ(), shell)
 
 	s.mu.Lock()
 	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
@@ -991,12 +994,59 @@ func (s *muxServer) isClosed() bool {
 	return s.closed
 }
 
-func shellCommand() *exec.Cmd {
+func loginShellPath() string {
 	shell := os.Getenv("SHELL")
 	if strings.TrimSpace(shell) == "" {
-		shell = "/bin/sh"
+		return "/bin/sh"
 	}
-	return exec.Command(shell)
+	return shell
+}
+
+func shellCommand(shell string) *exec.Cmd {
+	cmd := exec.Command(shell)
+	// Use the user's login shell so their profile owns PATH/tool setup.
+	cmd.Args[0] = "-" + filepath.Base(shell)
+	return cmd
+}
+
+func terminalEnvironment(base []string, shell string) []string {
+	env := map[string]string{}
+	for _, item := range base {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			continue
+		}
+		env[key] = value
+	}
+	if strings.TrimSpace(shell) != "" {
+		env["SHELL"] = shell
+	}
+	if strings.TrimSpace(env["TERM"]) == "" {
+		env["TERM"] = "xterm-256color"
+	}
+	if strings.TrimSpace(env["COLORTERM"]) == "" {
+		env["COLORTERM"] = "truecolor"
+	}
+
+	result := make([]string, 0, len(env))
+	for key, value := range env {
+		result = append(result, key+"="+value)
+	}
+	return result
+}
+
+func expandHomePath(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path, err
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 }
 
 func firstShellWord(command string) string {
