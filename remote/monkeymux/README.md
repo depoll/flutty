@@ -21,8 +21,10 @@ only a best-effort direct replay so the foreground terminal visibly moves to
 the selected PTY.
 
 When `attach` finds an existing server from a different helper version, it asks
-before restarting that session. Choosing no attaches to the running server
-best-effort so app updates do not silently discard in-progress windows.
+before replacing that session. Choosing no attaches to the running server
+best-effort so app updates do not silently discard in-progress windows. If the
+old helper predates safe shutdown support, the prompt says the update may
+abandon existing windows before starting the newer helper.
 
 The initial target matrix is POSIX-first: Linux and macOS on amd64 and arm64.
 Windows support is a later ConPTY-backed follow-up.

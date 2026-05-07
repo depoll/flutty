@@ -172,6 +172,33 @@ func TestPromptForServerUpdateAcceptsYes(t *testing.T) {
 	}
 }
 
+func TestPromptForServerUpdateWarnsWhenShutdownIsUnavailable(t *testing.T) {
+	var output bytes.Buffer
+	status := runningServerStatus{version: "0.1.0"}
+
+	if !promptForServerUpdate(strings.NewReader("y\n"), &output, "main", status) {
+		t.Fatal("yes prompt response did not update server")
+	}
+	if got := output.String(); !strings.Contains(got, "may abandon") {
+		t.Fatalf("prompt output = %q, want abandon warning", got)
+	}
+}
+
+func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
+	var output bytes.Buffer
+	status := runningServerStatus{
+		version:      "0.1.1",
+		capabilities: []string{"shutdown"},
+	}
+
+	if !promptForServerUpdate(strings.NewReader("y\n"), &output, "main", status) {
+		t.Fatal("yes prompt response did not update server")
+	}
+	if got := output.String(); !strings.Contains(got, "will close existing") {
+		t.Fatalf("prompt output = %q, want close warning", got)
+	}
+}
+
 func TestPromptForServerUpdateSkipsOnReadError(t *testing.T) {
 	var output bytes.Buffer
 	status := runningServerStatus{version: "0.1.0"}
