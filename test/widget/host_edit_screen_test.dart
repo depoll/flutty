@@ -1487,7 +1487,7 @@ void main() {
 
       expect(
         find.text(
-          'Free hosts can still open tmux automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
+          'Free hosts can still open terminal windows automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
         ),
         findsOneWidget,
       );

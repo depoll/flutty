@@ -1,0 +1,345 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'diagnostics_log_service.dart';
+import 'remote_file_service.dart';
+import 'ssh_exec_queue.dart';
+import 'ssh_service.dart';
+
+/// Asset path for the bundled MonkeyMux binary manifest.
+const monkeyMuxManifestAssetPath = 'assets/monkeymux/manifest.json';
+
+const _monkeyMuxInstallTimeout = Duration(seconds: 20);
+const _monkeyMuxExecMarker = '__monkeymux_exec_done__';
+
+/// Provides the app-bundled MonkeyMux binary manifest.
+final monkeyMuxManifestProvider = FutureProvider<MonkeyMuxManifest>(
+  (ref) => MonkeyMuxManifest.load(),
+);
+
+/// Installs and verifies MonkeyMux helpers on remote SSH hosts.
+final monkeyMuxInstallerServiceProvider = Provider<MonkeyMuxInstallerService>(
+  (ref) => MonkeyMuxInstallerService(
+    manifestFuture: ref.watch(monkeyMuxManifestProvider.future),
+    remoteFileService: ref.watch(remoteFileServiceProvider),
+  ),
+);
+
+/// Parsed MonkeyMux asset manifest.
+class MonkeyMuxManifest {
+  /// Creates a parsed MonkeyMux asset manifest.
+  const MonkeyMuxManifest({required this.version, required this.entries});
+
+  /// Parses a manifest JSON object.
+  factory MonkeyMuxManifest.fromJson(Map<String, Object?> json) {
+    final entriesJson = json['entries'];
+    return MonkeyMuxManifest(
+      version: json['version'] as String? ?? '',
+      entries: entriesJson is List
+          ? entriesJson
+                .whereType<Map<String, Object?>>()
+                .map(MonkeyMuxManifestEntry.fromJson)
+                .toList(growable: false)
+          : const <MonkeyMuxManifestEntry>[],
+    );
+  }
+
+  /// Loads the default bundled manifest.
+  static Future<MonkeyMuxManifest> load({AssetBundle? assetBundle}) async {
+    final bundle = assetBundle ?? rootBundle;
+    final jsonText = await bundle.loadString(monkeyMuxManifestAssetPath);
+    return MonkeyMuxManifest.fromJson(
+      jsonDecode(jsonText) as Map<String, Object?>,
+    );
+  }
+
+  /// Version shared by all manifest entries.
+  final String version;
+
+  /// Bundled platform binaries.
+  final List<MonkeyMuxManifestEntry> entries;
+
+  /// Finds the entry for [platformKey].
+  MonkeyMuxManifestEntry? entryForPlatform(String platformKey) {
+    for (final entry in entries) {
+      if (entry.platform == platformKey) {
+        return entry;
+      }
+    }
+    return null;
+  }
+}
+
+/// One bundled MonkeyMux binary entry.
+class MonkeyMuxManifestEntry {
+  /// Creates a MonkeyMux manifest entry.
+  const MonkeyMuxManifestEntry({
+    required this.platform,
+    required this.asset,
+    required this.sha256,
+    required this.size,
+  });
+
+  /// Parses a manifest entry JSON object.
+  factory MonkeyMuxManifestEntry.fromJson(Map<String, Object?> json) =>
+      MonkeyMuxManifestEntry(
+        platform: json['platform'] as String? ?? '',
+        asset: json['asset'] as String? ?? '',
+        sha256: json['sha256'] as String? ?? '',
+        size: json['size'] as int? ?? 0,
+      );
+
+  /// Platform key, for example `linux-amd64`.
+  final String platform;
+
+  /// Flutter asset path for the binary.
+  final String asset;
+
+  /// Expected SHA-256 of the binary bytes.
+  final String sha256;
+
+  /// Expected binary size in bytes.
+  final int size;
+}
+
+/// Result of installing or reusing a remote MonkeyMux helper.
+class MonkeyMuxInstallation {
+  /// Creates a MonkeyMux installation result.
+  const MonkeyMuxInstallation({
+    required this.executablePath,
+    required this.platform,
+    required this.version,
+  });
+
+  /// Absolute remote executable path.
+  final String executablePath;
+
+  /// Resolved remote platform key.
+  final String platform;
+
+  /// Installed MonkeyMux version.
+  final String version;
+}
+
+/// Error thrown when MonkeyMux cannot be installed or used.
+class MonkeyMuxInstallException implements Exception {
+  /// Creates a MonkeyMux installation error.
+  const MonkeyMuxInstallException(this.message);
+
+  /// Human-readable failure message.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Installs and verifies the bundled MonkeyMux helper on a remote host.
+class MonkeyMuxInstallerService {
+  /// Creates a MonkeyMux installer.
+  const MonkeyMuxInstallerService({
+    required Future<MonkeyMuxManifest> manifestFuture,
+    required RemoteFileService remoteFileService,
+    AssetBundle? assetBundle,
+  }) : _manifestFuture = manifestFuture,
+       _remoteFileService = remoteFileService,
+       _assetBundle = assetBundle;
+
+  final Future<MonkeyMuxManifest> _manifestFuture;
+  final RemoteFileService _remoteFileService;
+  final AssetBundle? _assetBundle;
+
+  /// Installs the helper if needed and returns its executable path.
+  Future<MonkeyMuxInstallation> ensureInstalled(SshSession session) async {
+    final platform = await probePlatform(session);
+    final manifest = await _manifestFuture;
+    final entry = manifest.entryForPlatform(platform);
+    if (entry == null) {
+      throw MonkeyMuxInstallException(
+        'MonkeyMux is not bundled for $platform.',
+      );
+    }
+    final assetBytes = await _loadAssetBytes(entry);
+    final localDigest = sha256.convert(assetBytes).toString();
+    if (localDigest != entry.sha256) {
+      throw const MonkeyMuxInstallException(
+        'Bundled MonkeyMux checksum does not match the manifest.',
+      );
+    }
+
+    final sftp = await session.sftp();
+    try {
+      final homeDirectory = await _remoteFileService.resolveInitialDirectory(
+        sftp,
+      );
+      final installDirectory = joinRemotePath(
+        homeDirectory,
+        '.monkeyssh/bin/monkeymux/${manifest.version}/$platform',
+      );
+      final executablePath = joinRemotePath(installDirectory, 'monkeymux');
+      if (await _remoteShaMatches(session, executablePath, entry.sha256)) {
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'reuse_existing',
+          fields: {'connectionId': session.connectionId, 'platform': platform},
+        );
+        return MonkeyMuxInstallation(
+          executablePath: executablePath,
+          platform: platform,
+          version: manifest.version,
+        );
+      }
+
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'upload_start',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': platform,
+          'size': entry.size,
+        },
+      );
+      await _remoteFileService.ensureDirectoryExists(sftp, installDirectory);
+      await _remoteFileService.uploadBytes(
+        sftp: sftp,
+        remotePath: executablePath,
+        bytes: assetBytes,
+      );
+      await _runRemoteCommand(
+        session,
+        'chmod 700 ${_shellQuote(executablePath)}',
+      );
+      if (!await _remoteShaMatches(session, executablePath, entry.sha256)) {
+        throw const MonkeyMuxInstallException(
+          'Uploaded MonkeyMux checksum verification failed.',
+        );
+      }
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'upload_complete',
+        fields: {'connectionId': session.connectionId, 'platform': platform},
+      );
+      return MonkeyMuxInstallation(
+        executablePath: executablePath,
+        platform: platform,
+        version: manifest.version,
+      );
+    } finally {
+      sftp.close();
+    }
+  }
+
+  /// Probes the remote host and returns a manifest platform key.
+  Future<String> probePlatform(SshSession session) async {
+    final output = await _runRemoteCommand(
+      session,
+      r'printf "%s\n%s\n" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"',
+      priority: SshExecPriority.low,
+    );
+    final lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+    if (lines.length < 2) {
+      throw const MonkeyMuxInstallException(
+        'Could not detect remote MonkeyMux platform.',
+      );
+    }
+    final osName = switch (lines[0].toLowerCase()) {
+      'darwin' => 'darwin',
+      'linux' => 'linux',
+      final value => value,
+    };
+    final arch = switch (lines[1].toLowerCase()) {
+      'x86_64' || 'amd64' => 'amd64',
+      'aarch64' || 'arm64' => 'arm64',
+      final value => value,
+    };
+    final platform = '$osName-$arch';
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'platform_probe',
+      fields: {'connectionId': session.connectionId, 'platform': platform},
+    );
+    return platform;
+  }
+
+  Future<Uint8List> _loadAssetBytes(MonkeyMuxManifestEntry entry) async {
+    final bundle = _assetBundle ?? rootBundle;
+    final bytes = await bundle.load(entry.asset);
+    return bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes);
+  }
+
+  Future<bool> _remoteShaMatches(
+    SshSession session,
+    String executablePath,
+    String expectedSha,
+  ) async {
+    try {
+      final output = await _runRemoteCommand(
+        session,
+        '(sha256sum ${_shellQuote(executablePath)} 2>/dev/null || '
+        'shasum -a 256 ${_shellQuote(executablePath)} 2>/dev/null) | '
+        r"awk '{print $1}'",
+        priority: SshExecPriority.low,
+      );
+      return output.trim() == expectedSha;
+    } on Exception {
+      return false;
+    }
+  }
+}
+
+Future<String> _runRemoteCommand(
+  SshSession session,
+  String command, {
+  SshExecPriority priority = SshExecPriority.normal,
+}) => session.runQueuedExec(() async {
+  final execSession = await session.execute(_markRemoteCommandDone(command));
+  try {
+    execSession.stderr.drain<void>().ignore();
+    return await _readStdoutUntilMarker(execSession);
+  } finally {
+    execSession.close();
+  }
+}, priority: priority);
+
+String _markRemoteCommandDone(String command) =>
+    '{ $command; __monkeymux_status__=\$?; '
+    'printf ${_shellQuote('\n$_monkeyMuxExecMarker:%s\n')} '
+    r'"$__monkeymux_status__"; }';
+
+Future<String> _readStdoutUntilMarker(SSHSession execSession) async {
+  final output = StringBuffer();
+  await for (final chunk
+      in execSession.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .timeout(_monkeyMuxInstallTimeout)) {
+    output.write(chunk);
+    final currentOutput = output.toString();
+    final marker = RegExp(
+      '(?:^|\\n)${RegExp.escape(_monkeyMuxExecMarker)}:([0-9]+)\\n',
+    ).firstMatch(currentOutput);
+    if (marker == null) {
+      continue;
+    }
+    final status = int.parse(marker.group(1)!);
+    if (status != 0) {
+      throw MonkeyMuxInstallException(
+        'Remote command failed with exit status $status.',
+      );
+    }
+    return currentOutput.substring(0, marker.start).trimRight();
+  }
+  throw const MonkeyMuxInstallException(
+    'Remote command closed before completion marker.',
+  );
+}
+
+String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";

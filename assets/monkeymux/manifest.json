@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0",
+  "entries": [
+    {"platform":"darwin-amd64","asset":"assets/monkeymux/bin/darwin-amd64/monkeymux","sha256":"53c89543250d00ee331f85c15c9eca106b8516a3774577d8a2b7f25c37e7207d","size":3200736},
+    {"platform":"darwin-arm64","asset":"assets/monkeymux/bin/darwin-arm64/monkeymux","sha256":"d31f3b6f38ca74a62c8f494771eb41d18f4447ab33fe6370fdf9c33f64df3d5c","size":3031778},
+    {"platform":"linux-amd64","asset":"assets/monkeymux/bin/linux-amd64/monkeymux","sha256":"9d429ba5905d7326caa7f230688a65c037e9fe6a4e640d74b21e2922e2e270ee","size":3158178},
+    {"platform":"linux-arm64","asset":"assets/monkeymux/bin/linux-arm64/monkeymux","sha256":"035077937b43e82386967f285556856a5cbab4f60fda548331b5516a2eb00525","size":3080354}
+  ]
+}

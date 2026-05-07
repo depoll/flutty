@@ -11,6 +11,7 @@ import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/remote_multiplexer_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
@@ -322,6 +323,9 @@ void main() {
                         ref: ref,
                         session: session,
                         tmuxSessionName: tmuxSessionName,
+                        remoteMultiplexerService: TmuxRemoteMultiplexerService(
+                          tmuxService,
+                        ),
                         isProUser: true,
                         startClisInYoloMode: false,
                       ),
@@ -635,6 +639,9 @@ Future<void> _pumpNavigatorHost(
                     ref: ref,
                     session: session,
                     tmuxSessionName: tmuxSessionName,
+                    remoteMultiplexerService: TmuxRemoteMultiplexerService(
+                      tmuxService,
+                    ),
                     isProUser: true,
                     startClisInYoloMode: startClisInYoloMode,
                   ).then((action) => onActionSelected?.call(action)),

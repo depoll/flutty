@@ -16,6 +16,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.startClisInYoloMode,
     required this.initiallyExpanded,
     required this.ref,
+    required this.remoteMultiplexerService,
     required this.onAction,
     required this.onExpandedChanged,
     this.tmuxExtraFlags,
@@ -51,6 +52,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Riverpod ref.
   final WidgetRef ref;
+
+  /// Backend used to load and watch remote windows.
+  final RemoteMultiplexerService remoteMultiplexerService;
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
@@ -106,7 +110,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _windowReloadRecoveryRequested = false;
   late LocalNotificationService _localNotifications;
 
-  TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
+  RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
 
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
@@ -135,7 +139,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
     unawaited(_loadPreferredLaunchTool());
-    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
+    unawaited(
+      widget.ref
+          .read(tmuxServiceProvider)
+          .prefetchInstalledAgentTools(widget.session),
+    );
     _loadWindows();
     _subscribeToWindowChanges();
   }
@@ -178,7 +186,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           }
         });
       }
-      unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
+      unawaited(
+        widget.ref
+            .read(tmuxServiceProvider)
+            .prefetchInstalledAgentTools(widget.session),
+      );
     } else if (!(_windows?.isNotEmpty ?? false)) {
       setState(() => _isLoading = true);
     }
@@ -222,7 +234,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         'generation': generation,
       },
     );
-    _windowChangeSubscription = _tmux
+    _windowChangeSubscription = _mux
         .watchWindowChanges(
           widget.session,
           widget.tmuxSessionName,
@@ -518,7 +530,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     try {
-      final reloadedWindows = await _tmux.listWindows(
+      final reloadedWindows = await _mux.listWindows(
         widget.session,
         widget.tmuxSessionName,
         extraFlags: widget.tmuxExtraFlags,
@@ -658,9 +670,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   Future<void> _showNewWindowPicker() async {
-    final installedToolsFuture = _tmux.detectInstalledAgentTools(
-      widget.session,
-    );
+    final installedToolsFuture = widget.ref
+        .read(tmuxServiceProvider)
+        .detectInstalledAgentTools(widget.session);
     final action = await showTmuxNewWindowPicker(
       context: context,
       isProUser: widget.isProUser,

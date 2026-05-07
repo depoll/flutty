@@ -14,6 +14,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -785,7 +786,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       return HostStartupMode.agent;
     }
     if (host.tmuxSessionName case final value? when value.trim().isNotEmpty) {
-      return HostStartupMode.tmux;
+      return switch (RemoteMuxBackendPresentation.fromStorageValue(
+        host.remoteMuxBackend,
+      )) {
+        RemoteMuxBackend.auto => HostStartupMode.muxAuto,
+        RemoteMuxBackend.monkeyMux => HostStartupMode.monkeyMux,
+        RemoteMuxBackend.tmux || null => HostStartupMode.tmux,
+      };
     }
     return switch (autoConnectMode) {
       AutoConnectCommandMode.none => HostStartupMode.none,
@@ -817,7 +824,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Optionally open a tmux workspace, launch an agent with tmux window helpers, or run any shell command right after the terminal connects.',
+          'Optionally open persistent terminal windows, launch an agent with tmux helpers, or run any shell command right after the terminal connects.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: colorScheme.onSurfaceVariant,
           ),
@@ -836,7 +843,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                       _selectedStartupMode == HostStartupMode.customCommand ||
                       _selectedStartupMode == HostStartupMode.snippet
                   ? 'This host keeps its saved Pro startup, but it will not run until MonkeySSH Pro is active again.'
-                  : 'Free hosts can still open tmux automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
+                  : 'Free hosts can still open terminal windows automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
               style: theme.textTheme.bodySmall,
             ),
           ),
@@ -870,7 +877,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             labelText: 'Startup behavior',
             prefixIcon: Icon(Icons.play_circle_outline),
             helperText:
-                'Pick a startup flow for this host. tmux stays free; agent/custom/snippet flows require MonkeySSH Pro.',
+                'Pick a startup flow for this host. Terminal windows stay free; agent/custom/snippet flows require MonkeySSH Pro.',
           ),
           items: HostStartupMode.values
               .map(
@@ -889,7 +896,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ),
         switch (_selectedStartupMode) {
           HostStartupMode.none => const SizedBox.shrink(),
-          HostStartupMode.tmux => _buildTmuxStartupFields(context),
+          HostStartupMode.muxAuto ||
+          HostStartupMode.monkeyMux ||
+          HostStartupMode.tmux => _buildMuxStartupFields(context),
           HostStartupMode.agent => _buildAgentStartupFields(
             context,
             hasAgentPresetAccess: hasAgentPresetAccess,
@@ -907,12 +916,26 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     );
   }
 
-  Widget _buildTmuxStartupFields(BuildContext context) {
+  Widget _buildMuxStartupFields(BuildContext context) {
+    final isTmuxMode = _selectedStartupMode == HostStartupMode.tmux;
+    final isMonkeyMuxMode = _selectedStartupMode == HostStartupMode.monkeyMux;
+    final sessionLabel = isTmuxMode
+        ? 'tmux session name'
+        : 'Terminal window session name';
+    final sessionHelperText = switch (_selectedStartupMode) {
+      HostStartupMode.muxAuto =>
+        'MonkeySSH installs or reuses MonkeyMux when possible, then falls back to tmux if needed.',
+      HostStartupMode.monkeyMux =>
+        'MonkeySSH installs or reuses MonkeyMux transparently for this remote session.',
+      HostStartupMode.tmux =>
+        'Creates or attaches to this tmux session without launching any extra command.',
+      _ => '',
+    };
     final effectiveTmuxExtraFlags = resolveTmuxExtraFlags(
       extraFlags: _tmuxExtraFlagsController.text,
       disableStatusBar: _disableTmuxStatusBar,
     );
-    final preview = _tmuxSessionController.text.trim().isEmpty
+    final preview = !isTmuxMode || _tmuxSessionController.text.trim().isEmpty
         ? null
         : buildTmuxCommand(
             sessionName: _tmuxSessionController.text.trim(),
@@ -930,21 +953,22 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             key: const Key('host-tmux-session-field'),
             controller: _tmuxSessionController,
             focusNode: _tmuxSessionFocusNode,
-            decoration: const InputDecoration(
-              labelText: 'tmux session name',
+            decoration: InputDecoration(
+              labelText: sessionLabel,
               hintText: 'workspace',
-              prefixIcon: Icon(Icons.view_carousel_outlined),
-              helperText:
-                  'Creates or attaches to this tmux session without launching any extra command.',
+              prefixIcon: const Icon(Icons.view_carousel_outlined),
+              helperText: sessionHelperText,
             ),
             autocorrect: false,
             onChanged: (_) => setState(() {}),
             validator: (value) {
-              if (_selectedStartupMode != HostStartupMode.tmux) {
+              if (!_selectedStartupMode.usesRemoteMultiplexer) {
                 return null;
               }
               if (value == null || value.trim().isEmpty) {
-                return 'Enter a tmux session name';
+                return _selectedStartupMode == HostStartupMode.tmux
+                    ? 'Enter a tmux session name'
+                    : 'Enter a terminal window session name';
               }
               return null;
             },
@@ -963,32 +987,40 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           onChanged: (_) => setState(() {}),
         ),
         const SizedBox(height: 12),
-        TextFormField(
-          key: const Key('host-tmux-extra-flags-field'),
-          controller: _tmuxExtraFlagsController,
-          decoration: const InputDecoration(
-            labelText: 'Extra tmux flags (optional)',
-            hintText: '-f ~/.tmux.conf',
-            prefixIcon: Icon(Icons.tune_outlined),
+        if (isTmuxMode) ...[
+          TextFormField(
+            key: const Key('host-tmux-extra-flags-field'),
+            controller: _tmuxExtraFlagsController,
+            decoration: const InputDecoration(
+              labelText: 'Extra tmux flags (optional)',
+              hintText: '-f ~/.tmux.conf',
+              prefixIcon: Icon(Icons.tune_outlined),
+            ),
+            autocorrect: false,
+            onChanged: (_) => setState(() {}),
           ),
-          autocorrect: false,
-          onChanged: (_) => setState(() {}),
-        ),
-        const SizedBox(height: 4),
-        CheckboxListTile(
-          key: const Key('host-tmux-disable-status-bar-checkbox'),
-          value: _disableTmuxStatusBar,
-          contentPadding: EdgeInsets.zero,
-          controlAffinity: ListTileControlAffinity.leading,
-          title: const Text('Hide tmux status bar'),
-          subtitle: const Text(
-            'Append `\\; set status off` so MonkeySSH\'s tmux bar is the only one shown.',
+          const SizedBox(height: 4),
+          CheckboxListTile(
+            key: const Key('host-tmux-disable-status-bar-checkbox'),
+            value: _disableTmuxStatusBar,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('Hide tmux status bar'),
+            subtitle: const Text(
+              'Append `\\; set status off` so MonkeySSH\'s tmux bar is the only one shown.',
+            ),
+            onChanged: (value) {
+              setState(() => _disableTmuxStatusBar = value ?? false);
+              _updateDirtyState();
+            },
           ),
-          onChanged: (value) {
-            setState(() => _disableTmuxStatusBar = value ?? false);
-            _updateDirtyState();
-          },
-        ),
+        ] else if (isMonkeyMuxMode) ...[
+          const SizedBox(height: 4),
+          Text(
+            'MonkeyMux passes terminal bytes through directly and uses a separate backchannel for window updates.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
         if (preview != null) ...[
           const SizedBox(height: 12),
           Text(
@@ -1484,6 +1516,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedStartupMode = value;
       switch (value) {
         case HostStartupMode.none:
+        case HostStartupMode.muxAuto:
+        case HostStartupMode.monkeyMux:
         case HostStartupMode.tmux:
           _selectedAutoConnectMode = AutoConnectCommandMode.none;
         case HostStartupMode.agent:
