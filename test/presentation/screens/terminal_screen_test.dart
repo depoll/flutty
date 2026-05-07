@@ -1437,12 +1437,22 @@ void main() {
       _MockTmuxService tmuxService, {
       SettingsService? settingsServiceOverride,
       AgentSessionDiscoveryService? agentSessionDiscoveryServiceOverride,
+      bool simulateAttachedTuiSignals = false,
     }) async {
       const tmuxSessionName = 'work';
       const windows = <TmuxWindow>[
         TmuxWindow(index: 0, name: 'shell', isActive: true),
         TmuxWindow(index: 1, name: 'agent', isActive: false),
       ];
+
+      if (simulateAttachedTuiSignals) {
+        // Real tmux clients enable focus reports + alt buffer on attach. The
+        // outer reports gate uses these to skip pushing OSC bytes through SSH
+        // when the foreground is a bare shell, so tests that exercise the
+        // attached-tmux happy path need the same signals to be visible before
+        // the prime/refresh paths fire on initial pumps.
+        session.terminal!.write('\x1b[?1004h');
+      }
 
       when(
         () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -1505,6 +1515,466 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
     }
+
+    testWidgets(
+      'keeps probing for tmux after an initial inactive result',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true),
+        ];
+        var foregroundSessionCalls = 0;
+        var themeRefreshCount = 0;
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async {
+          foregroundSessionCalls += 1;
+          return foregroundSessionCalls == 1 ? null : tmuxSessionName;
+        });
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {
+          themeRefreshCount += 1;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
+
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pump();
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
+        expect(themeRefreshCount, greaterThanOrEqualTo(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'primes tmux with outer theme reports after attach',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(
+          tester,
+          tmuxService,
+          simulateAttachedTuiSignals: true,
+        );
+        await tester.pump(const Duration(milliseconds: 400));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O'));
+        expect(writtenShellText, contains('\x1b[I'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;'));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'sends outer tmux theme reports after theme changes',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(
+          tester,
+          tmuxService,
+          simulateAttachedTuiSignals: true,
+        );
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O'));
+        expect(writtenShellText, contains('\x1b[I'));
+        expect(writtenShellText, contains('\x1b[?997;1n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;'));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'does not leak outer tmux theme reports to a bare shell after detach',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+
+        // tmux attach has been torn down (no focus tracking, alt buffer, mouse
+        // mode, or DEC 2031 subscription), so OSC theme reports would land on
+        // a bare zsh prompt and be echoed back as typed input. Even though
+        // tmux state is still primed locally, the gate on foreground TUI
+        // signals must suppress the outer reports entirely.
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'preserves outer focus after coalesced tmux window refreshes',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        final refreshCompleters = <Completer<void>>[];
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@8', name: 'shell', isActive: true),
+          TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: false),
+        ];
+
+        addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) {
+          final completer = Completer<void>();
+          refreshCompleters.add(completer);
+          return completer.future;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        shellWrites.clear();
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: true),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+        expect(refreshCompleters, hasLength(1));
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(index: 0, id: '@8', name: 'shell', isActive: true),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+
+        refreshCompleters.first.complete();
+        await tester.pump();
+        await tester.pump();
+        expect(refreshCompleters, hasLength(2));
+
+        refreshCompleters[1].complete();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[O'),
+        );
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[I'),
+        );
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[?997;1n'),
+        );
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b]10;'),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'does not send stale outer focus after superseded tmux theme refresh',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final refreshCompleters = <Completer<void>>[];
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, id: '@8', name: 'shell', isActive: true),
+          TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: false),
+        ];
+
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) {
+          final completer = Completer<void>();
+          refreshCompleters.add(completer);
+          return completer.future;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+
+        expect(refreshCompleters, hasLength(1));
+
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.light);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+
+        refreshCompleters.first.complete();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+
+        expect(refreshCompleters, hasLength(2));
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          isEmpty,
+        );
+
+        refreshCompleters[1].complete();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[O'),
+        );
+        expect(
+          utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(growable: false),
+          ),
+          contains('\x1b[I'),
+        );
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[?997;2n'));
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;'));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     testWidgets(
       'mobile terminal paints cursor from the terminal input focus node',
@@ -1616,6 +2086,10 @@ void main() {
             0x7fffffff;
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
@@ -1771,6 +2245,10 @@ void main() {
         var refreshCount = 0;
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -1832,18 +2310,68 @@ void main() {
         final refreshCountBeforeWindowEvent = refreshCount;
         windowEvents.add(
           const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 0,
+              id: '@8',
+              name: 'shell',
+              isActive: true,
+              paneTitle: 'codex-notes',
+              lastActivityEpochSeconds: 123,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+
+        expect(refreshCount, refreshCountBeforeWindowEvent);
+
+        shellWrites.clear();
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 0,
+              id: '@8',
+              name: 'shell',
+              isActive: true,
+              paneTitle: 'Copilot',
+              lastActivityEpochSeconds: 123,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 60));
+
+        expect(refreshCount, greaterThan(refreshCountBeforeWindowEvent));
+        final refreshCountAfterTitleAgent = refreshCount;
+
+        shellWrites.clear();
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
             TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: true),
           ),
         );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 149));
 
-        expect(refreshCount, refreshCountBeforeWindowEvent);
+        expect(refreshCount, refreshCountAfterTitleAgent);
 
         await tester.pump(const Duration(milliseconds: 1));
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 60));
 
-        expect(refreshCount, greaterThan(refreshCountBeforeWindowEvent));
+        expect(refreshCount, greaterThan(refreshCountAfterTitleAgent));
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O'));
+        expect(writtenShellText, contains('\x1b[I'));
+        expect(writtenShellText, contains('\x1b[?997;2n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;'));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1861,6 +2389,10 @@ void main() {
         var refreshCount = 0;
 
         addTearDown(windowEvents.close);
+        // Real tmux clients enable focus tracking + alt buffer on attach;
+        // the outer reports gate skips OSC sends to a bare shell, so simulate
+        // those signals on the session terminal before the screen pumps.
+        session.terminal!.write('\x1b[?1004h');
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -2105,7 +2637,7 @@ void main() {
         await tester.pump();
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
 
-        await tester.pump(const Duration(seconds: 3));
+        await tester.pump(const Duration(seconds: 12));
 
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
         expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
