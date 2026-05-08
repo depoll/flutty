@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.10"
+	monkeyMuxVersion         = "0.1.11"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -44,9 +44,10 @@ const (
 	windowUpdateMinInterval  = 750 * time.Millisecond
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
+	csiBufferLimitBytes      = 64
 )
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[0m\x1b[H\x1b[2J"
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 var capabilities = []string{
 	"attach",
@@ -157,9 +158,12 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	oscBuffer                  []byte
+	csiBuffer                  []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
+	cursorVisible              bool
+	cursorVisibilityKnown      bool
 	alert                      bool
 	closed                     bool
 }
@@ -536,6 +540,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		pty:               file,
 		cmd:               cmd,
 		lastActivity:      time.Now(),
+		cursorVisible:     true,
 	}
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
@@ -595,6 +600,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	wasAlert := window.alert
 	window.lastActivity = now
 	window.observeTerminalMetadataLocked(chunk)
+	window.observeCursorVisibilityLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
@@ -1354,9 +1360,15 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.history)
 	history = trimReplayHistoryForAttach(history)
-	replay := make([]byte, 0, len(activeWindowReplayPrefix)+len(history))
+	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
+	replay := make(
+		[]byte,
+		0,
+		len(activeWindowReplayPrefix)+len(history)+len(cursor),
+	)
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, history...)
+	replay = append(replay, cursor...)
 	return replay
 }
 
@@ -1884,6 +1896,81 @@ func leadingShellToken(value string) string {
 		return ""
 	}
 	return fields[0]
+}
+
+func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	data := chunk
+	if len(w.csiBuffer) > 0 {
+		combined := make([]byte, 0, len(w.csiBuffer)+len(chunk))
+		combined = append(combined, w.csiBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.csiBuffer = nil
+	}
+
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return
+		}
+		if escapeIndex+1 >= len(data) {
+			w.storePartialCsiLocked(data[escapeIndex:])
+			return
+		}
+		if data[escapeIndex+1] != '[' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		end := csiSequenceEnd(data, escapeIndex+2)
+		if end < 0 {
+			w.storePartialCsiLocked(data[escapeIndex:])
+			return
+		}
+		final := data[end]
+		if final == 'h' || final == 'l' {
+			params := string(data[escapeIndex+2 : end])
+			if csiPrivateModeEnabled(params, "25") {
+				w.cursorVisible = final == 'h'
+				w.cursorVisibilityKnown = true
+			}
+		}
+		data = data[end+1:]
+	}
+}
+
+func (w *muxWindow) storePartialCsiLocked(data []byte) {
+	if len(data) > csiBufferLimitBytes {
+		w.csiBuffer = nil
+		return
+	}
+	w.csiBuffer = append(w.csiBuffer[:0], data...)
+}
+
+func csiPrivateModeEnabled(params string, mode string) bool {
+	if !strings.HasPrefix(params, "?") {
+		return false
+	}
+	for _, part := range strings.Split(strings.TrimPrefix(params, "?"), ";") {
+		if part == mode {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *muxWindow) cursorVisibleForReplayLocked() bool {
+	return !w.cursorVisibilityKnown || w.cursorVisible
+}
+
+func cursorVisibilityReplaySequence(visible bool) string {
+	if visible {
+		return "\x1b[?25h"
+	}
+	return "\x1b[?25l"
 }
 
 func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {

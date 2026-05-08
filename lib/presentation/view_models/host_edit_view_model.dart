@@ -19,7 +19,7 @@ enum HostStartupMode {
   /// Do nothing after the SSH connection opens.
   none,
 
-  /// Let MonkeySSH choose a remote window backend.
+  /// Legacy automatic remote-window backend selection.
   muxAuto,
 
   /// Open or attach to a MonkeyMux session after connecting.
@@ -43,9 +43,9 @@ extension HostStartupModePresentation on HostStartupMode {
   /// Human-readable label used in the startup mode dropdown.
   String get label => switch (this) {
     HostStartupMode.none => 'Do nothing',
-    HostStartupMode.muxAuto => 'Terminal windows',
+    HostStartupMode.muxAuto => 'Automatic windows',
     HostStartupMode.monkeyMux => 'MonkeyMux',
-    HostStartupMode.tmux => 'Open tmux session',
+    HostStartupMode.tmux => 'tmux',
     HostStartupMode.agent => 'Launch coding agent',
     HostStartupMode.customCommand => 'Run custom command',
     HostStartupMode.snippet => 'Run saved snippet',
@@ -377,7 +377,7 @@ class HostEditViewModel extends Notifier<HostEditState> {
             target: HostEditValidationTarget.tmuxSession,
             message: draft.selectedStartupMode == HostStartupMode.tmux
                 ? 'Fix tmux session name to save this host'
-                : 'Fix terminal window session name to save this host',
+                : 'Fix MonkeyMux session name to save this host',
           );
         }
         return null;

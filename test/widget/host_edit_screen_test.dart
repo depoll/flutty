@@ -393,12 +393,33 @@ void main() {
       expect(agentSessionField.decoration!.helperMaxLines, greaterThan(1));
     });
 
+    testWidgets('shows explicit MonkeyMux and tmux startup choices', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+
+      final startupModeField = find.byKey(const Key('host-startup-mode-field'));
+      await tester.scrollUntilVisible(
+        startupModeField,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(startupModeField);
+      await tester.tap(startupModeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('MonkeyMux'), findsOneWidget);
+      expect(find.text('tmux'), findsOneWidget);
+      expect(find.text('Automatic windows'), findsNothing);
+    });
+
     testWidgets('scrolls to missing tmux session when saving tmux startup', (
       tester,
     ) async {
       final harness = await _pumpHostCreateScreen(tester);
       await _fillRequiredHostFields(tester);
-      await _selectStartupMode(tester, 'Open tmux session');
+      await _selectStartupMode(tester, 'tmux');
 
       await _tapBottomSave(tester);
 
@@ -1054,7 +1075,7 @@ void main() {
         );
         expect(
           find.text(
-            'MonkeyMux is managed by MonkeySSH, so no tmux flags or tmux status-bar settings are needed.',
+            'MonkeyMux is managed by MonkeySSH, so there are no tmux flags or tmux status-bar settings.',
           ),
           findsOneWidget,
         );
@@ -1521,7 +1542,7 @@ void main() {
       },
     );
 
-    testWidgets('shows Pro helper copy for auto-run automation', (
+    testWidgets('explains launch behavior without plan-gating copy', (
       tester,
     ) async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -1567,10 +1588,11 @@ void main() {
 
       expect(
         find.text(
-          'Free hosts can still open terminal windows automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
+          'Choose what MonkeySSH starts after SSH connects. MonkeyMux and tmux keep remote shells alive across reconnects and add the window switcher; agent, command, and snippet options start a workflow automatically.',
         ),
         findsOneWidget,
       );
+      expect(find.textContaining('Terminal windows stay free'), findsNothing);
     });
 
     testWidgets(
@@ -1609,7 +1631,7 @@ void main() {
         await _pumpHostCreateScreen(tester);
 
         // Switch the startup mode dropdown (a pure non-text setState).
-        await _selectStartupMode(tester, 'Open tmux session');
+        await _selectStartupMode(tester, 'tmux');
 
         // Navigating back must trigger the discard dialog because startup mode
         // changed from the initial "Do nothing" value.
