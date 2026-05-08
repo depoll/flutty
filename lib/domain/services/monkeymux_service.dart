@@ -65,6 +65,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _windowListRequests =
       <_MonkeyMuxWatchKey, Future<List<TmuxWindow>>>{};
   static final _agentMetadataRequests = <_MonkeyMuxWatchKey, Future<void>>{};
+  static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
 
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
@@ -74,6 +75,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       fields: {'connectionId': connectionId},
     );
     _windowSnapshotCache.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _windowSnapshotGenerations.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
     _windowListRequests.removeWhere((key, request) {
@@ -409,10 +413,16 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     if (_agentMetadataRequests.containsKey(key)) {
       return;
     }
+    final snapshotGeneration = _windowSnapshotGeneration(key);
+    var shouldReschedule = false;
     final request =
         _enrichWindowsWithAgentMetadata(session, sessionName, windows).then((
           enrichedWindows,
         ) {
+          if (_windowSnapshotGeneration(key) != snapshotGeneration) {
+            shouldReschedule = true;
+            return;
+          }
           final previousWindows = _windowSnapshotCache[key];
           _cacheWindows(key, enrichedWindows);
           final cachedWindows = _windowSnapshotCache[key] ?? enrichedWindows;
@@ -427,12 +437,24 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       if (identical(_agentMetadataRequests[key], request)) {
         _agentMetadataRequests.remove(key);
       }
+      if (shouldReschedule) {
+        final latestWindows = _windowSnapshotCache[key];
+        if (latestWindows != null) {
+          _scheduleAgentMetadataRefresh(
+            session,
+            sessionName,
+            key,
+            latestWindows,
+          );
+        }
+      }
     }).ignore();
   }
 
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
     if (windows.isEmpty) {
       _windowSnapshotCache[key] = const <TmuxWindow>[];
+      _bumpWindowSnapshotGeneration(key);
       return;
     }
     final currentWindows = _windowSnapshotCache[key];
@@ -444,12 +466,14 @@ class MonkeyMuxService implements RemoteMultiplexerService {
               TmuxWindowListEvent(windows),
             ),
     );
+    _bumpWindowSnapshotGeneration(key);
   }
 
   static void _cacheWindowSnapshot(_MonkeyMuxWatchKey key, TmuxWindow window) {
     final currentWindows = _windowSnapshotCache[key];
     if (currentWindows == null || currentWindows.isEmpty) {
       _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable([window]);
+      _bumpWindowSnapshotGeneration(key);
       return;
     }
     _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
@@ -457,6 +481,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         currentWindows,
         TmuxWindowSnapshotEvent(window),
       ),
+    );
+    _bumpWindowSnapshotGeneration(key);
+  }
+
+  static int _windowSnapshotGeneration(_MonkeyMuxWatchKey key) =>
+      _windowSnapshotGenerations[key] ?? 0;
+
+  static void _bumpWindowSnapshotGeneration(_MonkeyMuxWatchKey key) {
+    _windowSnapshotGenerations.update(
+      key,
+      (value) => value + 1,
+      ifAbsent: () => 1,
     );
   }
 }
@@ -520,6 +556,7 @@ class _MonkeyMuxWindowChangeObserver {
   final _pendingCommands = <String, _MonkeyMuxControlRequest>{};
 
   SSHSession? _controlSession;
+  Timer? _reconnectTimer;
   // Cancelled in _cleanup().
   // ignore: cancel_subscriptions
   StreamSubscription<String>? _stdoutSubscription;
@@ -529,6 +566,7 @@ class _MonkeyMuxWindowChangeObserver {
   Future<void>? _startFuture;
   Future<void>? _disposeFuture;
   bool _disposed = false;
+  int _reconnectAttempts = 0;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
 
@@ -562,6 +600,8 @@ class _MonkeyMuxWindowChangeObserver {
 
   Future<void> _ensureStarted() {
     if (_disposed || _controlSession != null) return Future<void>.value();
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     final existingStart = _startFuture;
     if (existingStart != null) return existingStart;
     final start = _start();
@@ -598,6 +638,7 @@ class _MonkeyMuxWindowChangeObserver {
         (_) => _handleClosed(),
         onError: _handleError,
       );
+      _reconnectAttempts = 0;
       _drainCommands();
       DiagnosticsLogService.instance.info(
         'monkeymux.watch',
@@ -667,7 +708,7 @@ class _MonkeyMuxWindowChangeObserver {
       },
     );
     _failPending(error, stackTrace);
-    unawaited(_cleanup());
+    unawaited(_cleanup().whenComplete(_scheduleReconnect));
   }
 
   void _handleClosed() {
@@ -676,7 +717,7 @@ class _MonkeyMuxWindowChangeObserver {
       const MonkeyMuxInstallException('MonkeyMux control channel closed.'),
       StackTrace.current,
     );
-    unawaited(_cleanup());
+    unawaited(_cleanup().whenComplete(_scheduleReconnect));
   }
 
   void _failPending(Object error, StackTrace stackTrace) {
@@ -703,11 +744,47 @@ class _MonkeyMuxWindowChangeObserver {
     controlSession?.close();
   }
 
+  void _scheduleReconnect() {
+    if (_disposed ||
+        _controller.isClosed ||
+        !_controller.hasListener ||
+        _controlSession != null ||
+        _startFuture != null ||
+        _reconnectTimer != null) {
+      return;
+    }
+    final delay = _nextReconnectDelay();
+    _reconnectAttempts += 1;
+    _reconnectTimer = Timer(delay, () {
+      _reconnectTimer = null;
+      if (_disposed || _controller.isClosed || !_controller.hasListener) {
+        return;
+      }
+      unawaited(_ensureStarted());
+    });
+  }
+
+  Duration _nextReconnectDelay() {
+    const baseDelay = Duration(milliseconds: 250);
+    const maxDelay = Duration(seconds: 5);
+    var factor = 1;
+    for (var i = 0; i < _reconnectAttempts && factor < 16; i += 1) {
+      factor *= 2;
+    }
+    final milliseconds = baseDelay.inMilliseconds * factor;
+    if (milliseconds >= maxDelay.inMilliseconds) {
+      return maxDelay;
+    }
+    return Duration(milliseconds: milliseconds);
+  }
+
   Future<void> dispose() => _disposeFuture ??= _dispose();
 
   Future<void> _dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     await _cleanup();
     if (!_controller.isClosed) {
       await _controller.close();
@@ -836,9 +913,18 @@ TmuxWindow? _windowFromJson(Object? value) {
     currentPath: _nonEmpty(value['currentPath'] as String?),
     panePid: value['panePid'] as int?,
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
+    agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }
+
+/// Parses a MonkeyMux window snapshot for protocol regression tests.
+@visibleForTesting
+TmuxWindow? parseMonkeyMuxWindowSnapshotForTesting(Object? value) =>
+    _windowFromJson(value);
+
+AgentLaunchTool? _agentToolFromMonkeyMuxMetadata(String? value) =>
+    agentLaunchToolForCommandName(value);
 
 String? _nonEmpty(String? value) {
   final trimmed = value?.trim();

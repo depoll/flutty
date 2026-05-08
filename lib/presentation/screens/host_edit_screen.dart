@@ -33,6 +33,8 @@ import '../widgets/terminal_theme_picker.dart';
 import '../widgets/unsaved_changes_guard.dart';
 import 'transfer_screen.dart';
 
+const _hostFieldHelperMaxLines = 4;
+
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [HostEditScreen].
@@ -530,6 +532,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             prefixIcon: Icon(Icons.sell_outlined),
                             helperText:
                                 'Comma-separated tags for search/organization',
+                            helperMaxLines: _hostFieldHelperMaxLines,
                           ),
                           textInputAction: TextInputAction.next,
                           autocorrect: false,
@@ -589,11 +592,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             return DropdownButtonFormField<int?>(
                               // ignore: deprecated_member_use
                               value: validKeyId,
+                              isExpanded: true,
                               decoration: const InputDecoration(
                                 labelText: 'SSH Key (optional)',
                                 prefixIcon: Icon(Icons.key),
                                 helperText:
                                     'Auto tries up to 5 installed keys when password is empty',
+                                helperMaxLines: _hostFieldHelperMaxLines,
                               ),
                               items: [
                                 const DropdownMenuItem<int?>(
@@ -663,11 +668,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 return DropdownButtonFormField<int?>(
                                   // ignore: deprecated_member_use
                                   value: validJumpHostId,
+                                  isExpanded: true,
                                   decoration: const InputDecoration(
                                     labelText: 'Jump Host (optional)',
                                     prefixIcon: Icon(Icons.hub),
                                     helperText:
                                         'Connect through another host (bastion)',
+                                    helperMaxLines: _hostFieldHelperMaxLines,
                                   ),
                                   items: [
                                     const DropdownMenuItem(child: Text('None')),
@@ -789,12 +796,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       return HostStartupMode.agent;
     }
     if (host.tmuxSessionName case final value? when value.trim().isNotEmpty) {
-      return switch (RemoteMuxBackendPresentation.fromStorageValue(
-        host.remoteMuxBackend,
+      return switch (resolveRemoteMuxBackendForStartup(
+        storedBackend: host.remoteMuxBackend,
+        tmuxExtraFlags: host.tmuxExtraFlags,
       )) {
         RemoteMuxBackend.auto => HostStartupMode.muxAuto,
         RemoteMuxBackend.monkeyMux => HostStartupMode.monkeyMux,
-        RemoteMuxBackend.tmux || null => HostStartupMode.tmux,
+        RemoteMuxBackend.tmux => HostStartupMode.tmux,
       };
     }
     return switch (autoConnectMode) {
@@ -876,11 +884,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           key: const Key('host-startup-mode-field'),
           // ignore: deprecated_member_use
           value: _selectedStartupMode,
+          isExpanded: true,
           decoration: const InputDecoration(
             labelText: 'Startup behavior',
             prefixIcon: Icon(Icons.play_circle_outline),
             helperText:
                 'Pick a startup flow for this host. Terminal windows stay free; agent/custom/snippet flows require MonkeySSH Pro.',
+            helperMaxLines: _hostFieldHelperMaxLines,
           ),
           items: HostStartupMode.values
               .map(
@@ -961,6 +971,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               hintText: 'workspace',
               prefixIcon: const Icon(Icons.view_carousel_outlined),
               helperText: sessionHelperText,
+              helperMaxLines: _hostFieldHelperMaxLines,
             ),
             autocorrect: false,
             onChanged: (_) => setState(() {}),
@@ -1069,6 +1080,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           key: const Key('host-agent-tool-field'),
           // ignore: deprecated_member_use
           value: _selectedAgentLaunchTool,
+          isExpanded: true,
           decoration: InputDecoration(
             labelText: 'Coding agent',
             prefixIcon: Padding(
@@ -1077,6 +1089,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             ),
             helperText:
                 'Launch an agent directly, or pair it with MonkeyMux or tmux so MonkeySSH can show window navigation.',
+            helperMaxLines: _hostFieldHelperMaxLines,
           ),
           items: AgentLaunchTool.values
               .map(
@@ -1112,11 +1125,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           key: const Key('host-agent-mux-backend-field'),
           // ignore: deprecated_member_use
           value: _selectedAgentMuxBackend,
+          isExpanded: true,
           decoration: const InputDecoration(
             labelText: 'Terminal window backend',
             prefixIcon: Icon(Icons.view_carousel_outlined),
             helperText:
                 'MonkeyMux is the default bundled backend. Choose tmux for hosts where you prefer a remote tmux session.',
+            helperMaxLines: _hostFieldHelperMaxLines,
           ),
           items: const [
             DropdownMenuItem<RemoteMuxBackend>(
@@ -1168,6 +1183,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             helperText: isAgentTmuxBackend
                 ? 'Add a tmux session to keep agent workspaces visible in the window bar.'
                 : 'Add a MonkeyMux session to keep agent workspaces visible in the window bar.',
+            helperMaxLines: _hostFieldHelperMaxLines,
           ),
           autocorrect: false,
           onChanged: hasAgentPresetAccess
@@ -1207,6 +1223,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 prefixIcon: Icon(Icons.tune_outlined),
                 helperText:
                     'Passed directly to `tmux new-session`. Used only when a tmux session is set for the coding agent launch.',
+                helperMaxLines: _hostFieldHelperMaxLines,
               ),
               autovalidateMode: AutovalidateMode.onUserInteraction,
               autocorrect: false,
@@ -1292,6 +1309,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             helperText:
                 'Run any shell command after connect. Choose the tmux or agent modes above for extra window-aware behavior.',
             prefixIcon: Icon(Icons.terminal),
+            helperMaxLines: _hostFieldHelperMaxLines,
           ),
           minLines: 1,
           maxLines: 3,
@@ -1347,7 +1365,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     prefixIcon: Icon(Icons.code),
                     helperText:
                         'Variable prompts are not shown when a snippet runs automatically.',
+                    helperMaxLines: _hostFieldHelperMaxLines,
                   ),
+                  isExpanded: true,
                   items: [
                     const DropdownMenuItem<int?>(
                       child: Text('Choose a snippet'),

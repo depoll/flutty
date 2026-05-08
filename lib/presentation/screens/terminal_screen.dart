@@ -350,8 +350,22 @@ String? resolveOwnedTmuxDetectionExistingSessionName({
 @visibleForTesting
 bool shouldPreserveTmuxBarSnapshotOnUpdate({
   required bool sessionChanged,
+  required bool backendChanged,
   required bool recoveryChanged,
-}) => recoveryChanged && !sessionChanged;
+}) => recoveryChanged && !sessionChanged && !backendChanged;
+
+/// Resolves a stored remote multiplexer backend for startup.
+///
+/// Missing values intentionally use automatic MonkeyMux-first behavior unless a
+/// legacy tmux host has custom tmux flags that MonkeyMux cannot honor.
+@visibleForTesting
+RemoteMuxBackend resolveRemoteMuxStartupBackend(
+  String? storedBackend, {
+  String? tmuxExtraFlags,
+}) => resolveRemoteMuxBackendForStartup(
+  storedBackend: storedBackend,
+  tmuxExtraFlags: tmuxExtraFlags,
+);
 
 /// Resolves the working directory to use when creating a new tmux window.
 @visibleForTesting
@@ -5999,7 +6013,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String sessionName,
   ) async {
     final configuredBackend =
-        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.tmux;
+        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
     if (configuredBackend == RemoteMuxBackend.monkeyMux ||
         configuredBackend == RemoteMuxBackend.auto) {
       try {
@@ -6184,10 +6198,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null || sessionName.trim().isEmpty) {
       return null;
     }
-    return RemoteMuxBackendPresentation.fromStorageValue(
-          host?.remoteMuxBackend,
-        ) ??
-        RemoteMuxBackend.tmux;
+    return resolveRemoteMuxStartupBackend(
+      host?.remoteMuxBackend,
+      tmuxExtraFlags: host?.tmuxExtraFlags,
+    );
   }
 
   void _clearTmuxState() {

@@ -887,6 +887,28 @@ cwd: /tmp/demo
       expect(metadata.summary, 'can i rename this session?');
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
     });
+
+    test('extracts metadata from a truncated large JSON prefix', () {
+      final metadata = parseGeminiSessionMetadata('''
+{
+  "sessionId": "session-large",
+  "summary": "Investigate MonkeyMux agent detection hardening",
+  "lastUpdated": "2026-04-12T21:29:53.292Z",
+  "kind": "main",
+  "directories": ["/Users/depoll/Code/flutty"],
+  "messages": [
+''', activeWorkingDirectory: '/Users/depoll/Code/flutty');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.isSubagent, isFalse);
+      expect(metadata.sessionId, 'session-large');
+      expect(
+        metadata.summary,
+        'Investigate MonkeyMux agent detection hardening',
+      );
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
+    });
   });
 
   group('parseAcpSessionListResult', () {

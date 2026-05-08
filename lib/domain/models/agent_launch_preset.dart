@@ -88,12 +88,14 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     return null;
   }
 
-  for (final tool in AgentLaunchTool.values) {
-    if (tool.commandName == normalized) {
-      return tool;
-    }
-  }
-  return null;
+  return switch (normalized) {
+    'claude' || 'claude-code' => AgentLaunchTool.claudeCode,
+    'copilot' || 'github-copilot' => AgentLaunchTool.copilotCli,
+    'codex' || 'codex-cli' => AgentLaunchTool.codex,
+    'opencode' || 'open-code' => AgentLaunchTool.openCode,
+    'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
+    _ => null,
+  };
 }
 
 /// Resolves a supported agent CLI from a full shell command.

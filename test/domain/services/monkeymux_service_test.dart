@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 
@@ -39,6 +40,23 @@ void main() {
         "'~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
+    });
+  });
+
+  group('parseMonkeyMuxWindowSnapshotForTesting', () {
+    test('maps helper agentTool metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Gemini CLI',
+        'active': true,
+        'currentCommand': 'node',
+        'panePid': 1234,
+        'agentTool': 'gemini',
+      });
+
+      expect(window, isNotNull);
+      expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
     });
   });
 }

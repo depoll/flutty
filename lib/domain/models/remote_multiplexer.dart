@@ -35,3 +35,20 @@ extension RemoteMuxBackendPresentation on RemoteMuxBackend {
     _ => null,
   };
 }
+
+/// Resolves the remote multiplexer backend a host should use at startup.
+RemoteMuxBackend resolveRemoteMuxBackendForStartup({
+  String? storedBackend,
+  String? tmuxExtraFlags,
+}) {
+  final parsedBackend = RemoteMuxBackendPresentation.fromStorageValue(
+    storedBackend,
+  );
+  if (parsedBackend != null) {
+    return parsedBackend;
+  }
+  if (tmuxExtraFlags != null && tmuxExtraFlags.trim().isNotEmpty) {
+    return RemoteMuxBackend.tmux;
+  }
+  return RemoteMuxBackend.auto;
+}

@@ -415,6 +415,11 @@ void main() {
         agentLaunchToolForCommandName('gemini --yolo'),
         AgentLaunchTool.geminiCli,
       );
+      expect(
+        agentLaunchToolForCommandName('gemini-cli'),
+        AgentLaunchTool.geminiCli,
+      );
+      expect(agentLaunchToolForCommandName('codex-cli'), AgentLaunchTool.codex);
       expect(agentLaunchToolForCommandName('vim'), isNull);
       expect(agentLaunchToolForCommandName(''), isNull);
     });
