@@ -1947,6 +1947,10 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('monkeymux-handle-icon')),
+          findsOneWidget,
+        );
         verify(
           () => monkeyMuxService.watchWindowChanges(
             session,
