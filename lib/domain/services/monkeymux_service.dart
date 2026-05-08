@@ -27,6 +27,8 @@ String buildMonkeyMuxAttachCommand({
   required String executablePath,
   required String sessionName,
   String? workingDirectory,
+  String? launchCommand,
+  String? windowName,
 }) {
   final parts = <String>[
     _shellQuote(executablePath),
@@ -34,6 +36,14 @@ String buildMonkeyMuxAttachCommand({
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
       _shellQuote(workingDirectory.trim()),
+    ],
+    if (windowName != null && windowName.trim().isNotEmpty) ...[
+      '--name',
+      _shellQuote(windowName.trim()),
+    ],
+    if (launchCommand != null && launchCommand.trim().isNotEmpty) ...[
+      '--command',
+      _shellQuote(launchCommand.trim()),
     ],
     _shellQuote(sessionName),
   ];

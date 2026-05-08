@@ -1000,6 +1000,53 @@ void main() {
     );
 
     testWidgets(
+      'defaults agent startup to MonkeyMux and hides tmux-only options',
+      (tester) async {
+        await _pumpHostCreateScreen(tester, hasPro: true);
+
+        await _selectStartupMode(tester, 'Launch coding agent');
+
+        final backendField = find.byKey(
+          const Key('host-agent-mux-backend-field'),
+        );
+        expect(backendField, findsOneWidget);
+        expect(find.text('MonkeyMux session (optional)'), findsOneWidget);
+        expect(
+          find.byKey(const Key('host-agent-disable-status-bar-checkbox')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+          findsNothing,
+        );
+        expect(
+          find.text(
+            'MonkeyMux is managed by MonkeySSH, so no tmux flags or tmux status-bar settings are needed.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('claude', findRichText: true), findsWidgets);
+
+        await tester.tap(backendField);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('tmux').last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(find.text('tmux session (optional)'), findsOneWidget);
+        expect(
+          find.byKey(const Key('host-agent-disable-status-bar-checkbox')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
       'uses the host CLI yolo mode setting in generated agent commands',
       (tester) async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());

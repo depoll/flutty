@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion        = "0.1.4"
+	monkeyMuxVersion        = "0.1.5"
 	defaultColumns          = 80
 	defaultRows             = 24
 	maxTitleBytes           = 160
@@ -47,6 +47,7 @@ const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x
 
 var capabilities = []string{
 	"attach",
+	"attach-command",
 	"control-json-v1",
 	"direct-pass-through",
 	"posix-pty",
@@ -182,19 +183,25 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] <session> | control <session> --json | gc | version")
 	os.Exit(2)
 }
 
 func attachCommand(args []string) {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	cwd := fs.String("cwd", "", "initial working directory")
+	name := fs.String("name", "", "initial window name")
+	command := fs.String("command", "", "initial command")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		usageAndExit()
 	}
 	session := fs.Arg(0)
-	if err := ensureServer(session, *cwd); err != nil {
+	if err := ensureServer(session, createWindowOptions{
+		cwd:     *cwd,
+		name:    *name,
+		command: *command,
+	}); err != nil {
 		fatal(err)
 	}
 
@@ -276,11 +283,17 @@ func serveCommand(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	session := fs.String("session", "", "session name")
 	cwd := fs.String("cwd", "", "initial working directory")
+	name := fs.String("name", "", "initial window name")
+	command := fs.String("command", "", "initial command")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*session) == "" {
 		usageAndExit()
 	}
-	if err := serveSession(*session, *cwd); err != nil {
+	if err := serveSession(*session, createWindowOptions{
+		cwd:     *cwd,
+		name:    *name,
+		command: *command,
+	}); err != nil {
 		fatal(err)
 	}
 }
@@ -311,7 +324,7 @@ func gcCommand() {
 	}
 }
 
-func ensureServer(session string, cwd string) error {
+func ensureServer(session string, initialWindow createWindowOptions) error {
 	if status, err := queryRunningServerStatus(session); err == nil {
 		if status.version == monkeyMuxVersion {
 			return nil
@@ -350,8 +363,14 @@ func ensureServer(session string, cwd string) error {
 		return err
 	}
 	cmd := exec.Command(exe, "serve", "--session", session)
-	if strings.TrimSpace(cwd) != "" {
-		cmd.Args = append(cmd.Args, "--cwd", cwd)
+	if strings.TrimSpace(initialWindow.cwd) != "" {
+		cmd.Args = append(cmd.Args, "--cwd", initialWindow.cwd)
+	}
+	if strings.TrimSpace(initialWindow.name) != "" {
+		cmd.Args = append(cmd.Args, "--name", initialWindow.name)
+	}
+	if strings.TrimSpace(initialWindow.command) != "" {
+		cmd.Args = append(cmd.Args, "--command", initialWindow.command)
 	}
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -375,7 +394,7 @@ func ensureServer(session string, cwd string) error {
 	return fmt.Errorf("monkeymux server did not start for session %q", session)
 }
 
-func serveSession(session string, cwd string) error {
+func serveSession(session string, initialWindow createWindowOptions) error {
 	socket, err := socketPath(session)
 	if err != nil {
 		return err
@@ -396,7 +415,7 @@ func serveSession(session string, cwd string) error {
 
 	server := newMuxServer(session)
 	server.listener = listener
-	if _, err := server.createWindow(createWindowOptions{cwd: cwd}); err != nil {
+	if _, err := server.createWindow(initialWindow); err != nil {
 		return err
 	}
 	defer server.close()

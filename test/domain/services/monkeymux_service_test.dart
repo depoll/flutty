@@ -29,12 +29,15 @@ void main() {
         executablePath: '/home/me/.monkeyssh/bin/monkey mux',
         sessionName: "work'space",
         workingDirectory: "~/src/it's app",
+        windowName: 'Codex agent',
+        launchCommand: "codex --model 'gpt-5.4'",
       );
 
       expect(
         command,
         "'/home/me/.monkeyssh/bin/monkey mux' attach --cwd "
-        "'~/src/it'\"'\"'s app' 'work'\"'\"'space'",
+        "'~/src/it'\"'\"'s app' --name 'Codex agent' --command "
+        "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
     });
   });
