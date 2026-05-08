@@ -500,8 +500,16 @@ class TmuxWindow {
   /// The supported agent CLI running in the foreground, if one can be inferred.
   AgentLaunchTool? get foregroundAgentTool {
     if (agentTool != null) return agentTool;
-    for (final candidate in [currentCommand, name, paneTitle]) {
+    for (final candidate in [currentCommand]) {
       final tool = agentLaunchToolForCommandName(candidate);
+      if (tool != null) {
+        return tool;
+      }
+    }
+    for (final candidate in [name, paneTitle]) {
+      final tool =
+          agentLaunchToolForCommandName(candidate) ??
+          _agentToolFromTerminalTitle(candidate);
       if (tool != null) {
         return tool;
       }
@@ -914,6 +922,22 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
 };
+
+AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  final normalized = _normalizeAgentTitleForComparison(value);
+  if (normalized.isEmpty) return null;
+  for (final tool in AgentLaunchTool.values) {
+    for (final alias in _agentTitleAliases(tool)) {
+      if (normalized == alias ||
+          normalized.startsWith('$alias ') ||
+          normalized.startsWith('$alias:')) {
+        return tool;
+      }
+    }
+  }
+  return null;
+}
 
 bool _isDecoratedVariantOfTitle(String rawTitle, String? plainTitle) {
   if (plainTitle == null || plainTitle.isEmpty) return false;

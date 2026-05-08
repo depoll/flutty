@@ -6,6 +6,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/agent_launch_preset.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
@@ -13,6 +14,7 @@ import 'monkeymux_installer_service.dart';
 import 'remote_multiplexer_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
+import 'tmux_service.dart';
 
 /// MonkeyMux-backed implementation of [RemoteMultiplexerService].
 final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
@@ -48,17 +50,82 @@ class MonkeyMuxService implements RemoteMultiplexerService {
 
   static final _observers =
       <_MonkeyMuxWatchKey, _MonkeyMuxWindowChangeObserver>{};
+  static final _windowSnapshotCache = <_MonkeyMuxWatchKey, List<TmuxWindow>>{};
+  static final _windowListRequests =
+      <_MonkeyMuxWatchKey, Future<List<TmuxWindow>>>{};
+
+  /// Clears MonkeyMux caches and watchers for a connection.
+  Future<void> clearCache(int connectionId) async {
+    DiagnosticsLogService.instance.info(
+      'monkeymux.cache',
+      'clear',
+      fields: {'connectionId': connectionId},
+    );
+    _windowSnapshotCache.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _windowListRequests.removeWhere((key, request) {
+      if (key.connectionId == connectionId) {
+        request.ignore();
+        return true;
+      }
+      return false;
+    });
+    final observerKeys = _observers.keys
+        .where((key) => key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final key in observerKeys) {
+      final observer = _observers.remove(key);
+      if (observer != null) {
+        await observer.dispose();
+      }
+    }
+  }
 
   @override
   Future<List<TmuxWindow>> listWindows(
     SshSession session,
     String sessionName, {
     String? extraFlags,
-  }) async {
-    final response = await _runControlCommand(session, sessionName, {
-      'type': 'list_windows',
-    });
-    return response.windows;
+  }) {
+    final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+    final existingRequest = _windowListRequests[key];
+    if (existingRequest != null) {
+      return existingRequest;
+    }
+    final request = _listWindows(session, sessionName, key);
+    _windowListRequests[key] = request;
+    request.whenComplete(() {
+      if (identical(_windowListRequests[key], request)) {
+        _windowListRequests.remove(key);
+      }
+    }).ignore();
+    return request;
+  }
+
+  Future<List<TmuxWindow>> _listWindows(
+    SshSession session,
+    String sessionName,
+    _MonkeyMuxWatchKey key,
+  ) async {
+    try {
+      final response = await _runControlCommand(session, sessionName, {
+        'type': 'list_windows',
+      });
+      final windows = await _enrichWindowsWithAgentMetadata(
+        session,
+        sessionName,
+        response.windows,
+      );
+      _cacheWindows(key, windows);
+      return windows;
+    } on Object {
+      final cachedWindows = _windowSnapshotCache[key];
+      if (cachedWindows != null && cachedWindows.isNotEmpty) {
+        return cachedWindows;
+      }
+      rethrow;
+    }
   }
 
   @override
@@ -74,6 +141,8 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         session: session,
         sessionName: sessionName,
         installer: _installer,
+        onWindowList: (windows) => _cacheWindows(key, windows),
+        onWindowSnapshot: (window) => _cacheWindowSnapshot(key, window),
         onDispose: () => _observers.remove(key),
       ),
     );
@@ -191,9 +260,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
-  }) async {
-    await _runControlCommand(session, sessionName, {'type': 'theme_changed'});
-  }
+  }) async {}
 
   Future<_MonkeyMuxControlResponse> _runControlCommand(
     SshSession session,
@@ -203,8 +270,8 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) async {
     final observer =
         _observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)];
-    if (observer?.canRunCommands ?? false) {
-      return observer!.runCommand(command);
+    if (observer != null) {
+      return observer.runCommand(command);
     }
     final installation = await _installer.ensureInstalled(session);
     final controlCommand =
@@ -217,6 +284,80 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       priority: priority,
     );
   }
+
+  Future<List<TmuxWindow>> _enrichWindowsWithAgentMetadata(
+    SshSession session,
+    String sessionName,
+    List<TmuxWindow> windows,
+  ) async {
+    final panePids = windows
+        .where(
+          (window) =>
+              window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+              window.panePid != null,
+        )
+        .map((window) => window.panePid!)
+        .toSet();
+    if (panePids.isEmpty) {
+      return windows;
+    }
+
+    try {
+      final response = await _runControlCommand(session, sessionName, {
+        'type': 'run_command',
+        'command': buildCopilotActiveSessionMetadataCommand(panePids),
+      }, priority: SshExecPriority.low);
+      final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
+        response.data ?? '',
+        panePids,
+      );
+      if (metadataByPanePid.isEmpty) {
+        return windows;
+      }
+      return windows
+          .map((window) {
+            final panePid = window.panePid;
+            final metadata = panePid == null
+                ? null
+                : metadataByPanePid[panePid];
+            if (metadata == null) return window;
+            return window.copyWith(
+              activeAgentSessionId: metadata.sessionId,
+              agentSessionTitle: metadata.title,
+            );
+          })
+          .toList(growable: false);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.agent',
+        'active_session_metadata_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return windows;
+    }
+  }
+
+  static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
+    if (windows.isEmpty) return;
+    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(windows);
+  }
+
+  static void _cacheWindowSnapshot(_MonkeyMuxWatchKey key, TmuxWindow window) {
+    final currentWindows = _windowSnapshotCache[key];
+    if (currentWindows == null || currentWindows.isEmpty) {
+      _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable([window]);
+      return;
+    }
+    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
+      applyTmuxWindowChangeEvent(
+        currentWindows,
+        TmuxWindowSnapshotEvent(window),
+      ),
+    );
+  }
 }
 
 Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
@@ -226,6 +367,7 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
 ) async {
   final execSession = await session.execute(command);
   try {
+    execSession.stderr.drain<void>().ignore();
     final requestId = request['id'] as String?;
     execSession.write(utf8.encode('${jsonEncode(request)}\n'));
     await for (final line
@@ -257,6 +399,8 @@ class _MonkeyMuxWindowChangeObserver {
     required this.session,
     required this.sessionName,
     required this.installer,
+    required this.onWindowList,
+    required this.onWindowSnapshot,
     required this.onDispose,
   }) : _controller = StreamController<TmuxWindowChangeEvent>.broadcast() {
     _controller
@@ -267,6 +411,8 @@ class _MonkeyMuxWindowChangeObserver {
   final SshSession session;
   final String sessionName;
   final MonkeyMuxInstallerService installer;
+  final ValueChanged<List<TmuxWindow>> onWindowList;
+  final ValueChanged<TmuxWindow> onWindowSnapshot;
   final VoidCallback onDispose;
   final StreamController<TmuxWindowChangeEvent> _controller;
   final _commandQueue = Queue<_MonkeyMuxControlRequest>();
@@ -285,14 +431,18 @@ class _MonkeyMuxWindowChangeObserver {
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
 
-  bool get canRunCommands => !_disposed && _controlSession != null;
-
-  Future<_MonkeyMuxControlResponse> runCommand(Map<String, Object?> command) {
+  Future<_MonkeyMuxControlResponse> runCommand(
+    Map<String, Object?> command,
+  ) async {
+    if (_disposed) {
+      throw const MonkeyMuxInstallException(
+        'MonkeyMux control channel unavailable.',
+      );
+    }
+    await _ensureStarted();
     if (_disposed || _controlSession == null) {
-      return Future<_MonkeyMuxControlResponse>.error(
-        const MonkeyMuxInstallException(
-          'MonkeyMux control channel unavailable.',
-        ),
+      throw const MonkeyMuxInstallException(
+        'MonkeyMux control channel unavailable.',
       );
     }
     final request = _MonkeyMuxControlRequest(command);
@@ -381,9 +531,18 @@ class _MonkeyMuxWindowChangeObserver {
       case 'window_added':
         final window = response.window;
         if (window != null && !_controller.isClosed) {
-          _controller.add(TmuxWindowSnapshotEvent(window));
+          onWindowSnapshot(window);
+          if (window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+              window.panePid != null) {
+            _controller.add(const TmuxWindowReloadEvent());
+          } else {
+            _controller.add(TmuxWindowSnapshotEvent(window));
+          }
         }
       case 'window_list':
+        if (response.windows.isNotEmpty) {
+          onWindowList(response.windows);
+        }
       case 'active_window_changed':
       case 'window_removed':
         if (!_controller.isClosed) {
@@ -488,6 +647,7 @@ class _MonkeyMuxControlResponse {
     this.windows = const [],
     this.currentPath,
     this.currentCommand,
+    this.data,
   });
 
   factory _MonkeyMuxControlResponse.fromJson(Map<String, Object?> json) =>
@@ -507,6 +667,7 @@ class _MonkeyMuxControlResponse {
         },
         currentPath: json['currentPath'] as String?,
         currentCommand: json['currentCommand'] as String?,
+        data: json['data'] as String?,
       );
 
   static _MonkeyMuxControlResponse? tryParse(String line) {
@@ -529,6 +690,7 @@ class _MonkeyMuxControlResponse {
   final List<TmuxWindow> windows;
   final String? currentPath;
   final String? currentCommand;
+  final String? data;
 
   bool get isError => status == 'error' || type == 'error';
 }
@@ -562,6 +724,7 @@ TmuxWindow? _windowFromJson(Object? value) {
     isActive: active is bool && active,
     currentCommand: _nonEmpty(value['currentCommand'] as String?),
     currentPath: _nonEmpty(value['currentPath'] as String?),
+    panePid: value['panePid'] as int?,
     flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,

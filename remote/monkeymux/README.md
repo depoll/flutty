@@ -20,6 +20,17 @@ selected window. MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to
 the selected PTY.
 
+MonkeyMux observes OSC title and working-directory reports for metadata only,
+without stripping or rewriting those bytes from the foreground stream. This
+keeps app window labels in sync with TUIs while preserving pass-through I/O.
+Snapshots also include the PTY process ID so the app can resolve active Copilot
+session titles the same way it does for tmux panes.
+
+Control clients can ask MonkeyMux to run bounded metadata commands through the
+server process. This keeps app-side probes on the MonkeyMux backchannel and
+uses the environment inherited by the foreground `attach` shell instead of
+opening unrelated SSH exec sessions.
+
 When `attach` finds an existing server from a different helper version, it asks
 before replacing that session. Choosing no attaches to the running server
 best-effort so app updates do not silently discard in-progress windows. If the

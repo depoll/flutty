@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -148,6 +149,89 @@ func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	}
 	if got := string(window.history[len(window.history)-5:]); got != "bcdef" {
 		t.Fatalf("history suffix = %q, want bcdef", got)
+	}
+}
+
+func TestWindowMetadataTracksOscTitle(t *testing.T) {
+	window := &muxWindow{name: "zsh", paneTitle: "zsh"}
+
+	window.observeTerminalMetadataLocked([]byte("\x1b]2;Claude Code · flutty\x1b\\"))
+
+	if window.name != "Claude Code · flutty" {
+		t.Fatalf("name = %q, want OSC title", window.name)
+	}
+	if window.paneTitle != "Claude Code · flutty" {
+		t.Fatalf("pane title = %q, want OSC title", window.paneTitle)
+	}
+}
+
+func TestWindowMetadataTracksSplitOscTitle(t *testing.T) {
+	window := &muxWindow{name: "zsh", paneTitle: "zsh"}
+
+	window.observeTerminalMetadataLocked([]byte("prefix\x1b]0;Copilot"))
+	window.observeTerminalMetadataLocked([]byte(" CLI\aafter"))
+
+	if window.name != "Copilot CLI" {
+		t.Fatalf("name = %q, want split OSC title", window.name)
+	}
+	if string(window.oscBuffer) != "" {
+		t.Fatalf("osc buffer = %q, want empty", window.oscBuffer)
+	}
+}
+
+func TestWindowMetadataTracksOsc7Path(t *testing.T) {
+	window := &muxWindow{cwd: "/tmp"}
+
+	window.observeTerminalMetadataLocked(
+		[]byte("\x1b]7;file://host/Users/depoll/Code/flutty\x1b\\"),
+	)
+
+	if window.cwd != "/Users/depoll/Code/flutty" {
+		t.Fatalf("cwd = %q, want OSC 7 path", window.cwd)
+	}
+}
+
+func TestReplayPrefixDoesNotForceCursorVisible(t *testing.T) {
+	if strings.Contains(activeWindowReplayPrefix, "?25h") {
+		t.Fatalf("replay prefix forces cursor visible: %q", activeWindowReplayPrefix)
+	}
+}
+
+func TestWindowProcessIDReportsShellPid(t *testing.T) {
+	window := &muxWindow{cmd: &exec.Cmd{Process: &os.Process{Pid: 12345}}}
+
+	if got := window.processID(); got != 12345 {
+		t.Fatalf("processID = %d, want 12345", got)
+	}
+}
+
+func TestRunShellCommandUsesServerEnvironment(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv("MONKEYMUX_TEST_ENV", "ok")
+	server := newMuxServer("test")
+
+	output, exitCode, err := server.runShellCommand("printf %s \"$MONKEYMUX_TEST_ENV\"")
+	if err != nil {
+		t.Fatalf("runShellCommand returned error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, want 0", exitCode)
+	}
+	if output != "ok" {
+		t.Fatalf("output = %q, want ok", output)
+	}
+}
+
+func TestRunShellCommandReportsExitCode(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	server := newMuxServer("test")
+
+	_, exitCode, err := server.runShellCommand("exit 7")
+	if err != nil {
+		t.Fatalf("runShellCommand returned error: %v", err)
+	}
+	if exitCode != 7 {
+		t.Fatalf("exitCode = %d, want 7", exitCode)
 	}
 }
 

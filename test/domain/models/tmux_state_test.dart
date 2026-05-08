@@ -468,6 +468,31 @@ void main() {
       },
     );
 
+    test('foregroundAgentTool detects agent terminal titles', () {
+      const copilotTitleWindow = TmuxWindow(
+        index: 1,
+        name: 'Copilot CLI · flutty',
+        isActive: false,
+        currentCommand: 'node',
+      );
+      const claudePaneTitleWindow = TmuxWindow(
+        index: 2,
+        name: 'zsh',
+        isActive: false,
+        currentCommand: 'node',
+        paneTitle: 'Claude Code - fixing tests',
+      );
+
+      expect(
+        copilotTitleWindow.foregroundAgentTool,
+        AgentLaunchTool.copilotCli,
+      );
+      expect(
+        claudePaneTitleWindow.foregroundAgentTool,
+        AgentLaunchTool.claudeCode,
+      );
+    });
+
     test('equality works correctly', () {
       const a = TmuxWindow(index: 0, name: 'vim', isActive: true);
       const b = TmuxWindow(index: 0, name: 'vim', isActive: true);

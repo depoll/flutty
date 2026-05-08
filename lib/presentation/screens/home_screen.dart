@@ -14,6 +14,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -23,6 +24,8 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/monkeymux_service.dart';
+import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -893,6 +896,7 @@ enum _HostContextAction {
 
 Future<void> _disconnectConnection(WidgetRef ref, int connectionId) async {
   await ref.read(tmuxServiceProvider).clearCache(connectionId);
+  await ref.read(monkeyMuxServiceProvider).clearCache(connectionId);
   await ref.read(activeSessionsProvider.notifier).disconnect(connectionId);
 }
 
@@ -1723,7 +1727,15 @@ class _ConnectionsPanel extends ConsumerWidget {
                               'tmux-badge-${connection.connectionId}',
                             ),
                             connectionId: connection.connectionId,
-                            preferredSessionName: preferredTmuxSessionName,
+                            preferredSessionName:
+                                connection.remoteMuxSessionName ??
+                                preferredTmuxSessionName,
+                            configuredMuxBackend:
+                                connection.remoteMuxBackend ??
+                                RemoteMuxBackendPresentation.fromStorageValue(
+                                  host?.remoteMuxBackend,
+                                ) ??
+                                RemoteMuxBackend.tmux,
                             tmuxExtraFlags: host?.tmuxExtraFlags,
                             onTap: () => unawaited(
                               context.push(
@@ -2893,6 +2905,7 @@ class _SnippetRow extends ConsumerWidget {
 class _TmuxConnectionBadge extends ConsumerStatefulWidget {
   const _TmuxConnectionBadge({
     required this.connectionId,
+    required this.configuredMuxBackend,
     required this.onTap,
     this.preferredSessionName,
     this.tmuxExtraFlags,
@@ -2900,6 +2913,7 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
   });
 
   final int connectionId;
+  final RemoteMuxBackend configuredMuxBackend;
   final String? preferredSessionName;
   final String? tmuxExtraFlags;
 
@@ -2919,6 +2933,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   String? _preferredSessionToolName;
   String? _sessionName;
+  RemoteMuxBackend _muxBackend = RemoteMuxBackend.tmux;
   bool _startClisInYoloMode = false;
   bool _queried = false;
   bool _expanded = false;
@@ -2947,10 +2962,15 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final connectionChanged = oldWidget.connectionId != widget.connectionId;
     final preferredSessionChanged =
         oldWidget.preferredSessionName != widget.preferredSessionName;
+    final muxBackendChanged =
+        oldWidget.configuredMuxBackend != widget.configuredMuxBackend;
     final tmuxExtraFlagsChanged =
         oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
     unawaited(_loadHostAgentPreferences());
-    if (connectionChanged || preferredSessionChanged || tmuxExtraFlagsChanged) {
+    if (connectionChanged ||
+        preferredSessionChanged ||
+        muxBackendChanged ||
+        tmuxExtraFlagsChanged) {
       _tmuxQueryGeneration++;
       _tmuxRetryTimer?.cancel();
       _tmuxRetryTimer = null;
@@ -3037,7 +3057,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }
 
   String get _pageStorageIdentifier =>
-      'tmux-badge-state-${widget.connectionId}';
+      'tmux-badge-state-${widget.connectionId}-${widget.configuredMuxBackend.storageValue}';
 
   void _persistUiState() {
     PageStorage.maybeOf(context)?.writeState(context, <String, Object>{
@@ -3053,6 +3073,38 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     return monetizationState.allowsFeature(
       MonetizationFeature.agentLaunchPresets,
     );
+  }
+
+  RemoteMuxBackend _resolveMuxBackend(SshSession session) =>
+      widget.configuredMuxBackend == RemoteMuxBackend.auto
+      ? (session.remoteMuxBackend ?? RemoteMuxBackend.tmux)
+      : widget.configuredMuxBackend;
+
+  RemoteMultiplexerService _serviceForBackend(RemoteMuxBackend backend) =>
+      backend == RemoteMuxBackend.monkeyMux
+      ? ref.read(monkeyMuxServiceProvider)
+      : TmuxRemoteMultiplexerService(ref.read(tmuxServiceProvider));
+
+  Future<String?> _resolveMuxSessionName(
+    SshSession session,
+    RemoteMuxBackend backend,
+  ) async {
+    final preferredSessionName = widget.preferredSessionName?.trim();
+    if (preferredSessionName != null && preferredSessionName.isNotEmpty) {
+      return preferredSessionName;
+    }
+    final activeSessionName = session.remoteMuxSessionName?.trim();
+    if (activeSessionName != null &&
+        activeSessionName.isNotEmpty &&
+        session.remoteMuxBackend == backend) {
+      return activeSessionName;
+    }
+    if (backend == RemoteMuxBackend.monkeyMux) {
+      return null;
+    }
+    return ref
+        .read(tmuxServiceProvider)
+        .currentSessionName(session, extraFlags: widget.tmuxExtraFlags);
   }
 
   Future<void> _retryTmuxQuery(
@@ -3132,15 +3184,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }
     unawaited(_loadHostAgentPreferences(session.hostId));
 
-    final tmux = ref.read(tmuxServiceProvider);
-    final preferredSessionName = widget.preferredSessionName?.trim();
-    final sessionName =
-        preferredSessionName != null && preferredSessionName.isNotEmpty
-        ? preferredSessionName
-        : await tmux.currentSessionName(
-            session,
-            extraFlags: widget.tmuxExtraFlags,
-          );
+    final muxBackend = _resolveMuxBackend(session);
+    final mux = _serviceForBackend(muxBackend);
+    final sessionName = await _resolveMuxSessionName(session, muxBackend);
     if (!_isCurrentTmuxQuery(queryGeneration)) {
       return;
     }
@@ -3148,14 +3194,17 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
+    _muxBackend = muxBackend;
 
     await _windowChangeSubscription?.cancel();
     final generation = ++_windowEventGeneration;
-    _windowChangeSubscription = tmux
+    _windowChangeSubscription = mux
         .watchWindowChanges(
           session,
           sessionName,
-          extraFlags: widget.tmuxExtraFlags,
+          extraFlags: muxBackend == RemoteMuxBackend.tmux
+              ? widget.tmuxExtraFlags
+              : null,
         )
         .listen((event) {
           if (!_isCurrentTmuxQuery(queryGeneration)) return;
@@ -3164,12 +3213,14 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             sessionName,
             event,
             generation,
+            muxBackend,
             queryGeneration,
           );
         });
     await _refreshTmuxWindows(
       session,
       sessionName,
+      muxBackend: muxBackend,
       queryGeneration: queryGeneration,
     );
   }
@@ -3179,6 +3230,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     String sessionName,
     TmuxWindowChangeEvent event,
     int generation,
+    RemoteMuxBackend muxBackend,
     int queryGeneration,
   ) {
     if (!mounted || !_isCurrentTmuxQuery(queryGeneration)) return;
@@ -3187,6 +3239,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _refreshTmuxWindows(
         session,
         sessionName,
+        muxBackend: muxBackend,
         queryGeneration: queryGeneration,
       );
       return;
@@ -3196,6 +3249,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _refreshTmuxWindows(
         session,
         sessionName,
+        muxBackend: muxBackend,
         queryGeneration: queryGeneration,
       );
       return;
@@ -3206,6 +3260,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     setState(() {
       _windows = applyTmuxWindowChangeEvent(currentWindows, event);
       _sessionName = sessionName;
+      _muxBackend = muxBackend;
       _queried = true;
     });
   }
@@ -3213,6 +3268,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   Future<void> _refreshTmuxWindows(
     SshSession session,
     String sessionName, {
+    required RemoteMuxBackend muxBackend,
     required int queryGeneration,
   }) async {
     if (!_isCurrentTmuxQuery(queryGeneration)) {
@@ -3225,9 +3281,14 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _loadingWindows = true;
     final reloadGeneration = ++_windowReloadGeneration;
     try {
-      final windows = await ref
-          .read(tmuxServiceProvider)
-          .listWindows(session, sessionName, extraFlags: widget.tmuxExtraFlags);
+      final mux = _serviceForBackend(muxBackend);
+      final windows = await mux.listWindows(
+        session,
+        sessionName,
+        extraFlags: muxBackend == RemoteMuxBackend.tmux
+            ? widget.tmuxExtraFlags
+            : null,
+      );
       if (!_isCurrentTmuxQuery(queryGeneration)) {
         return;
       }
@@ -3241,6 +3302,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       setState(() {
         _windows = windows;
         _sessionName = sessionName;
+        _muxBackend = muxBackend;
         _queried = true;
       });
     } on Object {
@@ -3259,6 +3321,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _refreshTmuxWindows(
             session,
             sessionName,
+            muxBackend: muxBackend,
             queryGeneration: queryGeneration,
           ),
         );
@@ -3318,7 +3381,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                   Text(
                     _sessionName != null
                         ? '$_sessionName · ${windows.length} windows'
-                        : 'tmux · ${windows.length} windows',
+                        : '${_muxBackend.label} · ${windows.length} windows',
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -3495,15 +3558,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .getSession(widget.connectionId);
     if (session == null || _sessionName == null) return;
 
+    final mux = _serviceForBackend(_muxBackend);
     _runTmuxPreviewAction(
-      ref
-          .read(tmuxServiceProvider)
-          .killWindow(
-            session,
-            _sessionName!,
-            windowIndex,
-            extraFlags: widget.tmuxExtraFlags,
-          ),
+      mux.killWindow(
+        session,
+        _sessionName!,
+        windowIndex,
+        extraFlags: _muxBackend == RemoteMuxBackend.tmux
+            ? widget.tmuxExtraFlags
+            : null,
+      ),
     );
 
     // Optimistically remove from the list.
@@ -3518,15 +3582,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .read(activeSessionsProvider.notifier)
         .getSession(widget.connectionId);
     if (session != null && _sessionName != null) {
+      final mux = _serviceForBackend(_muxBackend);
       _runTmuxPreviewAction(
-        ref
-            .read(tmuxServiceProvider)
-            .selectWindow(
-              session,
-              _sessionName!,
-              windowIndex,
-              extraFlags: widget.tmuxExtraFlags,
-            ),
+        mux.selectWindow(
+          session,
+          _sessionName!,
+          windowIndex,
+          extraFlags: _muxBackend == RemoteMuxBackend.tmux
+              ? widget.tmuxExtraFlags
+              : null,
+        ),
       );
     }
     widget.onTap();
@@ -3541,7 +3606,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'tmux action failed. Check the session and try again.',
+                'Terminal window action failed. Check the session and try again.',
               ),
             ),
           );
@@ -3570,16 +3635,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       info,
       startInYoloMode: cliLaunchPreferences.startInYoloMode,
     );
-    await ref
-        .read(tmuxServiceProvider)
-        .createWindow(
-          session,
-          _sessionName!,
-          command: command,
-          name: info.toolName,
-          workingDirectory: info.workingDirectory,
-          extraFlags: widget.tmuxExtraFlags,
-        );
+    await _serviceForBackend(_muxBackend).createWindow(
+      session,
+      _sessionName!,
+      command: command,
+      name: info.toolName,
+      workingDirectory: info.workingDirectory,
+      extraFlags: _muxBackend == RemoteMuxBackend.tmux
+          ? widget.tmuxExtraFlags
+          : null,
+    );
     if (mounted) {
       widget.onTap();
     }
