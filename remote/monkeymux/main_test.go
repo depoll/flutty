@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+func replayPrefixForTest(window *muxWindow) string {
+	return activeWindowReplayPrefix + string(terminalTitleReplaySequence(window))
+}
+
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
 	base := []string{
 		"PATH=/custom/bin:/usr/bin",
@@ -67,11 +71,14 @@ func TestExpandHomePath(t *testing.T) {
 	}
 }
 
-func TestShellCommandUsesPlainShell(t *testing.T) {
+func TestShellCommandUsesLoginShell(t *testing.T) {
 	cmd := shellCommand("/bin/zsh")
 
-	if got := cmd.Args[0]; got != "/bin/zsh" {
-		t.Fatalf("argv0 = %q, want plain shell argv0", got)
+	if got := cmd.Path; got != "/bin/zsh" {
+		t.Fatalf("path = %q, want shell path", got)
+	}
+	if got := cmd.Args[0]; got != "-zsh" {
+		t.Fatalf("argv0 = %q, want login shell argv0", got)
 	}
 }
 
@@ -110,7 +117,7 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := activeWindowReplayPrefix + "background output" +
+	want := replayPrefixForTest(inactiveWindow) + "background output" +
 		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
@@ -150,7 +157,8 @@ func TestActiveReplayIncludesWindowHistory(t *testing.T) {
 	server.mu.Unlock()
 	server.writeAttach(attach, replay)
 
-	want := activeWindowReplayPrefix + "previous screen" +
+	window := server.windows[0]
+	want := replayPrefixForTest(window) + "previous screen" +
 		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
@@ -168,8 +176,9 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 
 	replay := server.activeReplayLocked()
 
-	if len(replay) > len(activeWindowReplayPrefix)+windowReplayLimitBytes+2048 {
-		t.Fatalf("replay length = %d, want capped near %d", len(replay), len(activeWindowReplayPrefix)+windowReplayLimitBytes)
+	window := server.windows[0]
+	if len(replay) > len(replayPrefixForTest(window))+windowReplayLimitBytes+2048 {
+		t.Fatalf("replay length = %d, want capped near %d", len(replay), len(replayPrefixForTest(window))+windowReplayLimitBytes)
 	}
 	if !strings.HasSuffix(
 		strings.TrimSuffix(string(replay), cursorVisibilityReplaySequence(true)),
@@ -260,7 +269,8 @@ func TestCreateWindowClearsAttachBeforePromptOutput(t *testing.T) {
 	}
 
 	output := attach.String()
-	wantPrefix := activeWindowReplayPrefix + cursorVisibilityReplaySequence(true)
+	wantPrefix := replayPrefixForTest(&muxWindow{name: "sh", paneTitle: "sh"}) +
+		cursorVisibilityReplaySequence(true)
 	if !strings.HasPrefix(output, wantPrefix) {
 		t.Fatalf("attach output = %q, want replay prefix before prompt", output)
 	}
@@ -297,6 +307,46 @@ func TestWindowMetadataTracksOscTitle(t *testing.T) {
 	}
 	if window.paneTitle != "Claude Code · flutty" {
 		t.Fatalf("pane title = %q, want OSC title", window.paneTitle)
+	}
+}
+
+func TestActiveReplaySetsWindowTitle(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:           "@1",
+			index:        0,
+			name:         "Copilot CLI",
+			paneTitle:    "Copilot CLI",
+			history:      []byte("prompt"),
+			lastActivity: time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	for _, sequence := range []string{
+		"\x1b]0;Copilot CLI\x07",
+		"\x1b]1;Copilot CLI\x07",
+		"\x1b]2;Copilot CLI\x07",
+	} {
+		if !strings.Contains(replay, sequence) {
+			t.Fatalf("replay = %q, want title sequence %q", replay, sequence)
+		}
+	}
+}
+
+func TestTerminalTitleReplaySanitizesControlCharacters(t *testing.T) {
+	window := &muxWindow{name: "bad\x1b\a title"}
+
+	replay := string(terminalTitleReplaySequence(window))
+
+	if strings.Contains(replay, "bad\x1b") || strings.Contains(replay, "\a title") {
+		t.Fatalf("title replay retained payload control characters: %q", replay)
+	}
+	if !strings.Contains(replay, "bad title") {
+		t.Fatalf("title replay = %q, want sanitized title text", replay)
 	}
 }
 
@@ -522,7 +572,7 @@ func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	if !server.windows[1].closed {
 		t.Fatal("closed window was not marked closed immediately")
 	}
-	want := activeWindowReplayPrefix + "three" +
+	want := replayPrefixForTest(server.windows[2]) + "three" +
 		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
@@ -550,7 +600,7 @@ func TestCloseLastIndexedActiveWindowWrapsToFirstWindow(t *testing.T) {
 	if got := server.activeWindowID(); got != "@1" {
 		t.Fatalf("active window = %q, want wrapped window @1", got)
 	}
-	want := activeWindowReplayPrefix + "one" +
+	want := replayPrefixForTest(server.windows[0]) + "one" +
 		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)

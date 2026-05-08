@@ -2927,6 +2927,8 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 }
 
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
+  static const _monkeyMuxSummaryIconAsset =
+      'assets/icons/monkeyssh_icon_monochrome.png';
   static const _initialSessionFetchLimit = 24;
   static const _prefetchSessionFetchLimit = 6;
   static const _tmuxQueryRetryDelay = Duration(seconds: 2);
@@ -3458,11 +3460,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.window_outlined,
-                    size: 14,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
+                  _buildMuxSummaryIcon(theme),
                   const SizedBox(width: 4),
                   Text(
                     _sessionName != null
@@ -3636,6 +3634,19 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         ],
       ),
     );
+  }
+
+  Widget _buildMuxSummaryIcon(ThemeData theme) {
+    final color = theme.colorScheme.onSurfaceVariant;
+    if (_muxBackend == RemoteMuxBackend.monkeyMux) {
+      return ImageIcon(
+        const AssetImage(_monkeyMuxSummaryIconAsset),
+        key: const ValueKey('monkeymux-connection-summary-icon'),
+        size: 14,
+        color: color,
+      );
+    }
+    return Icon(Icons.window_outlined, size: 14, color: color);
   }
 
   void _closeWindow(int windowIndex) {
