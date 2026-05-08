@@ -427,6 +427,9 @@ class SecureTransferService {
           keyId: Value(keyId),
           groupId: const Value(null),
           jumpHostId: const Value(null),
+          skipJumpHostOnSsids: Value(
+            _optionalString(hostData['skipJumpHostOnSsids']),
+          ),
           isFavorite: Value((hostData['isFavorite'] as bool?) ?? false),
           color: Value(_optionalString(hostData['color'])),
           notes: Value(_optionalString(hostData['notes'])),
@@ -944,6 +947,9 @@ class SecureTransferService {
           keyId: Value(mappedKeyId),
           groupId: Value(mappedGroupId),
           jumpHostId: const Value(null),
+          skipJumpHostOnSsids: Value(
+            _optionalString(item['skipJumpHostOnSsids']),
+          ),
           isFavorite: Value((item['isFavorite'] as bool?) ?? false),
           color: Value(_optionalString(item['color'])),
           notes: Value(_optionalString(item['notes'])),
