@@ -756,11 +756,37 @@ final _oscEscapeSequencePattern = RegExp(
 );
 final _csiEscapeSequencePattern = RegExp('\x1B\\[[0-?]*[ -/]*[@-~]');
 final _singleCharEscapeSequencePattern = RegExp('\x1B[@-_]');
+final _terminalMouseReportOutputPattern = RegExp(
+  '^(?:\x1B\\[<\\d+;\\d+;\\d+[mM])+\$',
+);
+final _terminalFocusReportOutputPattern = RegExp('^(?:\x1B\\[[IO])+\$');
 
 String _stripTerminalPromptEscapeSequences(String text) => text
     .replaceAll(_oscEscapeSequencePattern, '')
     .replaceAll(_csiEscapeSequencePattern, '')
     .replaceAll(_singleCharEscapeSequencePattern, '');
+
+bool _isTerminalMouseOrFocusReportOutput(String output) =>
+    _terminalMouseReportOutputPattern.hasMatch(output) ||
+    _terminalFocusReportOutputPattern.hasMatch(output);
+
+bool _isShellCommandName(String? command) {
+  final trimmed = command?.trim();
+  if (trimmed == null || trimmed.isEmpty) return false;
+  final token = trimmed.split(RegExp(r'\s+')).first;
+  final basename = token.split(RegExp(r'[\\/]')).last.toLowerCase();
+  switch (basename.replaceFirst(RegExp(r'\.exe$'), '')) {
+    case 'sh':
+    case 'bash':
+    case 'zsh':
+    case 'fish':
+    case 'dash':
+    case 'ksh':
+      return true;
+    default:
+      return false;
+  }
+}
 
 final _terminalSensitivePromptPattern = RegExp(
   r'\b(?:password|passphrase|pin|otp|one[- ]time(?:\s+password)?|verification(?:\s+code)?|authentication(?:\s+code)?|auth(?:\s+code)?|security(?:\s+code)?)\b[^\r\n]{0,160}[:：]\s*$',
@@ -2625,6 +2651,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   String? _tmuxCurrentCommand;
+  int _muxPaneContextRefreshGeneration = 0;
+  DateTime? _muxPaneContextRefreshedAt;
   DateTime? _shellCompletionTmuxContextRefreshedAt;
   int? _shellCompletionTmuxContextConnectionId;
   String? _shellCompletionTmuxContextSessionName;
@@ -3344,17 +3372,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (_isTmuxActive && tmuxStateBelongsToSession) {
       if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-        // MonkeyMux is direct pass-through: remote TUIs should receive only
-        // answers to terminal queries they emitted, never tmux-style synthetic
-        // theme/focus reports injected by MonkeySSH.
         DiagnosticsLogService.instance.info(
           'terminal.theme',
-          'monkeymux_refresh_skipped',
+          'monkeymux_refresh_requested',
           fields: {
             'reason': reason,
             'connectionId': session.connectionId,
             'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
           },
+        );
+        _queueTmuxTerminalThemeRefresh(
+          _TmuxTerminalThemeRefreshRequest(
+            theme: theme,
+            session: session,
+            sessionName: _tmuxSessionName!,
+            refreshGeneration: refreshGeneration,
+            reason: reason,
+            extraFlags: _activeTmuxExtraFlags,
+          ),
         );
         return;
       }
@@ -3505,6 +3540,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.isUsingAltBuffer ||
       _terminal.mouseMode != MouseMode.none;
 
+  bool _shouldSuppressMonkeyMuxTerminalControlInput(String output) {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return false;
+    }
+    if (!_isTerminalMouseOrFocusReportOutput(output)) {
+      return false;
+    }
+    final command = _tmuxCurrentCommand?.trim();
+    if (command != null && agentLaunchToolForCommandName(command) != null) {
+      return false;
+    }
+    return _isShellCommandName(command);
+  }
+
   /// Whether outer-tmux theme/focus reports are safe to push through the SSH
   /// stream right now.
   ///
@@ -3640,10 +3689,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _refreshMuxPaneContextAfterWindowStateChange(session, sessionName);
+    }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _refreshMuxPaneContextAfterWindowStateChange(
+    SshSession session,
+    String sessionName,
+  ) {
+    final refreshedAt = _muxPaneContextRefreshedAt;
+    if (refreshedAt != null &&
+        DateTime.now().difference(refreshedAt) <
+            const Duration(milliseconds: 300)) {
+      return;
+    }
+    _muxPaneContextRefreshedAt = DateTime.now();
+    final refreshGeneration = ++_muxPaneContextRefreshGeneration;
+    unawaited(
+      Future<TmuxPaneContext?>.sync(
+            () => _activeRemoteMultiplexerService.currentPaneContext(
+              session,
+              sessionName,
+              priority: SshExecPriority.low,
+              extraFlags: _activeTmuxExtraFlags,
+            ),
+          )
+          .then((context) {
+            if (!mounted ||
+                refreshGeneration != _muxPaneContextRefreshGeneration ||
+                _tmuxStateConnectionId != session.connectionId ||
+                _tmuxSessionName != sessionName) {
+              return;
+            }
+            final currentPath = context?.currentPath?.trim();
+            final currentCommand = context?.currentCommand?.trim();
+            if ((currentPath == null || currentPath == _tmuxWorkingDirectory) &&
+                (currentCommand == null ||
+                    currentCommand == _tmuxCurrentCommand)) {
+              return;
+            }
+            setState(() {
+              if (currentPath != null && currentPath.isNotEmpty) {
+                _tmuxWorkingDirectory = currentPath;
+              }
+              if (currentCommand != null && currentCommand.isNotEmpty) {
+                _tmuxCurrentCommand = currentCommand;
+              }
+            });
+          })
+          .catchError((Object error) {
+            DiagnosticsLogService.instance.debug(
+              'tmux.ui',
+              'context_refresh_failed',
+              fields: {
+                'connectionId': session.connectionId,
+                'errorType': error.runtimeType,
+              },
+            );
+          }),
     );
   }
 
@@ -3661,9 +3770,43 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       DiagnosticsLogService.instance.debug(
         'terminal.theme',
-        'monkeymux_window_refresh_skipped',
+        'monkeymux_window_refresh_requested',
         fields: {'reason': reason, 'connectionId': session.connectionId},
       );
+      final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+      _pendingTmuxWindowThemeRefreshRequest = _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: sessionName,
+        refreshGeneration: _terminalThemeRefreshGeneration,
+        reason: reason,
+        extraFlags: _activeTmuxExtraFlags,
+      );
+      if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
+        return;
+      }
+
+      late final Timer timer;
+      timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
+        _terminalThemeRefreshTimers.remove(timer);
+        if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
+          _tmuxWindowThemeRefreshDebounceTimer = null;
+        }
+        final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
+        _pendingTmuxWindowThemeRefreshRequest = null;
+        if (pendingRequest == null ||
+            _tmuxSessionName != pendingRequest.sessionName ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: pendingRequest.theme,
+              session: pendingRequest.session,
+              refreshGeneration: pendingRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        _queueTmuxTerminalThemeRefresh(pendingRequest);
+      });
+      _tmuxWindowThemeRefreshDebounceTimer = timer;
+      _terminalThemeRefreshTimers.add(timer);
       return;
     }
 
@@ -5491,6 +5634,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         data == '\n' ? '\r' : data,
       );
 
+      if (_shouldSuppressMonkeyMuxTerminalControlInput(output)) {
+        DiagnosticsLogService.instance.debug(
+          'terminal.input',
+          'monkeymux_stale_control_input_suppressed',
+          fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
       _shell?.write(utf8.encode(output));

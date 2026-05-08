@@ -583,6 +583,15 @@ class TmuxWindowReloadEvent extends TmuxWindowChangeEvent {
   const TmuxWindowReloadEvent();
 }
 
+/// A full live window-list snapshot.
+class TmuxWindowListEvent extends TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowListEvent].
+  const TmuxWindowListEvent(this.windows);
+
+  /// The latest windows reported by the multiplexer.
+  final List<TmuxWindow> windows;
+}
+
 /// Applies a live tmux window update to an existing window list.
 List<TmuxWindow> applyTmuxWindowChangeEvent(
   List<TmuxWindow> windows,
@@ -591,6 +600,17 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
   switch (event) {
     case TmuxWindowReloadEvent():
       return windows;
+    case TmuxWindowListEvent(windows: final nextWindows):
+      return List<TmuxWindow>.unmodifiable(
+        nextWindows.map((nextWindow) {
+          final existingWindow = windows
+              .where((window) => _isSameTmuxWindow(window, nextWindow))
+              .firstOrNull;
+          return existingWindow == null
+              ? nextWindow
+              : _preserveActiveAgentSessionMetadata(existingWindow, nextWindow);
+        }),
+      );
     case TmuxWindowSnapshotEvent(window: final window):
       final updated = windows
           .map(

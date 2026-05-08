@@ -3244,6 +3244,21 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       );
       return;
     }
+    if (event is TmuxWindowListEvent) {
+      _windowReloadGeneration += 1;
+      _tmuxRetryTimer?.cancel();
+      _tmuxRetryTimer = null;
+      final currentWindows = _windows;
+      setState(() {
+        _windows = currentWindows == null
+            ? event.windows
+            : applyTmuxWindowChangeEvent(currentWindows, event);
+        _sessionName = sessionName;
+        _muxBackend = muxBackend;
+        _queried = true;
+      });
+      return;
+    }
     final currentWindows = _windows;
     if (currentWindows == null) {
       _refreshTmuxWindows(

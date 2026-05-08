@@ -53,6 +53,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _windowSnapshotCache = <_MonkeyMuxWatchKey, List<TmuxWindow>>{};
   static final _windowListRequests =
       <_MonkeyMuxWatchKey, Future<List<TmuxWindow>>>{};
+  static final _agentMetadataRequests = <_MonkeyMuxWatchKey, Future<void>>{};
 
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
@@ -65,6 +66,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       (key, _) => key.connectionId == connectionId,
     );
     _windowListRequests.removeWhere((key, request) {
+      if (key.connectionId == connectionId) {
+        request.ignore();
+        return true;
+      }
+      return false;
+    });
+    _agentMetadataRequests.removeWhere((key, request) {
       if (key.connectionId == connectionId) {
         request.ignore();
         return true;
@@ -112,13 +120,14 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       final response = await _runControlCommand(session, sessionName, {
         'type': 'list_windows',
       });
-      final windows = await _enrichWindowsWithAgentMetadata(
+      _cacheWindows(key, response.windows);
+      _scheduleAgentMetadataRefresh(
         session,
         sessionName,
+        key,
         response.windows,
       );
-      _cacheWindows(key, windows);
-      return windows;
+      return _windowSnapshotCache[key] ?? response.windows;
     } on Object {
       final cachedWindows = _windowSnapshotCache[key];
       if (cachedWindows != null && cachedWindows.isNotEmpty) {
@@ -141,7 +150,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         session: session,
         sessionName: sessionName,
         installer: _installer,
-        onWindowList: (windows) => _cacheWindows(key, windows),
+        onWindowList: (windows) {
+          _cacheWindows(key, windows);
+          _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
+        },
         onWindowSnapshot: (window) => _cacheWindowSnapshot(key, window),
         onDispose: () => _observers.remove(key),
       ),
@@ -260,7 +272,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
-  }) async {}
+  }) async {
+    await _runControlCommand(session, sessionName, {
+      'type': 'theme_changed',
+    }, priority: SshExecPriority.low);
+  }
 
   Future<_MonkeyMuxControlResponse> _runControlCommand(
     SshSession session,
@@ -340,9 +356,54 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  void _scheduleAgentMetadataRefresh(
+    SshSession session,
+    String sessionName,
+    _MonkeyMuxWatchKey key,
+    List<TmuxWindow> windows,
+  ) {
+    if (!windows.any(
+      (window) =>
+          window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+          window.panePid != null,
+    )) {
+      return;
+    }
+    if (_agentMetadataRequests.containsKey(key)) {
+      return;
+    }
+    final request =
+        _enrichWindowsWithAgentMetadata(session, sessionName, windows).then((
+          enrichedWindows,
+        ) {
+          final previousWindows = _windowSnapshotCache[key];
+          _cacheWindows(key, enrichedWindows);
+          final cachedWindows = _windowSnapshotCache[key] ?? enrichedWindows;
+          if (previousWindows != null &&
+              listEquals(previousWindows, cachedWindows)) {
+            return;
+          }
+          _observers[key]?.emitWindowList(cachedWindows);
+        });
+    _agentMetadataRequests[key] = request;
+    request.whenComplete(() {
+      if (identical(_agentMetadataRequests[key], request)) {
+        _agentMetadataRequests.remove(key);
+      }
+    }).ignore();
+  }
+
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
     if (windows.isEmpty) return;
-    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(windows);
+    final currentWindows = _windowSnapshotCache[key];
+    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
+      currentWindows == null
+          ? windows
+          : applyTmuxWindowChangeEvent(
+              currentWindows,
+              TmuxWindowListEvent(windows),
+            ),
+    );
   }
 
   static void _cacheWindowSnapshot(_MonkeyMuxWatchKey key, TmuxWindow window) {
@@ -430,6 +491,14 @@ class _MonkeyMuxWindowChangeObserver {
   bool _disposed = false;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  void emitWindowList(List<TmuxWindow> windows) {
+    if (_disposed || _controller.isClosed || windows.isEmpty) {
+      return;
+    }
+    onWindowList(windows);
+    _controller.add(TmuxWindowListEvent(windows));
+  }
 
   Future<_MonkeyMuxControlResponse> runCommand(
     Map<String, Object?> command,
@@ -532,18 +601,16 @@ class _MonkeyMuxWindowChangeObserver {
         final window = response.window;
         if (window != null && !_controller.isClosed) {
           onWindowSnapshot(window);
-          if (window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-              window.panePid != null) {
-            _controller.add(const TmuxWindowReloadEvent());
-          } else {
-            _controller.add(TmuxWindowSnapshotEvent(window));
-          }
+          _controller.add(TmuxWindowSnapshotEvent(window));
         }
       case 'window_list':
+      case 'active_window_changed':
         if (response.windows.isNotEmpty) {
           onWindowList(response.windows);
+          if (!_controller.isClosed) {
+            _controller.add(TmuxWindowListEvent(response.windows));
+          }
         }
-      case 'active_window_changed':
       case 'window_removed':
         if (!_controller.isClosed) {
           _controller.add(const TmuxWindowReloadEvent());

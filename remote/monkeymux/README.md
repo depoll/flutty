@@ -21,15 +21,21 @@ only a best-effort direct replay so the foreground terminal visibly moves to
 the selected PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
-without stripping or rewriting those bytes from the foreground stream. This
-keeps app window labels in sync with TUIs while preserving pass-through I/O.
-Snapshots also include the PTY process ID so the app can resolve active Copilot
-session titles the same way it does for tmux panes.
+without stripping or rewriting those bytes from the foreground stream. It also
+tracks the PTY foreground process group for snapshots, so shell-launched tools
+such as Codex can be surfaced as agent windows even when the terminal title is
+only the current directory. Window replay resets stale local mouse/focus modes
+before replaying history so touch input from one window is not leaked into a
+plain shell prompt in another.
 
 Control clients can ask MonkeyMux to run bounded metadata commands through the
 server process. This keeps app-side probes on the MonkeyMux backchannel and
 uses the environment inherited by the foreground `attach` shell instead of
 opening unrelated SSH exec sessions.
+
+Theme/focus refresh requests are backchannel hints. MonkeyMux only forwards
+focus transitions to recognized foreground agent TUIs; it does not inject
+tmux-style palette reports into shell windows.
 
 When `attach` finds an existing server from a different helper version, it asks
 before replacing that session. Choosing no attaches to the running server
