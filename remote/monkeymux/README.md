@@ -21,7 +21,9 @@ synthesized by MonkeyMux.
 Window switching and reconnect repaint from a bounded raw byte history for the
 selected window. MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to
-the selected PTY.
+the selected PTY. Replay strips old terminal response queries, such as device
+attributes and OSC color queries, so re-showing history does not synthesize new
+input into the live PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also
@@ -29,7 +31,8 @@ tracks the PTY foreground process group for snapshots, so shell-launched tools
 such as Codex can be surfaced as agent windows even when the terminal title is
 only the current directory. Window replay resets stale local mouse/focus modes
 before replaying history so touch input from one window is not leaked into a
-plain shell prompt in another.
+plain shell prompt in another. Closing the active window selects the next open
+window immediately before the old PTY is torn down.
 
 Control clients can ask MonkeyMux to run bounded metadata commands through the
 server process. This keeps app-side probes on the MonkeyMux backchannel and
