@@ -23,6 +23,51 @@ final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
       MonkeyMuxService(installer: ref.watch(monkeyMuxInstallerServiceProvider)),
 );
 
+/// How the helper should handle an already-running server with an older
+/// version when attaching to a MonkeyMux session.
+enum MonkeyMuxServerUpdatePolicy {
+  /// Ask on the terminal. Intended for manual helper use only.
+  prompt('prompt'),
+
+  /// Keep the current server and suppress terminal prompts.
+  never('never'),
+
+  /// Update without a terminal prompt.
+  always('always');
+
+  const MonkeyMuxServerUpdatePolicy(this.cliValue);
+
+  /// CLI flag value passed to the MonkeyMux helper.
+  final String cliValue;
+}
+
+/// Version metadata for an already-running MonkeyMux server.
+@immutable
+class MonkeyMuxServerStatus {
+  /// Creates a running server status snapshot.
+  const MonkeyMuxServerStatus({
+    required this.version,
+    required this.capabilities,
+  });
+
+  /// Running helper version reported by the server.
+  final String? version;
+
+  /// Capability strings reported by the server.
+  final Set<String> capabilities;
+
+  /// Whether the server can be shut down through the control channel.
+  bool get supportsShutdown => capabilities.contains('shutdown');
+
+  /// Whether this server differs from the app-bundled helper version.
+  bool needsUpdate(String bundledVersion) {
+    final runningVersion = version?.trim();
+    return runningVersion == null ||
+        runningVersion.isEmpty ||
+        runningVersion != bundledVersion.trim();
+  }
+}
+
 /// Builds the foreground attach command for an installed MonkeyMux helper.
 String buildMonkeyMuxAttachCommand({
   required String executablePath,
@@ -30,10 +75,15 @@ String buildMonkeyMuxAttachCommand({
   String? workingDirectory,
   String? launchCommand,
   String? windowName,
+  MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
 }) {
   final parts = <String>[
     _shellQuote(executablePath),
     'attach',
+    if (serverUpdatePolicy != null) ...[
+      '--update-policy',
+      serverUpdatePolicy.cliValue,
+    ],
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
       _shellQuote(workingDirectory.trim()),
@@ -304,6 +354,34 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     );
   }
 
+  /// Returns metadata for an already-running MonkeyMux server, if any.
+  Future<MonkeyMuxServerStatus?> runningServerStatus(
+    SshSession session,
+    MonkeyMuxInstallation installation,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    final controlCommand =
+        '${_shellQuote(installation.executablePath)} control --json '
+        '${_shellQuote(sessionName)}';
+    try {
+      return await session.runQueuedExec(
+        () => _readRunningServerStatus(session, controlCommand),
+        priority: priority,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.status',
+        'unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
   Future<_MonkeyMuxControlResponse> _runControlCommand(
     SshSession session,
     String sessionName,
@@ -517,6 +595,37 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
   throw const MonkeyMuxInstallException(
     'MonkeyMux control command closed without a response.',
   );
+}
+
+Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
+  SshSession session,
+  String command,
+) async {
+  final execSession = await session.execute(command);
+  try {
+    execSession.stderr.drain<void>().ignore();
+    await for (final line
+        in execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .timeout(const Duration(seconds: 5))) {
+      final response = _MonkeyMuxControlResponse.tryParse(line);
+      if (response == null || response.type != 'hello') {
+        continue;
+      }
+      return MonkeyMuxServerStatus(
+        version: response.version,
+        capabilities: response.capabilities.toSet(),
+      );
+    }
+  } on TimeoutException {
+    return null;
+  } finally {
+    await execSession.stdin.close();
+    execSession.close();
+  }
+  return null;
 }
 
 class _MonkeyMuxWindowChangeObserver {
@@ -822,6 +931,8 @@ class _MonkeyMuxControlResponse {
     this.currentCommand,
     this.data,
     this.exitCode,
+    this.version,
+    this.capabilities = const [],
   });
 
   factory _MonkeyMuxControlResponse.fromJson(Map<String, Object?> json) =>
@@ -843,6 +954,12 @@ class _MonkeyMuxControlResponse {
         currentCommand: json['currentCommand'] as String?,
         data: json['data'] as String?,
         exitCode: json['exitCode'] as int?,
+        version: json['version'] as String?,
+        capabilities: switch (json['capabilities']) {
+          final List<Object?> capabilities =>
+            capabilities.whereType<String>().toList(growable: false),
+          _ => const <String>[],
+        },
       );
 
   static _MonkeyMuxControlResponse? tryParse(String line) {
@@ -867,6 +984,8 @@ class _MonkeyMuxControlResponse {
   final String? currentCommand;
   final String? data;
   final int? exitCode;
+  final String? version;
+  final List<String> capabilities;
 
   bool get isError => status == 'error' || type == 'error';
 }

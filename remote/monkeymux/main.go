@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.13"
+	monkeyMuxVersion         = "0.1.14"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -66,6 +66,7 @@ var capabilities = []string{
 	"focus-hint",
 	"theme-hint",
 	"shutdown",
+	"attach-update-policy",
 }
 
 var (
@@ -73,6 +74,12 @@ var (
 	errRunCommandClientClosed = errors.New("control client closed")
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
+)
+
+const (
+	serverUpdatePolicyPrompt = "prompt"
+	serverUpdatePolicyNever  = "never"
+	serverUpdatePolicyAlways = "always"
 )
 
 var (
@@ -211,7 +218,7 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
 	os.Exit(2)
 }
 
@@ -220,16 +227,21 @@ func attachCommand(args []string) {
 	cwd := fs.String("cwd", "", "initial working directory")
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
+	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		usageAndExit()
+	}
+	policy, err := normalizeServerUpdatePolicy(*updatePolicy)
+	if err != nil {
+		fatal(err)
 	}
 	session := fs.Arg(0)
 	if err := ensureServer(session, createWindowOptions{
 		cwd:     *cwd,
 		name:    *name,
 		command: *command,
-	}); err != nil {
+	}, policy); err != nil {
 		fatal(err)
 	}
 
@@ -352,12 +364,18 @@ func gcCommand() {
 	}
 }
 
-func ensureServer(session string, initialWindow createWindowOptions) error {
+func ensureServer(session string, initialWindow createWindowOptions, updatePolicy string) error {
 	if status, err := queryRunningServerStatus(session); err == nil {
 		if status.version == monkeyMuxVersion {
 			return nil
 		}
-		if !promptForServerUpdate(os.Stdin, os.Stderr, session, status) {
+		if !shouldUpdateRunningServer(
+			os.Stdin,
+			os.Stderr,
+			session,
+			status,
+			updatePolicy,
+		) {
 			return nil
 		}
 		if status.supportsCapability("shutdown") {
@@ -2229,6 +2247,36 @@ func promptForServerUpdate(
 	}
 	fmt.Fprint(writer, "monkeymux: update skipped; continuing existing session.\r\n")
 	return false
+}
+
+func shouldUpdateRunningServer(
+	reader io.Reader,
+	writer io.Writer,
+	session string,
+	status runningServerStatus,
+	updatePolicy string,
+) bool {
+	switch updatePolicy {
+	case serverUpdatePolicyNever:
+		return false
+	case serverUpdatePolicyAlways:
+		return true
+	default:
+		return promptForServerUpdate(reader, writer, session, status)
+	}
+}
+
+func normalizeServerUpdatePolicy(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", serverUpdatePolicyPrompt:
+		return serverUpdatePolicyPrompt, nil
+	case serverUpdatePolicyNever:
+		return serverUpdatePolicyNever, nil
+	case serverUpdatePolicyAlways:
+		return serverUpdatePolicyAlways, nil
+	default:
+		return "", fmt.Errorf("invalid update policy %q", value)
+	}
 }
 
 func queryRunningServerStatus(session string) (runningServerStatus, error) {

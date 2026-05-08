@@ -994,6 +994,12 @@ typedef _TerminalPathSnapshotAnalysis = ({
   _NormalizedTerminalPathSnapshot normalizedSnapshot,
 });
 typedef _VerifiedTerminalPath = ({String terminalPath, String resolvedPath});
+typedef _PreparedRemoteMuxCommand = ({
+  RemoteMuxBackend backend,
+  String command,
+  String sessionName,
+  AgentLaunchTool? tool,
+});
 
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
@@ -5584,7 +5590,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fields: {
             'connectionId': session.connectionId,
             'backend': startupCommand.backend.storageValue,
-            'tool': startupCommand.tool.name,
+            'hasTool': startupCommand.tool != null,
+            if (startupCommand.tool case final tool?) 'tool': tool.name,
           },
         );
       }
@@ -5882,32 +5889,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // unavailable so tmux-native navigation remains accessible.
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
-      final attachCommand = await _buildRemoteMuxAttachCommand(
+      final attachCommand = await _prepareRemoteMuxAttachCommand(
         session,
         host,
         tmuxSession,
       );
-      final review = assessAutoConnectCommandExecution(
-        attachCommand.command,
-        importedNeedsReview: host.autoConnectRequiresConfirmation,
-      );
-      if (review.requiresReview) {
-        final decision = await _reviewImportedAutoConnectCommand(review);
-        if (!mounted || decision == _AutoConnectReviewDecision.skip) {
-          return;
-        }
-        if (decision == _AutoConnectReviewDecision.trustAndRun) {
-          final updatedHost = host.copyWith(
-            autoConnectRequiresConfirmation: false,
-          );
-          await ref.read(hostRepositoryProvider).update(updatedHost);
-          _host = updatedHost;
-        }
-      }
-      _activeMuxBackend = attachCommand.backend;
-      session
-        ..remoteMuxBackend = attachCommand.backend
-        ..remoteMuxSessionName = tmuxSession;
+      if (attachCommand == null) return;
+      _applyPreparedRemoteMuxCommand(session, attachCommand);
       shell.write(
         utf8.encode(formatAutoConnectCommandForShell(attachCommand.command)),
       );
@@ -6021,30 +6009,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<
-    ({
-      RemoteMuxBackend backend,
-      String command,
-      String sessionName,
-      AgentLaunchTool tool,
-    })?
-  >
-  _buildNewShellStartupCommand(SshSession session) async {
+  Future<_PreparedRemoteMuxCommand?> _buildNewShellStartupCommand(
+    SshSession session,
+  ) async {
     final host = _host;
     final agentPreset = _autoConnectAgentPreset;
-    if (host == null ||
-        agentPreset == null ||
+    if (host == null) {
+      return null;
+    }
+
+    final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
+    if (tmuxSession != null &&
+        tmuxSession.isNotEmpty &&
+        !host.autoConnectRequiresConfirmation &&
+        _configuredRemoteMuxBackend(host) == RemoteMuxBackend.monkeyMux) {
+      final command = await _prepareRemoteMuxAttachCommand(
+        session,
+        host,
+        tmuxSession,
+      );
+      if (command != null && command.backend == RemoteMuxBackend.monkeyMux) {
+        _applyPreparedRemoteMuxCommand(session, command);
+        return command;
+      }
+      return null;
+    }
+
+    if (agentPreset == null ||
         !agentPreset.usesMonkeyMuxSession ||
         host.autoConnectRequiresConfirmation) {
       return null;
     }
+
     final command = await _prepareMonkeyMuxAgentLaunchCommand(
       session,
       host,
       agentPreset,
     );
     if (command != null) {
-      _applyPreparedAgentLaunchCommand(session, command);
+      _applyPreparedRemoteMuxCommand(session, command);
     }
     return command;
   }
@@ -6052,6 +6055,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? get _initialTmuxSessionName {
     final sessionName = widget.initialTmuxSessionName?.trim();
     return sessionName == null || sessionName.isEmpty ? null : sessionName;
+  }
+
+  Future<_PreparedRemoteMuxCommand?> _prepareRemoteMuxAttachCommand(
+    SshSession session,
+    Host host,
+    String sessionName,
+  ) async {
+    final attachCommand = await _buildRemoteMuxAttachCommand(
+      session,
+      host,
+      sessionName,
+    );
+    final review = assessAutoConnectCommandExecution(
+      attachCommand.command,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return null;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+    return (
+      backend: attachCommand.backend,
+      command: attachCommand.command,
+      sessionName: sessionName,
+      tool: null,
+    );
   }
 
   Future<({String command, RemoteMuxBackend backend})>
@@ -6069,11 +6107,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           session,
           priority: SshExecPriority.normal,
         );
+        final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
+          session,
+          installation,
+          sessionName,
+        );
+        if (!mounted) {
+          return (
+            command: buildMonkeyMuxAttachCommand(
+              executablePath: installation.executablePath,
+              sessionName: sessionName,
+              workingDirectory: host.tmuxWorkingDirectory,
+              serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+            ),
+            backend: RemoteMuxBackend.monkeyMux,
+          );
+        }
         return (
           command: buildMonkeyMuxAttachCommand(
             executablePath: installation.executablePath,
             sessionName: sessionName,
             workingDirectory: host.tmuxWorkingDirectory,
+            serverUpdatePolicy: updatePolicy,
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
@@ -6106,6 +6161,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  Future<MonkeyMuxServerUpdatePolicy> _resolveMonkeyMuxServerUpdatePolicy(
+    SshSession session,
+    MonkeyMuxInstallation installation,
+    String sessionName,
+  ) async {
+    final status = await _monkeyMuxService.runningServerStatus(
+      session,
+      installation,
+      sessionName,
+    );
+    if (status == null || !status.needsUpdate(installation.version)) {
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'upgrade_prompt',
+      fields: {
+        'connectionId': session.connectionId,
+        'supportsShutdown': status.supportsShutdown,
+      },
+    );
+    final shouldUpdate = await _confirmMonkeyMuxServerUpdate(
+      runningVersion: status.version,
+      bundledVersion: installation.version,
+      supportsShutdown: status.supportsShutdown,
+    );
+    if (!mounted || !shouldUpdate) {
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'upgrade_skipped',
+        fields: {'connectionId': session.connectionId},
+      );
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'upgrade_confirmed',
+      fields: {'connectionId': session.connectionId},
+    );
+    return MonkeyMuxServerUpdatePolicy.always;
+  }
+
   Future<void> _runMonkeyMuxAgentLaunchCommand(
     SshSession session,
     Host host,
@@ -6120,7 +6217,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (command == null) {
       return;
     }
-    _applyPreparedAgentLaunchCommand(session, command);
+    _applyPreparedRemoteMuxCommand(session, command);
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
     DiagnosticsLogService.instance.info(
       'terminal.agent_launch',
@@ -6128,20 +6225,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       fields: {
         'connectionId': session.connectionId,
         'backend': command.backend.storageValue,
-        'tool': command.tool.name,
+        if (command.tool case final tool?) 'tool': tool.name,
       },
     );
   }
 
-  Future<
-    ({
-      RemoteMuxBackend backend,
-      String command,
-      String sessionName,
-      AgentLaunchTool tool,
-    })?
-  >
-  _prepareMonkeyMuxAgentLaunchCommand(
+  Future<_PreparedRemoteMuxCommand?> _prepareMonkeyMuxAgentLaunchCommand(
     SshSession session,
     Host host,
     AgentLaunchPreset preset,
@@ -6181,12 +6270,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'version': installation.version,
         },
       );
+      final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
+        session,
+        installation,
+        sessionName,
+      );
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
+        serverUpdatePolicy: updatePolicy,
       );
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -6237,15 +6332,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _applyPreparedAgentLaunchCommand(
+  void _applyPreparedRemoteMuxCommand(
     SshSession session,
-    ({
-      RemoteMuxBackend backend,
-      String command,
-      String sessionName,
-      AgentLaunchTool tool,
-    })
-    command,
+    _PreparedRemoteMuxCommand command,
   ) {
     _activeMuxBackend = command.backend;
     session
@@ -12204,6 +12293,43 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
     return decision ?? _AutoConnectReviewDecision.skip;
+  }
+
+  Future<bool> _confirmMonkeyMuxServerUpdate({
+    required String? runningVersion,
+    required String bundledVersion,
+    required bool supportsShutdown,
+  }) async {
+    final runningLabel = runningVersion == null || runningVersion.trim().isEmpty
+        ? 'unknown'
+        : runningVersion.trim();
+    final message = supportsShutdown
+        ? 'This MonkeyMux session is running helper $runningLabel. '
+              'This app includes helper $bundledVersion. Updating will restart '
+              'MonkeyMux for this session and close its current windows.'
+        : 'This MonkeyMux session is running helper $runningLabel. '
+              'This app includes helper $bundledVersion. This older helper '
+              'cannot close itself cleanly, so updating may abandon existing '
+              'MonkeyMux windows.';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (context) => AlertDialog(
+        title: const Text('Update MonkeyMux?'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep current'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   Future<bool> _confirmCommandInsertion({
