@@ -267,5 +267,81 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets(
+      'sends repeated backspaces while Android IME keeps text composing',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}nano',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}nan',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 2, end: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}na',
+            selection: TextSelection.collapsed(offset: 4),
+            composing: TextRange(start: 2, end: 4),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, ['\x7f', '\x7f']);
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'nano',
+            initialCursorOffset: 'nano'.length,
+          ),
+          (text: 'na', cursorOffset: 'na'.length),
+        );
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}na',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, isEmpty);
+
+        focusNode.dispose();
+      },
+    );
   });
 }
