@@ -3545,7 +3545,7 @@ void main() {
           (_) async => const MonkeyMuxInstallation(
             executablePath: '/tmp/monkeymux',
             platform: 'darwin-arm64',
-            version: '0.1.6',
+            version: '0.1.7',
           ),
         );
         when(

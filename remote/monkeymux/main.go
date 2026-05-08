@@ -30,17 +30,18 @@ import (
 )
 
 const (
-	monkeyMuxVersion        = "0.1.6"
-	defaultColumns          = 80
-	defaultRows             = 24
-	maxTitleBytes           = 160
-	oscBufferLimitBytes     = 4096
-	processMetadataTimeout  = 500 * time.Millisecond
-	processMetadataInterval = 500 * time.Millisecond
-	runCommandTimeout       = 8 * time.Second
-	socketTimeout           = 2 * time.Second
-	windowUpdateMinInterval = 750 * time.Millisecond
-	windowHistoryLimitBytes = 128 * 1024
+	monkeyMuxVersion         = "0.1.7"
+	defaultColumns           = 80
+	defaultRows              = 24
+	maxTitleBytes            = 160
+	oscBufferLimitBytes      = 4096
+	processMetadataTimeout   = 500 * time.Millisecond
+	processMetadataInterval  = 500 * time.Millisecond
+	runCommandOutputMaxBytes = 256 * 1024
+	runCommandTimeout        = 8 * time.Second
+	socketTimeout            = 2 * time.Second
+	windowUpdateMinInterval  = 750 * time.Millisecond
+	windowHistoryLimitBytes  = 128 * 1024
 )
 
 const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[0m\x1b[H\x1b[2J"
@@ -58,10 +59,18 @@ var capabilities = []string{
 	"active-context",
 	"inject-input",
 	"run-command",
+	"client-scoped-run-command",
 	"focus-hint",
 	"theme-hint",
 	"shutdown",
 }
+
+var (
+	errRunCommandCanceled     = errors.New("command canceled")
+	errRunCommandClientClosed = errors.New("control client closed")
+	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
+	errRunCommandTimeout      = errors.New("command timed out")
+)
 
 type controlMessage struct {
 	Role        string   `json:"role,omitempty"`
@@ -158,7 +167,12 @@ type windowBroadcastIdentity struct {
 type controlClient struct {
 	conn net.Conn
 	enc  *json.Encoder
-	mu   sync.Mutex
+
+	mu sync.Mutex
+
+	commandsMu sync.Mutex
+	commands   map[string]context.CancelFunc
+	closed     bool
 }
 
 func main() {
@@ -695,9 +709,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 }
 
 func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
-	client := &controlClient{conn: conn, enc: json.NewEncoder(conn)}
+	client := newControlClient(conn)
 	s.addControl(client)
 	defer func() {
+		client.close()
 		s.removeControl(client)
 		_ = conn.Close()
 	}()
@@ -823,19 +838,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("missing command"))
 			return
 		}
-		output, exitCode, err := s.runShellCommand(request.Command)
-		if err != nil {
-			client.sendError(request, err)
-			return
-		}
-		client.send(controlResponse{
-			ID:       request.ID,
-			Type:     "command_output",
-			Status:   "ok",
-			Session:  s.session,
-			Data:     output,
-			ExitCode: exitCode,
-		})
+		client.runShellCommandAsync(s, request)
 	case "inject_input":
 		id := request.WindowID
 		if id == "" {
@@ -872,9 +875,23 @@ func (s *muxServer) removeControl(client *controlClient) {
 	delete(s.controls, client)
 }
 
+func newControlClient(conn net.Conn) *controlClient {
+	client := &controlClient{
+		conn:     conn,
+		commands: map[string]context.CancelFunc{},
+	}
+	if conn != nil {
+		client.enc = json.NewEncoder(conn)
+	}
+	return client
+}
+
 func (c *controlClient) send(response controlResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.enc == nil {
+		return
+	}
 	_ = c.enc.Encode(response)
 }
 
@@ -885,6 +902,75 @@ func (c *controlClient) sendError(request controlMessage, err error) {
 		Status: "error",
 		Error:  err.Error(),
 	})
+}
+
+func (c *controlClient) trackCommand(key string, cancel context.CancelFunc) bool {
+	c.commandsMu.Lock()
+	defer c.commandsMu.Unlock()
+	if c.closed {
+		return false
+	}
+	c.commands[key] = cancel
+	return true
+}
+
+func (c *controlClient) untrackCommand(key string) {
+	c.commandsMu.Lock()
+	defer c.commandsMu.Unlock()
+	delete(c.commands, key)
+}
+
+func (c *controlClient) close() {
+	c.commandsMu.Lock()
+	if c.closed {
+		c.commandsMu.Unlock()
+		return
+	}
+	c.closed = true
+	cancels := make([]context.CancelFunc, 0, len(c.commands))
+	for _, cancel := range c.commands {
+		cancels = append(cancels, cancel)
+	}
+	c.commands = map[string]context.CancelFunc{}
+	c.commandsMu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+func (c *controlClient) runShellCommandAsync(s *muxServer, request controlMessage) {
+	commandKey := fmt.Sprintf("%s/%d", request.ID, time.Now().UnixNano())
+	go func() {
+		output, exitCode, err := c.runShellCommand(s, commandKey, request.Command)
+		if err != nil {
+			c.sendError(request, err)
+			return
+		}
+		c.send(controlResponse{
+			ID:       request.ID,
+			Type:     "command_output",
+			Status:   "ok",
+			Session:  s.session,
+			Data:     output,
+			ExitCode: exitCode,
+		})
+	}()
+}
+
+func (c *controlClient) runShellCommand(
+	s *muxServer,
+	commandKey string,
+	command string,
+) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	if !c.trackCommand(commandKey, cancel) {
+		cancel()
+		return "", 0, errRunCommandClientClosed
+	}
+	defer c.untrackCommand(commandKey)
+	defer cancel()
+	return s.runShellCommandContext(ctx, command)
 }
 
 func (s *muxServer) broadcast(response controlResponse) {
@@ -951,6 +1037,15 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 }
 
 func (s *muxServer) runShellCommand(command string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	defer cancel()
+	return s.runShellCommandContext(ctx, command)
+}
+
+func (s *muxServer) runShellCommandContext(
+	ctx context.Context,
+	command string,
+) (string, int, error) {
 	s.mu.Lock()
 	cwd := ""
 	if window := s.windowByIDLocked(s.activeID); window != nil {
@@ -958,24 +1053,43 @@ func (s *muxServer) runShellCommand(command string) (string, int, error) {
 	}
 	s.mu.Unlock()
 
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	switch filepath.Base(shell) {
-	case "sh", "bash", "zsh", "ksh", "dash":
-	default:
-		shell = "/bin/sh"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	shell := commandShellPath()
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	output := newBoundedCommandOutput(runCommandOutputMaxBytes, cancel)
+	cmd := exec.Command(shell, "-c", command)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	output, err := cmd.CombinedOutput()
+	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Stdout = output
+	cmd.Stderr = output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return "", 0, err
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	var err error
+	select {
+	case err = <-waitCh:
+	case <-ctx.Done():
+		killCommandProcessGroup(cmd)
+		err = <-waitCh
+	}
+
+	if output.exceeded() {
+		return output.String(), 0, errRunCommandOutputLimit
+	}
 	if ctx.Err() == context.DeadlineExceeded {
-		return "", 0, errors.New("command timed out")
+		return output.String(), 0, errRunCommandTimeout
+	}
+	if ctx.Err() == context.Canceled {
+		return output.String(), 0, errRunCommandCanceled
 	}
 	exitCode := 0
 	if err != nil {
@@ -985,7 +1099,77 @@ func (s *muxServer) runShellCommand(command string) (string, int, error) {
 			return "", 0, err
 		}
 	}
-	return string(output), exitCode, nil
+	return output.String(), exitCode, nil
+}
+
+func commandShellPath() string {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	switch filepath.Base(shell) {
+	case "sh", "bash", "zsh", "ksh", "dash":
+		return shell
+	default:
+		return "/bin/sh"
+	}
+}
+
+func killCommandProcessGroup(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	_ = cmd.Process.Kill()
+}
+
+type boundedCommandOutput struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	limit     int
+	cancel    context.CancelFunc
+	overLimit bool
+}
+
+func newBoundedCommandOutput(
+	limit int,
+	cancel context.CancelFunc,
+) *boundedCommandOutput {
+	return &boundedCommandOutput{limit: limit, cancel: cancel}
+}
+
+func (o *boundedCommandOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	remaining := o.limit - o.buffer.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = o.buffer.Write(p[:remaining])
+	}
+	exceededNow := len(p) > remaining && !o.overLimit
+	if len(p) > remaining {
+		o.overLimit = true
+	}
+	cancel := o.cancel
+	o.mu.Unlock()
+
+	if exceededNow && cancel != nil {
+		cancel()
+	}
+	return len(p), nil
+}
+
+func (o *boundedCommandOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buffer.String()
+}
+
+func (o *boundedCommandOutput) exceeded() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.overLimit
 }
 
 func (s *muxServer) selectWindow(windowID string) error {

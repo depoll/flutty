@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -380,6 +381,62 @@ func TestRunShellCommandReportsExitCode(t *testing.T) {
 	if exitCode != 7 {
 		t.Fatalf("exitCode = %d, want 7", exitCode)
 	}
+}
+
+func TestRunShellCommandBoundsOutput(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	server := newMuxServer("test")
+
+	output, _, err := server.runShellCommand("yes x")
+	if !errors.Is(err, errRunCommandOutputLimit) {
+		t.Fatalf("runShellCommand error = %v, want output limit", err)
+	}
+	if len(output) != runCommandOutputMaxBytes {
+		t.Fatalf("output length = %d, want %d", len(output), runCommandOutputMaxBytes)
+	}
+}
+
+func TestControlClientCloseCancelsRunCommand(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	server := newMuxServer("test")
+	client := newControlClient(nil)
+	done := make(chan error, 1)
+
+	startedAt := time.Now()
+	go func() {
+		_, _, err := client.runShellCommand(server, "slow-command", "sleep 30")
+		done <- err
+	}()
+	waitForTrackedCommand(t, client)
+
+	client.close()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, errRunCommandCanceled) {
+			t.Fatalf("runShellCommand error = %v, want canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runShellCommand did not stop after client close")
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 2*time.Second {
+		t.Fatalf("command ran for %s after client close", elapsed)
+	}
+}
+
+func waitForTrackedCommand(t *testing.T, client *controlClient) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		client.commandsMu.Lock()
+		count := len(client.commands)
+		client.commandsMu.Unlock()
+		if count > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("command was not tracked")
 }
 
 func TestPromptForServerUpdateDefaultsToKeepingExistingSession(t *testing.T) {
