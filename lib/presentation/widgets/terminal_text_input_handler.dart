@@ -1876,6 +1876,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return applyModifiers(normalizedText);
   }
 
+  String _lastGrapheme(String text) => text.characters.last;
+
   int _deltaCursorScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
     int cursorOffsetHint,
@@ -2503,6 +2505,23 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
+      final hadActiveToolbarModifier =
+          widget.hasActiveToolbarModifier?.call() ?? false;
+      if (hadActiveToolbarModifier && delta.appendedText.isNotEmpty) {
+        // One-shot terminal modifiers apply to a single key. Some IMEs can send
+        // stale composing text in the same batch, so keep only the newest key.
+        _cancelDeferredTrailingBackspaceImeClear();
+        _notifyUserInput();
+        widget.terminal.textInput(
+          _applyTerminalTextInputModifiers(_lastGrapheme(delta.appendedText)),
+        );
+        _clearImeBufferForFreshInput(
+          armModifierChordWindow: true,
+          armSplitLeadingTokenNormalization: true,
+        );
+        _sawImeComposition = false;
+        return;
+      }
       if (_sendSingleBackspaceForPendingTouchDeletion(delta: delta)) {
         _sawImeComposition = false;
         return;
@@ -2535,12 +2554,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
       final previousText = deltaPreviousText;
 
-      // Capture modifier state BEFORE sending the delta. The send path
-      // synchronously fires terminal.onOutput which may consume one-shot
-      // toolbar modifiers (e.g. Ctrl). Checking after would always be false.
-      final hadActiveToolbarModifier =
-          widget.hasActiveToolbarModifier?.call() ?? false;
-
       if (deleteResetContinuation != null) {
         _lastSentText = deltaPreviousText;
         _lastSentCursorOffset = deltaPreviousCursorOffset;
@@ -2554,9 +2567,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
 
       // Detect non-additive operations that should clear the IME suggestion
-      // context: pure deletions (backspace with no replacement text) and
-      // modifier chords (Ctrl/Alt + character) where the typed character
-      // becomes a control code instead of visible text.
+      // context: pure deletions (backspace with no replacement text).
       //
       // IME replacements (e.g. autocorrect changing "teh" to "the") may
       // also shorten text but include appended replacement text, so they
@@ -2567,10 +2578,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           delta.appendedText.isEmpty;
       final wasTrailingPureDeletion =
           wasPureDeletion && pendingInputIsTrailingPureDeletion;
-      final wasModifiedSingleChar =
-          delta.deletedCount == 0 &&
-          delta.appendedText.characters.length == 1 &&
-          hadActiveToolbarModifier;
 
       // Also detect the second character of a two-part chord like tmux's
       // Ctrl+b, c. After the first modifier character resets, the follow-up
@@ -2590,15 +2597,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           delta.deletedCount == 0 &&
           delta.appendedText.characters.length == 1;
 
-      if (wasModifiedSingleChar || wasChordFollowUp) {
-        // The character was transformed into a control code by the toolbar
-        // modifier (or is the follow-up of a two-part chord), so it does
-        // not represent visible terminal text. Do a full reset — the
-        // shell's response to a control code is unpredictable.
-        _clearImeBufferForFreshInput(
-          armModifierChordWindow: wasModifiedSingleChar,
-          armSplitLeadingTokenNormalization: true,
-        );
+      if (wasChordFollowUp) {
+        // The character is the follow-up of a two-part chord, so it should not
+        // remain in the IME suggestion context.
+        _clearImeBufferForFreshInput(armSplitLeadingTokenNormalization: true);
         _sawImeComposition = false;
         return;
       }
