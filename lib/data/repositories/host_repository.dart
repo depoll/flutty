@@ -165,6 +165,7 @@ class HostRepository {
         keyId: Value(host.keyId),
         groupId: Value(host.groupId),
         jumpHostId: Value(host.jumpHostId),
+        skipJumpHostOnSsids: Value(host.skipJumpHostOnSsids),
         isFavorite: Value(host.isFavorite),
         color: Value(host.color),
         notes: Value(host.notes),
