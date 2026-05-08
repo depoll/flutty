@@ -110,7 +110,8 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := activeWindowReplayPrefix + "background output"
+	want := activeWindowReplayPrefix + "background output" +
+		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}
@@ -149,7 +150,8 @@ func TestActiveReplayIncludesWindowHistory(t *testing.T) {
 	server.mu.Unlock()
 	server.writeAttach(attach, replay)
 
-	want := activeWindowReplayPrefix + "previous screen"
+	want := activeWindowReplayPrefix + "previous screen" +
+		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}
@@ -169,7 +171,10 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 	if len(replay) > len(activeWindowReplayPrefix)+windowReplayLimitBytes+2048 {
 		t.Fatalf("replay length = %d, want capped near %d", len(replay), len(activeWindowReplayPrefix)+windowReplayLimitBytes)
 	}
-	if !strings.HasSuffix(string(replay), "suffix") {
+	if !strings.HasSuffix(
+		strings.TrimSuffix(string(replay), cursorVisibilityReplaySequence(true)),
+		"suffix",
+	) {
 		t.Fatalf("replay did not preserve recent output suffix")
 	}
 }
@@ -283,16 +288,46 @@ func TestWindowMetadataTracksOsc7Path(t *testing.T) {
 	}
 }
 
-func TestReplayPrefixDoesNotForceCursorVisible(t *testing.T) {
-	if strings.Contains(activeWindowReplayPrefix, "?25h") {
-		t.Fatalf("replay prefix forces cursor visible: %q", activeWindowReplayPrefix)
+func TestActiveReplayRestoresCursorVisibility(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("prompt"), lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.HasSuffix(replay, cursorVisibilityReplaySequence(true)) {
+		t.Fatalf("replay = %q, want visible cursor suffix", replay)
+	}
+}
+
+func TestActiveReplayPreservesHiddenCursor(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@1", []byte("start\x1b[?25l"))
+	replay := string(server.activeReplayLocked())
+
+	if !strings.HasSuffix(replay, cursorVisibilityReplaySequence(false)) {
+		t.Fatalf("replay = %q, want hidden cursor suffix", replay)
 	}
 }
 
 func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
-	for _, mode := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?1004l", "?2004l"} {
+	for _, mode := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?1004l", "?2004l", "?1l", "?6l", "?7h"} {
 		if !strings.Contains(activeWindowReplayPrefix, mode) {
 			t.Fatalf("replay prefix %q does not reset %s", activeWindowReplayPrefix, mode)
+		}
+	}
+}
+
+func TestReplayPrefixClearsScrollbackAndMargins(t *testing.T) {
+	for _, sequence := range []string{"\x1b[r", "\x1b[2J", "\x1b[3J", "\x1b(B"} {
+		if !strings.Contains(activeWindowReplayPrefix, sequence) {
+			t.Fatalf("replay prefix %q does not include %q", activeWindowReplayPrefix, sequence)
 		}
 	}
 }
@@ -449,7 +484,8 @@ func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	if !server.windows[1].closed {
 		t.Fatal("closed window was not marked closed immediately")
 	}
-	want := activeWindowReplayPrefix + "three"
+	want := activeWindowReplayPrefix + "three" +
+		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}
@@ -476,7 +512,8 @@ func TestCloseLastIndexedActiveWindowWrapsToFirstWindow(t *testing.T) {
 	if got := server.activeWindowID(); got != "@1" {
 		t.Fatalf("active window = %q, want wrapped window @1", got)
 	}
-	want := activeWindowReplayPrefix + "one"
+	want := activeWindowReplayPrefix + "one" +
+		cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}

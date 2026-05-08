@@ -34,6 +34,14 @@ import '../widgets/unsaved_changes_guard.dart';
 import 'transfer_screen.dart';
 
 const _hostFieldHelperMaxLines = 4;
+const _hostStartupModeOptions = <HostStartupMode>[
+  HostStartupMode.none,
+  HostStartupMode.monkeyMux,
+  HostStartupMode.tmux,
+  HostStartupMode.agent,
+  HostStartupMode.customCommand,
+  HostStartupMode.snippet,
+];
 
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
@@ -800,7 +808,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         storedBackend: host.remoteMuxBackend,
         tmuxExtraFlags: host.tmuxExtraFlags,
       )) {
-        RemoteMuxBackend.auto => HostStartupMode.muxAuto,
+        RemoteMuxBackend.auto => HostStartupMode.monkeyMux,
         RemoteMuxBackend.monkeyMux => HostStartupMode.monkeyMux,
         RemoteMuxBackend.tmux => HostStartupMode.tmux,
       };
@@ -824,41 +832,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            Text('Launch After Connect', style: theme.textTheme.titleMedium),
-            const PremiumBadge(),
-          ],
-        ),
+        Text('Launch After Connect', style: theme.textTheme.titleMedium),
         const SizedBox(height: 8),
         Text(
-          'Optionally open persistent terminal windows, launch an agent with tmux helpers, or run any shell command right after the terminal connects.',
+          'Choose what MonkeySSH starts after SSH connects. MonkeyMux and tmux keep remote shells alive across reconnects and add the window switcher; agent, command, and snippet options start a workflow automatically.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: colorScheme.onSurfaceVariant,
           ),
         ),
-        if (!hasAutomationAccess) ...[
-          const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              _selectedStartupMode == HostStartupMode.agent ||
-                      _selectedStartupMode == HostStartupMode.customCommand ||
-                      _selectedStartupMode == HostStartupMode.snippet
-                  ? 'This host keeps its saved Pro startup, but it will not run until MonkeySSH Pro is active again.'
-                  : 'Free hosts can still open terminal windows automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
-              style: theme.textTheme.bodySmall,
-            ),
-          ),
-        ],
         const SizedBox(height: 12),
         CheckboxListTile(
           key: const Key('host-cli-yolo-mode-checkbox'),
@@ -889,10 +870,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             labelText: 'Startup behavior',
             prefixIcon: Icon(Icons.play_circle_outline),
             helperText:
-                'Pick a startup flow for this host. Terminal windows stay free; agent/custom/snippet flows require MonkeySSH Pro.',
+                'Pick the startup flow for this host. Choose MonkeyMux for the bundled window manager, or tmux for an existing remote tmux setup.',
             helperMaxLines: _hostFieldHelperMaxLines,
           ),
-          items: HostStartupMode.values
+          items: _hostStartupModeOptions
               .map(
                 (mode) => DropdownMenuItem<HostStartupMode>(
                   value: mode,
@@ -931,17 +912,19 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
   Widget _buildMuxStartupFields(BuildContext context) {
     final isTmuxMode = _selectedStartupMode == HostStartupMode.tmux;
-    final isMonkeyMuxMode = _selectedStartupMode == HostStartupMode.monkeyMux;
+    final isMonkeyMuxMode =
+        _selectedStartupMode == HostStartupMode.monkeyMux ||
+        _selectedStartupMode == HostStartupMode.muxAuto;
     final sessionLabel = isTmuxMode
         ? 'tmux session name'
-        : 'Terminal window session name';
+        : 'MonkeyMux session name';
     final sessionHelperText = switch (_selectedStartupMode) {
       HostStartupMode.muxAuto =>
-        'MonkeySSH installs or reuses MonkeyMux when possible, then falls back to tmux if needed.',
+        'Legacy automatic mode. New edits use MonkeyMux or tmux explicitly.',
       HostStartupMode.monkeyMux =>
-        'MonkeySSH installs or reuses MonkeyMux transparently for this remote session.',
+        'Uses MonkeySSH\'s bundled helper to keep windows alive across reconnects and report window changes over a backchannel.',
       HostStartupMode.tmux =>
-        'Creates or attaches to this tmux session without launching any extra command.',
+        'Uses tmux already installed on the remote host. Choose this when you want tmux-compatible sessions or shared tmux clients.',
       _ => '',
     };
     final effectiveTmuxExtraFlags = resolveTmuxExtraFlags(
@@ -982,7 +965,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               if (value == null || value.trim().isEmpty) {
                 return _selectedStartupMode == HostStartupMode.tmux
                     ? 'Enter a tmux session name'
-                    : 'Enter a terminal window session name';
+                    : 'Enter a MonkeyMux session name';
               }
               return null;
             },
@@ -1031,7 +1014,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ] else if (isMonkeyMuxMode) ...[
           const SizedBox(height: 4),
           Text(
-            'MonkeyMux passes terminal bytes through directly and uses a separate backchannel for window updates.',
+            'MonkeyMux passes the terminal stream through directly. Window names, activity, switching, and close events use the backchannel instead of extra SSH sessions.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -1130,7 +1113,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             labelText: 'Terminal window backend',
             prefixIcon: Icon(Icons.view_carousel_outlined),
             helperText:
-                'MonkeyMux is the default bundled backend. Choose tmux for hosts where you prefer a remote tmux session.',
+                'Choose how the agent terminal is kept in the window switcher: MonkeyMux uses the bundled helper; tmux uses a remote tmux session.',
             helperMaxLines: _hostFieldHelperMaxLines,
           ),
           items: const [
@@ -1236,7 +1219,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ] else ...[
           const SizedBox(height: 12),
           Text(
-            'MonkeyMux is managed by MonkeySSH, so no tmux flags or tmux status-bar settings are needed.',
+            'MonkeyMux is managed by MonkeySSH, so there are no tmux flags or tmux status-bar settings.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],

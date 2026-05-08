@@ -107,7 +107,7 @@ void main() {
             .having(
               (issue) => issue.message,
               'message',
-              'Fix terminal window session name to save this host',
+              'Fix MonkeyMux session name to save this host',
             ),
       );
       expect(
