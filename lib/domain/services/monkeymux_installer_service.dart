@@ -152,11 +152,62 @@ class MonkeyMuxInstallerService {
   final Future<MonkeyMuxManifest> _manifestFuture;
   final RemoteFileService _remoteFileService;
   final AssetBundle? _assetBundle;
+  static final _installCache = <int, MonkeyMuxInstallation>{};
+  static final _installRequests = <int, Future<MonkeyMuxInstallation>>{};
 
   /// Installs the helper if needed and returns its executable path.
   Future<MonkeyMuxInstallation> ensureInstalled(
     SshSession session, {
     SshExecPriority priority = SshExecPriority.low,
+  }) async {
+    final connectionId = session.connectionId;
+    final cachedInstallation = _installCache[connectionId];
+    if (cachedInstallation != null) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.install',
+        'reuse_cached',
+        fields: {
+          'connectionId': connectionId,
+          'platform': cachedInstallation.platform,
+        },
+      );
+      return cachedInstallation;
+    }
+
+    final existingRequest = _installRequests[connectionId];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.install',
+        'join_inflight',
+        fields: {'connectionId': connectionId},
+      );
+      return existingRequest;
+    }
+
+    final request = _ensureInstalled(session, priority: priority);
+    _installRequests[connectionId] = request;
+    request.then((installation) {
+      if (identical(_installRequests[connectionId], request)) {
+        _installCache[connectionId] = installation;
+      }
+    }, onError: (_) {}).ignore();
+    request.whenComplete(() {
+      if (identical(_installRequests[connectionId], request)) {
+        _installRequests.remove(connectionId);
+      }
+    }).ignore();
+    return request;
+  }
+
+  /// Clears cached install state for a disconnected SSH connection.
+  void clearCache(int connectionId) {
+    _installCache.remove(connectionId);
+    _installRequests.remove(connectionId);
+  }
+
+  Future<MonkeyMuxInstallation> _ensureInstalled(
+    SshSession session, {
+    required SshExecPriority priority,
   }) async {
     final platform = await probePlatform(session, priority: priority);
     final manifest = await _manifestFuture;
@@ -212,16 +263,50 @@ class MonkeyMuxInstallerService {
         },
       );
       await _remoteFileService.ensureDirectoryExists(sftp, installDirectory);
-      await _remoteFileService.uploadBytes(
-        sftp: sftp,
-        remotePath: executablePath,
-        bytes: assetBytes,
+      final temporaryExecutablePath = joinRemotePath(
+        installDirectory,
+        '.monkeymux.${session.connectionId}.'
+        '${DateTime.now().microsecondsSinceEpoch}.tmp',
       );
-      await _runRemoteCommand(
-        session,
-        'chmod 700 ${_shellQuote(executablePath)}',
-        priority: priority,
-      );
+      var movedTemporaryExecutable = false;
+      try {
+        await _remoteFileService.uploadBytes(
+          sftp: sftp,
+          remotePath: temporaryExecutablePath,
+          bytes: assetBytes,
+        );
+        await _runRemoteCommand(
+          session,
+          'chmod 700 ${_shellQuote(temporaryExecutablePath)}',
+          priority: priority,
+        );
+        if (!await _remoteShaMatches(
+          session,
+          temporaryExecutablePath,
+          entry.sha256,
+          priority: priority,
+        )) {
+          throw const MonkeyMuxInstallException(
+            'Uploaded MonkeyMux checksum verification failed.',
+          );
+        }
+        await _runRemoteCommand(
+          session,
+          'mv -f ${_shellQuote(temporaryExecutablePath)} '
+          '${_shellQuote(executablePath)}',
+          priority: priority,
+        );
+        movedTemporaryExecutable = true;
+      } on Object catch (error, stackTrace) {
+        if (!movedTemporaryExecutable) {
+          await _removeRemoteTemporaryFile(
+            session,
+            temporaryExecutablePath,
+            priority: priority,
+          );
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      }
       if (!await _remoteShaMatches(
         session,
         executablePath,
@@ -229,7 +314,7 @@ class MonkeyMuxInstallerService {
         priority: priority,
       )) {
         throw const MonkeyMuxInstallException(
-          'Uploaded MonkeyMux checksum verification failed.',
+          'Installed MonkeyMux checksum verification failed.',
         );
       }
       DiagnosticsLogService.instance.info(
@@ -309,6 +394,29 @@ class MonkeyMuxInstallerService {
       return output.trim() == expectedSha;
     } on Exception {
       return false;
+    }
+  }
+
+  Future<void> _removeRemoteTemporaryFile(
+    SshSession session,
+    String remotePath, {
+    required SshExecPriority priority,
+  }) async {
+    try {
+      await _runRemoteCommand(
+        session,
+        'rm -f ${_shellQuote(remotePath)}',
+        priority: priority,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.install',
+        'temp_cleanup_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
     }
   }
 }

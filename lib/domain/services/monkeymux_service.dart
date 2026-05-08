@@ -74,6 +74,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       'clear',
       fields: {'connectionId': connectionId},
     );
+    _installer.clearCache(connectionId);
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -131,25 +132,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     _MonkeyMuxWatchKey key,
   ) async {
-    try {
-      final response = await _runControlCommand(session, sessionName, {
-        'type': 'list_windows',
-      });
-      _cacheWindows(key, response.windows);
-      _scheduleAgentMetadataRefresh(
-        session,
-        sessionName,
-        key,
-        response.windows,
-      );
-      return _windowSnapshotCache[key] ?? response.windows;
-    } on Object {
-      final cachedWindows = _windowSnapshotCache[key];
-      if (cachedWindows != null && cachedWindows.isNotEmpty) {
-        return cachedWindows;
-      }
-      rethrow;
-    }
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'list_windows',
+    });
+    _cacheWindows(key, response.windows);
+    _scheduleAgentMetadataRefresh(session, sessionName, key, response.windows);
+    return _windowSnapshotCache[key] ?? response.windows;
   }
 
   @override
@@ -565,6 +553,7 @@ class _MonkeyMuxWindowChangeObserver {
   StreamSubscription<void>? _doneSubscription;
   Future<void>? _startFuture;
   Future<void>? _disposeFuture;
+  MonkeyMuxInstallation? _installation;
   bool _disposed = false;
   int _reconnectAttempts = 0;
 
@@ -618,7 +607,9 @@ class _MonkeyMuxWindowChangeObserver {
 
   Future<void> _start() async {
     try {
-      final installation = await installer.ensureInstalled(session);
+      final installation = _installation ??= await installer.ensureInstalled(
+        session,
+      );
       if (_disposed) return;
       final command =
           '${_shellQuote(installation.executablePath)} control --json '

@@ -89,6 +89,8 @@ class _TmuxExpandableBar extends StatefulWidget {
 
 class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     with SingleTickerProviderStateMixin {
+  static const _monkeyMuxHandleIconAsset =
+      'assets/icons/monkeyssh_icon_monochrome.png';
   static const _denseTileVisualDensity = VisualDensity(vertical: -2);
   static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
@@ -1032,12 +1034,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
                 children: [
-                  AgentToolIcon(
-                    tool: activeWindowTool,
-                    size: 16,
-                    color: theme.colorScheme.primary,
-                    fallbackIcon: Icons.window_outlined,
-                  ),
+                  _buildHandleIcon(theme, activeWindowTool),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1075,6 +1072,22 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ),
       ),
     );
+  }
+
+  Widget _buildHandleIcon(ThemeData theme, AgentLaunchTool? activeWindowTool) {
+    final color = theme.colorScheme.primary;
+    if (activeWindowTool != null) {
+      return AgentToolIcon(tool: activeWindowTool, size: 16, color: color);
+    }
+    if (widget.activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      return ImageIcon(
+        const AssetImage(_monkeyMuxHandleIconAsset),
+        key: const ValueKey('monkeymux-handle-icon'),
+        size: 16,
+        color: color,
+      );
+    }
+    return Icon(Icons.window_outlined, size: 16, color: color);
   }
 
   Widget _buildWindowList(ThemeData theme) {
