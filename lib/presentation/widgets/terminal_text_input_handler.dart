@@ -2299,6 +2299,35 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
   }
 
+  bool _sendComposingDeletionIfNeeded(TextEditingValue value) {
+    final currentText = _extractInputText(value.text);
+    if (_lastSentText.isEmpty || currentText == _lastSentText) {
+      return false;
+    }
+
+    final targetCursorOffset = _collapsedSelectionCursorOffset(
+      currentText,
+      value,
+    );
+    final delta = _computeTextDelta(
+      currentText,
+      cursorOffsetHint: targetCursorOffset,
+    );
+    if (delta.deletedCount == 0 || delta.appendedText.isNotEmpty) {
+      return false;
+    }
+
+    _notifyUserInput();
+    _sendInputDelta(currentText, delta);
+    if (targetCursorOffset != null &&
+        targetCursorOffset != _lastSentCursorOffset) {
+      _moveTerminalCursorTo(targetCursorOffset);
+    }
+    _trimLeadingSuggestionSpaceAfterDelete = true;
+    _trimLeadingSwipeSpaceAfterBufferClear = currentText.isEmpty;
+    return true;
+  }
+
   // -- TextInputClient implementation --
 
   @override
@@ -2373,6 +2402,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (!value.composing.isCollapsed) {
         _cancelDeferredTrailingBackspaceImeClear();
         _iosBackspaceRunwayLength = 0;
+        if (_sendComposingDeletionIfNeeded(value)) {
+          _sawImeComposition = true;
+          return;
+        }
         _sawImeComposition = true;
         return;
       }
