@@ -2054,8 +2054,14 @@ class SshSession {
       .toList();
 
   /// Get or create a shell session.
-  Future<SSHSession> getShell({SSHPtyConfig? pty, bool forceNew = false}) =>
-      _runtime.getShell(pty: pty, forceNew: forceNew);
+  ///
+  /// When [command] is provided for a new shell, the foreground PTY runs that
+  /// command directly instead of opening an interactive login shell first.
+  Future<SSHSession> getShell({
+    SSHPtyConfig? pty,
+    bool forceNew = false,
+    String? command,
+  }) => _runtime.getShell(pty: pty, forceNew: forceNew, command: command);
 
   /// Shell stdout as a broadcast stream for screen re-attachment.
   Stream<String> get shellStdoutStream => _runtime.shellStdoutStream;

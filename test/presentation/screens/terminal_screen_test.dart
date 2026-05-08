@@ -3798,6 +3798,7 @@ void main() {
         );
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
         final monkeyMuxService = _MockMonkeyMuxService();
+        final tmuxService = _MockTmuxService();
         session = SshSession(
           connectionId: 7,
           hostId: host.id,
@@ -3837,6 +3838,13 @@ void main() {
             version: '0.1.10',
           ),
         );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
         when(
           () => monkeyMuxService.hasForegroundClientOrThrow(session, 'agents'),
         ).thenAnswer((_) async => true);
@@ -3848,6 +3856,12 @@ void main() {
         when(
           () => monkeyMuxService.watchWindowChanges(session, 'agents'),
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
           ProviderScope(
@@ -3868,6 +3882,7 @@ void main() {
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
             child: MaterialApp(
@@ -3883,16 +3898,20 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        final writtenShellText = utf8.decode(
-          shellWrites.expand((chunk) => chunk).toList(growable: false),
-        );
-        expect(writtenShellText, contains("'/tmp/monkeymux' attach"));
-        expect(writtenShellText, contains("--cwd '/work/project'"));
-        expect(writtenShellText, contains("--name 'Copilot CLI'"));
-        expect(writtenShellText, contains("--command 'copilot --yolo'"));
-        expect(writtenShellText, contains('agents'));
+        expect(shellWrites, isEmpty);
+        final startupCommands = executedCommands
+            .where((command) => command.contains("'/tmp/monkeymux' attach"))
+            .toList(growable: false);
+        expect(startupCommands, hasLength(1));
+        final startupCommand = startupCommands.single;
+        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains("--cwd '/work/project'"));
+        expect(startupCommand, contains("--name 'Copilot CLI'"));
+        expect(startupCommand, contains("--command 'copilot --yolo'"));
+        expect(startupCommand, contains('agents'));
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, 'agents');
+        verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
         verify(
           () => monkeyMuxInstallerService.ensureInstalled(
             session,

@@ -5530,16 +5530,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         reason: 'open_new_terminal',
       );
 
+      final startupCommand = await _buildNewShellStartupCommand(session);
+      if (!mounted) return;
+
       _shell = await session.getShell(
         pty: SSHPtyConfig(
           width: _terminal.viewWidth,
           height: _terminal.viewHeight,
         ),
+        command: startupCommand?.command,
       );
       DiagnosticsLogService.instance.info(
         'terminal',
         'shell_opened',
-        fields: {'connectionId': session.connectionId, 'reusedTerminal': false},
+        fields: {
+          'connectionId': session.connectionId,
+          'reusedTerminal': false,
+          'hasStartupCommand': startupCommand != null,
+        },
       );
 
       _wireTerminalCallbacks(session);
@@ -5567,7 +5575,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
-      await _runAutoConnectCommand(session);
+      if (startupCommand == null) {
+        await _runAutoConnectCommand(session);
+      } else {
+        DiagnosticsLogService.instance.info(
+          'terminal.agent_launch',
+          'foreground_command_opened',
+          fields: {
+            'connectionId': session.connectionId,
+            'backend': startupCommand.backend.storageValue,
+            'tool': startupCommand.tool.name,
+          },
+        );
+      }
 
       // Detect tmux after the auto-connect command has had time to start.
       // A small delay ensures tmux has initialized if the auto-connect
@@ -6001,6 +6021,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<
+    ({
+      RemoteMuxBackend backend,
+      String command,
+      String sessionName,
+      AgentLaunchTool tool,
+    })?
+  >
+  _buildNewShellStartupCommand(SshSession session) async {
+    final host = _host;
+    final agentPreset = _autoConnectAgentPreset;
+    if (host == null ||
+        agentPreset == null ||
+        !agentPreset.usesMonkeyMuxSession ||
+        host.autoConnectRequiresConfirmation) {
+      return null;
+    }
+    final command = await _prepareMonkeyMuxAgentLaunchCommand(
+      session,
+      host,
+      agentPreset,
+    );
+    if (command != null) {
+      _applyPreparedAgentLaunchCommand(session, command);
+    }
+    return command;
+  }
+
   String? get _initialTmuxSessionName {
     final sessionName = widget.initialTmuxSessionName?.trim();
     return sessionName == null || sessionName.isEmpty ? null : sessionName;
@@ -6064,9 +6112,43 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     AgentLaunchPreset preset,
     SSHSession shell,
   ) async {
+    final command = await _prepareMonkeyMuxAgentLaunchCommand(
+      session,
+      host,
+      preset,
+    );
+    if (command == null) {
+      return;
+    }
+    _applyPreparedAgentLaunchCommand(session, command);
+    shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
+    DiagnosticsLogService.instance.info(
+      'terminal.agent_launch',
+      'command_written',
+      fields: {
+        'connectionId': session.connectionId,
+        'backend': command.backend.storageValue,
+        'tool': command.tool.name,
+      },
+    );
+  }
+
+  Future<
+    ({
+      RemoteMuxBackend backend,
+      String command,
+      String sessionName,
+      AgentLaunchTool tool,
+    })?
+  >
+  _prepareMonkeyMuxAgentLaunchCommand(
+    SshSession session,
+    Host host,
+    AgentLaunchPreset preset,
+  ) async {
     final sessionName = preset.tmuxSessionName?.trim();
     if (sessionName == null || sessionName.isEmpty) {
-      return;
+      return null;
     }
 
     final launchCommand = buildAgentToolCommand(
@@ -6136,7 +6218,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (review.requiresReview) {
       final decision = await _reviewImportedAutoConnectCommand(review);
       if (!mounted || decision == _AutoConnectReviewDecision.skip) {
-        return;
+        return null;
       }
       if (decision == _AutoConnectReviewDecision.trustAndRun) {
         final updatedHost = host.copyWith(
@@ -6147,20 +6229,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    _activeMuxBackend = muxBackend;
-    session
-      ..remoteMuxBackend = muxBackend
-      ..remoteMuxSessionName = sessionName;
-    shell.write(utf8.encode(formatAutoConnectCommandForShell(attachCommand)));
-    DiagnosticsLogService.instance.info(
-      'terminal.agent_launch',
-      'command_written',
-      fields: {
-        'connectionId': session.connectionId,
-        'backend': muxBackend.storageValue,
-        'tool': preset.tool.name,
-      },
+    return (
+      backend: muxBackend,
+      command: attachCommand,
+      sessionName: sessionName,
+      tool: preset.tool,
     );
+  }
+
+  void _applyPreparedAgentLaunchCommand(
+    SshSession session,
+    ({
+      RemoteMuxBackend backend,
+      String command,
+      String sessionName,
+      AgentLaunchTool tool,
+    })
+    command,
+  ) {
+    _activeMuxBackend = command.backend;
+    session
+      ..remoteMuxBackend = command.backend
+      ..remoteMuxSessionName = command.sessionName;
   }
 
   String? _preferredTmuxSessionName(Host? host) =>
