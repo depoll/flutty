@@ -148,7 +148,7 @@ void main() {
       expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
-    test('duplicate skips device-local SSIDs', () async {
+    test('duplicate copies skip-jump SSIDs', () async {
       final keyId = await db
           .into(db.sshKeys)
           .insert(
@@ -251,7 +251,7 @@ void main() {
       expect(duplicateHost.groupId, sourceHost.groupId);
       expect(duplicateHost.jumpHostId, sourceHost.jumpHostId);
       expect(sourceHost.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
-      expect(duplicateHost.skipJumpHostOnSsids, isNull);
+      expect(duplicateHost.skipJumpHostOnSsids, sourceHost.skipJumpHostOnSsids);
       expect(duplicateHost.isFavorite, sourceHost.isFavorite);
       expect(duplicateHost.color, sourceHost.color);
       expect(duplicateHost.notes, sourceHost.notes);
