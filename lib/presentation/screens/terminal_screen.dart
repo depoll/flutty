@@ -7049,6 +7049,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  bool _isExpectedMonkeyMuxFinalCloseError(Exception error) {
+    if (error is! MonkeyMuxInstallException) {
+      return false;
+    }
+    final message = error.message.toLowerCase();
+    return message.contains('control channel closed') ||
+        message.contains('control channel unavailable') ||
+        message.contains('closed without a response');
+  }
+
   /// Switches to a different tmux window via exec channel.
   ///
   /// Uses an exec channel (not the interactive shell) because
@@ -7151,7 +7161,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName,
       windowIndex,
     );
-    await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
+    try {
+      await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
+    } on Exception catch (error) {
+      if (closesLastMonkeyMuxWindow &&
+          _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+          _isExpectedMonkeyMuxFinalCloseError(error)) {
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'monkeymux_final_close_control_closed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        await _handleMuxSessionEnded(session, sessionName);
+        return;
+      }
+      rethrow;
+    }
     if (closesLastMonkeyMuxWindow) {
       await _handleMuxSessionEnded(session, sessionName);
       return;
