@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/agent_launch_preset.dart';
+import '../models/terminal_backend.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
@@ -292,6 +293,23 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
     }, priority: SshExecPriority.low);
+  }
+
+  /// Runs a short-lived command through the MonkeyMux control client.
+  Future<TerminalClientCommandResult> runClientCommand(
+    SshSession session,
+    String sessionName,
+    String command, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'run_command',
+      'command': command,
+    }, priority: priority);
+    return TerminalClientCommandResult(
+      output: response.data ?? '',
+      exitCode: response.exitCode,
+    );
   }
 
   Future<_MonkeyMuxControlResponse> _runControlCommand(
@@ -734,6 +752,7 @@ class _MonkeyMuxControlResponse {
     this.currentPath,
     this.currentCommand,
     this.data,
+    this.exitCode,
   });
 
   factory _MonkeyMuxControlResponse.fromJson(Map<String, Object?> json) =>
@@ -754,6 +773,7 @@ class _MonkeyMuxControlResponse {
         currentPath: json['currentPath'] as String?,
         currentCommand: json['currentCommand'] as String?,
         data: json['data'] as String?,
+        exitCode: json['exitCode'] as int?,
       );
 
   static _MonkeyMuxControlResponse? tryParse(String line) {
@@ -777,6 +797,7 @@ class _MonkeyMuxControlResponse {
   final String? currentPath;
   final String? currentCommand;
   final String? data;
+  final int? exitCode;
 
   bool get isError => status == 'error' || type == 'error';
 }
