@@ -164,7 +164,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           _cacheWindows(key, windows);
           _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
         },
-        onWindowSnapshot: (window) => _cacheWindowSnapshot(key, window),
+        onWindowSnapshot: (window) {
+          _cacheWindowSnapshot(key, window);
+          final windows = _windowSnapshotCache[key];
+          if (windows != null) {
+            _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
+          }
+        },
         onDispose: () => _observers.remove(key),
       ),
     );

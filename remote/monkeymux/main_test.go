@@ -138,6 +138,62 @@ func TestActiveReplayIncludesWindowHistory(t *testing.T) {
 	}
 }
 
+func TestReplayStripsTerminalResponseQueries(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:    "@1",
+			index: 0,
+			history: []byte(
+				"before" +
+					"\x1b[c" +
+					"\x1b[>0c" +
+					"\x1b[6n" +
+					"\x1b]11;?\x07" +
+					"\x1b]2;Gemini\x07" +
+					"after",
+			),
+			lastActivity: time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	for _, stripped := range []string{
+		"\x1b[c",
+		"\x1b[>0c",
+		"\x1b[6n",
+		"\x1b]11;?\x07",
+	} {
+		if strings.Contains(replay, stripped) {
+			t.Fatalf("replay retained terminal query %q in %q", stripped, replay)
+		}
+	}
+	if !strings.Contains(replay, "\x1b]2;Gemini\x07") {
+		t.Fatalf("replay stripped title update: %q", replay)
+	}
+	if !strings.Contains(replay, "before") || !strings.Contains(replay, "after") {
+		t.Fatalf("replay = %q, want normal output preserved", replay)
+	}
+}
+
+func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput("@1", []byte("live\x1b[c\x1b]11;?\x07query"))
+
+	if got := attach.String(); got != "live\x1b[c\x1b]11;?\x07query" {
+		t.Fatalf("active attach output = %q, want unmodified live query", got)
+	}
+}
+
 func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	window := &muxWindow{}
 
@@ -234,6 +290,53 @@ func TestWindowSnapshotPrefersForegroundProcessMetadata(t *testing.T) {
 	}
 	if snapshot.PanePid != 23456 {
 		t.Fatalf("pane pid = %d, want foreground pid", snapshot.PanePid)
+	}
+}
+
+func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("one"), lastActivity: time.Now()},
+		{id: "@2", index: 1, history: []byte("two"), lastActivity: time.Now()},
+		{id: "@3", index: 2, history: []byte("three"), lastActivity: time.Now()},
+	}
+	server.activeID = "@2"
+	server.attachConn = attach
+
+	if err := server.closeWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := server.activeWindowID(); got != "@3" {
+		t.Fatalf("active window = %q, want next window @3", got)
+	}
+	want := activeWindowReplayPrefix + "three"
+	if got := attach.String(); got != want {
+		t.Fatalf("attach output = %q, want %q", got, want)
+	}
+}
+
+func TestCloseLastIndexedActiveWindowWrapsToFirstWindow(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("one"), lastActivity: time.Now()},
+		{id: "@2", index: 1, history: []byte("two"), lastActivity: time.Now()},
+	}
+	server.activeID = "@2"
+	server.attachConn = attach
+
+	if err := server.closeWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := server.activeWindowID(); got != "@1" {
+		t.Fatalf("active window = %q, want wrapped window @1", got)
+	}
+	want := activeWindowReplayPrefix + "one"
+	if got := attach.String(); got != want {
+		t.Fatalf("attach output = %q, want %q", got, want)
 	}
 }
 

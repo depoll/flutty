@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion        = "0.1.5"
+	monkeyMuxVersion        = "0.1.6"
 	defaultColumns          = 80
 	defaultRows             = 24
 	maxTitleBytes           = 160
@@ -1009,6 +1009,12 @@ func (s *muxServer) selectWindow(windowID string) error {
 }
 
 func (s *muxServer) closeWindow(windowID string) error {
+	var attach net.Conn
+	var replay []byte
+	var activeChanged bool
+	var process *os.Process
+	var windowPty *os.File
+
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
@@ -1025,9 +1031,50 @@ func (s *muxServer) closeWindow(windowID string) error {
 		s.mu.Unlock()
 		return errors.New("cannot close the last MonkeyMux window")
 	}
-	_ = window.cmd.Process.Signal(syscall.SIGHUP)
-	_ = window.pty.Close()
+	if s.activeID == windowID {
+		replacement := s.replacementWindowForClosedLocked(window)
+		if replacement != nil {
+			s.activeID = replacement.id
+			replacement.alert = false
+			s.resizeActiveLocked(s.width, s.height)
+			attach = s.attachConn
+			replay = s.replayBytesLocked(replacement)
+			activeChanged = true
+		}
+	}
+	if window.cmd != nil {
+		process = window.cmd.Process
+	}
+	windowPty = window.pty
 	s.mu.Unlock()
+
+	if activeChanged {
+		s.broadcastWindowList("active_window_changed")
+		s.writeAttach(attach, replay)
+	}
+	if process != nil {
+		_ = process.Signal(syscall.SIGHUP)
+	}
+	if windowPty != nil {
+		_ = windowPty.Close()
+	}
+	return nil
+}
+
+func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWindow {
+	for _, candidate := range s.windows {
+		if candidate.closed || candidate.id == closing.id {
+			continue
+		}
+		if candidate.index > closing.index {
+			return candidate
+		}
+	}
+	for _, candidate := range s.windows {
+		if !candidate.closed && candidate.id != closing.id {
+			return candidate
+		}
+	}
 	return nil
 }
 
@@ -1059,9 +1106,10 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
-	replay := make([]byte, 0, len(activeWindowReplayPrefix)+len(window.history))
+	history := stripTerminalQueriesFromReplay(window.history)
+	replay := make([]byte, 0, len(activeWindowReplayPrefix)+len(history))
 	replay = append(replay, activeWindowReplayPrefix...)
-	replay = append(replay, window.history...)
+	replay = append(replay, history...)
 	return replay
 }
 
@@ -1169,6 +1217,97 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	if overflow := len(w.history) - windowHistoryLimitBytes; overflow > 0 {
 		copy(w.history, w.history[overflow:])
 		w.history = w.history[:windowHistoryLimitBytes]
+	}
+}
+
+func stripTerminalQueriesFromReplay(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	var output []byte
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' || i+1 >= len(data) {
+			output = append(output, data[i])
+			i++
+			continue
+		}
+		next := data[i+1]
+		if next == '[' {
+			end := csiSequenceEnd(data, i+2)
+			if end < 0 {
+				output = append(output, data[i:]...)
+				break
+			}
+			sequence := data[i : end+1]
+			if isReplayUnsafeCsiQuery(sequence) {
+				i = end + 1
+				continue
+			}
+		} else if next == ']' {
+			end, terminatorLength, ok := findOscTerminator(data[i+2:])
+			if !ok {
+				output = append(output, data[i:]...)
+				break
+			}
+			payload := data[i+2 : i+2+end]
+			if isReplayUnsafeOscQuery(payload) {
+				i += 2 + end + terminatorLength
+				continue
+			}
+		}
+		output = append(output, data[i])
+		i++
+	}
+	if output == nil {
+		return data
+	}
+	return output
+}
+
+func csiSequenceEnd(data []byte, start int) int {
+	for i := start; i < len(data); i++ {
+		if data[i] >= 0x40 && data[i] <= 0x7e {
+			return i
+		}
+	}
+	return -1
+}
+
+func isReplayUnsafeCsiQuery(sequence []byte) bool {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return false
+	}
+	final := sequence[len(sequence)-1]
+	params := string(sequence[2 : len(sequence)-1])
+	switch final {
+	case 'c':
+		return params == "" ||
+			params == "0" ||
+			strings.HasPrefix(params, "?") ||
+			strings.HasPrefix(params, ">")
+	case 'n':
+		return params == "5" ||
+			params == "6" ||
+			params == "?6" ||
+			params == "?15" ||
+			params == "?25" ||
+			params == "?26" ||
+			params == "?53"
+	default:
+		return false
+	}
+}
+
+func isReplayUnsafeOscQuery(payload []byte) bool {
+	code, value, ok := strings.Cut(string(payload), ";")
+	if !ok || !strings.Contains(value, "?") {
+		return false
+	}
+	switch code {
+	case "4", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19":
+		return true
+	default:
+		return false
 	}
 }
 
