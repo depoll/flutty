@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
@@ -8033,6 +8034,37 @@ void main() {
 
       expect(harness.terminalOutput, <String>['\x11']);
       expect(modifierActive, isFalse);
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
+    testWidgets('modifier chords ignore stale multi-character IME batches', (
+      tester,
+    ) async {
+      final toolbarController = KeyboardToolbarController()..toggleCtrl();
+      addTearDown(toolbarController.dispose);
+      final harness = await _pumpTerminalHarness(
+        tester,
+        hasActiveToolbarModifier: () =>
+            toolbarController.isCtrlActive || toolbarController.isAltActive,
+        applyTerminalTextInputModifiers:
+            toolbarController.applySystemKeyboardModifiers,
+      );
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('staleq', selectionOffset: 'staleq'.length),
+      );
+      await tester.pump();
+
+      expect(harness.terminalOutput, <String>['\x11']);
+      expect(toolbarController.isCtrlActive, isFalse);
       expect(
         _terminalTextInputClient(tester).currentTextEditingValue,
         const TextEditingValue(
