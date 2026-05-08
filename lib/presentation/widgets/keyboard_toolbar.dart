@@ -528,36 +528,42 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   void _toggleCtrl() {
     HapticFeedback.selectionClick();
     _controller.toggleCtrl();
+    widget.onKeyPressed?.call();
     _refocusTerminal();
   }
 
   void _toggleAlt() {
     HapticFeedback.selectionClick();
     _controller.toggleAlt();
+    widget.onKeyPressed?.call();
     _refocusTerminal();
   }
 
   void _toggleShift() {
     HapticFeedback.selectionClick();
     _controller.toggleShift();
+    widget.onKeyPressed?.call();
     _refocusTerminal();
   }
 
   void _lockCtrl() {
     HapticFeedback.mediumImpact();
     _controller.lockCtrl();
+    widget.onKeyPressed?.call();
     _refocusTerminal();
   }
 
   void _lockAlt() {
     HapticFeedback.mediumImpact();
     _controller.lockAlt();
+    widget.onKeyPressed?.call();
     _refocusTerminal();
   }
 
   void _lockShift() {
     HapticFeedback.mediumImpact();
     _controller.lockShift();
+    widget.onKeyPressed?.call();
     _refocusTerminal();
   }
 
