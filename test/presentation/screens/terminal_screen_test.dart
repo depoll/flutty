@@ -1967,6 +1967,118 @@ void main() {
     );
 
     testWidgets(
+      'disconnects when final MonkeyMux close shuts the control channel',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        final activeSessions = _TestActiveSessionsNotifier(session);
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.clearCache(session.connectionId),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.clearCache(session.connectionId),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.killWindow(
+            session,
+            sessionName,
+            0,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenThrow(
+          const MonkeyMuxInstallException('MonkeyMux control channel closed.'),
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(() => activeSessions),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              initialRoute: '/terminal',
+              routes: {
+                '/': (_) => const SizedBox.shrink(),
+                '/terminal': (_) => TerminalScreen(
+                  hostId: host.id,
+                  connectionId: session.connectionId,
+                ),
+              },
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        final closeWindowButton = find.byWidgetPredicate(
+          (widget) => widget is IconButton && widget.tooltip == 'Close window',
+        );
+        expect(closeWindowButton, findsOneWidget);
+        await tester.tap(closeWindowButton);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(activeSessions.disconnectedConnectionIds, [
+          session.connectionId,
+        ]);
+        expect(
+          find.text('tmux action failed. Check the session and try again.'),
+          findsNothing,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'does not leak outer tmux theme reports to a bare shell after detach',
       (tester) async {
         final tmuxService = _MockTmuxService();
