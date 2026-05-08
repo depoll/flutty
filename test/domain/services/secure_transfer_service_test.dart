@@ -135,6 +135,7 @@ void main() {
               hostname: 'prod.example.com',
               username: 'root',
               password: const Value('secret'),
+              skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
               autoConnectCommand: const Value('tmux new -As MonkeySSH'),
               autoConnectSnippetId: Value(snippetId),
             ),
@@ -158,7 +159,30 @@ void main() {
       expect(hostData['hostname'], 'prod.example.com');
       expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
       expect(hostData['autoConnectSnippetId'], isNull);
+      expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
     });
+
+    test(
+      'createMigrationData includes skip-jump SSIDs in host exports',
+      () async {
+        await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Production',
+            hostname: 'prod.example.com',
+            username: 'root',
+            skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
+          ),
+        );
+
+        final migrationData = await transferService.createMigrationData(
+          includeKnownHosts: false,
+        );
+        final hosts = migrationData['hosts'] as List;
+        final hostData = Map<String, dynamic>.from(hosts.single as Map);
+
+        expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
+      },
+    );
 
     test(
       'includes referenced key data when requested for host export',
@@ -247,6 +271,7 @@ void main() {
             'port': 22,
             'username': 'root',
             'password': 'host-pass',
+            'skipJumpHostOnSsids': 'Home WiFi\nOffice WiFi',
             'isFavorite': false,
           },
         },
@@ -254,12 +279,14 @@ void main() {
 
       final imported = await transferService.importHostPayload(payload);
       expect(imported.password, 'host-pass');
+      expect(imported.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
       expect(imported.autoConnectRequiresConfirmation, isFalse);
 
       final stored = await (db.select(
         db.hosts,
       )..where((h) => h.id.equals(imported.id))).getSingle();
       expect(stored.password, startsWith('ENCv1:'));
+      expect(stored.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
     });
 
     test('importHostPayload preserves host CLI launch preferences', () async {
@@ -672,6 +699,7 @@ void main() {
                 hostname: 'b.example.com',
                 username: 'root',
                 jumpHostId: Value(hostAId),
+                skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
               ),
             );
 
@@ -753,6 +781,7 @@ void main() {
         )..where((s) => s.key.equals('extra'))).getSingleOrNull();
         final hosts = await db.select(db.hosts).get();
         final hostA = hosts.firstWhere((host) => host.label == 'A');
+        final hostB = hosts.firstWhere((host) => host.label == 'B');
         final importedSnippet = await (db.select(
           db.snippets,
         )..where((snippet) => snippet.name.equals('List files'))).getSingle();
@@ -765,6 +794,7 @@ void main() {
         expect(hostA.autoConnectCommand, 'ls -la');
         expect(hostA.autoConnectSnippetId, importedSnippet.id);
         expect(hostA.autoConnectRequiresConfirmation, isTrue);
+        expect(hostB.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
         expect(groups, hasLength(2));
         expect(snippetFolders, hasLength(2));
         expect(portForwards, hasLength(1));
