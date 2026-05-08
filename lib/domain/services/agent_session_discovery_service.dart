@@ -9,6 +9,7 @@ import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
+import 'terminal_connection_backend_service.dart';
 
 const _genericSessionSummaries = <String>{
   'untitled',
@@ -1017,10 +1018,14 @@ List<ToolSessionInfo> scopeDiscoveredSessionsToWorkingDirectory(
 /// [ToolSessionInfo] entries.
 class AgentSessionDiscoveryService {
   /// Creates a new [AgentSessionDiscoveryService].
-  AgentSessionDiscoveryService({DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  AgentSessionDiscoveryService({
+    DateTime Function()? now,
+    TerminalConnectionBackendService? terminalBackendService,
+  }) : _now = now ?? DateTime.now,
+       _terminalBackendService = terminalBackendService;
 
   final DateTime Function() _now;
+  final TerminalConnectionBackendService? _terminalBackendService;
   final Map<_AgentSessionDiscoveryKey, _CachedDiscoveryResult> _discoveryCache =
       <_AgentSessionDiscoveryKey, _CachedDiscoveryResult>{};
   final Map<_AgentSessionDiscoveryKey, Stream<DiscoveredSessionsResult>>
@@ -2423,23 +2428,58 @@ class AgentSessionDiscoveryService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
-  Future<String> _exec(SshSession session, String command) =>
-      session.runQueuedExec(() async {
-        final execSession = await session.execute(
-          _markCommandDone('$_profileSourcingPrefix$command'),
-        );
-        try {
-          execSession.stderr.drain<void>().ignore();
-          return await _readStdoutUntilDoneMarker(execSession);
-        } finally {
-          execSession.close();
-        }
-      }, priority: SshExecPriority.low);
+  Future<String> _exec(SshSession session, String command) {
+    final controlChannelBackend = _controlChannelCommandBackend(session);
+    if (controlChannelBackend != null) {
+      return _execThroughControlChannel(controlChannelBackend, command);
+    }
+    return session.runQueuedExec(() async {
+      final execSession = await session.execute(
+        _markCommandDone('$_profileSourcingPrefix$command'),
+      );
+      try {
+        execSession.stderr.drain<void>().ignore();
+        return await _readStdoutUntilDoneMarker(execSession);
+      } finally {
+        execSession.close();
+      }
+    }, priority: SshExecPriority.low);
+  }
+
+  Future<String> _execThroughControlChannel(
+    TerminalConnectionBackend backend,
+    String command,
+  ) async {
+    final result = await backend.runClientCommand(
+      _markCommandDone('$_profileSourcingPrefix$command'),
+      priority: SshExecPriority.low,
+    );
+    return _stripDoneMarker(result.output);
+  }
+
+  TerminalConnectionBackend? _controlChannelCommandBackend(SshSession session) {
+    final terminalBackendService = _terminalBackendService;
+    if (terminalBackendService == null) return null;
+    final backend = terminalBackendService.resolve(session);
+    return backend.capabilities.clientCommandsUseControlChannel
+        ? backend
+        : null;
+  }
 
   static String _markCommandDone(String command) =>
       '{ $command; __flutty_agent_discovery_exec_status__=\$?; '
       'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
       r'"$__flutty_agent_discovery_exec_status__"; }';
+
+  static String _stripDoneMarker(String output) {
+    RegExpMatch? markerMatch;
+    for (final match in _execDoneMarkerLinePattern.allMatches(output)) {
+      markerMatch = match;
+    }
+    return markerMatch == null
+        ? output
+        : output.substring(0, markerMatch.start);
+  }
 
   static Future<String> _readStdoutUntilDoneMarker(
     SSHSession execSession,
@@ -2500,6 +2540,9 @@ class AgentSessionDiscoveryService {
     required String? workingDirectory,
     required int max,
   }) async {
+    if (_controlChannelCommandBackend(session) != null) {
+      return null;
+    }
     final scopedWorkingDirectories = _acpSessionListWorkingDirectories(
       workingDirectory,
     );
@@ -3281,5 +3324,9 @@ String? _resolveGeminiWorkingDirectory(
 /// Provider for [AgentSessionDiscoveryService].
 final agentSessionDiscoveryServiceProvider =
     Provider<AgentSessionDiscoveryService>(
-      (ref) => AgentSessionDiscoveryService(),
+      (ref) => AgentSessionDiscoveryService(
+        terminalBackendService: ref.watch(
+          terminalConnectionBackendServiceProvider,
+        ),
+      ),
     );
