@@ -148,7 +148,7 @@ void main() {
       expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
-    test('duplicate copies all host fields and port forwards', () async {
+    test('duplicate copies skip-jump SSIDs', () async {
       final keyId = await db
           .into(db.sshKeys)
           .insert(
@@ -188,6 +188,7 @@ void main() {
           keyId: Value(keyId),
           groupId: Value(groupId),
           jumpHostId: Value(jumpHostId),
+          skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
           isFavorite: const Value(true),
           color: const Value('#112233'),
           notes: const Value('Has extra metadata'),
@@ -249,6 +250,8 @@ void main() {
       expect(duplicateHost.keyId, sourceHost.keyId);
       expect(duplicateHost.groupId, sourceHost.groupId);
       expect(duplicateHost.jumpHostId, sourceHost.jumpHostId);
+      expect(sourceHost.skipJumpHostOnSsids, 'Home WiFi\nOffice WiFi');
+      expect(duplicateHost.skipJumpHostOnSsids, sourceHost.skipJumpHostOnSsids);
       expect(duplicateHost.isFavorite, sourceHost.isFavorite);
       expect(duplicateHost.color, sourceHost.color);
       expect(duplicateHost.notes, sourceHost.notes);
