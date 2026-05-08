@@ -340,12 +340,19 @@ func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server.activeID = "@2"
 	server.attachConn = attach
 
-	if err := server.closeWindow("@2"); err != nil {
+	shouldShutdown, err := server.closeWindow("@2")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if shouldShutdown {
+		t.Fatal("closing one of several windows requested shutdown")
 	}
 
 	if got := server.activeWindowID(); got != "@3" {
 		t.Fatalf("active window = %q, want next window @3", got)
+	}
+	if !server.windows[1].closed {
+		t.Fatal("closed window was not marked closed immediately")
 	}
 	want := activeWindowReplayPrefix + "three"
 	if got := attach.String(); got != want {
@@ -363,8 +370,12 @@ func TestCloseLastIndexedActiveWindowWrapsToFirstWindow(t *testing.T) {
 	server.activeID = "@2"
 	server.attachConn = attach
 
-	if err := server.closeWindow("@2"); err != nil {
+	shouldShutdown, err := server.closeWindow("@2")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if shouldShutdown {
+		t.Fatal("closing one of several windows requested shutdown")
 	}
 
 	if got := server.activeWindowID(); got != "@1" {
@@ -373,6 +384,57 @@ func TestCloseLastIndexedActiveWindowWrapsToFirstWindow(t *testing.T) {
 	want := activeWindowReplayPrefix + "one"
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
+	}
+}
+
+func TestCloseWindowRemovesFromSnapshotsImmediately(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		{id: "@2", index: 1, lastActivity: time.Now()},
+		{id: "@3", index: 2, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	shouldShutdown, err := server.closeWindow("@2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shouldShutdown {
+		t.Fatal("closing one of several windows requested shutdown")
+	}
+
+	snapshots := server.snapshots()
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshot count = %d, want 2", len(snapshots))
+	}
+	if snapshots[0].ID != "@1" || snapshots[0].Index != 0 {
+		t.Fatalf("first snapshot = %#v, want @1 at index 0", snapshots[0])
+	}
+	if snapshots[1].ID != "@3" || snapshots[1].Index != 1 {
+		t.Fatalf("second snapshot = %#v, want @3 at index 1", snapshots[1])
+	}
+}
+
+func TestCloseLastWindowRequestsShutdown(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	shouldShutdown, err := server.closeWindow("@1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shouldShutdown {
+		t.Fatal("closing the last window did not request shutdown")
+	}
+	if got := server.activeWindowID(); got != "" {
+		t.Fatalf("active window = %q, want none", got)
+	}
+	if snapshots := server.snapshots(); len(snapshots) != 0 {
+		t.Fatalf("snapshot count = %d, want 0", len(snapshots))
 	}
 }
 
