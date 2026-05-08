@@ -232,6 +232,28 @@ void main() {
       expect(callCount, 1);
     });
 
+    testWidgets('modifier taps call onKeyPressed to reset IME context', (
+      tester,
+    ) async {
+      var callCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onKeyPressed: () => callCount++,
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Ctrl'));
+      await tester.pump();
+
+      expect(callCount, 1);
+    });
+
     testWidgets('special characters render correctly', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
