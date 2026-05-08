@@ -259,6 +259,22 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _notifyWindowStateChanged();
       return;
     }
+    if (event is TmuxWindowListEvent) {
+      _windowReloadGeneration += 1;
+      _resetWindowReloadRecovery();
+      final currentWindows = _windows;
+      final windows = currentWindows == null
+          ? event.windows
+          : applyTmuxWindowChangeEvent(currentWindows, event);
+      final shouldNotifyWindowStateChanged =
+          currentWindows == null ||
+          _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
+      _applyWindows(windows);
+      if (shouldNotifyWindowStateChanged) {
+        _notifyWindowStateChanged();
+      }
+      return;
+    }
     final currentWindows = _windows;
     if (currentWindows == null) {
       DiagnosticsLogService.instance.debug(

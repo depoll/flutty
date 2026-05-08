@@ -25,21 +25,25 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
 const (
-	monkeyMuxVersion        = "0.1.3"
+	monkeyMuxVersion        = "0.1.4"
 	defaultColumns          = 80
 	defaultRows             = 24
 	maxTitleBytes           = 160
 	oscBufferLimitBytes     = 4096
+	processMetadataTimeout  = 500 * time.Millisecond
+	processMetadataInterval = 500 * time.Millisecond
 	runCommandTimeout       = 8 * time.Second
 	socketTimeout           = 2 * time.Second
-	windowHistoryLimitBytes = 1024 * 1024
+	windowUpdateMinInterval = 750 * time.Millisecond
+	windowHistoryLimitBytes = 128 * 1024
 )
 
-const activeWindowReplayPrefix = "\x1b[?1049l\x1b[0m\x1b[H\x1b[2J"
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[0m\x1b[H\x1b[2J"
 
 var capabilities = []string{
 	"attach",
@@ -54,6 +58,7 @@ var capabilities = []string{
 	"inject-input",
 	"run-command",
 	"focus-hint",
+	"theme-hint",
 	"shutdown",
 }
 
@@ -121,19 +126,32 @@ type muxServer struct {
 }
 
 type muxWindow struct {
-	id           string
-	index        int
-	name         string
-	cwd          string
-	command      string
-	paneTitle    string
-	pty          *os.File
-	cmd          *exec.Cmd
-	history      []byte
-	oscBuffer    []byte
-	lastActivity time.Time
-	alert        bool
-	closed       bool
+	id                         string
+	index                      int
+	name                       string
+	cwd                        string
+	command                    string
+	foregroundPid              int
+	foregroundCommand          string
+	paneTitle                  string
+	pty                        *os.File
+	cmd                        *exec.Cmd
+	history                    []byte
+	oscBuffer                  []byte
+	lastActivity               time.Time
+	lastProcessMetadataRefresh time.Time
+	lastBroadcast              time.Time
+	alert                      bool
+	closed                     bool
+}
+
+type windowBroadcastIdentity struct {
+	name      string
+	cwd       string
+	command   string
+	paneTitle string
+	panePid   int
+	alert     bool
 }
 
 type controlClient struct {
@@ -459,15 +477,17 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.mu.Lock()
 	s.nextID++
 	window := &muxWindow{
-		id:           fmt.Sprintf("@%d", s.nextID),
-		index:        len(s.windows),
-		name:         name,
-		cwd:          cwd,
-		command:      filepath.Base(cmd.Path),
-		paneTitle:    name,
-		pty:          file,
-		cmd:          cmd,
-		lastActivity: time.Now(),
+		id:                fmt.Sprintf("@%d", s.nextID),
+		index:             len(s.windows),
+		name:              name,
+		cwd:               cwd,
+		command:           filepath.Base(cmd.Path),
+		foregroundPid:     cmd.Process.Pid,
+		foregroundCommand: filepath.Base(cmd.Path),
+		paneTitle:         name,
+		pty:               file,
+		cmd:               cmd,
+		lastActivity:      time.Now(),
 	}
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
@@ -515,6 +535,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
 	var shouldWrite bool
 	var snapshot *windowSnapshot
+	now := time.Now()
 
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -522,28 +543,40 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		s.mu.Unlock()
 		return
 	}
-	window.lastActivity = time.Now()
+	before := window.broadcastIdentityLocked()
+	wasAlert := window.alert
+	window.lastActivity = now
 	window.observeTerminalMetadataLocked(chunk)
 	window.appendHistoryLocked(chunk)
+	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
 	} else {
 		window.alert = true
 	}
-	snap := s.snapshotLocked(window)
-	snapshot = &snap
+	after := window.broadcastIdentityLocked()
+	if before != after ||
+		(!wasAlert && window.alert) ||
+		window.lastBroadcast.IsZero() ||
+		now.Sub(window.lastBroadcast) >= windowUpdateMinInterval {
+		snap := s.snapshotLocked(window)
+		snapshot = &snap
+		window.lastBroadcast = now
+	}
 	s.mu.Unlock()
 
 	if shouldWrite {
 		s.writeAttach(attach, chunk)
 	}
 
-	s.broadcast(controlResponse{
-		Type:    "window_updated",
-		Session: s.session,
-		Window:  snapshot,
-	})
+	if snapshot != nil {
+		s.broadcast(controlResponse{
+			Type:    "window_updated",
+			Session: s.session,
+			Window:  snapshot,
+		})
+	}
 }
 
 func (s *muxServer) markWindowClosed(windowID string) {
@@ -747,18 +780,24 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		s.resize(request.Width, request.Height)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
 	case "query_active_context":
-		window := s.activeWindow()
-		if window == nil {
+		s.mu.Lock()
+		window := s.windowByIDLocked(s.activeID)
+		if window == nil || window.closed {
+			s.mu.Unlock()
 			client.sendError(request, errors.New("no active window"))
 			return
 		}
+		window.refreshProcessMetadataLocked(time.Now())
+		currentPath := window.cwd
+		currentCommand := window.currentCommandLocked()
+		s.mu.Unlock()
 		client.send(controlResponse{
 			ID:             request.ID,
 			Type:           "active_context",
 			Status:         "ok",
 			Session:        s.session,
-			CurrentPath:    window.cwd,
-			CurrentCommand: window.command,
+			CurrentPath:    currentPath,
+			CurrentCommand: currentCommand,
 		})
 	case "run_command":
 		if strings.TrimSpace(request.Command) == "" {
@@ -789,14 +828,10 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		}
 		client.send(controlResponse{ID: request.ID, Type: "input_injected", Status: "ok"})
 	case "focus_changed":
-		id := s.activeWindowID()
-		if request.Data != "" {
-			_ = s.writeWindow(id, []byte(request.Data))
-		} else {
-			_ = s.writeWindow(id, []byte("\x1b[I"))
-		}
+		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
+		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
 	case "shutdown":
 		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
@@ -877,6 +912,7 @@ func (s *muxServer) snapshot(window *muxWindow) windowSnapshot {
 }
 
 func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
+	window.refreshProcessMetadataLocked(time.Now())
 	flags := ""
 	if window.alert {
 		flags = "#"
@@ -886,9 +922,9 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		Index:                    window.index,
 		Name:                     window.name,
 		Active:                   s.activeID == window.id,
-		CurrentCommand:           window.command,
+		CurrentCommand:           window.currentCommandLocked(),
 		CurrentPath:              window.cwd,
-		PanePid:                  window.processID(),
+		PanePid:                  window.metadataProcessIDLocked(),
 		Flags:                    flags,
 		PaneTitle:                window.paneTitle,
 		LastActivityEpochSeconds: window.lastActivity.Unix(),
@@ -948,8 +984,8 @@ func (s *muxServer) selectWindow(windowID string) error {
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
 	s.mu.Unlock()
-	s.writeAttach(attach, replay)
 	s.broadcastWindowList("active_window_changed")
+	s.writeAttach(attach, replay)
 	return nil
 }
 
@@ -1030,6 +1066,32 @@ func (s *muxServer) writeActive(data []byte) {
 	_ = s.writeWindow(s.activeWindowID(), data)
 }
 
+func (s *muxServer) sendThemeHint(data string) bool {
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		return false
+	}
+	window.refreshProcessMetadataLocked(time.Now())
+	if !window.supportsThemeHintLocked() {
+		s.mu.Unlock()
+		return false
+	}
+	windowID := window.id
+	s.mu.Unlock()
+
+	if data != "" {
+		return s.writeWindow(windowID, []byte(data)) == nil
+	}
+	go func() {
+		_ = s.writeWindow(windowID, []byte("\x1b[O"))
+		time.Sleep(50 * time.Millisecond)
+		_ = s.writeWindow(windowID, []byte("\x1b[I"))
+	}()
+	return true
+}
+
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -1096,6 +1158,140 @@ func (w *muxWindow) processID() int {
 		return 0
 	}
 	return w.cmd.Process.Pid
+}
+
+func (w *muxWindow) metadataProcessIDLocked() int {
+	if w.foregroundPid > 0 {
+		return w.foregroundPid
+	}
+	return w.processID()
+}
+
+func (w *muxWindow) currentCommandLocked() string {
+	if strings.TrimSpace(w.foregroundCommand) != "" {
+		return w.foregroundCommand
+	}
+	return w.command
+}
+
+func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
+	return windowBroadcastIdentity{
+		name:      w.name,
+		cwd:       w.cwd,
+		command:   w.currentCommandLocked(),
+		paneTitle: w.paneTitle,
+		panePid:   w.metadataProcessIDLocked(),
+		alert:     w.alert,
+	}
+}
+
+func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
+	if w == nil || w.pty == nil {
+		return
+	}
+	if !w.lastProcessMetadataRefresh.IsZero() &&
+		now.Sub(w.lastProcessMetadataRefresh) < processMetadataInterval {
+		return
+	}
+	w.lastProcessMetadataRefresh = now
+
+	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return
+	}
+	w.foregroundPid = pgrp
+	if command := commandNameForProcessGroup(pgrp); command != "" {
+		w.foregroundCommand = command
+	}
+}
+
+func (w *muxWindow) supportsThemeHintLocked() bool {
+	return agentToolFromCommandName(w.currentCommandLocked()) != ""
+}
+
+func commandNameForProcessGroup(pgrp int) string {
+	if pgrp <= 0 {
+		return ""
+	}
+	if command := commandNameForPID(pgrp); command != "" {
+		return command
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,pgid=,comm=").Output()
+	if err != nil || ctx.Err() != nil {
+		return ""
+	}
+	var fallback string
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[1] != strconv.Itoa(pgrp) {
+			continue
+		}
+		command := cleanProcessCommandName(fields[2])
+		if command == "" {
+			continue
+		}
+		if fields[0] == strconv.Itoa(pgrp) {
+			return command
+		}
+		if fallback == "" || !isShellCommandName(command) {
+			fallback = command
+		}
+	}
+	return fallback
+}
+
+func commandNameForPID(pid int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil || ctx.Err() != nil {
+		return ""
+	}
+	return cleanProcessCommandName(string(output))
+}
+
+func cleanProcessCommandName(value string) string {
+	for _, line := range strings.Split(value, "\n") {
+		command := strings.TrimSpace(line)
+		if command == "" {
+			continue
+		}
+		command = strings.Fields(command)[0]
+		command = filepath.Base(command)
+		command = strings.TrimSuffix(command, ".exe")
+		return command
+	}
+	return ""
+}
+
+func agentToolFromCommandName(command string) string {
+	normalized := strings.ToLower(cleanProcessCommandName(command))
+	switch normalized {
+	case "claude", "claude-code":
+		return "claude"
+	case "copilot", "github-copilot":
+		return "copilot"
+	case "codex":
+		return "codex"
+	case "opencode", "open-code":
+		return "opencode"
+	case "gemini":
+		return "gemini"
+	default:
+		return ""
+	}
+}
+
+func isShellCommandName(command string) bool {
+	switch strings.ToLower(cleanProcessCommandName(command)) {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {

@@ -1698,7 +1698,7 @@ void main() {
     );
 
     testWidgets(
-      'does not inject tmux theme reports for MonkeyMux window updates',
+      'uses MonkeyMux theme hints without tmux report injection',
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
@@ -1783,6 +1783,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         shellWrites.clear();
+        themeRefreshCount = 0;
 
         windowEvents.add(
           const TmuxWindowSnapshotEvent(
@@ -1800,7 +1801,7 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(themeRefreshCount, 0);
+        expect(themeRefreshCount, 1);
         expect(writtenShellText, isNot(contains('\x1b[O')));
         expect(writtenShellText, isNot(contains('\x1b[I')));
         expect(writtenShellText, isNot(contains('\x1b]10;')));

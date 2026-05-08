@@ -197,11 +197,55 @@ func TestReplayPrefixDoesNotForceCursorVisible(t *testing.T) {
 	}
 }
 
+func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
+	for _, mode := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?1004l", "?2004l"} {
+		if !strings.Contains(activeWindowReplayPrefix, mode) {
+			t.Fatalf("replay prefix %q does not reset %s", activeWindowReplayPrefix, mode)
+		}
+	}
+}
+
 func TestWindowProcessIDReportsShellPid(t *testing.T) {
 	window := &muxWindow{cmd: &exec.Cmd{Process: &os.Process{Pid: 12345}}}
 
 	if got := window.processID(); got != 12345 {
 		t.Fatalf("processID = %d, want 12345", got)
+	}
+}
+
+func TestWindowSnapshotPrefersForegroundProcessMetadata(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "flutty",
+		command:           "zsh",
+		foregroundPid:     23456,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	snapshot := server.snapshot(window)
+
+	if snapshot.CurrentCommand != "codex" {
+		t.Fatalf("current command = %q, want codex", snapshot.CurrentCommand)
+	}
+	if snapshot.PanePid != 23456 {
+		t.Fatalf("pane pid = %d, want foreground pid", snapshot.PanePid)
+	}
+}
+
+func TestThemeHintOnlyTargetsAgentForegroundWindows(t *testing.T) {
+	agentWindow := &muxWindow{foregroundCommand: "codex"}
+	shellWindow := &muxWindow{foregroundCommand: "zsh"}
+
+	if !agentWindow.supportsThemeHintLocked() {
+		t.Fatal("codex foreground window did not support theme hints")
+	}
+	if shellWindow.supportsThemeHintLocked() {
+		t.Fatal("shell foreground window unexpectedly supported theme hints")
 	}
 }
 

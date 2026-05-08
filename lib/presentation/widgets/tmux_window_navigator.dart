@@ -403,6 +403,19 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       _loadWindows();
       return;
     }
+    if (event is TmuxWindowListEvent) {
+      _windowReloadGeneration += 1;
+      _resetWindowReloadRecovery();
+      final currentWindows = _windows;
+      setState(() {
+        _windows = currentWindows == null
+            ? event.windows
+            : applyTmuxWindowChangeEvent(currentWindows, event);
+        _error = null;
+        _isLoadingWindows = false;
+      });
+      return;
+    }
     final currentWindows = _windows;
     if (currentWindows == null) {
       DiagnosticsLogService.instance.debug(

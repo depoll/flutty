@@ -305,6 +305,22 @@ void main() {
       expect(window.secondaryTitle, 'session rollout-...');
     });
 
+    test('uses foreground command to label MonkeyMux Codex windows', () {
+      const window = TmuxWindow(
+        index: 5,
+        name: 'flutty',
+        isActive: true,
+        currentCommand: 'codex',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: 'flutty',
+      );
+
+      expect(window.foregroundAgentTool, AgentLaunchTool.codex);
+      expect(window.displayTitle, 'Codex · flutty');
+      expect(window.handleTitle, 'Codex · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
     test('shows live agent session titles when available', () {
       const window = TmuxWindow(
         index: 1,
