@@ -32,14 +32,28 @@ void main() {
         workingDirectory: "~/src/it's app",
         windowName: 'Codex agent',
         launchCommand: "codex --model 'gpt-5.4'",
+        serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
       );
 
       expect(
         command,
-        "'/home/me/.monkeyssh/bin/monkey mux' attach --cwd "
+        "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never --cwd "
         "'~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
+    });
+  });
+
+  group('MonkeyMuxServerStatus', () {
+    test('detects version mismatches and shutdown capability', () {
+      const status = MonkeyMuxServerStatus(
+        version: '0.1.13',
+        capabilities: {'window-list', 'shutdown'},
+      );
+
+      expect(status.supportsShutdown, isTrue);
+      expect(status.needsUpdate('0.1.13'), isFalse);
+      expect(status.needsUpdate('0.1.14'), isTrue);
     });
   });
 

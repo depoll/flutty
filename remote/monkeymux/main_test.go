@@ -90,6 +90,87 @@ func TestDefaultShellPathFallsBackToSh(t *testing.T) {
 	}
 }
 
+func TestNormalizeServerUpdatePolicy(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{"", serverUpdatePolicyPrompt},
+		{"prompt", serverUpdatePolicyPrompt},
+		{" never ", serverUpdatePolicyNever},
+		{"ALWAYS", serverUpdatePolicyAlways},
+	} {
+		got, err := normalizeServerUpdatePolicy(test.input)
+		if err != nil {
+			t.Fatalf("normalizeServerUpdatePolicy(%q) error: %v", test.input, err)
+		}
+		if got != test.want {
+			t.Fatalf("normalizeServerUpdatePolicy(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+
+	if _, err := normalizeServerUpdatePolicy("sometimes"); err == nil {
+		t.Fatal("invalid update policy succeeded")
+	}
+}
+
+func TestShouldUpdateRunningServerNeverIsSilent(t *testing.T) {
+	var output bytes.Buffer
+	update := shouldUpdateRunningServer(
+		strings.NewReader("y\n"),
+		&output,
+		"work",
+		runningServerStatus{version: "0.1.0"},
+		serverUpdatePolicyNever,
+	)
+
+	if update {
+		t.Fatal("never policy requested update")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("never policy wrote prompt: %q", output.String())
+	}
+}
+
+func TestShouldUpdateRunningServerAlwaysSkipsPrompt(t *testing.T) {
+	var output bytes.Buffer
+	update := shouldUpdateRunningServer(
+		strings.NewReader("n\n"),
+		&output,
+		"work",
+		runningServerStatus{version: "0.1.0"},
+		serverUpdatePolicyAlways,
+	)
+
+	if !update {
+		t.Fatal("always policy did not request update")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("always policy wrote prompt: %q", output.String())
+	}
+}
+
+func TestShouldUpdateRunningServerPromptUsesTerminalPrompt(t *testing.T) {
+	var output bytes.Buffer
+	update := shouldUpdateRunningServer(
+		strings.NewReader("y\n"),
+		&output,
+		"work",
+		runningServerStatus{
+			version:      "0.1.0",
+			capabilities: []string{"shutdown"},
+		},
+		serverUpdatePolicyPrompt,
+	)
+
+	if !update {
+		t.Fatal("prompt policy did not honor yes answer")
+	}
+	if !strings.Contains(output.String(), "Update now?") {
+		t.Fatalf("prompt policy output = %q, want update prompt", output.String())
+	}
+}
+
 func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
