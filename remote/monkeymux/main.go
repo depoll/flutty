@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.12"
+	monkeyMuxVersion         = "0.1.13"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1365,16 +1365,36 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.history)
 	history = trimReplayHistoryForAttach(history)
+	title := terminalTitleReplaySequence(window)
 	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
 	replay := make(
 		[]byte,
 		0,
-		len(activeWindowReplayPrefix)+len(history)+len(cursor),
+		len(activeWindowReplayPrefix)+len(title)+len(history)+len(cursor),
 	)
 	replay = append(replay, activeWindowReplayPrefix...)
+	replay = append(replay, title...)
 	replay = append(replay, history...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func terminalTitleReplaySequence(window *muxWindow) []byte {
+	title := ""
+	if window != nil {
+		title = firstNonEmptyString(window.paneTitle, window.name)
+	}
+	title = sanitizeTerminalTitle(title)
+	return []byte("\x1b]0;" + title + "\x07\x1b]1;" + title + "\x07\x1b]2;" + title + "\x07")
+}
+
+func sanitizeTerminalTitle(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
 }
 
 func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
@@ -2280,7 +2300,11 @@ func defaultShellPath() string {
 }
 
 func shellCommand(shell string) *exec.Cmd {
-	return exec.Command(shell)
+	cmd := exec.Command(shell)
+	if base := filepath.Base(shell); base != "" {
+		cmd.Args[0] = "-" + base
+	}
+	return cmd
 }
 
 func inheritedEnvironment(base []string) []string {
