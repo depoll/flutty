@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.8"
+	monkeyMuxVersion         = "0.1.9"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -614,6 +614,11 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 }
 
 func (s *muxServer) markWindowClosed(windowID string) {
+	var attach net.Conn
+	var replay []byte
+	var activeChanged bool
+	var shouldShutdown bool
+
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
@@ -630,11 +635,16 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			if !candidate.closed {
 				s.activeID = candidate.id
 				candidate.alert = false
+				s.resizeActiveLocked(s.width, s.height)
+				attach = s.attachConn
+				replay = s.replayBytesLocked(candidate)
+				activeChanged = true
 				break
 			}
 		}
 	}
 	snapshots := s.snapshotsLocked()
+	shouldShutdown = len(snapshots) == 0
 	s.mu.Unlock()
 
 	s.broadcast(controlResponse{
@@ -647,6 +657,17 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		Session: s.session,
 		Windows: snapshots,
 	})
+	if activeChanged {
+		s.broadcast(controlResponse{
+			Type:    "active_window_changed",
+			Session: s.session,
+			Windows: snapshots,
+		})
+		s.writeAttach(attach, replay)
+	}
+	if shouldShutdown {
+		go s.close()
+	}
 }
 
 func (s *muxServer) handleConnection(conn net.Conn) {
@@ -802,11 +823,15 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("missing target window"))
 			return
 		}
-		if err := s.closeWindow(id); err != nil {
+		shouldShutdown, err := s.closeWindow(id)
+		if err != nil {
 			client.sendError(request, err)
 			return
 		}
 		client.send(controlResponse{ID: request.ID, Type: "window_closed", Status: "ok"})
+		if shouldShutdown {
+			go s.close()
+		}
 	case "resize":
 		if request.Width <= 0 || request.Height <= 0 {
 			client.sendError(request, errors.New("invalid terminal size"))
@@ -1193,28 +1218,26 @@ func (s *muxServer) selectWindow(windowID string) error {
 	return nil
 }
 
-func (s *muxServer) closeWindow(windowID string) error {
+func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
+	var shouldShutdown bool
 	var process *os.Process
 	var windowPty *os.File
+	var snapshots []windowSnapshot
 
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
-		return fmt.Errorf("window %q not found", windowID)
+		return false, fmt.Errorf("window %q not found", windowID)
 	}
 	openCount := 0
 	for _, candidate := range s.windows {
 		if !candidate.closed {
 			openCount++
 		}
-	}
-	if openCount <= 1 {
-		s.mu.Unlock()
-		return errors.New("cannot close the last MonkeyMux window")
 	}
 	if s.activeID == windowID {
 		replacement := s.replacementWindowForClosedLocked(window)
@@ -1225,16 +1248,37 @@ func (s *muxServer) closeWindow(windowID string) error {
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
 			activeChanged = true
+		} else {
+			s.activeID = ""
 		}
 	}
+	window.closed = true
+	window.alert = false
 	if window.cmd != nil {
 		process = window.cmd.Process
 	}
 	windowPty = window.pty
+	s.reindexWindowsLocked()
+	snapshots = s.snapshotsLocked()
+	shouldShutdown = openCount <= 1 || len(snapshots) == 0
 	s.mu.Unlock()
 
+	s.broadcast(controlResponse{
+		Type:    "window_removed",
+		Session: s.session,
+		Window:  &windowSnapshot{ID: windowID},
+	})
+	s.broadcast(controlResponse{
+		Type:    "window_list",
+		Session: s.session,
+		Windows: snapshots,
+	})
 	if activeChanged {
-		s.broadcastWindowList("active_window_changed")
+		s.broadcast(controlResponse{
+			Type:    "active_window_changed",
+			Session: s.session,
+			Windows: snapshots,
+		})
 		s.writeAttach(attach, replay)
 	}
 	if process != nil {
@@ -1243,7 +1287,7 @@ func (s *muxServer) closeWindow(windowID string) error {
 	if windowPty != nil {
 		_ = windowPty.Close()
 	}
-	return nil
+	return shouldShutdown, nil
 }
 
 func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWindow {

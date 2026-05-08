@@ -642,11 +642,9 @@ class _MonkeyMuxWindowChangeObserver {
         }
       case 'window_list':
       case 'active_window_changed':
-        if (response.windows.isNotEmpty) {
-          onWindowList(response.windows);
-          if (!_controller.isClosed) {
-            _controller.add(TmuxWindowListEvent(response.windows));
-          }
+        onWindowList(response.windows);
+        if (!_controller.isClosed) {
+          _controller.add(TmuxWindowListEvent(response.windows));
         }
       case 'window_removed':
         if (!_controller.isClosed) {
