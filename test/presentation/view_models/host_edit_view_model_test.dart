@@ -5,12 +5,15 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
+import 'package:monkeyssh/domain/models/host_connection_type.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 
 HostEditDraft _draft({
   String label = 'Host',
   String hostname = 'example.com',
   String port = '22',
+  HostConnectionType connectionType = HostConnectionType.ssh,
+  String devTunnelUrl = '',
   String username = 'root',
   HostStartupMode startupMode = HostStartupMode.none,
   AutoConnectCommandMode autoConnectMode = AutoConnectCommandMode.none,
@@ -23,6 +26,8 @@ HostEditDraft _draft({
   label: label,
   hostname: hostname,
   port: port,
+  connectionType: connectionType,
+  devTunnelUrl: devTunnelUrl,
   username: username,
   password: '',
   tags: '',
@@ -72,6 +77,22 @@ void main() {
               (issue) => issue.message,
               'message',
               'Fix label to save this host',
+            ),
+      );
+      expect(
+        viewModel.validateDraft(
+          _draft(connectionType: HostConnectionType.devTunnel),
+        ),
+        isA<HostEditValidationIssue>()
+            .having(
+              (issue) => issue.target,
+              'target',
+              HostEditValidationTarget.devTunnelUrl,
+            )
+            .having(
+              (issue) => issue.message,
+              'message',
+              'Fix Dev Tunnel URL to save this host',
             ),
       );
       expect(

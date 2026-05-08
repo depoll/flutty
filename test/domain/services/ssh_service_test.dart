@@ -17,6 +17,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/host_connection_type.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
@@ -635,6 +636,8 @@ void main() {
       expect(config.hostname, 'example.com');
       expect(config.port, 22);
       expect(config.username, 'user');
+      expect(config.connectionType, HostConnectionType.ssh);
+      expect(config.devTunnelUrl, isNull);
       expect(config.password, isNull);
       expect(config.privateKey, isNull);
       expect(config.passphrase, isNull);
@@ -654,6 +657,8 @@ void main() {
         hostname: 'target.example.com',
         port: 22,
         username: 'user',
+        connectionType: HostConnectionType.devTunnel,
+        devTunnelUrl: 'https://abc-22.usw2.devtunnels.ms',
         password: 'pass123',
         privateKey: '-----BEGIN KEY-----',
         passphrase: 'secret',
@@ -665,6 +670,8 @@ void main() {
       expect(config.hostname, 'target.example.com');
       expect(config.port, 22);
       expect(config.username, 'user');
+      expect(config.connectionType, HostConnectionType.devTunnel);
+      expect(config.devTunnelUrl, 'https://abc-22.usw2.devtunnels.ms');
       expect(config.password, 'pass123');
       expect(config.privateKey, '-----BEGIN KEY-----');
       expect(config.passphrase, 'secret');
@@ -783,6 +790,29 @@ void main() {
         expect(config.identityKeys, isNull);
         expect(config.jumpHost, isNotNull);
         expect(config.jumpHost!.hostname, 'bastion.example.com');
+      });
+
+      test('creates config with dev tunnel fields', () async {
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Dev Tunnel Host',
+                hostname: 'devbox',
+                username: 'admin',
+                connectionType: const Value('dev_tunnel'),
+                devTunnelUrl: const Value('https://abc-22.usw2.devtunnels.ms'),
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((t) => t.id.equals(hostId))).getSingle();
+
+        final config = SshConnectionConfig.fromHost(host);
+
+        expect(config.hostname, 'devbox');
+        expect(config.connectionType, HostConnectionType.devTunnel);
+        expect(config.devTunnelUrl, 'https://abc-22.usw2.devtunnels.ms');
       });
     });
   });
@@ -1668,6 +1698,33 @@ void main() {
       expect(config, isNotNull);
       expect(config!.password, 'secret');
       expect(config.identityKeys, isNull);
+    });
+
+    test('connectToHost includes dev tunnel connection metadata', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: null,
+      );
+      final hostId = await hostRepo.insert(
+        HostsCompanion.insert(
+          label: 'Dev Tunnel Host',
+          hostname: 'devbox',
+          username: 'admin',
+          connectionType: const Value('dev_tunnel'),
+          devTunnelUrl: const Value('https://abc-22.usw2.devtunnels.ms'),
+        ),
+      );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.connectionType, HostConnectionType.devTunnel);
+      expect(config.devTunnelUrl, 'https://abc-22.usw2.devtunnels.ms');
     });
 
     test('connect fails with invalid hostname', () async {

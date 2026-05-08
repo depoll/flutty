@@ -18,6 +18,7 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/dev_tunnel_auth_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
@@ -226,6 +227,7 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
           ),
         ],
         databaseProvider.overrideWithValue(database),
+        devTunnelSignedInProvider.overrideWith((ref) async => false),
         hostRepositoryProvider.overrideWithValue(hostRepository),
         agentLaunchPresetServiceProvider.overrideWithValue(presetService),
         keyRepositoryProvider.overrideWithValue(
@@ -411,6 +413,41 @@ void main() {
         expect(harness.hostRepository.insertedHost, isNull);
       },
     );
+
+    testWidgets('saves dev tunnel connection fields for new hosts', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(tester);
+      await _fillRequiredHostFields(tester);
+
+      final connectionTypeField = find.byKey(
+        const Key('host-connection-type-field'),
+      );
+      await tester.ensureVisible(connectionTypeField);
+      await tester.tap(connectionTypeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Dev Tunnel').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.enterText(
+        find.byKey(const Key('host-dev-tunnel-url-field')),
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+
+      await _tapBottomSave(tester);
+
+      final insertedHost = harness.hostRepository.insertedHost;
+      expect(insertedHost, isNotNull);
+      expect(insertedHost!.connectionType.value, 'dev_tunnel');
+      expect(
+        insertedHost.devTunnelUrl.value,
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+      expect(insertedHost.jumpHostId.value, isNull);
+      expect(find.text('Sign in to Dev Tunnels'), findsOneWidget);
+    });
 
     testWidgets('shows one selected coding agent icon in closed dropdown', (
       tester,
@@ -1078,6 +1115,12 @@ void main() {
         expect(yoloFinder, findsOneWidget);
         expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
 
+        await tester.scrollUntilVisible(
+          yoloFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(yoloFinder);
         await tester.tap(yoloFinder);
         await tester.pump();
 

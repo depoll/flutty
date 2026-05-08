@@ -13,9 +13,12 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
+import '../models/host_connection_type.dart';
 import '../models/terminal_theme.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
+import 'dev_tunnel_auth_service.dart';
+import 'dev_tunnel_socket_connector.dart';
 import 'diagnostics_log_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
@@ -497,6 +500,8 @@ class SshConnectionConfig {
     required this.hostname,
     required this.port,
     required this.username,
+    this.connectionType = HostConnectionType.ssh,
+    this.devTunnelUrl,
     this.password,
     this.privateKey,
     this.passphrase,
@@ -516,6 +521,8 @@ class SshConnectionConfig {
     hostname: host.hostname,
     port: host.port,
     username: host.username,
+    connectionType: hostConnectionTypeFromStorage(host.connectionType),
+    devTunnelUrl: host.devTunnelUrl,
     password: host.password,
     privateKey: key?.privateKey,
     passphrase: key?.passphrase,
@@ -531,6 +538,12 @@ class SshConnectionConfig {
 
   /// Username for authentication.
   final String username;
+
+  /// Connection method for reaching the SSH service.
+  final HostConnectionType connectionType;
+
+  /// Dev Tunnel forwarding URL, when [connectionType] is dev tunnel.
+  final String? devTunnelUrl;
 
   /// Password for authentication (if using password auth).
   final String? password;
@@ -600,6 +613,18 @@ typedef ConnectionProgressCallback =
 /// Connects a raw SSH socket for the requested host.
 typedef SshSocketConnector =
     Future<SSHSocket> Function(String host, int port, {Duration? timeout});
+
+/// Connects to a GitHub/Microsoft Dev Tunnel forwarding URL.
+typedef DevTunnelConnector =
+    Future<SSHSocket> Function(
+      String url, {
+      String? authorizationHeader,
+      Duration? timeout,
+    });
+
+/// Resolves Dev Tunnel authorization for a forwarding URL.
+typedef DevTunnelAuthorizationResolver =
+    Future<String?> Function(String url, {int? port});
 
 /// Creates an [SSHClient] for a prepared socket.
 typedef SshClientFactory =
@@ -682,9 +707,16 @@ class SshService {
     this.hostKeyPromptHandler,
     WifiNetworkService? wifiNetworkService,
     SshSocketConnector? socketConnector,
+    DevTunnelConnector? devTunnelConnector,
+    DevTunnelAuthorizationResolver? devTunnelAuthorizationResolver,
     SshClientFactory? clientFactory,
   }) : wifiNetworkService = wifiNetworkService ?? WifiNetworkService(),
        _socketConnector = socketConnector ?? _connectWithKeepAlive,
+       _devTunnelConnector =
+           devTunnelConnector ?? DevTunnelSocketConnector.connect,
+       _devTunnelAuthorizationResolver =
+           devTunnelAuthorizationResolver ??
+           DevTunnelAuthService().resolveAuthorizationHeader,
        _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
@@ -710,6 +742,8 @@ class SshService {
   final WifiNetworkService wifiNetworkService;
 
   final SshSocketConnector _socketConnector;
+  final DevTunnelConnector _devTunnelConnector;
+  final DevTunnelAuthorizationResolver _devTunnelAuthorizationResolver;
   final SshClientFactory _clientFactory;
 
   final Map<int, SshSession> _sessions = {};
@@ -884,6 +918,7 @@ class SshService {
           'hostId': hostId,
           'connectionId': connectionId,
           'usesJumpHost': config.jumpHost != null,
+          'connectionType': config.connectionType.name,
           'usesPassword': config.password != null,
           'identityCount': config.identityKeys?.length ?? 0,
         },
@@ -934,6 +969,7 @@ class SshService {
         fields: {
           'isJumpHost': isJumpHost,
           'hasJumpHost': config.jumpHost != null,
+          'connectionType': config.connectionType.name,
           'usesPassword': config.password != null,
           'identityCount': config.identityKeys?.length ?? 0,
           'hasExplicitKey': config.privateKey != null,
@@ -972,6 +1008,32 @@ class SshService {
             'Opening tunnel to destination…',
           );
           return jumpClient.forwardLocal(config.hostname, config.port);
+        }
+
+        if (config.connectionType == HostConnectionType.devTunnel) {
+          final url = config.devTunnelUrl?.trim();
+          if (url == null || url.isEmpty) {
+            throw const DevTunnelConnectionException(
+              'Enter a Dev Tunnel forwarding URL.',
+            );
+          }
+          report(
+            SshConnectionState.connecting,
+            'Preparing Dev Tunnel connection…',
+          );
+          final authorizationHeader = await _devTunnelAuthorizationResolver(
+            url,
+            port: config.port,
+          );
+          report(
+            SshConnectionState.connecting,
+            'Opening Dev Tunnel connection…',
+          );
+          return _devTunnelConnector(
+            url,
+            authorizationHeader: authorizationHeader,
+            timeout: config.connectionTimeout,
+          );
         }
 
         report(
@@ -1254,6 +1316,24 @@ class SshService {
         success: false,
         error: e.message ?? 'Connection timed out',
       );
+    } on DevTunnelConnectionException catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
+      client?.close();
+      _closeClients(dependentClients);
+      return SshConnectionResult(success: false, error: e.message);
+    } on DevTunnelAuthException catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
+      client?.close();
+      _closeClients(dependentClients);
+      return SshConnectionResult(success: false, error: e.message);
     } on Exception catch (e) {
       DiagnosticsLogService.instance.warning(
         'ssh.connect',
@@ -2703,6 +2783,9 @@ final sshServiceProvider = Provider<SshService>(
     knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
     hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
     wifiNetworkService: ref.watch(wifiNetworkServiceProvider),
+    devTunnelAuthorizationResolver: ref
+        .watch(devTunnelAuthServiceProvider)
+        .resolveAuthorizationHeader,
   ),
 );
 

@@ -2046,6 +2046,28 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     requiredDuringInsert: false,
     defaultValue: const Constant(22),
   );
+  static const VerificationMeta _connectionTypeMeta = const VerificationMeta(
+    'connectionType',
+  );
+  @override
+  late final GeneratedColumn<String> connectionType = GeneratedColumn<String>(
+    'connection_type',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _devTunnelUrlMeta = const VerificationMeta(
+    'devTunnelUrl',
+  );
+  @override
+  late final GeneratedColumn<String> devTunnelUrl = GeneratedColumn<String>(
+    'dev_tunnel_url',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _usernameMeta = const VerificationMeta(
     'username',
   );
@@ -2324,6 +2346,8 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     label,
     hostname,
     port,
+    connectionType,
+    devTunnelUrl,
     username,
     password,
     keyId,
@@ -2383,6 +2407,24 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
       context.handle(
         _portMeta,
         port.isAcceptableOrUnknown(data['port']!, _portMeta),
+      );
+    }
+    if (data.containsKey('connection_type')) {
+      context.handle(
+        _connectionTypeMeta,
+        connectionType.isAcceptableOrUnknown(
+          data['connection_type']!,
+          _connectionTypeMeta,
+        ),
+      );
+    }
+    if (data.containsKey('dev_tunnel_url')) {
+      context.handle(
+        _devTunnelUrlMeta,
+        devTunnelUrl.isAcceptableOrUnknown(
+          data['dev_tunnel_url']!,
+          _devTunnelUrlMeta,
+        ),
       );
     }
     if (data.containsKey('username')) {
@@ -2586,6 +2628,14 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.int,
         data['${effectivePrefix}port'],
       )!,
+      connectionType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}connection_type'],
+      ),
+      devTunnelUrl: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}dev_tunnel_url'],
+      ),
       username: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}username'],
@@ -2700,6 +2750,12 @@ class Host extends DataClass implements Insertable<Host> {
   /// SSH port (default 22).
   final int port;
 
+  /// Connection method (`ssh`, `dev_tunnel`). Null is treated as `ssh`.
+  final String? connectionType;
+
+  /// GitHub/Microsoft Dev Tunnel forwarding URL.
+  final String? devTunnelUrl;
+
   /// Username for authentication.
   final String username;
 
@@ -2781,6 +2837,8 @@ class Host extends DataClass implements Insertable<Host> {
     required this.label,
     required this.hostname,
     required this.port,
+    this.connectionType,
+    this.devTunnelUrl,
     required this.username,
     this.password,
     this.keyId,
@@ -2812,6 +2870,12 @@ class Host extends DataClass implements Insertable<Host> {
     map['label'] = Variable<String>(label);
     map['hostname'] = Variable<String>(hostname);
     map['port'] = Variable<int>(port);
+    if (!nullToAbsent || connectionType != null) {
+      map['connection_type'] = Variable<String>(connectionType);
+    }
+    if (!nullToAbsent || devTunnelUrl != null) {
+      map['dev_tunnel_url'] = Variable<String>(devTunnelUrl);
+    }
     map['username'] = Variable<String>(username);
     if (!nullToAbsent || password != null) {
       map['password'] = Variable<String>(password);
@@ -2880,6 +2944,12 @@ class Host extends DataClass implements Insertable<Host> {
       label: Value(label),
       hostname: Value(hostname),
       port: Value(port),
+      connectionType: connectionType == null && nullToAbsent
+          ? const Value.absent()
+          : Value(connectionType),
+      devTunnelUrl: devTunnelUrl == null && nullToAbsent
+          ? const Value.absent()
+          : Value(devTunnelUrl),
       username: Value(username),
       password: password == null && nullToAbsent
           ? const Value.absent()
@@ -2948,6 +3018,8 @@ class Host extends DataClass implements Insertable<Host> {
       label: serializer.fromJson<String>(json['label']),
       hostname: serializer.fromJson<String>(json['hostname']),
       port: serializer.fromJson<int>(json['port']),
+      connectionType: serializer.fromJson<String?>(json['connectionType']),
+      devTunnelUrl: serializer.fromJson<String?>(json['devTunnelUrl']),
       username: serializer.fromJson<String>(json['username']),
       password: serializer.fromJson<String?>(json['password']),
       keyId: serializer.fromJson<int?>(json['keyId']),
@@ -2997,6 +3069,8 @@ class Host extends DataClass implements Insertable<Host> {
       'label': serializer.toJson<String>(label),
       'hostname': serializer.toJson<String>(hostname),
       'port': serializer.toJson<int>(port),
+      'connectionType': serializer.toJson<String?>(connectionType),
+      'devTunnelUrl': serializer.toJson<String?>(devTunnelUrl),
       'username': serializer.toJson<String>(username),
       'password': serializer.toJson<String?>(password),
       'keyId': serializer.toJson<int?>(keyId),
@@ -3030,6 +3104,8 @@ class Host extends DataClass implements Insertable<Host> {
     String? label,
     String? hostname,
     int? port,
+    Value<String?> connectionType = const Value.absent(),
+    Value<String?> devTunnelUrl = const Value.absent(),
     String? username,
     Value<String?> password = const Value.absent(),
     Value<int?> keyId = const Value.absent(),
@@ -3058,6 +3134,10 @@ class Host extends DataClass implements Insertable<Host> {
     label: label ?? this.label,
     hostname: hostname ?? this.hostname,
     port: port ?? this.port,
+    connectionType: connectionType.present
+        ? connectionType.value
+        : this.connectionType,
+    devTunnelUrl: devTunnelUrl.present ? devTunnelUrl.value : this.devTunnelUrl,
     username: username ?? this.username,
     password: password.present ? password.value : this.password,
     keyId: keyId.present ? keyId.value : this.keyId,
@@ -3109,6 +3189,12 @@ class Host extends DataClass implements Insertable<Host> {
       label: data.label.present ? data.label.value : this.label,
       hostname: data.hostname.present ? data.hostname.value : this.hostname,
       port: data.port.present ? data.port.value : this.port,
+      connectionType: data.connectionType.present
+          ? data.connectionType.value
+          : this.connectionType,
+      devTunnelUrl: data.devTunnelUrl.present
+          ? data.devTunnelUrl.value
+          : this.devTunnelUrl,
       username: data.username.present ? data.username.value : this.username,
       password: data.password.present ? data.password.value : this.password,
       keyId: data.keyId.present ? data.keyId.value : this.keyId,
@@ -3169,6 +3255,8 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('label: $label, ')
           ..write('hostname: $hostname, ')
           ..write('port: $port, ')
+          ..write('connectionType: $connectionType, ')
+          ..write('devTunnelUrl: $devTunnelUrl, ')
           ..write('username: $username, ')
           ..write('password: $password, ')
           ..write('keyId: $keyId, ')
@@ -3204,6 +3292,8 @@ class Host extends DataClass implements Insertable<Host> {
     label,
     hostname,
     port,
+    connectionType,
+    devTunnelUrl,
     username,
     password,
     keyId,
@@ -3236,6 +3326,8 @@ class Host extends DataClass implements Insertable<Host> {
           other.label == this.label &&
           other.hostname == this.hostname &&
           other.port == this.port &&
+          other.connectionType == this.connectionType &&
+          other.devTunnelUrl == this.devTunnelUrl &&
           other.username == this.username &&
           other.password == this.password &&
           other.keyId == this.keyId &&
@@ -3267,6 +3359,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<String> label;
   final Value<String> hostname;
   final Value<int> port;
+  final Value<String?> connectionType;
+  final Value<String?> devTunnelUrl;
   final Value<String> username;
   final Value<String?> password;
   final Value<int?> keyId;
@@ -3295,6 +3389,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.label = const Value.absent(),
     this.hostname = const Value.absent(),
     this.port = const Value.absent(),
+    this.connectionType = const Value.absent(),
+    this.devTunnelUrl = const Value.absent(),
     this.username = const Value.absent(),
     this.password = const Value.absent(),
     this.keyId = const Value.absent(),
@@ -3324,6 +3420,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     required String label,
     required String hostname,
     this.port = const Value.absent(),
+    this.connectionType = const Value.absent(),
+    this.devTunnelUrl = const Value.absent(),
     required String username,
     this.password = const Value.absent(),
     this.keyId = const Value.absent(),
@@ -3355,6 +3453,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<String>? label,
     Expression<String>? hostname,
     Expression<int>? port,
+    Expression<String>? connectionType,
+    Expression<String>? devTunnelUrl,
     Expression<String>? username,
     Expression<String>? password,
     Expression<int>? keyId,
@@ -3384,6 +3484,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
       if (label != null) 'label': label,
       if (hostname != null) 'hostname': hostname,
       if (port != null) 'port': port,
+      if (connectionType != null) 'connection_type': connectionType,
+      if (devTunnelUrl != null) 'dev_tunnel_url': devTunnelUrl,
       if (username != null) 'username': username,
       if (password != null) 'password': password,
       if (keyId != null) 'key_id': keyId,
@@ -3423,6 +3525,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<String>? label,
     Value<String>? hostname,
     Value<int>? port,
+    Value<String?>? connectionType,
+    Value<String?>? devTunnelUrl,
     Value<String>? username,
     Value<String?>? password,
     Value<int?>? keyId,
@@ -3452,6 +3556,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
       label: label ?? this.label,
       hostname: hostname ?? this.hostname,
       port: port ?? this.port,
+      connectionType: connectionType ?? this.connectionType,
+      devTunnelUrl: devTunnelUrl ?? this.devTunnelUrl,
       username: username ?? this.username,
       password: password ?? this.password,
       keyId: keyId ?? this.keyId,
@@ -3494,6 +3600,12 @@ class HostsCompanion extends UpdateCompanion<Host> {
     }
     if (port.present) {
       map['port'] = Variable<int>(port.value);
+    }
+    if (connectionType.present) {
+      map['connection_type'] = Variable<String>(connectionType.value);
+    }
+    if (devTunnelUrl.present) {
+      map['dev_tunnel_url'] = Variable<String>(devTunnelUrl.value);
     }
     if (username.present) {
       map['username'] = Variable<String>(username.value);
@@ -3586,6 +3698,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('label: $label, ')
           ..write('hostname: $hostname, ')
           ..write('port: $port, ')
+          ..write('connectionType: $connectionType, ')
+          ..write('devTunnelUrl: $devTunnelUrl, ')
           ..write('username: $username, ')
           ..write('password: $password, ')
           ..write('keyId: $keyId, ')
@@ -6699,6 +6813,8 @@ typedef $$HostsTableCreateCompanionBuilder =
       required String label,
       required String hostname,
       Value<int> port,
+      Value<String?> connectionType,
+      Value<String?> devTunnelUrl,
       required String username,
       Value<String?> password,
       Value<int?> keyId,
@@ -6729,6 +6845,8 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<String> label,
       Value<String> hostname,
       Value<int> port,
+      Value<String?> connectionType,
+      Value<String?> devTunnelUrl,
       Value<String> username,
       Value<String?> password,
       Value<int?> keyId,
@@ -6877,6 +6995,16 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<int> get port => $composableBuilder(
     column: $table.port,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get connectionType => $composableBuilder(
+    column: $table.connectionType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get devTunnelUrl => $composableBuilder(
+    column: $table.devTunnelUrl,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -7122,6 +7250,16 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get connectionType => $composableBuilder(
+    column: $table.connectionType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get devTunnelUrl => $composableBuilder(
+    column: $table.devTunnelUrl,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get username => $composableBuilder(
     column: $table.username,
     builder: (column) => ColumnOrderings(column),
@@ -7331,6 +7469,16 @@ class $$HostsTableAnnotationComposer
 
   GeneratedColumn<int> get port =>
       $composableBuilder(column: $table.port, builder: (column) => column);
+
+  GeneratedColumn<String> get connectionType => $composableBuilder(
+    column: $table.connectionType,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get devTunnelUrl => $composableBuilder(
+    column: $table.devTunnelUrl,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<String> get username =>
       $composableBuilder(column: $table.username, builder: (column) => column);
@@ -7568,6 +7716,8 @@ class $$HostsTableTableManager
                 Value<String> label = const Value.absent(),
                 Value<String> hostname = const Value.absent(),
                 Value<int> port = const Value.absent(),
+                Value<String?> connectionType = const Value.absent(),
+                Value<String?> devTunnelUrl = const Value.absent(),
                 Value<String> username = const Value.absent(),
                 Value<String?> password = const Value.absent(),
                 Value<int?> keyId = const Value.absent(),
@@ -7597,6 +7747,8 @@ class $$HostsTableTableManager
                 label: label,
                 hostname: hostname,
                 port: port,
+                connectionType: connectionType,
+                devTunnelUrl: devTunnelUrl,
                 username: username,
                 password: password,
                 keyId: keyId,
@@ -7628,6 +7780,8 @@ class $$HostsTableTableManager
                 required String label,
                 required String hostname,
                 Value<int> port = const Value.absent(),
+                Value<String?> connectionType = const Value.absent(),
+                Value<String?> devTunnelUrl = const Value.absent(),
                 required String username,
                 Value<String?> password = const Value.absent(),
                 Value<int?> keyId = const Value.absent(),
@@ -7657,6 +7811,8 @@ class $$HostsTableTableManager
                 label: label,
                 hostname: hostname,
                 port: port,
+                connectionType: connectionType,
+                devTunnelUrl: devTunnelUrl,
                 username: username,
                 password: password,
                 keyId: keyId,

@@ -148,6 +148,22 @@ void main() {
       expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
+    test('insert stores dev tunnel connection fields', () async {
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Dev Tunnel Host',
+          hostname: 'devbox',
+          username: 'admin',
+          connectionType: const Value('dev_tunnel'),
+          devTunnelUrl: const Value('https://abc-22.usw2.devtunnels.ms'),
+        ),
+      );
+
+      final host = await repository.getById(id);
+      expect(host!.connectionType, 'dev_tunnel');
+      expect(host.devTunnelUrl, 'https://abc-22.usw2.devtunnels.ms');
+    });
+
     test('duplicate copies skip-jump SSIDs', () async {
       final keyId = await db
           .into(db.sshKeys)
@@ -183,6 +199,8 @@ void main() {
           label: 'Primary Server',
           hostname: 'prod.example.com',
           port: const Value(2200),
+          connectionType: const Value('dev_tunnel'),
+          devTunnelUrl: const Value('https://abc-22.usw2.devtunnels.ms'),
           username: 'deploy',
           password: const Value('s3cr3t'),
           keyId: Value(keyId),
@@ -245,6 +263,8 @@ void main() {
       expect(duplicateHost!.label, 'Primary Server (copy)');
       expect(duplicateHost.hostname, sourceHost.hostname);
       expect(duplicateHost.port, sourceHost.port);
+      expect(duplicateHost.connectionType, sourceHost.connectionType);
+      expect(duplicateHost.devTunnelUrl, sourceHost.devTunnelUrl);
       expect(duplicateHost.username, sourceHost.username);
       expect(duplicateHost.password, sourceHost.password);
       expect(duplicateHost.keyId, sourceHost.keyId);
