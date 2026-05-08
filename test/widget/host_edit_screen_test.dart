@@ -17,9 +17,11 @@ import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
+import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 
 Host _testHost({
@@ -31,6 +33,7 @@ Host _testHost({
   String? tmuxSessionName,
   String? tmuxWorkingDirectory,
   String? tmuxExtraFlags,
+  String? remoteMuxBackend,
 }) => Host(
   id: id,
   label: label,
@@ -46,6 +49,7 @@ Host _testHost({
   tmuxSessionName: tmuxSessionName,
   tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: tmuxExtraFlags,
+  remoteMuxBackend: remoteMuxBackend,
   sortOrder: 0,
 );
 
@@ -363,6 +367,32 @@ void main() {
       expect(find.byType(HostEditScreen), findsNothing);
     });
 
+    testWidgets('lets long host guidance text wrap', (tester) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+
+      final startupModeField = tester
+          .widget<DropdownButtonFormField<HostStartupMode>>(
+            find.byKey(const Key('host-startup-mode-field')),
+          );
+      expect(startupModeField.decoration.helperMaxLines, greaterThan(1));
+
+      await _selectStartupMode(tester, 'Launch coding agent');
+
+      final backendField = tester
+          .widget<DropdownButtonFormField<RemoteMuxBackend>>(
+            find.byKey(const Key('host-agent-mux-backend-field')),
+          );
+      expect(backendField.decoration.helperMaxLines, greaterThan(1));
+
+      final agentSessionField = tester.widget<TextField>(
+        find.descendant(
+          of: find.byKey(const Key('host-agent-tmux-session-field')),
+          matching: find.byType(TextField),
+        ),
+      );
+      expect(agentSessionField.decoration!.helperMaxLines, greaterThan(1));
+    });
+
     testWidgets('scrolls to missing tmux session when saving tmux startup', (
       tester,
     ) async {
@@ -580,6 +610,7 @@ void main() {
           label: 'Imported Host',
           autoConnectRequiresConfirmation: false,
           tmuxSessionName: 'old-workspace',
+          remoteMuxBackend: RemoteMuxBackend.tmux.storageValue,
         ),
         database: database,
         encryptionService: encryptionService,
@@ -679,6 +710,7 @@ void main() {
             label: 'Imported Host',
             autoConnectRequiresConfirmation: false,
             tmuxSessionName: 'old-workspace',
+            remoteMuxBackend: RemoteMuxBackend.tmux.storageValue,
           ),
           database: database,
           encryptionService: encryptionService,
@@ -776,6 +808,7 @@ void main() {
           autoConnectRequiresConfirmation: false,
           tmuxSessionName: 'workspace',
           tmuxExtraFlags: r'-f ~/.tmux.conf \; set status off',
+          remoteMuxBackend: RemoteMuxBackend.tmux.storageValue,
         ),
         database: database,
         encryptionService: encryptionService,

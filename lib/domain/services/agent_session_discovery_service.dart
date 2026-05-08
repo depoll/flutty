@@ -25,6 +25,7 @@ const _profileSourcingPrefix =
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
+const _geminiSessionMetadataMaxBytes = 64 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -630,13 +631,10 @@ parseGeminiSessionMetadata(
 }) {
   final decoded = _decodeJsonOrJsonlObject(raw);
   if (decoded == null) {
-    return (
-      sessionId: null,
-      summary: null,
-      workingDirectory: fallbackWorkingDirectory,
-      updatedAt: null,
-      isSubagent: false,
-      parsedAny: false,
+    return _parsePartialGeminiSessionMetadata(
+      raw,
+      activeWorkingDirectory: activeWorkingDirectory,
+      fallbackWorkingDirectory: fallbackWorkingDirectory,
     );
   }
 
@@ -662,6 +660,95 @@ parseGeminiSessionMetadata(
     isSubagent: _readStringField(decoded, 'kind') == 'subagent',
     parsedAny: true,
   );
+}
+
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool isSubagent,
+  bool parsedAny,
+})
+_parsePartialGeminiSessionMetadata(
+  String raw, {
+  String? activeWorkingDirectory,
+  String? fallbackWorkingDirectory,
+}) {
+  final sessionId = _readJsonStringFromRaw(raw, 'sessionId');
+  final storedSummary = _readJsonStringFromRaw(raw, 'summary');
+  final kind = _readJsonStringFromRaw(raw, 'kind');
+  final directories = _readJsonStringArrayFromRaw(raw, 'directories');
+  final resolvedWorkingDirectory =
+      _resolveGeminiWorkingDirectory(
+        directories,
+        activeWorkingDirectory: activeWorkingDirectory,
+      ) ??
+      fallbackWorkingDirectory;
+  final summary = (storedSummary?.trim().isNotEmpty ?? false)
+      ? _summarizeSessionText(storedSummary!)
+      : null;
+  final updatedAt =
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'lastUpdated')) ??
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'startTime'));
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      kind != null ||
+      directories != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: resolvedWorkingDirectory,
+    updatedAt: updatedAt,
+    isSubagent: kind == 'subagent',
+    parsedAny: parsedAny,
+  );
+}
+
+String? _readJsonStringFromRaw(String raw, String key) {
+  final pattern = RegExp(
+    '"${RegExp.escape(key)}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"',
+    multiLine: true,
+  );
+  final match = pattern.firstMatch(raw);
+  if (match == null) return null;
+  try {
+    final decoded = jsonDecode('"${match.group(1)}"');
+    return decoded is String ? decoded : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+List<Object?>? _readJsonStringArrayFromRaw(String raw, String key) {
+  final startPattern = RegExp(
+    '"${RegExp.escape(key)}"\\s*:\\s*\\[',
+    multiLine: true,
+  );
+  final startMatch = startPattern.firstMatch(raw);
+  if (startMatch == null) return null;
+  final start = startMatch.end;
+  final closingIndex = raw.indexOf(']', start);
+  final segment = raw.substring(
+    start,
+    closingIndex == -1 ? raw.length : closingIndex,
+  );
+  final values = <Object?>[];
+  final stringPattern = RegExp(r'"((?:\\.|[^"\\])*)"');
+  for (final match in stringPattern.allMatches(segment)) {
+    try {
+      final decoded = jsonDecode('"${match.group(1)}"');
+      if (decoded is String) {
+        values.add(decoded);
+      }
+    } on FormatException {
+      continue;
+    }
+  }
+  return values.isEmpty ? null : values;
 }
 
 /// Parses ACP `session/list` responses into unified session metadata.
@@ -2155,6 +2242,7 @@ class AgentSessionDiscoveryService {
     final sessionSnapshots = await _readRemoteFileSnapshots(
       session,
       recentSessionPaths,
+      maxBytes: _geminiSessionMetadataMaxBytes,
     );
 
     var hadError = false;
@@ -2759,6 +2847,7 @@ class AgentSessionDiscoveryService {
     SshSession session,
     Iterable<String> paths, {
     int? maxLines,
+    int? maxBytes,
     bool tail = false,
   }) async {
     final uniquePaths = paths
@@ -2804,7 +2893,13 @@ class AgentSessionDiscoveryService {
         )
         ..write(r'printf "%s%s%s%s" "$path" "$SEP" "${mtime:-}" "$SEP"; ');
 
-      if (maxLines == null) {
+      if (maxBytes != null) {
+        command.write(
+          r'$HEAD_BIN -c '
+          '$maxBytes'
+          r' "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; ',
+        );
+      } else if (maxLines == null) {
         command.write(
           r'$CAT_BIN "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; ',
         );

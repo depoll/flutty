@@ -169,9 +169,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         oldWidget.session.connectionId != widget.session.connectionId ||
         oldWidget.tmuxSessionName != widget.tmuxSessionName ||
         oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
+    final backendChanged =
+        oldWidget.activeMuxBackend != widget.activeMuxBackend ||
+        oldWidget.remoteMultiplexerService != widget.remoteMultiplexerService;
     final recoveryChanged =
         oldWidget.recoveryGeneration != widget.recoveryGeneration;
-    if (!sessionChanged && !recoveryChanged) {
+    if (!sessionChanged && !backendChanged && !recoveryChanged) {
       return;
     }
     final wasExpanded = _expanded;
@@ -179,6 +182,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _resetWindowReloadRecovery();
     if (!shouldPreserveTmuxBarSnapshotOnUpdate(
       sessionChanged: sessionChanged,
+      backendChanged: backendChanged,
       recoveryChanged: recoveryChanged,
     )) {
       _clearSeenAlertNotifications(
@@ -208,7 +212,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     } else if (!(_windows?.isNotEmpty ?? false)) {
       setState(() => _isLoading = true);
     }
-    if (sessionChanged) {
+    if (sessionChanged || backendChanged) {
       _sessionEndedNotified = false;
       unawaited(_windowChangeSubscription?.cancel());
       _subscribeToWindowChanges();

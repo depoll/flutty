@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -73,6 +74,11 @@ var (
 	errRunCommandTimeout      = errors.New("command timed out")
 )
 
+var (
+	leadingCdCommandPattern = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
+	leadingEnvPattern       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
+)
+
 type controlMessage struct {
 	Role        string   `json:"role,omitempty"`
 	ID          string   `json:"id,omitempty"`
@@ -117,6 +123,7 @@ type windowSnapshot struct {
 	PanePid                  int    `json:"panePid,omitempty"`
 	Flags                    string `json:"flags,omitempty"`
 	PaneTitle                string `json:"paneTitle,omitempty"`
+	AgentTool                string `json:"agentTool,omitempty"`
 	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
 }
 
@@ -142,6 +149,7 @@ type muxWindow struct {
 	name                       string
 	cwd                        string
 	command                    string
+	agentTool                  string
 	foregroundPid              int
 	foregroundCommand          string
 	paneTitle                  string
@@ -161,6 +169,7 @@ type windowBroadcastIdentity struct {
 	cwd       string
 	command   string
 	paneTitle string
+	agentTool string
 	panePid   int
 	alert     bool
 }
@@ -494,6 +503,10 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	} else if strings.TrimSpace(options.command) != "" {
 		name = firstShellWord(options.command)
 	}
+	agentTool := firstNonEmptyString(
+		agentToolFromCommandText(options.command),
+		agentToolFromCommandName(name),
+	)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -516,6 +529,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		name:              name,
 		cwd:               cwd,
 		command:           filepath.Base(cmd.Path),
+		agentTool:         agentTool,
 		foregroundPid:     cmd.Process.Pid,
 		foregroundCommand: filepath.Base(cmd.Path),
 		paneTitle:         name,
@@ -1058,6 +1072,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		PanePid:                  window.metadataProcessIDLocked(),
 		Flags:                    flags,
 		PaneTitle:                window.paneTitle,
+		AgentTool:                window.agentToolLocked(),
 		LastActivityEpochSeconds: window.lastActivity.Unix(),
 	}
 }
@@ -1587,12 +1602,26 @@ func (w *muxWindow) currentCommandLocked() string {
 	return w.command
 }
 
+func (w *muxWindow) agentToolLocked() string {
+	if tool := agentToolFromCommandName(w.currentCommandLocked()); tool != "" {
+		return tool
+	}
+	if tool := strings.TrimSpace(w.agentTool); tool != "" {
+		return tool
+	}
+	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
+		return tool
+	}
+	return agentToolFromCommandName(w.name)
+}
+
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 	return windowBroadcastIdentity{
 		name:      w.name,
 		cwd:       w.cwd,
 		command:   w.currentCommandLocked(),
 		paneTitle: w.paneTitle,
+		agentTool: w.agentToolLocked(),
 		panePid:   w.metadataProcessIDLocked(),
 		alert:     w.alert,
 	}
@@ -1619,37 +1648,50 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return agentToolFromCommandName(w.currentCommandLocked()) != ""
+	return w.agentToolLocked() != ""
 }
 
 func commandNameForProcessGroup(pgrp int) string {
 	if pgrp <= 0 {
 		return ""
 	}
-	if command := commandNameForPID(pgrp); command != "" {
-		return command
+	directCommand := commandNameForPID(pgrp)
+	if directCommand != "" &&
+		!isGenericRuntimeCommandName(directCommand) &&
+		!isShellCommandName(directCommand) {
+		return directCommand
+	}
+
+	fallback := directCommand
+	if agentToolFromCommandName(fallback) != "" {
+		return fallback
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,pgid=,comm=").Output()
+	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,pgid=,comm=,args=").Output()
 	if err != nil || ctx.Err() != nil {
-		return ""
+		return fallback
 	}
-	var fallback string
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 3 || fields[1] != strconv.Itoa(pgrp) {
 			continue
 		}
-		command := cleanProcessCommandName(fields[2])
+		command := commandNameFromProcessFields(fields[2], strings.Join(fields[3:], " "))
 		if command == "" {
 			continue
 		}
-		if fields[0] == strconv.Itoa(pgrp) {
+		if agentToolFromCommandName(command) != "" {
 			return command
 		}
-		if fallback == "" || !isShellCommandName(command) {
+		if fields[0] == strconv.Itoa(pgrp) &&
+			!isGenericRuntimeCommandName(command) {
+			return command
+		}
+		if fallback == "" ||
+			(!isShellCommandName(command) &&
+				!isGenericRuntimeCommandName(command)) {
 			fallback = command
 		}
 	}
@@ -1659,11 +1701,36 @@ func commandNameForProcessGroup(pgrp int) string {
 func commandNameForPID(pid int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=", "-o", "args=").Output()
+	if err == nil && ctx.Err() == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			if command := commandNameFromProcessFields(fields[0], strings.Join(fields[1:], " ")); command != "" {
+				return command
+			}
+		}
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err = exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
 	if err != nil || ctx.Err() != nil {
 		return ""
 	}
 	return cleanProcessCommandName(string(output))
+}
+
+func commandNameFromProcessFields(command string, args string) string {
+	if agentCommand := agentCommandNameFromProcessArgs(args); agentCommand != "" {
+		return agentCommand
+	}
+	if command := cleanProcessCommandName(command); command != "" {
+		return command
+	}
+	return cleanProcessCommandName(args)
 }
 
 func cleanProcessCommandName(value string) string {
@@ -1673,11 +1740,50 @@ func cleanProcessCommandName(value string) string {
 			continue
 		}
 		command = strings.Fields(command)[0]
+		command = strings.Trim(command, `"'`)
 		command = filepath.Base(command)
 		command = strings.TrimSuffix(command, ".exe")
+		command = strings.TrimSuffix(command, ".js")
 		return command
 	}
 	return ""
+}
+
+func agentCommandNameFromProcessArgs(args string) string {
+	trimmed := strings.TrimSpace(args)
+	if trimmed == "" {
+		return ""
+	}
+	for _, token := range strings.Fields(trimmed) {
+		command := cleanProcessCommandName(token)
+		if agentToolFromCommandName(command) != "" {
+			return canonicalAgentCommandName(command)
+		}
+	}
+
+	lowered := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(lowered, "@google/gemini-cli") ||
+		strings.Contains(lowered, "/gemini-cli/") ||
+		strings.Contains(lowered, "/gemini.js"):
+		return "gemini"
+	case strings.Contains(lowered, "@openai/codex") ||
+		strings.Contains(lowered, "/codex/bin/codex") ||
+		strings.Contains(lowered, "/codex.js"):
+		return "codex"
+	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
+		strings.Contains(lowered, "/claude-code/"):
+		return "claude"
+	default:
+		return ""
+	}
+}
+
+func agentToolFromCommandText(command string) string {
+	return firstNonEmptyString(
+		agentToolFromCommandName(commandNameFromShellCommand(command)),
+		agentToolFromCommandName(agentCommandNameFromProcessArgs(command)),
+	)
 }
 
 func agentToolFromCommandName(command string) string {
@@ -1687,14 +1793,50 @@ func agentToolFromCommandName(command string) string {
 		return "claude"
 	case "copilot", "github-copilot":
 		return "copilot"
-	case "codex":
+	case "codex", "codex-cli":
 		return "codex"
 	case "opencode", "open-code":
 		return "opencode"
-	case "gemini":
+	case "gemini", "gemini-cli":
 		return "gemini"
 	default:
 		return ""
+	}
+}
+
+func canonicalAgentCommandName(command string) string {
+	return firstNonEmptyString(agentToolFromCommandName(command), cleanProcessCommandName(command))
+}
+
+func agentToolFromTerminalTitle(title string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(title), " "))
+	normalized = strings.Trim(normalized, "·-: ")
+	switch {
+	case normalized == "claude" || normalized == "claude code" ||
+		strings.HasPrefix(normalized, "claude code "):
+		return "claude"
+	case normalized == "copilot" || normalized == "copilot cli" ||
+		strings.HasPrefix(normalized, "copilot cli "):
+		return "copilot"
+	case normalized == "codex" || strings.HasPrefix(normalized, "codex "):
+		return "codex"
+	case normalized == "opencode" || normalized == "open code" ||
+		strings.HasPrefix(normalized, "opencode "):
+		return "opencode"
+	case normalized == "gemini" || normalized == "gemini cli" ||
+		strings.HasPrefix(normalized, "gemini cli "):
+		return "gemini"
+	default:
+		return ""
+	}
+}
+
+func isGenericRuntimeCommandName(command string) bool {
+	switch strings.ToLower(cleanProcessCommandName(command)) {
+	case "node", "nodejs", "npm", "npx", "bun", "deno", "python", "python3":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1705,6 +1847,43 @@ func isShellCommandName(command string) bool {
 	default:
 		return false
 	}
+}
+
+func commandNameFromShellCommand(command string) string {
+	normalized := strings.TrimSpace(command)
+	for normalized != "" {
+		if match := leadingCdCommandPattern.FindStringIndex(normalized); match != nil && match[0] == 0 {
+			normalized = strings.TrimSpace(normalized[match[1]:])
+			continue
+		}
+		if match := leadingEnvPattern.FindStringIndex(normalized); match != nil && match[0] == 0 {
+			normalized = strings.TrimSpace(normalized[match[1]:])
+			continue
+		}
+		break
+	}
+	token := leadingShellToken(normalized)
+	if token == "" {
+		return ""
+	}
+	return cleanProcessCommandName(token)
+}
+
+func leadingShellToken(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if quote := trimmed[0]; quote == '\'' || quote == '"' {
+		if end := strings.IndexByte(trimmed[1:], quote); end >= 0 {
+			return trimmed[1 : end+1]
+		}
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
@@ -2033,11 +2212,25 @@ func expandHomePath(path string) (string, error) {
 }
 
 func firstShellWord(command string) string {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
+	if command := agentCommandNameFromProcessArgs(command); command != "" {
+		return command
+	}
+	if command := commandNameFromShellCommand(command); command != "" {
+		return command
+	}
+	if strings.TrimSpace(command) == "" {
 		return "shell"
 	}
-	return filepath.Base(fields[0])
+	return cleanProcessCommandName(command)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func terminalSize() (int, int) {

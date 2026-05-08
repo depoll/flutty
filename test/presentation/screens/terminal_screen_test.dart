@@ -2129,7 +2129,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async => tmuxSessionName);
@@ -2272,7 +2276,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async => tmuxSessionName);
@@ -2508,7 +2516,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
@@ -2667,7 +2679,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async => tmuxSessionName);
@@ -2908,7 +2924,11 @@ void main() {
             username: 'root',
           ),
         );
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         var foregroundSessionCalls = 0;
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -2996,7 +3016,11 @@ void main() {
             username: 'root',
           ),
         );
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         var foregroundSessionCalls = 0;
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),

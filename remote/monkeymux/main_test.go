@@ -327,6 +327,101 @@ func TestWindowSnapshotPrefersForegroundProcessMetadata(t *testing.T) {
 	if snapshot.PanePid != 23456 {
 		t.Fatalf("pane pid = %d, want foreground pid", snapshot.PanePid)
 	}
+	if snapshot.AgentTool != "codex" {
+		t.Fatalf("agent tool = %q, want codex", snapshot.AgentTool)
+	}
+}
+
+func TestWindowSnapshotIncludesLaunchAgentTool(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "Gemini CLI",
+		command:           "zsh",
+		agentTool:         "gemini",
+		foregroundPid:     23456,
+		foregroundCommand: "zsh",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	snapshot := server.snapshot(window)
+
+	if snapshot.AgentTool != "gemini" {
+		t.Fatalf("agent tool = %q, want gemini", snapshot.AgentTool)
+	}
+}
+
+func TestCommandNameFromProcessFieldsDetectsNodeBackedAgents(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		args    string
+		want    string
+	}{
+		{
+			name:    "gemini node shim",
+			command: "node",
+			args:    "node /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js",
+			want:    "gemini",
+		},
+		{
+			name:    "codex node shim",
+			command: "node",
+			args:    "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+			want:    "codex",
+		},
+		{
+			name:    "plain node script",
+			command: "node",
+			args:    "node /tmp/build.js",
+			want:    "node",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commandNameFromProcessFields(tt.command, tt.args); got != tt.want {
+				t.Fatalf("commandNameFromProcessFields() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFirstShellWordSkipsWrappers(t *testing.T) {
+	tests := []struct {
+		command string
+		want    string
+	}{
+		{command: "cd ~/repo && codex resume abc", want: "codex"},
+		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
+		{command: `GEMINI_API_KEY=redacted gemini --yolo`, want: "gemini"},
+		{command: `OPENCODE_PERMISSION='{"*":"allow"}' opencode`, want: "opencode"},
+	}
+
+	for _, tt := range tests {
+		if got := firstShellWord(tt.command); got != tt.want {
+			t.Fatalf("firstShellWord(%q) = %q, want %q", tt.command, got, tt.want)
+		}
+	}
+}
+
+func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
+	tests := []struct {
+		command string
+		want    string
+	}{
+		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
+		{command: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js", want: "codex"},
+	}
+
+	for _, tt := range tests {
+		if got := agentToolFromCommandText(tt.command); got != tt.want {
+			t.Fatalf("agentToolFromCommandText(%q) = %q, want %q", tt.command, got, tt.want)
+		}
+	}
 }
 
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
