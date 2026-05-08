@@ -607,6 +607,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('$sessionName · 1 windows'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
       verify(
         () => monkeyMuxService.listWindows(
           session,

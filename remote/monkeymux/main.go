@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.9"
+	monkeyMuxVersion         = "0.1.10"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1142,11 +1142,17 @@ func commandShellPath() string {
 }
 
 func killCommandProcessGroup(cmd *exec.Cmd) {
+	signalCommandProcessGroup(cmd, syscall.SIGKILL)
+}
+
+func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	_ = cmd.Process.Kill()
+	if cmd.Process.Pid > 0 {
+		_ = syscall.Kill(-cmd.Process.Pid, signal)
+	}
+	_ = cmd.Process.Signal(signal)
 }
 
 type boundedCommandOutput struct {
@@ -1223,7 +1229,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var replay []byte
 	var activeChanged bool
 	var shouldShutdown bool
-	var process *os.Process
+	var command *exec.Cmd
 	var windowPty *os.File
 	var snapshots []windowSnapshot
 
@@ -1254,9 +1260,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	window.closed = true
 	window.alert = false
-	if window.cmd != nil {
-		process = window.cmd.Process
-	}
+	command = window.cmd
 	windowPty = window.pty
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
@@ -1281,9 +1285,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		})
 		s.writeAttach(attach, replay)
 	}
-	if process != nil {
-		_ = process.Signal(syscall.SIGHUP)
-	}
+	signalCommandProcessGroup(command, syscall.SIGHUP)
 	if windowPty != nil {
 		_ = windowPty.Close()
 	}
@@ -1867,9 +1869,7 @@ func (s *muxServer) close() {
 		_ = control.conn.Close()
 	}
 	for _, window := range windows {
-		if window.cmd != nil && window.cmd.Process != nil {
-			_ = window.cmd.Process.Signal(syscall.SIGHUP)
-		}
+		signalCommandProcessGroup(window.cmd, syscall.SIGHUP)
 		if window.pty != nil {
 			_ = window.pty.Close()
 		}
