@@ -46,6 +46,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/shell_completion_service.dart';
 import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_connection_backend_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
@@ -2816,6 +2817,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final RemoteMultiplexerService _tmuxMultiplexerService;
   late final MonkeyMuxService _monkeyMuxService;
   late final MonkeyMuxInstallerService _monkeyMuxInstallerService;
+  late final TerminalConnectionBackendService _terminalBackendService;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
 
   // Track whether the app is in the background so we can auto-reconnect
@@ -3020,6 +3022,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxMultiplexerService = TmuxRemoteMultiplexerService(_tmuxService);
     _monkeyMuxService = ref.read(monkeyMuxServiceProvider);
     _monkeyMuxInstallerService = ref.read(monkeyMuxInstallerServiceProvider);
+    _terminalBackendService = ref.read(
+      terminalConnectionBackendServiceProvider,
+    );
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -3713,12 +3718,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final refreshGeneration = ++_muxPaneContextRefreshGeneration;
     unawaited(
       Future<TmuxPaneContext?>.sync(
-            () => _activeRemoteMultiplexerService.currentPaneContext(
+            () => _activeTerminalConnectionBackend(
               session,
-              sessionName,
-              priority: SshExecPriority.low,
-              extraFlags: _activeTmuxExtraFlags,
-            ),
+            ).currentPaneContext(priority: SshExecPriority.low),
           )
           .then((context) {
             if (!mounted ||
@@ -4524,28 +4526,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return parsed.text;
   }
 
-  Future<String> _runRemoteCommand(SshSession session, String command) =>
-      session.runQueuedExec(() async {
-        final exec = await session.execute(command);
-        try {
-          final stdout = StringBuffer();
-          final stderr = StringBuffer();
-          final stdoutFuture = exec.stdout
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .forEach(stdout.write);
-          final stderrFuture = exec.stderr
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .forEach(stderr.write);
-          await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
-          return stdout.toString().isNotEmpty
-              ? stdout.toString()
-              : stderr.toString();
-        } finally {
-          exec.close();
-        }
-      }, priority: SshExecPriority.low);
+  Future<String> _runRemoteCommand(SshSession session, String command) async =>
+      (await _activeTerminalConnectionBackend(
+        session,
+      ).runClientCommand(command, priority: SshExecPriority.low)).output;
 
   void _handleTerminalScroll() {
     final currentOffset = _terminalScrollController.hasClients
@@ -6176,6 +6160,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ? _monkeyMuxService
       : _tmuxMultiplexerService;
 
+  TerminalConnectionBackend _activeTerminalConnectionBackend(
+    SshSession session,
+  ) => _terminalBackendService.resolve(
+    session,
+    activeMuxBackend: _isTmuxActive ? _activeMuxBackend : RemoteMuxBackend.auto,
+    sessionName: _isTmuxActive ? _tmuxSessionName : null,
+    tmuxExtraFlags: _activeTmuxExtraFlags,
+  );
+
   RemoteMultiplexerService _remoteMultiplexerServiceForBackend(
     RemoteMuxBackend backend,
   ) => backend == RemoteMuxBackend.monkeyMux
@@ -7016,25 +7009,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final mux = _activeRemoteMultiplexerService;
+    final backend = _activeTerminalConnectionBackend(session);
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
     if (targetWindowId == null) {
-      await mux.selectWindow(
-        session,
-        sessionName,
-        windowIndex,
-        extraFlags: _activeTmuxExtraFlags,
-      );
+      await backend.selectWindow(windowIndex);
     } else {
-      await mux.selectWindow(
-        session,
-        sessionName,
-        windowIndex,
-        windowId: targetWindowId,
-        extraFlags: _activeTmuxExtraFlags,
-      );
+      await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
 
     // Clear stale working directory — it will be refreshed from
@@ -7070,14 +7052,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final mux = _activeRemoteMultiplexerService;
+    final backend = _activeTerminalConnectionBackend(session);
     String? currentPaneWorkingDirectory;
     if (!(workingDirectory?.trim().isNotEmpty ?? false)) {
-      currentPaneWorkingDirectory = await mux.currentPanePath(
-        session,
-        sessionName,
-        extraFlags: _activeTmuxExtraFlags,
-      );
+      currentPaneWorkingDirectory = await backend.currentPanePath();
     }
     if (!mounted) return;
     final resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
@@ -7087,13 +7065,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
       hostWorkingDirectory: _host?.tmuxWorkingDirectory,
     );
-    await mux.createWindow(
-      session,
-      sessionName,
+    await backend.createWindow(
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
-      extraFlags: _activeTmuxExtraFlags,
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
@@ -7112,12 +7087,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    await _activeRemoteMultiplexerService.killWindow(
-      session,
-      sessionName,
-      windowIndex,
-      extraFlags: _activeTmuxExtraFlags,
-    );
+    await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     _scheduleTerminalSizeRefresh();
