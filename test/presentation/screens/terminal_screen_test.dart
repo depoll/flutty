@@ -26,8 +26,10 @@ import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -58,6 +60,9 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
 }
+
+class _MockMonkeyMuxInstallerService extends Mock
+    implements MonkeyMuxInstallerService {}
 
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
@@ -206,6 +211,7 @@ void main() {
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
     registerFallbackValue(monkey_themes.TerminalThemes.defaultDarkTheme);
+    registerFallbackValue(SshExecPriority.normal);
   });
 
   group('terminal native selection helpers', () {
@@ -3489,6 +3495,128 @@ void main() {
         );
         expect(writtenShellText, contains('codex --yolo'));
         expect(writtenShellText, isNot(contains('--approval-mode never')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'auto-connect launches MonkeyMux agent presets with user-visible install priority',
+      (tester) async {
+        final settingsService = SettingsService(db);
+        final presetService = AgentLaunchPresetService(settingsService);
+        final cliLaunchPreferencesService = HostCliLaunchPreferencesService(
+          settingsService,
+        );
+        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(id: host.id, autoConnectCommand: 'copilot');
+        await presetService.setPresetForHost(
+          host.id,
+          const AgentLaunchPreset(
+            tool: AgentLaunchTool.copilotCli,
+            workingDirectory: '/work/project',
+            tmuxSessionName: 'agents',
+            remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+          ),
+        );
+        await cliLaunchPreferencesService.setPreferencesForHost(
+          host.id,
+          const HostCliLaunchPreferences(startInYoloMode: true),
+        );
+        when(
+          () => monetizationService.canUseFeature(any()),
+        ).thenAnswer((_) async => false);
+        when(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: any(named: 'priority'),
+          ),
+        ).thenAnswer(
+          (_) async => const MonkeyMuxInstallation(
+            executablePath: '/tmp/monkeymux',
+            platform: 'darwin-arm64',
+            version: '0.1.6',
+          ),
+        );
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'agents'),
+        ).thenAnswer((_) async => true);
+        when(() => monkeyMuxService.listWindows(session, 'agents')).thenAnswer(
+          (_) async => const <TmuxWindow>[
+            TmuxWindow(index: 0, name: 'Copilot CLI', isActive: true),
+          ],
+        );
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'agents'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              settingsServiceProvider.overrideWithValue(settingsService),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains("'/tmp/monkeymux' attach"));
+        expect(writtenShellText, contains("--cwd '/work/project'"));
+        expect(writtenShellText, contains("--name 'Copilot CLI'"));
+        expect(writtenShellText, contains("--command 'copilot --yolo'"));
+        expect(writtenShellText, contains('agents'));
+        expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
+        expect(session.remoteMuxSessionName, 'agents');
+        verify(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: SshExecPriority.normal,
+          ),
+        ).called(1);
+        verifyNever(
+          () => monetizationService.canUseFeature(
+            MonetizationFeature.autoConnectAutomation,
+          ),
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

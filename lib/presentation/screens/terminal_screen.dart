@@ -5895,6 +5895,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final agentPreset = _autoConnectAgentPreset;
+    if (agentPreset != null && agentPreset.usesMonkeyMuxSession) {
+      await _runMonkeyMuxAgentLaunchCommand(session, host, agentPreset, shell);
+      return;
+    }
+
     final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
     final mode = resolveAutoConnectCommandMode(
       command: resolvedStoredCommand,
@@ -5939,12 +5945,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
-      return;
-    }
-
-    final agentPreset = _autoConnectAgentPreset;
-    if (agentPreset != null && agentPreset.usesMonkeyMuxSession) {
-      await _runMonkeyMuxAgentLaunchCommand(session, host, agentPreset, shell);
       return;
     }
 
@@ -6020,6 +6020,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       try {
         final installation = await _monkeyMuxInstallerService.ensureInstalled(
           session,
+          priority: SshExecPriority.normal,
         );
         return (
           command: buildMonkeyMuxAttachCommand(
@@ -6074,11 +6075,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       additionalArguments: preset.additionalArguments,
       startInYoloMode: _startClisInYoloMode,
     );
+    DiagnosticsLogService.instance.info(
+      'terminal.agent_launch',
+      'monkeymux_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'tool': preset.tool.name,
+        'hasWorkingDirectory': preset.hasWorkingDirectory,
+      },
+    );
     var muxBackend = RemoteMuxBackend.monkeyMux;
     late String attachCommand;
     try {
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
         session,
+        priority: SshExecPriority.normal,
+      );
+      DiagnosticsLogService.instance.info(
+        'terminal.agent_launch',
+        'monkeymux_ready',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': installation.platform,
+          'version': installation.version,
+        },
       );
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
@@ -6133,6 +6153,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..remoteMuxBackend = muxBackend
       ..remoteMuxSessionName = sessionName;
     shell.write(utf8.encode(formatAutoConnectCommandForShell(attachCommand)));
+    DiagnosticsLogService.instance.info(
+      'terminal.agent_launch',
+      'command_written',
+      fields: {
+        'connectionId': session.connectionId,
+        'backend': muxBackend.storageValue,
+        'tool': preset.tool.name,
+      },
+    );
   }
 
   String? _preferredTmuxSessionName(Host? host) =>
