@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -26,14 +29,17 @@ import (
 )
 
 const (
-	monkeyMuxVersion        = "0.1.2"
+	monkeyMuxVersion        = "0.1.3"
 	defaultColumns          = 80
 	defaultRows             = 24
+	maxTitleBytes           = 160
+	oscBufferLimitBytes     = 4096
+	runCommandTimeout       = 8 * time.Second
 	socketTimeout           = 2 * time.Second
 	windowHistoryLimitBytes = 1024 * 1024
 )
 
-const activeWindowReplayPrefix = "\x1b[?1049l\x1b[?25h\x1b[0m\x1b[H\x1b[2J"
+const activeWindowReplayPrefix = "\x1b[?1049l\x1b[0m\x1b[H\x1b[2J"
 
 var capabilities = []string{
 	"attach",
@@ -46,6 +52,7 @@ var capabilities = []string{
 	"window-close",
 	"active-context",
 	"inject-input",
+	"run-command",
 	"focus-hint",
 	"shutdown",
 }
@@ -80,6 +87,8 @@ type controlResponse struct {
 	Window         *windowSnapshot  `json:"window,omitempty"`
 	CurrentPath    string           `json:"currentPath,omitempty"`
 	CurrentCommand string           `json:"currentCommand,omitempty"`
+	Data           string           `json:"data,omitempty"`
+	ExitCode       int              `json:"exitCode,omitempty"`
 }
 
 type windowSnapshot struct {
@@ -89,6 +98,7 @@ type windowSnapshot struct {
 	Active                   bool   `json:"active"`
 	CurrentCommand           string `json:"currentCommand,omitempty"`
 	CurrentPath              string `json:"currentPath,omitempty"`
+	PanePid                  int    `json:"panePid,omitempty"`
 	Flags                    string `json:"flags,omitempty"`
 	PaneTitle                string `json:"paneTitle,omitempty"`
 	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
@@ -116,9 +126,11 @@ type muxWindow struct {
 	name         string
 	cwd          string
 	command      string
+	paneTitle    string
 	pty          *os.File
 	cmd          *exec.Cmd
 	history      []byte
+	oscBuffer    []byte
 	lastActivity time.Time
 	alert        bool
 	closed       bool
@@ -452,6 +464,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		name:         name,
 		cwd:          cwd,
 		command:      filepath.Base(cmd.Path),
+		paneTitle:    name,
 		pty:          file,
 		cmd:          cmd,
 		lastActivity: time.Now(),
@@ -510,6 +523,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		return
 	}
 	window.lastActivity = time.Now()
+	window.observeTerminalMetadataLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	if s.activeID == windowID {
 		attach = s.attachConn
@@ -746,6 +760,24 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			CurrentPath:    window.cwd,
 			CurrentCommand: window.command,
 		})
+	case "run_command":
+		if strings.TrimSpace(request.Command) == "" {
+			client.sendError(request, errors.New("missing command"))
+			return
+		}
+		output, exitCode, err := s.runShellCommand(request.Command)
+		if err != nil {
+			client.sendError(request, err)
+			return
+		}
+		client.send(controlResponse{
+			ID:       request.ID,
+			Type:     "command_output",
+			Status:   "ok",
+			Session:  s.session,
+			Data:     output,
+			ExitCode: exitCode,
+		})
 	case "inject_input":
 		id := request.WindowID
 		if id == "" {
@@ -856,10 +888,49 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		Active:                   s.activeID == window.id,
 		CurrentCommand:           window.command,
 		CurrentPath:              window.cwd,
+		PanePid:                  window.processID(),
 		Flags:                    flags,
-		PaneTitle:                window.name,
+		PaneTitle:                window.paneTitle,
 		LastActivityEpochSeconds: window.lastActivity.Unix(),
 	}
+}
+
+func (s *muxServer) runShellCommand(command string) (string, int, error) {
+	s.mu.Lock()
+	cwd := ""
+	if window := s.windowByIDLocked(s.activeID); window != nil {
+		cwd = window.cwd
+	}
+	s.mu.Unlock()
+
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	switch filepath.Base(shell) {
+	case "sh", "bash", "zsh", "ksh", "dash":
+	default:
+		shell = "/bin/sh"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", 0, errors.New("command timed out")
+	}
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return "", 0, err
+		}
+	}
+	return string(output), exitCode, nil
 }
 
 func (s *muxServer) selectWindow(windowID string) error {
@@ -1018,6 +1089,128 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 		copy(w.history, w.history[overflow:])
 		w.history = w.history[:windowHistoryLimitBytes]
 	}
+}
+
+func (w *muxWindow) processID() int {
+	if w == nil || w.cmd == nil || w.cmd.Process == nil {
+		return 0
+	}
+	return w.cmd.Process.Pid
+}
+
+func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	data := chunk
+	if len(w.oscBuffer) > 0 {
+		combined := make([]byte, 0, len(w.oscBuffer)+len(chunk))
+		combined = append(combined, w.oscBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.oscBuffer = nil
+	}
+
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return
+		}
+		if escapeIndex+1 >= len(data) {
+			w.storePartialOscLocked(data[escapeIndex:])
+			return
+		}
+		if data[escapeIndex+1] != ']' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		payloadStart := escapeIndex + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			w.storePartialOscLocked(data[escapeIndex:])
+			return
+		}
+		w.applyOscPayloadLocked(string(data[payloadStart : payloadStart+payloadEnd]))
+		data = data[payloadStart+payloadEnd+terminatorLength:]
+	}
+}
+
+func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\a':
+			return i, 1, true
+		case '\x1b':
+			if i+1 >= len(data) {
+				return 0, 0, false
+			}
+			if data[i+1] == '\\' {
+				return i, 2, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func (w *muxWindow) storePartialOscLocked(data []byte) {
+	if len(data) > oscBufferLimitBytes {
+		w.oscBuffer = nil
+		return
+	}
+	w.oscBuffer = append(w.oscBuffer[:0], data...)
+}
+
+func (w *muxWindow) applyOscPayloadLocked(payload string) {
+	code, value, ok := strings.Cut(payload, ";")
+	if !ok {
+		return
+	}
+	switch code {
+	case "0", "1", "2":
+		title := cleanTerminalTitle(value)
+		if title == "" {
+			return
+		}
+		w.paneTitle = title
+		w.name = title
+	case "7":
+		path := pathFromOsc7(value)
+		if path != "" {
+			w.cwd = path
+		}
+	}
+}
+
+func cleanTerminalTitle(value string) string {
+	title := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) <= maxTitleBytes {
+		return title
+	}
+	for i := range title {
+		if i > maxTitleBytes {
+			return title[:i]
+		}
+	}
+	return title
+}
+
+func pathFromOsc7(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "file" {
+		return ""
+	}
+	path, err := url.PathUnescape(parsed.Path)
+	if err != nil || !strings.HasPrefix(path, "/") {
+		return ""
+	}
+	return path
 }
 
 func (s *muxServer) clearAlertsLocked(activeID string) {
