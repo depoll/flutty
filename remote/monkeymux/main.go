@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.11"
+	monkeyMuxVersion         = "0.1.12"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -486,6 +486,8 @@ type createWindowOptions struct {
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
+	var attach net.Conn
+	var replay []byte
 	cwd := strings.TrimSpace(options.cwd)
 	if cwd == "" {
 		if current, err := os.Getwd(); err == nil {
@@ -545,8 +547,11 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
 	s.clearAlertsLocked(window.id)
+	attach = s.attachConn
+	replay = s.replayBytesLocked(window)
 	s.mu.Unlock()
 
+	s.writeAttach(attach, replay)
 	go s.readWindow(window)
 	go func() {
 		_ = cmd.Wait()
@@ -566,6 +571,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		Window:  ptrWindowSnapshot(s.snapshot(window)),
 	})
 	s.broadcastWindowList("window_list")
+	s.broadcastWindowList("active_window_changed")
 	return window, nil
 }
 
@@ -812,7 +818,6 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, err)
 			return
 		}
-		s.selectWindow(window.id)
 		client.send(controlResponse{
 			ID:      request.ID,
 			Type:    "window_created",

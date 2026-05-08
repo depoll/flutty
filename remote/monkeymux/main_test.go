@@ -235,6 +235,44 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	}
 }
 
+func TestCreateWindowClearsAttachBeforePromptOutput(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+	attach := &recordingConn{}
+	server.attachConn = attach
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("old"), lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.nextID = 1
+
+	_, err := server.createWindow(createWindowOptions{
+		args: []string{"/bin/sh", "-c", "printf monkeymux-prompt; sleep 0.2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(attach.String(), "monkeymux-prompt") &&
+		time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	output := attach.String()
+	wantPrefix := activeWindowReplayPrefix + cursorVisibilityReplaySequence(true)
+	if !strings.HasPrefix(output, wantPrefix) {
+		t.Fatalf("attach output = %q, want replay prefix before prompt", output)
+	}
+	afterPrefix := strings.TrimPrefix(output, wantPrefix)
+	if !strings.Contains(afterPrefix, "monkeymux-prompt") {
+		t.Fatalf("attach output = %q, want prompt after replay prefix", output)
+	}
+	if strings.Contains(afterPrefix, activeWindowReplayPrefix) {
+		t.Fatalf("attach output = %q, replay prefix repeated after prompt", output)
+	}
+}
+
 func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	window := &muxWindow{}
 
