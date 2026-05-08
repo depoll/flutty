@@ -5,6 +5,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/host_cli_launch_preferences.dart';
+import '../models/host_connection_type.dart';
 import '../services/agent_launch_preset_service.dart';
 import '../services/host_cli_launch_preferences_service.dart';
 
@@ -22,6 +23,8 @@ class SaveHostInput {
     required this.username,
     required this.autoConnectRequiresConfirmation,
     required this.isFavorite,
+    this.connectionType = HostConnectionType.ssh,
+    this.devTunnelUrl,
     this.password,
     this.tags,
     this.keyId,
@@ -46,6 +49,12 @@ class SaveHostInput {
 
   /// SSH port.
   final int port;
+
+  /// Connection method for reaching the SSH service.
+  final HostConnectionType connectionType;
+
+  /// Optional GitHub/Microsoft Dev Tunnel forwarding URL.
+  final String? devTunnelUrl;
 
   /// SSH username.
   final String username;
@@ -185,6 +194,8 @@ class SaveHostCommand {
           label: input.label,
           hostname: input.hostname,
           port: input.port,
+          connectionType: drift.Value(input.connectionType.storageValue),
+          devTunnelUrl: drift.Value(input.devTunnelUrl),
           username: input.username,
           password: drift.Value(input.password),
           tags: drift.Value(input.tags),
@@ -212,6 +223,8 @@ class SaveHostCommand {
           label: input.label,
           hostname: input.hostname,
           port: drift.Value(input.port),
+          connectionType: drift.Value(input.connectionType.storageValue),
+          devTunnelUrl: drift.Value(input.devTunnelUrl),
           username: input.username,
           password: drift.Value(input.password),
           tags: drift.Value(input.tags),

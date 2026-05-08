@@ -114,6 +114,27 @@ void main() {
 
       expect(hosts, hasLength(2));
     });
+
+    test('stores dev tunnel connection metadata', () async {
+      final id = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Dev Tunnel Host',
+              hostname: 'devbox',
+              username: 'admin',
+              connectionType: const Value('dev_tunnel'),
+              devTunnelUrl: const Value('https://abc-22.usw2.devtunnels.ms'),
+            ),
+          );
+
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+
+      expect(host.connectionType, 'dev_tunnel');
+      expect(host.devTunnelUrl, 'https://abc-22.usw2.devtunnels.ms');
+    });
   });
 
   group('SSH Keys table', () {

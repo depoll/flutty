@@ -1,0 +1,380 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+
+import 'dev_tunnel_socket_connector.dart';
+
+/// Error raised when Dev Tunnels login or token exchange fails.
+class DevTunnelAuthException implements Exception {
+  /// Creates a [DevTunnelAuthException].
+  const DevTunnelAuthException(this.message);
+
+  /// User-facing error message.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// GitHub device-code login challenge for Dev Tunnels.
+class DevTunnelDeviceLogin {
+  /// Creates a [DevTunnelDeviceLogin].
+  const DevTunnelDeviceLogin({
+    required this.deviceCode,
+    required this.userCode,
+    required this.verificationUri,
+    required this.expiresIn,
+    required this.interval,
+  });
+
+  /// Opaque device code used when polling GitHub.
+  final String deviceCode;
+
+  /// Short code the user enters on GitHub.
+  final String userCode;
+
+  /// GitHub verification URL the user opens to finish sign-in.
+  final Uri verificationUri;
+
+  /// Time until the device code expires.
+  final Duration expiresIn;
+
+  /// Minimum interval between polling attempts.
+  final Duration interval;
+}
+
+/// Status returned by a GitHub device-code poll.
+enum DevTunnelDeviceLoginPollStatus {
+  /// The user approved the login and the token was stored.
+  authorized,
+
+  /// The user has not completed login yet.
+  pending,
+
+  /// The device code expired before approval.
+  expired,
+
+  /// The user denied login.
+  denied,
+
+  /// GitHub returned a non-recoverable error.
+  error,
+}
+
+/// Result returned by a GitHub device-code poll.
+class DevTunnelDeviceLoginPollResult {
+  /// Creates a [DevTunnelDeviceLoginPollResult].
+  const DevTunnelDeviceLoginPollResult({required this.status, this.message});
+
+  /// Current poll status.
+  final DevTunnelDeviceLoginPollStatus status;
+
+  /// Optional user-facing error detail.
+  final String? message;
+}
+
+/// Handles Dev Tunnels account login and connect-token exchange.
+class DevTunnelAuthService {
+  /// Creates a [DevTunnelAuthService].
+  DevTunnelAuthService({
+    FlutterSecureStorage? storage,
+    http.Client? httpClient,
+    Duration requestTimeout = const Duration(seconds: 30),
+  }) : _storage = storage ?? _secureStorage,
+       _httpClient = httpClient ?? http.Client(),
+       _requestTimeout = requestTimeout;
+
+  static const _githubClientId = 'Iv1.e7b89e013f801f03';
+  static const _githubTokenKey = 'monkeyssh_dev_tunnels_github_token';
+  static const _devTunnelApiVersion = '2023-09-27-preview';
+  static const _secureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
+  static const _iosOptions = IOSOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+  );
+
+  final FlutterSecureStorage _storage;
+  final http.Client _httpClient;
+  final Duration _requestTimeout;
+
+  /// Returns whether a GitHub login token is stored for Dev Tunnels.
+  Future<bool> hasGitHubLogin() async {
+    final token = await _readGitHubToken();
+    return token != null && token.isNotEmpty;
+  }
+
+  /// Clears the stored GitHub login token.
+  Future<void> signOutGitHub() =>
+      _storage.delete(key: _githubTokenKey, iOptions: _iosOptions);
+
+  /// Starts the GitHub device-code login flow used by Dev Tunnels.
+  Future<DevTunnelDeviceLogin> startGitHubDeviceLogin() async {
+    final response = await _httpClient
+        .post(
+          Uri.parse('https://github.com/login/device/code'),
+          headers: const {
+            HttpHeaders.acceptHeader: 'application/json',
+            HttpHeaders.contentTypeHeader: 'application/x-www-form-urlencoded',
+          },
+          body: Uri(
+            queryParameters: const {
+              'client_id': _githubClientId,
+              'scope': 'user:email read:org',
+            },
+          ).query,
+        )
+        .timeout(_requestTimeout);
+    _ensureSuccess(response, 'starting GitHub login');
+
+    final body = _decodeJsonObject(response.body);
+    final deviceCode = _requiredString(body, 'device_code');
+    final userCode = _requiredString(body, 'user_code');
+    final verificationUri = Uri.tryParse(
+      _requiredString(body, 'verification_uri'),
+    );
+    final expiresIn = _requiredPositiveInt(body, 'expires_in');
+    final interval = _optionalPositiveInt(body, 'interval') ?? 5;
+    if (verificationUri == null || !verificationUri.hasScheme) {
+      throw const DevTunnelAuthException(
+        'GitHub returned an invalid verification URL.',
+      );
+    }
+
+    return DevTunnelDeviceLogin(
+      deviceCode: deviceCode,
+      userCode: userCode,
+      verificationUri: verificationUri,
+      expiresIn: Duration(seconds: expiresIn),
+      interval: Duration(seconds: interval),
+    );
+  }
+
+  /// Polls GitHub for a completed device-code login.
+  Future<DevTunnelDeviceLoginPollResult> pollGitHubDeviceLogin(
+    String deviceCode,
+  ) async {
+    final response = await _httpClient
+        .post(
+          Uri.parse('https://github.com/login/oauth/access_token'),
+          headers: const {
+            HttpHeaders.acceptHeader: 'application/json',
+            HttpHeaders.contentTypeHeader: 'application/x-www-form-urlencoded',
+          },
+          body: Uri(
+            queryParameters: {
+              'client_id': _githubClientId,
+              'device_code': deviceCode,
+              'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+            },
+          ).query,
+        )
+        .timeout(_requestTimeout);
+    _ensureSuccess(response, 'polling GitHub login');
+
+    final body = _decodeJsonObject(response.body);
+    final accessToken = _optionalString(body, 'access_token');
+    if (accessToken != null && accessToken.isNotEmpty) {
+      await _writeGitHubToken(accessToken);
+      return const DevTunnelDeviceLoginPollResult(
+        status: DevTunnelDeviceLoginPollStatus.authorized,
+      );
+    }
+
+    final error = _optionalString(body, 'error');
+    return switch (error) {
+      'authorization_pending' ||
+      'slow_down' => const DevTunnelDeviceLoginPollResult(
+        status: DevTunnelDeviceLoginPollStatus.pending,
+      ),
+      'expired_token' => const DevTunnelDeviceLoginPollResult(
+        status: DevTunnelDeviceLoginPollStatus.expired,
+      ),
+      'access_denied' => DevTunnelDeviceLoginPollResult(
+        status: DevTunnelDeviceLoginPollStatus.denied,
+        message: _optionalString(body, 'error_description'),
+      ),
+      _ => DevTunnelDeviceLoginPollResult(
+        status: DevTunnelDeviceLoginPollStatus.error,
+        message:
+            _optionalString(body, 'error_description') ??
+            error ??
+            'GitHub login failed.',
+      ),
+    };
+  }
+
+  /// Resolves the `X-Tunnel-Authorization` header for a forwarding URL.
+  ///
+  /// Returns null when the user is not signed in, allowing anonymous Dev
+  /// Tunnels to connect without account login.
+  Future<String?> resolveAuthorizationHeader(
+    String forwardingUrl, {
+    int? port,
+  }) async {
+    final githubToken = await _readGitHubToken();
+    if (githubToken == null || githubToken.isEmpty) {
+      return null;
+    }
+
+    final DevTunnelForwardingUrl parsedUrl;
+    try {
+      parsedUrl = parseDevTunnelForwardingUrl(
+        forwardingUrl,
+        fallbackPort: port,
+      );
+    } on FormatException catch (error) {
+      throw DevTunnelAuthException(error.message);
+    }
+    final connectToken = await _requestConnectToken(
+      githubToken: githubToken,
+      forwardingUrl: parsedUrl,
+    );
+    return 'tunnel $connectToken';
+  }
+
+  Future<String> _requestConnectToken({
+    required String githubToken,
+    required DevTunnelForwardingUrl forwardingUrl,
+  }) async {
+    final queryParameters = <String, String>{
+      'includePorts': 'true',
+      'tokenScopes': 'connect',
+      'api-version': _devTunnelApiVersion,
+    };
+    final uri = Uri.https(
+      '${forwardingUrl.clusterId}.rel.tunnels.api.visualstudio.com',
+      '/tunnels/${forwardingUrl.tunnelId}',
+      queryParameters,
+    );
+    final response = await _httpClient
+        .get(
+          uri,
+          headers: {
+            HttpHeaders.acceptHeader: 'application/json',
+            HttpHeaders.authorizationHeader: 'github $githubToken',
+            HttpHeaders.userAgentHeader: 'MonkeySSH Dev Tunnels',
+          },
+        )
+        .timeout(_requestTimeout);
+    _ensureSuccess(response, 'getting Dev Tunnel access');
+
+    final body = _decodeJsonObject(response.body);
+    final portToken = _connectTokenFromPorts(body, forwardingUrl.port);
+    if (portToken != null) {
+      return portToken;
+    }
+    final tunnelToken = _connectTokenFromObject(body);
+    if (tunnelToken != null) {
+      return tunnelToken;
+    }
+
+    throw const DevTunnelAuthException(
+      'Signed-in account does not have access to connect to this Dev Tunnel.',
+    );
+  }
+
+  String? _connectTokenFromPorts(Map<String, Object?> body, int? port) {
+    final ports = body['ports'];
+    if (ports is! List<Object?>) {
+      return null;
+    }
+    for (final portEntry in ports) {
+      if (portEntry is! Map<String, Object?>) {
+        continue;
+      }
+      if (port != null && portEntry['portNumber'] != port) {
+        continue;
+      }
+      final token = _connectTokenFromObject(portEntry);
+      if (token != null) {
+        return token;
+      }
+    }
+    return null;
+  }
+
+  String? _connectTokenFromObject(Map<String, Object?> object) {
+    final accessTokens = object['accessTokens'];
+    if (accessTokens is! Map<String, Object?>) {
+      return null;
+    }
+    final token = accessTokens['connect'];
+    return token is String && token.isNotEmpty ? token : null;
+  }
+
+  Future<String?> _readGitHubToken() =>
+      _storage.read(key: _githubTokenKey, iOptions: _iosOptions);
+
+  Future<void> _writeGitHubToken(String token) =>
+      _storage.write(key: _githubTokenKey, value: token, iOptions: _iosOptions);
+
+  static Map<String, Object?> _decodeJsonObject(String source) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(source);
+    } on FormatException {
+      throw const DevTunnelAuthException('Unexpected Dev Tunnels response.');
+    }
+    if (decoded is Map<String, Object?>) {
+      return decoded;
+    }
+    throw const DevTunnelAuthException('Unexpected Dev Tunnels response.');
+  }
+
+  static String _requiredString(Map<String, Object?> body, String key) {
+    final value = body[key];
+    if (value is String && value.isNotEmpty) {
+      return value;
+    }
+    throw DevTunnelAuthException('GitHub response is missing $key.');
+  }
+
+  static String? _optionalString(Map<String, Object?> body, String key) {
+    final value = body[key];
+    return value is String ? value : null;
+  }
+
+  static int _requiredPositiveInt(Map<String, Object?> body, String key) {
+    final value = _optionalPositiveInt(body, key);
+    if (value != null) {
+      return value;
+    }
+    throw DevTunnelAuthException('GitHub response is missing $key.');
+  }
+
+  static int? _optionalPositiveInt(Map<String, Object?> body, String key) {
+    final value = body[key];
+    if (value is int && value > 0) {
+      return value;
+    }
+    return null;
+  }
+
+  static void _ensureSuccess(http.Response response, String action) {
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return;
+    }
+    throw DevTunnelAuthException(
+      'Dev Tunnels failed while $action (${response.statusCode}).',
+    );
+  }
+}
+
+/// Provider for [DevTunnelAuthService].
+final devTunnelAuthServiceProvider = Provider<DevTunnelAuthService>((ref) {
+  final client = http.Client();
+  ref.onDispose(client.close);
+  return DevTunnelAuthService(httpClient: client);
+});
+
+/// Whether Dev Tunnels has a stored GitHub login.
+final devTunnelSignedInProvider = FutureProvider.autoDispose<bool>(
+  (ref) => ref.watch(devTunnelAuthServiceProvider).hasGitHubLogin(),
+);
