@@ -135,6 +135,7 @@ void main() {
               hostname: 'prod.example.com',
               username: 'root',
               password: const Value('secret'),
+              skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
               autoConnectCommand: const Value('tmux new -As MonkeySSH'),
               autoConnectSnippetId: Value(snippetId),
             ),
@@ -158,7 +159,30 @@ void main() {
       expect(hostData['hostname'], 'prod.example.com');
       expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
       expect(hostData['autoConnectSnippetId'], isNull);
+      expect(hostData.containsKey('skipJumpHostOnSsids'), isFalse);
     });
+
+    test(
+      'createMigrationData omits device-local skip-jump SSIDs from host exports',
+      () async {
+        await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Production',
+            hostname: 'prod.example.com',
+            username: 'root',
+            skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
+          ),
+        );
+
+        final migrationData = await transferService.createMigrationData(
+          includeKnownHosts: false,
+        );
+        final hosts = migrationData['hosts'] as List;
+        final hostData = Map<String, dynamic>.from(hosts.single as Map);
+
+        expect(hostData.containsKey('skipJumpHostOnSsids'), isFalse);
+      },
+    );
 
     test(
       'includes referenced key data when requested for host export',

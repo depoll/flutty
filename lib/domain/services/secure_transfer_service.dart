@@ -189,6 +189,7 @@ class SecureTransferService {
     SettingKeys.agentLaunchPresets,
     SettingKeys.hostCliLaunchPreferences,
   };
+  static const _deviceLocalHostExportFields = {'skipJumpHostOnSsids'};
 
   /// Creates an encrypted host transfer payload.
   Future<String> createHostPayload({
@@ -203,7 +204,7 @@ class SecureTransferService {
     final cliLaunchPreferences = await _hostCliLaunchPreferencesService
         .getPreferencesForHost(host.id);
 
-    final hostData = Map<String, dynamic>.from(host.toJson())
+    final hostData = _exportableHostJson(host)
       ..['keyId'] = referencedKey == null ? null : host.keyId
       ..['groupId'] = null
       ..['jumpHostId'] = null
@@ -285,7 +286,7 @@ class SecureTransferService {
       'settings': filteredSettings,
       'groups': _sortedJsonRecords(groups.map((item) => item.toJson())),
       'keys': _sortedJsonRecords(keys.map((item) => item.toJson())),
-      'hosts': _sortedJsonRecords(hosts.map((item) => item.toJson())),
+      'hosts': _sortedJsonRecords(hosts.map(_exportableHostJson)),
       'snippetFolders': _sortedJsonRecords(
         snippetFolders.map((item) => item.toJson()),
       ),
@@ -1402,6 +1403,14 @@ class SecureTransferService {
         ..sort(
           (first, second) => jsonEncode(first).compareTo(jsonEncode(second)),
         );
+
+  Map<String, dynamic> _exportableHostJson(Host host) {
+    final json = Map<String, dynamic>.from(host.toJson());
+    for (final key in _deviceLocalHostExportFields) {
+      json.remove(key);
+    }
+    return json;
+  }
 
   Object? _canonicalizeJsonValue(Object? value) {
     if (value is Map) {
