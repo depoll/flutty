@@ -5942,6 +5942,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final agentPreset = _autoConnectAgentPreset;
+    if (agentPreset != null && agentPreset.usesMonkeyMuxSession) {
+      await _runMonkeyMuxAgentLaunchCommand(session, host, agentPreset, shell);
+      return;
+    }
+
     String? snippetCommand;
     int? resolvedSnippetId;
     final snippetId = host.autoConnectSnippetId;
@@ -6050,6 +6056,83 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       backend: RemoteMuxBackend.tmux,
     );
+  }
+
+  Future<void> _runMonkeyMuxAgentLaunchCommand(
+    SshSession session,
+    Host host,
+    AgentLaunchPreset preset,
+    SSHSession shell,
+  ) async {
+    final sessionName = preset.tmuxSessionName?.trim();
+    if (sessionName == null || sessionName.isEmpty) {
+      return;
+    }
+
+    final launchCommand = buildAgentToolCommand(
+      preset.tool,
+      additionalArguments: preset.additionalArguments,
+      startInYoloMode: _startClisInYoloMode,
+    );
+    var muxBackend = RemoteMuxBackend.monkeyMux;
+    late String attachCommand;
+    try {
+      final installation = await _monkeyMuxInstallerService.ensureInstalled(
+        session,
+      );
+      attachCommand = buildMonkeyMuxAttachCommand(
+        executablePath: installation.executablePath,
+        sessionName: sessionName,
+        workingDirectory: preset.workingDirectory,
+        windowName: preset.tool.label,
+        launchCommand: launchCommand,
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.install',
+        'agent_launch_fallback',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('MonkeyMux is unavailable; using tmux instead.'),
+          ),
+        );
+      }
+      muxBackend = RemoteMuxBackend.tmux;
+      attachCommand = buildAgentLaunchCommand(
+        preset.copyWith(remoteMuxBackend: RemoteMuxBackend.tmux),
+        startInYoloMode: _startClisInYoloMode,
+      );
+    }
+
+    final review = assessAutoConnectCommandExecution(
+      attachCommand,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+
+    _activeMuxBackend = muxBackend;
+    session
+      ..remoteMuxBackend = muxBackend
+      ..remoteMuxSessionName = sessionName;
+    shell.write(utf8.encode(formatAutoConnectCommandForShell(attachCommand)));
   }
 
   String? _preferredTmuxSessionName(Host? host) =>

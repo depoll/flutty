@@ -127,6 +127,7 @@ typedef HostEditDraft = ({
   String agentTmuxSession,
   String agentTmuxExtraFlags,
   String agentArguments,
+  RemoteMuxBackend selectedAgentMuxBackend,
   int? selectedKeyId,
   int? selectedGroupId,
   int? selectedJumpHostId,
@@ -677,6 +678,7 @@ AgentLaunchPreset? buildCurrentAgentLaunchPreset(HostEditDraft draft) {
     tool: draft.selectedAgentLaunchTool,
     workingDirectory: draft.agentWorkingDirectory.trim(),
     tmuxSessionName: draft.agentTmuxSession.trim(),
+    remoteMuxBackend: draft.selectedAgentMuxBackend,
     tmuxExtraFlags: draft.agentTmuxExtraFlags.trim(),
     tmuxDisableStatusBar: draft.disableAgentTmuxStatusBar,
     additionalArguments: draft.agentArguments.trim(),
@@ -685,6 +687,9 @@ AgentLaunchPreset? buildCurrentAgentLaunchPreset(HostEditDraft draft) {
 
 /// Validates agent tmux flags for [draft].
 String? validateAgentTmuxExtraFlags(String? value, HostEditDraft draft) {
+  if (draft.selectedAgentMuxBackend != RemoteMuxBackend.tmux) {
+    return null;
+  }
   if (draft.agentTmuxSession.trim().isEmpty) {
     return null;
   }

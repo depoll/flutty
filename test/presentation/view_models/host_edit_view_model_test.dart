@@ -19,6 +19,7 @@ HostEditDraft _draft({
   String tmuxSession = '',
   String agentTmuxSession = '',
   String agentTmuxExtraFlags = '',
+  RemoteMuxBackend selectedAgentMuxBackend = RemoteMuxBackend.monkeyMux,
   int? snippetId,
 }) => (
   label: label,
@@ -35,6 +36,7 @@ HostEditDraft _draft({
   agentTmuxSession: agentTmuxSession,
   agentTmuxExtraFlags: agentTmuxExtraFlags,
   agentArguments: '',
+  selectedAgentMuxBackend: selectedAgentMuxBackend,
   selectedKeyId: null,
   selectedGroupId: null,
   selectedJumpHostId: null,
