@@ -17,12 +17,14 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.initiallyExpanded,
     required this.ref,
     required this.remoteMultiplexerService,
+    required this.activeMuxBackend,
     required this.onAction,
     required this.onExpandedChanged,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
     this.onWindowStateChanged,
     this.onWindowLoadStalled,
+    this.onSessionEnded,
     super.key,
   });
 
@@ -56,6 +58,9 @@ class _TmuxExpandableBar extends StatefulWidget {
   /// Backend used to load and watch remote windows.
   final RemoteMultiplexerService remoteMultiplexerService;
 
+  /// Active multiplexer backend for backend-specific lifecycle behavior.
+  final RemoteMuxBackend activeMuxBackend;
+
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
 
@@ -67,6 +72,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   final Future<void> Function(SshSession session, String sessionName)?
   onWindowLoadStalled;
+
+  final Future<void> Function(SshSession session, String sessionName)?
+  onSessionEnded;
 
   /// Best-known project working directory for AI session scoping.
   final String? scopeWorkingDirectory;
@@ -108,9 +116,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   int _windowRetryAttempts = 0;
   int _consecutiveEmptyWindowReloads = 0;
   bool _windowReloadRecoveryRequested = false;
+  bool _sessionEndedNotified = false;
   late LocalNotificationService _localNotifications;
 
   RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
+
+  List<TmuxWindow>? get currentWindowsSnapshot => _windows;
+
+  bool get _emptyWindowListEndsSession =>
+      widget.activeMuxBackend == RemoteMuxBackend.monkeyMux;
 
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
@@ -195,6 +209,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       setState(() => _isLoading = true);
     }
     if (sessionChanged) {
+      _sessionEndedNotified = false;
       unawaited(_windowChangeSubscription?.cancel());
       _subscribeToWindowChanges();
     }
@@ -262,6 +277,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (event is TmuxWindowListEvent) {
       _windowReloadGeneration += 1;
       _resetWindowReloadRecovery();
+      if (event.windows.isEmpty && _emptyWindowListEndsSession) {
+        _applyWindows(const <TmuxWindow>[]);
+        _notifySessionEnded();
+        return;
+      }
       final currentWindows = _windows;
       final windows = currentWindows == null
           ? event.windows
@@ -500,6 +520,25 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
+  void _notifySessionEnded() {
+    if (_sessionEndedNotified) {
+      return;
+    }
+    _sessionEndedNotified = true;
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'mux_session_ended',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'backend': widget.activeMuxBackend.storageValue,
+      },
+    );
+    final onSessionEnded = widget.onSessionEnded;
+    if (onSessionEnded != null) {
+      unawaited(onSessionEnded(widget.session, widget.tmuxSessionName));
+    }
+  }
+
   bool collapseIfExpanded() {
     if (!_expanded) {
       return false;
@@ -569,6 +608,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
         },
       );
+      if (isEmptyReload && _emptyWindowListEndsSession) {
+        _applyWindows(const <TmuxWindow>[]);
+        _notifySessionEnded();
+        return;
+      }
       final windows = resolveTmuxReloadedWindows(
         shouldPreserveTmuxWindowSnapshotOnEmptyReload(
               _windows,

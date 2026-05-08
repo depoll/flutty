@@ -21,6 +21,7 @@ import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
@@ -2947,6 +2948,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
   bool _tmuxQueryScheduled = false;
+  bool _muxSessionEnding = false;
   int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
   int _tmuxQueryGeneration = 0;
@@ -2983,6 +2985,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       final subscription = _windowChangeSubscription;
       _windowChangeSubscription = null;
       unawaited(subscription?.cancel());
+      _muxSessionEnding = false;
       setState(() {
         _windows = null;
         _sessionName = null;
@@ -3294,6 +3297,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _windowReloadGeneration += 1;
       _tmuxRetryTimer?.cancel();
       _tmuxRetryTimer = null;
+      if (event.windows.isEmpty && muxBackend == RemoteMuxBackend.monkeyMux) {
+        setState(() {
+          _windows = const <TmuxWindow>[];
+          _sessionName = sessionName;
+          _muxBackend = muxBackend;
+          _queried = true;
+        });
+        unawaited(_disconnectEndedMonkeyMuxSession(session));
+        return;
+      }
       final currentWindows = _windows;
       setState(() {
         _windows = currentWindows == null
@@ -3354,6 +3367,18 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         return;
       }
       if (reloadGeneration < _windowReloadGeneration) return;
+      if (windows.isEmpty && muxBackend == RemoteMuxBackend.monkeyMux) {
+        _tmuxRetryTimer?.cancel();
+        _tmuxRetryTimer = null;
+        setState(() {
+          _windows = const <TmuxWindow>[];
+          _sessionName = sessionName;
+          _muxBackend = muxBackend;
+          _queried = true;
+        });
+        await _disconnectEndedMonkeyMuxSession(session);
+        return;
+      }
       if (windows.isEmpty) {
         _scheduleTmuxRetry();
       } else {
@@ -3620,21 +3645,49 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     if (session == null || _sessionName == null) return;
 
     final mux = _serviceForBackend(_muxBackend);
-    _runTmuxPreviewAction(
-      mux.killWindow(
+    final closesLastMonkeyMuxWindow =
+        _muxBackend == RemoteMuxBackend.monkeyMux &&
+        (_windows?.length ?? 0) <= 1;
+    _runTmuxPreviewAction(() async {
+      await mux.killWindow(
         session,
         _sessionName!,
         windowIndex,
         extraFlags: _muxBackend == RemoteMuxBackend.tmux
             ? widget.tmuxExtraFlags
             : null,
-      ),
-    );
+      );
+      if (closesLastMonkeyMuxWindow) {
+        await _disconnectEndedMonkeyMuxSession(session);
+      }
+    }());
 
     // Optimistically remove from the list.
     setState(() {
       _windows = _windows?.where((w) => w.index != windowIndex).toList();
     });
+  }
+
+  Future<void> _disconnectEndedMonkeyMuxSession(SshSession session) async {
+    if (_muxSessionEnding) {
+      return;
+    }
+    _muxSessionEnding = true;
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'monkeymux_badge_disconnect',
+      fields: {'connectionId': session.connectionId},
+    );
+    _tmuxRetryTimer?.cancel();
+    _tmuxRetryTimer = null;
+    final subscription = _windowChangeSubscription;
+    _windowChangeSubscription = null;
+    await subscription?.cancel();
+    await ref.read(tmuxServiceProvider).clearCache(session.connectionId);
+    await ref.read(monkeyMuxServiceProvider).clearCache(session.connectionId);
+    await ref
+        .read(activeSessionsProvider.notifier)
+        .disconnect(session.connectionId);
   }
 
   void _switchAndOpenWindow(int windowIndex) {

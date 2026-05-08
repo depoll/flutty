@@ -431,7 +431,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }
 
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
-    if (windows.isEmpty) return;
+    if (windows.isEmpty) {
+      _windowSnapshotCache[key] = const <TmuxWindow>[];
+      return;
+    }
     final currentWindows = _windowSnapshotCache[key];
     _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
       currentWindows == null
