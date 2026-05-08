@@ -824,6 +824,8 @@ TmuxWindow? _windowFromJson(Object? value) {
   if (value is! Map<String, Object?>) return null;
   final index = value['index'];
   final active = value['active'];
+  // MonkeyMux activity is tracked via idle metadata; tmux alert flags would
+  // turn ordinary background output into noisy system notifications.
   return TmuxWindow(
     index: index is int ? index : 0,
     id: value['id'] as String?,
@@ -832,7 +834,6 @@ TmuxWindow? _windowFromJson(Object? value) {
     currentCommand: _nonEmpty(value['currentCommand'] as String?),
     currentPath: _nonEmpty(value['currentPath'] as String?),
     panePid: value['panePid'] as int?,
-    flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );

@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.7"
+	monkeyMuxVersion         = "0.1.8"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -42,6 +42,7 @@ const (
 	socketTimeout            = 2 * time.Second
 	windowUpdateMinInterval  = 750 * time.Millisecond
 	windowHistoryLimitBytes  = 128 * 1024
+	windowReplayLimitBytes   = 32 * 1024
 )
 
 const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[0m\x1b[H\x1b[2J"
@@ -585,7 +586,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
-	} else {
+	} else if containsTerminalBell(chunk) {
 		window.alert = true
 	}
 	after := window.broadcastIdentityLocked()
@@ -1291,6 +1292,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.history)
+	history = trimReplayHistoryForAttach(history)
 	replay := make([]byte, 0, len(activeWindowReplayPrefix)+len(history))
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, history...)
@@ -1404,10 +1406,33 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 }
 
+func trimReplayHistoryForAttach(history []byte) []byte {
+	if len(history) <= windowReplayLimitBytes {
+		return history
+	}
+	start := len(history) - windowReplayLimitBytes
+	scanEnd := start + 2048
+	if scanEnd > len(history) {
+		scanEnd = len(history)
+	}
+	for i := start; i < scanEnd; i++ {
+		switch history[i] {
+		case '\x1b', '\n', '\r':
+			return history[i:]
+		}
+	}
+	return history[start:]
+}
+
+func containsTerminalBell(data []byte) bool {
+	return bytes.IndexByte(data, '\a') >= 0
+}
+
 func stripTerminalQueriesFromReplay(data []byte) []byte {
 	if len(data) == 0 {
 		return data
 	}
+
 	var output []byte
 	for i := 0; i < len(data); {
 		if data[i] != '\x1b' || i+1 >= len(data) {

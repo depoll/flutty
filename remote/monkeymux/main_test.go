@@ -102,8 +102,8 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	if got := string(inactiveWindow.history); got != "background output" {
 		t.Fatalf("inactive history = %q, want buffered output", got)
 	}
-	if !inactiveWindow.alert {
-		t.Fatal("inactive output did not mark the window alert")
+	if inactiveWindow.alert {
+		t.Fatal("ordinary inactive output marked the window alert")
 	}
 
 	if err := server.selectWindow("@2"); err != nil {
@@ -116,6 +116,22 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 	if inactiveWindow.alert {
 		t.Fatal("selected window alert was not cleared")
+	}
+}
+
+func TestInactiveWindowBellMarksAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte("background output\a"))
+
+	if !inactiveWindow.alert {
+		t.Fatal("inactive bell did not mark the window alert")
 	}
 }
 
@@ -136,6 +152,25 @@ func TestActiveReplayIncludesWindowHistory(t *testing.T) {
 	want := activeWindowReplayPrefix + "previous screen"
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
+	}
+}
+
+func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
+	server := newMuxServer("test")
+	history := bytes.Repeat([]byte("a"), windowReplayLimitBytes+4096)
+	copy(history[len(history)-6:], []byte("suffix"))
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: history, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	replay := server.activeReplayLocked()
+
+	if len(replay) > len(activeWindowReplayPrefix)+windowReplayLimitBytes+2048 {
+		t.Fatalf("replay length = %d, want capped near %d", len(replay), len(activeWindowReplayPrefix)+windowReplayLimitBytes)
+	}
+	if !strings.HasSuffix(string(replay), "suffix") {
+		t.Fatalf("replay did not preserve recent output suffix")
 	}
 }
 
