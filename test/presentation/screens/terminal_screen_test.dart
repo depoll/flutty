@@ -1704,7 +1704,7 @@ void main() {
     );
 
     testWidgets(
-      'uses MonkeyMux theme hints without tmux report injection',
+      'uses MonkeyMux theme hints only for theme changes',
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
@@ -1807,12 +1807,34 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(themeRefreshCount, 1);
+        expect(themeRefreshCount, 0);
         expect(writtenShellText, isNot(contains('\x1b[O')));
         expect(writtenShellText, isNot(contains('\x1b[I')));
         expect(writtenShellText, isNot(contains('\x1b]10;')));
         expect(writtenShellText, isNot(contains('\x1b]11;')));
         expect(writtenShellText, isNot(contains('\x1b]4;')));
+
+        shellWrites.clear();
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final shellTextAfterThemeChange = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(themeRefreshCount, 1);
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b[O')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b[I')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b]10;')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b]11;')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b]4;')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -3545,7 +3567,7 @@ void main() {
           (_) async => const MonkeyMuxInstallation(
             executablePath: '/tmp/monkeymux',
             platform: 'darwin-arm64',
-            version: '0.1.7',
+            version: '0.1.8',
           ),
         );
         when(

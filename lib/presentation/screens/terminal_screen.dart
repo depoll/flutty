@@ -3696,6 +3696,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshMuxPaneContextAfterWindowStateChange(session, sessionName);
+      return;
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
@@ -7024,11 +7025,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
-    await _reattachTmuxIfNeeded(
-      session,
-      sessionName,
-      forceVisibleTmux: forceVisibleTmux,
-    );
+    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      await _reattachTmuxIfNeeded(
+        session,
+        sessionName,
+        forceVisibleTmux: forceVisibleTmux,
+      );
+    }
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
@@ -7073,7 +7076,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
-    await _reattachTmuxIfNeeded(session, sessionName);
+    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      await _reattachTmuxIfNeeded(session, sessionName);
+    }
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
