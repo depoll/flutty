@@ -154,8 +154,11 @@ class MonkeyMuxInstallerService {
   final AssetBundle? _assetBundle;
 
   /// Installs the helper if needed and returns its executable path.
-  Future<MonkeyMuxInstallation> ensureInstalled(SshSession session) async {
-    final platform = await probePlatform(session);
+  Future<MonkeyMuxInstallation> ensureInstalled(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.low,
+  }) async {
+    final platform = await probePlatform(session, priority: priority);
     final manifest = await _manifestFuture;
     final entry = manifest.entryForPlatform(platform);
     if (entry == null) {
@@ -181,7 +184,12 @@ class MonkeyMuxInstallerService {
         '.monkeyssh/bin/monkeymux/${manifest.version}/$platform',
       );
       final executablePath = joinRemotePath(installDirectory, 'monkeymux');
-      if (await _remoteShaMatches(session, executablePath, entry.sha256)) {
+      if (await _remoteShaMatches(
+        session,
+        executablePath,
+        entry.sha256,
+        priority: priority,
+      )) {
         DiagnosticsLogService.instance.info(
           'monkeymux.install',
           'reuse_existing',
@@ -212,8 +220,14 @@ class MonkeyMuxInstallerService {
       await _runRemoteCommand(
         session,
         'chmod 700 ${_shellQuote(executablePath)}',
+        priority: priority,
       );
-      if (!await _remoteShaMatches(session, executablePath, entry.sha256)) {
+      if (!await _remoteShaMatches(
+        session,
+        executablePath,
+        entry.sha256,
+        priority: priority,
+      )) {
         throw const MonkeyMuxInstallException(
           'Uploaded MonkeyMux checksum verification failed.',
         );
@@ -234,11 +248,14 @@ class MonkeyMuxInstallerService {
   }
 
   /// Probes the remote host and returns a manifest platform key.
-  Future<String> probePlatform(SshSession session) async {
+  Future<String> probePlatform(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.low,
+  }) async {
     final output = await _runRemoteCommand(
       session,
       r'printf "%s\n%s\n" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"',
-      priority: SshExecPriority.low,
+      priority: priority,
     );
     final lines = output
         .split('\n')
@@ -278,15 +295,16 @@ class MonkeyMuxInstallerService {
   Future<bool> _remoteShaMatches(
     SshSession session,
     String executablePath,
-    String expectedSha,
-  ) async {
+    String expectedSha, {
+    required SshExecPriority priority,
+  }) async {
     try {
       final output = await _runRemoteCommand(
         session,
         '(sha256sum ${_shellQuote(executablePath)} 2>/dev/null || '
         'shasum -a 256 ${_shellQuote(executablePath)} 2>/dev/null) | '
         r"awk '{print $1}'",
-        priority: SshExecPriority.low,
+        priority: priority,
       );
       return output.trim() == expectedSha;
     } on Exception {

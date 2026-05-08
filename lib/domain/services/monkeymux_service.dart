@@ -305,7 +305,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     if (observer != null) {
       return observer.runCommand(command);
     }
-    final installation = await _installer.ensureInstalled(session);
+    final installation = await _installer.ensureInstalled(
+      session,
+      priority: priority,
+    );
     final controlCommand =
         '${_shellQuote(installation.executablePath)} control --json '
         '${_shellQuote(sessionName)}';
