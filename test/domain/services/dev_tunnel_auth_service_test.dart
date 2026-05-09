@@ -202,6 +202,59 @@ void main() {
       expect(header, isNull);
     });
 
+    test('lists Dev Tunnels visible to signed-in account', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final requests = <http.Request>[];
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response(
+            jsonEncode({
+              'value': [
+                {
+                  'tunnelId': 'abc',
+                  'clusterId': 'usw2',
+                  'name': 'Mac mini',
+                  'ports': [
+                    {
+                      'portNumber': 22,
+                      'protocol': 'ssh',
+                      'webForwardingUris': [
+                        'https://abc-22.usw2.devtunnels.ms',
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+            200,
+          );
+        }),
+      );
+
+      final tunnels = await service.listTunnels();
+
+      expect(tunnels, hasLength(1));
+      expect(tunnels.single.displayName, 'Mac mini');
+      expect(tunnels.single.ports.single.portNumber, 22);
+      expect(
+        tunnels.single.ports.single.forwardingUrl,
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+      expect(
+        requests.single.url.toString(),
+        'https://global.rel.tunnels.api.visualstudio.com/api/v1/tunnels'
+        '?includePorts=true&api-version=2023-09-27-preview',
+      );
+      expect(requests.single.headers['authorization'], 'github gh-token');
+    });
+
     test(
       'rejects non-Dev-Tunnel forwarding URLs before checking login',
       () async {

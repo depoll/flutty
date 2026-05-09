@@ -80,6 +80,57 @@ class DevTunnelDeviceLoginPollResult {
   final String? message;
 }
 
+/// A Dev Tunnel visible to the signed-in account.
+class DevTunnel {
+  /// Creates a [DevTunnel].
+  const DevTunnel({
+    required this.tunnelId,
+    required this.clusterId,
+    required this.name,
+    required this.ports,
+  });
+
+  /// Stable tunnel ID used by the Dev Tunnels service.
+  final String tunnelId;
+
+  /// Relay cluster ID used in standard forwarding URLs.
+  final String clusterId;
+
+  /// Optional user-facing tunnel name.
+  final String? name;
+
+  /// Exposed ports for this tunnel.
+  final List<DevTunnelPort> ports;
+
+  /// Label for picker UI.
+  String get displayName {
+    final trimmedName = name?.trim();
+    if (trimmedName != null && trimmedName.isNotEmpty) {
+      return trimmedName;
+    }
+    return tunnelId;
+  }
+}
+
+/// A connectable port on a Dev Tunnel.
+class DevTunnelPort {
+  /// Creates a [DevTunnelPort].
+  const DevTunnelPort({
+    required this.portNumber,
+    required this.forwardingUrl,
+    required this.protocol,
+  });
+
+  /// Port number exposed by the tunnel.
+  final int portNumber;
+
+  /// Standard `devtunnels.ms` forwarding URL, when available.
+  final String? forwardingUrl;
+
+  /// Optional protocol metadata from the Dev Tunnels service.
+  final String? protocol;
+}
+
 /// Handles Dev Tunnels account login and connect-token exchange.
 class DevTunnelAuthService {
   /// Creates a [DevTunnelAuthService].
@@ -272,6 +323,59 @@ class DevTunnelAuthService {
       forwardingUrl: parsedUrl,
     );
     return 'tunnel $connectToken';
+  }
+
+  /// Lists tunnels visible to the signed-in GitHub account.
+  Future<List<DevTunnel>> listTunnels() async {
+    final githubToken = await _resolveGitHubToken();
+    if (githubToken == null || githubToken.isEmpty) {
+      throw const DevTunnelAuthException(
+        'Sign in to Dev Tunnels to list tunnels.',
+      );
+    }
+
+    final response = await _httpClient
+        .get(
+          Uri.https(
+            'global.rel.tunnels.api.visualstudio.com',
+            '/api/v1/tunnels',
+            const {'includePorts': 'true', 'api-version': _devTunnelApiVersion},
+          ),
+          headers: {
+            HttpHeaders.acceptHeader: 'application/json',
+            HttpHeaders.authorizationHeader: 'github $githubToken',
+            HttpHeaders.userAgentHeader: 'MonkeySSH Dev Tunnels',
+          },
+        )
+        .timeout(_requestTimeout);
+    if (response.statusCode == 401) {
+      await signOutGitHub();
+      throw const DevTunnelAuthException(
+        'Dev Tunnels sign-in expired. Sign in again.',
+      );
+    }
+    _ensureSuccess(response, 'listing Dev Tunnels');
+
+    final body = _decodeJson(response.body);
+    final tunnelsJson = switch (body) {
+      final List<Object?> list => list,
+      final Map<String, Object?> object when object['value'] is List<Object?> =>
+        object['value']! as List<Object?>,
+      final Map<String, Object?> object when object['items'] is List<Object?> =>
+        object['items']! as List<Object?>,
+      _ => throw const DevTunnelAuthException(
+        'Unexpected Dev Tunnels response.',
+      ),
+    };
+    final tunnels = <DevTunnel>[];
+    for (final entry in tunnelsJson) {
+      final tunnel = _parseTunnel(entry);
+      if (tunnel != null) {
+        tunnels.add(tunnel);
+      }
+    }
+    tunnels.sort((a, b) => a.displayName.compareTo(b.displayName));
+    return tunnels;
   }
 
   Future<String> _requestConnectToken({
@@ -480,13 +584,90 @@ class DevTunnelAuthService {
     return !DateTime.now().toUtc().add(_tokenExpirySkew).isBefore(expiresAt);
   }
 
-  static Map<String, Object?> _decodeJsonObject(String source) {
-    final Object? decoded;
+  DevTunnel? _parseTunnel(Object? entry) {
+    if (entry is! Map<String, Object?>) {
+      return null;
+    }
+    final tunnelId =
+        _optionalString(entry, 'tunnelId') ??
+        _optionalString(entry, 'id') ??
+        _optionalString(entry, 'name');
+    final clusterId =
+        _optionalString(entry, 'clusterId') ??
+        _optionalString(entry, 'cluster') ??
+        _optionalString(entry, 'relayClusterId');
+    if (tunnelId == null || clusterId == null) {
+      return null;
+    }
+
+    final ports = <DevTunnelPort>[];
+    final portsJson = entry['ports'];
+    if (portsJson is List<Object?>) {
+      for (final portEntry in portsJson) {
+        final port = _parseTunnelPort(
+          portEntry,
+          tunnelId: tunnelId,
+          clusterId: clusterId,
+        );
+        if (port != null) {
+          ports.add(port);
+        }
+      }
+    }
+
+    return DevTunnel(
+      tunnelId: tunnelId,
+      clusterId: clusterId,
+      name: _optionalString(entry, 'name'),
+      ports: List.unmodifiable(ports),
+    );
+  }
+
+  DevTunnelPort? _parseTunnelPort(
+    Object? entry, {
+    required String tunnelId,
+    required String clusterId,
+  }) {
+    if (entry is! Map<String, Object?>) {
+      return null;
+    }
+    final portNumber = _optionalPositiveInt(entry, 'portNumber');
+    if (portNumber == null) {
+      return null;
+    }
+
+    return DevTunnelPort(
+      portNumber: portNumber,
+      forwardingUrl:
+          _firstHttpStringFromList(entry['webForwardingUris']) ??
+          'https://$tunnelId-$portNumber.$clusterId.devtunnels.ms',
+      protocol: _optionalString(entry, 'protocol'),
+    );
+  }
+
+  static String? _firstHttpStringFromList(Object? value) {
+    if (value is! List<Object?>) {
+      return null;
+    }
+    for (final entry in value) {
+      if (entry is String &&
+          (entry.startsWith('https://') || entry.startsWith('http://'))) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  static Object? _decodeJson(String source) {
     try {
-      decoded = jsonDecode(source);
+      return jsonDecode(source);
     } on FormatException {
       throw const DevTunnelAuthException('Unexpected Dev Tunnels response.');
     }
+  }
+
+  static Map<String, Object?> _decodeJsonObject(String source) {
+    final decoded = _decodeJson(source);
     if (decoded is Map<String, Object?>) {
       return decoded;
     }
@@ -542,4 +723,9 @@ final devTunnelAuthServiceProvider = Provider<DevTunnelAuthService>((ref) {
 /// Whether Dev Tunnels has a stored GitHub login.
 final devTunnelSignedInProvider = FutureProvider.autoDispose<bool>(
   (ref) => ref.watch(devTunnelAuthServiceProvider).hasGitHubLogin(),
+);
+
+/// Tunnels visible to the signed-in Dev Tunnels account.
+final devTunnelListProvider = FutureProvider.autoDispose<List<DevTunnel>>(
+  (ref) => ref.watch(devTunnelAuthServiceProvider).listTunnels(),
 );

@@ -102,6 +102,24 @@ class _CountingKeyRepository extends KeyRepository {
   }
 }
 
+class _ThrowingLastConnectedHostRepository extends HostRepository {
+  _ThrowingLastConnectedHostRepository(
+    super.db,
+    super.secretEncryptionService,
+    this.host,
+  );
+
+  final Host host;
+
+  @override
+  Future<Host?> getById(int id) async => id == host.id ? host : null;
+
+  @override
+  Future<bool> updateLastConnected(int id) async {
+    throw StateError('last connected update failed');
+  }
+}
+
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockExecSession extends Mock implements SSHSession {}
@@ -1927,6 +1945,81 @@ void main() {
       expect(clientFactoryCalls, 1);
       expect(promptCount, 0);
     });
+
+    test(
+      'connectToHost succeeds if last-connected timestamp update fails',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Timestamp Failure Host',
+                hostname: 'timestamp.example.com',
+                username: 'tester',
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((table) => table.id.equals(hostId))).getSingle();
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([5, 6, 7]);
+        final trustedHostKey = VerifiedHostKey(
+          hostname: 'timestamp.example.com',
+          port: 22,
+          keyType: 'ssh-ed25519',
+          hostKeyBytes: hostKeyBytes,
+        );
+        await knownHostsRepository.upsertTrustedHost(
+          hostname: trustedHostKey.hostname,
+          port: trustedHostKey.port,
+          keyType: trustedHostKey.trustedKeyType,
+          fingerprint: trustedHostKey.fingerprint,
+          encodedHostKey: trustedHostKey.encodedHostKey,
+          resetFirstSeen: true,
+        );
+        final socket = _FakeHostKeySocket(hostKeyBytes);
+        final client = _MockSshClient();
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          hostRepository: _ThrowingLastConnectedHostRepository(
+            db,
+            encryptionService,
+            host,
+          ),
+          knownHostsRepository: knownHostsRepository,
+          socketConnector: (host, port, {timeout}) async => socket,
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  final trusted = await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                  expect(trusted, isTrue);
+                });
+                return client;
+              },
+        );
+
+        final result = await service.connectToHost(hostId);
+
+        expect(result.success, isTrue);
+        expect(result.connectionId, isNotNull);
+      },
+    );
 
     test(
       'connect uses Dev Tunnel authorization and socket connector',
