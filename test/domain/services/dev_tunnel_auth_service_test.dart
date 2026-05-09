@@ -218,15 +218,20 @@ void main() {
             jsonEncode({
               'value': [
                 {
-                  'tunnelId': 'abc',
+                  'regionName': 'US West 2',
                   'clusterId': 'usw2',
-                  'name': 'Mac mini',
-                  'ports': [
+                  'value': [
                     {
-                      'portNumber': 22,
-                      'protocol': 'ssh',
-                      'webForwardingUris': [
-                        'https://abc-22.usw2.devtunnels.ms',
+                      'tunnelId': 'abc',
+                      'name': 'Mac mini',
+                      'ports': [
+                        {
+                          'portNumber': 22,
+                          'protocol': 'ssh',
+                          'webForwardingUris': [
+                            'https://abc-22.usw2.devtunnels.ms',
+                          ],
+                        },
                       ],
                     },
                   ],
@@ -249,10 +254,51 @@ void main() {
       );
       expect(
         requests.single.url.toString(),
-        'https://global.rel.tunnels.api.visualstudio.com/api/v1/tunnels'
-        '?includePorts=true&api-version=2023-09-27-preview',
+        'https://global.rel.tunnels.api.visualstudio.com/tunnels'
+        '?includePorts=true&global=true&api-version=2023-09-27-preview',
       );
       expect(requests.single.headers['authorization'], 'github gh-token');
+    });
+
+    test('uses HTTP forwarding URLs from portForwardingUris', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'value': [
+                {
+                  'tunnelId': 'abc',
+                  'clusterId': 'usw2',
+                  'ports': [
+                    {
+                      'portNumber': 22,
+                      'portForwardingUris': [
+                        'tcp://abc-22.usw2.devtunnels.ms',
+                        'https://abc-22.usw2.devtunnels.ms',
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+            200,
+          ),
+        ),
+      );
+
+      final tunnels = await service.listTunnels();
+
+      expect(
+        tunnels.single.ports.single.forwardingUrl,
+        'https://abc-22.usw2.devtunnels.ms',
+      );
     });
 
     test(

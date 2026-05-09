@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show ProviderException;
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -1720,18 +1721,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 LinearProgressIndicator(),
               ],
             ),
-            error: (_, _) => Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Could not load Dev Tunnels.'),
-                const SizedBox(height: 8),
-                TextButton.icon(
-                  onPressed: () => ref.invalidate(devTunnelListProvider),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Retry'),
-                ),
-              ],
-            ),
+            error: (error, _) {
+              final message = _devTunnelListErrorMessage(error);
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(message),
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _retryDevTunnelList,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry'),
+                  ),
+                ],
+              );
+            },
             data: (tunnels) {
               final selections = [
                 for (final tunnel in tunnels)
@@ -1746,7 +1750,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     const Text('No open Dev Tunnel ports found.'),
                     const SizedBox(height: 8),
                     TextButton.icon(
-                      onPressed: () => ref.invalidate(devTunnelListProvider),
+                      onPressed: _retryDevTunnelList,
                       icon: const Icon(Icons.refresh),
                       label: const Text('Refresh'),
                     ),
@@ -1769,7 +1773,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   prefixIcon: const Icon(Icons.cloud_queue_outlined),
                   suffixIcon: IconButton(
                     tooltip: 'Refresh tunnels',
-                    onPressed: () => ref.invalidate(devTunnelListProvider),
+                    onPressed: _retryDevTunnelList,
                     icon: const Icon(Icons.refresh),
                   ),
                 ),
@@ -1798,6 +1802,37 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
         ),
       );
+
+  String _devTunnelListErrorMessage(Object error) {
+    var current = error;
+    while (current is ProviderException) {
+      current = current.exception;
+    }
+    if (current is DevTunnelAuthException) {
+      return current.message;
+    }
+    final rawMessages = <String>[current.toString(), error.toString()];
+    for (final rawMessage in rawMessages) {
+      for (final line in rawMessage.split('\n')) {
+        final message = line.trim();
+        if (_isDevTunnelErrorMessage(message)) {
+          return message;
+        }
+      }
+    }
+    return 'Could not load Dev Tunnels.';
+  }
+
+  bool _isDevTunnelErrorMessage(String message) =>
+      message.startsWith('Dev Tunnels ') ||
+      message.startsWith('Sign in to Dev Tunnels') ||
+      message.startsWith('Signed-in account does not have access');
+
+  void _retryDevTunnelList() {
+    ref
+      ..invalidate(devTunnelSignedInProvider)
+      ..invalidate(devTunnelListProvider);
+  }
 
   void _applyDevTunnelPortSelection(_DevTunnelPortSelection selection) {
     final parsed = parseDevTunnelForwardingUrl(

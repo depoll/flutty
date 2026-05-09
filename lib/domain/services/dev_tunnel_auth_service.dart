@@ -338,8 +338,12 @@ class DevTunnelAuthService {
         .get(
           Uri.https(
             'global.rel.tunnels.api.visualstudio.com',
-            '/api/v1/tunnels',
-            const {'includePorts': 'true', 'api-version': _devTunnelApiVersion},
+            '/tunnels',
+            const {
+              'includePorts': 'true',
+              'global': 'true',
+              'api-version': _devTunnelApiVersion,
+            },
           ),
           headers: {
             HttpHeaders.acceptHeader: 'application/json',
@@ -357,19 +361,12 @@ class DevTunnelAuthService {
     _ensureSuccess(response, 'listing Dev Tunnels');
 
     final body = _decodeJson(response.body);
-    final tunnelsJson = switch (body) {
-      final List<Object?> list => list,
-      final Map<String, Object?> object when object['value'] is List<Object?> =>
-        object['value']! as List<Object?>,
-      final Map<String, Object?> object when object['items'] is List<Object?> =>
-        object['items']! as List<Object?>,
-      _ => throw const DevTunnelAuthException(
-        'Unexpected Dev Tunnels response.',
-      ),
-    };
     final tunnels = <DevTunnel>[];
-    for (final entry in tunnelsJson) {
-      final tunnel = _parseTunnel(entry);
+    for (final entry in _tunnelEntriesFromJson(body)) {
+      final tunnel = _parseTunnel(
+        entry.object,
+        fallbackClusterId: entry.clusterId,
+      );
       if (tunnel != null) {
         tunnels.add(tunnel);
       }
@@ -584,7 +581,40 @@ class DevTunnelAuthService {
     return !DateTime.now().toUtc().add(_tokenExpirySkew).isBefore(expiresAt);
   }
 
-  DevTunnel? _parseTunnel(Object? entry) {
+  List<({Object? object, String? clusterId})> _tunnelEntriesFromJson(
+    Object? body,
+  ) {
+    final topLevelEntries = switch (body) {
+      final List<Object?> list => list,
+      final Map<String, Object?> object when object['value'] is List<Object?> =>
+        object['value']! as List<Object?>,
+      final Map<String, Object?> object when object['items'] is List<Object?> =>
+        object['items']! as List<Object?>,
+      _ => throw const DevTunnelAuthException(
+        'Unexpected Dev Tunnels response.',
+      ),
+    };
+
+    final entries = <({Object? object, String? clusterId})>[];
+    for (final entry in topLevelEntries) {
+      if (entry is Map<String, Object?> &&
+          !_hasTunnelIdentifier(entry) &&
+          entry['value'] is List<Object?>) {
+        final fallbackClusterId =
+            _optionalString(entry, 'clusterId') ??
+            _optionalString(entry, 'cluster') ??
+            _optionalString(entry, 'relayClusterId');
+        for (final regionalEntry in entry['value']! as List<Object?>) {
+          entries.add((object: regionalEntry, clusterId: fallbackClusterId));
+        }
+        continue;
+      }
+      entries.add((object: entry, clusterId: null));
+    }
+    return entries;
+  }
+
+  DevTunnel? _parseTunnel(Object? entry, {String? fallbackClusterId}) {
     if (entry is! Map<String, Object?>) {
       return null;
     }
@@ -595,7 +625,8 @@ class DevTunnelAuthService {
     final clusterId =
         _optionalString(entry, 'clusterId') ??
         _optionalString(entry, 'cluster') ??
-        _optionalString(entry, 'relayClusterId');
+        _optionalString(entry, 'relayClusterId') ??
+        fallbackClusterId;
     if (tunnelId == null || clusterId == null) {
       return null;
     }
@@ -640,10 +671,15 @@ class DevTunnelAuthService {
       portNumber: portNumber,
       forwardingUrl:
           _firstHttpStringFromList(entry['webForwardingUris']) ??
+          _firstHttpStringFromList(entry['portForwardingUris']) ??
           'https://$tunnelId-$portNumber.$clusterId.devtunnels.ms',
       protocol: _optionalString(entry, 'protocol'),
     );
   }
+
+  static bool _hasTunnelIdentifier(Map<String, Object?> object) =>
+      _optionalString(object, 'tunnelId') != null ||
+      _optionalString(object, 'id') != null;
 
   static String? _firstHttpStringFromList(Object? value) {
     if (value is! List<Object?>) {
@@ -728,4 +764,5 @@ final devTunnelSignedInProvider = FutureProvider.autoDispose<bool>(
 /// Tunnels visible to the signed-in Dev Tunnels account.
 final devTunnelListProvider = FutureProvider.autoDispose<List<DevTunnel>>(
   (ref) => ref.watch(devTunnelAuthServiceProvider).listTunnels(),
+  retry: (_, _) => null,
 );
