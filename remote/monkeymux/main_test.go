@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net"
@@ -662,6 +663,26 @@ func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
 	}
 }
 
+func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
+	tests := []struct {
+		tool string
+		args string
+		want string
+	}{
+		{tool: "claude", args: "claude --resume abc123", want: "abc123"},
+		{tool: "copilot", args: "copilot --resume 'session one'", want: "session one"},
+		{tool: "codex", args: "codex resume run-42", want: "run-42"},
+		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
+		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
+	}
+
+	for _, tt := range tests {
+		if got := agentSessionIDFromArgs(tt.tool, tt.args); got != tt.want {
+			t.Fatalf("agentSessionIDFromArgs(%q, %q) = %q, want %q", tt.tool, tt.args, got, tt.want)
+		}
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -770,6 +791,102 @@ func TestCloseLastWindowRequestsShutdown(t *testing.T) {
 	}
 	if snapshots := server.snapshots(); len(snapshots) != 0 {
 		t.Fatalf("snapshot count = %d, want 0", len(snapshots))
+	}
+}
+
+func TestRestoreSnapshotIncludesShellHistory(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:                    "@1",
+			index:                 0,
+			name:                  "zsh",
+			command:               "zsh",
+			foregroundCommand:     "zsh",
+			history:               []byte("shell history"),
+			lastActivity:          time.Now(),
+			cursorVisible:         false,
+			cursorVisibilityKnown: true,
+		},
+		{
+			id:                "@2",
+			index:             1,
+			name:              "Codex",
+			command:           "codex",
+			foregroundCommand: "codex",
+			agentTool:         "codex",
+			history:           []byte("agent history"),
+			lastActivity:      time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	restore := server.restoreSnapshot()
+
+	if got := len(restore.Windows); got != 2 {
+		t.Fatalf("restore window count = %d, want 2", got)
+	}
+	if got := restore.Windows[0].HistoryBase64; got != base64.StdEncoding.EncodeToString([]byte("shell history")) {
+		t.Fatalf("shell history = %q, want encoded shell history", got)
+	}
+	if !restore.Windows[0].Active {
+		t.Fatal("active shell window was not marked active")
+	}
+	if !restore.Windows[0].CursorVisibilityKnown || restore.Windows[0].CursorVisible {
+		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", restore.Windows[0].CursorVisibilityKnown, restore.Windows[0].CursorVisible)
+	}
+	if got := restore.Windows[1].HistoryBase64; got != "" {
+		t.Fatalf("agent history = %q, want no replayed agent history", got)
+	}
+}
+
+func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
+	state := restoreWindowState{
+		Name:                  "Project shell",
+		Cwd:                   "/tmp/project",
+		CurrentCommand:        "zsh",
+		PaneTitle:             "Project shell",
+		HistoryBase64:         base64.StdEncoding.EncodeToString([]byte("prompt")),
+		CursorVisible:         false,
+		CursorVisibilityKnown: true,
+	}
+
+	options := createWindowOptionsForRestore(state)
+
+	if options.command != "" {
+		t.Fatalf("command = %q, want login shell", options.command)
+	}
+	if got := string(options.history); got != "prompt" {
+		t.Fatalf("history = %q, want prompt", got)
+	}
+	if options.cwd != "/tmp/project" {
+		t.Fatalf("cwd = %q, want /tmp/project", options.cwd)
+	}
+	if !options.cursorVisibilityKnown || options.cursorVisible {
+		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", options.cursorVisibilityKnown, options.cursorVisible)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
+	state := restoreWindowState{
+		Name:           "Copilot CLI",
+		Cwd:            "/tmp/project",
+		CurrentCommand: "copilot",
+		AgentTool:      "copilot",
+		AgentSessionID: "session's id",
+		HistoryBase64:  base64.StdEncoding.EncodeToString([]byte("old agent screen")),
+	}
+
+	options := createWindowOptionsForRestore(state)
+
+	if got := options.command; got != "copilot --resume 'session'\"'\"'s id'" {
+		t.Fatalf("command = %q, want quoted copilot resume", got)
+	}
+	if len(options.history) != 0 {
+		t.Fatalf("agent restore history length = %d, want 0", len(options.history))
+	}
+	if options.agentTool != "copilot" {
+		t.Fatalf("agent tool = %q, want copilot", options.agentTool)
 	}
 }
 
@@ -915,7 +1032,7 @@ func TestPromptForServerUpdateWarnsWhenShutdownIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
+func TestPromptForServerUpdateDescribesWindowRestore(t *testing.T) {
 	var output bytes.Buffer
 	status := runningServerStatus{
 		version:      "0.1.1",
@@ -925,8 +1042,8 @@ func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
 	if !promptForServerUpdate(strings.NewReader("y\n"), &output, "main", status) {
 		t.Fatal("yes prompt response did not update server")
 	}
-	if got := output.String(); !strings.Contains(got, "will close existing") {
-		t.Fatalf("prompt output = %q, want close warning", got)
+	if got := output.String(); !strings.Contains(got, "try to restore existing windows") {
+		t.Fatalf("prompt output = %q, want restore message", got)
 	}
 }
 
