@@ -6,6 +6,7 @@ import '../../data/repositories/host_repository.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/host_cli_launch_preferences.dart';
 import '../models/host_connection_type.dart';
+import '../models/remote_multiplexer.dart';
 import '../services/agent_launch_preset_service.dart';
 import '../services/host_cli_launch_preferences_service.dart';
 
@@ -39,6 +40,7 @@ class SaveHostInput {
     this.tmuxSessionName,
     this.tmuxWorkingDirectory,
     this.tmuxExtraFlags,
+    this.remoteMuxBackend,
   });
 
   /// Display label.
@@ -103,6 +105,9 @@ class SaveHostInput {
 
   /// Extra flags for the `tmux new-session` invocation.
   final String? tmuxExtraFlags;
+
+  /// Remote multiplexer backend to use with [tmuxSessionName].
+  final RemoteMuxBackend? remoteMuxBackend;
 
   /// Whether this host is marked as a favourite.
   final bool isFavorite;
@@ -213,6 +218,7 @@ class SaveHostCommand {
           tmuxSessionName: drift.Value(input.tmuxSessionName),
           tmuxWorkingDirectory: drift.Value(input.tmuxWorkingDirectory),
           tmuxExtraFlags: drift.Value(input.tmuxExtraFlags),
+          remoteMuxBackend: drift.Value(input.remoteMuxBackend?.storageValue),
           isFavorite: input.isFavorite,
         ),
       );
@@ -243,6 +249,7 @@ class SaveHostCommand {
           tmuxSessionName: drift.Value(input.tmuxSessionName),
           tmuxWorkingDirectory: drift.Value(input.tmuxWorkingDirectory),
           tmuxExtraFlags: drift.Value(input.tmuxExtraFlags),
+          remoteMuxBackend: drift.Value(input.remoteMuxBackend?.storageValue),
           isFavorite: drift.Value(input.isFavorite),
         ),
       );

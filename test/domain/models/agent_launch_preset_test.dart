@@ -2,6 +2,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 
 void main() {
   group('buildAgentToolCommand', () {
@@ -140,6 +141,25 @@ void main() {
         'tmux new-session -A -s \'nightly review\' -c '
         '"\$HOME/src/app" -x 160 -y 48 \'codex --message "hello"\' '
         r'\; set-option -g focus-events on',
+      );
+    });
+
+    test('keeps MonkeyMux agent sessions as plain agent commands', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        workingDirectory: '~/src/app',
+        tmuxSessionName: 'nightly review',
+        remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        tmuxExtraFlags: '-x 160 -y 48',
+        tmuxDisableStatusBar: true,
+        additionalArguments: '--message "hello"',
+      );
+
+      expect(preset.usesMonkeyMuxSession, isTrue);
+      expect(preset.usesTmuxSession, isFalse);
+      expect(
+        buildAgentLaunchCommand(preset),
+        r'cd "$HOME/src/app" && codex --message "hello"',
       );
     });
 
@@ -318,9 +338,21 @@ void main() {
     expect(decoded.tool, preset.tool);
     expect(decoded.workingDirectory, preset.workingDirectory);
     expect(decoded.tmuxSessionName, preset.tmuxSessionName);
+    expect(decoded.effectiveRemoteMuxBackend, preset.effectiveRemoteMuxBackend);
     expect(decoded.tmuxExtraFlags, preset.tmuxExtraFlags);
     expect(decoded.tmuxDisableStatusBar, isTrue);
     expect(decoded.additionalArguments, preset.additionalArguments);
+  });
+
+  test('decodes legacy session presets as tmux', () {
+    final preset = AgentLaunchPreset.fromJson({
+      'tool': 'codex',
+      'tmuxSessionName': 'legacy-agent',
+    });
+
+    expect(preset.remoteMuxBackend, isNull);
+    expect(preset.effectiveRemoteMuxBackend, RemoteMuxBackend.tmux);
+    expect(preset.usesTmuxSession, isTrue);
   });
 
   test('round-trips new tool enum values through json', () {
@@ -383,6 +415,11 @@ void main() {
         agentLaunchToolForCommandName('gemini --yolo'),
         AgentLaunchTool.geminiCli,
       );
+      expect(
+        agentLaunchToolForCommandName('gemini-cli'),
+        AgentLaunchTool.geminiCli,
+      );
+      expect(agentLaunchToolForCommandName('codex-cli'), AgentLaunchTool.codex);
       expect(agentLaunchToolForCommandName('vim'), isNull);
       expect(agentLaunchToolForCommandName(''), isNull);
     });

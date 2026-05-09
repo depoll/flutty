@@ -14,11 +14,13 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
@@ -34,6 +36,8 @@ class _MockSnippetRepository extends Mock implements SnippetRepository {}
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockTmuxService extends Mock implements TmuxService {}
+
+class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {}
 
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
@@ -157,6 +161,7 @@ Host _buildHost({
   String? autoConnectCommand,
   String? tmuxSessionName,
   String? tmuxExtraFlags,
+  RemoteMuxBackend? remoteMuxBackend,
 }) => Host(
   id: id,
   label: label,
@@ -183,6 +188,7 @@ Host _buildHost({
   tmuxSessionName: tmuxSessionName,
   tmuxWorkingDirectory: null,
   tmuxExtraFlags: tmuxExtraFlags,
+  remoteMuxBackend: remoteMuxBackend?.storageValue,
   sortOrder: sortOrder,
 );
 
@@ -204,6 +210,8 @@ ActiveConnection _buildActiveConnection({
   required int connectionId,
   required int hostId,
   SshConnectionState state = SshConnectionState.connected,
+  RemoteMuxBackend? remoteMuxBackend,
+  String? remoteMuxSessionName,
 }) => ActiveConnection(
   connectionId: connectionId,
   hostId: hostId,
@@ -214,6 +222,8 @@ ActiveConnection _buildActiveConnection({
     port: 22,
     username: 'root',
   ),
+  remoteMuxBackend: remoteMuxBackend,
+  remoteMuxSessionName: remoteMuxSessionName,
 );
 
 const _proMonetizationState = MonetizationState(
@@ -516,6 +526,98 @@ void main() {
     expect(find.text('correct-session · 1 windows'), findsOneWidget);
     expect(find.text('wrong-session · 1 windows'), findsNothing);
   });
+
+  testWidgets(
+    'connection badge uses MonkeyMux windows for MonkeyMux sessions',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final tmuxService = _MockTmuxService();
+      final monkeyMuxService = _MockMonkeyMuxService();
+      final sshClient = _MockSshClient();
+      const sessionName = 'mmux-work';
+      final session =
+          SshSession(
+              connectionId: 7,
+              hostId: 1,
+              client: sshClient,
+              config: const SshConnectionConfig(
+                hostname: 'alpha.example.com',
+                port: 22,
+                username: 'root',
+              ),
+            )
+            ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+            ..remoteMuxSessionName = sessionName;
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+            remoteMuxSessionName: sessionName,
+          ),
+        ],
+        initialSessions: [session],
+      );
+
+      when(
+        () => monkeyMuxService.watchWindowChanges(
+          session,
+          sessionName,
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => monkeyMuxService.listWindows(
+          session,
+          sessionName,
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer(
+        (_) async => const <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'monkey', isActive: true),
+        ],
+      );
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(
+                  id: 1,
+                  label: 'Alpha',
+                  sortOrder: 0,
+                  tmuxSessionName: sessionName,
+                  remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+                ),
+              ]),
+            ),
+            tmuxServiceProvider.overrideWithValue(tmuxService),
+            monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('Connections').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('$sessionName · 1 windows'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
+      verify(
+        () => monkeyMuxService.listWindows(
+          session,
+          sessionName,
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).called(greaterThanOrEqualTo(1));
+      verifyNever(() => tmuxService.listWindows(session, any()));
+    },
+  );
 
   testWidgets(
     'ignores stale tmux retries after host session info loads later',

@@ -5,13 +5,23 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/terminal_backend.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/terminal_connection_backend_service.dart';
 
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockExecSession extends Mock implements SSHSession {}
+
+class _MockTerminalConnectionBackendService extends Mock
+    implements TerminalConnectionBackendService {}
+
+class _MockTerminalConnectionBackend extends Mock
+    implements TerminalConnectionBackend {}
 
 SshSession _buildDiscoverySession(SSHClient client) => SshSession(
   connectionId: 1,
@@ -117,9 +127,13 @@ SSHSession _buildAcpSessionListExecSession({
 String _remoteSnapshotLine(String path, String content, {int mtime = 0}) =>
     '$path\x1f$mtime\x1f${base64Encode(utf8.encode(content))}\n';
 
+String _markedDiscoveryOutput(String stdout) =>
+    '$stdout\n__flutty_agent_discovery_exec_done__:0\n';
+
 void main() {
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
+    registerFallbackValue(SshExecPriority.low);
   });
 
   group('normalizeWorkingDirectoryForComparison', () {
@@ -873,6 +887,28 @@ cwd: /tmp/demo
       expect(metadata.summary, 'can i rename this session?');
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
     });
+
+    test('extracts metadata from a truncated large JSON prefix', () {
+      final metadata = parseGeminiSessionMetadata('''
+{
+  "sessionId": "session-large",
+  "summary": "Investigate MonkeyMux agent detection hardening",
+  "lastUpdated": "2026-04-12T21:29:53.292Z",
+  "kind": "main",
+  "directories": ["/Users/depoll/Code/flutty"],
+  "messages": [
+''', activeWorkingDirectory: '/Users/depoll/Code/flutty');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.isSubagent, isFalse);
+      expect(metadata.sessionId, 'session-large');
+      expect(
+        metadata.summary,
+        'Investigate MonkeyMux agent detection hardening',
+      );
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
+    });
   });
 
   group('parseAcpSessionListResult', () {
@@ -1058,6 +1094,67 @@ branch refs/heads/main
           ),
           isNotEmpty,
         );
+      },
+    );
+
+    test(
+      'MonkeyMux discovery uses control-channel commands and skips ACP exec',
+      () async {
+        final client = _MockSshClient();
+        final backendService = _MockTerminalConnectionBackendService();
+        final backend = _MockTerminalConnectionBackend();
+        final commands = <String>[];
+        final session = _buildDiscoverySession(client)
+          ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+          ..remoteMuxSessionName = 'dev';
+
+        when(() => backendService.resolve(session)).thenReturn(backend);
+        when(() => backend.capabilities).thenReturn(
+          const TerminalBackendCapabilities(
+            supportsWindows: true,
+            supportsClientCommands: true,
+            clientCommandsUseControlChannel: true,
+          ),
+        );
+        when(
+          () =>
+              backend.runClientCommand(any(), priority: any(named: 'priority')),
+        ).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          final output = command.contains('~/.local/share/opencode/opencode.db')
+              ? 'session-1\x1fOpenCode mmux\x1f/Users/depoll/Code/flutty\x1f1770000000\n'
+              : '';
+          return TerminalClientCommandResult(
+            output: _markedDiscoveryOutput(output),
+            exitCode: 0,
+          );
+        });
+
+        final discovery = AgentSessionDiscoveryService(
+          terminalBackendService: backendService,
+        );
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: '/Users/depoll/Code/flutty',
+          toolName: 'OpenCode',
+        );
+
+        expect(result.sessions.map((session) => session.sessionId), [
+          'session-1',
+        ]);
+        expect(
+          commands.where((command) => command.contains('opencode acp')),
+          isEmpty,
+        );
+        expect(
+          commands.where(
+            (command) =>
+                command.contains('~/.local/share/opencode/opencode.db'),
+          ),
+          hasLength(1),
+        );
+        verifyNever(() => client.execute(any()));
       },
     );
 

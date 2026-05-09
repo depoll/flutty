@@ -86,11 +86,15 @@ class _SshSessionRuntime {
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,
     bool forceNew = false,
+    String? command,
   }) async {
     if (forceNew) {
       await closeShell();
     }
     if (_shell == null) {
+      final commandKind = command == null
+          ? 'interactive_shell'
+          : _diagnosticSshCommandKind(command);
       DiagnosticsLogService.instance.info(
         'ssh.shell',
         'open_start',
@@ -98,14 +102,25 @@ class _SshSessionRuntime {
           'connectionId': _session.connectionId,
           'hostId': _session.hostId,
           'requestedPty': pty != null,
+          'hasCommand': command != null,
+          'commandKind': commandKind,
         },
       );
       try {
-        _shell = await _session.client.shell(pty: pty ?? const SSHPtyConfig());
+        _shell = command == null
+            ? await _session.client.shell(pty: pty ?? const SSHPtyConfig())
+            : await _session.client.execute(
+                command,
+                pty: pty ?? const SSHPtyConfig(),
+              );
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'open_success',
-          fields: {'connectionId': _session.connectionId},
+          fields: {
+            'connectionId': _session.connectionId,
+            'hasCommand': command != null,
+            'commandKind': commandKind,
+          },
         );
       } on Object catch (error) {
         DiagnosticsLogService.instance.error(
@@ -114,6 +129,8 @@ class _SshSessionRuntime {
           fields: {
             'connectionId': _session.connectionId,
             'errorType': error.runtimeType,
+            'hasCommand': command != null,
+            'commandKind': commandKind,
           },
         );
         rethrow;
