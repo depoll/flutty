@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:io' show gzip;
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,9 +20,18 @@ void main() {
         bytes.offsetInBytes,
         bytes.lengthInBytes,
       );
+      final binaryBytes = switch (entry.encoding) {
+        null || '' || 'none' => assetBytes,
+        'gzip' => Uint8List.fromList(gzip.decode(assetBytes)),
+        final encoding => throw StateError(
+          'Unsupported MonkeyMux asset encoding: $encoding',
+        ),
+      };
 
-      expect(assetBytes.length, entry.size, reason: entry.asset);
-      expect(sha256.convert(assetBytes).toString(), entry.sha256);
+      expect(entry.encoding, 'gzip', reason: entry.asset);
+      expect(entry.asset, endsWith('.gz'));
+      expect(binaryBytes.length, entry.size, reason: entry.asset);
+      expect(sha256.convert(binaryBytes).toString(), entry.sha256);
     }
   });
 }
