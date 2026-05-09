@@ -773,15 +773,26 @@ func TestCloseLastWindowRequestsShutdown(t *testing.T) {
 	}
 }
 
-func TestThemeHintOnlyTargetsAgentForegroundWindows(t *testing.T) {
+func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 	agentWindow := &muxWindow{foregroundCommand: "codex"}
+	agentWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004h"))
+	agentWithoutFocus := &muxWindow{foregroundCommand: "gemini"}
 	shellWindow := &muxWindow{foregroundCommand: "zsh"}
+	shellWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004h"))
 
 	if !agentWindow.supportsThemeHintLocked() {
-		t.Fatal("codex foreground window did not support theme hints")
+		t.Fatal("focus-aware agent foreground window did not support theme hints")
+	}
+	if agentWithoutFocus.supportsThemeHintLocked() {
+		t.Fatal("agent foreground window without focus mode supported theme hints")
 	}
 	if shellWindow.supportsThemeHintLocked() {
-		t.Fatal("shell foreground window unexpectedly supported theme hints")
+		t.Fatal("focus-aware shell foreground window unexpectedly supported theme hints")
+	}
+
+	agentWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004l"))
+	if agentWindow.supportsThemeHintLocked() {
+		t.Fatal("agent foreground window supported theme hints after focus mode disabled")
 	}
 }
 
