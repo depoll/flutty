@@ -115,7 +115,20 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _windowListRequests =
       <_MonkeyMuxWatchKey, Future<List<TmuxWindow>>>{};
   static final _agentMetadataRequests = <_MonkeyMuxWatchKey, Future<void>>{};
+  static final _agentMetadataRequestPanePids = <_MonkeyMuxWatchKey, Set<int>>{};
+  static final _agentMetadataPendingWindows =
+      <_MonkeyMuxWatchKey, List<TmuxWindow>>{};
+  static final _agentMetadataPendingForced = <_MonkeyMuxWatchKey, bool>{};
+  static final _agentMetadataRefreshes = <_MonkeyMuxWatchKey, DateTime>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
+  static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
+  static const _agentMetadataExecOpenTimeout = Duration(seconds: 10);
+  static const _agentMetadataExecOutputTimeout = Duration(seconds: 15);
+  static const _agentMetadataExecDoneMarker =
+      '__monkeymux_agent_metadata_done__';
+  static final RegExp _agentMetadataExecDoneMarkerLinePattern = RegExp(
+    '(?:^|\\n)${RegExp.escape(_agentMetadataExecDoneMarker)}:([0-9]+)\\n',
+  );
 
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
@@ -129,6 +142,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       (key, _) => key.connectionId == connectionId,
     );
     _windowSnapshotGenerations.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _agentMetadataRefreshes.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _agentMetadataRequestPanePids.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _agentMetadataPendingWindows.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
+    _agentMetadataPendingForced.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
     _windowListRequests.removeWhere((key, request) {
@@ -208,10 +233,22 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
         },
         onWindowSnapshot: (window) {
+          final cachedWindows = _windowSnapshotCache[key];
+          final forceAgentMetadataRefresh =
+              shouldForceAgentSessionMetadataRefreshForSnapshot(
+                cachedWindows ?? const <TmuxWindow>[],
+                window,
+              );
           _cacheWindowSnapshot(key, window);
           final windows = _windowSnapshotCache[key];
           if (windows != null) {
-            _scheduleAgentMetadataRefresh(session, sessionName, key, windows);
+            _scheduleAgentMetadataRefresh(
+              session,
+              sessionName,
+              key,
+              windows,
+              force: forceAgentMetadataRefresh,
+            );
           }
         },
         onDispose: () => _observers.remove(key),
@@ -410,48 +447,49 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     );
   }
 
-  Future<List<TmuxWindow>> _enrichWindowsWithAgentMetadata(
+  Future<
+    ({
+      Map<int, ({String sessionId, String? title})> metadataByPanePid,
+      Set<int> panePids,
+    })?
+  >
+  _loadAgentMetadata(
     SshSession session,
-    String sessionName,
-    List<TmuxWindow> windows,
+    _MonkeyMuxWatchKey key,
+    Set<int> panePids,
   ) async {
-    final panePids = windows
-        .where(
-          (window) =>
-              window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-              window.panePid != null,
-        )
-        .map((window) => window.panePid!)
-        .toSet();
     if (panePids.isEmpty) {
-      return windows;
+      return null;
     }
 
     try {
-      final response = await _runControlCommand(session, sessionName, {
-        'type': 'run_command',
-        'command': buildCopilotActiveSessionMetadataCommand(panePids),
-      }, priority: SshExecPriority.low);
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.agent',
+        'active_session_metadata_start',
+        fields: {
+          'connectionId': session.connectionId,
+          'paneCount': panePids.length,
+        },
+      );
+      final output = await _runAgentMetadataCommand(
+        session,
+        buildCopilotActiveSessionMetadataCommand(panePids),
+      );
       final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
-        response.data ?? '',
+        output,
         panePids,
       );
-      if (metadataByPanePid.isEmpty) {
-        return windows;
-      }
-      return windows
-          .map((window) {
-            final panePid = window.panePid;
-            final metadata = panePid == null
-                ? null
-                : metadataByPanePid[panePid];
-            if (metadata == null) return window;
-            return window.copyWith(
-              activeAgentSessionId: metadata.sessionId,
-              agentSessionTitle: metadata.title,
-            );
-          })
-          .toList(growable: false);
+      _agentMetadataRefreshes[key] = DateTime.now();
+      DiagnosticsLogService.instance.info(
+        'monkeymux.agent',
+        'active_session_metadata_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'paneCount': panePids.length,
+          'matchCount': metadataByPanePid.length,
+        },
+      );
+      return (metadataByPanePid: metadataByPanePid, panePids: panePids);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.agent',
@@ -461,7 +499,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'errorType': error.runtimeType,
         },
       );
-      return windows;
+      return null;
     }
   }
 
@@ -469,55 +507,87 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     SshSession session,
     String sessionName,
     _MonkeyMuxWatchKey key,
-    List<TmuxWindow> windows,
-  ) {
-    if (!windows.any(
-      (window) =>
-          window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-          window.panePid != null,
-    )) {
+    List<TmuxWindow> windows, {
+    bool force = false,
+  }) {
+    final panePids = _copilotPanePids(windows);
+    if (panePids.isEmpty) {
       return;
     }
     if (_agentMetadataRequests.containsKey(key)) {
+      final activePanePids =
+          _agentMetadataRequestPanePids[key] ?? const <int>{};
+      final hasNewPanePids = panePids.any(
+        (panePid) => !activePanePids.contains(panePid),
+      );
+      if (force || hasNewPanePids) {
+        _agentMetadataPendingWindows[key] = windows;
+        _agentMetadataPendingForced[key] =
+            (_agentMetadataPendingForced[key] ?? false) ||
+            force ||
+            hasNewPanePids;
+      }
       return;
     }
-    final snapshotGeneration = _windowSnapshotGeneration(key);
-    var shouldReschedule = false;
-    final request =
-        _enrichWindowsWithAgentMetadata(session, sessionName, windows).then((
-          enrichedWindows,
-        ) {
-          if (_windowSnapshotGeneration(key) != snapshotGeneration) {
-            shouldReschedule = true;
-            return;
-          }
-          final previousWindows = _windowSnapshotCache[key];
-          _cacheWindows(key, enrichedWindows);
-          final cachedWindows = _windowSnapshotCache[key] ?? enrichedWindows;
-          if (previousWindows != null &&
-              listEquals(previousWindows, cachedWindows)) {
-            return;
-          }
-          _observers[key]?.emitWindowList(cachedWindows);
-        });
+    final lastRefresh = _agentMetadataRefreshes[key];
+    if (!force &&
+        lastRefresh != null &&
+        DateTime.now().difference(lastRefresh) <
+            _agentSessionMetadataFreshTtl) {
+      return;
+    }
+    _agentMetadataRequestPanePids[key] = panePids;
+    late final Future<void> request;
+    request = _loadAgentMetadata(session, key, panePids).then((
+      metadataRefresh,
+    ) {
+      if (!identical(_agentMetadataRequests[key], request)) {
+        return;
+      }
+      if (metadataRefresh == null) {
+        return;
+      }
+      final previousWindows = _windowSnapshotCache[key] ?? windows;
+      final result = _applyMonkeyMuxAgentSessionMetadata(
+        previousWindows,
+        metadataRefresh.metadataByPanePid,
+        refreshedPanePids: metadataRefresh.panePids,
+      );
+      if (!result.changed) return;
+      _replaceCachedWindows(key, result.windows);
+      _observers[key]?.emitWindowList(
+        _windowSnapshotCache[key] ?? result.windows,
+      );
+    });
     _agentMetadataRequests[key] = request;
     request.whenComplete(() {
-      if (identical(_agentMetadataRequests[key], request)) {
-        _agentMetadataRequests.remove(key);
+      if (!identical(_agentMetadataRequests[key], request)) {
+        return;
       }
-      if (shouldReschedule) {
-        final latestWindows = _windowSnapshotCache[key];
-        if (latestWindows != null) {
-          _scheduleAgentMetadataRefresh(
-            session,
-            sessionName,
-            key,
-            latestWindows,
-          );
-        }
+      _agentMetadataRequests.remove(key);
+      _agentMetadataRequestPanePids.remove(key);
+      final pendingWindows = _agentMetadataPendingWindows.remove(key);
+      final pendingForced = _agentMetadataPendingForced.remove(key) ?? false;
+      if (pendingWindows != null && pendingWindows.isNotEmpty) {
+        _scheduleAgentMetadataRefresh(
+          session,
+          sessionName,
+          key,
+          pendingWindows,
+          force: pendingForced,
+        );
       }
     }).ignore();
   }
+
+  Set<int> _copilotPanePids(Iterable<TmuxWindow> windows) => windows
+      .where(
+        (window) =>
+            window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
+            window.panePid != null,
+      )
+      .map((window) => window.panePid!)
+      .toSet();
 
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
     if (windows.isEmpty) {
@@ -553,8 +623,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     _bumpWindowSnapshotGeneration(key);
   }
 
-  static int _windowSnapshotGeneration(_MonkeyMuxWatchKey key) =>
-      _windowSnapshotGenerations[key] ?? 0;
+  static void _replaceCachedWindows(
+    _MonkeyMuxWatchKey key,
+    List<TmuxWindow> windows,
+  ) {
+    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(windows);
+    _bumpWindowSnapshotGeneration(key);
+  }
 
   static void _bumpWindowSnapshotGeneration(_MonkeyMuxWatchKey key) {
     _windowSnapshotGenerations.update(
@@ -563,7 +638,150 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       ifAbsent: () => 1,
     );
   }
+
+  Future<String> _runAgentMetadataCommand(SshSession session, String command) =>
+      session.runQueuedExec(
+        () => _runAgentMetadataCommandUnqueued(session, command),
+        priority: SshExecPriority.low,
+      );
+
+  Future<String> _runAgentMetadataCommandUnqueued(
+    SshSession session,
+    String command,
+  ) async {
+    final startedAt = DateTime.now();
+    final openFuture = session.execute(_markAgentMetadataCommandDone(command));
+    final execSession = await openFuture.timeout(
+      _agentMetadataExecOpenTimeout,
+      onTimeout: () {
+        openFuture.then((exec) => exec.close()).ignore();
+        throw TimeoutException(
+          'Timed out opening Copilot metadata exec channel',
+          _agentMetadataExecOpenTimeout,
+        );
+      },
+    );
+    try {
+      execSession.stderr.drain<void>().ignore();
+      final output = await _readAgentMetadataStdoutUntilDoneMarker(
+        execSession,
+        connectionId: session.connectionId,
+      );
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.agent',
+        'active_session_metadata_exec_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
+          'outputChars': output.length,
+        },
+      );
+      return output;
+    } finally {
+      await execSession.stdin.close();
+      execSession.close();
+    }
+  }
+
+  String _markAgentMetadataCommandDone(String command) =>
+      '{ $command; __monkeymux_agent_metadata_status__=\$?; '
+      'printf ${_shellQuote('\n$_agentMetadataExecDoneMarker:%s\n')} '
+      r'"$__monkeymux_agent_metadata_status__"; }';
+
+  Future<String> _readAgentMetadataStdoutUntilDoneMarker(
+    SSHSession execSession, {
+    required int connectionId,
+  }) async {
+    final output = StringBuffer();
+    await for (final chunk
+        in execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .timeout(_agentMetadataExecOutputTimeout)) {
+      output.write(chunk);
+      final currentOutput = output.toString();
+      RegExpMatch? markerMatch;
+      for (final match in _agentMetadataExecDoneMarkerLinePattern.allMatches(
+        currentOutput,
+      )) {
+        markerMatch = match;
+      }
+      if (markerMatch != null) {
+        final statusText = markerMatch.group(1)!;
+        if (statusText != '0') {
+          throw MonkeyMuxInstallException(
+            'Copilot metadata command failed with exit status $statusText.',
+          );
+        }
+        return currentOutput.substring(0, markerMatch.start).trimRight();
+      }
+    }
+    DiagnosticsLogService.instance.warning(
+      'monkeymux.agent',
+      'active_session_metadata_closed_before_marker',
+      fields: {'connectionId': connectionId},
+    );
+    throw const MonkeyMuxInstallException(
+      'Copilot metadata command closed without a response.',
+    );
+  }
 }
+
+({List<TmuxWindow> windows, bool changed}) _applyMonkeyMuxAgentSessionMetadata(
+  List<TmuxWindow> windows,
+  Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+  Set<int>? refreshedPanePids,
+}) {
+  var changed = false;
+  final enriched = windows
+      .map((window) {
+        final panePid = window.panePid;
+        if (panePid != null &&
+            window.foregroundAgentTool != AgentLaunchTool.copilotCli) {
+          if (window.activeAgentSessionId != null ||
+              window.agentSessionTitle != null) {
+            changed = true;
+            return window.copyWith(clearActiveAgentSessionMetadata: true);
+          }
+          return window;
+        }
+        final metadata = panePid == null ? null : metadataByPanePid[panePid];
+        if (metadata == null) {
+          if (panePid != null &&
+              refreshedPanePids != null &&
+              refreshedPanePids.contains(panePid) &&
+              (window.activeAgentSessionId != null ||
+                  window.agentSessionTitle != null)) {
+            changed = true;
+            return window.copyWith(clearActiveAgentSessionMetadata: true);
+          }
+          return window;
+        }
+        if (window.activeAgentSessionId == metadata.sessionId &&
+            window.agentSessionTitle == metadata.title) {
+          return window;
+        }
+        changed = true;
+        return window.copyWith(
+          activeAgentSessionId: metadata.sessionId,
+          agentSessionTitle: metadata.title,
+        );
+      })
+      .toList(growable: false);
+  return (windows: changed ? enriched : windows, changed: changed);
+}
+
+/// Applies live Copilot metadata to MonkeyMux windows for regression tests.
+@visibleForTesting
+List<TmuxWindow> applyMonkeyMuxAgentSessionMetadataForTesting(
+  List<TmuxWindow> windows,
+  Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+  Set<int>? refreshedPanePids,
+}) => _applyMonkeyMuxAgentSessionMetadata(
+  windows,
+  metadataByPanePid,
+  refreshedPanePids: refreshedPanePids,
+).windows;
 
 Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
   SshSession session,

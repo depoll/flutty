@@ -2998,7 +2998,6 @@ bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
 
 /// Returns whether a live tmux window snapshot should bypass the normal active
 /// session metadata refresh throttle.
-@visibleForTesting
 bool shouldForceAgentSessionMetadataRefreshForSnapshot(
   Iterable<TmuxWindow> cachedWindows,
   TmuxWindow snapshot,
