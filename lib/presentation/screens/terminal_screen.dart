@@ -39,6 +39,7 @@ import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/monkeymux_service.dart';
+import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
@@ -10813,6 +10814,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    if (ref.read(portForwardBrowserLinksNotifierProvider) &&
+        shouldOpenUriInPortForwardBrowser(
+          uri,
+          activeLocalPorts: _activeLocalForwardPorts(),
+        )) {
+      await context.pushNamed<void>(
+        Routes.portForwardBrowser,
+        queryParameters: {
+          'url': normalizePortForwardBrowserUri(uri).toString(),
+          'title': uri.authority,
+        },
+      );
+      return;
+    }
+
     var launched = false;
     try {
       launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -10824,6 +10840,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _showTerminalLinkMessage('Could not open $link');
+  }
+
+  Iterable<int> _activeLocalForwardPorts() {
+    final connectionId = _connectionId;
+    final session = connectionId == null
+        ? _sessionController.observedSession
+        : ref.read(activeSessionsProvider.notifier).getSession(connectionId);
+    return session?.activeTunnels
+            .where((tunnel) => tunnel.isLocal)
+            .map((tunnel) => tunnel.localPort) ??
+        const <int>[];
   }
 
   Future<void> _openTerminalFilePath(String path) =>

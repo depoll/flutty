@@ -30,6 +30,9 @@ abstract final class Routes {
   /// Port forwards route.
   static const portForwards = 'port-forwards';
 
+  /// Embedded port-forward browser route.
+  static const portForwardBrowser = 'port-forward-browser';
+
   /// Settings route.
   static const settings = 'settings';
 

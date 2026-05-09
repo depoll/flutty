@@ -12,6 +12,7 @@ import '../presentation/screens/hosts_screen.dart';
 import '../presentation/screens/key_add_screen.dart';
 import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
+import '../presentation/screens/port_forward_browser_screen.dart';
 import '../presentation/screens/port_forward_edit_screen.dart';
 import '../presentation/screens/port_forwards_screen.dart';
 import '../presentation/screens/settings_screen.dart';
@@ -207,6 +208,28 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final portForwardId = int.tryParse(state.pathParameters['id'] ?? '');
           return PortForwardEditScreen(portForwardId: portForwardId);
+        },
+      ),
+      GoRoute(
+        path: '/port-forwards/browser',
+        name: Routes.portForwardBrowser,
+        pageBuilder: (context, state) {
+          final uri = Uri.tryParse(state.uri.queryParameters['url'] ?? '');
+          if (uri == null || uri.host.isEmpty) {
+            return _buildSlideUpPage<String>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid browser URL')),
+              ),
+            );
+          }
+          return _buildSlideUpPage<String>(
+            key: state.pageKey,
+            child: PortForwardBrowserScreen(
+              initialUri: uri,
+              title: state.uri.queryParameters['title'],
+            ),
+          );
         },
       ),
       GoRoute(

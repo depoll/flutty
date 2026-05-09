@@ -1,10 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/routes.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../../domain/services/port_forward_browser_service.dart';
+import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 
 /// Screen displaying list of port forwards grouped by host.
@@ -94,9 +99,92 @@ class PortForwardsScreen extends ConsumerWidget {
           portForwards: forwards,
           onEdit: (pf) => context.push('/port-forwards/edit/${pf.id}'),
           onDelete: (pf) => _deletePortForward(context, ref, pf),
+          onOpenBrowser: (pf) =>
+              unawaited(_openPortForwardBrowser(context, ref, pf)),
         );
       },
     );
+  }
+
+  Future<void> _openPortForwardBrowser(
+    BuildContext context,
+    WidgetRef ref,
+    PortForward portForward,
+  ) async {
+    if (!canOpenPortForwardInBrowser(portForward)) {
+      _showPortForwardMessage(
+        context,
+        'Only local port forwards can open in the browser.',
+      );
+      return;
+    }
+
+    final browserUri = buildPortForwardBrowserUri(portForward);
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final existingConnectionId =
+        sessionsNotifier.getConnectionForActiveLocalForward(portForward.id) ??
+        sessionsNotifier.getPreferredConnectionForHost(portForward.hostId);
+
+    final int connectionId;
+    if (existingConnectionId == null) {
+      _showPortForwardMessage(
+        context,
+        'Connecting to start "${portForward.name}"…',
+      );
+      final result = await sessionsNotifier.connect(portForward.hostId);
+      if (!context.mounted) return;
+      final resultConnectionId = result.connectionId;
+      if (!result.success || resultConnectionId == null) {
+        _showPortForwardMessage(
+          context,
+          result.error ?? 'Could not connect to start the port forward.',
+        );
+        return;
+      }
+      connectionId = resultConnectionId;
+    } else {
+      connectionId = existingConnectionId;
+    }
+
+    final session = sessionsNotifier.getSession(connectionId);
+    if (session == null) {
+      _showPortForwardMessage(
+        context,
+        'Could not find the active SSH session.',
+      );
+      return;
+    }
+
+    final started = await session.startLocalForward(
+      portForwardId: portForward.id,
+      localHost: portForward.localHost,
+      localPort: portForward.localPort,
+      remoteHost: portForward.remoteHost,
+      remotePort: portForward.remotePort,
+    );
+    if (!context.mounted) return;
+    if (!started) {
+      _showPortForwardMessage(
+        context,
+        'Could not start "${portForward.name}". Check the local port.',
+      );
+      return;
+    }
+
+    await context.pushNamed<void>(
+      Routes.portForwardBrowser,
+      queryParameters: {
+        'url': browserUri.toString(),
+        'title': portForward.name,
+      },
+    );
+  }
+
+  void _showPortForwardMessage(BuildContext context, String message) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _deletePortForward(
@@ -143,12 +231,14 @@ class _HostGroup extends StatelessWidget {
     required this.portForwards,
     required this.onEdit,
     required this.onDelete,
+    required this.onOpenBrowser,
   });
 
   final String hostLabel;
   final List<PortForward> portForwards;
   final void Function(PortForward) onEdit;
   final void Function(PortForward) onDelete;
+  final void Function(PortForward) onOpenBrowser;
 
   @override
   Widget build(BuildContext context) {
@@ -184,6 +274,7 @@ class _HostGroup extends StatelessWidget {
             child: _PortForwardListTile(
               portForward: pf,
               onTap: () => onEdit(pf),
+              onOpenBrowser: () => onOpenBrowser(pf),
             ),
           ),
         ),
@@ -194,10 +285,15 @@ class _HostGroup extends StatelessWidget {
 }
 
 class _PortForwardListTile extends StatelessWidget {
-  const _PortForwardListTile({required this.portForward, required this.onTap});
+  const _PortForwardListTile({
+    required this.portForward,
+    required this.onTap,
+    required this.onOpenBrowser,
+  });
 
   final PortForward portForward;
   final VoidCallback onTap;
+  final VoidCallback onOpenBrowser;
 
   @override
   Widget build(BuildContext context) {
@@ -229,6 +325,12 @@ class _PortForwardListTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (isLocal)
+            IconButton(
+              tooltip: 'Open in app browser',
+              icon: const Icon(Icons.open_in_browser),
+              onPressed: onOpenBrowser,
+            ),
           if (portForward.autoStart)
             Tooltip(
               message: 'Auto-start enabled',

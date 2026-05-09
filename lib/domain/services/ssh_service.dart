@@ -2945,6 +2945,31 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     return activeConnections.first.connectionId;
   }
 
+  /// Get the newest active connection that already owns a local forward.
+  int? getConnectionForActiveLocalForward(int portForwardId) {
+    final activeConnections = <SshSession>[];
+    for (final session in _sshService.sessions.values) {
+      final connectionState = state[session.connectionId];
+      if (connectionState == null ||
+          connectionState == SshConnectionState.error ||
+          connectionState == SshConnectionState.disconnected) {
+        continue;
+      }
+
+      final hasLocalForward = session.activeTunnels.any(
+        (tunnel) => tunnel.portForwardId == portForwardId && tunnel.isLocal,
+      );
+      if (hasLocalForward) {
+        activeConnections.add(session);
+      }
+    }
+    if (activeConnections.isEmpty) {
+      return null;
+    }
+    activeConnections.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return activeConnections.first.connectionId;
+  }
+
   /// Get all active connection metadata for UI rendering.
   List<ActiveConnection> getActiveConnections() {
     final connections = <ActiveConnection>[];
