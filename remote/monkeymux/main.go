@@ -31,20 +31,22 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.17"
-	defaultColumns           = 80
-	defaultRows              = 24
-	maxTitleBytes            = 160
-	oscBufferLimitBytes      = 4096
-	processMetadataTimeout   = 500 * time.Millisecond
-	processMetadataInterval  = 500 * time.Millisecond
-	runCommandOutputMaxBytes = 256 * 1024
-	runCommandTimeout        = 8 * time.Second
-	socketTimeout            = 2 * time.Second
-	windowUpdateMinInterval  = 750 * time.Millisecond
-	windowHistoryLimitBytes  = 128 * 1024
-	windowReplayLimitBytes   = 32 * 1024
-	csiBufferLimitBytes      = 64
+	monkeyMuxVersion                = "0.1.18"
+	defaultColumns                  = 80
+	defaultRows                     = 24
+	maxTitleBytes                   = 160
+	oscBufferLimitBytes             = 4096
+	processMetadataTimeout          = 500 * time.Millisecond
+	processMetadataInterval         = 500 * time.Millisecond
+	defaultRunCommandOutputMaxBytes = 256 * 1024
+	maxRunCommandOutputMaxBytes     = 8 * 1024 * 1024
+	defaultRunCommandTimeout        = 8 * time.Second
+	maxRunCommandTimeout            = 30 * time.Second
+	socketTimeout                   = 2 * time.Second
+	windowUpdateMinInterval         = 750 * time.Millisecond
+	windowHistoryLimitBytes         = 128 * 1024
+	windowReplayLimitBytes          = 32 * 1024
+	csiBufferLimitBytes             = 64
 )
 
 const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
@@ -62,6 +64,7 @@ var capabilities = []string{
 	"active-context",
 	"inject-input",
 	"run-command",
+	"run-command-options",
 	"client-scoped-run-command",
 	"focus-hint",
 	"theme-hint",
@@ -104,6 +107,8 @@ type controlMessage struct {
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
+	TimeoutMs   int      `json:"timeoutMs,omitempty"`
+	MaxOutput   int      `json:"maxOutputBytes,omitempty"`
 }
 
 type controlResponse struct {
@@ -197,6 +202,11 @@ type controlClient struct {
 	commandsMu sync.Mutex
 	commands   map[string]context.CancelFunc
 	closed     bool
+}
+
+type runCommandOptions struct {
+	timeout        time.Duration
+	maxOutputBytes int
 }
 
 func main() {
@@ -967,6 +977,44 @@ func newControlClient(conn net.Conn) *controlClient {
 	return client
 }
 
+func defaultRunCommandOptions() runCommandOptions {
+	return runCommandOptions{
+		timeout:        defaultRunCommandTimeout,
+		maxOutputBytes: defaultRunCommandOutputMaxBytes,
+	}
+}
+
+func runCommandOptionsFromRequest(request controlMessage) runCommandOptions {
+	options := defaultRunCommandOptions()
+	if request.TimeoutMs > 0 {
+		options.timeout = clampDuration(
+			time.Duration(request.TimeoutMs)*time.Millisecond,
+			maxRunCommandTimeout,
+		)
+	}
+	if request.MaxOutput > 0 {
+		options.maxOutputBytes = clampInt(
+			request.MaxOutput,
+			maxRunCommandOutputMaxBytes,
+		)
+	}
+	return options
+}
+
+func clampDuration(value time.Duration, maximum time.Duration) time.Duration {
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func clampInt(value int, maximum int) int {
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
 func (c *controlClient) send(response controlResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1022,8 +1070,14 @@ func (c *controlClient) close() {
 
 func (c *controlClient) runShellCommandAsync(s *muxServer, request controlMessage) {
 	commandKey := fmt.Sprintf("%s/%d", request.ID, time.Now().UnixNano())
+	options := runCommandOptionsFromRequest(request)
 	go func() {
-		output, exitCode, err := c.runShellCommand(s, commandKey, request.Command)
+		output, exitCode, err := c.runShellCommand(
+			s,
+			commandKey,
+			request.Command,
+			options,
+		)
 		if err != nil {
 			c.sendError(request, err)
 			return
@@ -1043,15 +1097,16 @@ func (c *controlClient) runShellCommand(
 	s *muxServer,
 	commandKey string,
 	command string,
+	options runCommandOptions,
 ) (string, int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	if !c.trackCommand(commandKey, cancel) {
 		cancel()
 		return "", 0, errRunCommandClientClosed
 	}
 	defer c.untrackCommand(commandKey)
 	defer cancel()
-	return s.runShellCommandContext(ctx, command)
+	return s.runShellCommandContext(ctx, command, options)
 }
 
 func (s *muxServer) broadcast(response controlResponse) {
@@ -1119,14 +1174,16 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 }
 
 func (s *muxServer) runShellCommand(command string) (string, int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	options := defaultRunCommandOptions()
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
-	return s.runShellCommandContext(ctx, command)
+	return s.runShellCommandContext(ctx, command, options)
 }
 
 func (s *muxServer) runShellCommandContext(
 	ctx context.Context,
 	command string,
+	options runCommandOptions,
 ) (string, int, error) {
 	s.mu.Lock()
 	cwd := ""
@@ -1138,7 +1195,7 @@ func (s *muxServer) runShellCommandContext(
 	shell := commandShellPath()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	output := newBoundedCommandOutput(runCommandOutputMaxBytes, cancel)
+	output := newBoundedCommandOutput(options.maxOutputBytes, cancel)
 	cmd := exec.Command(shell, "-c", command)
 	if cwd != "" {
 		cmd.Dir = cwd

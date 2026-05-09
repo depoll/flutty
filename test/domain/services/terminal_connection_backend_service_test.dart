@@ -114,6 +114,8 @@ void main() {
             'dev',
             'printf hi',
             priority: SshExecPriority.low,
+            timeout: any(named: 'timeout'),
+            maxOutputBytes: any(named: 'maxOutputBytes'),
           ),
         ).thenAnswer(
           (_) async =>
@@ -136,6 +138,8 @@ void main() {
             'dev',
             'printf hi',
             priority: SshExecPriority.low,
+            timeout: any(named: 'timeout'),
+            maxOutputBytes: any(named: 'maxOutputBytes'),
           ),
         ).called(1);
       },

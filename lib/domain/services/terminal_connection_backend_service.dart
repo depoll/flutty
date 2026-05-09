@@ -56,6 +56,8 @@ abstract interface class TerminalConnectionBackend {
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
     String? workingDirectory,
+    Duration? timeout,
+    int? maxOutputBytes,
   });
 
   /// Refreshes visible clients after a theme change.
@@ -194,6 +196,8 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
     String? workingDirectory,
+    Duration? timeout,
+    int? maxOutputBytes,
   }) => _commandRunner.run(
     _session,
     command,
@@ -317,6 +321,8 @@ class _MultiplexedTerminalConnectionBackend
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
     String? workingDirectory,
+    Duration? timeout,
+    int? maxOutputBytes,
   }) {
     final commandToRun = _wrapClientCommandWorkingDirectory(
       command,
@@ -329,6 +335,8 @@ class _MultiplexedTerminalConnectionBackend
         _sessionName,
         commandToRun,
         priority: priority,
+        timeout: timeout,
+        maxOutputBytes: maxOutputBytes,
       );
     }
     return _commandRunner.run(_session, commandToRun, priority: priority);
