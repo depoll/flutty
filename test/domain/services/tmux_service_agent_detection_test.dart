@@ -126,6 +126,10 @@ void main() {
       expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
       expect(command, contains('lock_rows='));
       expect(command, contains('inuse.*.lock'));
+      expect(command, contains('flutty_lsof_session_match'));
+      expect(command, contains('.claude'));
+      expect(command, contains('.codex'));
+      expect(command, contains('.gemini'));
       expect(command, contains(r'awk -F "$sep" -v wanted="$pid"'));
       expect(command, contains('workspace.yaml'));
       expect(command, contains(r'if [ -d "$state_dir" ]; then'));
@@ -148,6 +152,43 @@ void main() {
       expect(metadata[42]?.sessionId, 'session-1');
       expect(metadata[42]?.title, 'User named Copilot session');
     });
+
+    test('parses live metadata for every supported agent tool', () {
+      const sep = tmuxWindowFieldSeparator;
+
+      final metadata = parseAgentActiveSessionMetadataOutput(
+        'claude${sep}claude-1${sep}501${sep}42${sep}medium$sep\n'
+        'codex${sep}codex-1${sep}502${sep}43${sep}medium$sep\n'
+        'gemini${sep}gemini-1${sep}503${sep}44${sep}medium$sep\n'
+        'opencode${sep}opencode-1${sep}504${sep}45${sep}medium$sep\n'
+        'copilot${sep}copilot-1${sep}505${sep}46${sep}medium${sep}Title\n',
+        const {42, 43, 44, 45, 46},
+      );
+
+      expect(metadata[42]?.tool, AgentLaunchTool.claudeCode);
+      expect(metadata[43]?.tool, AgentLaunchTool.codex);
+      expect(metadata[44]?.tool, AgentLaunchTool.geminiCli);
+      expect(metadata[45]?.tool, AgentLaunchTool.openCode);
+      expect(metadata[46]?.tool, AgentLaunchTool.copilotCli);
+      expect(metadata[46]?.title, 'Title');
+      expect(metadata[46]?.confidence, AgentSessionConfidence.medium);
+    });
+
+    test(
+      'prefers higher confidence when multiple matches exist for a pane',
+      () {
+        const sep = tmuxWindowFieldSeparator;
+
+        final metadata = parseAgentActiveSessionMetadataOutput(
+          'claude${sep}inferred${sep}501${sep}42${sep}medium$sep\n'
+          'claude${sep}explicit${sep}502${sep}42${sep}high$sep\n',
+          const {42},
+        );
+
+        expect(metadata[42]?.sessionId, 'explicit');
+        expect(metadata[42]?.confidence, AgentSessionConfidence.high);
+      },
+    );
 
     test('forces refresh when a Copilot tmux title changes', () {
       const existing = TmuxWindow(
