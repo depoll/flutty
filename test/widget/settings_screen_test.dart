@@ -235,6 +235,38 @@ void main() {
       );
     });
 
+    testWidgets('toggles forwarded localhost browser from terminal settings', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Forwarded localhost browser'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      final tile = find.widgetWithText(
+        SwitchListTile,
+        'Forwarded localhost browser',
+      );
+      expect(tile, findsOneWidget);
+
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+
+      expect(
+        await SettingsService(
+          db,
+        ).getBool(SettingKeys.portForwardBrowserLinks, defaultValue: true),
+        isFalse,
+      );
+    });
+
     testWidgets('shows active subscription state when Pro is unlocked', (
       tester,
     ) async {

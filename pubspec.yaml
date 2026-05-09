@@ -52,6 +52,7 @@ dependencies:
   flutter_svg: ^2.2.4
   google_fonts: ^8.1.0
   flutter_local_notifications: ^21.0.0
+  webview_flutter: ^4.13.1
   
   # Utilities
   uuid: ^4.5.3
