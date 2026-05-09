@@ -3,6 +3,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 
 void main() {
@@ -98,6 +99,79 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+  });
+
+  group('MonkeyMux agent metadata', () {
+    test('refreshes metadata for every supported agent pane', () {
+      const windows = [
+        TmuxWindow(
+          index: 0,
+          name: 'Codex',
+          isActive: true,
+          currentCommand: 'codex',
+          panePid: 42,
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'shell',
+          isActive: false,
+          currentCommand: 'zsh',
+          panePid: 43,
+        ),
+      ];
+
+      expect(shouldRefreshMonkeyMuxAgentMetadataForTesting(windows), isTrue);
+      expect(
+        shouldRefreshMonkeyMuxAgentMetadataForTesting(const [
+          TmuxWindow(
+            index: 1,
+            name: 'shell',
+            isActive: false,
+            currentCommand: 'zsh',
+            panePid: 43,
+          ),
+        ]),
+        isFalse,
+      );
+    });
+
+    test('applies all-agent metadata with confidence to matching panes', () {
+      const sep = tmuxWindowFieldSeparator;
+      const windows = [
+        TmuxWindow(
+          index: 0,
+          name: 'Codex',
+          isActive: true,
+          currentCommand: 'codex',
+          panePid: 42,
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'Gemini',
+          isActive: false,
+          currentCommand: 'gemini',
+          panePid: 43,
+        ),
+      ];
+
+      final enriched = applyMonkeyMuxAgentMetadataForTesting(
+        windows,
+        'codex${sep}codex-session${sep}501${sep}42${sep}medium$sep\n'
+        'gemini${sep}gemini-session${sep}502${sep}43${sep}medium${sep}Gemini title\n',
+      );
+
+      expect(enriched[0].activeAgentSessionId, 'codex-session');
+      expect(
+        enriched[0].activeAgentSessionConfidence,
+        AgentSessionConfidence.medium,
+      );
+      expect(enriched[1].activeAgentSessionId, 'gemini-session');
+      expect(enriched[1].agentSessionTitle, 'Gemini title');
+      expect(
+        enriched[1].activeAgentSessionConfidence,
+        AgentSessionConfidence.medium,
+      );
     });
   });
 }

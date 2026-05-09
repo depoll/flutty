@@ -17,6 +17,13 @@ import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'tmux_service.dart';
 
+typedef _MonkeyMuxAgentSessionMetadata = ({
+  AgentLaunchTool tool,
+  String sessionId,
+  String? title,
+  AgentSessionConfidence confidence,
+});
+
 /// MonkeyMux-backed implementation of [RemoteMultiplexerService].
 final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
   (ref) =>
@@ -415,14 +422,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     List<TmuxWindow> windows,
   ) async {
-    final panePids = windows
-        .where(
-          (window) =>
-              window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-              window.panePid != null,
-        )
-        .map((window) => window.panePid!)
-        .toSet();
+    final panePids = _monkeyMuxAgentPanePids(windows);
     if (panePids.isEmpty) {
       return windows;
     }
@@ -430,28 +430,16 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     try {
       final response = await _runControlCommand(session, sessionName, {
         'type': 'run_command',
-        'command': buildCopilotActiveSessionMetadataCommand(panePids),
+        'command': buildAgentActiveSessionMetadataCommand(panePids),
       }, priority: SshExecPriority.low);
-      final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
+      final metadataByPanePid = parseAgentActiveSessionMetadataOutput(
         response.data ?? '',
         panePids,
       );
       if (metadataByPanePid.isEmpty) {
         return windows;
       }
-      return windows
-          .map((window) {
-            final panePid = window.panePid;
-            final metadata = panePid == null
-                ? null
-                : metadataByPanePid[panePid];
-            if (metadata == null) return window;
-            return window.copyWith(
-              activeAgentSessionId: metadata.sessionId,
-              agentSessionTitle: metadata.title,
-            );
-          })
-          .toList(growable: false);
+      return _applyMonkeyMuxAgentMetadataToWindows(windows, metadataByPanePid);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.agent',
@@ -471,11 +459,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     _MonkeyMuxWatchKey key,
     List<TmuxWindow> windows,
   ) {
-    if (!windows.any(
-      (window) =>
-          window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-          window.panePid != null,
-    )) {
+    if (_monkeyMuxAgentPanePids(windows).isEmpty) {
       return;
     }
     if (_agentMetadataRequests.containsKey(key)) {
@@ -1034,10 +1018,54 @@ TmuxWindow? _windowFromJson(Object? value) {
   );
 }
 
+Set<int> _monkeyMuxAgentPanePids(Iterable<TmuxWindow> windows) => windows
+    .where(
+      (window) => window.foregroundAgentTool != null && window.panePid != null,
+    )
+    .map((window) => window.panePid!)
+    .toSet();
+
+List<TmuxWindow> _applyMonkeyMuxAgentMetadataToWindows(
+  List<TmuxWindow> windows,
+  Map<int, _MonkeyMuxAgentSessionMetadata> metadataByPanePid,
+) => windows
+    .map((window) {
+      final panePid = window.panePid;
+      final metadata = panePid == null ? null : metadataByPanePid[panePid];
+      if (metadata == null || metadata.tool != window.foregroundAgentTool) {
+        return window;
+      }
+      return window.copyWith(
+        activeAgentSessionId: metadata.sessionId,
+        agentSessionTitle: metadata.title,
+        activeAgentSessionConfidence: metadata.confidence,
+      );
+    })
+    .toList(growable: false);
+
 /// Parses a MonkeyMux window snapshot for protocol regression tests.
 @visibleForTesting
 TmuxWindow? parseMonkeyMuxWindowSnapshotForTesting(Object? value) =>
     _windowFromJson(value);
+
+/// Returns whether a MonkeyMux window list contains panes needing agent probes.
+@visibleForTesting
+bool shouldRefreshMonkeyMuxAgentMetadataForTesting(
+  Iterable<TmuxWindow> windows,
+) => _monkeyMuxAgentPanePids(windows).isNotEmpty;
+
+/// Applies live agent metadata to MonkeyMux windows for regression tests.
+@visibleForTesting
+List<TmuxWindow> applyMonkeyMuxAgentMetadataForTesting(
+  List<TmuxWindow> windows,
+  String output,
+) {
+  final panePids = _monkeyMuxAgentPanePids(windows);
+  return _applyMonkeyMuxAgentMetadataToWindows(
+    windows,
+    parseAgentActiveSessionMetadataOutput(output, panePids),
+  );
+}
 
 /// Parses a MonkeyMux attach-state response for protocol regression tests.
 @visibleForTesting
