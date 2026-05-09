@@ -13,6 +13,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
+import '../models/remote_multiplexer.dart';
 import '../models/terminal_theme.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
@@ -1921,6 +1922,12 @@ class SshSession {
   /// Session-specific terminal font size override.
   double? terminalFontSize;
 
+  /// The terminal multiplexer backend currently attached in this session.
+  RemoteMuxBackend? remoteMuxBackend;
+
+  /// The terminal multiplexer session name currently attached in this session.
+  String? remoteMuxSessionName;
+
   /// Whether OSC 52 clipboard sharing is enabled for this session.
   bool clipboardSharingEnabled;
 
@@ -2047,8 +2054,14 @@ class SshSession {
       .toList();
 
   /// Get or create a shell session.
-  Future<SSHSession> getShell({SSHPtyConfig? pty, bool forceNew = false}) =>
-      _runtime.getShell(pty: pty, forceNew: forceNew);
+  ///
+  /// When [command] is provided for a new shell, the foreground PTY runs that
+  /// command directly instead of opening an interactive login shell first.
+  Future<SSHSession> getShell({
+    SSHPtyConfig? pty,
+    bool forceNew = false,
+    String? command,
+  }) => _runtime.getShell(pty: pty, forceNew: forceNew, command: command);
 
   /// Shell stdout as a broadcast stream for screen re-attachment.
   Stream<String> get shellStdoutStream => _runtime.shellStdoutStream;
@@ -2596,6 +2609,8 @@ class ActiveConnection {
     this.workingDirectory,
     this.shellStatus,
     this.lastExitCode,
+    this.remoteMuxBackend,
+    this.remoteMuxSessionName,
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
   });
@@ -2632,6 +2647,12 @@ class ActiveConnection {
 
   /// The latest command exit code emitted through shell integration.
   final int? lastExitCode;
+
+  /// The terminal multiplexer backend attached in this connection, if known.
+  final RemoteMuxBackend? remoteMuxBackend;
+
+  /// The terminal multiplexer session attached in this connection, if known.
+  final String? remoteMuxSessionName;
 
   /// Session-specific light theme override.
   final String? terminalThemeLightId;
@@ -2878,6 +2899,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       workingDirectory: session.workingDirectory,
       shellStatus: session.shellStatus,
       lastExitCode: session.lastExitCode,
+      remoteMuxBackend: session.remoteMuxBackend,
+      remoteMuxSessionName: session.remoteMuxSessionName,
       terminalThemeLightId: session.terminalThemeLightId,
       terminalThemeDarkId: session.terminalThemeDarkId,
     );
@@ -2945,6 +2968,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           workingDirectory: session.workingDirectory,
           shellStatus: session.shellStatus,
           lastExitCode: session.lastExitCode,
+          remoteMuxBackend: session.remoteMuxBackend,
+          remoteMuxSessionName: session.remoteMuxSessionName,
           terminalThemeLightId: session.terminalThemeLightId,
           terminalThemeDarkId: session.terminalThemeDarkId,
         ),

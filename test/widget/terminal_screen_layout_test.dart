@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -442,6 +443,7 @@ void main() {
       expect(
         shouldPreserveTmuxBarSnapshotOnUpdate(
           sessionChanged: false,
+          backendChanged: false,
           recoveryChanged: true,
         ),
         isTrue,
@@ -449,6 +451,7 @@ void main() {
       expect(
         shouldPreserveTmuxBarSnapshotOnUpdate(
           sessionChanged: true,
+          backendChanged: false,
           recoveryChanged: true,
         ),
         isFalse,
@@ -456,9 +459,35 @@ void main() {
       expect(
         shouldPreserveTmuxBarSnapshotOnUpdate(
           sessionChanged: false,
+          backendChanged: true,
+          recoveryChanged: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveTmuxBarSnapshotOnUpdate(
+          sessionChanged: false,
+          backendChanged: false,
           recoveryChanged: false,
         ),
         isFalse,
+      );
+    });
+
+    test('defaults missing remote mux backend to automatic startup', () {
+      expect(resolveRemoteMuxStartupBackend(null), RemoteMuxBackend.auto);
+      expect(resolveRemoteMuxStartupBackend(''), RemoteMuxBackend.auto);
+      expect(
+        resolveRemoteMuxStartupBackend(RemoteMuxBackend.tmux.storageValue),
+        RemoteMuxBackend.tmux,
+      );
+      expect(
+        resolveRemoteMuxStartupBackend(RemoteMuxBackend.monkeyMux.storageValue),
+        RemoteMuxBackend.monkeyMux,
+      );
+      expect(
+        resolveRemoteMuxStartupBackend(null, tmuxExtraFlags: '-S /tmp/tmux'),
+        RemoteMuxBackend.tmux,
       );
     });
 

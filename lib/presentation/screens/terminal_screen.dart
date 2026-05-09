@@ -26,6 +26,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -36,12 +37,16 @@ import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/monkeymux_installer_service.dart';
+import '../../domain/services/monkeymux_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
+import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/shell_completion_service.dart';
 import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_connection_backend_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/terminal_wake_lock_service.dart';
@@ -345,8 +350,22 @@ String? resolveOwnedTmuxDetectionExistingSessionName({
 @visibleForTesting
 bool shouldPreserveTmuxBarSnapshotOnUpdate({
   required bool sessionChanged,
+  required bool backendChanged,
   required bool recoveryChanged,
-}) => recoveryChanged && !sessionChanged;
+}) => recoveryChanged && !sessionChanged && !backendChanged;
+
+/// Resolves a stored remote multiplexer backend for startup.
+///
+/// Missing values intentionally use automatic MonkeyMux-first behavior unless a
+/// legacy tmux host has custom tmux flags that MonkeyMux cannot honor.
+@visibleForTesting
+RemoteMuxBackend resolveRemoteMuxStartupBackend(
+  String? storedBackend, {
+  String? tmuxExtraFlags,
+}) => resolveRemoteMuxBackendForStartup(
+  storedBackend: storedBackend,
+  tmuxExtraFlags: tmuxExtraFlags,
+);
 
 /// Resolves the working directory to use when creating a new tmux window.
 @visibleForTesting
@@ -752,11 +771,37 @@ final _oscEscapeSequencePattern = RegExp(
 );
 final _csiEscapeSequencePattern = RegExp('\x1B\\[[0-?]*[ -/]*[@-~]');
 final _singleCharEscapeSequencePattern = RegExp('\x1B[@-_]');
+final _terminalMouseReportOutputPattern = RegExp(
+  '^(?:\x1B\\[<\\d+;\\d+;\\d+[mM])+\$',
+);
+final _terminalFocusReportOutputPattern = RegExp('^(?:\x1B\\[[IO])+\$');
 
 String _stripTerminalPromptEscapeSequences(String text) => text
     .replaceAll(_oscEscapeSequencePattern, '')
     .replaceAll(_csiEscapeSequencePattern, '')
     .replaceAll(_singleCharEscapeSequencePattern, '');
+
+bool _isTerminalMouseOrFocusReportOutput(String output) =>
+    _terminalMouseReportOutputPattern.hasMatch(output) ||
+    _terminalFocusReportOutputPattern.hasMatch(output);
+
+bool _isShellCommandName(String? command) {
+  final trimmed = command?.trim();
+  if (trimmed == null || trimmed.isEmpty) return false;
+  final token = trimmed.split(RegExp(r'\s+')).first;
+  final basename = token.split(RegExp(r'[\\/]')).last.toLowerCase();
+  switch (basename.replaceFirst(RegExp(r'\.exe$'), '')) {
+    case 'sh':
+    case 'bash':
+    case 'zsh':
+    case 'fish':
+    case 'dash':
+    case 'ksh':
+      return true;
+    default:
+      return false;
+  }
+}
 
 final _terminalSensitivePromptPattern = RegExp(
   r'\b(?:password|passphrase|pin|otp|one[- ]time(?:\s+password)?|verification(?:\s+code)?|authentication(?:\s+code)?|auth(?:\s+code)?|security(?:\s+code)?)\b[^\r\n]{0,160}[:：]\s*$',
@@ -949,6 +994,12 @@ typedef _TerminalPathSnapshotAnalysis = ({
   _NormalizedTerminalPathSnapshot normalizedSnapshot,
 });
 typedef _VerifiedTerminalPath = ({String terminalPath, String resolvedPath});
+typedef _PreparedRemoteMuxCommand = ({
+  RemoteMuxBackend backend,
+  String command,
+  String sessionName,
+  AgentLaunchTool? tool,
+});
 
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
@@ -2621,6 +2672,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   String? _tmuxCurrentCommand;
+  int _muxPaneContextRefreshGeneration = 0;
+  DateTime? _muxPaneContextRefreshedAt;
   DateTime? _shellCompletionTmuxContextRefreshedAt;
   int? _shellCompletionTmuxContextConnectionId;
   String? _shellCompletionTmuxContextSessionName;
@@ -2781,6 +2834,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
   late final TmuxService _tmuxService;
+  late final RemoteMultiplexerService _tmuxMultiplexerService;
+  late final MonkeyMuxService _monkeyMuxService;
+  late final MonkeyMuxInstallerService _monkeyMuxInstallerService;
+  late final TerminalConnectionBackendService _terminalBackendService;
+  RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -2981,6 +3039,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
     _tmuxService = ref.read(tmuxServiceProvider);
+    _tmuxMultiplexerService = TmuxRemoteMultiplexerService(_tmuxService);
+    _monkeyMuxService = ref.read(monkeyMuxServiceProvider);
+    _monkeyMuxInstallerService = ref.read(monkeyMuxInstallerServiceProvider);
+    _terminalBackendService = ref.read(
+      terminalConnectionBackendServiceProvider,
+    );
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -3332,6 +3396,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       });
     }
     if (_isTmuxActive && tmuxStateBelongsToSession) {
+      if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'monkeymux_refresh_requested',
+          fields: {
+            'reason': reason,
+            'connectionId': session.connectionId,
+            'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
+          },
+        );
+        _queueTmuxTerminalThemeRefresh(
+          _TmuxTerminalThemeRefreshRequest(
+            theme: theme,
+            session: session,
+            sessionName: _tmuxSessionName!,
+            refreshGeneration: refreshGeneration,
+            reason: reason,
+            extraFlags: _activeTmuxExtraFlags,
+          ),
+        );
+        return;
+      }
       _refreshTmuxClientAfterTerminalThemeChange(
         theme: theme,
         session: session,
@@ -3479,6 +3565,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.isUsingAltBuffer ||
       _terminal.mouseMode != MouseMode.none;
 
+  bool _shouldSuppressMonkeyMuxTerminalControlInput(String output) {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return false;
+    }
+    if (!_isTerminalMouseOrFocusReportOutput(output)) {
+      return false;
+    }
+    final command = _tmuxCurrentCommand?.trim();
+    if (command != null && agentLaunchToolForCommandName(command) != null) {
+      return false;
+    }
+    return _isShellCommandName(command);
+  }
+
   /// Whether outer-tmux theme/focus reports are safe to push through the SSH
   /// stream right now.
   ///
@@ -3521,6 +3621,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
       return;
     }
+    if (_activeMuxBackend != RemoteMuxBackend.tmux) {
+      return;
+    }
     _cancelTerminalThemeRefreshTimers();
     final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
     DiagnosticsLogService.instance.info(
@@ -3548,7 +3651,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
-    final extraFlags = _host?.tmuxExtraFlags;
+    final extraFlags = _activeTmuxExtraFlags;
     _queueTmuxTerminalThemeRefresh(
       _TmuxTerminalThemeRefreshRequest(
         theme: theme,
@@ -3602,7 +3705,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName: tmuxSessionName,
         refreshGeneration: refreshGeneration,
         reason: reason,
-        extraFlags: _host?.tmuxExtraFlags,
+        extraFlags: _activeTmuxExtraFlags,
         sendOuterFocusReport: true,
         sendOuterThemeReports: true,
       ),
@@ -3611,10 +3714,68 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _refreshMuxPaneContextAfterWindowStateChange(session, sessionName);
+      return;
+    }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
+    );
+  }
+
+  void _refreshMuxPaneContextAfterWindowStateChange(
+    SshSession session,
+    String sessionName,
+  ) {
+    final refreshedAt = _muxPaneContextRefreshedAt;
+    if (refreshedAt != null &&
+        DateTime.now().difference(refreshedAt) <
+            const Duration(milliseconds: 300)) {
+      return;
+    }
+    _muxPaneContextRefreshedAt = DateTime.now();
+    final refreshGeneration = ++_muxPaneContextRefreshGeneration;
+    unawaited(
+      Future<TmuxPaneContext?>.sync(
+            () => _activeTerminalConnectionBackend(
+              session,
+            ).currentPaneContext(priority: SshExecPriority.low),
+          )
+          .then((context) {
+            if (!mounted ||
+                refreshGeneration != _muxPaneContextRefreshGeneration ||
+                _tmuxStateConnectionId != session.connectionId ||
+                _tmuxSessionName != sessionName) {
+              return;
+            }
+            final currentPath = context?.currentPath?.trim();
+            final currentCommand = context?.currentCommand?.trim();
+            if ((currentPath == null || currentPath == _tmuxWorkingDirectory) &&
+                (currentCommand == null ||
+                    currentCommand == _tmuxCurrentCommand)) {
+              return;
+            }
+            setState(() {
+              if (currentPath != null && currentPath.isNotEmpty) {
+                _tmuxWorkingDirectory = currentPath;
+              }
+              if (currentCommand != null && currentCommand.isNotEmpty) {
+                _tmuxCurrentCommand = currentCommand;
+              }
+            });
+          })
+          .catchError((Object error) {
+            DiagnosticsLogService.instance.debug(
+              'tmux.ui',
+              'context_refresh_failed',
+              fields: {
+                'connectionId': session.connectionId,
+                'errorType': error.runtimeType,
+              },
+            );
+          }),
     );
   }
 
@@ -3627,6 +3788,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _tmuxStateConnectionId != session.connectionId ||
         _tmuxSessionName != sessionName ||
         session.terminal != _terminal) {
+      return;
+    }
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      DiagnosticsLogService.instance.debug(
+        'terminal.theme',
+        'monkeymux_window_refresh_requested',
+        fields: {'reason': reason, 'connectionId': session.connectionId},
+      );
+      final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+      _pendingTmuxWindowThemeRefreshRequest = _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: sessionName,
+        refreshGeneration: _terminalThemeRefreshGeneration,
+        reason: reason,
+        extraFlags: _activeTmuxExtraFlags,
+      );
+      if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
+        return;
+      }
+
+      late final Timer timer;
+      timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
+        _terminalThemeRefreshTimers.remove(timer);
+        if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
+          _tmuxWindowThemeRefreshDebounceTimer = null;
+        }
+        final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
+        _pendingTmuxWindowThemeRefreshRequest = null;
+        if (pendingRequest == null ||
+            _tmuxSessionName != pendingRequest.sessionName ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: pendingRequest.theme,
+              session: pendingRequest.session,
+              refreshGeneration: pendingRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        _queueTmuxTerminalThemeRefresh(pendingRequest);
+      });
+      _tmuxWindowThemeRefreshDebounceTimer = timer;
+      _terminalThemeRefreshTimers.add(timer);
       return;
     }
 
@@ -3647,7 +3850,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       refreshGeneration: _terminalThemeRefreshGeneration,
       reason: reason,
-      extraFlags: _host?.tmuxExtraFlags,
+      extraFlags: _activeTmuxExtraFlags,
       sendOuterThemeReports: true,
     );
     if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
@@ -3800,7 +4003,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     var outerRefreshReason = request.reason;
     var tmuxCommandDeferred = false;
     try {
-      final tmux = ref.read(tmuxServiceProvider);
+      final mux = _activeRemoteMultiplexerService;
       DiagnosticsLogService.instance.info(
         'terminal.theme',
         'tmux_refresh_start',
@@ -3811,7 +4014,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'terminalViewReady': _terminalViewKey.currentState != null,
         },
       );
-      if (tmux.isExecChannelCoolingDown(request.session)) {
+      if (mux.isExecChannelCoolingDown(request.session)) {
         DiagnosticsLogService.instance.debug(
           'terminal.theme',
           'tmux_refresh_deferred',
@@ -3823,7 +4026,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         tmuxCommandDeferred = true;
         outerRefreshReason = '${request.reason}_tmux_deferred';
       } else {
-        await tmux.refreshTerminalTheme(
+        await mux.refreshTerminalTheme(
           request.session,
           request.sessionName,
           request.theme,
@@ -4344,28 +4547,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return parsed.text;
   }
 
-  Future<String> _runRemoteCommand(SshSession session, String command) =>
-      session.runQueuedExec(() async {
-        final exec = await session.execute(command);
-        try {
-          final stdout = StringBuffer();
-          final stderr = StringBuffer();
-          final stdoutFuture = exec.stdout
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .forEach(stdout.write);
-          final stderrFuture = exec.stderr
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .forEach(stderr.write);
-          await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
-          return stdout.toString().isNotEmpty
-              ? stdout.toString()
-              : stderr.toString();
-        } finally {
-          exec.close();
-        }
-      }, priority: SshExecPriority.low);
+  Future<String> _runRemoteCommand(SshSession session, String command) async =>
+      (await _activeTerminalConnectionBackend(
+        session,
+      ).runClientCommand(command, priority: SshExecPriority.low)).output;
 
   void _handleTerminalScroll() {
     final currentOffset = _terminalScrollController.hasClients
@@ -5265,6 +5450,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // scrollback and screen buffer across screen navigations).
       final existingTerminal = session.terminal;
       if (existingTerminal != null) {
+        final existingMuxBackend = session.remoteMuxBackend;
+        if (existingMuxBackend != null) {
+          _activeMuxBackend = existingMuxBackend;
+        }
         final sharedClipboardEnabled = await ref.read(
           sharedClipboardProvider.future,
         );
@@ -5347,16 +5536,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         reason: 'open_new_terminal',
       );
 
+      final startupCommand = await _buildNewShellStartupCommand(session);
+      if (!mounted) return;
+
       _shell = await session.getShell(
         pty: SSHPtyConfig(
           width: _terminal.viewWidth,
           height: _terminal.viewHeight,
         ),
+        command: startupCommand?.command,
       );
       DiagnosticsLogService.instance.info(
         'terminal',
         'shell_opened',
-        fields: {'connectionId': session.connectionId, 'reusedTerminal': false},
+        fields: {
+          'connectionId': session.connectionId,
+          'reusedTerminal': false,
+          'hasStartupCommand': startupCommand != null,
+        },
       );
 
       _wireTerminalCallbacks(session);
@@ -5384,7 +5581,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
-      await _runAutoConnectCommand();
+      if (startupCommand == null) {
+        await _runAutoConnectCommand(session);
+      } else {
+        DiagnosticsLogService.instance.info(
+          'terminal.agent_launch',
+          'foreground_command_opened',
+          fields: {
+            'connectionId': session.connectionId,
+            'backend': startupCommand.backend.storageValue,
+            'hasTool': startupCommand.tool != null,
+            if (startupCommand.tool case final tool?) 'tool': tool.name,
+          },
+        );
+      }
 
       // Detect tmux after the auto-connect command has had time to start.
       // A small delay ensures tmux has initialized if the auto-connect
@@ -5450,6 +5660,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         data == '\n' ? '\r' : data,
       );
 
+      if (_shouldSuppressMonkeyMuxTerminalControlInput(output)) {
+        DiagnosticsLogService.instance.debug(
+          'terminal.input',
+          'monkeymux_stale_control_input_suppressed',
+          fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
       _shell?.write(utf8.encode(output));
@@ -5659,7 +5877,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _runAutoConnectCommand() async {
+  Future<void> _runAutoConnectCommand(SshSession session) async {
     final host = _host;
     final shell = _shell;
     if (host == null || shell == null) {
@@ -5671,29 +5889,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // unavailable so tmux-native navigation remains accessible.
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
-      final tmuxCommand = buildTmuxCommand(
-        sessionName: tmuxSession,
-        workingDirectory: host.tmuxWorkingDirectory,
-        extraFlags: host.tmuxExtraFlags,
+      final attachCommand = await _prepareRemoteMuxAttachCommand(
+        session,
+        host,
+        tmuxSession,
       );
-      final review = assessAutoConnectCommandExecution(
-        tmuxCommand,
-        importedNeedsReview: host.autoConnectRequiresConfirmation,
+      if (attachCommand == null) return;
+      _applyPreparedRemoteMuxCommand(session, attachCommand);
+      shell.write(
+        utf8.encode(formatAutoConnectCommandForShell(attachCommand.command)),
       );
-      if (review.requiresReview) {
-        final decision = await _reviewImportedAutoConnectCommand(review);
-        if (!mounted || decision == _AutoConnectReviewDecision.skip) {
-          return;
-        }
-        if (decision == _AutoConnectReviewDecision.trustAndRun) {
-          final updatedHost = host.copyWith(
-            autoConnectRequiresConfirmation: false,
-          );
-          await ref.read(hostRepositoryProvider).update(updatedHost);
-          _host = updatedHost;
-        }
-      }
-      shell.write(utf8.encode(formatAutoConnectCommandForShell(tmuxCommand)));
+      return;
+    }
+
+    final agentPreset = _autoConnectAgentPreset;
+    if (agentPreset != null && agentPreset.usesMonkeyMuxSession) {
+      await _runMonkeyMuxAgentLaunchCommand(session, host, agentPreset, shell);
       return;
     }
 
@@ -5798,9 +6009,358 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<_PreparedRemoteMuxCommand?> _buildNewShellStartupCommand(
+    SshSession session,
+  ) async {
+    final host = _host;
+    final agentPreset = _autoConnectAgentPreset;
+    if (host == null) {
+      return null;
+    }
+
+    final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
+    if (tmuxSession != null &&
+        tmuxSession.isNotEmpty &&
+        !host.autoConnectRequiresConfirmation &&
+        _configuredRemoteMuxBackend(host) == RemoteMuxBackend.monkeyMux) {
+      final command = await _prepareRemoteMuxAttachCommand(
+        session,
+        host,
+        tmuxSession,
+      );
+      if (command != null && command.backend == RemoteMuxBackend.monkeyMux) {
+        _applyPreparedRemoteMuxCommand(session, command);
+        return command;
+      }
+      return null;
+    }
+
+    if (agentPreset == null ||
+        !agentPreset.usesMonkeyMuxSession ||
+        host.autoConnectRequiresConfirmation) {
+      return null;
+    }
+
+    final command = await _prepareMonkeyMuxAgentLaunchCommand(
+      session,
+      host,
+      agentPreset,
+    );
+    if (command != null) {
+      _applyPreparedRemoteMuxCommand(session, command);
+    }
+    return command;
+  }
+
   String? get _initialTmuxSessionName {
     final sessionName = widget.initialTmuxSessionName?.trim();
     return sessionName == null || sessionName.isEmpty ? null : sessionName;
+  }
+
+  Future<_PreparedRemoteMuxCommand?> _prepareRemoteMuxAttachCommand(
+    SshSession session,
+    Host host,
+    String sessionName,
+  ) async {
+    final attachCommand = await _buildRemoteMuxAttachCommand(
+      session,
+      host,
+      sessionName,
+    );
+    final review = assessAutoConnectCommandExecution(
+      attachCommand.command,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return null;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+    return (
+      backend: attachCommand.backend,
+      command: attachCommand.command,
+      sessionName: sessionName,
+      tool: null,
+    );
+  }
+
+  Future<({String command, RemoteMuxBackend backend})>
+  _buildRemoteMuxAttachCommand(
+    SshSession session,
+    Host host,
+    String sessionName,
+  ) async {
+    final configuredBackend =
+        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
+    if (configuredBackend == RemoteMuxBackend.monkeyMux ||
+        configuredBackend == RemoteMuxBackend.auto) {
+      try {
+        final installation = await _monkeyMuxInstallerService.ensureInstalled(
+          session,
+          priority: SshExecPriority.normal,
+        );
+        final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
+          session,
+          installation,
+          sessionName,
+        );
+        if (!mounted) {
+          return (
+            command: buildMonkeyMuxAttachCommand(
+              executablePath: installation.executablePath,
+              sessionName: sessionName,
+              workingDirectory: host.tmuxWorkingDirectory,
+              serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+            ),
+            backend: RemoteMuxBackend.monkeyMux,
+          );
+        }
+        return (
+          command: buildMonkeyMuxAttachCommand(
+            executablePath: installation.executablePath,
+            sessionName: sessionName,
+            workingDirectory: host.tmuxWorkingDirectory,
+            serverUpdatePolicy: updatePolicy,
+          ),
+          backend: RemoteMuxBackend.monkeyMux,
+        );
+      } on Exception catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'monkeymux.install',
+          'attach_fallback',
+          fields: {
+            'connectionId': session.connectionId,
+            'configuredBackend': configuredBackend.storageValue,
+            'errorType': error.runtimeType,
+          },
+        );
+        if (configuredBackend == RemoteMuxBackend.monkeyMux && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('MonkeyMux is unavailable; using tmux instead.'),
+            ),
+          );
+        }
+      }
+    }
+    return (
+      command: buildTmuxCommand(
+        sessionName: sessionName,
+        workingDirectory: host.tmuxWorkingDirectory,
+        extraFlags: host.tmuxExtraFlags,
+      ),
+      backend: RemoteMuxBackend.tmux,
+    );
+  }
+
+  Future<MonkeyMuxServerUpdatePolicy> _resolveMonkeyMuxServerUpdatePolicy(
+    SshSession session,
+    MonkeyMuxInstallation installation,
+    String sessionName,
+  ) async {
+    final status = await _monkeyMuxService.runningServerStatus(
+      session,
+      installation,
+      sessionName,
+    );
+    if (status == null || !status.needsUpdate(installation.version)) {
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'upgrade_prompt',
+      fields: {
+        'connectionId': session.connectionId,
+        'supportsShutdown': status.supportsShutdown,
+      },
+    );
+    final shouldUpdate = await _confirmMonkeyMuxServerUpdate(
+      runningVersion: status.version,
+      bundledVersion: installation.version,
+      supportsShutdown: status.supportsShutdown,
+    );
+    if (!mounted || !shouldUpdate) {
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'upgrade_skipped',
+        fields: {'connectionId': session.connectionId},
+      );
+      return MonkeyMuxServerUpdatePolicy.never;
+    }
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'upgrade_confirmed',
+      fields: {'connectionId': session.connectionId},
+    );
+    return MonkeyMuxServerUpdatePolicy.always;
+  }
+
+  Future<void> _runMonkeyMuxAgentLaunchCommand(
+    SshSession session,
+    Host host,
+    AgentLaunchPreset preset,
+    SSHSession shell,
+  ) async {
+    final command = await _prepareMonkeyMuxAgentLaunchCommand(
+      session,
+      host,
+      preset,
+    );
+    if (command == null) {
+      return;
+    }
+    _applyPreparedRemoteMuxCommand(session, command);
+    shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
+    DiagnosticsLogService.instance.info(
+      'terminal.agent_launch',
+      'command_written',
+      fields: {
+        'connectionId': session.connectionId,
+        'backend': command.backend.storageValue,
+        if (command.tool case final tool?) 'tool': tool.name,
+      },
+    );
+  }
+
+  Future<_PreparedRemoteMuxCommand?> _prepareMonkeyMuxAgentLaunchCommand(
+    SshSession session,
+    Host host,
+    AgentLaunchPreset preset,
+  ) async {
+    final sessionName = preset.tmuxSessionName?.trim();
+    if (sessionName == null || sessionName.isEmpty) {
+      return null;
+    }
+
+    final launchCommand = buildAgentToolCommand(
+      preset.tool,
+      additionalArguments: preset.additionalArguments,
+      startInYoloMode: _startClisInYoloMode,
+    );
+    DiagnosticsLogService.instance.info(
+      'terminal.agent_launch',
+      'monkeymux_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'tool': preset.tool.name,
+        'hasWorkingDirectory': preset.hasWorkingDirectory,
+      },
+    );
+    var muxBackend = RemoteMuxBackend.monkeyMux;
+    late String attachCommand;
+    try {
+      final installation = await _monkeyMuxInstallerService.ensureInstalled(
+        session,
+        priority: SshExecPriority.normal,
+      );
+      DiagnosticsLogService.instance.info(
+        'terminal.agent_launch',
+        'monkeymux_ready',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': installation.platform,
+          'version': installation.version,
+        },
+      );
+      final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
+        session,
+        installation,
+        sessionName,
+      );
+      attachCommand = buildMonkeyMuxAttachCommand(
+        executablePath: installation.executablePath,
+        sessionName: sessionName,
+        workingDirectory: preset.workingDirectory,
+        windowName: preset.tool.label,
+        launchCommand: launchCommand,
+        serverUpdatePolicy: updatePolicy,
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.install',
+        'agent_launch_fallback',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('MonkeyMux is unavailable; using tmux instead.'),
+          ),
+        );
+      }
+      muxBackend = RemoteMuxBackend.tmux;
+      attachCommand = buildAgentLaunchCommand(
+        preset.copyWith(remoteMuxBackend: RemoteMuxBackend.tmux),
+        startInYoloMode: _startClisInYoloMode,
+      );
+    }
+
+    final review = assessAutoConnectCommandExecution(
+      attachCommand,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return null;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+
+    return (
+      backend: muxBackend,
+      command: attachCommand,
+      sessionName: sessionName,
+      tool: preset.tool,
+    );
+  }
+
+  void _applyPreparedRemoteMuxCommand(
+    SshSession session,
+    _PreparedRemoteMuxCommand command,
+  ) {
+    void apply() {
+      _activeMuxBackend = command.backend;
+      session
+        ..remoteMuxBackend = command.backend
+        ..remoteMuxSessionName = command.sessionName;
+      if (command.backend != RemoteMuxBackend.monkeyMux) {
+        return;
+      }
+      _isTmuxActive = true;
+      _tmuxSessionName = command.sessionName;
+      _tmuxStateConnectionId = session.connectionId;
+      _showTmuxBar = true;
+      _tmuxLaunchWorkingDirectory = _host?.tmuxWorkingDirectory;
+      _tmuxWorkingDirectory = _host?.tmuxWorkingDirectory;
+      _tmuxCurrentCommand = null;
+      _shellCompletionTmuxContextRefreshedAt = null;
+      _shellCompletionTmuxContextConnectionId = null;
+      _shellCompletionTmuxContextSessionName = null;
+    }
+
+    if (mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
   }
 
   String? _preferredTmuxSessionName(Host? host) =>
@@ -5810,12 +6370,47 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         autoConnectCommand: _resolveStoredAutoConnectCommand(host),
       );
 
+  RemoteMultiplexerService get _activeRemoteMultiplexerService =>
+      _activeMuxBackend == RemoteMuxBackend.monkeyMux
+      ? _monkeyMuxService
+      : _tmuxMultiplexerService;
+
+  TerminalConnectionBackend _activeTerminalConnectionBackend(
+    SshSession session,
+  ) => _terminalBackendService.resolve(
+    session,
+    activeMuxBackend: _isTmuxActive ? _activeMuxBackend : RemoteMuxBackend.auto,
+    sessionName: _isTmuxActive ? _tmuxSessionName : null,
+    tmuxExtraFlags: _activeTmuxExtraFlags,
+  );
+
+  RemoteMultiplexerService _remoteMultiplexerServiceForBackend(
+    RemoteMuxBackend backend,
+  ) => backend == RemoteMuxBackend.monkeyMux
+      ? _monkeyMuxService
+      : _tmuxMultiplexerService;
+
+  String? get _activeTmuxExtraFlags =>
+      _activeMuxBackend == RemoteMuxBackend.tmux ? _host?.tmuxExtraFlags : null;
+
+  RemoteMuxBackend? _configuredRemoteMuxBackend(Host? host) {
+    final sessionName = _initialTmuxSessionName ?? host?.tmuxSessionName;
+    if (sessionName == null || sessionName.trim().isEmpty) {
+      return null;
+    }
+    return resolveRemoteMuxStartupBackend(
+      host?.remoteMuxBackend,
+      tmuxExtraFlags: host?.tmuxExtraFlags,
+    );
+  }
+
   void _clearTmuxState() {
     _stopTmuxForegroundVerification();
     _cancelPendingTmuxWindowThemeRefresh();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
@@ -5864,8 +6459,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _tmuxForegroundVerificationInFlight = true;
     try {
-      final tmux = ref.read(tmuxServiceProvider);
-      if (tmux.isExecChannelCoolingDown(session)) {
+      final mux = _activeRemoteMultiplexerService;
+      if (mux.isExecChannelCoolingDown(session)) {
         DiagnosticsLogService.instance.debug(
           'tmux.ui',
           'foreground_verify_deferred',
@@ -5873,10 +6468,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         return;
       }
-      final foregroundSessionName = await tmux.foregroundSessionNameOrThrow(
-        session,
-        extraFlags: _host?.tmuxExtraFlags,
-      );
+      final String? foregroundSessionName;
+      final bool foregroundMatches;
+      if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        foregroundMatches = await mux.hasForegroundClientOrThrow(
+          session,
+          sessionName,
+        );
+        foregroundSessionName = foregroundMatches ? sessionName : null;
+      } else {
+        foregroundSessionName = await mux.foregroundSessionNameOrThrow(
+          session,
+          extraFlags: _activeTmuxExtraFlags,
+        );
+        foregroundMatches = foregroundSessionName == sessionName;
+      }
       if (!mounted ||
           generation != _tmuxForegroundVerificationGeneration ||
           _connectionId != session.connectionId ||
@@ -5884,7 +6490,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxSessionName != sessionName) {
         return;
       }
-      if (foregroundSessionName == sessionName) {
+      if (foregroundMatches) {
         DiagnosticsLogService.instance.debug(
           'tmux.ui',
           'foreground_verified',
@@ -5933,7 +6539,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final capturedConnectionId = _connectionId;
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
-    final preferredSessionName = _preferredTmuxSessionName(host);
+    final configuredBackend = _configuredRemoteMuxBackend(host);
+    final preferredSessionName =
+        _preferredTmuxSessionName(host) ?? session.remoteMuxSessionName;
+    final persistedBackend = session.remoteMuxBackend;
+    final muxBackend =
+        persistedBackend ??
+        (configuredBackend == RemoteMuxBackend.auto
+            ? _activeMuxBackend
+            : (configuredBackend ?? _activeMuxBackend));
+    final mux = _remoteMultiplexerServiceForBackend(muxBackend);
     final tmuxStateBelongsToSession =
         _tmuxStateConnectionId == session.connectionId;
     final mayPreserveExistingTmuxState =
@@ -5978,6 +6593,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } else if (shouldPrimeTmuxStateWhileDetecting) {
           _isTmuxActive = true;
           _tmuxSessionName = candidateSessionName;
+          _activeMuxBackend = muxBackend;
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
           _tmuxWorkingDirectory = preferredWorkingDirectory;
@@ -5997,7 +6613,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     try {
-      final tmux = ref.read(tmuxServiceProvider);
       final retrySchedule = resolveTmuxDetectionRetrySchedule(
         skipDelay: skipDelay,
       );
@@ -6015,13 +6630,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final bool active;
         final String? foregroundSessionName;
         try {
-          foregroundSessionName = await tmux.foregroundSessionNameOrThrow(
-            session,
-            extraFlags: host?.tmuxExtraFlags,
-          );
-          active = candidateSessionName != null
-              ? foregroundSessionName == candidateSessionName
-              : foregroundSessionName != null;
+          if (muxBackend == RemoteMuxBackend.monkeyMux &&
+              candidateSessionName != null) {
+            active = await mux.hasForegroundClientOrThrow(
+              session,
+              candidateSessionName,
+            );
+            foregroundSessionName = active ? candidateSessionName : null;
+          } else {
+            foregroundSessionName = await mux.foregroundSessionNameOrThrow(
+              session,
+              extraFlags: host?.tmuxExtraFlags,
+            );
+            active = candidateSessionName != null
+                ? foregroundSessionName == candidateSessionName
+                : foregroundSessionName != null;
+          }
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -6079,10 +6703,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
         final List<TmuxWindow> windows;
         try {
-          windows = await tmux.listWindows(
+          windows = await mux.listWindows(
             session,
             sessionName,
-            extraFlags: host?.tmuxExtraFlags,
+            extraFlags: muxBackend == RemoteMuxBackend.tmux
+                ? host?.tmuxExtraFlags
+                : null,
           );
         } on Object catch (error) {
           hadDetectionFailure = true;
@@ -6132,6 +6758,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() {
           _isTmuxActive = true;
           _tmuxSessionName = sessionName;
+          _activeMuxBackend = muxBackend;
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
@@ -6140,6 +6767,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             tmuxLaunchCwd,
           );
         });
+        session
+          ..remoteMuxBackend = muxBackend
+          ..remoteMuxSessionName = sessionName;
         _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
@@ -6155,7 +6785,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         // whatever stale value tmux had cached (e.g., from a previous
         // attach to a different terminal), and bake the wrong composer
         // surface color into its rendered output.
-        _primeTmuxTerminalTheme(session);
+        if (muxBackend == RemoteMuxBackend.tmux) {
+          _primeTmuxTerminalTheme(session);
+        }
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return true;
       }
@@ -6401,7 +7033,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       key: _tmuxBarKey,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
-      tmuxExtraFlags: _host?.tmuxExtraFlags,
+      remoteMultiplexerService: _activeRemoteMultiplexerService,
+      activeMuxBackend: _activeMuxBackend,
+      tmuxExtraFlags: _activeTmuxExtraFlags,
       availableHeight: availableHeight,
       recoveryGeneration: _tmuxBarRecoveryGeneration,
       isProUser: isProUser,
@@ -6412,6 +7046,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
+      onSessionEnded: _handleMuxSessionEnded,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -6511,7 +7146,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref: ref,
         session: session,
         tmuxSessionName: _tmuxSessionName!,
-        tmuxExtraFlags: _host?.tmuxExtraFlags,
+        remoteMultiplexerService: _activeRemoteMultiplexerService,
+        tmuxExtraFlags: _activeTmuxExtraFlags,
         isProUser: isProUser,
         startClisInYoloMode: _startClisInYoloMode,
         scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -6575,6 +7211,68 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _handleMuxSessionEnded(
+    SshSession session,
+    String sessionName,
+  ) async {
+    if (!mounted ||
+        _activeMuxBackend != RemoteMuxBackend.monkeyMux ||
+        _connectionId != session.connectionId ||
+        _tmuxSessionName != sessionName) {
+      return;
+    }
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'monkeymux_session_disconnect',
+      fields: {'connectionId': session.connectionId},
+    );
+    await _disconnect();
+  }
+
+  Future<bool> _isClosingLastMonkeyMuxWindow(
+    SshSession session,
+    String sessionName,
+    int windowIndex,
+  ) async {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return false;
+    }
+    final knownWindows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
+    if (knownWindows != null && knownWindows.isNotEmpty) {
+      return knownWindows.length == 1 &&
+          knownWindows.any((window) => window.index == windowIndex);
+    }
+    try {
+      final windows = await _activeRemoteMultiplexerService.listWindows(
+        session,
+        sessionName,
+        extraFlags: _activeTmuxExtraFlags,
+      );
+      return windows.length == 1 &&
+          windows.any((window) => window.index == windowIndex);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'monkeymux_last_window_check_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return false;
+    }
+  }
+
+  bool _isExpectedMonkeyMuxFinalCloseError(Exception error) {
+    if (error is! MonkeyMuxInstallException) {
+      return false;
+    }
+    final message = error.message.toLowerCase();
+    return message.contains('control channel closed') ||
+        message.contains('control channel unavailable') ||
+        message.contains('closed without a response');
+  }
+
   /// Switches to a different tmux window via exec channel.
   ///
   /// Uses an exec channel (not the interactive shell) because
@@ -6590,25 +7288,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final tmux = ref.read(tmuxServiceProvider);
+    final backend = _activeTerminalConnectionBackend(session);
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
     if (targetWindowId == null) {
-      await tmux.selectWindow(
-        session,
-        sessionName,
-        windowIndex,
-        extraFlags: _host?.tmuxExtraFlags,
-      );
+      await backend.selectWindow(windowIndex);
     } else {
-      await tmux.selectWindow(
-        session,
-        sessionName,
-        windowIndex,
-        windowId: targetWindowId,
-        extraFlags: _host?.tmuxExtraFlags,
-      );
+      await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
 
     // Clear stale working directory — it will be refreshed from
@@ -6616,11 +7303,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
-    await _reattachTmuxIfNeeded(
-      session,
-      sessionName,
-      forceVisibleTmux: forceVisibleTmux,
-    );
+    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      await _reattachTmuxIfNeeded(
+        session,
+        sessionName,
+        forceVisibleTmux: forceVisibleTmux,
+      );
+    }
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
@@ -6644,14 +7333,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final tmux = ref.read(tmuxServiceProvider);
+    final backend = _activeTerminalConnectionBackend(session);
     String? currentPaneWorkingDirectory;
     if (!(workingDirectory?.trim().isNotEmpty ?? false)) {
-      currentPaneWorkingDirectory = await tmux.currentPanePath(
-        session,
-        sessionName,
-        extraFlags: _host?.tmuxExtraFlags,
-      );
+      currentPaneWorkingDirectory = await backend.currentPanePath();
     }
     if (!mounted) return;
     final resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
@@ -6661,18 +7346,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
       hostWorkingDirectory: _host?.tmuxWorkingDirectory,
     );
-    await tmux.createWindow(
-      session,
-      sessionName,
+    await backend.createWindow(
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
-      extraFlags: _host?.tmuxExtraFlags,
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
-    await _reattachTmuxIfNeeded(session, sessionName);
+    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      await _reattachTmuxIfNeeded(session, sessionName);
+    }
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
@@ -6686,14 +7370,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    await ref
-        .read(tmuxServiceProvider)
-        .killWindow(
-          session,
-          sessionName,
-          windowIndex,
-          extraFlags: _host?.tmuxExtraFlags,
+    final closesLastMonkeyMuxWindow = await _isClosingLastMonkeyMuxWindow(
+      session,
+      sessionName,
+      windowIndex,
+    );
+    try {
+      await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
+    } on Exception catch (error) {
+      if (closesLastMonkeyMuxWindow &&
+          _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+          _isExpectedMonkeyMuxFinalCloseError(error)) {
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'monkeymux_final_close_control_closed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
         );
+        await _handleMuxSessionEnded(session, sessionName);
+        return;
+      }
+      rethrow;
+    }
+    if (closesLastMonkeyMuxWindow) {
+      await _handleMuxSessionEnded(session, sessionName);
+      return;
+    }
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     _scheduleTerminalSizeRefresh();
@@ -6709,8 +7413,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String sessionName, {
     bool forceVisibleTmux = false,
   }) async {
-    final tmux = ref.read(tmuxServiceProvider);
-    if (!forceVisibleTmux && tmux.isExecChannelCoolingDown(session)) {
+    final mux = _activeRemoteMultiplexerService;
+    if (!forceVisibleTmux && mux.isExecChannelCoolingDown(session)) {
       DiagnosticsLogService.instance.debug(
         'tmux.ui',
         'reattach_foreground_check_deferred',
@@ -6720,10 +7424,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     var hasForegroundClient = false;
     try {
-      hasForegroundClient = await tmux.hasForegroundClientOrThrow(
+      hasForegroundClient = await mux.hasForegroundClientOrThrow(
         session,
         sessionName,
-        extraFlags: _host?.tmuxExtraFlags,
+        extraFlags: _activeTmuxExtraFlags,
       );
     } on Exception catch (error) {
       if (!forceVisibleTmux) {
@@ -6790,11 +7494,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final host = _host;
-    final reattachCommand = buildTmuxCommand(
-      sessionName: sessionName,
-      workingDirectory: host?.tmuxWorkingDirectory,
-      extraFlags: host?.tmuxExtraFlags,
-    );
+    late final String reattachCommand;
+    if (host == null) {
+      reattachCommand = buildTmuxCommand(sessionName: sessionName);
+    } else {
+      final attachCommand = await _buildRemoteMuxAttachCommand(
+        session,
+        host,
+        sessionName,
+      );
+      _activeMuxBackend = attachCommand.backend;
+      reattachCommand = attachCommand.command;
+    }
     shell.write(utf8.encode(formatAutoConnectCommandForShell(reattachCommand)));
     DiagnosticsLogService.instance.info(
       'tmux.ui',
@@ -7001,6 +7712,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String message,
   }) async {
     await _tmuxService.clearCache(connectionId);
+    await _monkeyMuxService.clearCache(connectionId);
     await _sessionsNotifier?.handleUnexpectedDisconnect(
       connectionId,
       message: message,
@@ -7011,12 +7723,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final connectionId = _connectionId;
     _connectionId = null;
     _clearAppThemeOverride();
+    _cancelTerminalThemeRefreshTimers();
+    _clearTmuxState();
     _syncTerminalWakeLock(SshConnectionState.disconnected);
-    await _doneSubscription?.cancel();
+    unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
     _shell = null;
     if (connectionId != null) {
       await _tmuxService.clearCache(connectionId);
+      await _monkeyMuxService.clearCache(connectionId);
       await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
@@ -7051,6 +7766,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _shell = null;
       if (previousConnectionId != null) {
         await _tmuxService.clearCache(previousConnectionId);
+        await _monkeyMuxService.clearCache(previousConnectionId);
         await _sessionsNotifier?.disconnect(previousConnectionId);
       }
       if (!mounted) {
@@ -11598,6 +12314,43 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
     return decision ?? _AutoConnectReviewDecision.skip;
+  }
+
+  Future<bool> _confirmMonkeyMuxServerUpdate({
+    required String? runningVersion,
+    required String bundledVersion,
+    required bool supportsShutdown,
+  }) async {
+    final runningLabel = runningVersion == null || runningVersion.trim().isEmpty
+        ? 'unknown'
+        : runningVersion.trim();
+    final message = supportsShutdown
+        ? 'This MonkeyMux session is running helper $runningLabel. '
+              'This app includes helper $bundledVersion. Updating will restart '
+              'MonkeyMux for this session and close its current windows.'
+        : 'This MonkeyMux session is running helper $runningLabel. '
+              'This app includes helper $bundledVersion. This older helper '
+              'cannot close itself cleanly, so updating may abandon existing '
+              'MonkeyMux windows.';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (context) => AlertDialog(
+        title: const Text('Update MonkeyMux?'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep current'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   Future<bool> _confirmCommandInsertion({

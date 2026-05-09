@@ -1,0 +1,2536 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
+)
+
+const (
+	monkeyMuxVersion         = "0.1.17"
+	defaultColumns           = 80
+	defaultRows              = 24
+	maxTitleBytes            = 160
+	oscBufferLimitBytes      = 4096
+	processMetadataTimeout   = 500 * time.Millisecond
+	processMetadataInterval  = 500 * time.Millisecond
+	runCommandOutputMaxBytes = 256 * 1024
+	runCommandTimeout        = 8 * time.Second
+	socketTimeout            = 2 * time.Second
+	windowUpdateMinInterval  = 750 * time.Millisecond
+	windowHistoryLimitBytes  = 128 * 1024
+	windowReplayLimitBytes   = 32 * 1024
+	csiBufferLimitBytes      = 64
+)
+
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+
+var capabilities = []string{
+	"attach",
+	"attach-command",
+	"control-json-v1",
+	"direct-pass-through",
+	"posix-pty",
+	"window-list",
+	"window-create",
+	"window-select",
+	"window-close",
+	"active-context",
+	"inject-input",
+	"run-command",
+	"client-scoped-run-command",
+	"focus-hint",
+	"theme-hint",
+	"shutdown",
+	"attach-update-policy",
+	"attach-state",
+}
+
+var (
+	errRunCommandCanceled     = errors.New("command canceled")
+	errRunCommandClientClosed = errors.New("control client closed")
+	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
+	errRunCommandTimeout      = errors.New("command timed out")
+)
+
+const (
+	serverUpdatePolicyPrompt = "prompt"
+	serverUpdatePolicyNever  = "never"
+	serverUpdatePolicyAlways = "always"
+)
+
+var (
+	leadingCdCommandPattern = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
+	leadingEnvPattern       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
+)
+
+type controlMessage struct {
+	Role        string   `json:"role,omitempty"`
+	ID          string   `json:"id,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Session     string   `json:"session,omitempty"`
+	WindowID    string   `json:"windowId,omitempty"`
+	WindowIndex *int     `json:"windowIndex,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Cwd         string   `json:"cwd,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	Data        string   `json:"data,omitempty"`
+	Width       int      `json:"width,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	PixelWidth  int      `json:"pixelWidth,omitempty"`
+	PixelHeight int      `json:"pixelHeight,omitempty"`
+}
+
+type controlResponse struct {
+	ID             string           `json:"id,omitempty"`
+	Type           string           `json:"type"`
+	Status         string           `json:"status,omitempty"`
+	Error          string           `json:"error,omitempty"`
+	Version        string           `json:"version,omitempty"`
+	Session        string           `json:"session,omitempty"`
+	Capabilities   []string         `json:"capabilities,omitempty"`
+	Windows        []windowSnapshot `json:"windows,omitempty"`
+	Window         *windowSnapshot  `json:"window,omitempty"`
+	CurrentPath    string           `json:"currentPath,omitempty"`
+	CurrentCommand string           `json:"currentCommand,omitempty"`
+	Data           string           `json:"data,omitempty"`
+	ExitCode       int              `json:"exitCode,omitempty"`
+	HasAttach      bool             `json:"hasForegroundClient,omitempty"`
+}
+
+type windowSnapshot struct {
+	ID                       string `json:"id"`
+	Index                    int    `json:"index"`
+	Name                     string `json:"name"`
+	Active                   bool   `json:"active"`
+	CurrentCommand           string `json:"currentCommand,omitempty"`
+	CurrentPath              string `json:"currentPath,omitempty"`
+	PanePid                  int    `json:"panePid,omitempty"`
+	Flags                    string `json:"flags,omitempty"`
+	PaneTitle                string `json:"paneTitle,omitempty"`
+	AgentTool                string `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
+}
+
+type muxServer struct {
+	session string
+	width   int
+	height  int
+
+	mu         sync.Mutex
+	windows    []*muxWindow
+	activeID   string
+	nextID     int
+	listener   net.Listener
+	attachConn net.Conn
+	attachMu   sync.Mutex
+	controls   map[*controlClient]struct{}
+	closed     bool
+}
+
+type muxWindow struct {
+	id                         string
+	index                      int
+	name                       string
+	cwd                        string
+	command                    string
+	agentTool                  string
+	foregroundPid              int
+	foregroundCommand          string
+	paneTitle                  string
+	pty                        *os.File
+	cmd                        *exec.Cmd
+	history                    []byte
+	oscBuffer                  []byte
+	csiBuffer                  []byte
+	lastActivity               time.Time
+	lastProcessMetadataRefresh time.Time
+	lastBroadcast              time.Time
+	cursorVisible              bool
+	cursorVisibilityKnown      bool
+	focusModeEnabled           bool
+	alert                      bool
+	closed                     bool
+}
+
+type windowBroadcastIdentity struct {
+	name      string
+	cwd       string
+	command   string
+	paneTitle string
+	agentTool string
+	panePid   int
+	alert     bool
+}
+
+type controlClient struct {
+	conn net.Conn
+	enc  *json.Encoder
+
+	mu sync.Mutex
+
+	commandsMu sync.Mutex
+	commands   map[string]context.CancelFunc
+	closed     bool
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usageAndExit()
+	}
+
+	switch os.Args[1] {
+	case "attach":
+		attachCommand(os.Args[2:])
+	case "control":
+		controlCommand(os.Args[2:])
+	case "serve":
+		serveCommand(os.Args[2:])
+	case "gc":
+		gcCommand()
+	case "version", "--version", "-v":
+		fmt.Println(monkeyMuxVersion)
+	default:
+		usageAndExit()
+	}
+}
+
+func usageAndExit() {
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	os.Exit(2)
+}
+
+func attachCommand(args []string) {
+	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	cwd := fs.String("cwd", "", "initial working directory")
+	name := fs.String("name", "", "initial window name")
+	command := fs.String("command", "", "initial command")
+	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		usageAndExit()
+	}
+	policy, err := normalizeServerUpdatePolicy(*updatePolicy)
+	if err != nil {
+		fatal(err)
+	}
+	session := fs.Arg(0)
+	if err := ensureServer(session, createWindowOptions{
+		cwd:     *cwd,
+		name:    *name,
+		command: *command,
+	}, policy); err != nil {
+		fatal(err)
+	}
+
+	conn, err := dialSession(session)
+	if err != nil {
+		fatal(err)
+	}
+	defer conn.Close()
+
+	width, height := terminalSize()
+	hello := controlMessage{
+		Role:    "attach",
+		Session: session,
+		Width:   width,
+		Height:  height,
+	}
+	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+		fatal(err)
+	}
+
+	restoreTerminal := makeTerminalRaw()
+	defer restoreTerminal()
+
+	stopResize := forwardResizeSignals(session)
+	defer stopResize()
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(conn, os.Stdin)
+		errs <- err
+	}()
+	go func() {
+		_, err := io.Copy(os.Stdout, conn)
+		errs <- err
+	}()
+
+	if err := <-errs; err != nil && !errors.Is(err, io.EOF) {
+		fatal(err)
+	}
+}
+
+func controlCommand(args []string) {
+	fs := flag.NewFlagSet("control", flag.ExitOnError)
+	jsonMode := fs.Bool("json", false, "use newline-delimited JSON")
+	_ = fs.String("cwd", "", "ignored; only attach starts sessions")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 || !*jsonMode {
+		usageAndExit()
+	}
+	session := fs.Arg(0)
+
+	conn, err := dialSession(session)
+	if err != nil {
+		fatal(fmt.Errorf("monkeymux session %q is not running; attach before opening control", session))
+	}
+	defer conn.Close()
+
+	hello := controlMessage{Role: "control", Session: session}
+	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+		fatal(err)
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(os.Stdout, conn)
+		errs <- err
+	}()
+	go func() {
+		_, err := io.Copy(conn, os.Stdin)
+		errs <- err
+	}()
+
+	if err := <-errs; err != nil && !errors.Is(err, io.EOF) {
+		fatal(err)
+	}
+}
+
+func serveCommand(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	session := fs.String("session", "", "session name")
+	cwd := fs.String("cwd", "", "initial working directory")
+	name := fs.String("name", "", "initial window name")
+	command := fs.String("command", "", "initial command")
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*session) == "" {
+		usageAndExit()
+	}
+	if err := serveSession(*session, createWindowOptions{
+		cwd:     *cwd,
+		name:    *name,
+		command: *command,
+	}); err != nil {
+		fatal(err)
+	}
+}
+
+func gcCommand() {
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		fatal(err)
+	}
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "monkeymux-") {
+			continue
+		}
+		path := filepath.Join(runDir, entry.Name())
+		conn, err := net.DialTimeout("unix", path, 150*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			continue
+		}
+		_ = os.Remove(path)
+	}
+}
+
+func ensureServer(session string, initialWindow createWindowOptions, updatePolicy string) error {
+	if status, err := queryRunningServerStatus(session); err == nil {
+		if status.version == monkeyMuxVersion {
+			return nil
+		}
+		if !shouldUpdateRunningServer(
+			os.Stdin,
+			os.Stderr,
+			session,
+			status,
+			updatePolicy,
+		) {
+			return nil
+		}
+		if status.supportsCapability("shutdown") {
+			requestServerShutdown(session)
+			if !waitForServerExit(session, 2*time.Second) {
+				fmt.Fprintf(
+					os.Stderr,
+					"monkeymux: running session did not exit; continuing with helper %s\r\n",
+					status.displayVersion(),
+				)
+				return nil
+			}
+		} else {
+			fmt.Fprintf(
+				os.Stderr,
+				"monkeymux: abandoning helper %s socket and starting helper %s\r\n",
+				status.displayVersion(),
+				monkeyMuxVersion,
+			)
+		}
+	}
+
+	socket, err := socketPath(session)
+	if err != nil {
+		return err
+	}
+	_ = os.Remove(socket)
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "serve", "--session", session)
+	if strings.TrimSpace(initialWindow.cwd) != "" {
+		cmd.Args = append(cmd.Args, "--cwd", initialWindow.cwd)
+	}
+	if strings.TrimSpace(initialWindow.name) != "" {
+		cmd.Args = append(cmd.Args, "--name", initialWindow.name)
+	}
+	if strings.TrimSpace(initialWindow.command) != "" {
+		cmd.Args = append(cmd.Args, "--command", initialWindow.command)
+	}
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+
+	deadline := time.Now().Add(socketTimeout)
+	for time.Now().Before(deadline) {
+		conn, err := dialSession(session)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("monkeymux server did not start for session %q", session)
+}
+
+func serveSession(session string, initialWindow createWindowOptions) error {
+	socket, err := socketPath(session)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		return err
+	}
+	_ = os.Remove(socket)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(socket)
+	}()
+	_ = os.Chmod(socket, 0o600)
+
+	server := newMuxServer(session)
+	server.listener = listener
+	if _, err := server.createWindow(initialWindow); err != nil {
+		return err
+	}
+	defer server.close()
+
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		<-signals
+		server.close()
+		_ = listener.Close()
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if server.isClosed() {
+				return nil
+			}
+			return err
+		}
+		go server.handleConnection(conn)
+	}
+}
+
+func newMuxServer(session string) *muxServer {
+	return &muxServer{
+		session:  session,
+		width:    defaultColumns,
+		height:   defaultRows,
+		controls: map[*controlClient]struct{}{},
+	}
+}
+
+type createWindowOptions struct {
+	name    string
+	cwd     string
+	command string
+	args    []string
+}
+
+func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
+	var attach net.Conn
+	var replay []byte
+	cwd := strings.TrimSpace(options.cwd)
+	if cwd == "" {
+		if current, err := os.Getwd(); err == nil {
+			cwd = current
+		}
+	} else if expanded, err := expandHomePath(cwd); err == nil {
+		cwd = expanded
+	}
+
+	shell := defaultShellPath()
+	cmd := shellCommand(shell)
+	name := filepath.Base(shell)
+	if len(options.args) > 0 {
+		cmd = exec.Command(options.args[0], options.args[1:]...)
+		name = filepath.Base(options.args[0])
+	} else if strings.TrimSpace(options.command) != "" {
+		cmd = shellCommandForScript(shell, strings.TrimSpace(options.command))
+	}
+	if strings.TrimSpace(options.name) != "" {
+		name = strings.TrimSpace(options.name)
+	} else if strings.TrimSpace(options.command) != "" {
+		name = firstShellWord(options.command)
+	}
+	agentTool := firstNonEmptyString(
+		agentToolFromCommandText(options.command),
+		agentToolFromCommandName(name),
+	)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	cmd.Env = inheritedEnvironment(os.Environ())
+
+	s.mu.Lock()
+	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
+	s.mu.Unlock()
+
+	file, err := pty.StartWithSize(cmd, size)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.nextID++
+	window := &muxWindow{
+		id:                fmt.Sprintf("@%d", s.nextID),
+		index:             len(s.windows),
+		name:              name,
+		cwd:               cwd,
+		command:           filepath.Base(cmd.Path),
+		agentTool:         agentTool,
+		foregroundPid:     cmd.Process.Pid,
+		foregroundCommand: filepath.Base(cmd.Path),
+		paneTitle:         name,
+		pty:               file,
+		cmd:               cmd,
+		lastActivity:      time.Now(),
+		cursorVisible:     true,
+	}
+	s.windows = append(s.windows, window)
+	s.activeID = window.id
+	s.clearAlertsLocked(window.id)
+	attach = s.attachConn
+	replay = s.replayBytesLocked(window)
+	s.mu.Unlock()
+
+	s.writeAttach(attach, replay)
+	go s.readWindow(window)
+	go func() {
+		_ = cmd.Wait()
+		s.markWindowClosed(window.id)
+	}()
+
+	s.broadcast(controlResponse{
+		Type:    "window_added",
+		Session: s.session,
+		Window:  ptrWindowSnapshot(s.snapshot(window)),
+	})
+	s.broadcastWindowList("window_list")
+	s.broadcastWindowList("active_window_changed")
+	return window, nil
+}
+
+func (s *muxServer) readWindow(window *muxWindow) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := window.pty.Read(buf)
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			s.handleWindowOutput(window.id, chunk)
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
+	var attach net.Conn
+	var shouldWrite bool
+	var snapshot *windowSnapshot
+	now := time.Now()
+
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		return
+	}
+	before := window.broadcastIdentityLocked()
+	wasAlert := window.alert
+	window.lastActivity = now
+	window.observeTerminalMetadataLocked(chunk)
+	window.observeCursorVisibilityLocked(chunk)
+	window.appendHistoryLocked(chunk)
+	window.refreshProcessMetadataLocked(now)
+	if s.activeID == windowID {
+		attach = s.attachConn
+		shouldWrite = attach != nil
+	} else if containsTerminalBell(chunk) {
+		window.alert = true
+	}
+	after := window.broadcastIdentityLocked()
+	if before != after ||
+		(!wasAlert && window.alert) ||
+		window.lastBroadcast.IsZero() ||
+		now.Sub(window.lastBroadcast) >= windowUpdateMinInterval {
+		snap := s.snapshotLocked(window)
+		snapshot = &snap
+		window.lastBroadcast = now
+	}
+	s.mu.Unlock()
+
+	if shouldWrite {
+		s.writeAttach(attach, chunk)
+	}
+
+	if snapshot != nil {
+		s.broadcast(controlResponse{
+			Type:    "window_updated",
+			Session: s.session,
+			Window:  snapshot,
+		})
+	}
+}
+
+func (s *muxServer) markWindowClosed(windowID string) {
+	var attach net.Conn
+	var replay []byte
+	var activeChanged bool
+	var shouldShutdown bool
+
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		return
+	}
+	window.closed = true
+	window.alert = false
+	_ = window.pty.Close()
+	s.reindexWindowsLocked()
+	if s.activeID == windowID {
+		s.activeID = ""
+		for _, candidate := range s.windows {
+			if !candidate.closed {
+				s.activeID = candidate.id
+				candidate.alert = false
+				s.resizeActiveLocked(s.width, s.height)
+				attach = s.attachConn
+				replay = s.replayBytesLocked(candidate)
+				activeChanged = true
+				break
+			}
+		}
+	}
+	snapshots := s.snapshotsLocked()
+	shouldShutdown = len(snapshots) == 0
+	s.mu.Unlock()
+
+	s.broadcast(controlResponse{
+		Type:    "window_removed",
+		Session: s.session,
+		Window:  &windowSnapshot{ID: windowID},
+	})
+	s.broadcast(controlResponse{
+		Type:    "window_list",
+		Session: s.session,
+		Windows: snapshots,
+	})
+	if activeChanged {
+		s.broadcast(controlResponse{
+			Type:    "active_window_changed",
+			Session: s.session,
+			Windows: snapshots,
+		})
+		s.writeAttach(attach, replay)
+	}
+	if shouldShutdown {
+		go s.close()
+	}
+}
+
+func (s *muxServer) handleConnection(conn net.Conn) {
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	var hello controlMessage
+	if err := json.Unmarshal(line, &hello); err != nil {
+		_ = conn.Close()
+		return
+	}
+	switch hello.Role {
+	case "attach":
+		s.handleAttach(conn, reader, hello)
+	case "control":
+		s.handleControl(conn, reader)
+	default:
+		_ = conn.Close()
+	}
+}
+
+func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
+	var replay []byte
+	s.mu.Lock()
+	if s.attachConn != nil {
+		_ = s.attachConn.Close()
+	}
+	s.attachConn = conn
+	if hello.Width > 0 && hello.Height > 0 {
+		s.width = hello.Width
+		s.height = hello.Height
+		s.resizeActiveLocked(hello.Width, hello.Height)
+	}
+	replay = s.activeReplayLocked()
+	s.mu.Unlock()
+	s.writeAttach(conn, replay)
+	s.broadcastWindowList("active_window_changed")
+
+	defer func() {
+		s.mu.Lock()
+		if s.attachConn == conn {
+			s.attachConn = nil
+		}
+		s.mu.Unlock()
+		_ = conn.Close()
+	}()
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			s.writeActive(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
+	client := newControlClient(conn)
+	s.addControl(client)
+	defer func() {
+		client.close()
+		s.removeControl(client)
+		_ = conn.Close()
+	}()
+
+	client.send(controlResponse{
+		Type:         "hello",
+		Status:       "ok",
+		Version:      monkeyMuxVersion,
+		Session:      s.session,
+		Capabilities: capabilities,
+	})
+	client.send(controlResponse{
+		Type:    "window_list",
+		Status:  "ok",
+		Session: s.session,
+		Windows: s.snapshots(),
+	})
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var request controlMessage
+		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
+			client.send(controlResponse{
+				Type:   "error",
+				Status: "error",
+				Error:  err.Error(),
+			})
+			continue
+		}
+		s.handleControlRequest(client, request)
+	}
+}
+
+func (s *muxServer) handleControlRequest(client *controlClient, request controlMessage) {
+	switch request.Type {
+	case "ping":
+		client.send(controlResponse{ID: request.ID, Type: "pong", Status: "ok"})
+	case "list_windows":
+		client.send(controlResponse{
+			ID:      request.ID,
+			Type:    "window_list",
+			Status:  "ok",
+			Session: s.session,
+			Windows: s.snapshots(),
+		})
+	case "create_window":
+		window, err := s.createWindow(createWindowOptions{
+			name:    request.Name,
+			cwd:     request.Cwd,
+			command: request.Command,
+			args:    request.Args,
+		})
+		if err != nil {
+			client.sendError(request, err)
+			return
+		}
+		client.send(controlResponse{
+			ID:      request.ID,
+			Type:    "window_created",
+			Status:  "ok",
+			Session: s.session,
+			Window:  ptrWindowSnapshot(s.snapshot(window)),
+		})
+	case "select_window":
+		id := request.WindowID
+		if id == "" && request.WindowIndex != nil {
+			id = s.windowIDForIndex(*request.WindowIndex)
+		}
+		if id == "" {
+			client.sendError(request, errors.New("missing target window"))
+			return
+		}
+		if err := s.selectWindow(id); err != nil {
+			client.sendError(request, err)
+			return
+		}
+		client.send(controlResponse{ID: request.ID, Type: "window_selected", Status: "ok"})
+	case "close_window", "kill_window":
+		id := request.WindowID
+		if id == "" && request.WindowIndex != nil {
+			id = s.windowIDForIndex(*request.WindowIndex)
+		}
+		if id == "" {
+			client.sendError(request, errors.New("missing target window"))
+			return
+		}
+		shouldShutdown, err := s.closeWindow(id)
+		if err != nil {
+			client.sendError(request, err)
+			return
+		}
+		client.send(controlResponse{ID: request.ID, Type: "window_closed", Status: "ok"})
+		if shouldShutdown {
+			go s.close()
+		}
+	case "resize":
+		if request.Width <= 0 || request.Height <= 0 {
+			client.sendError(request, errors.New("invalid terminal size"))
+			return
+		}
+		s.resize(request.Width, request.Height)
+		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
+	case "query_active_context":
+		s.mu.Lock()
+		window := s.windowByIDLocked(s.activeID)
+		if window == nil || window.closed {
+			s.mu.Unlock()
+			client.sendError(request, errors.New("no active window"))
+			return
+		}
+		window.refreshProcessMetadataLocked(time.Now())
+		currentPath := window.cwd
+		currentCommand := window.currentCommandLocked()
+		s.mu.Unlock()
+		client.send(controlResponse{
+			ID:             request.ID,
+			Type:           "active_context",
+			Status:         "ok",
+			Session:        s.session,
+			CurrentPath:    currentPath,
+			CurrentCommand: currentCommand,
+		})
+	case "query_attach_state":
+		client.send(controlResponse{
+			ID:        request.ID,
+			Type:      "attach_state",
+			Status:    "ok",
+			Session:   s.session,
+			HasAttach: s.hasAttachClient(),
+		})
+	case "run_command":
+		if strings.TrimSpace(request.Command) == "" {
+			client.sendError(request, errors.New("missing command"))
+			return
+		}
+		client.runShellCommandAsync(s, request)
+	case "inject_input":
+		id := request.WindowID
+		if id == "" {
+			id = s.activeWindowID()
+		}
+		if err := s.writeWindow(id, []byte(request.Data)); err != nil {
+			client.sendError(request, err)
+			return
+		}
+		client.send(controlResponse{ID: request.ID, Type: "input_injected", Status: "ok"})
+	case "focus_changed":
+		s.sendThemeHint(request.Data)
+		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
+	case "theme_changed":
+		s.sendThemeHint(request.Data)
+		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
+	case "shutdown":
+		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
+		go s.close()
+	default:
+		client.sendError(request, fmt.Errorf("unsupported command %q", request.Type))
+	}
+}
+
+func (s *muxServer) addControl(client *controlClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.controls[client] = struct{}{}
+}
+
+func (s *muxServer) removeControl(client *controlClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.controls, client)
+}
+
+func (s *muxServer) hasAttachClient() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attachConn != nil
+}
+
+func newControlClient(conn net.Conn) *controlClient {
+	client := &controlClient{
+		conn:     conn,
+		commands: map[string]context.CancelFunc{},
+	}
+	if conn != nil {
+		client.enc = json.NewEncoder(conn)
+	}
+	return client
+}
+
+func (c *controlClient) send(response controlResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.enc == nil {
+		return
+	}
+	_ = c.enc.Encode(response)
+}
+
+func (c *controlClient) sendError(request controlMessage, err error) {
+	c.send(controlResponse{
+		ID:     request.ID,
+		Type:   "error",
+		Status: "error",
+		Error:  err.Error(),
+	})
+}
+
+func (c *controlClient) trackCommand(key string, cancel context.CancelFunc) bool {
+	c.commandsMu.Lock()
+	defer c.commandsMu.Unlock()
+	if c.closed {
+		return false
+	}
+	c.commands[key] = cancel
+	return true
+}
+
+func (c *controlClient) untrackCommand(key string) {
+	c.commandsMu.Lock()
+	defer c.commandsMu.Unlock()
+	delete(c.commands, key)
+}
+
+func (c *controlClient) close() {
+	c.commandsMu.Lock()
+	if c.closed {
+		c.commandsMu.Unlock()
+		return
+	}
+	c.closed = true
+	cancels := make([]context.CancelFunc, 0, len(c.commands))
+	for _, cancel := range c.commands {
+		cancels = append(cancels, cancel)
+	}
+	c.commands = map[string]context.CancelFunc{}
+	c.commandsMu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+func (c *controlClient) runShellCommandAsync(s *muxServer, request controlMessage) {
+	commandKey := fmt.Sprintf("%s/%d", request.ID, time.Now().UnixNano())
+	go func() {
+		output, exitCode, err := c.runShellCommand(s, commandKey, request.Command)
+		if err != nil {
+			c.sendError(request, err)
+			return
+		}
+		c.send(controlResponse{
+			ID:       request.ID,
+			Type:     "command_output",
+			Status:   "ok",
+			Session:  s.session,
+			Data:     output,
+			ExitCode: exitCode,
+		})
+	}()
+}
+
+func (c *controlClient) runShellCommand(
+	s *muxServer,
+	commandKey string,
+	command string,
+) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	if !c.trackCommand(commandKey, cancel) {
+		cancel()
+		return "", 0, errRunCommandClientClosed
+	}
+	defer c.untrackCommand(commandKey)
+	defer cancel()
+	return s.runShellCommandContext(ctx, command)
+}
+
+func (s *muxServer) broadcast(response controlResponse) {
+	s.mu.Lock()
+	clients := make([]*controlClient, 0, len(s.controls))
+	for client := range s.controls {
+		clients = append(clients, client)
+	}
+	s.mu.Unlock()
+	for _, client := range clients {
+		client.send(response)
+	}
+}
+
+func (s *muxServer) broadcastWindowList(eventType string) {
+	s.broadcast(controlResponse{
+		Type:    eventType,
+		Session: s.session,
+		Windows: s.snapshots(),
+	})
+}
+
+func (s *muxServer) snapshots() []windowSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotsLocked()
+}
+
+func (s *muxServer) snapshotsLocked() []windowSnapshot {
+	windows := make([]windowSnapshot, 0, len(s.windows))
+	for _, window := range s.windows {
+		if window.closed {
+			continue
+		}
+		windows = append(windows, s.snapshotLocked(window))
+	}
+	return windows
+}
+
+func (s *muxServer) snapshot(window *muxWindow) windowSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotLocked(window)
+}
+
+func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
+	window.refreshProcessMetadataLocked(time.Now())
+	flags := ""
+	if window.alert {
+		flags = "#"
+	}
+	return windowSnapshot{
+		ID:                       window.id,
+		Index:                    window.index,
+		Name:                     window.name,
+		Active:                   s.activeID == window.id,
+		CurrentCommand:           window.currentCommandLocked(),
+		CurrentPath:              window.cwd,
+		PanePid:                  window.metadataProcessIDLocked(),
+		Flags:                    flags,
+		PaneTitle:                window.paneTitle,
+		AgentTool:                window.agentToolLocked(),
+		LastActivityEpochSeconds: window.lastActivity.Unix(),
+	}
+}
+
+func (s *muxServer) runShellCommand(command string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runCommandTimeout)
+	defer cancel()
+	return s.runShellCommandContext(ctx, command)
+}
+
+func (s *muxServer) runShellCommandContext(
+	ctx context.Context,
+	command string,
+) (string, int, error) {
+	s.mu.Lock()
+	cwd := ""
+	if window := s.windowByIDLocked(s.activeID); window != nil {
+		cwd = window.cwd
+	}
+	s.mu.Unlock()
+
+	shell := commandShellPath()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	output := newBoundedCommandOutput(runCommandOutputMaxBytes, cancel)
+	cmd := exec.Command(shell, "-c", command)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Stdout = output
+	cmd.Stderr = output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return "", 0, err
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	var err error
+	select {
+	case err = <-waitCh:
+	case <-ctx.Done():
+		killCommandProcessGroup(cmd)
+		err = <-waitCh
+	}
+
+	if output.exceeded() {
+		return output.String(), 0, errRunCommandOutputLimit
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return output.String(), 0, errRunCommandTimeout
+	}
+	if ctx.Err() == context.Canceled {
+		return output.String(), 0, errRunCommandCanceled
+	}
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return "", 0, err
+		}
+	}
+	return output.String(), exitCode, nil
+}
+
+func commandShellPath() string {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	switch filepath.Base(shell) {
+	case "sh", "bash", "zsh", "ksh", "dash":
+		return shell
+	default:
+		return "/bin/sh"
+	}
+}
+
+func killCommandProcessGroup(cmd *exec.Cmd) {
+	signalCommandProcessGroup(cmd, syscall.SIGKILL)
+}
+
+func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if cmd.Process.Pid > 0 {
+		_ = syscall.Kill(-cmd.Process.Pid, signal)
+	}
+	_ = cmd.Process.Signal(signal)
+}
+
+type boundedCommandOutput struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	limit     int
+	cancel    context.CancelFunc
+	overLimit bool
+}
+
+func newBoundedCommandOutput(
+	limit int,
+	cancel context.CancelFunc,
+) *boundedCommandOutput {
+	return &boundedCommandOutput{limit: limit, cancel: cancel}
+}
+
+func (o *boundedCommandOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	remaining := o.limit - o.buffer.Len()
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		_, _ = o.buffer.Write(p[:remaining])
+	}
+	exceededNow := len(p) > remaining && !o.overLimit
+	if len(p) > remaining {
+		o.overLimit = true
+	}
+	cancel := o.cancel
+	o.mu.Unlock()
+
+	if exceededNow && cancel != nil {
+		cancel()
+	}
+	return len(p), nil
+}
+
+func (o *boundedCommandOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buffer.String()
+}
+
+func (o *boundedCommandOutput) exceeded() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.overLimit
+}
+
+func (s *muxServer) selectWindow(windowID string) error {
+	var attach net.Conn
+	var replay []byte
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("window %q not found", windowID)
+	}
+	s.activeID = windowID
+	window.alert = false
+	s.resizeActiveLocked(s.width, s.height)
+	attach = s.attachConn
+	replay = s.replayBytesLocked(window)
+	s.mu.Unlock()
+	s.broadcastWindowList("active_window_changed")
+	s.writeAttach(attach, replay)
+	return nil
+}
+
+func (s *muxServer) closeWindow(windowID string) (bool, error) {
+	var attach net.Conn
+	var replay []byte
+	var activeChanged bool
+	var shouldShutdown bool
+	var command *exec.Cmd
+	var windowPty *os.File
+	var snapshots []windowSnapshot
+
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		return false, fmt.Errorf("window %q not found", windowID)
+	}
+	openCount := 0
+	for _, candidate := range s.windows {
+		if !candidate.closed {
+			openCount++
+		}
+	}
+	if s.activeID == windowID {
+		replacement := s.replacementWindowForClosedLocked(window)
+		if replacement != nil {
+			s.activeID = replacement.id
+			replacement.alert = false
+			s.resizeActiveLocked(s.width, s.height)
+			attach = s.attachConn
+			replay = s.replayBytesLocked(replacement)
+			activeChanged = true
+		} else {
+			s.activeID = ""
+		}
+	}
+	window.closed = true
+	window.alert = false
+	command = window.cmd
+	windowPty = window.pty
+	s.reindexWindowsLocked()
+	snapshots = s.snapshotsLocked()
+	shouldShutdown = openCount <= 1 || len(snapshots) == 0
+	s.mu.Unlock()
+
+	s.broadcast(controlResponse{
+		Type:    "window_removed",
+		Session: s.session,
+		Window:  &windowSnapshot{ID: windowID},
+	})
+	s.broadcast(controlResponse{
+		Type:    "window_list",
+		Session: s.session,
+		Windows: snapshots,
+	})
+	if activeChanged {
+		s.broadcast(controlResponse{
+			Type:    "active_window_changed",
+			Session: s.session,
+			Windows: snapshots,
+		})
+		s.writeAttach(attach, replay)
+	}
+	signalCommandProcessGroup(command, syscall.SIGHUP)
+	if windowPty != nil {
+		_ = windowPty.Close()
+	}
+	return shouldShutdown, nil
+}
+
+func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWindow {
+	for _, candidate := range s.windows {
+		if candidate.closed || candidate.id == closing.id {
+			continue
+		}
+		if candidate.index > closing.index {
+			return candidate
+		}
+	}
+	for _, candidate := range s.windows {
+		if !candidate.closed && candidate.id != closing.id {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func (s *muxServer) resize(width int, height int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.width = width
+	s.height = height
+	s.resizeActiveLocked(width, height)
+}
+
+func (s *muxServer) resizeActiveLocked(width int, height int) {
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed || window.pty == nil {
+		return
+	}
+	_ = pty.Setsize(window.pty, &pty.Winsize{
+		Rows: uint16(height),
+		Cols: uint16(width),
+	})
+}
+
+func (s *muxServer) activeReplayLocked() []byte {
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		return nil
+	}
+	return s.replayBytesLocked(window)
+}
+
+func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	history := stripTerminalQueriesFromReplay(window.history)
+	history = trimReplayHistoryForAttach(history)
+	title := terminalTitleReplaySequence(window)
+	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
+	replay := make(
+		[]byte,
+		0,
+		len(activeWindowReplayPrefix)+len(title)+len(history)+len(cursor),
+	)
+	replay = append(replay, activeWindowReplayPrefix...)
+	replay = append(replay, title...)
+	replay = append(replay, history...)
+	replay = append(replay, cursor...)
+	return replay
+}
+
+func terminalTitleReplaySequence(window *muxWindow) []byte {
+	title := ""
+	if window != nil {
+		title = firstNonEmptyString(window.paneTitle, window.name)
+	}
+	title = sanitizeTerminalTitle(title)
+	return []byte("\x1b]0;" + title + "\x07\x1b]1;" + title + "\x07\x1b]2;" + title + "\x07")
+}
+
+func sanitizeTerminalTitle(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
+}
+
+func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
+	if conn == nil || len(data) == 0 {
+		return
+	}
+	s.attachMu.Lock()
+	_, err := conn.Write(data)
+	s.attachMu.Unlock()
+	if err != nil {
+		s.mu.Lock()
+		if s.attachConn == conn {
+			s.attachConn = nil
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *muxServer) writeActive(data []byte) {
+	_ = s.writeWindow(s.activeWindowID(), data)
+}
+
+func (s *muxServer) sendThemeHint(data string) bool {
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		return false
+	}
+	window.refreshProcessMetadataLocked(time.Now())
+	if !window.supportsThemeHintLocked() {
+		s.mu.Unlock()
+		return false
+	}
+	windowID := window.id
+	s.mu.Unlock()
+
+	if data != "" {
+		return s.writeWindow(windowID, []byte(data)) == nil
+	}
+	go func() {
+		_ = s.writeWindow(windowID, []byte("\x1b[O"))
+		time.Sleep(50 * time.Millisecond)
+		_ = s.writeWindow(windowID, []byte("\x1b[I"))
+	}()
+	return true
+}
+
+func (s *muxServer) writeWindow(windowID string, data []byte) error {
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	s.mu.Unlock()
+	if window == nil || window.closed {
+		return fmt.Errorf("window %q not found", windowID)
+	}
+	_, err := window.pty.Write(data)
+	return err
+}
+
+func (s *muxServer) activeWindow() *muxWindow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.windowByIDLocked(s.activeID)
+}
+
+func (s *muxServer) activeWindowID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeID
+}
+
+func (s *muxServer) windowIDForIndex(index int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, window := range s.windows {
+		if !window.closed && window.index == index {
+			return window.id
+		}
+	}
+	return ""
+}
+
+func (s *muxServer) windowByIDLocked(windowID string) *muxWindow {
+	for _, window := range s.windows {
+		if window.id == windowID {
+			return window
+		}
+	}
+	return nil
+}
+
+func (w *muxWindow) appendHistoryLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	if len(chunk) >= windowHistoryLimitBytes {
+		w.history = append(
+			w.history[:0],
+			chunk[len(chunk)-windowHistoryLimitBytes:]...,
+		)
+		return
+	}
+	w.history = append(w.history, chunk...)
+	if overflow := len(w.history) - windowHistoryLimitBytes; overflow > 0 {
+		copy(w.history, w.history[overflow:])
+		w.history = w.history[:windowHistoryLimitBytes]
+	}
+}
+
+func trimReplayHistoryForAttach(history []byte) []byte {
+	if len(history) <= windowReplayLimitBytes {
+		return history
+	}
+	start := len(history) - windowReplayLimitBytes
+	scanEnd := start + 2048
+	if scanEnd > len(history) {
+		scanEnd = len(history)
+	}
+	for i := start; i < scanEnd; i++ {
+		switch history[i] {
+		case '\x1b', '\n', '\r':
+			return history[i:]
+		}
+	}
+	return history[start:]
+}
+
+func containsTerminalBell(data []byte) bool {
+	return bytes.IndexByte(data, '\a') >= 0
+}
+
+func stripTerminalQueriesFromReplay(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+
+	var output []byte
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' || i+1 >= len(data) {
+			output = append(output, data[i])
+			i++
+			continue
+		}
+		next := data[i+1]
+		if next == '[' {
+			end := csiSequenceEnd(data, i+2)
+			if end < 0 {
+				output = append(output, data[i:]...)
+				break
+			}
+			sequence := data[i : end+1]
+			if isReplayUnsafeCsiQuery(sequence) {
+				i = end + 1
+				continue
+			}
+		} else if next == ']' {
+			end, terminatorLength, ok := findOscTerminator(data[i+2:])
+			if !ok {
+				output = append(output, data[i:]...)
+				break
+			}
+			payload := data[i+2 : i+2+end]
+			if isReplayUnsafeOscQuery(payload) {
+				i += 2 + end + terminatorLength
+				continue
+			}
+		}
+		output = append(output, data[i])
+		i++
+	}
+	if output == nil {
+		return data
+	}
+	return output
+}
+
+func csiSequenceEnd(data []byte, start int) int {
+	for i := start; i < len(data); i++ {
+		if data[i] >= 0x40 && data[i] <= 0x7e {
+			return i
+		}
+	}
+	return -1
+}
+
+func isReplayUnsafeCsiQuery(sequence []byte) bool {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return false
+	}
+	final := sequence[len(sequence)-1]
+	params := string(sequence[2 : len(sequence)-1])
+	switch final {
+	case 'c':
+		return params == "" ||
+			params == "0" ||
+			strings.HasPrefix(params, "?") ||
+			strings.HasPrefix(params, ">")
+	case 'n':
+		return params == "5" ||
+			params == "6" ||
+			params == "?6" ||
+			params == "?15" ||
+			params == "?25" ||
+			params == "?26" ||
+			params == "?53"
+	default:
+		return false
+	}
+}
+
+func isReplayUnsafeOscQuery(payload []byte) bool {
+	code, value, ok := strings.Cut(string(payload), ";")
+	if !ok || !strings.Contains(value, "?") {
+		return false
+	}
+	switch code {
+	case "4", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *muxWindow) processID() int {
+	if w == nil || w.cmd == nil || w.cmd.Process == nil {
+		return 0
+	}
+	return w.cmd.Process.Pid
+}
+
+func (w *muxWindow) metadataProcessIDLocked() int {
+	if w.foregroundPid > 0 {
+		return w.foregroundPid
+	}
+	return w.processID()
+}
+
+func (w *muxWindow) currentCommandLocked() string {
+	if strings.TrimSpace(w.foregroundCommand) != "" {
+		return w.foregroundCommand
+	}
+	return w.command
+}
+
+func (w *muxWindow) agentToolLocked() string {
+	if tool := agentToolFromCommandName(w.currentCommandLocked()); tool != "" {
+		return tool
+	}
+	if tool := strings.TrimSpace(w.agentTool); tool != "" {
+		return tool
+	}
+	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
+		return tool
+	}
+	return agentToolFromCommandName(w.name)
+}
+
+func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
+	return windowBroadcastIdentity{
+		name:      w.name,
+		cwd:       w.cwd,
+		command:   w.currentCommandLocked(),
+		paneTitle: w.paneTitle,
+		agentTool: w.agentToolLocked(),
+		panePid:   w.metadataProcessIDLocked(),
+		alert:     w.alert,
+	}
+}
+
+func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
+	if w == nil || w.pty == nil {
+		return
+	}
+	if !w.lastProcessMetadataRefresh.IsZero() &&
+		now.Sub(w.lastProcessMetadataRefresh) < processMetadataInterval {
+		return
+	}
+	w.lastProcessMetadataRefresh = now
+
+	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return
+	}
+	w.foregroundPid = pgrp
+	if command := commandNameForProcessGroup(pgrp); command != "" {
+		w.foregroundCommand = command
+	}
+}
+
+func (w *muxWindow) supportsThemeHintLocked() bool {
+	return w.focusModeEnabled && w.agentToolLocked() != ""
+}
+
+func commandNameForProcessGroup(pgrp int) string {
+	if pgrp <= 0 {
+		return ""
+	}
+	directCommand := commandNameForPID(pgrp)
+	if directCommand != "" &&
+		!isGenericRuntimeCommandName(directCommand) &&
+		!isShellCommandName(directCommand) {
+		return directCommand
+	}
+
+	fallback := directCommand
+	if agentToolFromCommandName(fallback) != "" {
+		return fallback
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,pgid=,comm=,args=").Output()
+	if err != nil || ctx.Err() != nil {
+		return fallback
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[1] != strconv.Itoa(pgrp) {
+			continue
+		}
+		command := commandNameFromProcessFields(fields[2], strings.Join(fields[3:], " "))
+		if command == "" {
+			continue
+		}
+		if agentToolFromCommandName(command) != "" {
+			return command
+		}
+		if fields[0] == strconv.Itoa(pgrp) &&
+			!isGenericRuntimeCommandName(command) {
+			return command
+		}
+		if fallback == "" ||
+			(!isShellCommandName(command) &&
+				!isGenericRuntimeCommandName(command)) {
+			fallback = command
+		}
+	}
+	return fallback
+}
+
+func commandNameForPID(pid int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=", "-o", "args=").Output()
+	if err == nil && ctx.Err() == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			if command := commandNameFromProcessFields(fields[0], strings.Join(fields[1:], " ")); command != "" {
+				return command
+			}
+		}
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err = exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil || ctx.Err() != nil {
+		return ""
+	}
+	return cleanProcessCommandName(string(output))
+}
+
+func commandNameFromProcessFields(command string, args string) string {
+	if agentCommand := agentCommandNameFromProcessArgs(args); agentCommand != "" {
+		return agentCommand
+	}
+	if command := cleanProcessCommandName(command); command != "" {
+		return command
+	}
+	return cleanProcessCommandName(args)
+}
+
+func cleanProcessCommandName(value string) string {
+	for _, line := range strings.Split(value, "\n") {
+		command := strings.TrimSpace(line)
+		if command == "" {
+			continue
+		}
+		command = strings.Fields(command)[0]
+		command = strings.Trim(command, `"'`)
+		command = filepath.Base(command)
+		command = strings.TrimSuffix(command, ".exe")
+		command = strings.TrimSuffix(command, ".js")
+		return command
+	}
+	return ""
+}
+
+func agentCommandNameFromProcessArgs(args string) string {
+	trimmed := strings.TrimSpace(args)
+	if trimmed == "" {
+		return ""
+	}
+	for _, token := range strings.Fields(trimmed) {
+		command := cleanProcessCommandName(token)
+		if agentToolFromCommandName(command) != "" {
+			return canonicalAgentCommandName(command)
+		}
+	}
+
+	lowered := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(lowered, "@google/gemini-cli") ||
+		strings.Contains(lowered, "/gemini-cli/") ||
+		strings.Contains(lowered, "/gemini.js"):
+		return "gemini"
+	case strings.Contains(lowered, "@openai/codex") ||
+		strings.Contains(lowered, "/codex/bin/codex") ||
+		strings.Contains(lowered, "/codex.js"):
+		return "codex"
+	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
+		strings.Contains(lowered, "/claude-code/"):
+		return "claude"
+	default:
+		return ""
+	}
+}
+
+func agentToolFromCommandText(command string) string {
+	return firstNonEmptyString(
+		agentToolFromCommandName(commandNameFromShellCommand(command)),
+		agentToolFromCommandName(agentCommandNameFromProcessArgs(command)),
+	)
+}
+
+func agentToolFromCommandName(command string) string {
+	normalized := strings.ToLower(cleanProcessCommandName(command))
+	switch normalized {
+	case "claude", "claude-code":
+		return "claude"
+	case "copilot", "github-copilot":
+		return "copilot"
+	case "codex", "codex-cli":
+		return "codex"
+	case "opencode", "open-code":
+		return "opencode"
+	case "gemini", "gemini-cli":
+		return "gemini"
+	default:
+		return ""
+	}
+}
+
+func canonicalAgentCommandName(command string) string {
+	return firstNonEmptyString(agentToolFromCommandName(command), cleanProcessCommandName(command))
+}
+
+func agentToolFromTerminalTitle(title string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(title), " "))
+	normalized = strings.Trim(normalized, "·-: ")
+	switch {
+	case normalized == "claude" || normalized == "claude code" ||
+		strings.HasPrefix(normalized, "claude code "):
+		return "claude"
+	case normalized == "copilot" || normalized == "copilot cli" ||
+		strings.HasPrefix(normalized, "copilot cli "):
+		return "copilot"
+	case normalized == "codex" || strings.HasPrefix(normalized, "codex "):
+		return "codex"
+	case normalized == "opencode" || normalized == "open code" ||
+		strings.HasPrefix(normalized, "opencode "):
+		return "opencode"
+	case normalized == "gemini" || normalized == "gemini cli" ||
+		strings.HasPrefix(normalized, "gemini cli "):
+		return "gemini"
+	default:
+		return ""
+	}
+}
+
+func isGenericRuntimeCommandName(command string) bool {
+	switch strings.ToLower(cleanProcessCommandName(command)) {
+	case "node", "nodejs", "npm", "npx", "bun", "deno", "python", "python3":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShellCommandName(command string) bool {
+	switch strings.ToLower(cleanProcessCommandName(command)) {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandNameFromShellCommand(command string) string {
+	normalized := strings.TrimSpace(command)
+	for normalized != "" {
+		if match := leadingCdCommandPattern.FindStringIndex(normalized); match != nil && match[0] == 0 {
+			normalized = strings.TrimSpace(normalized[match[1]:])
+			continue
+		}
+		if match := leadingEnvPattern.FindStringIndex(normalized); match != nil && match[0] == 0 {
+			normalized = strings.TrimSpace(normalized[match[1]:])
+			continue
+		}
+		break
+	}
+	token := leadingShellToken(normalized)
+	if token == "" {
+		return ""
+	}
+	return cleanProcessCommandName(token)
+}
+
+func leadingShellToken(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if quote := trimmed[0]; quote == '\'' || quote == '"' {
+		if end := strings.IndexByte(trimmed[1:], quote); end >= 0 {
+			return trimmed[1 : end+1]
+		}
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	data := chunk
+	if len(w.csiBuffer) > 0 {
+		combined := make([]byte, 0, len(w.csiBuffer)+len(chunk))
+		combined = append(combined, w.csiBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.csiBuffer = nil
+	}
+
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return
+		}
+		if escapeIndex+1 >= len(data) {
+			w.storePartialCsiLocked(data[escapeIndex:])
+			return
+		}
+		if data[escapeIndex+1] != '[' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		end := csiSequenceEnd(data, escapeIndex+2)
+		if end < 0 {
+			w.storePartialCsiLocked(data[escapeIndex:])
+			return
+		}
+		final := data[end]
+		if final == 'h' || final == 'l' {
+			params := string(data[escapeIndex+2 : end])
+			enabled := final == 'h'
+			if csiPrivateModeEnabled(params, "25") {
+				w.cursorVisible = enabled
+				w.cursorVisibilityKnown = true
+			}
+			if csiPrivateModeEnabled(params, "1004") {
+				w.focusModeEnabled = enabled
+			}
+		}
+		data = data[end+1:]
+	}
+}
+
+func (w *muxWindow) storePartialCsiLocked(data []byte) {
+	if len(data) > csiBufferLimitBytes {
+		w.csiBuffer = nil
+		return
+	}
+	w.csiBuffer = append(w.csiBuffer[:0], data...)
+}
+
+func csiPrivateModeEnabled(params string, mode string) bool {
+	if !strings.HasPrefix(params, "?") {
+		return false
+	}
+	for _, part := range strings.Split(strings.TrimPrefix(params, "?"), ";") {
+		if part == mode {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *muxWindow) cursorVisibleForReplayLocked() bool {
+	return !w.cursorVisibilityKnown || w.cursorVisible
+}
+
+func cursorVisibilityReplaySequence(visible bool) string {
+	if visible {
+		return "\x1b[?25h"
+	}
+	return "\x1b[?25l"
+}
+
+func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	data := chunk
+	if len(w.oscBuffer) > 0 {
+		combined := make([]byte, 0, len(w.oscBuffer)+len(chunk))
+		combined = append(combined, w.oscBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.oscBuffer = nil
+	}
+
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return
+		}
+		if escapeIndex+1 >= len(data) {
+			w.storePartialOscLocked(data[escapeIndex:])
+			return
+		}
+		if data[escapeIndex+1] != ']' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		payloadStart := escapeIndex + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			w.storePartialOscLocked(data[escapeIndex:])
+			return
+		}
+		w.applyOscPayloadLocked(string(data[payloadStart : payloadStart+payloadEnd]))
+		data = data[payloadStart+payloadEnd+terminatorLength:]
+	}
+}
+
+func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\a':
+			return i, 1, true
+		case '\x1b':
+			if i+1 >= len(data) {
+				return 0, 0, false
+			}
+			if data[i+1] == '\\' {
+				return i, 2, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func (w *muxWindow) storePartialOscLocked(data []byte) {
+	if len(data) > oscBufferLimitBytes {
+		w.oscBuffer = nil
+		return
+	}
+	w.oscBuffer = append(w.oscBuffer[:0], data...)
+}
+
+func (w *muxWindow) applyOscPayloadLocked(payload string) {
+	code, value, ok := strings.Cut(payload, ";")
+	if !ok {
+		return
+	}
+	switch code {
+	case "0", "1", "2":
+		title := cleanTerminalTitle(value)
+		if title == "" {
+			return
+		}
+		w.paneTitle = title
+		w.name = title
+	case "7":
+		path := pathFromOsc7(value)
+		if path != "" {
+			w.cwd = path
+		}
+	}
+}
+
+func cleanTerminalTitle(value string) string {
+	title := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) <= maxTitleBytes {
+		return title
+	}
+	for i := range title {
+		if i > maxTitleBytes {
+			return title[:i]
+		}
+	}
+	return title
+}
+
+func pathFromOsc7(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "file" {
+		return ""
+	}
+	path, err := url.PathUnescape(parsed.Path)
+	if err != nil || !strings.HasPrefix(path, "/") {
+		return ""
+	}
+	return path
+}
+
+func (s *muxServer) clearAlertsLocked(activeID string) {
+	for _, window := range s.windows {
+		if window.id == activeID {
+			window.alert = false
+		}
+	}
+}
+
+func (s *muxServer) reindexWindowsLocked() {
+	index := 0
+	for _, window := range s.windows {
+		if window.closed {
+			continue
+		}
+		window.index = index
+		index++
+	}
+}
+
+func (s *muxServer) close() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	listener := s.listener
+	s.listener = nil
+	attach := s.attachConn
+	s.attachConn = nil
+	controls := make([]*controlClient, 0, len(s.controls))
+	for control := range s.controls {
+		controls = append(controls, control)
+	}
+	windows := append([]*muxWindow(nil), s.windows...)
+	s.mu.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+	if attach != nil {
+		_ = attach.Close()
+	}
+	for _, control := range controls {
+		_ = control.conn.Close()
+	}
+	for _, window := range windows {
+		signalCommandProcessGroup(window.cmd, syscall.SIGHUP)
+		if window.pty != nil {
+			_ = window.pty.Close()
+		}
+	}
+}
+
+func (s *muxServer) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+type runningServerStatus struct {
+	version      string
+	capabilities []string
+}
+
+func (s runningServerStatus) displayVersion() string {
+	if strings.TrimSpace(s.version) == "" {
+		return "unknown"
+	}
+	return s.version
+}
+
+func (s runningServerStatus) supportsCapability(capability string) bool {
+	for _, value := range s.capabilities {
+		if value == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func promptForServerUpdate(
+	reader io.Reader,
+	writer io.Writer,
+	session string,
+	status runningServerStatus,
+) bool {
+	fmt.Fprintf(
+		writer,
+		"\r\nMonkeyMux session %q is running with helper %s; this app includes helper %s.\r\n",
+		session,
+		status.displayVersion(),
+		monkeyMuxVersion,
+	)
+	if status.supportsCapability("shutdown") {
+		fmt.Fprint(
+			writer,
+			"Update now? This will close existing MonkeyMux windows for this session. [y/N] ",
+		)
+	} else {
+		fmt.Fprint(
+			writer,
+			"Update now? This old helper cannot close itself; updating may abandon existing MonkeyMux windows. [y/N] ",
+		)
+	}
+	answer, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil {
+		fmt.Fprint(writer, "\r\nmonkeymux: update skipped; continuing existing session.\r\n")
+		return false
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer == "y" || answer == "yes" {
+		return true
+	}
+	fmt.Fprint(writer, "monkeymux: update skipped; continuing existing session.\r\n")
+	return false
+}
+
+func shouldUpdateRunningServer(
+	reader io.Reader,
+	writer io.Writer,
+	session string,
+	status runningServerStatus,
+	updatePolicy string,
+) bool {
+	switch updatePolicy {
+	case serverUpdatePolicyNever:
+		return false
+	case serverUpdatePolicyAlways:
+		return true
+	default:
+		return promptForServerUpdate(reader, writer, session, status)
+	}
+}
+
+func normalizeServerUpdatePolicy(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", serverUpdatePolicyPrompt:
+		return serverUpdatePolicyPrompt, nil
+	case serverUpdatePolicyNever:
+		return serverUpdatePolicyNever, nil
+	case serverUpdatePolicyAlways:
+		return serverUpdatePolicyAlways, nil
+	default:
+		return "", fmt.Errorf("invalid update policy %q", value)
+	}
+}
+
+func queryRunningServerStatus(session string) (runningServerStatus, error) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return runningServerStatus{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return runningServerStatus{}, err
+	}
+	var hello controlResponse
+	if err := dec.Decode(&hello); err != nil {
+		return runningServerStatus{}, err
+	}
+	return runningServerStatus{
+		version:      hello.Version,
+		capabilities: hello.Capabilities,
+	}, nil
+}
+
+func requestServerShutdown(session string) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return
+	}
+	var ignored controlResponse
+	if err := dec.Decode(&ignored); err != nil {
+		return
+	}
+	_ = enc.Encode(controlMessage{
+		ID:      strconv.FormatInt(time.Now().UnixNano(), 10),
+		Type:    "shutdown",
+		Session: session,
+	})
+}
+
+func waitForServerExit(session string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := dialSession(session)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func defaultShellPath() string {
+	shell := os.Getenv("SHELL")
+	if strings.TrimSpace(shell) == "" {
+		return "/bin/sh"
+	}
+	return shell
+}
+
+func shellCommand(shell string) *exec.Cmd {
+	cmd := exec.Command(shell)
+	if base := filepath.Base(shell); base != "" {
+		cmd.Args[0] = "-" + base
+	}
+	return cmd
+}
+
+func shellCommandForScript(shell string, command string) *exec.Cmd {
+	cmd := exec.Command(shell, "-i", "-c", command)
+	if base := filepath.Base(shell); base != "" {
+		cmd.Args[0] = "-" + base
+	}
+	return cmd
+}
+
+func inheritedEnvironment(base []string) []string {
+	result := make([]string, len(base))
+	copy(result, base)
+	return result
+}
+
+func expandHomePath(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path, err
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+}
+
+func firstShellWord(command string) string {
+	if command := agentCommandNameFromProcessArgs(command); command != "" {
+		return command
+	}
+	if command := commandNameFromShellCommand(command); command != "" {
+		return command
+	}
+	if strings.TrimSpace(command) == "" {
+		return "shell"
+	}
+	return cleanProcessCommandName(command)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func terminalSize() (int, int) {
+	if size, err := pty.GetsizeFull(os.Stdin); err == nil && size.Cols > 0 && size.Rows > 0 {
+		return int(size.Cols), int(size.Rows)
+	}
+	columns, rows, err := term.GetSize(int(os.Stdin.Fd()))
+	if err == nil && columns > 0 && rows > 0 {
+		return columns, rows
+	}
+	return defaultColumns, defaultRows
+}
+
+func makeTerminalRaw() func() {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return func() {}
+	}
+	state, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return func() {}
+	}
+	return func() {
+		_ = term.Restore(int(os.Stdin.Fd()), state)
+	}
+}
+
+func forwardResizeSignals(session string) func() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGWINCH)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-signals:
+				width, height := terminalSize()
+				sendResize(session, width, height)
+			case <-done:
+				return
+			}
+		}
+	}()
+	width, height := terminalSize()
+	sendResize(session, width, height)
+	return func() {
+		close(done)
+		signal.Stop(signals)
+	}
+}
+
+func sendResize(session string, width int, height int) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	_ = enc.Encode(controlMessage{Role: "control", Session: session})
+	_ = dec.Decode(&controlResponse{})
+	_ = dec.Decode(&controlResponse{})
+	_ = enc.Encode(controlMessage{
+		ID:      strconv.FormatInt(time.Now().UnixNano(), 10),
+		Type:    "resize",
+		Width:   width,
+		Height:  height,
+		Session: session,
+	})
+}
+
+func socketPath(session string) (string, error) {
+	dir, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(session))
+	return filepath.Join(dir, "monkeymux-"+hex.EncodeToString(sum[:])[:24]+".sock"), nil
+}
+
+func runtimeDirectory() (string, error) {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); strings.TrimSpace(dir) != "" {
+		path := filepath.Join(dir, "monkeyssh", "monkeymux")
+		return path, os.MkdirAll(path, 0o700)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(home, ".monkeyssh", "run")
+	return path, os.MkdirAll(path, 0o700)
+}
+
+func dialSession(session string) (net.Conn, error) {
+	socket, err := socketPath(session)
+	if err != nil {
+		return nil, err
+	}
+	return net.DialTimeout("unix", socket, 500*time.Millisecond)
+}
+
+func ptrWindowSnapshot(snapshot windowSnapshot) *windowSnapshot {
+	return &snapshot
+}
+
+func fatal(err error) {
+	fmt.Fprintf(os.Stderr, "monkeymux: %v\n", err)
+	os.Exit(1)
+}
+
+func init() {
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(os.Stderr, "monkeymux: windows is not supported by this POSIX build")
+		os.Exit(1)
+	}
+}

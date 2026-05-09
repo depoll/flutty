@@ -9,6 +9,7 @@ import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
+import 'terminal_connection_backend_service.dart';
 
 const _genericSessionSummaries = <String>{
   'untitled',
@@ -24,6 +25,7 @@ const _profileSourcingPrefix =
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
+const _geminiSessionMetadataMaxBytes = 64 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -629,13 +631,10 @@ parseGeminiSessionMetadata(
 }) {
   final decoded = _decodeJsonOrJsonlObject(raw);
   if (decoded == null) {
-    return (
-      sessionId: null,
-      summary: null,
-      workingDirectory: fallbackWorkingDirectory,
-      updatedAt: null,
-      isSubagent: false,
-      parsedAny: false,
+    return _parsePartialGeminiSessionMetadata(
+      raw,
+      activeWorkingDirectory: activeWorkingDirectory,
+      fallbackWorkingDirectory: fallbackWorkingDirectory,
     );
   }
 
@@ -661,6 +660,95 @@ parseGeminiSessionMetadata(
     isSubagent: _readStringField(decoded, 'kind') == 'subagent',
     parsedAny: true,
   );
+}
+
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool isSubagent,
+  bool parsedAny,
+})
+_parsePartialGeminiSessionMetadata(
+  String raw, {
+  String? activeWorkingDirectory,
+  String? fallbackWorkingDirectory,
+}) {
+  final sessionId = _readJsonStringFromRaw(raw, 'sessionId');
+  final storedSummary = _readJsonStringFromRaw(raw, 'summary');
+  final kind = _readJsonStringFromRaw(raw, 'kind');
+  final directories = _readJsonStringArrayFromRaw(raw, 'directories');
+  final resolvedWorkingDirectory =
+      _resolveGeminiWorkingDirectory(
+        directories,
+        activeWorkingDirectory: activeWorkingDirectory,
+      ) ??
+      fallbackWorkingDirectory;
+  final summary = (storedSummary?.trim().isNotEmpty ?? false)
+      ? _summarizeSessionText(storedSummary!)
+      : null;
+  final updatedAt =
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'lastUpdated')) ??
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'startTime'));
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      kind != null ||
+      directories != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: resolvedWorkingDirectory,
+    updatedAt: updatedAt,
+    isSubagent: kind == 'subagent',
+    parsedAny: parsedAny,
+  );
+}
+
+String? _readJsonStringFromRaw(String raw, String key) {
+  final pattern = RegExp(
+    '"${RegExp.escape(key)}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"',
+    multiLine: true,
+  );
+  final match = pattern.firstMatch(raw);
+  if (match == null) return null;
+  try {
+    final decoded = jsonDecode('"${match.group(1)}"');
+    return decoded is String ? decoded : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+List<Object?>? _readJsonStringArrayFromRaw(String raw, String key) {
+  final startPattern = RegExp(
+    '"${RegExp.escape(key)}"\\s*:\\s*\\[',
+    multiLine: true,
+  );
+  final startMatch = startPattern.firstMatch(raw);
+  if (startMatch == null) return null;
+  final start = startMatch.end;
+  final closingIndex = raw.indexOf(']', start);
+  final segment = raw.substring(
+    start,
+    closingIndex == -1 ? raw.length : closingIndex,
+  );
+  final values = <Object?>[];
+  final stringPattern = RegExp(r'"((?:\\.|[^"\\])*)"');
+  for (final match in stringPattern.allMatches(segment)) {
+    try {
+      final decoded = jsonDecode('"${match.group(1)}"');
+      if (decoded is String) {
+        values.add(decoded);
+      }
+    } on FormatException {
+      continue;
+    }
+  }
+  return values.isEmpty ? null : values;
 }
 
 /// Parses ACP `session/list` responses into unified session metadata.
@@ -1017,10 +1105,14 @@ List<ToolSessionInfo> scopeDiscoveredSessionsToWorkingDirectory(
 /// [ToolSessionInfo] entries.
 class AgentSessionDiscoveryService {
   /// Creates a new [AgentSessionDiscoveryService].
-  AgentSessionDiscoveryService({DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+  AgentSessionDiscoveryService({
+    DateTime Function()? now,
+    TerminalConnectionBackendService? terminalBackendService,
+  }) : _now = now ?? DateTime.now,
+       _terminalBackendService = terminalBackendService;
 
   final DateTime Function() _now;
+  final TerminalConnectionBackendService? _terminalBackendService;
   final Map<_AgentSessionDiscoveryKey, _CachedDiscoveryResult> _discoveryCache =
       <_AgentSessionDiscoveryKey, _CachedDiscoveryResult>{};
   final Map<_AgentSessionDiscoveryKey, Stream<DiscoveredSessionsResult>>
@@ -2150,6 +2242,7 @@ class AgentSessionDiscoveryService {
     final sessionSnapshots = await _readRemoteFileSnapshots(
       session,
       recentSessionPaths,
+      maxBytes: _geminiSessionMetadataMaxBytes,
     );
 
     var hadError = false;
@@ -2423,23 +2516,58 @@ class AgentSessionDiscoveryService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
-  Future<String> _exec(SshSession session, String command) =>
-      session.runQueuedExec(() async {
-        final execSession = await session.execute(
-          _markCommandDone('$_profileSourcingPrefix$command'),
-        );
-        try {
-          execSession.stderr.drain<void>().ignore();
-          return await _readStdoutUntilDoneMarker(execSession);
-        } finally {
-          execSession.close();
-        }
-      }, priority: SshExecPriority.low);
+  Future<String> _exec(SshSession session, String command) {
+    final controlChannelBackend = _controlChannelCommandBackend(session);
+    if (controlChannelBackend != null) {
+      return _execThroughControlChannel(controlChannelBackend, command);
+    }
+    return session.runQueuedExec(() async {
+      final execSession = await session.execute(
+        _markCommandDone('$_profileSourcingPrefix$command'),
+      );
+      try {
+        execSession.stderr.drain<void>().ignore();
+        return await _readStdoutUntilDoneMarker(execSession);
+      } finally {
+        execSession.close();
+      }
+    }, priority: SshExecPriority.low);
+  }
+
+  Future<String> _execThroughControlChannel(
+    TerminalConnectionBackend backend,
+    String command,
+  ) async {
+    final result = await backend.runClientCommand(
+      _markCommandDone('$_profileSourcingPrefix$command'),
+      priority: SshExecPriority.low,
+    );
+    return _stripDoneMarker(result.output);
+  }
+
+  TerminalConnectionBackend? _controlChannelCommandBackend(SshSession session) {
+    final terminalBackendService = _terminalBackendService;
+    if (terminalBackendService == null) return null;
+    final backend = terminalBackendService.resolve(session);
+    return backend.capabilities.clientCommandsUseControlChannel
+        ? backend
+        : null;
+  }
 
   static String _markCommandDone(String command) =>
       '{ $command; __flutty_agent_discovery_exec_status__=\$?; '
       'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
       r'"$__flutty_agent_discovery_exec_status__"; }';
+
+  static String _stripDoneMarker(String output) {
+    RegExpMatch? markerMatch;
+    for (final match in _execDoneMarkerLinePattern.allMatches(output)) {
+      markerMatch = match;
+    }
+    return markerMatch == null
+        ? output
+        : output.substring(0, markerMatch.start);
+  }
 
   static Future<String> _readStdoutUntilDoneMarker(
     SSHSession execSession,
@@ -2500,6 +2628,9 @@ class AgentSessionDiscoveryService {
     required String? workingDirectory,
     required int max,
   }) async {
+    if (_controlChannelCommandBackend(session) != null) {
+      return null;
+    }
     final scopedWorkingDirectories = _acpSessionListWorkingDirectories(
       workingDirectory,
     );
@@ -2716,6 +2847,7 @@ class AgentSessionDiscoveryService {
     SshSession session,
     Iterable<String> paths, {
     int? maxLines,
+    int? maxBytes,
     bool tail = false,
   }) async {
     final uniquePaths = paths
@@ -2761,7 +2893,13 @@ class AgentSessionDiscoveryService {
         )
         ..write(r'printf "%s%s%s%s" "$path" "$SEP" "${mtime:-}" "$SEP"; ');
 
-      if (maxLines == null) {
+      if (maxBytes != null) {
+        command.write(
+          r'$HEAD_BIN -c '
+          '$maxBytes'
+          r' "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; ',
+        );
+      } else if (maxLines == null) {
         command.write(
           r'$CAT_BIN "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; ',
         );
@@ -3281,5 +3419,9 @@ String? _resolveGeminiWorkingDirectory(
 /// Provider for [AgentSessionDiscoveryService].
 final agentSessionDiscoveryServiceProvider =
     Provider<AgentSessionDiscoveryService>(
-      (ref) => AgentSessionDiscoveryService(),
+      (ref) => AgentSessionDiscoveryService(
+        terminalBackendService: ref.watch(
+          terminalConnectionBackendServiceProvider,
+        ),
+      ),
     );
