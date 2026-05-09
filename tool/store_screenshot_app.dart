@@ -594,12 +594,12 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await Future<void>.delayed(const Duration(seconds: 4));
       await _announceScene(5);
 
-      debugPrint('STORE_SCREENSHOT_DONE');
+      debugPrintSynchronously('STORE_SCREENSHOT_DONE');
       await ref.read(databaseProvider).close();
       exit(0);
     } on Object catch (error, stackTrace) {
-      debugPrint('STORE_SCREENSHOT_ERROR $error');
-      debugPrint('$stackTrace');
+      debugPrintSynchronously('STORE_SCREENSHOT_ERROR $error');
+      debugPrintSynchronously('$stackTrace');
       await ref.read(databaseProvider).close();
       exit(1);
     }
@@ -619,7 +619,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       'index': index + 1,
       'paths': widget.target.pathsByScene[index],
     };
-    debugPrint('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
     await Future<void>.delayed(const Duration(seconds: 2));
   }
 

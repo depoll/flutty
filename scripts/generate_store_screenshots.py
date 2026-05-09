@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import pty
+import queue
 import re
 import shutil
 import select
@@ -19,6 +20,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import struct
 import termios
@@ -39,6 +41,12 @@ KEY_BYTES = {
     'Up': '\x1b[A',
     'C-l': '\x0c',
 }
+CLEAR_SCREEN_SEQUENCES = (
+    '\x1b[H\x1b[2J',
+    '\x1b[2J',
+    '\x1b[3J',
+    '\x0c',
+)
 
 
 @dataclass(frozen=True)
@@ -151,14 +159,7 @@ def _run_flutter_capture(
     if java_home:
         env['JAVA_HOME'] = java_home
 
-    command = [
-        'flutter',
-        'run',
-        '--debug',
-        '-d',
-        device_id,
-        '-t',
-        'tool/store_screenshot_app.dart',
+    dart_defines = [
         f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
         f'--dart-define=STORE_SCREENSHOT_SSH_PORT={demo.port}',
         f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={demo.username}',
@@ -170,8 +171,29 @@ def _run_flutter_capture(
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
+    command = [
+        'flutter',
+        'run',
+        '--debug',
+        '-d',
+        device_id,
+        '-t',
+        'tool/store_screenshot_app.dart',
+        *dart_defines,
+    ]
     if target.platform in ('android', 'ios'):
         command.extend(['--flavor', 'production'])
+    if target.platform == 'android':
+        apk_path = _build_android_screenshot_apk(env, dart_defines)
+        command = [
+            'flutter',
+            'run',
+            '-d',
+            device_id,
+            '--use-application-binary',
+            str(apk_path),
+            '--no-pub',
+        ]
 
     process = subprocess.Popen(
         command,
@@ -214,6 +236,29 @@ def _run_flutter_capture(
         if process.returncode not in (0, None):
             raise subprocess.CalledProcessError(process.returncode, command)
         raise RuntimeError(f'{target.name} run ended before all screenshots were captured')
+
+
+def _build_android_screenshot_apk(
+    env: dict[str, str],
+    dart_defines: list[str],
+) -> Path:
+    command = [
+        'flutter',
+        'build',
+        'apk',
+        '--debug',
+        '--flavor',
+        'production',
+        '-t',
+        'tool/store_screenshot_app.dart',
+        '--no-pub',
+        *dart_defines,
+    ]
+    subprocess.run(command, cwd=ROOT, env=env, check=True)
+    apk_path = ROOT / 'build/app/outputs/flutter-apk/app-production-debug.apk'
+    if not apk_path.exists():
+        raise RuntimeError(f'Android screenshot APK was not produced: {apk_path}')
+    return apk_path
 
 
 class StoreDemoEnvironment:
@@ -602,10 +647,13 @@ class StoreDemoEnvironment:
             ['Detected a custom API key', 'ANTHROPIC_API_KEY', 'dummy'],
         )
         self._monkeymux_send_keys('claude', 'Up', 'Enter')
-        self._wait_for_visible_text('claude', ['Press Enter to continue'])
+        self._wait_for_visible_text('claude', ['Press Ente'])
         self._monkeymux_send_keys('claude', 'Enter')
         self._wait_for_visible_text('claude', ['Yes, I trust this folder'])
         self._monkeymux_send_keys('claude', 'Enter')
+        self._wait_for_visible_text('claude', ['Claude Code'])
+        self._monkeymux_send_keys('claude', 'C-l')
+        time.sleep(2)
         self._wait_for_visible_text('claude', ['Claude Code'])
         time.sleep(3)
         self._assert_claude_pane_streamer_safe()
@@ -616,22 +664,22 @@ class StoreDemoEnvironment:
         self._monkeymux_send_keys('copilot', 'Enter')
         time.sleep(4)
         text = self._capture_visible_pane('copilot')
-        if 'Streamer mode enabled.' in text:
+        if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
             return
-        if 'Streamer mode disabled.' in text:
+        if _visible_text_contains_marker(text, 'Streamer mode disabled.'):
             self._monkeymux_send_literal('copilot', '/streamer')
             self._monkeymux_send_keys('copilot', 'Enter')
             time.sleep(4)
             text = self._capture_visible_pane('copilot')
-            if 'Streamer mode enabled.' in text:
+            if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
                 return
-        raise RuntimeError('Could not enable GitHub Copilot CLI streamer mode.')
+        self._assert_copilot_pane_streamer_safe()
 
     def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
         deadline = time.time() + 30
         while time.time() < deadline:
             text = self._capture_visible_pane(window)
-            if all(marker in text for marker in markers):
+            if all(_visible_text_contains_marker(text, marker) for marker in markers):
                 return
             time.sleep(1)
         raise RuntimeError(
@@ -651,6 +699,10 @@ class StoreDemoEnvironment:
         allow_billing_label: bool = False,
     ) -> None:
         text = self._capture_visible_pane(window)
+        if window == 'copilot':
+            text = _text_after_last_visible_marker(text, 'GitHub Copilot')
+        elif window == 'claude':
+            text = _text_after_last_visible_marker(text, 'Claude Code')
         private_patterns = [
             (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
             (
@@ -848,7 +900,10 @@ class _MonkeyMuxControl:
             text=True,
             bufsize=1,
         )
+        self._responses: queue.Queue[dict[str, object] | Exception] = queue.Queue()
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._counter = 0
+        self._reader.start()
         self._wait_for_hello()
 
     def request(
@@ -883,6 +938,7 @@ class _MonkeyMuxControl:
         if self._process.stdin is not None:
             self._process.stdin.close()
         _terminate_process(self._process, timeout=2)
+        self._reader.join(timeout=1)
 
     def _wait_for_hello(self) -> None:
         deadline = time.time() + 2
@@ -893,30 +949,28 @@ class _MonkeyMuxControl:
         raise RuntimeError('MonkeyMux control did not send hello.')
 
     def _read_response(self, timeout: float) -> dict[str, object]:
-        if self._process.stdout is None:
-            raise RuntimeError('MonkeyMux control stdout is unavailable.')
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        try:
+            response = self._responses.get(timeout=timeout)
+        except queue.Empty as error:
             if self._process.poll() is not None:
-                raise RuntimeError('MonkeyMux control process exited.')
-            readable, _, _ = select.select(
-                [self._process.stdout],
-                [],
-                [],
-                min(0.2, max(deadline - time.time(), 0)),
-            )
-            if not readable:
-                continue
-            line = self._process.stdout.readline()
-            if line == '':
-                raise RuntimeError('MonkeyMux control closed stdout.')
+                raise RuntimeError('MonkeyMux control process exited.') from error
+            raise RuntimeError('Timed out reading MonkeyMux control output.') from error
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def _read_loop(self) -> None:
+        if self._process.stdout is None:
+            self._responses.put(RuntimeError('MonkeyMux control stdout is unavailable.'))
+            return
+        for line in self._process.stdout:
             try:
                 decoded = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if isinstance(decoded, dict):
-                return decoded
-        raise RuntimeError('Timed out reading MonkeyMux control output.')
+                self._responses.put(decoded)
+        self._responses.put(RuntimeError('MonkeyMux control closed stdout.'))
 
 
 def _monkeymux_platform_key() -> str:
@@ -942,6 +996,7 @@ def _set_pty_size(fd: int, *, rows: int, columns: int) -> None:
 
 
 def _strip_terminal_output(text: str) -> str:
+    text = _latest_visible_screen_text(text)
     stripped = ANSI_ESCAPE_PATTERN.sub('', text)
     stripped = stripped.replace('\r\n', '\n').replace('\r', '\n')
     return ''.join(
@@ -950,6 +1005,35 @@ def _strip_terminal_output(text: str) -> str:
         else ' '
         for character in stripped
     )
+
+
+def _latest_visible_screen_text(text: str) -> str:
+    latest_end = -1
+    for sequence in CLEAR_SCREEN_SEQUENCES:
+        index = text.rfind(sequence)
+        if index >= 0:
+            latest_end = max(latest_end, index + len(sequence))
+    return text[latest_end:] if latest_end >= 0 else text
+
+
+def _visible_text_contains_marker(text: str, marker: str) -> bool:
+    if marker in text:
+        return True
+    compact_text = re.sub(r'\s+', '', text)
+    compact_marker = re.sub(r'\s+', '', marker)
+    return compact_marker in compact_text
+
+
+def _text_after_last_visible_marker(text: str, marker: str) -> str:
+    index = text.rfind(marker)
+    if index >= 0:
+        return text[index:]
+    compact_text = re.sub(r'\s+', '', text)
+    compact_marker = re.sub(r'\s+', '', marker)
+    compact_index = compact_text.rfind(compact_marker)
+    if compact_index >= 0:
+        return compact_text[compact_index:]
+    return text
 
 
 def _terminate_process(process: subprocess.Popen, *, timeout: float) -> None:
@@ -1040,6 +1124,12 @@ def _reset_ios_app_state(device_id: str) -> None:
         'xyz.depollsoft.monkeyssh',
         'xyz.depollsoft.monkeyssh.private',
     ):
+        subprocess.run(
+            ['xcrun', 'simctl', 'terminate', device_id, bundle_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
         subprocess.run(
             ['xcrun', 'simctl', 'uninstall', device_id, bundle_id],
             stdout=subprocess.DEVNULL,
