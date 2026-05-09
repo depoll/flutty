@@ -188,6 +188,49 @@ void main() {
       expect(requests.single.headers['authorization'], 'github gh-token');
     });
 
+    test('resolves relay connection metadata for raw SSH ports', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'accessTokens': {'connect': 'tunnel-connect-token'},
+              'endpoints': [
+                {
+                  'connectionMode': 'TunnelRelay',
+                  'clientRelayUri': 'wss://relay.example.test/client',
+                },
+              ],
+              'ports': [
+                {
+                  'portNumber': 22,
+                  'protocol': 'ssh',
+                  'accessTokens': {'connect': 'port-connect-token'},
+                },
+              ],
+            }),
+            200,
+          ),
+        ),
+      );
+
+      final info = await service.resolveConnectionInfo(
+        'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
+      );
+
+      expect(info.authorizationHeader, 'tunnel port-connect-token');
+      expect(info.clientRelayUri, Uri.parse('wss://relay.example.test/client'));
+      expect(info.portNumber, 22);
+      expect(info.protocol, 'ssh');
+    });
+
     test(
       'falls back to listed tunnel metadata when URL host is not tunnel ID',
       () async {
@@ -218,6 +261,13 @@ void main() {
                         {
                           'tunnelId': 'swift-fog-99j495s',
                           'name': 'Swift Fog',
+                          'endpoints': [
+                            {
+                              'connectionMode': 'TunnelRelay',
+                              'clientRelayUri':
+                                  'wss://relay.usw3.example.test/client',
+                            },
+                          ],
                           'ports': [
                             {
                               'portNumber': 31545,
@@ -250,12 +300,16 @@ void main() {
           }),
         );
 
-        final header = await service.resolveAuthorizationHeader(
+        final info = await service.resolveConnectionInfo(
           'https://39bjkbx1-31545.usw3.devtunnels.ms',
           port: 31545,
         );
 
-        expect(header, 'tunnel listed-port-token');
+        expect(info.authorizationHeader, 'tunnel listed-port-token');
+        expect(
+          info.clientRelayUri,
+          Uri.parse('wss://relay.usw3.example.test/client'),
+        );
         expect(requests, hasLength(3));
         expect(
           requests.last.url.toString(),
@@ -304,6 +358,16 @@ void main() {
                       'name': 'Mac mini',
                       'description': 'Desk machine',
                       'labels': ['ssh', 'office'],
+                      'status': {
+                        'hostConnectionCount': 1,
+                        'lastHostConnectionTime': '2026-05-09T16:00:00Z',
+                      },
+                      'endpoints': [
+                        {
+                          'connectionMode': 'TunnelRelay',
+                          'clientRelayUri': 'wss://relay.example.test',
+                        },
+                      ],
                       'ports': [
                         {
                           'portNumber': 22,
@@ -331,6 +395,13 @@ void main() {
       expect(tunnels.single.displayName, 'Mac mini');
       expect(tunnels.single.description, 'Desk machine');
       expect(tunnels.single.labels, ['ssh', 'office']);
+      expect(tunnels.single.regionName, 'US West 2');
+      expect(tunnels.single.hostConnectionCount, 1);
+      expect(tunnels.single.lastHostConnectionTime, isNotNull);
+      expect(
+        tunnels.single.clientRelayUri,
+        Uri.parse('wss://relay.example.test'),
+      );
       expect(tunnels.single.ports.single.tunnelId, 'abc');
       expect(tunnels.single.ports.single.clusterId, 'usw2');
       expect(tunnels.single.ports.single.portNumber, 22);

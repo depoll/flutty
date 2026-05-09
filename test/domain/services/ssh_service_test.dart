@@ -2048,23 +2048,42 @@ void main() {
         int? resolvedPort;
         String? connectedUrl;
         String? connectedAuthorizationHeader;
+        Uri? connectedClientRelayUri;
+        int? connectedPortNumber;
+        String? connectedProtocol;
         Duration? connectedTimeout;
 
         when(client.close).thenReturn(null);
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
-          devTunnelAuthorizationResolver: (url, {port}) async {
+          devTunnelConnectionResolver: (url, {port}) async {
             resolvedUrl = url;
             resolvedPort = port;
-            return 'tunnel connect-token';
+            return DevTunnelConnectionInfo(
+              authorizationHeader: 'tunnel connect-token',
+              portNumber: port,
+              protocol: 'ssh',
+              clientRelayUri: Uri.parse('wss://relay.example.test/client'),
+            );
           },
-          devTunnelConnector: (url, {authorizationHeader, timeout}) async {
-            connectedUrl = url;
-            connectedAuthorizationHeader = authorizationHeader;
-            connectedTimeout = timeout;
-            return socket;
-          },
+          devTunnelConnector:
+              (
+                url, {
+                authorizationHeader,
+                clientRelayUri,
+                portNumber,
+                protocol,
+                timeout,
+              }) async {
+                connectedUrl = url;
+                connectedAuthorizationHeader = authorizationHeader;
+                connectedClientRelayUri = clientRelayUri;
+                connectedPortNumber = portNumber;
+                connectedProtocol = protocol;
+                connectedTimeout = timeout;
+                return socket;
+              },
           clientFactory:
               (
                 socket, {
@@ -2102,6 +2121,12 @@ void main() {
         expect(resolvedPort, 22);
         expect(connectedUrl, 'https://abc-22.usw2.devtunnels.ms');
         expect(connectedAuthorizationHeader, 'tunnel connect-token');
+        expect(
+          connectedClientRelayUri,
+          Uri.parse('wss://relay.example.test/client'),
+        );
+        expect(connectedPortNumber, 22);
+        expect(connectedProtocol, 'ssh');
         expect(connectedTimeout, const Duration(seconds: 7));
       },
     );
@@ -2111,12 +2136,22 @@ void main() {
       addTearDown(db.close);
       final service = SshService(
         knownHostsRepository: KnownHostsRepository(db),
-        devTunnelAuthorizationResolver: (_, {port}) async {
+        devTunnelConnectionResolver: (_, {port}) async {
           throw const DevTunnelAuthException('Sign in to Dev Tunnels.');
         },
-        devTunnelConnector: (_, {authorizationHeader, timeout}) async {
-          throw const DevTunnelConnectionException('Unexpected socket open.');
-        },
+        devTunnelConnector:
+            (
+              _, {
+              authorizationHeader,
+              clientRelayUri,
+              portNumber,
+              protocol,
+              timeout,
+            }) async {
+              throw const DevTunnelConnectionException(
+                'Unexpected socket open.',
+              );
+            },
       );
 
       const config = SshConnectionConfig(

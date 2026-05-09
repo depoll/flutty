@@ -611,7 +611,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                     child: Text(
                                       'Choose the Dev Tunnel port that forwards to SSH. '
                                       'Dev Tunnels replace the hostname and port; '
-                                      'MonkeySSH still signs in to the SSH server behind the tunnel.',
+                                      'MonkeySSH still signs in to the SSH server behind the tunnel. '
+                                      'VS Code or HTTP tunnel ports do not have an SSH username.',
                                       style: Theme.of(
                                         context,
                                       ).textTheme.bodyMedium,
@@ -1829,6 +1830,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     .map(
                       (selection) => DropdownMenuItem<String>(
                         value: selection.forwardingUrl,
+                        enabled: selection.isSshCompatible,
                         child: Text(
                           selection.label,
                           overflow: TextOverflow.ellipsis,
@@ -1845,6 +1847,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         if ((value == null || value.isEmpty) &&
                             _devTunnelUrlController.text.trim().isEmpty) {
                           return 'Choose a Dev Tunnel port';
+                        }
+                        final matchingSelection = selections.where(
+                          (selection) => selection.forwardingUrl == value,
+                        );
+                        if (matchingSelection.isNotEmpty &&
+                            !matchingSelection.first.isSshCompatible) {
+                          return 'Choose an SSH or TCP Dev Tunnel port';
                         }
                         return null;
                       }
@@ -2694,6 +2703,8 @@ class _DevTunnelPortSelection {
 
   String get forwardingUrl => port.forwardingUrl!;
 
+  bool get isSshCompatible => port.isSshCompatible;
+
   String get defaultHostLabel {
     final portName = port.name?.trim();
     if (portName != null && portName.isNotEmpty) {
@@ -2715,20 +2726,51 @@ class _DevTunnelPortSelection {
             protocol.isEmpty
         ? ''
         : ' ${protocol.toUpperCase()}';
-    return '${tunnel.displayName} - $portLabel$protocolLabel '
-        '(${port.clusterId})';
+    final compatibilityLabel = port.isKnownWebOnly ? ' - not SSH' : '';
+    return '${tunnel.displayName} - $portLabel$protocolLabel'
+        '$compatibilityLabel (${port.clusterId})';
   }
 
   String get details {
+    final status = _statusLabel;
+    final region = tunnel.regionName?.trim();
     final parts = <String>[
-      forwardingUrl,
+      'Tunnel ${tunnel.tunnelId}',
+      if (region != null && region.isNotEmpty) region,
+      ?status,
       if (tunnel.description?.trim().isNotEmpty ?? false)
         tunnel.description!.trim(),
       if (port.description?.trim().isNotEmpty ?? false)
         port.description!.trim(),
-      if (tunnel.labels.isNotEmpty) tunnel.labels.join(', '),
+      if (tunnel.labels.isNotEmpty) 'Labels: ${tunnel.labels.join(', ')}',
+      if (tunnel.lastHostConnectionTime != null)
+        'Last host: ${_formatDateTime(tunnel.lastHostConnectionTime!)}',
+      if (tunnel.expiresAt != null)
+        'Expires: ${_formatDateTime(tunnel.expiresAt!)}',
+      if (port.webForwardingUrl != null) 'Web: ${port.webForwardingUrl}',
+      if (port.portForwardingUrl != null) 'Port: ${port.portForwardingUrl}',
+      if (port.webForwardingUrl == null && port.portForwardingUrl == null)
+        forwardingUrl,
     ];
     return parts.join(' • ');
+  }
+
+  String? get _statusLabel {
+    final hostCount = tunnel.hostConnectionCount;
+    if (hostCount == null) {
+      return null;
+    }
+    if (hostCount == 0) {
+      return 'No host connected';
+    }
+    return hostCount == 1 ? '1 host connected' : '$hostCount hosts connected';
+  }
+
+  String _formatDateTime(DateTime value) {
+    final local = value.toLocal();
+    String twoDigits(int number) => number.toString().padLeft(2, '0');
+    return '${local.year}-${twoDigits(local.month)}-${twoDigits(local.day)} '
+        '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
   }
 }
 
