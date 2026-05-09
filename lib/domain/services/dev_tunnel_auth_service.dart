@@ -90,6 +90,12 @@ class DevTunnel {
     required this.description,
     required this.labels,
     required this.ports,
+    this.regionName,
+    this.clientRelayUri,
+    this.hostConnectionCount,
+    this.lastHostConnectionTime,
+    this.createdAt,
+    this.expiresAt,
   });
 
   /// Stable tunnel ID used by the Dev Tunnels service.
@@ -109,6 +115,24 @@ class DevTunnel {
 
   /// Exposed ports for this tunnel.
   final List<DevTunnelPort> ports;
+
+  /// User-facing region name returned by the global tunnel list.
+  final String? regionName;
+
+  /// Relay WebSocket URI used by Dev Tunnel clients for raw TCP connections.
+  final Uri? clientRelayUri;
+
+  /// Number of currently connected tunnel hosts, when reported.
+  final int? hostConnectionCount;
+
+  /// Last time a host connected to the tunnel, when reported.
+  final DateTime? lastHostConnectionTime;
+
+  /// Tunnel creation timestamp, when reported.
+  final DateTime? createdAt;
+
+  /// Tunnel expiration timestamp, when reported.
+  final DateTime? expiresAt;
 
   /// Label for picker UI.
   String get displayName {
@@ -131,6 +155,8 @@ class DevTunnelPort {
     required this.protocol,
     required this.name,
     required this.description,
+    this.webForwardingUrl,
+    this.portForwardingUrl,
   });
 
   /// Stable tunnel ID that owns this port.
@@ -154,6 +180,12 @@ class DevTunnelPort {
   /// Optional port description.
   final String? description;
 
+  /// Browser-oriented HTTP/WS forwarding URL, when available.
+  final String? webForwardingUrl;
+
+  /// Raw port-forwarding URI returned by the Dev Tunnels service, when available.
+  final String? portForwardingUrl;
+
   /// Label for picker UI.
   String get displayName {
     final trimmedName = name?.trim();
@@ -166,10 +198,71 @@ class DevTunnelPort {
     }
     return ':$portNumber';
   }
+
+  /// Whether the reported protocol is known to be web-only.
+  bool get isKnownWebOnly => _isWebOnlyDevTunnelProtocol(protocol);
+
+  /// Whether this port can plausibly carry an SSH byte stream.
+  bool get isSshCompatible => !isKnownWebOnly;
+}
+
+/// Dev Tunnel access details needed to open a client connection.
+class DevTunnelConnectionInfo {
+  /// Creates a [DevTunnelConnectionInfo].
+  const DevTunnelConnectionInfo({
+    required this.authorizationHeader,
+    required this.portNumber,
+    required this.protocol,
+    this.clientRelayUri,
+  });
+
+  /// Header value used to authorize Dev Tunnel connections, when signed in.
+  final String? authorizationHeader;
+
+  /// Relay WebSocket URI used by Dev Tunnel clients for raw TCP connections.
+  final Uri? clientRelayUri;
+
+  /// Dev Tunnel port number being connected.
+  final int? portNumber;
+
+  /// Protocol metadata reported by the Dev Tunnels service.
+  final String? protocol;
+
+  /// Whether the reported protocol is known to be web-only.
+  bool get isKnownWebOnly => _isWebOnlyDevTunnelProtocol(protocol);
+}
+
+class _DevTunnelAccess {
+  const _DevTunnelAccess({
+    required this.connectToken,
+    required this.clientRelayUri,
+    required this.port,
+  });
+
+  final String connectToken;
+  final Uri? clientRelayUri;
+  final DevTunnelPort? port;
+
+  _DevTunnelAccess withFallback({
+    required DevTunnelPort? port,
+    required Uri? clientRelayUri,
+  }) => _DevTunnelAccess(
+    connectToken: connectToken,
+    clientRelayUri: this.clientRelayUri ?? clientRelayUri,
+    port: this.port ?? port,
+  );
 }
 
 class _DevTunnelNotFoundException implements Exception {
   const _DevTunnelNotFoundException();
+}
+
+bool _isWebOnlyDevTunnelProtocol(String? protocol) {
+  final normalized = protocol?.trim().toLowerCase();
+  return normalized == 'http' ||
+      normalized == 'https' ||
+      normalized == 'ws' ||
+      normalized == 'wss';
 }
 
 /// Handles Dev Tunnels account login and connect-token exchange.
@@ -343,6 +436,15 @@ class DevTunnelAuthService {
   Future<String?> resolveAuthorizationHeader(
     String forwardingUrl, {
     int? port,
+  }) async => (await resolveConnectionInfo(
+    forwardingUrl,
+    port: port,
+  )).authorizationHeader;
+
+  /// Resolves Dev Tunnel connection details for a forwarding URL.
+  Future<DevTunnelConnectionInfo> resolveConnectionInfo(
+    String forwardingUrl, {
+    int? port,
   }) async {
     final DevTunnelForwardingUrl parsedUrl;
     try {
@@ -356,14 +458,23 @@ class DevTunnelAuthService {
 
     final githubToken = await _resolveGitHubToken();
     if (githubToken == null || githubToken.isEmpty) {
-      return null;
+      return DevTunnelConnectionInfo(
+        authorizationHeader: null,
+        portNumber: parsedUrl.port ?? port,
+        protocol: null,
+      );
     }
 
-    final connectToken = await _resolveConnectToken(
+    final access = await _resolveConnectAccess(
       githubToken: githubToken,
       forwardingUrl: parsedUrl,
     );
-    return 'tunnel $connectToken';
+    return DevTunnelConnectionInfo(
+      authorizationHeader: 'tunnel ${access.connectToken}',
+      clientRelayUri: access.clientRelayUri,
+      portNumber: access.port?.portNumber ?? parsedUrl.port ?? port,
+      protocol: access.port?.protocol,
+    );
   }
 
   /// Lists tunnels visible to the signed-in GitHub account.
@@ -411,6 +522,7 @@ class DevTunnelAuthService {
       final tunnel = _parseTunnel(
         entry.object,
         fallbackClusterId: entry.clusterId,
+        regionName: entry.regionName,
       );
       if (tunnel != null) {
         tunnels.add(tunnel);
@@ -420,7 +532,7 @@ class DevTunnelAuthService {
     return tunnels;
   }
 
-  Future<String> _resolveConnectToken({
+  Future<_DevTunnelAccess> _resolveConnectAccess({
     required String githubToken,
     required DevTunnelForwardingUrl forwardingUrl,
   }) async {
@@ -432,22 +544,26 @@ class DevTunnelAuthService {
         port: forwardingUrl.port,
       );
     } on _DevTunnelNotFoundException {
-      final matchedPort = await _findListedPortForForwardingUrl(
+      final match = await _findListedPortForForwardingUrl(
         githubToken: githubToken,
         forwardingUrl: forwardingUrl,
       );
-      if (matchedPort == null) {
+      if (match == null) {
         throw const DevTunnelAuthException(
           'Could not find this Dev Tunnel in the signed-in account. '
           'Refresh tunnels and select it again.',
         );
       }
       try {
-        return await _requestConnectToken(
+        final access = await _requestConnectToken(
           githubToken: githubToken,
-          tunnelId: matchedPort.tunnelId,
-          clusterId: matchedPort.clusterId,
-          port: matchedPort.portNumber,
+          tunnelId: match.port.tunnelId,
+          clusterId: match.port.clusterId,
+          port: match.port.portNumber,
+        );
+        return access.withFallback(
+          port: match.port,
+          clientRelayUri: match.clientRelayUri,
         );
       } on _DevTunnelNotFoundException {
         throw const DevTunnelAuthException(
@@ -458,7 +574,7 @@ class DevTunnelAuthService {
     }
   }
 
-  Future<String> _requestConnectToken({
+  Future<_DevTunnelAccess> _requestConnectToken({
     required String githubToken,
     required String tunnelId,
     required String clusterId,
@@ -496,13 +612,27 @@ class DevTunnelAuthService {
     _ensureSuccess(response, 'getting Dev Tunnel access');
 
     final body = _decodeJsonObject(response.body);
-    final portToken = _connectTokenFromPorts(body, port);
-    if (portToken != null) {
-      return portToken;
+    final clientRelayUri = _clientRelayUriFromTunnelJson(body);
+    final portResult = _connectTokenFromPorts(
+      body,
+      port,
+      tunnelId: tunnelId,
+      clusterId: clusterId,
+    );
+    if (portResult != null) {
+      return _DevTunnelAccess(
+        connectToken: portResult.token,
+        clientRelayUri: clientRelayUri,
+        port: portResult.port,
+      );
     }
     final tunnelToken = _connectTokenFromObject(body);
     if (tunnelToken != null) {
-      return tunnelToken;
+      return _DevTunnelAccess(
+        connectToken: tunnelToken,
+        clientRelayUri: clientRelayUri,
+        port: null,
+      );
     }
 
     throw const DevTunnelAuthException(
@@ -510,7 +640,8 @@ class DevTunnelAuthService {
     );
   }
 
-  Future<DevTunnelPort?> _findListedPortForForwardingUrl({
+  Future<({DevTunnelPort port, Uri? clientRelayUri})?>
+  _findListedPortForForwardingUrl({
     required String githubToken,
     required DevTunnelForwardingUrl forwardingUrl,
   }) async {
@@ -519,34 +650,45 @@ class DevTunnelAuthService {
     final tunnels = await _listTunnels(githubToken);
     for (final tunnel in tunnels) {
       for (final port in tunnel.ports) {
-        final candidateUrl = port.forwardingUrl;
-        if (candidateUrl == null || candidateUrl.isEmpty) {
-          continue;
+        final candidateUrls = {
+          port.forwardingUrl,
+          port.portForwardingUrl,
+          port.webForwardingUrl,
+        }.whereType<String>();
+        for (final candidateUrl in candidateUrls) {
+          if (candidateUrl.isEmpty) {
+            continue;
+          }
+          final DevTunnelForwardingUrl candidate;
+          try {
+            candidate = parseDevTunnelForwardingUrl(
+              candidateUrl,
+              fallbackPort: port.portNumber,
+            );
+          } on FormatException {
+            continue;
+          }
+          if (candidate.uri.host.toLowerCase() != targetHost) {
+            continue;
+          }
+          if (targetPort != null &&
+              candidate.port != targetPort &&
+              port.portNumber != targetPort) {
+            continue;
+          }
+          return (port: port, clientRelayUri: tunnel.clientRelayUri);
         }
-        final DevTunnelForwardingUrl candidate;
-        try {
-          candidate = parseDevTunnelForwardingUrl(
-            candidateUrl,
-            fallbackPort: port.portNumber,
-          );
-        } on FormatException {
-          continue;
-        }
-        if (candidate.uri.host.toLowerCase() != targetHost) {
-          continue;
-        }
-        if (targetPort != null &&
-            candidate.port != targetPort &&
-            port.portNumber != targetPort) {
-          continue;
-        }
-        return port;
       }
     }
     return null;
   }
 
-  String? _connectTokenFromPorts(Map<String, Object?> body, int? port) {
+  ({String token, DevTunnelPort? port})? _connectTokenFromPorts(
+    Map<String, Object?> body,
+    int? port, {
+    required String tunnelId,
+    required String clusterId,
+  }) {
     final ports = body['ports'];
     if (ports is! List<Object?>) {
       return null;
@@ -560,7 +702,14 @@ class DevTunnelAuthService {
       }
       final token = _connectTokenFromObject(portEntry);
       if (token != null) {
-        return token;
+        return (
+          token: token,
+          port: _parseTunnelPort(
+            portEntry,
+            tunnelId: tunnelId,
+            clusterId: clusterId,
+          ),
+        );
       }
     }
     return null;
@@ -705,9 +854,8 @@ class DevTunnelAuthService {
     return !DateTime.now().toUtc().add(_tokenExpirySkew).isBefore(expiresAt);
   }
 
-  List<({Object? object, String? clusterId})> _tunnelEntriesFromJson(
-    Object? body,
-  ) {
+  List<({Object? object, String? clusterId, String? regionName})>
+  _tunnelEntriesFromJson(Object? body) {
     final topLevelEntries = switch (body) {
       final List<Object?> list => list,
       final Map<String, Object?> object when object['value'] is List<Object?> =>
@@ -719,7 +867,8 @@ class DevTunnelAuthService {
       ),
     };
 
-    final entries = <({Object? object, String? clusterId})>[];
+    final entries =
+        <({Object? object, String? clusterId, String? regionName})>[];
     for (final entry in topLevelEntries) {
       if (entry is Map<String, Object?> &&
           !_hasTunnelIdentifier(entry) &&
@@ -728,17 +877,26 @@ class DevTunnelAuthService {
             _optionalString(entry, 'clusterId') ??
             _optionalString(entry, 'cluster') ??
             _optionalString(entry, 'relayClusterId');
+        final regionName = _optionalString(entry, 'regionName');
         for (final regionalEntry in entry['value']! as List<Object?>) {
-          entries.add((object: regionalEntry, clusterId: fallbackClusterId));
+          entries.add((
+            object: regionalEntry,
+            clusterId: fallbackClusterId,
+            regionName: regionName,
+          ));
         }
         continue;
       }
-      entries.add((object: entry, clusterId: null));
+      entries.add((object: entry, clusterId: null, regionName: null));
     }
     return entries;
   }
 
-  DevTunnel? _parseTunnel(Object? entry, {String? fallbackClusterId}) {
+  DevTunnel? _parseTunnel(
+    Object? entry, {
+    String? fallbackClusterId,
+    String? regionName,
+  }) {
     if (entry is! Map<String, Object?>) {
       return null;
     }
@@ -777,6 +935,14 @@ class DevTunnelAuthService {
       description: _optionalString(entry, 'description'),
       labels: List.unmodifiable(_optionalStringList(entry, 'labels')),
       ports: List.unmodifiable(ports),
+      regionName: regionName ?? _optionalString(entry, 'regionName'),
+      clientRelayUri: _clientRelayUriFromTunnelJson(entry),
+      hostConnectionCount: _hostConnectionCountFromTunnelJson(entry),
+      lastHostConnectionTime: _lastHostConnectionTimeFromTunnelJson(entry),
+      createdAt: _optionalDateTime(entry, 'created'),
+      expiresAt:
+          _optionalDateTime(entry, 'expiration') ??
+          _optionalDateTime(entry, 'expiresAt'),
     );
   }
 
@@ -800,17 +966,25 @@ class DevTunnelAuthService {
         _optionalString(entry, 'relayClusterId') ??
         clusterId;
 
+    final portForwardingUrl = _firstHttpStringFromList(
+      entry['portForwardingUris'],
+    );
+    final webForwardingUrl = _firstHttpStringFromList(
+      entry['webForwardingUris'],
+    );
     return DevTunnelPort(
       tunnelId: portTunnelId,
       clusterId: portClusterId,
       portNumber: portNumber,
       forwardingUrl:
-          _firstHttpStringFromList(entry['webForwardingUris']) ??
-          _firstHttpStringFromList(entry['portForwardingUris']) ??
+          portForwardingUrl ??
+          webForwardingUrl ??
           'https://$portTunnelId-$portNumber.$portClusterId.devtunnels.ms',
       protocol: _optionalString(entry, 'protocol'),
       name: _optionalString(entry, 'name'),
       description: _optionalString(entry, 'description'),
+      webForwardingUrl: webForwardingUrl,
+      portForwardingUrl: portForwardingUrl,
     );
   }
 
@@ -829,6 +1003,62 @@ class DevTunnelAuthService {
       }
     }
     return null;
+  }
+
+  static Uri? _clientRelayUriFromTunnelJson(Map<String, Object?> tunnel) {
+    final endpoints = tunnel['endpoints'];
+    if (endpoints is! List<Object?>) {
+      return null;
+    }
+
+    Uri? fallbackUri;
+    for (final endpoint in endpoints) {
+      if (endpoint is! Map<String, Object?>) {
+        continue;
+      }
+      final rawUri = _optionalString(endpoint, 'clientRelayUri');
+      if (rawUri == null || rawUri.isEmpty) {
+        continue;
+      }
+      final parsedUri = Uri.tryParse(rawUri);
+      if (parsedUri == null || !parsedUri.hasScheme) {
+        continue;
+      }
+      fallbackUri ??= parsedUri;
+      final mode = _optionalString(endpoint, 'connectionMode')?.toLowerCase();
+      if (mode == 'tunnelrelay' || mode == 'tunnel-relay') {
+        return parsedUri;
+      }
+    }
+    return fallbackUri;
+  }
+
+  static int? _hostConnectionCountFromTunnelJson(Map<String, Object?> tunnel) {
+    final status = tunnel['status'];
+    if (status is! Map<String, Object?>) {
+      return null;
+    }
+    final count = status['hostConnectionCount'];
+    if (count is int && count >= 0) {
+      return count;
+    }
+    if (count is Map<String, Object?>) {
+      final current = count['current'];
+      if (current is int && current >= 0) {
+        return current;
+      }
+    }
+    return null;
+  }
+
+  static DateTime? _lastHostConnectionTimeFromTunnelJson(
+    Map<String, Object?> tunnel,
+  ) {
+    final status = tunnel['status'];
+    if (status is! Map<String, Object?>) {
+      return null;
+    }
+    return _optionalDateTime(status, 'lastHostConnectionTime');
   }
 
   static Object? _decodeJson(String source) {
@@ -888,6 +1118,11 @@ class DevTunnelAuthService {
       return value;
     }
     return null;
+  }
+
+  static DateTime? _optionalDateTime(Map<String, Object?> body, String key) {
+    final value = body[key];
+    return value is String ? DateTime.tryParse(value)?.toUtc() : null;
   }
 
   static void _ensureSuccess(http.Response response, String action) {

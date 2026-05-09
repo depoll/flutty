@@ -620,12 +620,15 @@ typedef DevTunnelConnector =
     Future<SSHSocket> Function(
       String url, {
       String? authorizationHeader,
+      Uri? clientRelayUri,
+      int? portNumber,
+      String? protocol,
       Duration? timeout,
     });
 
 /// Resolves Dev Tunnel authorization for a forwarding URL.
-typedef DevTunnelAuthorizationResolver =
-    Future<String?> Function(String url, {int? port});
+typedef DevTunnelConnectionResolver =
+    Future<DevTunnelConnectionInfo> Function(String url, {int? port});
 
 /// Creates an [SSHClient] for a prepared socket.
 typedef SshClientFactory =
@@ -709,15 +712,14 @@ class SshService {
     WifiNetworkService? wifiNetworkService,
     SshSocketConnector? socketConnector,
     DevTunnelConnector? devTunnelConnector,
-    DevTunnelAuthorizationResolver? devTunnelAuthorizationResolver,
+    DevTunnelConnectionResolver? devTunnelConnectionResolver,
     SshClientFactory? clientFactory,
   }) : wifiNetworkService = wifiNetworkService ?? WifiNetworkService(),
        _socketConnector = socketConnector ?? _connectWithKeepAlive,
        _devTunnelConnector =
            devTunnelConnector ?? DevTunnelSocketConnector.connect,
-       _devTunnelAuthorizationResolver =
-           devTunnelAuthorizationResolver ??
-           _anonymousDevTunnelAuthorizationResolver,
+       _devTunnelConnectionResolver =
+           devTunnelConnectionResolver ?? _anonymousDevTunnelConnectionResolver,
        _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
@@ -727,10 +729,14 @@ class SshService {
   static const _maxAutoKeysPerAttempt = 5;
   static const _hostKeyProbeSettleTimeout = Duration(seconds: 1);
 
-  static Future<String?> _anonymousDevTunnelAuthorizationResolver(
+  static Future<DevTunnelConnectionInfo> _anonymousDevTunnelConnectionResolver(
     String url, {
     int? port,
-  }) async => null;
+  }) async => DevTunnelConnectionInfo(
+    authorizationHeader: null,
+    portNumber: port,
+    protocol: null,
+  );
 
   /// Host repository for looking up hosts.
   final HostRepository? hostRepository;
@@ -749,7 +755,7 @@ class SshService {
 
   final SshSocketConnector _socketConnector;
   final DevTunnelConnector _devTunnelConnector;
-  final DevTunnelAuthorizationResolver _devTunnelAuthorizationResolver;
+  final DevTunnelConnectionResolver _devTunnelConnectionResolver;
   final SshClientFactory _clientFactory;
 
   final Map<int, SshSession> _sessions = {};
@@ -1034,17 +1040,27 @@ class SshService {
             SshConnectionState.connecting,
             'Preparing Dev Tunnel connection…',
           );
-          final authorizationHeader = await _devTunnelAuthorizationResolver(
+          final connectionInfo = await _devTunnelConnectionResolver(
             url,
             port: config.port,
           );
+          if (connectionInfo.isKnownWebOnly) {
+            final protocolLabel = connectionInfo.protocol!.trim().toUpperCase();
+            throw DevTunnelConnectionException(
+              'This Dev Tunnel port is $protocolLabel, not SSH. Choose a Dev '
+              'Tunnel port that forwards an SSH server, usually port 22.',
+            );
+          }
           report(
             SshConnectionState.connecting,
             'Opening Dev Tunnel connection…',
           );
           return _devTunnelConnector(
             url,
-            authorizationHeader: authorizationHeader,
+            authorizationHeader: connectionInfo.authorizationHeader,
+            clientRelayUri: connectionInfo.clientRelayUri,
+            portNumber: connectionInfo.portNumber ?? config.port,
+            protocol: connectionInfo.protocol,
             timeout: config.connectionTimeout,
           );
         }
@@ -2816,9 +2832,9 @@ final sshServiceProvider = Provider<SshService>(
     knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
     hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
     wifiNetworkService: ref.watch(wifiNetworkServiceProvider),
-    devTunnelAuthorizationResolver: ref
+    devTunnelConnectionResolver: ref
         .watch(devTunnelAuthServiceProvider)
-        .resolveAuthorizationHeader,
+        .resolveConnectionInfo,
   ),
 );
 

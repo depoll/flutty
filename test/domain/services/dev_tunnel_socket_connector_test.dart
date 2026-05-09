@@ -98,5 +98,38 @@ void main() {
         throwsA(isA<DevTunnelConnectionException>()),
       );
     });
+
+    test('rejects web-only tunnel ports before opening a socket', () {
+      expect(
+        () => DevTunnelSocketConnector.connect(
+          'https://abc-443.usw2.devtunnels.ms',
+          protocol: 'https',
+        ),
+        throwsA(
+          isA<DevTunnelConnectionException>().having(
+            (error) => error.message,
+            'message',
+            contains('not SSH'),
+          ),
+        ),
+      );
+    });
+
+    test('rejects signed-in access without relay metadata', () {
+      expect(
+        () => DevTunnelSocketConnector.connect(
+          'https://abc-22.usw2.devtunnels.ms',
+          authorizationHeader: 'tunnel connect-token',
+          portNumber: 22,
+        ),
+        throwsA(
+          isA<DevTunnelConnectionException>().having(
+            (error) => error.message,
+            'message',
+            contains('relay endpoint'),
+          ),
+        ),
+      );
+    });
   });
 }
