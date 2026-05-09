@@ -1614,6 +1614,20 @@ Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
   },
 };
 
+String? _diagnosticClosedSshConnectionErrorReason(Object error) {
+  if (error is! SSHStateError) {
+    return null;
+  }
+  final normalized = error.message.toLowerCase();
+  if (normalized.contains('transport is closed')) {
+    return 'transport_closed';
+  }
+  if (normalized.contains('connection closed')) {
+    return 'connection_closed';
+  }
+  return null;
+}
+
 String _diagnosticSshChannelOpenReason(String description) {
   final normalized = description.toLowerCase();
   if (normalized.contains('administratively prohibited')) {
@@ -1954,6 +1968,9 @@ class SshSession {
 
   final _previewListeners = <VoidCallback>{};
   final _metadataListeners = <VoidCallback>{};
+  final _connectionHealthFailures =
+      StreamController<_SshConnectionHealthFailure>.broadcast();
+  bool _connectionHealthFailureReported = false;
   String? _terminalPreview;
   String? _windowTitle;
   String? _iconName;
@@ -1966,6 +1983,9 @@ class SshSession {
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
+
+  Stream<_SshConnectionHealthFailure> get _connectionHealthFailureStream =>
+      _connectionHealthFailures.stream;
 
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
@@ -2365,6 +2385,7 @@ class SshSession {
           ..._diagnosticSshExecErrorFields(error),
         },
       );
+      _reportConnectionHealthFailureIfClosed(error, operation: 'exec');
       rethrow;
     }
   }
@@ -2405,6 +2426,7 @@ class SshSession {
           ..._diagnosticSshExecErrorFields(error),
         },
       );
+      _reportConnectionHealthFailureIfClosed(error, operation: 'sftp');
       rethrow;
     }
   }
@@ -2587,11 +2609,52 @@ class SshSession {
   Future<void> close() async {
     await stopAllForwards();
     await closeShell();
+    await _connectionHealthFailures.close();
     client.close();
     for (final dependentClient in dependentClients) {
       dependentClient.close();
     }
   }
+
+  void _reportConnectionHealthFailureIfClosed(
+    Object error, {
+    required String operation,
+  }) {
+    final reason = _diagnosticClosedSshConnectionErrorReason(error);
+    if (reason == null ||
+        _connectionHealthFailureReported ||
+        _connectionHealthFailures.isClosed) {
+      return;
+    }
+    _connectionHealthFailureReported = true;
+    DiagnosticsLogService.instance.warning(
+      'ssh.session',
+      'stale_connection_detected',
+      fields: {
+        'connectionId': connectionId,
+        'hostId': hostId,
+        'operation': operation,
+        'reason': reason,
+        'errorType': error.runtimeType,
+      },
+    );
+    _connectionHealthFailures.add(
+      _SshConnectionHealthFailure(
+        connectionId: connectionId,
+        message: 'Connection became unresponsive. Reconnect to continue.',
+      ),
+    );
+  }
+}
+
+class _SshConnectionHealthFailure {
+  const _SshConnectionHealthFailure({
+    required this.connectionId,
+    required this.message,
+  });
+
+  final int connectionId;
+  final String message;
 }
 
 /// Lightweight active connection metadata for UI.
@@ -2741,6 +2804,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   final Map<int, int> _connectionHostIds = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
+  final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
+  _connectionHealthFailureSubscriptions = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -2756,6 +2821,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         unawaited(subscription.cancel());
       }
       _disconnectSubscriptions.clear();
+      for (final subscription in _connectionHealthFailureSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _connectionHealthFailureSubscriptions.clear();
     });
     _connectionHostIds.clear();
     _connectionAttempts.clear();
@@ -2996,6 +3065,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (existingSubscription != null) {
       unawaited(existingSubscription.cancel());
     }
+    final existingHealthFailureSubscription =
+        _connectionHealthFailureSubscriptions.remove(session.connectionId);
+    if (existingHealthFailureSubscription != null) {
+      unawaited(existingHealthFailureSubscription.cancel());
+    }
     _disconnectSubscriptions[session.connectionId] = session.client.done
         .asStream()
         .listen(
@@ -3012,6 +3086,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
             ),
           ),
         );
+    _connectionHealthFailureSubscriptions[session.connectionId] = session
+        ._connectionHealthFailureStream
+        .listen(
+          (failure) => unawaited(
+            handleUnexpectedDisconnect(
+              failure.connectionId,
+              message: failure.message,
+            ),
+          ),
+        );
   }
 
   void _detachSessionListeners(int connectionId, {SshSession? session}) {
@@ -3021,6 +3105,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final subscription = _disconnectSubscriptions.remove(connectionId);
     if (subscription != null) {
       unawaited(subscription.cancel());
+    }
+    final healthFailureSubscription = _connectionHealthFailureSubscriptions
+        .remove(connectionId);
+    if (healthFailureSubscription != null) {
+      unawaited(healthFailureSubscription.cancel());
     }
   }
 

@@ -209,6 +209,9 @@ class _FakeActiveSessionsSshService extends SshService {
   @override
   SshSession? getSession(int connectionId) => _sessions[connectionId];
 
+  _MockSshClient clientFor(int connectionId) =>
+      _sessions[connectionId]!.client as _MockSshClient;
+
   void completeConnection(int connectionId) {
     final completer = _clientDoneCompleters[connectionId];
     if (completer != null && !completer.isCompleted) {
@@ -1218,6 +1221,39 @@ void main() {
         'Connection closed',
       );
     });
+
+    test(
+      'removes stale sessions when channel opens report a closed transport',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        expect(result.connectionId, isNotNull);
+
+        final connectionId = result.connectionId!;
+        final session = fakeSshService.getSession(connectionId)!;
+        when(
+          () => fakeSshService
+              .clientFor(connectionId)
+              .execute(any(), pty: any(named: 'pty')),
+        ).thenThrow(SSHStateError('Transport is closed'));
+
+        await expectLater(
+          session.execute('true'),
+          throwsA(isA<SSHStateError>()),
+        );
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(notifier.getSession(connectionId), isNull);
+        expect(container.read(activeSessionsProvider)[connectionId], isNull);
+        expect(
+          notifier.getConnectionAttempt(42)?.latestMessage,
+          'Connection became unresponsive. Reconnect to continue.',
+        );
+      },
+    );
 
     test('updateSessionTheme skips unchanged theme IDs', () async {
       final notifier = container.read(activeSessionsProvider.notifier);
