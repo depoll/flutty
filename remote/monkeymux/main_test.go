@@ -82,7 +82,7 @@ func TestShellCommandUsesLoginShell(t *testing.T) {
 	}
 }
 
-func TestShellCommandForScriptUsesLoginShellWithoutTypingCommand(t *testing.T) {
+func TestShellCommandForScriptUsesInteractiveLoginShellWithoutTypingCommand(t *testing.T) {
 	cmd := shellCommandForScript("/bin/zsh", "codex --yolo")
 
 	if got := cmd.Path; got != "/bin/zsh" {
@@ -91,10 +91,13 @@ func TestShellCommandForScriptUsesLoginShellWithoutTypingCommand(t *testing.T) {
 	if got := cmd.Args[0]; got != "-zsh" {
 		t.Fatalf("argv0 = %q, want login shell argv0", got)
 	}
-	if got := cmd.Args[1]; got != "-c" {
-		t.Fatalf("shell flags = %q, want -c", got)
+	if got := cmd.Args[1]; got != "-i" {
+		t.Fatalf("shell interactive flag = %q, want -i", got)
 	}
-	if got := cmd.Args[2]; got != "codex --yolo" {
+	if got := cmd.Args[2]; got != "-c" {
+		t.Fatalf("shell command flag = %q, want -c", got)
+	}
+	if got := cmd.Args[3]; got != "codex --yolo" {
 		t.Fatalf("script = %q, want launch command", got)
 	}
 }
