@@ -65,6 +65,9 @@ void main() {
         '',
         '@8',
         '4321',
+        'session-123',
+        'Live session title',
+        'high',
       ].join(sep);
       final window = TmuxWindow.fromTmuxFormat(line);
 
@@ -78,7 +81,10 @@ void main() {
       expect(window.flags, '*');
       expect(window.paneTitle, 'Editing main.dart');
       expect(window.paneStartCommand, 'vim main.dart');
-      expect(window.displayTitle, 'Editing main.dart');
+      expect(window.activeAgentSessionId, 'session-123');
+      expect(window.agentSessionTitle, 'Live session title');
+      expect(window.activeAgentSessionConfidence, AgentSessionConfidence.high);
+      expect(window.displayTitle, 'Live session title');
       expect(window.hasAlert, false);
     });
 

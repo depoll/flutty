@@ -47,6 +47,13 @@ class _TmuxExecChannelCoolingDownException implements Exception {
       '${cooldownRemaining.inMilliseconds}ms';
 }
 
+typedef _ActiveAgentSessionMetadata = ({
+  AgentLaunchTool tool,
+  String sessionId,
+  String? title,
+  AgentSessionConfidence confidence,
+});
+
 /// Introspects and controls tmux sessions on remote hosts via SSH exec
 /// channels.
 ///
@@ -96,7 +103,7 @@ class TmuxService {
       <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
   static final _windowSnapshotCache = <_TmuxWindowWatchKey, List<TmuxWindow>>{};
   static final _activeAgentSessionMetadataCache =
-      <int, Map<int, ({String sessionId, String? title})>>{};
+      <int, Map<int, _ActiveAgentSessionMetadata>>{};
   static final _activeAgentSessionMetadataRequests = <int, Future<void>>{};
   static final _activeAgentSessionMetadataRequestTokens = <int, Object>{};
   static final _activeAgentSessionMetadataRequestPanePids = <int, Set<int>>{};
@@ -875,26 +882,26 @@ class TmuxService {
     List<TmuxWindow> windows, {
     bool force = false,
   }) {
-    final copilotPanePids = _copilotPanePids(windows);
-    if (copilotPanePids.isEmpty) {
+    final agentPanePids = _agentPanePids(windows);
+    if (agentPanePids.isEmpty) {
       return;
     }
     _scheduleAgentSessionMetadataRefreshForPanePids(
       session,
-      copilotPanePids,
+      agentPanePids,
       force: force,
     );
   }
 
   void _scheduleAgentSessionMetadataRefreshForPanePids(
     SshSession session,
-    Set<int> copilotPanePids, {
+    Set<int> agentPanePids, {
     bool force = false,
   }) {
     final connectionId = session.connectionId;
     final debouncedPanePids =
         (_activeAgentSessionMetadataDebouncedPanePids[connectionId] ?? <int>{})
-          ..addAll(copilotPanePids);
+          ..addAll(agentPanePids);
     _activeAgentSessionMetadataDebouncedPanePids[connectionId] =
         debouncedPanePids;
     _activeAgentSessionMetadataDebouncedSessions[connectionId] = session;
@@ -933,7 +940,7 @@ class TmuxService {
 
   void _startAgentSessionMetadataRefreshForPanePids(
     SshSession session,
-    Set<int> copilotPanePids, {
+    Set<int> agentPanePids, {
     bool force = false,
   }) {
     final connectionId = session.connectionId;
@@ -941,14 +948,14 @@ class TmuxService {
       final activePanePids =
           _activeAgentSessionMetadataRequestPanePids[connectionId] ??
           const <int>{};
-      final hasNewPanePids = copilotPanePids.any(
+      final hasNewPanePids = agentPanePids.any(
         (panePid) => !activePanePids.contains(panePid),
       );
       if (force || hasNewPanePids) {
         final pendingPanePids =
             (_activeAgentSessionMetadataPendingPanePids[connectionId] ??
                   <int>{})
-              ..addAll(copilotPanePids);
+              ..addAll(agentPanePids);
         _activeAgentSessionMetadataPendingPanePids[connectionId] =
             pendingPanePids;
         _activeAgentSessionMetadataPendingForced[connectionId] =
@@ -971,7 +978,7 @@ class TmuxService {
     if (execCooldown != null) {
       _deferAgentSessionMetadataRefreshForExecCooldown(
         session,
-        copilotPanePids,
+        agentPanePids,
         force: force,
         cooldown: execCooldown,
       );
@@ -983,20 +990,20 @@ class TmuxService {
       'active_session_metadata_start',
       fields: {
         'connectionId': connectionId,
-        'paneCount': copilotPanePids.length,
+        'paneCount': agentPanePids.length,
         'forced': force,
       },
     );
 
     final requestToken = Object();
     _activeAgentSessionMetadataRequestTokens[connectionId] = requestToken;
-    _activeAgentSessionMetadataRequestPanePids[connectionId] = copilotPanePids;
+    _activeAgentSessionMetadataRequestPanePids[connectionId] = agentPanePids;
     late final Future<void> request;
     request =
         _refreshActiveAgentSessionMetadata(
           session,
           requestToken,
-          copilotPanePids,
+          agentPanePids,
           force: force,
         ).whenComplete(() {
           if (identical(
@@ -1034,7 +1041,7 @@ class TmuxService {
     try {
       final output = await _exec(
         session,
-        buildCopilotActiveSessionMetadataCommand(panePids),
+        buildAgentActiveSessionMetadataCommand(panePids),
         priority: SshExecPriority.low,
       );
       if (!identical(
@@ -1044,14 +1051,13 @@ class TmuxService {
         return;
       }
       _activeAgentSessionMetadataRefreshes[connectionId] = DateTime.now();
-      final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
+      final metadataByPanePid = parseAgentActiveSessionMetadataOutput(
         output,
         panePids,
       );
-      final nextMetadataByPanePid =
-          Map<int, ({String sessionId, String? title})>.of(
-            _activeAgentSessionMetadataCache[connectionId] ?? const {},
-          );
+      final nextMetadataByPanePid = Map<int, _ActiveAgentSessionMetadata>.of(
+        _activeAgentSessionMetadataCache[connectionId] ?? const {},
+      );
       for (final panePid in panePids) {
         nextMetadataByPanePid.remove(panePid);
       }
@@ -1151,11 +1157,10 @@ class TmuxService {
     );
   }
 
-  Set<int> _copilotPanePids(Iterable<TmuxWindow> windows) => windows
+  Set<int> _agentPanePids(Iterable<TmuxWindow> windows) => windows
       .where(
         (window) =>
-            window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-            window.panePid != null,
+            window.foregroundAgentTool != null && window.panePid != null,
       )
       .map((window) => window.panePid!)
       .toSet();
@@ -1163,42 +1168,61 @@ class TmuxService {
   ({List<TmuxWindow> windows, bool changed})
   _applyAgentSessionMetadataToWindows(
     List<TmuxWindow> windows,
-    Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+    Map<int, _ActiveAgentSessionMetadata> metadataByPanePid, {
     Set<int>? refreshedPanePids,
   }) {
     var changed = false;
     final enriched = windows
         .map((window) {
           final panePid = window.panePid;
-          if (panePid != null &&
-              window.foregroundAgentTool != AgentLaunchTool.copilotCli) {
+          final foregroundAgentTool = window.foregroundAgentTool;
+          if (panePid != null && foregroundAgentTool == null) {
             if (window.activeAgentSessionId != null ||
-                window.agentSessionTitle != null) {
+                window.agentSessionTitle != null ||
+                window.activeAgentSessionConfidence != null) {
               changed = true;
               return window.copyWith(clearActiveAgentSessionMetadata: true);
             }
             return window;
           }
           final metadata = panePid == null ? null : metadataByPanePid[panePid];
+          if (metadata != null &&
+              foregroundAgentTool != null &&
+              metadata.tool != foregroundAgentTool) {
+            if (window.activeAgentSessionId != null ||
+                window.agentSessionTitle != null ||
+                window.activeAgentSessionConfidence != null) {
+              changed = true;
+              return window.copyWith(clearActiveAgentSessionMetadata: true);
+            }
+            return window;
+          }
           if (metadata == null) {
             if (panePid != null &&
                 refreshedPanePids != null &&
                 refreshedPanePids.contains(panePid) &&
                 (window.activeAgentSessionId != null ||
-                    window.agentSessionTitle != null)) {
+                    window.agentSessionTitle != null ||
+                    window.activeAgentSessionConfidence != null)) {
+              if (window.activeAgentSessionConfidence ==
+                  AgentSessionConfidence.high) {
+                return window;
+              }
               changed = true;
               return window.copyWith(clearActiveAgentSessionMetadata: true);
             }
             return window;
           }
           if (window.activeAgentSessionId == metadata.sessionId &&
-              window.agentSessionTitle == metadata.title) {
+              window.agentSessionTitle == metadata.title &&
+              window.activeAgentSessionConfidence == metadata.confidence) {
             return window;
           }
           changed = true;
           return window.copyWith(
             activeAgentSessionId: metadata.sessionId,
             agentSessionTitle: metadata.title,
+            activeAgentSessionConfidence: metadata.confidence,
           );
         })
         .toList(growable: false);
@@ -1207,7 +1231,7 @@ class TmuxService {
 
   void _applyActiveAgentSessionMetadataToCachedWindows(
     int connectionId,
-    Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+    Map<int, _ActiveAgentSessionMetadata> metadataByPanePid, {
     Set<int>? refreshedPanePids,
   }) {
     if (metadataByPanePid.isEmpty &&
@@ -1576,11 +1600,23 @@ class TmuxService {
         : '$sessionName:$createdWindowIndex';
     final agentTool = _agentToolForCreatedWindow(command: command, name: name);
     if (agentTool != null) {
+      final agentSessionId = agentSessionIdFromLaunchCommand(
+        command,
+        tool: agentTool,
+      );
+      final optionCommands = <String>[
+        'set-option -w -t ${_shellQuote(target)} @flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
+        if (agentSessionId != null)
+          'set-option -w -t ${_shellQuote(target)} @flutty_agent_session_id ${_shellQuote(agentSessionId)}',
+        if (agentSessionId != null)
+          'set-option -w -t ${_shellQuote(target)} @flutty_agent_session_confidence ${_shellQuote(AgentSessionConfidence.high.name)}',
+        if (agentSessionId != null)
+          'set-option -w -t ${_shellQuote(target)} @flutty_agent_session_updated_at ${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
+      ];
       await _execTmuxCommand(
         session,
         sessionName,
-        'set-option -w -t ${_shellQuote(target)} '
-        '@flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
+        optionCommands.join(r' \; '),
         extraFlags: extraFlags,
       );
     }
@@ -1778,8 +1814,12 @@ class TmuxService {
           event.window,
         );
     if (cachedWindows != null && cachedWindows.isNotEmpty) {
+      final updatedWindows = applyTmuxWindowChangeEvent(cachedWindows, event);
       _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
-        applyTmuxWindowChangeEvent(cachedWindows, event),
+        _enrichWindowsWithCachedAgentSessionMetadata(
+          session.connectionId,
+          updatedWindows,
+        ),
       );
     }
     _scheduleAgentSessionMetadataRefresh(session, [
@@ -2898,7 +2938,10 @@ const _tmuxWindowSubscriptionFormat =
     '#{pane_start_command}$tmuxWindowFieldSeparator'
     '#{@flutty_agent_tool}$tmuxWindowFieldSeparator'
     '#{window_id}$tmuxWindowFieldSeparator'
-    '#{pane_pid}';
+    '#{pane_pid}$tmuxWindowFieldSeparator'
+    '#{@flutty_agent_session_id}$tmuxWindowFieldSeparator'
+    '#{@flutty_agent_session_title}$tmuxWindowFieldSeparator'
+    '#{@flutty_agent_session_confidence}';
 
 const _tmuxControlModeClientFlags = 'ignore-size,no-output';
 const _tmuxControlModeDetachInput = 'detach-client -P\n\n';
@@ -3003,7 +3046,7 @@ bool shouldForceAgentSessionMetadataRefreshForSnapshot(
   Iterable<TmuxWindow> cachedWindows,
   TmuxWindow snapshot,
 ) {
-  if (snapshot.foregroundAgentTool != AgentLaunchTool.copilotCli) {
+  if (snapshot.foregroundAgentTool == null) {
     return false;
   }
 
@@ -3870,16 +3913,15 @@ Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
   return installed;
 }
 
-/// Builds a shell command that maps live Copilot CLI lock files to session
-/// metadata.
+/// Builds a shell command that maps live AI CLI processes to session metadata.
 ///
 /// The command starts from known tmux pane PIDs, takes one process-tree
-/// snapshot, finds descendant Copilot processes, and only checks lock files
-/// matching those descendant PIDs.
+/// snapshot, finds descendant AI CLI processes, and uses lightweight lock-file,
+/// command-line, and open-file probes to infer the active session.
 ///
 /// The output is Unit Separator-delimited:
-/// `session_id<US>copilot_pid<US>matched_pane_pid<US>session_title`.
-String buildCopilotActiveSessionMetadataCommand(Set<int> panePids) {
+/// `tool<US>session_id<US>process_pid<US>matched_pane_pid<US>confidence<US>title`.
+String buildAgentActiveSessionMetadataCommand(Set<int> panePids) {
   final normalizedPanePids =
       panePids.where((panePid) => panePid > 0).toSet().toList()..sort();
   if (normalizedPanePids.isEmpty) {
@@ -3894,9 +3936,9 @@ home=\${HOME:-}
 if [ -z "\$home" ]; then
   home=~
 fi
+ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
 state_dir=\$home/.copilot/session-state
 if [ -d "\$state_dir" ]; then
-  lock_pids=
   lock_rows=
   for lock in "\$state_dir"/*/inuse.*.lock; do
     [ -e "\$lock" ] || continue
@@ -3905,23 +3947,89 @@ if [ -d "\$state_dir" ]; then
     pid=\${pid%.lock}
     case "\$pid" in ''|*[!0-9]*) continue ;; esac
     dir=\${lock%/*}
-    lock_pids="\${lock_pids:+\$lock_pids }\$pid"
     lock_rows="\$lock_rows\$pid\$sep\$dir
 "
   done
-  if [ -n "\$lock_pids" ]; then
-    ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
-  fi
-  if [ -n "\${ps_output:-}" ]; then
-    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v locks="\$lock_pids" '
+fi
+flutty_arg_value() {
+  option=\$1
+  command_text=\$2
+  printf '%s\\n' "\$command_text" | awk -v opt="\$option" '
+{
+  for (i = 1; i <= NF; i++) {
+    if (\$i == opt && i < NF) {
+      print \$(i + 1)
+      exit
+    }
+    prefix = opt "="
+    if (index(\$i, prefix) == 1) {
+      print substr(\$i, length(prefix) + 1)
+      exit
+    }
+  }
+}'
+}
+flutty_codex_resume_id() {
+  command_text=\$1
+  printf '%s\\n' "\$command_text" | awk '
+{
+  for (i = 1; i < NF; i++) {
+    if (\$i == "resume") {
+      print \$(i + 1)
+      exit
+    }
+  }
+}'
+}
+flutty_lsof_session_match() {
+  pid=\$1
+  tool=\$2
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -nP -p "\$pid" -Fn 2>/dev/null | awk -v tool="\$tool" -v sep="\$sep" '
+function emit(value, title) {
+  gsub(sep, " ", value)
+  gsub(sep, " ", title)
+  print value sep title
+  exit
+}
+{
+  if (substr(\$0, 1, 1) != "n") next
+  path = substr(\$0, 2)
+  if (tool == "claude" && path ~ /\\/\\.claude\\/projects\\/.*\\/[^\\/]+\\.jsonl\$/) {
+    file = path
+    sub(/^.*\\//, "", file)
+    sub(/\\.jsonl\$/, "", file)
+    emit(file, "")
+  }
+  if (tool == "codex" && path ~ /\\/\\.codex\\/sessions\\/.*\\/rollout-[^\\/]+\\.jsonl\$/) {
+    file = path
+    sub(/^.*\\//, "", file)
+    sub(/\\.jsonl\$/, "", file)
+    if (match(file, /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\$/)) {
+      file = substr(file, RSTART, RLENGTH)
+    }
+    emit(file, "")
+  }
+  if (tool == "gemini" && path ~ /\\/\\.gemini\\/tmp\\/.*\\/chats\\/session-[^\\/]+\\.(json|jsonl)\$/) {
+    file = path
+    sub(/^.*\\//, "", file)
+    sub(/\\.(json|jsonl)\$/, "", file)
+    emit(file, "")
+  }
+  if (tool == "copilot" && path ~ /\\/\\.copilot\\/session-state\\/[^\\/]+\\/workspace\\.yaml\$/) {
+    file = path
+    sub(/^.*\\/\\.copilot\\/session-state\\//, "", file)
+    sub(/\\/workspace\\.yaml\$/, "", file)
+    emit(file, "")
+  }
+}'
+}
+if [ -n "\${ps_output:-}" ]; then
+  agent_rows=\$(printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v sep="\$sep" '
 BEGIN {
   split(panes, pane_values, " ")
   for (i in pane_values) {
     if (pane_values[i] ~ /^[0-9]+\$/) target[pane_values[i]] = 1
-  }
-  split(locks, lock_values, " ")
-  for (i in lock_values) {
-    if (lock_values[i] ~ /^[0-9]+\$/) lock_pid[lock_values[i]] = 1
   }
 }
 {
@@ -3933,52 +4041,191 @@ BEGIN {
   sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+[[:space:]]*/, "", args)
   parent[pid] = ppid
   command[pid] = tolower(comm " " args)
+  raw_command[pid] = args
 }
 END {
-  for (pid in lock_pid) {
-    if (!(pid in parent)) continue
-    if (command[pid] !~ /copilot/) continue
+  for (pid in parent) {
+    tool = ""
+    if (command[pid] ~ /(^|[\\/[:space:]])claude([[:space:]-]|\$)/) tool = "claude"
+    else if (command[pid] ~ /(^|[\\/[:space:]])copilot([[:space:]-]|\$)/) tool = "copilot"
+    else if (command[pid] ~ /(^|[\\/[:space:]])codex([[:space:]-]|\$)/) tool = "codex"
+    else if (command[pid] ~ /(^|[\\/[:space:]])gemini([[:space:]-]|\$)/) tool = "gemini"
+    else if (command[pid] ~ /(^|[\\/[:space:]])opencode([[:space:]-]|\$)/) tool = "opencode"
+    if (tool == "") continue
     current = pid
     seen = 0
     while (current != "" && current != "0" && seen < 128) {
       if (current in target) {
-        print current " " pid
+        command_text = raw_command[pid]
+        gsub(sep, " ", command_text)
+        print current sep pid sep tool sep command_text
         break
       }
       current = parent[current]
       seen++
     }
   }
-}' | while read pane_pid pid; do
+}')
+  printf '%s\\n' "\$agent_rows" | while IFS="\$sep" read -r pane_pid pid tool command_text; do
       case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
       case "\$pid" in ''|*[!0-9]*) continue ;; esac
-      dir=\$(printf '%s' "\$lock_rows" | awk -F "\$sep" -v wanted="\$pid" '\$1 == wanted { print \$2; exit }')
-      [ -n "\$dir" ] || continue
-      session_id=\${dir##*/}
-      workspace=\$dir/workspace.yaml
+      session_id=
       title=
-      if [ -r "\$workspace" ]; then
-        title=\$(awk '
+      confidence=medium
+      if [ "\$tool" = copilot ]; then
+        dir=\$(printf '%s' "\${lock_rows:-}" | awk -F "\$sep" -v wanted="\$pid" '\$1 == wanted { print \$2; exit }')
+        if [ -n "\$dir" ]; then
+          session_id=\${dir##*/}
+          workspace=\$dir/workspace.yaml
+          if [ -r "\$workspace" ]; then
+            title=\$(awk '
 /^[[:space:]]*name:[[:space:]]*/ {
   sub(/^[[:space:]]*name:[[:space:]]*/, "")
   print
   exit
 }
 ' "\$workspace" 2>/dev/null | tr -d '\\r' | tr "\\037" " ")
+          fi
+        fi
       fi
-      printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$title"
-    done
-  fi
+      if [ -z "\$session_id" ]; then
+        lsof_match=\$(flutty_lsof_session_match "\$pid" "\$tool" || true)
+        if [ -n "\$lsof_match" ]; then
+          session_id=\$(printf '%s' "\$lsof_match" | awk -F "\$sep" '{ print \$1; exit }')
+          title=\$(printf '%s' "\$lsof_match" | awk -F "\$sep" '{ print \$2; exit }')
+        fi
+      fi
+      if [ -z "\$session_id" ]; then
+        case "\$tool" in
+          claude|copilot|gemini) session_id=\$(flutty_arg_value --resume "\$command_text") ;;
+          codex) session_id=\$(flutty_codex_resume_id "\$command_text") ;;
+          opencode) session_id=\$(flutty_arg_value --session "\$command_text") ;;
+        esac
+      fi
+      [ -n "\$session_id" ] || continue
+      session_id=\$(printf '%s' "\$session_id" | tr "\\037\\r" "  ")
+      title=\$(printf '%s' "\$title" | tr "\\037\\r" "  ")
+      printf '%s%s%s%s%s%s%s%s%s%s%s\\n' "\$tool" "\$sep" "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$confidence" "\$sep" "\$title"
+  done
 fi
 ''';
 }
 
-/// Parses [buildCopilotActiveSessionMetadataCommand] output and returns live
-/// Copilot session metadata keyed by tmux pane PID.
+/// Parses [buildAgentActiveSessionMetadataCommand] output and returns live
+/// session metadata keyed by tmux pane PID.
+Map<
+  int,
+  ({
+    AgentLaunchTool tool,
+    String sessionId,
+    String? title,
+    AgentSessionConfidence confidence,
+  })
+>
+parseAgentActiveSessionMetadataOutput(String output, Set<int> panePids) {
+  if (output.trim().isEmpty || panePids.isEmpty) {
+    return const <
+      int,
+      ({
+        AgentLaunchTool tool,
+        String sessionId,
+        String? title,
+        AgentSessionConfidence confidence,
+      })
+    >{};
+  }
+
+  final metadataByPanePid =
+      <
+        int,
+        ({
+          AgentLaunchTool tool,
+          String sessionId,
+          String? title,
+          AgentSessionConfidence confidence,
+        })
+      >{};
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trimRight();
+    if (line.isEmpty) continue;
+    final fields = line.split(tmuxWindowFieldSeparator);
+    if (fields.length < 5) continue;
+
+    final tool = agentToolForBinaryName(fields[0].trim());
+    if (tool == null) continue;
+    final sessionId = _activeSessionMetadataField(fields[1]);
+    if (sessionId.isEmpty) continue;
+
+    final panePid = int.tryParse(fields[3].trim());
+    if (panePid == null || !panePids.contains(panePid)) continue;
+
+    final confidence = _activeSessionConfidenceFromMetadataField(fields[4]);
+    final title = fields.length > 5
+        ? _activeSessionTitleFromMetadataField(fields[5])
+        : null;
+    final metadata = (
+      tool: tool,
+      sessionId: sessionId,
+      title: title,
+      confidence: confidence,
+    );
+    final existingMetadata = metadataByPanePid[panePid];
+    if (existingMetadata == null ||
+        _activeSessionConfidenceRank(confidence) >
+            _activeSessionConfidenceRank(existingMetadata.confidence)) {
+      metadataByPanePid[panePid] = metadata;
+    }
+  }
+  return metadataByPanePid;
+}
+
+String _activeSessionMetadataField(String value) {
+  final trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  final first = trimmed.codeUnitAt(0);
+  final last = trimmed.codeUnitAt(trimmed.length - 1);
+  if ((first == 0x22 && last == 0x22) || (first == 0x27 && last == 0x27)) {
+    return trimmed.substring(1, trimmed.length - 1).trim();
+  }
+  return trimmed;
+}
+
+String? _activeSessionTitleFromMetadataField(String value) {
+  final trimmed = _activeSessionMetadataField(value);
+  if (trimmed.isEmpty) return null;
+  return trimmed;
+}
+
+AgentSessionConfidence _activeSessionConfidenceFromMetadataField(
+  String value,
+) => switch (value.trim().toLowerCase()) {
+  'high' => AgentSessionConfidence.high,
+  'low' => AgentSessionConfidence.low,
+  _ => AgentSessionConfidence.medium,
+};
+
+int _activeSessionConfidenceRank(AgentSessionConfidence confidence) =>
+    switch (confidence) {
+      AgentSessionConfidence.high => 3,
+      AgentSessionConfidence.medium => 2,
+      AgentSessionConfidence.low => 1,
+    };
+
+/// Backward-compatible alias for tests and callers that still use the old name.
+String buildCopilotActiveSessionMetadataCommand(Set<int> panePids) =>
+    buildAgentActiveSessionMetadataCommand(panePids);
+
+/// Backward-compatible parser for legacy Copilot-only metadata output.
 Map<int, ({String sessionId, String? title})>
 parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
-  if (output.trim().isEmpty || panePids.isEmpty) {
-    return const <int, ({String sessionId, String? title})>{};
+  final parsed = parseAgentActiveSessionMetadataOutput(output, panePids);
+  if (parsed.isNotEmpty) {
+    return parsed.map(
+      (panePid, metadata) => MapEntry(panePid, (
+        sessionId: metadata.sessionId,
+        title: metadata.title,
+      )),
+    );
   }
 
   final metadataByPanePid = <int, ({String sessionId, String? title})>{};
@@ -3988,7 +4235,7 @@ parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
     final fields = line.split(tmuxWindowFieldSeparator);
     if (fields.length < 3) continue;
 
-    final sessionId = fields[0].trim();
+    final sessionId = _activeSessionMetadataField(fields[0]);
     if (sessionId.isEmpty) continue;
 
     final chainPids = fields[2]
@@ -4003,7 +4250,7 @@ parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
     if (chainPids.isEmpty) continue;
 
     final title = fields.length > 3
-        ? _copilotSessionTitleFromMetadataField(fields[3])
+        ? _activeSessionTitleFromMetadataField(fields[3])
         : null;
     final metadata = (sessionId: sessionId, title: title);
     for (final panePid in panePids) {
@@ -4012,10 +4259,4 @@ parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
     }
   }
   return metadataByPanePid;
-}
-
-String? _copilotSessionTitleFromMetadataField(String value) {
-  final trimmed = value.trim();
-  if (trimmed.isEmpty) return null;
-  return trimmed;
 }
