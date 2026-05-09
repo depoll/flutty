@@ -87,6 +87,8 @@ class DevTunnel {
     required this.tunnelId,
     required this.clusterId,
     required this.name,
+    required this.description,
+    required this.labels,
     required this.ports,
   });
 
@@ -98,6 +100,12 @@ class DevTunnel {
 
   /// Optional user-facing tunnel name.
   final String? name;
+
+  /// Optional tunnel description.
+  final String? description;
+
+  /// Optional tunnel labels.
+  final List<String> labels;
 
   /// Exposed ports for this tunnel.
   final List<DevTunnelPort> ports;
@@ -116,10 +124,20 @@ class DevTunnel {
 class DevTunnelPort {
   /// Creates a [DevTunnelPort].
   const DevTunnelPort({
+    required this.tunnelId,
+    required this.clusterId,
     required this.portNumber,
     required this.forwardingUrl,
     required this.protocol,
+    required this.name,
+    required this.description,
   });
+
+  /// Stable tunnel ID that owns this port.
+  final String tunnelId;
+
+  /// Relay cluster ID that owns this port.
+  final String clusterId;
 
   /// Port number exposed by the tunnel.
   final int portNumber;
@@ -129,6 +147,29 @@ class DevTunnelPort {
 
   /// Optional protocol metadata from the Dev Tunnels service.
   final String? protocol;
+
+  /// Optional user-facing port name.
+  final String? name;
+
+  /// Optional port description.
+  final String? description;
+
+  /// Label for picker UI.
+  String get displayName {
+    final trimmedName = name?.trim();
+    if (trimmedName != null && trimmedName.isNotEmpty) {
+      return trimmedName;
+    }
+    final trimmedProtocol = protocol?.trim();
+    if (trimmedProtocol != null && trimmedProtocol.isNotEmpty) {
+      return '${trimmedProtocol.toUpperCase()} :$portNumber';
+    }
+    return ':$portNumber';
+  }
+}
+
+class _DevTunnelNotFoundException implements Exception {
+  const _DevTunnelNotFoundException();
 }
 
 /// Handles Dev Tunnels account login and connect-token exchange.
@@ -318,7 +359,7 @@ class DevTunnelAuthService {
       return null;
     }
 
-    final connectToken = await _requestConnectToken(
+    final connectToken = await _resolveConnectToken(
       githubToken: githubToken,
       forwardingUrl: parsedUrl,
     );
@@ -334,6 +375,10 @@ class DevTunnelAuthService {
       );
     }
 
+    return _listTunnels(githubToken);
+  }
+
+  Future<List<DevTunnel>> _listTunnels(String githubToken) async {
     final response = await _httpClient
         .get(
           Uri.https(
@@ -375,9 +420,49 @@ class DevTunnelAuthService {
     return tunnels;
   }
 
-  Future<String> _requestConnectToken({
+  Future<String> _resolveConnectToken({
     required String githubToken,
     required DevTunnelForwardingUrl forwardingUrl,
+  }) async {
+    try {
+      return await _requestConnectToken(
+        githubToken: githubToken,
+        tunnelId: forwardingUrl.tunnelId,
+        clusterId: forwardingUrl.clusterId,
+        port: forwardingUrl.port,
+      );
+    } on _DevTunnelNotFoundException {
+      final matchedPort = await _findListedPortForForwardingUrl(
+        githubToken: githubToken,
+        forwardingUrl: forwardingUrl,
+      );
+      if (matchedPort == null) {
+        throw const DevTunnelAuthException(
+          'Could not find this Dev Tunnel in the signed-in account. '
+          'Refresh tunnels and select it again.',
+        );
+      }
+      try {
+        return await _requestConnectToken(
+          githubToken: githubToken,
+          tunnelId: matchedPort.tunnelId,
+          clusterId: matchedPort.clusterId,
+          port: matchedPort.portNumber,
+        );
+      } on _DevTunnelNotFoundException {
+        throw const DevTunnelAuthException(
+          'Could not find this Dev Tunnel in the signed-in account. '
+          'Refresh tunnels and select it again.',
+        );
+      }
+    }
+  }
+
+  Future<String> _requestConnectToken({
+    required String githubToken,
+    required String tunnelId,
+    required String clusterId,
+    required int? port,
   }) async {
     final queryParameters = <String, String>{
       'includePorts': 'true',
@@ -385,8 +470,8 @@ class DevTunnelAuthService {
       'api-version': _devTunnelApiVersion,
     };
     final uri = Uri.https(
-      '${forwardingUrl.clusterId}.rel.tunnels.api.visualstudio.com',
-      '/tunnels/${forwardingUrl.tunnelId}',
+      '$clusterId.rel.tunnels.api.visualstudio.com',
+      '/tunnels/$tunnelId',
       queryParameters,
     );
     final response = await _httpClient
@@ -405,10 +490,13 @@ class DevTunnelAuthService {
         'Dev Tunnels sign-in expired. Sign in again.',
       );
     }
+    if (response.statusCode == 404) {
+      throw const _DevTunnelNotFoundException();
+    }
     _ensureSuccess(response, 'getting Dev Tunnel access');
 
     final body = _decodeJsonObject(response.body);
-    final portToken = _connectTokenFromPorts(body, forwardingUrl.port);
+    final portToken = _connectTokenFromPorts(body, port);
     if (portToken != null) {
       return portToken;
     }
@@ -420,6 +508,42 @@ class DevTunnelAuthService {
     throw const DevTunnelAuthException(
       'Signed-in account does not have access to connect to this Dev Tunnel.',
     );
+  }
+
+  Future<DevTunnelPort?> _findListedPortForForwardingUrl({
+    required String githubToken,
+    required DevTunnelForwardingUrl forwardingUrl,
+  }) async {
+    final targetHost = forwardingUrl.uri.host.toLowerCase();
+    final targetPort = forwardingUrl.port;
+    final tunnels = await _listTunnels(githubToken);
+    for (final tunnel in tunnels) {
+      for (final port in tunnel.ports) {
+        final candidateUrl = port.forwardingUrl;
+        if (candidateUrl == null || candidateUrl.isEmpty) {
+          continue;
+        }
+        final DevTunnelForwardingUrl candidate;
+        try {
+          candidate = parseDevTunnelForwardingUrl(
+            candidateUrl,
+            fallbackPort: port.portNumber,
+          );
+        } on FormatException {
+          continue;
+        }
+        if (candidate.uri.host.toLowerCase() != targetHost) {
+          continue;
+        }
+        if (targetPort != null &&
+            candidate.port != targetPort &&
+            port.portNumber != targetPort) {
+          continue;
+        }
+        return port;
+      }
+    }
+    return null;
   }
 
   String? _connectTokenFromPorts(Map<String, Object?> body, int? port) {
@@ -650,6 +774,8 @@ class DevTunnelAuthService {
       tunnelId: tunnelId,
       clusterId: clusterId,
       name: _optionalString(entry, 'name'),
+      description: _optionalString(entry, 'description'),
+      labels: List.unmodifiable(_optionalStringList(entry, 'labels')),
       ports: List.unmodifiable(ports),
     );
   }
@@ -667,13 +793,24 @@ class DevTunnelAuthService {
       return null;
     }
 
+    final portTunnelId = _optionalString(entry, 'tunnelId') ?? tunnelId;
+    final portClusterId =
+        _optionalString(entry, 'clusterId') ??
+        _optionalString(entry, 'cluster') ??
+        _optionalString(entry, 'relayClusterId') ??
+        clusterId;
+
     return DevTunnelPort(
+      tunnelId: portTunnelId,
+      clusterId: portClusterId,
       portNumber: portNumber,
       forwardingUrl:
           _firstHttpStringFromList(entry['webForwardingUris']) ??
           _firstHttpStringFromList(entry['portForwardingUris']) ??
-          'https://$tunnelId-$portNumber.$clusterId.devtunnels.ms',
+          'https://$portTunnelId-$portNumber.$portClusterId.devtunnels.ms',
       protocol: _optionalString(entry, 'protocol'),
+      name: _optionalString(entry, 'name'),
+      description: _optionalString(entry, 'description'),
     );
   }
 
@@ -721,6 +858,20 @@ class DevTunnelAuthService {
   static String? _optionalString(Map<String, Object?> body, String key) {
     final value = body[key];
     return value is String ? value : null;
+  }
+
+  static List<String> _optionalStringList(
+    Map<String, Object?> body,
+    String key,
+  ) {
+    final value = body[key];
+    if (value is! List<Object?>) {
+      return const [];
+    }
+    return [
+      for (final entry in value)
+        if (entry is String && entry.trim().isNotEmpty) entry,
+    ];
   }
 
   static int _requiredPositiveInt(Map<String, Object?> body, String key) {

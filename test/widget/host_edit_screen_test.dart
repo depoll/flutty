@@ -552,6 +552,75 @@ void main() {
       expect(listAttempts, greaterThan(attemptsBeforeRetry));
     });
 
+    testWidgets('uses recognizable Dev Tunnel metadata from picker', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(
+        tester,
+        devTunnelSignedIn: true,
+        devTunnelList: () async => const [
+          DevTunnel(
+            tunnelId: 'swift-fog-99j495s',
+            clusterId: 'usw3',
+            name: 'Swift Fog',
+            description: 'Office Mac mini',
+            labels: ['ssh'],
+            ports: [
+              DevTunnelPort(
+                tunnelId: 'swift-fog-99j495s',
+                clusterId: 'usw3',
+                portNumber: 31545,
+                forwardingUrl: 'https://39bjkbx1-31545.usw3.devtunnels.ms',
+                protocol: 'ssh',
+                name: 'Shell',
+                description: 'Remote SSH port',
+              ),
+            ],
+          ),
+        ],
+      );
+      await _fillRequiredHostFields(tester);
+
+      final connectionTypeField = find.byKey(
+        const Key('host-connection-type-field'),
+      );
+      await tester.ensureVisible(connectionTypeField);
+      await tester.tap(connectionTypeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Dev Tunnel').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byKey(const Key('host-hostname-field')), findsNothing);
+      expect(find.byKey(const Key('host-port-field')), findsNothing);
+      expect(find.byKey(const Key('host-dev-tunnel-url-field')), findsNothing);
+      final picker = find.byKey(const Key('host-dev-tunnel-picker-field'));
+      await tester.ensureVisible(picker);
+      await tester.tap(picker);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Swift Fog - Shell :31545 SSH (usw3)').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.textContaining('Office Mac mini'), findsOneWidget);
+      expect(find.textContaining('Remote SSH port'), findsOneWidget);
+      expect(find.textContaining('ssh'), findsWidgets);
+
+      await _tapBottomSave(tester);
+
+      final insertedHost = harness.hostRepository.insertedHost;
+      expect(insertedHost, isNotNull);
+      expect(insertedHost!.label.value, 'New Host');
+      expect(
+        insertedHost.devTunnelUrl.value,
+        'https://39bjkbx1-31545.usw3.devtunnels.ms',
+      );
+      expect(insertedHost.hostname.value, '39bjkbx1-31545.usw3.devtunnels.ms');
+      expect(insertedHost.port.value, 31545);
+    });
+
     testWidgets('shows one selected coding agent icon in closed dropdown', (
       tester,
     ) async {
