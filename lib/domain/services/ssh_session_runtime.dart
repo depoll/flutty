@@ -133,6 +133,10 @@ class _SshSessionRuntime {
             'commandKind': commandKind,
           },
         );
+        _session._reportConnectionHealthFailureIfClosed(
+          error,
+          operation: 'shell',
+        );
         rethrow;
       }
     } else {
@@ -245,6 +249,10 @@ class _SshSessionRuntime {
                 'errorType': error.runtimeType,
               },
             );
+            _session._reportConnectionHealthFailureIfClosed(
+              error,
+              operation: 'shell_stdout',
+            );
             final stdoutController = _shellStdoutController;
             if (identical(_shell, shell) &&
                 stdoutController != null &&
@@ -278,6 +286,10 @@ class _SshSessionRuntime {
                 'errorType': error.runtimeType,
               },
             );
+            _session._reportConnectionHealthFailureIfClosed(
+              error,
+              operation: 'shell_stderr',
+            );
             final stderrController = _shellStderrController;
             if (identical(_shell, shell) &&
                 stderrController != null &&
@@ -309,6 +321,10 @@ class _SshSessionRuntime {
             'connectionId': _session.connectionId,
             'errorType': error.runtimeType,
           },
+        );
+        _session._reportConnectionHealthFailureIfClosed(
+          error,
+          operation: 'shell_done',
         );
         final doneController = _shellDoneController;
         if (identical(_shell, shell) &&

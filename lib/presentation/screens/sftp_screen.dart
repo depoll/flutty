@@ -636,23 +636,29 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
+    } on SSHError catch (e) {
+      _handleConnectFailure(e, pendingSftp);
     } on Exception catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'sftp',
-        'connect_failed',
-        fields: {'errorType': e.runtimeType},
-      );
-      pendingSftp?.close();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isLoading = false;
-        _error = e is TimeoutException
-            ? sftpTimeoutMessage('opening the SFTP browser')
-            : 'SFTP connection failed. Check the connection and try again.';
-      });
+      _handleConnectFailure(e, pendingSftp);
     }
+  }
+
+  void _handleConnectFailure(Object error, SftpClient? pendingSftp) {
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      'connect_failed',
+      fields: {'errorType': error.runtimeType},
+    );
+    pendingSftp?.close();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isLoading = false;
+      _error = error is TimeoutException
+          ? sftpTimeoutMessage('opening the SFTP browser')
+          : 'SFTP connection failed. Check the connection and try again.';
+    });
   }
 
   Future<String?> _resolveHomeDirectoryPath() async {
