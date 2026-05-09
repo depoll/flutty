@@ -175,6 +175,7 @@ void main() {
           _draft(
             connectionType: HostConnectionType.devTunnel,
             devTunnelUrl: 'https://abc-22.usw2.devtunnels.ms',
+            hostname: '',
           ),
         ),
         isNull,

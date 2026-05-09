@@ -134,14 +134,12 @@ DevTunnelForwardingUrl parseDevTunnelForwardingUrl(
   final subdomainPortMatch = RegExp(
     r'^(.+)-([0-9]{1,5})$',
   ).firstMatch(tunnelLabel);
-  if (parsedExplicitPort == null &&
-      fallbackPort != null &&
-      subdomainPortMatch != null) {
+  if (parsedExplicitPort == null && subdomainPortMatch != null) {
     final parsedPort = int.tryParse(subdomainPortMatch.group(2)!);
     if (parsedPort != null &&
         parsedPort >= 1 &&
         parsedPort <= 65535 &&
-        parsedPort == fallbackPort) {
+        (fallbackPort == null || parsedPort == fallbackPort)) {
       tunnelId = subdomainPortMatch.group(1)!;
       port = parsedPort;
     }

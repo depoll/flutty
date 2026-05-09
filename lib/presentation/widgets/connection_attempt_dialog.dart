@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/ssh_service.dart';
 
@@ -45,6 +46,11 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
       ),
     );
     const message = 'Connection failed. Check the host settings and try again.';
+    DiagnosticsLogService.instance.warning(
+      'ssh.active',
+      'connect_threw',
+      fields: {'hostId': host.id, 'errorType': error.runtimeType},
+    );
     sessionsNotifier.reportConnectionAttemptError(host.id, message);
     result = const SshConnectionResult(success: false, error: message);
   }

@@ -244,9 +244,9 @@ class HostRepository {
 
   /// Update last connected timestamp.
   Future<bool> updateLastConnected(int id) async {
-    final host = await getById(id);
-    if (host == null) return false;
-    return update(host.copyWith(lastConnectedAt: Value(DateTime.now())));
+    final updated = await (_db.update(_db.hosts)..where((h) => h.id.equals(id)))
+        .write(HostsCompanion(lastConnectedAt: Value(DateTime.now())));
+    return updated > 0;
   }
 
   Future<List<Host>> _decryptHosts(List<Host> hosts) =>

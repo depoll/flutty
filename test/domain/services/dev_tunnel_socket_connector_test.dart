@@ -40,12 +40,21 @@ void main() {
     test('parses subdomain port forwarding URLs', () {
       final parsed = parseDevTunnelForwardingUrl(
         'https://abc-22.usw2.devtunnels.ms',
-        fallbackPort: 22,
       );
 
       expect(parsed.uri.toString(), 'wss://abc-22.usw2.devtunnels.ms');
       expect(parsed.tunnelId, 'abc');
       expect(parsed.clusterId, 'usw2');
+      expect(parsed.port, 22);
+    });
+
+    test('uses fallback port to disambiguate numeric tunnel suffixes', () {
+      final parsed = parseDevTunnelForwardingUrl(
+        'https://abc-22.usw2.devtunnels.ms',
+        fallbackPort: 22,
+      );
+
+      expect(parsed.tunnelId, 'abc');
       expect(parsed.port, 22);
     });
 

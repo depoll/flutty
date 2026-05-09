@@ -162,6 +162,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     ]) {
       c.addListener(_updateDirtyState);
     }
+    _devTunnelUrlController.addListener(_syncDevTunnelDerivedFields);
 
     if (widget.hostId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -198,6 +199,35 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     if (uri.userInfo.isNotEmpty) {
       final userInfoParts = uri.userInfo.split(':');
       _usernameController.text = Uri.decodeComponent(userInfoParts.first);
+    }
+  }
+
+  void _syncDevTunnelDerivedFields() {
+    if (_selectedConnectionType != HostConnectionType.devTunnel) {
+      return;
+    }
+    final url = _devTunnelUrlController.text.trim();
+    if (url.isEmpty) {
+      return;
+    }
+    final parsed = _tryParseDevTunnelUrl(url);
+    if (parsed == null) {
+      return;
+    }
+    final parsedPort = parsed.port;
+    if (_hostnameController.text != parsed.uri.host) {
+      _hostnameController.text = parsed.uri.host;
+    }
+    if (parsedPort != null && _portController.text != '$parsedPort') {
+      _portController.text = '$parsedPort';
+    }
+  }
+
+  DevTunnelForwardingUrl? _tryParseDevTunnelUrl(String url, {int? port}) {
+    try {
+      return parseDevTunnelForwardingUrl(url, fallbackPort: port);
+    } on FormatException {
+      return null;
     }
   }
 
@@ -403,6 +433,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
     final devTunnelSignedInAsync = ref.watch(devTunnelSignedInProvider);
+    final isDevTunnel = _selectedConnectionType == HostConnectionType.devTunnel;
+    final devTunnelListAsync =
+        isDevTunnel && (devTunnelSignedInAsync.asData?.value ?? false)
+        ? ref.watch(devTunnelListProvider)
+        : null;
 
     // ValueListenableBuilder keeps UnsavedChangesGuard (and its PopScope) in
     // sync with dirty state without rebuilding the whole tree on every
@@ -467,71 +502,60 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         ),
                         const SizedBox(height: 16),
 
-                        // Hostname
-                        KeyedSubtree(
-                          key: _hostnameFieldLocationKey,
-                          child: TextFormField(
-                            key: const Key('host-hostname-field'),
-                            controller: _hostnameController,
-                            focusNode: _hostnameFocusNode,
-                            decoration: InputDecoration(
-                              labelText:
-                                  _selectedConnectionType ==
-                                      HostConnectionType.devTunnel
-                                  ? 'SSH host key alias'
-                                  : 'Hostname',
-                              hintText:
-                                  _selectedConnectionType ==
-                                      HostConnectionType.devTunnel
-                                  ? 'remote-host'
-                                  : 'example.com or 192.168.1.1',
-                              helperText:
-                                  _selectedConnectionType ==
-                                      HostConnectionType.devTunnel
-                                  ? 'Used for SSH host-key trust; traffic goes through the Dev Tunnel URL.'
-                                  : null,
-                              prefixIcon: const Icon(Icons.dns),
+                        if (!isDevTunnel) ...[
+                          // Hostname
+                          KeyedSubtree(
+                            key: _hostnameFieldLocationKey,
+                            child: TextFormField(
+                              key: const Key('host-hostname-field'),
+                              controller: _hostnameController,
+                              focusNode: _hostnameFocusNode,
+                              decoration: const InputDecoration(
+                                labelText: 'Hostname',
+                                hintText: 'example.com or 192.168.1.1',
+                                prefixIcon: Icon(Icons.dns),
+                              ),
+                              keyboardType: TextInputType.url,
+                              textInputAction: TextInputAction.next,
+                              autocorrect: false,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Please enter a hostname';
+                                }
+                                return null;
+                              },
                             ),
-                            keyboardType: TextInputType.url,
-                            textInputAction: TextInputAction.next,
-                            autocorrect: false,
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter a hostname';
-                              }
-                              return null;
-                            },
                           ),
-                        ),
-                        const SizedBox(height: 16),
+                          const SizedBox(height: 16),
 
-                        // Port
-                        KeyedSubtree(
-                          key: _portFieldLocationKey,
-                          child: TextFormField(
-                            key: const Key('host-port-field'),
-                            controller: _portController,
-                            focusNode: _portFocusNode,
-                            decoration: const InputDecoration(
-                              labelText: 'Port',
-                              hintText: '22',
-                              prefixIcon: Icon(Icons.numbers),
+                          // Port
+                          KeyedSubtree(
+                            key: _portFieldLocationKey,
+                            child: TextFormField(
+                              key: const Key('host-port-field'),
+                              controller: _portController,
+                              focusNode: _portFocusNode,
+                              decoration: const InputDecoration(
+                                labelText: 'Port',
+                                hintText: '22',
+                                prefixIcon: Icon(Icons.numbers),
+                              ),
+                              keyboardType: TextInputType.number,
+                              textInputAction: TextInputAction.next,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Please enter a port';
+                                }
+                                final port = int.tryParse(value);
+                                if (port == null || port < 1 || port > 65535) {
+                                  return 'Port must be between 1 and 65535';
+                                }
+                                return null;
+                              },
                             ),
-                            keyboardType: TextInputType.number,
-                            textInputAction: TextInputAction.next,
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter a port';
-                              }
-                              final port = int.tryParse(value);
-                              if (port == null || port < 1 || port > 65535) {
-                                return 'Port must be between 1 and 65535';
-                              }
-                              return null;
-                            },
                           ),
-                        ),
-                        const SizedBox(height: 16),
+                          const SizedBox(height: 16),
+                        ],
 
                         DropdownButtonFormField<HostConnectionType>(
                           key: const Key('host-connection-type-field'),
@@ -551,8 +575,39 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                               .toList(growable: false),
                           onChanged: _handleConnectionTypeChanged,
                         ),
-                        if (_selectedConnectionType ==
-                            HostConnectionType.devTunnel) ...[
+                        if (isDevTunnel) ...[
+                          const SizedBox(height: 16),
+                          Card(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(Icons.info_outline),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      'Choose the Dev Tunnel port that forwards to SSH. '
+                                      'MonkeySSH fills the tunnel address and SSH port; '
+                                      'you only provide the SSH username and authentication below.',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodyMedium,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          _buildDevTunnelLoginCard(
+                            context,
+                            signedInAsync: devTunnelSignedInAsync,
+                          ),
+                          if (devTunnelListAsync != null) ...[
+                            const SizedBox(height: 16),
+                            _buildDevTunnelPickerCard(devTunnelListAsync),
+                          ],
                           const SizedBox(height: 16),
                           KeyedSubtree(
                             key: _devTunnelUrlFieldLocationKey,
@@ -565,7 +620,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 hintText: 'https://abc-22.usw2.devtunnels.ms',
                                 prefixIcon: Icon(Icons.cloud_outlined),
                                 helperText:
-                                    'Use the forwarding URL for the tunnel port that reaches SSH.',
+                                    'Usually filled by selecting a tunnel above.',
                               ),
                               keyboardType: TextInputType.url,
                               textInputAction: TextInputAction.next,
@@ -588,11 +643,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 }
                               },
                             ),
-                          ),
-                          const SizedBox(height: 16),
-                          _buildDevTunnelLoginCard(
-                            context,
-                            signedInAsync: devTunnelSignedInAsync,
                           ),
                         ],
                         const SizedBox(height: 16),
@@ -1524,6 +1574,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     setState(() {
       _selectedConnectionType = value;
     });
+    _syncDevTunnelDerivedFields();
     _updateDirtyState();
   }
 
@@ -1571,6 +1622,116 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     ),
   );
 
+  Widget _buildDevTunnelPickerCard(AsyncValue<List<DevTunnel>> tunnelsAsync) =>
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: tunnelsAsync.when(
+            loading: () => const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Loading Dev Tunnels…'),
+                SizedBox(height: 12),
+                LinearProgressIndicator(),
+              ],
+            ),
+            error: (_, _) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Could not load Dev Tunnels.'),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: () => ref.invalidate(devTunnelListProvider),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ],
+            ),
+            data: (tunnels) {
+              final selections = [
+                for (final tunnel in tunnels)
+                  for (final port in tunnel.ports)
+                    if (port.forwardingUrl != null)
+                      _DevTunnelPortSelection(tunnel: tunnel, port: port),
+              ];
+              if (selections.isEmpty) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('No open Dev Tunnel ports found.'),
+                    const SizedBox(height: 8),
+                    TextButton.icon(
+                      onPressed: () => ref.invalidate(devTunnelListProvider),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Refresh'),
+                    ),
+                  ],
+                );
+              }
+              final currentUrl = _devTunnelUrlController.text.trim();
+              final selectedUrl =
+                  selections.any(
+                    (selection) => selection.forwardingUrl == currentUrl,
+                  )
+                  ? currentUrl
+                  : null;
+              return DropdownButtonFormField<String>(
+                key: const Key('host-dev-tunnel-picker-field'),
+                // ignore: deprecated_member_use
+                value: selectedUrl,
+                decoration: InputDecoration(
+                  labelText: 'Dev Tunnel port',
+                  prefixIcon: const Icon(Icons.cloud_queue_outlined),
+                  suffixIcon: IconButton(
+                    tooltip: 'Refresh tunnels',
+                    onPressed: () => ref.invalidate(devTunnelListProvider),
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ),
+                items: selections
+                    .map(
+                      (selection) => DropdownMenuItem<String>(
+                        value: selection.forwardingUrl,
+                        child: Text(selection.label),
+                      ),
+                    )
+                    .toList(growable: false),
+                onChanged: (url) {
+                  _DevTunnelPortSelection? selection;
+                  for (final candidate in selections) {
+                    if (candidate.forwardingUrl == url) {
+                      selection = candidate;
+                      break;
+                    }
+                  }
+                  if (selection != null) {
+                    _applyDevTunnelPortSelection(selection);
+                  }
+                },
+              );
+            },
+          ),
+        ),
+      );
+
+  void _applyDevTunnelPortSelection(_DevTunnelPortSelection selection) {
+    final parsed = parseDevTunnelForwardingUrl(
+      selection.forwardingUrl,
+      fallbackPort: selection.port.portNumber,
+    );
+    final previousHostname = _hostnameController.text.trim();
+    final previousLabel = _labelController.text.trim();
+    setState(() {
+      _devTunnelUrlController.text = selection.forwardingUrl;
+      _hostnameController.text = parsed.uri.host;
+      _portController.text = selection.port.portNumber.toString();
+      if (previousLabel.isEmpty || previousLabel == previousHostname) {
+        _labelController.text = selection.defaultHostLabel;
+      }
+    });
+    _updateDirtyState();
+  }
+
   Future<void> _handleDevTunnelSignIn() async {
     final service = ref.read(devTunnelAuthServiceProvider);
     late final DevTunnelDeviceLogin login;
@@ -1605,7 +1766,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     if (!mounted || signedIn != true) {
       return;
     }
-    ref.invalidate(devTunnelSignedInProvider);
+    ref
+      ..invalidate(devTunnelSignedInProvider)
+      ..invalidate(devTunnelListProvider);
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Signed in to Dev Tunnels.')));
@@ -1613,7 +1776,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
   Future<void> _handleDevTunnelSignOut() async {
     await ref.read(devTunnelAuthServiceProvider).signOutGitHub();
-    ref.invalidate(devTunnelSignedInProvider);
+    ref
+      ..invalidate(devTunnelSignedInProvider)
+      ..invalidate(devTunnelListProvider);
     if (!mounted) {
       return;
     }
@@ -2321,6 +2486,25 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ).showSnackBar(SnackBar(content: Text('Deleted "${pf.name}"')));
       }
     }
+  }
+}
+
+class _DevTunnelPortSelection {
+  const _DevTunnelPortSelection({required this.tunnel, required this.port});
+
+  final DevTunnel tunnel;
+  final DevTunnelPort port;
+
+  String get forwardingUrl => port.forwardingUrl!;
+
+  String get defaultHostLabel => '${tunnel.displayName} :${port.portNumber}';
+
+  String get label {
+    final protocol = port.protocol?.trim();
+    final suffix = protocol == null || protocol.isEmpty
+        ? ''
+        : ' (${protocol.toUpperCase()})';
+    return '${tunnel.displayName} :${port.portNumber}$suffix';
   }
 }
 

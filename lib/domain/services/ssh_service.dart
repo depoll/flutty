@@ -914,8 +914,15 @@ class SshService {
             : null,
       );
 
-      // Update last connected timestamp
-      await hostRepository!.updateLastConnected(hostId);
+      try {
+        await hostRepository!.updateLastConnected(hostId);
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.connect',
+          'last_connected_update_failed',
+          fields: {'hostId': hostId, 'errorType': error.runtimeType},
+        );
+      }
       DiagnosticsLogService.instance.info(
         'ssh.connect',
         'connect_to_host_success',

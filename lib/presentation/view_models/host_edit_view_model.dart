@@ -320,13 +320,15 @@ class HostEditViewModel extends Notifier<HostEditState> {
 
   /// Returns the first validation issue for [draft], if any.
   HostEditValidationIssue? validateDraft(HostEditDraft draft) {
+    final isDevTunnel = draft.connectionType == HostConnectionType.devTunnel;
+    DevTunnelForwardingUrl? devTunnelUrl;
     if (draft.label.isEmpty) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.label,
         message: 'Fix label to save this host',
       );
     }
-    if (draft.hostname.isEmpty) {
+    if (!isDevTunnel && draft.hostname.isEmpty) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.hostname,
         message: 'Fix hostname to save this host',
@@ -334,16 +336,26 @@ class HostEditViewModel extends Notifier<HostEditState> {
     }
 
     final port = int.tryParse(draft.port);
-    if (draft.port.isEmpty || port == null || port < 1 || port > 65535) {
+    if (!isDevTunnel &&
+        (draft.port.isEmpty || port == null || port < 1 || port > 65535)) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.port,
         message: 'Fix port to save this host',
       );
     }
-    if (draft.connectionType == HostConnectionType.devTunnel) {
+    if (isDevTunnel) {
       try {
-        parseDevTunnelForwardingUrl(draft.devTunnelUrl, fallbackPort: port);
+        devTunnelUrl = parseDevTunnelForwardingUrl(
+          draft.devTunnelUrl,
+          fallbackPort: port,
+        );
       } on FormatException {
+        return const HostEditValidationIssue(
+          target: HostEditValidationTarget.devTunnelUrl,
+          message: 'Fix Dev Tunnel URL to save this host',
+        );
+      }
+      if (devTunnelUrl.port == null) {
         return const HostEditValidationIssue(
           target: HostEditValidationTarget.devTunnelUrl,
           message: 'Fix Dev Tunnel URL to save this host',
@@ -441,7 +453,14 @@ class HostEditViewModel extends Notifier<HostEditState> {
     required bool hasAutomationAccess,
   }) async {
     final existingHost = state.existingHost;
-    final port = int.parse(draft.port);
+    final devTunnelUrl = draft.connectionType == HostConnectionType.devTunnel
+        ? parseDevTunnelForwardingUrl(
+            draft.devTunnelUrl,
+            fallbackPort: int.tryParse(draft.port),
+          )
+        : null;
+    final port = devTunnelUrl?.port ?? int.parse(draft.port);
+    final hostname = devTunnelUrl?.uri.host ?? draft.hostname;
     final password = draft.password.isEmpty ? null : draft.password;
     final tags = draft.tags.trim().isEmpty ? null : draft.tags.trim();
 
@@ -553,7 +572,7 @@ class HostEditViewModel extends Notifier<HostEditState> {
 
     return SaveHostInput(
       label: draft.label,
-      hostname: draft.hostname,
+      hostname: hostname,
       port: port,
       connectionType: draft.connectionType,
       devTunnelUrl: draft.connectionType == HostConnectionType.devTunnel
