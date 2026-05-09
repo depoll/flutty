@@ -1,3 +1,4 @@
+import 'remote_multiplexer.dart';
 import 'tmux_state.dart';
 
 /// Supported coding-agent CLIs for host-scoped launch presets.
@@ -87,12 +88,14 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     return null;
   }
 
-  for (final tool in AgentLaunchTool.values) {
-    if (tool.commandName == normalized) {
-      return tool;
-    }
-  }
-  return null;
+  return switch (normalized) {
+    'claude' || 'claude-code' => AgentLaunchTool.claudeCode,
+    'copilot' || 'github-copilot' => AgentLaunchTool.copilotCli,
+    'codex' || 'codex-cli' => AgentLaunchTool.codex,
+    'opencode' || 'open-code' => AgentLaunchTool.openCode,
+    'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
+    _ => null,
+  };
 }
 
 /// Resolves a supported agent CLI from a full shell command.
@@ -129,6 +132,7 @@ class AgentLaunchPreset {
     required this.tool,
     this.workingDirectory,
     this.tmuxSessionName,
+    this.remoteMuxBackend,
     this.tmuxExtraFlags,
     this.tmuxDisableStatusBar = false,
     this.additionalArguments,
@@ -145,6 +149,9 @@ class AgentLaunchPreset {
       tool: tool,
       workingDirectory: _readTrimmedString(json['workingDirectory']),
       tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
+      remoteMuxBackend: RemoteMuxBackendPresentation.fromStorageValue(
+        _readTrimmedString(json['remoteMuxBackend']),
+      ),
       tmuxExtraFlags: _readTrimmedString(json['tmuxExtraFlags']),
       tmuxDisableStatusBar: json['tmuxDisableStatusBar'] == true,
       additionalArguments: _readTrimmedString(json['additionalArguments']),
@@ -160,6 +167,11 @@ class AgentLaunchPreset {
   /// Optional tmux session to create or attach before launching the agent.
   final String? tmuxSessionName;
 
+  /// Optional remote window backend for [tmuxSessionName].
+  ///
+  /// A null value preserves legacy presets: a configured session means tmux.
+  final RemoteMuxBackend? remoteMuxBackend;
+
   /// Optional `tmux new-session` flags passed before the agent command.
   final String? tmuxExtraFlags;
 
@@ -169,9 +181,22 @@ class AgentLaunchPreset {
   /// Optional extra arguments passed to the CLI.
   final String? additionalArguments;
 
+  /// Whether this preset uses a remote window session.
+  bool get usesMuxSession =>
+      tmuxSessionName != null && tmuxSessionName!.trim().isNotEmpty;
+
+  /// Backend used for the remote window session, if one is configured.
+  RemoteMuxBackend get effectiveRemoteMuxBackend =>
+      remoteMuxBackend ??
+      (usesMuxSession ? RemoteMuxBackend.tmux : RemoteMuxBackend.monkeyMux);
+
+  /// Whether this preset uses a MonkeyMux session.
+  bool get usesMonkeyMuxSession =>
+      usesMuxSession && effectiveRemoteMuxBackend == RemoteMuxBackend.monkeyMux;
+
   /// Whether this preset uses a tmux session.
   bool get usesTmuxSession =>
-      tmuxSessionName != null && tmuxSessionName!.trim().isNotEmpty;
+      usesMuxSession && effectiveRemoteMuxBackend == RemoteMuxBackend.tmux;
 
   /// Whether this preset changes to a working directory first.
   bool get hasWorkingDirectory =>
@@ -184,6 +209,8 @@ class AgentLaunchPreset {
       'workingDirectory': value.trim(),
     if (tmuxSessionName case final value? when value.trim().isNotEmpty)
       'tmuxSessionName': value.trim(),
+    if (remoteMuxBackend case final value?)
+      'remoteMuxBackend': value.storageValue,
     if (tmuxExtraFlags case final value? when value.trim().isNotEmpty)
       'tmuxExtraFlags': value.trim(),
     if (tmuxDisableStatusBar) 'tmuxDisableStatusBar': true,
@@ -196,6 +223,7 @@ class AgentLaunchPreset {
     AgentLaunchTool? tool,
     String? workingDirectory,
     String? tmuxSessionName,
+    RemoteMuxBackend? remoteMuxBackend,
     String? tmuxExtraFlags,
     bool? tmuxDisableStatusBar,
     String? additionalArguments,
@@ -203,6 +231,7 @@ class AgentLaunchPreset {
     tool: tool ?? this.tool,
     workingDirectory: workingDirectory ?? this.workingDirectory,
     tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
+    remoteMuxBackend: remoteMuxBackend ?? this.remoteMuxBackend,
     tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
     tmuxDisableStatusBar: tmuxDisableStatusBar ?? this.tmuxDisableStatusBar,
     additionalArguments: additionalArguments ?? this.additionalArguments,
@@ -312,7 +341,9 @@ String buildAgentLaunchCommand(
 
   final tmuxSessionName = preset.tmuxSessionName?.trim();
   final workingDirectory = preset.workingDirectory?.trim();
-  if (tmuxSessionName != null && tmuxSessionName.isNotEmpty) {
+  if (preset.usesTmuxSession &&
+      tmuxSessionName != null &&
+      tmuxSessionName.isNotEmpty) {
     final tmuxExtraFlags = _tokenizeTmuxNewSessionFlags(preset.tmuxExtraFlags);
     final commandParts = <String>[
       'tmux new-session -A -s ${_quoteShellArgument(tmuxSessionName)}',

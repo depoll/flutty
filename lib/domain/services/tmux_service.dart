@@ -3879,7 +3879,6 @@ Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
 ///
 /// The output is Unit Separator-delimited:
 /// `session_id<US>copilot_pid<US>matched_pane_pid<US>session_title`.
-@visibleForTesting
 String buildCopilotActiveSessionMetadataCommand(Set<int> panePids) {
   final normalizedPanePids =
       panePids.where((panePid) => panePid > 0).toSet().toList()..sort();
@@ -3976,7 +3975,6 @@ fi
 
 /// Parses [buildCopilotActiveSessionMetadataCommand] output and returns live
 /// Copilot session metadata keyed by tmux pane PID.
-@visibleForTesting
 Map<int, ({String sessionId, String? title})>
 parseCopilotActiveSessionMetadataOutput(String output, Set<int> panePids) {
   if (output.trim().isEmpty || panePids.isEmpty) {

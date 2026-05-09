@@ -18,6 +18,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
@@ -25,7 +26,10 @@ import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -51,6 +55,22 @@ class _MockTmuxService extends Mock implements TmuxService {
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
 }
+
+class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
+  @override
+  bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  Future<MonkeyMuxServerStatus?> runningServerStatus(
+    SshSession session,
+    MonkeyMuxInstallation installation,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async => null;
+}
+
+class _MockMonkeyMuxInstallerService extends Mock
+    implements MonkeyMuxInstallerService {}
 
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
@@ -114,10 +134,12 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier(this.session);
 
   final SshSession session;
+  final disconnectedConnectionIds = <int>[];
 
   @override
   Map<int, SshConnectionState> build() => <int, SshConnectionState>{
-    session.connectionId: SshConnectionState.connected,
+    if (!disconnectedConnectionIds.contains(session.connectionId))
+      session.connectionId: SshConnectionState.connected,
   };
 
   @override
@@ -132,7 +154,16 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 
   @override
   SshSession? getSession(int connectionId) =>
-      connectionId == session.connectionId ? session : null;
+      connectionId == session.connectionId &&
+          !disconnectedConnectionIds.contains(connectionId)
+      ? session
+      : null;
+
+  @override
+  Future<void> disconnect(int connectionId) async {
+    disconnectedConnectionIds.add(connectionId);
+    state = {...state}..remove(connectionId);
+  }
 
   @override
   Future<void> syncBackgroundStatus() async {}
@@ -158,6 +189,7 @@ Host _buildHost({
   String? autoConnectCommand,
   String? tmuxSessionName,
   String? tmuxExtraFlags,
+  RemoteMuxBackend? remoteMuxBackend,
 }) => Host(
   id: id,
   label: 'Terminal test host',
@@ -171,6 +203,7 @@ Host _buildHost({
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   autoConnectRequiresConfirmation: false,
+  remoteMuxBackend: remoteMuxBackend?.storageValue,
   sortOrder: 0,
 );
 
@@ -197,6 +230,7 @@ void main() {
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
     registerFallbackValue(monkey_themes.TerminalThemes.defaultDarkTheme);
+    registerFallbackValue(SshExecPriority.normal);
   });
 
   group('terminal native selection helpers', () {
@@ -1689,6 +1723,374 @@ void main() {
     );
 
     testWidgets(
+      'uses MonkeyMux theme hints only for theme changes',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
+        ];
+        var themeRefreshCount = 0;
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        session.terminal!.write('\x1b[?1004h');
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {
+          themeRefreshCount += 1;
+        });
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        shellWrites.clear();
+        themeRefreshCount = 0;
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 0,
+              id: '@0',
+              name: 'Copilot CLI · flutty',
+              isActive: true,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(themeRefreshCount, 0);
+        expect(writtenShellText, isNot(contains('\x1b[O')));
+        expect(writtenShellText, isNot(contains('\x1b[I')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;')));
+
+        shellWrites.clear();
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final shellTextAfterThemeChange = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(themeRefreshCount, 1);
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b[O')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b[I')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b]10;')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b]11;')));
+        expect(shellTextAfterThemeChange, isNot(contains('\x1b]4;')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'disconnects when MonkeyMux reports no remaining windows',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        final activeSessions = _TestActiveSessionsNotifier(session);
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.clearCache(session.connectionId),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.clearCache(session.connectionId),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(() => activeSessions),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              initialRoute: '/terminal',
+              routes: {
+                '/': (_) => const SizedBox.shrink(),
+                '/terminal': (_) => TerminalScreen(
+                  hostId: host.id,
+                  connectionId: session.connectionId,
+                ),
+              },
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('monkeymux-handle-icon')),
+          findsOneWidget,
+        );
+        verify(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+
+        windowEvents.add(const TmuxWindowListEvent(<TmuxWindow>[]));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(activeSessions.disconnectedConnectionIds, [
+          session.connectionId,
+        ]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'disconnects when final MonkeyMux close shuts the control channel',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        final activeSessions = _TestActiveSessionsNotifier(session);
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.clearCache(session.connectionId),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.clearCache(session.connectionId),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.killWindow(
+            session,
+            sessionName,
+            0,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenThrow(
+          const MonkeyMuxInstallException('MonkeyMux control channel closed.'),
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(() => activeSessions),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              initialRoute: '/terminal',
+              routes: {
+                '/': (_) => const SizedBox.shrink(),
+                '/terminal': (_) => TerminalScreen(
+                  hostId: host.id,
+                  connectionId: session.connectionId,
+                ),
+              },
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        final closeWindowButton = find.byWidgetPredicate(
+          (widget) => widget is IconButton && widget.tooltip == 'Close window',
+        );
+        expect(closeWindowButton, findsOneWidget);
+        await tester.tap(closeWindowButton);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(activeSessions.disconnectedConnectionIds, [
+          session.connectionId,
+        ]);
+        expect(
+          find.text('tmux action failed. Check the session and try again.'),
+          findsNothing,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'does not leak outer tmux theme reports to a bare shell after detach',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -1739,7 +2141,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async => tmuxSessionName);
@@ -1882,7 +2288,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async => tmuxSessionName);
@@ -2118,7 +2528,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
@@ -2277,7 +2691,11 @@ void main() {
         // the outer reports gate skips OSC sends to a bare shell, so simulate
         // those signals on the session terminal before the screen pumps.
         session.terminal!.write('\x1b[?1004h');
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async => tmuxSessionName);
@@ -2518,7 +2936,11 @@ void main() {
             username: 'root',
           ),
         );
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         var foregroundSessionCalls = 0;
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -2606,7 +3028,11 @@ void main() {
             username: 'root',
           ),
         );
-        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
         var foregroundSessionCalls = 0;
         when(
           () => tmuxService.foregroundSessionNameOrThrow(session),
@@ -3366,6 +3792,259 @@ void main() {
         );
         expect(writtenShellText, contains('codex --yolo'));
         expect(writtenShellText, isNot(contains('--approval-mode never')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'auto-connect launches MonkeyMux agent presets with user-visible install priority',
+      (tester) async {
+        final settingsService = SettingsService(db);
+        final presetService = AgentLaunchPresetService(settingsService);
+        final cliLaunchPreferencesService = HostCliLaunchPreferencesService(
+          settingsService,
+        );
+        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final tmuxService = _MockTmuxService();
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(id: host.id, autoConnectCommand: 'copilot');
+        await presetService.setPresetForHost(
+          host.id,
+          const AgentLaunchPreset(
+            tool: AgentLaunchTool.copilotCli,
+            workingDirectory: '/work/project',
+            tmuxSessionName: 'agents',
+            remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+          ),
+        );
+        await cliLaunchPreferencesService.setPreferencesForHost(
+          host.id,
+          const HostCliLaunchPreferences(startInYoloMode: true),
+        );
+        when(
+          () => monetizationService.canUseFeature(any()),
+        ).thenAnswer((_) async => false);
+        when(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: any(named: 'priority'),
+          ),
+        ).thenAnswer(
+          (_) async => const MonkeyMuxInstallation(
+            executablePath: '/tmp/monkeymux',
+            platform: 'darwin-arm64',
+            version: '0.1.10',
+          ),
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(session, 'agents'),
+        ).thenAnswer((_) async => true);
+        when(() => monkeyMuxService.listWindows(session, 'agents')).thenAnswer(
+          (_) async => const <TmuxWindow>[
+            TmuxWindow(index: 0, name: 'Copilot CLI', isActive: true),
+          ],
+        );
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, 'agents'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              settingsServiceProvider.overrideWithValue(settingsService),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(shellWrites, isEmpty);
+        final startupCommands = executedCommands
+            .where((command) => command.contains("'/tmp/monkeymux' attach"))
+            .toList(growable: false);
+        expect(startupCommands, hasLength(1));
+        final startupCommand = startupCommands.single;
+        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('--update-policy never'));
+        expect(startupCommand, contains("--cwd '/work/project'"));
+        expect(startupCommand, contains("--name 'Copilot CLI'"));
+        expect(startupCommand, contains("--command 'copilot --yolo'"));
+        expect(startupCommand, contains('agents'));
+        expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
+        expect(session.remoteMuxSessionName, 'agents');
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
+        verify(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: SshExecPriority.normal,
+          ),
+        ).called(1);
+        verifyNever(
+          () => monetizationService.canUseFeature(
+            MonetizationFeature.autoConnectAutomation,
+          ),
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'opens structured MonkeyMux attach as the foreground shell command',
+      (tester) async {
+        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: any(named: 'priority'),
+          ),
+        ).thenAnswer(
+          (_) async => const MonkeyMuxInstallation(
+            executablePath: '/tmp/monkeymux',
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+          ),
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () =>
+              monkeyMuxService.hasForegroundClientOrThrow(session, sessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, sessionName),
+        ).thenAnswer(
+          (_) async => const <TmuxWindow>[
+            TmuxWindow(index: 0, name: 'shell', isActive: true),
+          ],
+        );
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, sessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(shellWrites, isEmpty);
+        final startupCommands = executedCommands
+            .where((command) => command.contains("'/tmp/monkeymux' attach"))
+            .toList(growable: false);
+        expect(startupCommands, hasLength(1));
+        expect(startupCommands.single, contains('--update-policy never'));
+        expect(startupCommands.single, contains("'$sessionName'"));
+        expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
+        expect(session.remoteMuxSessionName, sessionName);
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
