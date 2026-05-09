@@ -2467,6 +2467,20 @@ class SshSession {
           final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
 
           await Future.any<void>([forwardToSocket, socketToForward]);
+        } on SSHError catch (e) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.forward',
+            'local_connection_failed',
+            fields: {
+              'connectionId': connectionId,
+              'hostId': hostId,
+              ..._diagnosticSshExecErrorFields(e),
+            },
+          );
+          _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
+          if (kDebugMode) {
+            debugPrint('Port forward connection error: $e');
+          }
         } on Exception catch (e) {
           DiagnosticsLogService.instance.warning(
             'ssh.forward',
@@ -2567,6 +2581,21 @@ class SshSession {
       });
 
       return true;
+    } on SSHError catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'remote_start_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          ..._diagnosticSshExecErrorFields(e),
+        },
+      );
+      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_remote');
+      if (kDebugMode) {
+        debugPrint('Failed to start remote forward: $e');
+      }
+      return false;
     } on Exception catch (e) {
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
@@ -2603,7 +2632,14 @@ class SshSession {
     int remotePort, {
     String localHost = 'localhost',
     int localPort = 0,
-  }) => client.forwardLocal(remoteHost, remotePort);
+  }) async {
+    try {
+      return await client.forwardLocal(remoteHost, remotePort);
+    } on SSHError catch (e) {
+      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
+      rethrow;
+    }
+  }
 
   /// Close the session.
   Future<void> close() async {
