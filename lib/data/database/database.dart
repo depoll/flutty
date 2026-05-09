@@ -106,6 +106,12 @@ class Hosts extends Table {
   /// Extra tmux flags appended to the generated `tmux new-session` command.
   TextColumn get tmuxExtraFlags => text().nullable()();
 
+  /// Remote multiplexer backend used with [tmuxSessionName].
+  ///
+  /// Null preserves legacy behavior and means tmux when [tmuxSessionName] is
+  /// populated.
+  TextColumn get remoteMuxBackend => text().nullable()();
+
   /// Display order within the hosts list.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 }
@@ -326,7 +332,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -395,11 +401,20 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 9) {
         final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.remoteMuxBackend.$name)) {
+          await m.addColumn(hosts, hosts.remoteMuxBackend);
+        }
+      }
+      if (from < 10) {
+        final hostColumnNames = await _readColumnNames('hosts');
         if (!hostColumnNames.contains(hosts.connectionType.$name)) {
           await m.addColumn(hosts, hosts.connectionType);
         }
         if (!hostColumnNames.contains(hosts.devTunnelUrl.$name)) {
           await m.addColumn(hosts, hosts.devTunnelUrl);
+        }
+        if (!hostColumnNames.contains(hosts.remoteMuxBackend.$name)) {
+          await m.addColumn(hosts, hosts.remoteMuxBackend);
         }
       }
     },

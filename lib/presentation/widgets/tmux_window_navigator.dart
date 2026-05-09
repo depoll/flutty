@@ -9,6 +9,7 @@ import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
+import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
 import 'agent_tool_icon.dart';
@@ -54,6 +55,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required WidgetRef ref,
   required SshSession session,
   required String tmuxSessionName,
+  required RemoteMultiplexerService remoteMultiplexerService,
   required bool isProUser,
   required bool startClisInYoloMode,
   String? tmuxExtraFlags,
@@ -65,6 +67,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   builder: (context) => _TmuxNavigatorSheet(
     session: session,
     tmuxSessionName: tmuxSessionName,
+    remoteMultiplexerService: remoteMultiplexerService,
     tmuxExtraFlags: tmuxExtraFlags,
     isProUser: isProUser,
     startClisInYoloMode: startClisInYoloMode,
@@ -167,6 +170,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
   const _TmuxNavigatorSheet({
     required this.session,
     required this.tmuxSessionName,
+    required this.remoteMultiplexerService,
     required this.isProUser,
     required this.startClisInYoloMode,
     required this.ref,
@@ -176,6 +180,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 
   final SshSession session;
   final String tmuxSessionName;
+  final RemoteMultiplexerService remoteMultiplexerService;
   final String? tmuxExtraFlags;
   final bool isProUser;
   final bool startClisInYoloMode;
@@ -206,7 +211,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   int _windowRetryAttempts = 0;
   int _consecutiveEmptyWindowReloads = 0;
 
-  TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
+  RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
 
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
@@ -248,7 +253,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         'generation': generation,
       },
     );
-    _windowChangeSubscription = _tmux
+    _windowChangeSubscription = _mux
         .watchWindowChanges(
           widget.session,
           widget.tmuxSessionName,
@@ -290,7 +295,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       },
     );
     try {
-      final reloadedWindows = await _tmux.listWindows(
+      final reloadedWindows = await _mux.listWindows(
         widget.session,
         widget.tmuxSessionName,
         extraFlags: widget.tmuxExtraFlags,
@@ -396,6 +401,19 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         },
       );
       _loadWindows();
+      return;
+    }
+    if (event is TmuxWindowListEvent) {
+      _windowReloadGeneration += 1;
+      _resetWindowReloadRecovery();
+      final currentWindows = _windows;
+      setState(() {
+        _windows = currentWindows == null
+            ? event.windows
+            : applyTmuxWindowChangeEvent(currentWindows, event);
+        _error = null;
+        _isLoadingWindows = false;
+      });
       return;
     }
     final currentWindows = _windows;
@@ -517,7 +535,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   Future<void> _showNewWindowPicker() async {
-    final installedToolsFuture = _installedToolsFuture ??= _tmux
+    final installedToolsFuture = _installedToolsFuture ??= widget.ref
+        .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
     final action = await showTmuxNewWindowPicker(
       context: context,

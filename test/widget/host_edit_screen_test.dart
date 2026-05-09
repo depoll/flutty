@@ -17,10 +17,12 @@ import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/dev_tunnel_auth_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
+import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 
 Host _testHost({
@@ -32,6 +34,7 @@ Host _testHost({
   String? tmuxSessionName,
   String? tmuxWorkingDirectory,
   String? tmuxExtraFlags,
+  String? remoteMuxBackend,
 }) => Host(
   id: id,
   label: label,
@@ -47,6 +50,7 @@ Host _testHost({
   tmuxSessionName: tmuxSessionName,
   tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: tmuxExtraFlags,
+  remoteMuxBackend: remoteMuxBackend,
   sortOrder: 0,
 );
 
@@ -365,12 +369,59 @@ void main() {
       expect(find.byType(HostEditScreen), findsNothing);
     });
 
+    testWidgets('lets long host guidance text wrap', (tester) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+
+      final startupModeField = tester
+          .widget<DropdownButtonFormField<HostStartupMode>>(
+            find.byKey(const Key('host-startup-mode-field')),
+          );
+      expect(startupModeField.decoration.helperMaxLines, greaterThan(1));
+
+      await _selectStartupMode(tester, 'Launch coding agent');
+
+      final backendField = tester
+          .widget<DropdownButtonFormField<RemoteMuxBackend>>(
+            find.byKey(const Key('host-agent-mux-backend-field')),
+          );
+      expect(backendField.decoration.helperMaxLines, greaterThan(1));
+
+      final agentSessionField = tester.widget<TextField>(
+        find.descendant(
+          of: find.byKey(const Key('host-agent-tmux-session-field')),
+          matching: find.byType(TextField),
+        ),
+      );
+      expect(agentSessionField.decoration!.helperMaxLines, greaterThan(1));
+    });
+
+    testWidgets('shows explicit MonkeyMux and tmux startup choices', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+
+      final startupModeField = find.byKey(const Key('host-startup-mode-field'));
+      await tester.scrollUntilVisible(
+        startupModeField,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(startupModeField);
+      await tester.tap(startupModeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('MonkeyMux'), findsOneWidget);
+      expect(find.text('tmux'), findsOneWidget);
+      expect(find.text('Automatic windows'), findsNothing);
+    });
+
     testWidgets('scrolls to missing tmux session when saving tmux startup', (
       tester,
     ) async {
       final harness = await _pumpHostCreateScreen(tester);
       await _fillRequiredHostFields(tester);
-      await _selectStartupMode(tester, 'Open tmux session');
+      await _selectStartupMode(tester, 'tmux');
 
       await _tapBottomSave(tester);
 
@@ -617,6 +668,7 @@ void main() {
           label: 'Imported Host',
           autoConnectRequiresConfirmation: false,
           tmuxSessionName: 'old-workspace',
+          remoteMuxBackend: RemoteMuxBackend.tmux.storageValue,
         ),
         database: database,
         encryptionService: encryptionService,
@@ -716,6 +768,7 @@ void main() {
             label: 'Imported Host',
             autoConnectRequiresConfirmation: false,
             tmuxSessionName: 'old-workspace',
+            remoteMuxBackend: RemoteMuxBackend.tmux.storageValue,
           ),
           database: database,
           encryptionService: encryptionService,
@@ -813,6 +866,7 @@ void main() {
           autoConnectRequiresConfirmation: false,
           tmuxSessionName: 'workspace',
           tmuxExtraFlags: r'-f ~/.tmux.conf \; set status off',
+          remoteMuxBackend: RemoteMuxBackend.tmux.storageValue,
         ),
         database: database,
         encryptionService: encryptionService,
@@ -1033,6 +1087,53 @@ void main() {
         expect(savedPreset.tmuxDisableStatusBar, isTrue);
         expect(savedPreset.tmuxSessionName, 'agent-session');
         expect(savedPreset.tmuxExtraFlags, '-x 200 -y 60');
+      },
+    );
+
+    testWidgets(
+      'defaults agent startup to MonkeyMux and hides tmux-only options',
+      (tester) async {
+        await _pumpHostCreateScreen(tester, hasPro: true);
+
+        await _selectStartupMode(tester, 'Launch coding agent');
+
+        final backendField = find.byKey(
+          const Key('host-agent-mux-backend-field'),
+        );
+        expect(backendField, findsOneWidget);
+        expect(find.text('MonkeyMux session (optional)'), findsOneWidget);
+        expect(
+          find.byKey(const Key('host-agent-disable-status-bar-checkbox')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+          findsNothing,
+        );
+        expect(
+          find.text(
+            'MonkeyMux is managed by MonkeySSH, so there are no tmux flags or tmux status-bar settings.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('claude', findRichText: true), findsWidgets);
+
+        await tester.tap(backendField);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('tmux').last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(find.text('tmux session (optional)'), findsOneWidget);
+        expect(
+          find.byKey(const Key('host-agent-disable-status-bar-checkbox')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+          findsOneWidget,
+        );
       },
     );
 
@@ -1484,7 +1585,7 @@ void main() {
       },
     );
 
-    testWidgets('shows Pro helper copy for auto-run automation', (
+    testWidgets('explains launch behavior without plan-gating copy', (
       tester,
     ) async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -1530,10 +1631,11 @@ void main() {
 
       expect(
         find.text(
-          'Free hosts can still open tmux automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
+          'Choose what MonkeySSH starts after SSH connects. MonkeyMux and tmux keep remote shells alive across reconnects and add the window switcher; agent, command, and snippet options start a workflow automatically.',
         ),
         findsOneWidget,
       );
+      expect(find.textContaining('Terminal windows stay free'), findsNothing);
     });
 
     testWidgets(
@@ -1572,7 +1674,7 @@ void main() {
         await _pumpHostCreateScreen(tester);
 
         // Switch the startup mode dropdown (a pure non-text setState).
-        await _selectStartupMode(tester, 'Open tmux session');
+        await _selectStartupMode(tester, 'tmux');
 
         // Navigating back must trigger the discard dialog because startup mode
         // changed from the initial "Do nothing" value.

@@ -500,8 +500,16 @@ class TmuxWindow {
   /// The supported agent CLI running in the foreground, if one can be inferred.
   AgentLaunchTool? get foregroundAgentTool {
     if (agentTool != null) return agentTool;
-    for (final candidate in [currentCommand, name, paneTitle]) {
+    for (final candidate in [currentCommand]) {
       final tool = agentLaunchToolForCommandName(candidate);
+      if (tool != null) {
+        return tool;
+      }
+    }
+    for (final candidate in [name, paneTitle]) {
+      final tool =
+          agentLaunchToolForCommandName(candidate) ??
+          _agentToolFromTerminalTitle(candidate);
       if (tool != null) {
         return tool;
       }
@@ -575,6 +583,15 @@ class TmuxWindowReloadEvent extends TmuxWindowChangeEvent {
   const TmuxWindowReloadEvent();
 }
 
+/// A full live window-list snapshot.
+class TmuxWindowListEvent extends TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowListEvent].
+  const TmuxWindowListEvent(this.windows);
+
+  /// The latest windows reported by the multiplexer.
+  final List<TmuxWindow> windows;
+}
+
 /// Applies a live tmux window update to an existing window list.
 List<TmuxWindow> applyTmuxWindowChangeEvent(
   List<TmuxWindow> windows,
@@ -583,6 +600,17 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
   switch (event) {
     case TmuxWindowReloadEvent():
       return windows;
+    case TmuxWindowListEvent(windows: final nextWindows):
+      return List<TmuxWindow>.unmodifiable(
+        nextWindows.map((nextWindow) {
+          final existingWindow = windows
+              .where((window) => _isSameTmuxWindow(window, nextWindow))
+              .firstOrNull;
+          return existingWindow == null
+              ? nextWindow
+              : _preserveActiveAgentSessionMetadata(existingWindow, nextWindow);
+        }),
+      );
     case TmuxWindowSnapshotEvent(window: final window):
       final updated = windows
           .map(
@@ -914,6 +942,22 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
 };
+
+AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  final normalized = _normalizeAgentTitleForComparison(value);
+  if (normalized.isEmpty) return null;
+  for (final tool in AgentLaunchTool.values) {
+    for (final alias in _agentTitleAliases(tool)) {
+      if (normalized == alias ||
+          normalized.startsWith('$alias ') ||
+          normalized.startsWith('$alias:')) {
+        return tool;
+      }
+    }
+  }
+  return null;
+}
 
 bool _isDecoratedVariantOfTitle(String rawTitle, String? plainTitle) {
   if (plainTitle == null || plainTitle.isEmpty) return false;

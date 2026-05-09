@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_connection_type.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
 
 HostEditDraft _draft({
@@ -21,6 +22,7 @@ HostEditDraft _draft({
   String tmuxSession = '',
   String agentTmuxSession = '',
   String agentTmuxExtraFlags = '',
+  RemoteMuxBackend selectedAgentMuxBackend = RemoteMuxBackend.monkeyMux,
   int? snippetId,
 }) => (
   label: label,
@@ -39,6 +41,7 @@ HostEditDraft _draft({
   agentTmuxSession: agentTmuxSession,
   agentTmuxExtraFlags: agentTmuxExtraFlags,
   agentArguments: '',
+  selectedAgentMuxBackend: selectedAgentMuxBackend,
   selectedKeyId: null,
   selectedGroupId: null,
   selectedJumpHostId: null,
@@ -115,6 +118,20 @@ void main() {
             ),
       );
       expect(
+        viewModel.validateDraft(_draft(startupMode: HostStartupMode.monkeyMux)),
+        isA<HostEditValidationIssue>()
+            .having(
+              (issue) => issue.target,
+              'target',
+              HostEditValidationTarget.tmuxSession,
+            )
+            .having(
+              (issue) => issue.message,
+              'message',
+              'Fix MonkeyMux session name to save this host',
+            ),
+      );
+      expect(
         viewModel.validateDraft(
           _draft(
             startupMode: HostStartupMode.snippet,
@@ -180,6 +197,16 @@ void main() {
         ),
         isNull,
       );
+    });
+
+    test('maps remote window startup modes to mux backends', () {
+      expect(HostStartupMode.muxAuto.remoteMuxBackend, RemoteMuxBackend.auto);
+      expect(
+        HostStartupMode.monkeyMux.remoteMuxBackend,
+        RemoteMuxBackend.monkeyMux,
+      );
+      expect(HostStartupMode.tmux.remoteMuxBackend, RemoteMuxBackend.tmux);
+      expect(HostStartupMode.none.remoteMuxBackend, isNull);
     });
   });
 
