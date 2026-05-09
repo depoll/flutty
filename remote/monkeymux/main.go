@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.17"
+	monkeyMuxVersion         = "0.1.18"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -76,6 +76,24 @@ var (
 	errRunCommandOutputLimit  = errors.New("command output limit exceeded")
 	errRunCommandTimeout      = errors.New("command timed out")
 )
+
+var signalForegroundResize = func(processGroup int) {
+	if processGroup <= 0 {
+		return
+	}
+	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+var foregroundProcessGroupForWindow = func(window *muxWindow) int {
+	if window == nil || window.pty == nil {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
+}
 
 const (
 	serverUpdatePolicyPrompt = "prompt"
@@ -659,6 +677,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
+	var foregroundProcessGroup int
 	var shouldShutdown bool
 
 	s.mu.Lock()
@@ -680,6 +699,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
+				foregroundProcessGroup = candidate.foregroundProcessGroupLocked()
 				activeChanged = true
 				break
 			}
@@ -706,6 +726,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Windows: snapshots,
 		})
 		s.writeAttach(attach, replay)
+		signalForegroundResize(foregroundProcessGroup)
 	}
 	if shouldShutdown {
 		go s.close()
@@ -1263,6 +1284,7 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
+	var foregroundProcessGroup int
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
@@ -1274,9 +1296,11 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
+	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	s.mu.Unlock()
 	s.broadcastWindowList("active_window_changed")
 	s.writeAttach(attach, replay)
+	signalForegroundResize(foregroundProcessGroup)
 	return nil
 }
 
@@ -1284,6 +1308,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
+	var foregroundProcessGroup int
 	var shouldShutdown bool
 	var command *exec.Cmd
 	var windowPty *os.File
@@ -1309,6 +1334,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
+			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -1340,6 +1366,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Windows: snapshots,
 		})
 		s.writeAttach(attach, replay)
+		signalForegroundResize(foregroundProcessGroup)
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
 	if windowPty != nil {
@@ -1382,6 +1409,15 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
+}
+
+func (w *muxWindow) foregroundProcessGroupLocked() int {
+	pgrp := foregroundProcessGroupForWindow(w)
+	if pgrp <= 0 {
+		return 0
+	}
+	w.foregroundPid = pgrp
+	return pgrp
 }
 
 func (s *muxServer) activeReplayLocked() []byte {
@@ -1704,11 +1740,7 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 	}
 	w.lastProcessMetadataRefresh = now
 
-	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
-		return
-	}
-	w.foregroundPid = pgrp
+	pgrp := w.foregroundProcessGroupLocked()
 	if command := commandNameForProcessGroup(pgrp); command != "" {
 		w.foregroundCommand = command
 	}

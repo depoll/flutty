@@ -242,6 +242,50 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 }
 
+func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	inactiveWindow.history = []byte("background output")
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
+		cursorVisibilityReplaySequence(true)
+	var signaled []int
+	foregroundProcessGroupForWindow = func(window *muxWindow) int {
+		if window == inactiveWindow {
+			return 4242
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize signaled before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(signaled, []int{4242}) {
+		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
+	}
+}
+
 func TestInactiveWindowBellMarksAlert(t *testing.T) {
 	server := newMuxServer("test")
 	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
