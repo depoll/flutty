@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_DIR="$ROOT_DIR/remote/monkeymux"
 ASSET_DIR="$ROOT_DIR/assets/monkeymux"
 VERSION="$(sh "$REMOTE_DIR/monkeymux-version.sh" 2>/dev/null || echo "0.1.0")"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 targets=(
   "darwin amd64 darwin-amd64"
@@ -26,21 +28,25 @@ sha256_file() {
   return 1
 }
 
+rm -rf "$ASSET_DIR/bin"
 mkdir -p "$ASSET_DIR/bin"
 
 manifest_entries=()
 for target in "${targets[@]}"; do
   read -r goos goarch platform <<<"$target"
   output_dir="$ASSET_DIR/bin/$platform"
-  output="$output_dir/monkeymux"
+  raw_output="$TMP_DIR/$platform/monkeymux"
+  output="$output_dir/monkeymux.gz"
   mkdir -p "$output_dir"
+  mkdir -p "$(dirname "$raw_output")"
   (
     cd "$REMOTE_DIR"
-    GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$output" .
+    GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$raw_output" .
   )
-  size="$(wc -c <"$output" | tr -d ' ')"
-  sha="$(sha256_file "$output")"
-  manifest_entries+=("$(printf '    {\"platform\":\"%s\",\"asset\":\"assets/monkeymux/bin/%s/monkeymux\",\"sha256\":\"%s\",\"size\":%s}' "$platform" "$platform" "$sha" "$size")")
+  gzip -n -c "$raw_output" > "$output"
+  size="$(wc -c <"$raw_output" | tr -d ' ')"
+  sha="$(sha256_file "$raw_output")"
+  manifest_entries+=("$(printf '    {\"platform\":\"%s\",\"asset\":\"assets/monkeymux/bin/%s/monkeymux.gz\",\"encoding\":\"gzip\",\"sha256\":\"%s\",\"size\":%s}' "$platform" "$platform" "$sha" "$size")")
 done
 
 {

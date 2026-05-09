@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show gzip;
 
 import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
@@ -83,6 +84,7 @@ class MonkeyMuxManifestEntry {
     required this.asset,
     required this.sha256,
     required this.size,
+    this.encoding,
   });
 
   /// Parses a manifest entry JSON object.
@@ -90,6 +92,7 @@ class MonkeyMuxManifestEntry {
       MonkeyMuxManifestEntry(
         platform: json['platform'] as String? ?? '',
         asset: json['asset'] as String? ?? '',
+        encoding: json['encoding'] as String?,
         sha256: json['sha256'] as String? ?? '',
         size: json['size'] as int? ?? 0,
       );
@@ -97,8 +100,11 @@ class MonkeyMuxManifestEntry {
   /// Platform key, for example `linux-amd64`.
   final String platform;
 
-  /// Flutter asset path for the binary.
+  /// Flutter asset path for the binary data.
   final String asset;
+
+  /// Optional asset encoding used to keep bundled executables as data files.
+  final String? encoding;
 
   /// Expected SHA-256 of the binary bytes.
   final String sha256;
@@ -374,7 +380,22 @@ class MonkeyMuxInstallerService {
   Future<Uint8List> _loadAssetBytes(MonkeyMuxManifestEntry entry) async {
     final bundle = _assetBundle ?? rootBundle;
     final bytes = await bundle.load(entry.asset);
-    return bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes);
+    final assetBytes = bytes.buffer.asUint8List(
+      bytes.offsetInBytes,
+      bytes.lengthInBytes,
+    );
+    switch (entry.encoding) {
+      case null:
+      case '':
+      case 'none':
+        return assetBytes;
+      case 'gzip':
+        return Uint8List.fromList(gzip.decode(assetBytes));
+      default:
+        throw MonkeyMuxInstallException(
+          'Unsupported MonkeyMux asset encoding: ${entry.encoding}',
+        );
+    }
   }
 
   Future<bool> _remoteShaMatches(
