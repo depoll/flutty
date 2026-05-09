@@ -2402,6 +2402,7 @@ class _DevTunnelLoginDialogState extends State<_DevTunnelLoginDialog> {
           return;
         case DevTunnelDeviceLoginPollStatus.pending:
           setState(() => _status = 'Waiting for GitHub approval…');
+          break;
         case DevTunnelDeviceLoginPollStatus.expired:
           setState(() => _status = 'This sign-in code expired.');
           return;

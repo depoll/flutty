@@ -26,14 +26,16 @@ class DevTunnelSocketConnector {
     String? authorizationHeader,
     Duration? timeout,
   }) async {
-    final uri = normalizeDevTunnelWebSocketUri(url);
-    final headers = <String, String>{'X-Tunnel-Skip-AntiPhishing-Page': 'true'};
-    final authorization = authorizationHeader?.trim();
-    if (authorization != null && authorization.isNotEmpty) {
-      headers['X-Tunnel-Authorization'] = authorization;
-    }
-
     try {
+      final uri = normalizeDevTunnelWebSocketUri(url);
+      final headers = <String, String>{
+        'X-Tunnel-Skip-AntiPhishing-Page': 'true',
+      };
+      final authorization = authorizationHeader?.trim();
+      if (authorization != null && authorization.isNotEmpty) {
+        headers['X-Tunnel-Authorization'] = authorization;
+      }
+
       final socketFuture = WebSocket.connect(
         uri.toString(),
         headers: headers,

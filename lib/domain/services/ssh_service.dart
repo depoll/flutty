@@ -716,7 +716,7 @@ class SshService {
            devTunnelConnector ?? DevTunnelSocketConnector.connect,
        _devTunnelAuthorizationResolver =
            devTunnelAuthorizationResolver ??
-           DevTunnelAuthService().resolveAuthorizationHeader,
+           _anonymousDevTunnelAuthorizationResolver,
        _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
@@ -725,6 +725,11 @@ class SshService {
   /// "too many authentication failures" disconnects in Auto mode.
   static const _maxAutoKeysPerAttempt = 5;
   static const _hostKeyProbeSettleTimeout = Duration(seconds: 1);
+
+  static Future<String?> _anonymousDevTunnelAuthorizationResolver(
+    String url, {
+    int? port,
+  }) async => null;
 
   /// Host repository for looking up hosts.
   final HostRepository? hostRepository;
