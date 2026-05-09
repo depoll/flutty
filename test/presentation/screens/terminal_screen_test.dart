@@ -917,6 +917,20 @@ void main() {
       await tester.pump();
     }
 
+    Future<void> openTerminalOverflowMenu(WidgetTester tester) async {
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openTerminalOverflowSubmenu(
+      WidgetTester tester,
+      String label,
+    ) async {
+      await openTerminalOverflowMenu(tester);
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, label));
+      await tester.pumpAndSettle();
+    }
+
     void enablePlainTuiSignals() {
       session.terminal!.write('\x1b[?1004h');
     }
@@ -1008,13 +1022,10 @@ void main() {
       expect(utf8.decode(shellWrites.expand((chunk) => chunk).toList()), 'x');
     });
 
-    testWidgets('terminal overflow menu omits standalone copy action', (
-      tester,
-    ) async {
+    testWidgets('terminal overflow menu groups paste actions', (tester) async {
       await pumpScreen(tester);
 
-      await tester.tap(find.byType(PopupMenuButton<String>));
-      await tester.pumpAndSettle();
+      await openTerminalOverflowMenu(tester);
 
       expect(
         find.byWidgetPredicate(
@@ -1026,6 +1037,39 @@ void main() {
         find.byWidgetPredicate(
           (widget) =>
               widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_file',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> &&
+              widget.value == 'paste_submenu',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Paste'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_image',
         ),
         findsOneWidget,
       );
@@ -1043,8 +1087,7 @@ void main() {
       (tester) async {
         await pumpScreen(tester);
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowSubmenu(tester, 'Options');
 
         expect(
           find.widgetWithText(
@@ -1079,8 +1122,7 @@ void main() {
               widget.value == 'create_snippet',
         );
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
         expect(createSnippetItem(), findsNothing);
 
         await tester.tapAt(const Offset(2, 2));
@@ -1100,8 +1142,7 @@ void main() {
         );
         await tester.pump();
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
         expect(createSnippetItem(), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
@@ -2434,8 +2475,7 @@ void main() {
     ) async {
       await pumpScreen(tester);
 
-      await tester.tap(find.byType(PopupMenuButton<String>));
-      await tester.pumpAndSettle();
+      await openTerminalOverflowSubmenu(tester, 'Options');
 
       final menuItem = find.widgetWithText(
         CheckedPopupMenuItem<String>,
@@ -3613,8 +3653,7 @@ void main() {
         expect(dismissRegion, findsOneWidget);
         expect(tester.widget<PopScope<Object?>>(popScope).canPop, isFalse);
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowSubmenu(tester, 'Options');
         await tester.tap(find.text('Hide tmux Bar'));
         await tester.pumpAndSettle();
 
@@ -4147,8 +4186,7 @@ void main() {
           isFalse,
         );
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
 
         expect(find.text('Snippets'), findsOneWidget);
         expect(tester.testTextInput.isVisible, isTrue);
@@ -4169,13 +4207,12 @@ void main() {
             ..resetDevicePixelRatio()
             ..resetViewInsets();
         });
-
         await pumpScreen(tester);
         await tester.tap(find.byType(MonkeyTerminalView));
         await tester.pump();
+        await tester.pump();
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
 
         const keyboardTop = 844 - 500;
         final menuScrollable = find.ancestor(
