@@ -22,6 +22,23 @@ void main() {
       );
       expect(RemoteMuxBackendPresentation.fromStorageValue(''), isNull);
     });
+
+    test('keeps tmux extra flags on tmux startup', () {
+      expect(
+        resolveRemoteMuxBackendForStartup(
+          storedBackend: 'auto',
+          tmuxExtraFlags: '-f ~/.tmux.conf',
+        ),
+        RemoteMuxBackend.tmux,
+      );
+      expect(
+        resolveRemoteMuxBackendForStartup(
+          storedBackend: 'auto',
+          tmuxExtraFlags: '',
+        ),
+        RemoteMuxBackend.auto,
+      );
+    });
   });
 
   group('buildMonkeyMuxAttachCommand', () {
@@ -54,6 +71,16 @@ void main() {
       expect(status.supportsShutdown, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);
+    });
+  });
+
+  group('MonkeyMux control responses', () {
+    test('parse foreground attach state', () {
+      final hasForegroundClient = parseMonkeyMuxHasForegroundClientForTesting(
+        '{"type":"attach_state","status":"ok","hasForegroundClient":true}',
+      );
+
+      expect(hasForegroundClient, isTrue);
     });
   });
 

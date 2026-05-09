@@ -13,6 +13,19 @@ targets=(
   "linux arm64 linux-arm64"
 )
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+    return
+  fi
+  echo "sha256sum or shasum is required" >&2
+  return 1
+}
+
 mkdir -p "$ASSET_DIR/bin"
 
 manifest_entries=()
@@ -26,7 +39,7 @@ for target in "${targets[@]}"; do
     GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$output" .
   )
   size="$(wc -c <"$output" | tr -d ' ')"
-  sha="$(shasum -a 256 "$output" | awk '{print $1}')"
+  sha="$(sha256_file "$output")"
   manifest_entries+=("$(printf '    {\"platform\":\"%s\",\"asset\":\"assets/monkeymux/bin/%s/monkeymux\",\"sha256\":\"%s\",\"size\":%s}' "$platform" "$platform" "$sha" "$size")")
 done
 

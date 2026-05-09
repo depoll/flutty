@@ -315,8 +315,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     String? extraFlags,
   }) async {
-    await _runControlCommand(session, sessionName, {'type': 'ping'});
-    return true;
+    final response = await _runControlCommand(session, sessionName, {
+      'type': 'query_attach_state',
+    });
+    return response.hasForegroundClient;
   }
 
   @override
@@ -729,6 +731,7 @@ class _MonkeyMuxWindowChangeObserver {
         return;
       }
       _controlSession = controlSession;
+      controlSession.stderr.drain<void>().ignore();
       _stdoutSubscription = controlSession.stdout
           .cast<List<int>>()
           .transform(utf8.decoder)
@@ -933,6 +936,7 @@ class _MonkeyMuxControlResponse {
     this.exitCode,
     this.version,
     this.capabilities = const [],
+    this.hasForegroundClient = false,
   });
 
   factory _MonkeyMuxControlResponse.fromJson(Map<String, Object?> json) =>
@@ -960,6 +964,7 @@ class _MonkeyMuxControlResponse {
             capabilities.whereType<String>().toList(growable: false),
           _ => const <String>[],
         },
+        hasForegroundClient: json['hasForegroundClient'] == true,
       );
 
   static _MonkeyMuxControlResponse? tryParse(String line) {
@@ -986,6 +991,7 @@ class _MonkeyMuxControlResponse {
   final int? exitCode;
   final String? version;
   final List<String> capabilities;
+  final bool hasForegroundClient;
 
   bool get isError => status == 'error' || type == 'error';
 }
@@ -1032,6 +1038,11 @@ TmuxWindow? _windowFromJson(Object? value) {
 @visibleForTesting
 TmuxWindow? parseMonkeyMuxWindowSnapshotForTesting(Object? value) =>
     _windowFromJson(value);
+
+/// Parses a MonkeyMux attach-state response for protocol regression tests.
+@visibleForTesting
+bool? parseMonkeyMuxHasForegroundClientForTesting(String line) =>
+    _MonkeyMuxControlResponse.tryParse(line)?.hasForegroundClient;
 
 AgentLaunchTool? _agentToolFromMonkeyMuxMetadata(String? value) =>
     agentLaunchToolForCommandName(value);

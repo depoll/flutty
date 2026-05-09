@@ -449,9 +449,11 @@ Future<String> _readStdoutUntilMarker(SSHSession execSession) async {
           .timeout(_monkeyMuxInstallTimeout)) {
     output.write(chunk);
     final currentOutput = output.toString();
-    final marker = RegExp(
+    final markerPattern = RegExp(
       '(?:^|\\n)${RegExp.escape(_monkeyMuxExecMarker)}:([0-9]+)\\n',
-    ).firstMatch(currentOutput);
+    );
+    final markers = markerPattern.allMatches(currentOutput);
+    final marker = markers.isEmpty ? null : markers.last;
     if (marker == null) {
       continue;
     }

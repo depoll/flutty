@@ -44,11 +44,13 @@ RemoteMuxBackend resolveRemoteMuxBackendForStartup({
   final parsedBackend = RemoteMuxBackendPresentation.fromStorageValue(
     storedBackend,
   );
-  if (parsedBackend != null) {
+  final hasTmuxExtraFlags =
+      tmuxExtraFlags != null && tmuxExtraFlags.trim().isNotEmpty;
+  if (parsedBackend != null && parsedBackend != RemoteMuxBackend.auto) {
     return parsedBackend;
   }
-  if (tmuxExtraFlags != null && tmuxExtraFlags.trim().isNotEmpty) {
+  if (hasTmuxExtraFlags) {
     return RemoteMuxBackend.tmux;
   }
-  return RemoteMuxBackend.auto;
+  return parsedBackend ?? RemoteMuxBackend.auto;
 }
