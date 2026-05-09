@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.15"
+	monkeyMuxVersion         = "0.1.16"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2367,7 +2367,7 @@ func shellCommand(shell string) *exec.Cmd {
 }
 
 func shellCommandForScript(shell string, command string) *exec.Cmd {
-	cmd := exec.Command(shell, "-c", command)
+	cmd := exec.Command(shell, "-i", "-c", command)
 	if base := filepath.Base(shell); base != "" {
 		cmd.Args[0] = "-" + base
 	}
