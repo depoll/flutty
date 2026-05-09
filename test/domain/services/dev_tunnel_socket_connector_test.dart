@@ -65,4 +65,14 @@ void main() {
       );
     });
   });
+
+  group('DevTunnelSocketConnector', () {
+    test('wraps invalid forwarding URLs in connection exception', () {
+      expect(
+        () =>
+            DevTunnelSocketConnector.connect('ftp://abc-22.usw2.devtunnels.ms'),
+        throwsA(isA<DevTunnelConnectionException>()),
+      );
+    });
+  });
 }
