@@ -180,6 +180,8 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
   WidgetTester tester, {
   bool hasPro = false,
   List<Snippet> snippets = const [],
+  bool devTunnelSignedIn = false,
+  Future<List<DevTunnel>> Function()? devTunnelList,
 }) async {
   final database = AppDatabase.forTesting(NativeDatabase.memory());
   final encryptionService = SecretEncryptionService.forTesting();
@@ -231,7 +233,11 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
           ),
         ],
         databaseProvider.overrideWithValue(database),
-        devTunnelSignedInProvider.overrideWith((ref) async => false),
+        devTunnelSignedInProvider.overrideWith(
+          (ref) async => devTunnelSignedIn,
+        ),
+        if (devTunnelList != null)
+          devTunnelListProvider.overrideWith((ref) => devTunnelList()),
         hostRepositoryProvider.overrideWithValue(hostRepository),
         agentLaunchPresetServiceProvider.overrideWithValue(presetService),
         keyRepositoryProvider.overrideWithValue(
@@ -498,6 +504,52 @@ void main() {
       );
       expect(insertedHost.jumpHostId.value, isNull);
       expect(find.text('Sign in to Dev Tunnels'), findsOneWidget);
+    });
+
+    testWidgets('shows dev tunnel list error details and retries', (
+      tester,
+    ) async {
+      var listAttempts = 0;
+      await _pumpHostCreateScreen(
+        tester,
+        devTunnelSignedIn: true,
+        devTunnelList: () async {
+          listAttempts += 1;
+          throw const DevTunnelAuthException(
+            'Dev Tunnels failed while listing Dev Tunnels (404).',
+          );
+        },
+      );
+
+      final connectionTypeField = find.byKey(
+        const Key('host-connection-type-field'),
+      );
+      await tester.ensureVisible(connectionTypeField);
+      await tester.tap(connectionTypeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Dev Tunnel').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (var i = 0; i < 5 && listAttempts == 0; i += 1) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(listAttempts, greaterThanOrEqualTo(1));
+      expect(
+        find.text('Dev Tunnels failed while listing Dev Tunnels (404).'),
+        findsOneWidget,
+      );
+
+      final attemptsBeforeRetry = listAttempts;
+      await tester.tap(find.widgetWithText(TextButton, 'Retry'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (var i = 0; i < 5 && listAttempts == attemptsBeforeRetry; i += 1) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(listAttempts, greaterThan(attemptsBeforeRetry));
     });
 
     testWidgets('shows one selected coding agent icon in closed dropdown', (
