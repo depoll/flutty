@@ -21,6 +21,8 @@ import 'package:monkeyssh/domain/models/host_connection_type.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
+import 'package:monkeyssh/domain/services/dev_tunnel_auth_service.dart';
+import 'package:monkeyssh/domain/services/dev_tunnel_socket_connector.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -1924,6 +1926,118 @@ void main() {
       expect(socketIndex, 1);
       expect(clientFactoryCalls, 1);
       expect(promptCount, 0);
+    });
+
+    test(
+      'connect uses Dev Tunnel authorization and socket connector',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([8, 9, 10]);
+        final trustedHostKey = VerifiedHostKey(
+          hostname: 'devbox',
+          port: 22,
+          keyType: 'ssh-ed25519',
+          hostKeyBytes: hostKeyBytes,
+        );
+        await knownHostsRepository.upsertTrustedHost(
+          hostname: trustedHostKey.hostname,
+          port: trustedHostKey.port,
+          keyType: trustedHostKey.trustedKeyType,
+          fingerprint: trustedHostKey.fingerprint,
+          encodedHostKey: trustedHostKey.encodedHostKey,
+          resetFirstSeen: true,
+        );
+        final socket = _FakeHostKeySocket(hostKeyBytes);
+        final client = _MockSshClient();
+        String? resolvedUrl;
+        int? resolvedPort;
+        String? connectedUrl;
+        String? connectedAuthorizationHeader;
+        Duration? connectedTimeout;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          devTunnelAuthorizationResolver: (url, {port}) async {
+            resolvedUrl = url;
+            resolvedPort = port;
+            return 'tunnel connect-token';
+          },
+          devTunnelConnector: (url, {authorizationHeader, timeout}) async {
+            connectedUrl = url;
+            connectedAuthorizationHeader = authorizationHeader;
+            connectedTimeout = timeout;
+            return socket;
+          },
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  final trusted = await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                  expect(trusted, isTrue);
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'devbox',
+          port: 22,
+          username: 'tester',
+          connectionType: HostConnectionType.devTunnel,
+          devTunnelUrl: 'https://abc-22.usw2.devtunnels.ms',
+          connectionTimeout: Duration(seconds: 7),
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isTrue);
+        expect(resolvedUrl, 'https://abc-22.usw2.devtunnels.ms');
+        expect(resolvedPort, 22);
+        expect(connectedUrl, 'https://abc-22.usw2.devtunnels.ms');
+        expect(connectedAuthorizationHeader, 'tunnel connect-token');
+        expect(connectedTimeout, const Duration(seconds: 7));
+      },
+    );
+
+    test('connect reports Dev Tunnel authentication failures', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final service = SshService(
+        knownHostsRepository: KnownHostsRepository(db),
+        devTunnelAuthorizationResolver: (_, {port}) async {
+          throw const DevTunnelAuthException('Sign in to Dev Tunnels.');
+        },
+        devTunnelConnector: (_, {authorizationHeader, timeout}) async {
+          throw const DevTunnelConnectionException('Unexpected socket open.');
+        },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'devbox',
+        port: 22,
+        username: 'tester',
+        connectionType: HostConnectionType.devTunnel,
+        devTunnelUrl: 'https://abc-22.usw2.devtunnels.ms',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isFalse);
+      expect(result.error, 'Sign in to Dev Tunnels.');
     });
 
     test('connect replaces a changed trusted host key after prompt', () async {

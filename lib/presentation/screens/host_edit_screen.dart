@@ -576,7 +576,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                   return null;
                                 }
                                 try {
-                                  normalizeDevTunnelWebSocketUri(value ?? '');
+                                  parseDevTunnelForwardingUrl(
+                                    value ?? '',
+                                    fallbackPort: int.tryParse(
+                                      _portController.text,
+                                    ),
+                                  );
                                   return null;
                                 } on FormatException {
                                   return 'Enter a valid Dev Tunnel URL';
@@ -721,7 +726,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         ExpansionTile(
                           key: const Key('host-advanced-tile'),
                           title: const Text('Advanced'),
-                          initiallyExpanded: _selectedJumpHostId != null,
+                          initiallyExpanded:
+                              _selectedConnectionType !=
+                                  HostConnectionType.devTunnel &&
+                              _selectedJumpHostId != null,
                           children: [
                             const SizedBox(height: 8),
                             // Jump host dropdown
@@ -789,7 +797,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 );
                               },
                             ),
-                            if (_selectedJumpHostId != null) ...[
+                            if (_selectedConnectionType !=
+                                    HostConnectionType.devTunnel &&
+                                _selectedJumpHostId != null) ...[
                               const SizedBox(height: 16),
                               _SkipJumpHostOnWifiSection(
                                 ssids: _skipJumpHostOnSsids,
@@ -1513,10 +1523,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
     setState(() {
       _selectedConnectionType = value;
-      if (value == HostConnectionType.devTunnel) {
-        _selectedJumpHostId = null;
-        _skipJumpHostOnSsids = const [];
-      }
     });
     _updateDirtyState();
   }
@@ -2369,8 +2375,9 @@ class _DevTunnelLoginDialogState extends State<_DevTunnelLoginDialog> {
 
   Future<void> _pollLogin() async {
     final deadline = DateTime.now().add(widget.login.expiresIn);
+    var pollInterval = widget.login.interval;
     while (mounted && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(widget.login.interval);
+      await Future<void>.delayed(pollInterval);
       if (!mounted) {
         return;
       }
@@ -2401,6 +2408,10 @@ class _DevTunnelLoginDialogState extends State<_DevTunnelLoginDialog> {
           Navigator.of(context).pop(true);
           return;
         case DevTunnelDeviceLoginPollStatus.pending:
+          setState(() => _status = 'Waiting for GitHub approval…');
+          break;
+        case DevTunnelDeviceLoginPollStatus.slowDown:
+          pollInterval += const Duration(seconds: 5);
           setState(() => _status = 'Waiting for GitHub approval…');
           break;
         case DevTunnelDeviceLoginPollStatus.expired:

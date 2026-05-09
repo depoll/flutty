@@ -342,7 +342,7 @@ class HostEditViewModel extends Notifier<HostEditState> {
     }
     if (draft.connectionType == HostConnectionType.devTunnel) {
       try {
-        normalizeDevTunnelWebSocketUri(draft.devTunnelUrl);
+        parseDevTunnelForwardingUrl(draft.devTunnelUrl, fallbackPort: port);
       } on FormatException {
         return const HostEditValidationIssue(
           target: HostEditValidationTarget.devTunnelUrl,
