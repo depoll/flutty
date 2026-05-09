@@ -82,6 +82,23 @@ func TestShellCommandUsesLoginShell(t *testing.T) {
 	}
 }
 
+func TestShellCommandForScriptUsesLoginShellWithoutTypingCommand(t *testing.T) {
+	cmd := shellCommandForScript("/bin/zsh", "codex --yolo")
+
+	if got := cmd.Path; got != "/bin/zsh" {
+		t.Fatalf("path = %q, want shell path", got)
+	}
+	if got := cmd.Args[0]; got != "-zsh" {
+		t.Fatalf("argv0 = %q, want login shell argv0", got)
+	}
+	if got := cmd.Args[1]; got != "-c" {
+		t.Fatalf("shell flags = %q, want -c", got)
+	}
+	if got := cmd.Args[2]; got != "codex --yolo" {
+		t.Fatalf("script = %q, want launch command", got)
+	}
+}
+
 func TestDefaultShellPathFallsBackToSh(t *testing.T) {
 	t.Setenv("SHELL", "")
 
@@ -168,6 +185,20 @@ func TestShouldUpdateRunningServerPromptUsesTerminalPrompt(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Update now?") {
 		t.Fatalf("prompt policy output = %q, want update prompt", output.String())
+	}
+}
+
+func TestHasAttachClientReportsAttachConnection(t *testing.T) {
+	server := newMuxServer("test")
+	if server.hasAttachClient() {
+		t.Fatal("new server reported attach client")
+	}
+
+	server.mu.Lock()
+	server.attachConn = &recordingConn{}
+	server.mu.Unlock()
+	if !server.hasAttachClient() {
+		t.Fatal("server did not report attach client")
 	}
 }
 

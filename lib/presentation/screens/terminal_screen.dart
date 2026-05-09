@@ -6336,10 +6336,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session,
     _PreparedRemoteMuxCommand command,
   ) {
-    _activeMuxBackend = command.backend;
-    session
-      ..remoteMuxBackend = command.backend
-      ..remoteMuxSessionName = command.sessionName;
+    void apply() {
+      _activeMuxBackend = command.backend;
+      session
+        ..remoteMuxBackend = command.backend
+        ..remoteMuxSessionName = command.sessionName;
+      if (command.backend != RemoteMuxBackend.monkeyMux) {
+        return;
+      }
+      _isTmuxActive = true;
+      _tmuxSessionName = command.sessionName;
+      _tmuxStateConnectionId = session.connectionId;
+      _showTmuxBar = true;
+      _tmuxLaunchWorkingDirectory = _host?.tmuxWorkingDirectory;
+      _tmuxWorkingDirectory = _host?.tmuxWorkingDirectory;
+      _tmuxCurrentCommand = null;
+      _shellCompletionTmuxContextRefreshedAt = null;
+      _shellCompletionTmuxContextConnectionId = null;
+      _shellCompletionTmuxContextSessionName = null;
+    }
+
+    if (mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
   }
 
   String? _preferredTmuxSessionName(Host? host) =>

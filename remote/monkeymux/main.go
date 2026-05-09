@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.14"
+	monkeyMuxVersion         = "0.1.15"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -67,6 +67,7 @@ var capabilities = []string{
 	"theme-hint",
 	"shutdown",
 	"attach-update-policy",
+	"attach-state",
 }
 
 var (
@@ -119,6 +120,7 @@ type controlResponse struct {
 	CurrentCommand string           `json:"currentCommand,omitempty"`
 	Data           string           `json:"data,omitempty"`
 	ExitCode       int              `json:"exitCode,omitempty"`
+	HasAttach      bool             `json:"hasForegroundClient,omitempty"`
 }
 
 type windowSnapshot struct {
@@ -521,6 +523,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if len(options.args) > 0 {
 		cmd = exec.Command(options.args[0], options.args[1:]...)
 		name = filepath.Base(options.args[0])
+	} else if strings.TrimSpace(options.command) != "" {
+		cmd = shellCommandForScript(shell, strings.TrimSpace(options.command))
 	}
 	if strings.TrimSpace(options.name) != "" {
 		name = strings.TrimSpace(options.name)
@@ -575,13 +579,6 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		_ = cmd.Wait()
 		s.markWindowClosed(window.id)
 	}()
-
-	if strings.TrimSpace(options.command) != "" && len(options.args) == 0 {
-		go func() {
-			time.Sleep(120 * time.Millisecond)
-			_, _ = file.Write([]byte(strings.TrimSpace(options.command) + "\r"))
-		}()
-	}
 
 	s.broadcast(controlResponse{
 		Type:    "window_added",
@@ -902,6 +899,14 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			CurrentPath:    currentPath,
 			CurrentCommand: currentCommand,
 		})
+	case "query_attach_state":
+		client.send(controlResponse{
+			ID:        request.ID,
+			Type:      "attach_state",
+			Status:    "ok",
+			Session:   s.session,
+			HasAttach: s.hasAttachClient(),
+		})
 	case "run_command":
 		if strings.TrimSpace(request.Command) == "" {
 			client.sendError(request, errors.New("missing command"))
@@ -942,6 +947,12 @@ func (s *muxServer) removeControl(client *controlClient) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.controls, client)
+}
+
+func (s *muxServer) hasAttachClient() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attachConn != nil
 }
 
 func newControlClient(conn net.Conn) *controlClient {
@@ -1703,7 +1714,7 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.agentToolLocked() != ""
+	return agentToolFromCommandName(w.currentCommandLocked()) != ""
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -2355,6 +2366,14 @@ func shellCommand(shell string) *exec.Cmd {
 	return cmd
 }
 
+func shellCommandForScript(shell string, command string) *exec.Cmd {
+	cmd := exec.Command(shell, "-c", command)
+	if base := filepath.Base(shell); base != "" {
+		cmd.Args[0] = "-" + base
+	}
+	return cmd
+}
+
 func inheritedEnvironment(base []string) []string {
 	result := make([]string, len(base))
 	copy(result, base)
@@ -2450,6 +2469,7 @@ func sendResize(session string, width int, height int) {
 		return
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
 	_ = enc.Encode(controlMessage{Role: "control", Session: session})

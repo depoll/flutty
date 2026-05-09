@@ -3920,6 +3920,7 @@ void main() {
         expect(startupCommand, contains('agents'));
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, 'agents');
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
         verify(
           () => monkeyMuxInstallerService.ensureInstalled(
@@ -4040,6 +4041,7 @@ void main() {
         expect(startupCommands.single, contains("'$sessionName'"));
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, sessionName);
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
