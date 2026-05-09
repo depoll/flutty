@@ -40,6 +40,7 @@ void main() {
     test('parses subdomain port forwarding URLs', () {
       final parsed = parseDevTunnelForwardingUrl(
         'https://abc-22.usw2.devtunnels.ms',
+        fallbackPort: 22,
       );
 
       expect(parsed.uri.toString(), 'wss://abc-22.usw2.devtunnels.ms');
@@ -47,6 +48,20 @@ void main() {
       expect(parsed.clusterId, 'usw2');
       expect(parsed.port, 22);
     });
+
+    test(
+      'keeps numeric tunnel suffixes when they do not match the SSH port',
+      () {
+        final parsed = parseDevTunnelForwardingUrl(
+          'https://custom-1234.usw2.devtunnels.ms',
+          fallbackPort: 22,
+        );
+
+        expect(parsed.tunnelId, 'custom-1234');
+        expect(parsed.clusterId, 'usw2');
+        expect(parsed.port, 22);
+      },
+    );
 
     test('parses explicit port forwarding URLs', () {
       final parsed = parseDevTunnelForwardingUrl(

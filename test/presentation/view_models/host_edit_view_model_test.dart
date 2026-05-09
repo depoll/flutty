@@ -149,6 +149,37 @@ void main() {
       expect(viewModel.updateDraft(_draft(label: 'Changed')), isTrue);
       expect(container.read(hostEditViewModelProvider(null)).isDirty, isTrue);
     });
+
+    test('requires standard devtunnels.ms forwarding URLs', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final viewModel = container.read(
+        hostEditViewModelProvider(null).notifier,
+      );
+
+      expect(
+        viewModel.validateDraft(
+          _draft(
+            connectionType: HostConnectionType.devTunnel,
+            devTunnelUrl: 'https://example.com',
+          ),
+        ),
+        isA<HostEditValidationIssue>().having(
+          (issue) => issue.target,
+          'target',
+          HostEditValidationTarget.devTunnelUrl,
+        ),
+      );
+      expect(
+        viewModel.validateDraft(
+          _draft(
+            connectionType: HostConnectionType.devTunnel,
+            devTunnelUrl: 'https://abc-22.usw2.devtunnels.ms',
+          ),
+        ),
+        isNull,
+      );
+    });
   });
 
   group('tmux status bar helpers', () {

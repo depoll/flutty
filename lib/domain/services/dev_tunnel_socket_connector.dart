@@ -27,7 +27,7 @@ class DevTunnelSocketConnector {
     Duration? timeout,
   }) async {
     try {
-      final uri = normalizeDevTunnelWebSocketUri(url);
+      final uri = parseDevTunnelForwardingUrl(url).uri;
       final headers = <String, String>{
         'X-Tunnel-Skip-AntiPhishing-Page': 'true',
       };
@@ -134,9 +134,14 @@ DevTunnelForwardingUrl parseDevTunnelForwardingUrl(
   final subdomainPortMatch = RegExp(
     r'^(.+)-([0-9]{1,5})$',
   ).firstMatch(tunnelLabel);
-  if (parsedExplicitPort == null && subdomainPortMatch != null) {
+  if (parsedExplicitPort == null &&
+      fallbackPort != null &&
+      subdomainPortMatch != null) {
     final parsedPort = int.tryParse(subdomainPortMatch.group(2)!);
-    if (parsedPort != null && parsedPort >= 1 && parsedPort <= 65535) {
+    if (parsedPort != null &&
+        parsedPort >= 1 &&
+        parsedPort <= 65535 &&
+        parsedPort == fallbackPort) {
       tunnelId = subdomainPortMatch.group(1)!;
       port = parsedPort;
     }
@@ -151,23 +156,10 @@ DevTunnelForwardingUrl parseDevTunnelForwardingUrl(
 }
 
 class _DevTunnelSshSocket implements SSHSocket {
-  _DevTunnelSshSocket(this._socket) {
-    _sinkController.stream.listen(
-      (data) {
-        if (_socket.readyState == WebSocket.open) {
-          _socket.add(data is Uint8List ? data : Uint8List.fromList(data));
-        }
-      },
-      onDone: () {
-        if (_socket.readyState == WebSocket.open) {
-          unawaited(_socket.close());
-        }
-      },
-    );
-  }
+  _DevTunnelSshSocket(this._socket) : _sink = _DevTunnelSshSocketSink(_socket);
 
   final WebSocket _socket;
-  final _sinkController = StreamController<List<int>>();
+  final _DevTunnelSshSocketSink _sink;
 
   @override
   Stream<Uint8List> get stream => _socket.map((message) {
@@ -188,12 +180,11 @@ class _DevTunnelSshSocket implements SSHSocket {
   });
 
   @override
-  StreamSink<List<int>> get sink => _sinkController.sink;
+  StreamSink<List<int>> get sink => _sink;
 
   @override
   Future<void> close() async {
-    await _sinkController.close();
-    await _socket.close();
+    await _sink.close();
   }
 
   @override
@@ -203,6 +194,65 @@ class _DevTunnelSshSocket implements SSHSocket {
 
   @override
   void destroy() {
-    unawaited(close());
+    _sink.destroy();
+  }
+}
+
+class _DevTunnelSshSocketSink implements StreamSink<List<int>> {
+  _DevTunnelSshSocketSink(this._socket);
+
+  final WebSocket _socket;
+  var _closed = false;
+
+  @override
+  void add(List<int> event) {
+    if (_closed || _socket.readyState != WebSocket.open) {
+      throw const DevTunnelConnectionException(
+        'Dev Tunnel connection closed before SSH data could be sent.',
+      );
+    }
+    _socket.add(event is Uint8List ? event : Uint8List.fromList(event));
+  }
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {
+    if (_closed || _socket.readyState != WebSocket.open) {
+      throw const DevTunnelConnectionException(
+        'Dev Tunnel connection closed before SSH data could be sent.',
+      );
+    }
+    _socket.addError(error, stackTrace);
+  }
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) async {
+    await for (final data in stream) {
+      add(data);
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) {
+      await done;
+      return;
+    }
+    _closed = true;
+    if (_socket.readyState == WebSocket.open) {
+      await _socket.close();
+    }
+    await done;
+  }
+
+  @override
+  Future<void> get done async {
+    await _socket.done;
+  }
+
+  void destroy() {
+    _closed = true;
+    if (_socket.readyState == WebSocket.open) {
+      unawaited(_socket.close());
+    }
   }
 }

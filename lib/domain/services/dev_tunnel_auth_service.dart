@@ -55,6 +55,9 @@ enum DevTunnelDeviceLoginPollStatus {
   /// The user has not completed login yet.
   pending,
 
+  /// GitHub asked the app to slow down polling.
+  slowDown,
+
   /// The device code expired before approval.
   expired,
 
@@ -90,7 +93,14 @@ class DevTunnelAuthService {
 
   static const _githubClientId = 'Iv1.e7b89e013f801f03';
   static const _githubTokenKey = 'monkeyssh_dev_tunnels_github_token';
+  static const _githubRefreshTokenKey =
+      'monkeyssh_dev_tunnels_github_refresh_token';
+  static const _githubTokenExpiresAtKey =
+      'monkeyssh_dev_tunnels_github_token_expires_at';
+  static const _githubRefreshTokenExpiresAtKey =
+      'monkeyssh_dev_tunnels_github_refresh_token_expires_at';
   static const _devTunnelApiVersion = '2023-09-27-preview';
+  static const _tokenExpirySkew = Duration(minutes: 5);
   static const _secureStorage = FlutterSecureStorage(
     iOptions: IOSOptions(
       accessibility: KeychainAccessibility.first_unlock_this_device,
@@ -107,12 +117,37 @@ class DevTunnelAuthService {
   /// Returns whether a GitHub login token is stored for Dev Tunnels.
   Future<bool> hasGitHubLogin() async {
     final token = await _readGitHubToken();
-    return token != null && token.isNotEmpty;
+    if (token == null || token.isEmpty) {
+      return false;
+    }
+    final expiresAt = await _readDateTime(_githubTokenExpiresAtKey);
+    if (!_isExpired(expiresAt)) {
+      return true;
+    }
+    final refreshToken = await _storage.read(
+      key: _githubRefreshTokenKey,
+      iOptions: _iosOptions,
+    );
+    final refreshExpiresAt = await _readDateTime(
+      _githubRefreshTokenExpiresAtKey,
+    );
+    return refreshToken != null &&
+        refreshToken.isNotEmpty &&
+        !_isExpired(refreshExpiresAt);
   }
 
   /// Clears the stored GitHub login token.
-  Future<void> signOutGitHub() =>
-      _storage.delete(key: _githubTokenKey, iOptions: _iosOptions);
+  Future<void> signOutGitHub() async {
+    await Future.wait([
+      _storage.delete(key: _githubTokenKey, iOptions: _iosOptions),
+      _storage.delete(key: _githubRefreshTokenKey, iOptions: _iosOptions),
+      _storage.delete(key: _githubTokenExpiresAtKey, iOptions: _iosOptions),
+      _storage.delete(
+        key: _githubRefreshTokenExpiresAtKey,
+        iOptions: _iosOptions,
+      ),
+    ]);
+  }
 
   /// Starts the GitHub device-code login flow used by Dev Tunnels.
   Future<DevTunnelDeviceLogin> startGitHubDeviceLogin() async {
@@ -124,10 +159,7 @@ class DevTunnelAuthService {
             HttpHeaders.contentTypeHeader: 'application/x-www-form-urlencoded',
           },
           body: Uri(
-            queryParameters: const {
-              'client_id': _githubClientId,
-              'scope': 'user:email read:org',
-            },
+            queryParameters: const {'client_id': _githubClientId},
           ).query,
         )
         .timeout(_requestTimeout);
@@ -181,7 +213,7 @@ class DevTunnelAuthService {
     final body = _decodeJsonObject(response.body);
     final accessToken = _optionalString(body, 'access_token');
     if (accessToken != null && accessToken.isNotEmpty) {
-      await _writeGitHubToken(accessToken);
+      await _storeGitHubTokenResponse(body);
       return const DevTunnelDeviceLoginPollResult(
         status: DevTunnelDeviceLoginPollStatus.authorized,
       );
@@ -189,9 +221,11 @@ class DevTunnelAuthService {
 
     final error = _optionalString(body, 'error');
     return switch (error) {
-      'authorization_pending' ||
-      'slow_down' => const DevTunnelDeviceLoginPollResult(
+      'authorization_pending' => const DevTunnelDeviceLoginPollResult(
         status: DevTunnelDeviceLoginPollStatus.pending,
+      ),
+      'slow_down' => const DevTunnelDeviceLoginPollResult(
+        status: DevTunnelDeviceLoginPollStatus.slowDown,
       ),
       'expired_token' => const DevTunnelDeviceLoginPollResult(
         status: DevTunnelDeviceLoginPollStatus.expired,
@@ -218,11 +252,6 @@ class DevTunnelAuthService {
     String forwardingUrl, {
     int? port,
   }) async {
-    final githubToken = await _readGitHubToken();
-    if (githubToken == null || githubToken.isEmpty) {
-      return null;
-    }
-
     final DevTunnelForwardingUrl parsedUrl;
     try {
       parsedUrl = parseDevTunnelForwardingUrl(
@@ -232,6 +261,12 @@ class DevTunnelAuthService {
     } on FormatException catch (error) {
       throw DevTunnelAuthException(error.message);
     }
+
+    final githubToken = await _resolveGitHubToken();
+    if (githubToken == null || githubToken.isEmpty) {
+      return null;
+    }
+
     final connectToken = await _requestConnectToken(
       githubToken: githubToken,
       forwardingUrl: parsedUrl,
@@ -263,6 +298,12 @@ class DevTunnelAuthService {
           },
         )
         .timeout(_requestTimeout);
+    if (response.statusCode == 401) {
+      await signOutGitHub();
+      throw const DevTunnelAuthException(
+        'Dev Tunnels sign-in expired. Sign in again.',
+      );
+    }
     _ensureSuccess(response, 'getting Dev Tunnel access');
 
     final body = _decodeJsonObject(response.body);
@@ -312,8 +353,132 @@ class DevTunnelAuthService {
   Future<String?> _readGitHubToken() =>
       _storage.read(key: _githubTokenKey, iOptions: _iosOptions);
 
-  Future<void> _writeGitHubToken(String token) =>
-      _storage.write(key: _githubTokenKey, value: token, iOptions: _iosOptions);
+  Future<String?> _resolveGitHubToken() async {
+    final token = await _readGitHubToken();
+    if (token == null || token.isEmpty) {
+      return null;
+    }
+
+    final expiresAt = await _readDateTime(_githubTokenExpiresAtKey);
+    if (!_isExpired(expiresAt)) {
+      return token;
+    }
+
+    final refreshToken = await _storage.read(
+      key: _githubRefreshTokenKey,
+      iOptions: _iosOptions,
+    );
+    final refreshExpiresAt = await _readDateTime(
+      _githubRefreshTokenExpiresAtKey,
+    );
+    if (refreshToken == null ||
+        refreshToken.isEmpty ||
+        _isExpired(refreshExpiresAt)) {
+      await signOutGitHub();
+      throw const DevTunnelAuthException(
+        'Dev Tunnels sign-in expired. Sign in again.',
+      );
+    }
+
+    return _refreshGitHubToken(refreshToken);
+  }
+
+  Future<String> _refreshGitHubToken(String refreshToken) async {
+    final response = await _httpClient
+        .post(
+          Uri.parse('https://github.com/login/oauth/access_token'),
+          headers: const {
+            HttpHeaders.acceptHeader: 'application/json',
+            HttpHeaders.contentTypeHeader: 'application/x-www-form-urlencoded',
+          },
+          body: Uri(
+            queryParameters: {
+              'client_id': _githubClientId,
+              'grant_type': 'refresh_token',
+              'refresh_token': refreshToken,
+            },
+          ).query,
+        )
+        .timeout(_requestTimeout);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      await signOutGitHub();
+      throw const DevTunnelAuthException(
+        'Dev Tunnels sign-in expired. Sign in again.',
+      );
+    }
+
+    final body = _decodeJsonObject(response.body);
+    final error = _optionalString(body, 'error');
+    if (error != null && error.isNotEmpty) {
+      await signOutGitHub();
+      throw const DevTunnelAuthException(
+        'Dev Tunnels sign-in expired. Sign in again.',
+      );
+    }
+
+    await _storeGitHubTokenResponse(body);
+    return _requiredString(body, 'access_token');
+  }
+
+  Future<void> _storeGitHubTokenResponse(Map<String, Object?> body) async {
+    final accessToken = _requiredString(body, 'access_token');
+    await _storage.write(
+      key: _githubTokenKey,
+      value: accessToken,
+      iOptions: _iosOptions,
+    );
+    await _writeExpiry(
+      key: _githubTokenExpiresAtKey,
+      expiresIn: _optionalPositiveInt(body, 'expires_in'),
+    );
+
+    final refreshToken = _optionalString(body, 'refresh_token');
+    if (refreshToken != null && refreshToken.isNotEmpty) {
+      await _storage.write(
+        key: _githubRefreshTokenKey,
+        value: refreshToken,
+        iOptions: _iosOptions,
+      );
+      await _writeExpiry(
+        key: _githubRefreshTokenExpiresAtKey,
+        expiresIn: _optionalPositiveInt(body, 'refresh_token_expires_in'),
+      );
+    }
+  }
+
+  Future<void> _writeExpiry({
+    required String key,
+    required int? expiresIn,
+  }) async {
+    if (expiresIn == null || expiresIn <= 0) {
+      await _storage.delete(key: key, iOptions: _iosOptions);
+      return;
+    }
+
+    await _storage.write(
+      key: key,
+      value: DateTime.now()
+          .toUtc()
+          .add(Duration(seconds: expiresIn))
+          .toIso8601String(),
+      iOptions: _iosOptions,
+    );
+  }
+
+  Future<DateTime?> _readDateTime(String key) async {
+    final value = await _storage.read(key: key, iOptions: _iosOptions);
+    if (value == null || value.isEmpty) {
+      return null;
+    }
+    return DateTime.tryParse(value)?.toUtc();
+  }
+
+  bool _isExpired(DateTime? expiresAt) {
+    if (expiresAt == null) {
+      return false;
+    }
+    return !DateTime.now().toUtc().add(_tokenExpirySkew).isBefore(expiresAt);
+  }
 
   static Map<String, Object?> _decodeJsonObject(String source) {
     final Object? decoded;

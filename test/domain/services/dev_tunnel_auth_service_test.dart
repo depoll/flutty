@@ -76,14 +76,22 @@ void main() {
         'https://github.com/login/device/code',
       );
       expect(requests.single.body, contains('client_id=Iv1.e7b89e013f801f03'));
+      expect(requests.single.body, isNot(contains('scope=')));
     });
 
     test('stores GitHub token when device login is approved', () async {
       final service = DevTunnelAuthService(
         storage: storage,
         httpClient: MockClient(
-          (_) async =>
-              http.Response(jsonEncode({'access_token': 'gh-token'}), 200),
+          (_) async => http.Response(
+            jsonEncode({
+              'access_token': 'gh-token',
+              'expires_in': 3600,
+              'refresh_token': 'refresh-token',
+              'refresh_token_expires_in': 7200,
+            }),
+            200,
+          ),
         ),
       );
 
@@ -94,6 +102,13 @@ void main() {
         () => storage.write(
           key: 'monkeyssh_dev_tunnels_github_token',
           value: 'gh-token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).called(1);
+      verify(
+        () => storage.write(
+          key: 'monkeyssh_dev_tunnels_github_refresh_token',
+          value: 'refresh-token',
           iOptions: any(named: 'iOptions'),
         ),
       ).called(1);
@@ -117,6 +132,19 @@ void main() {
         expect(result.status, DevTunnelDeviceLoginPollStatus.pending);
       },
     );
+
+    test('returns slowDown when GitHub asks polling to slow down', () async {
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(jsonEncode({'error': 'slow_down'}), 200),
+        ),
+      );
+
+      final result = await service.pollGitHubDeviceLogin('device-code');
+
+      expect(result.status, DevTunnelDeviceLoginPollStatus.slowDown);
+    });
 
     test('resolves a Dev Tunnel connect authorization header', () async {
       when(
@@ -147,6 +175,7 @@ void main() {
 
       final header = await service.resolveAuthorizationHeader(
         'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
       );
 
       expect(header, 'tunnel port-connect-token');
@@ -167,9 +196,123 @@ void main() {
 
       final header = await service.resolveAuthorizationHeader(
         'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
       );
 
       expect(header, isNull);
+    });
+
+    test(
+      'rejects non-Dev-Tunnel forwarding URLs before checking login',
+      () async {
+        final service = DevTunnelAuthService(
+          storage: storage,
+          httpClient: MockClient((_) async => http.Response('', 500)),
+        );
+
+        await expectLater(
+          service.resolveAuthorizationHeader('https://example.com'),
+          throwsA(isA<DevTunnelAuthException>()),
+        );
+      },
+    );
+
+    test('refreshes expired GitHub tokens before resolving access', () async {
+      final expiresAt = DateTime.now()
+          .toUtc()
+          .subtract(const Duration(minutes: 1))
+          .toIso8601String();
+      final refreshExpiresAt = DateTime.now()
+          .toUtc()
+          .add(const Duration(hours: 1))
+          .toIso8601String();
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'expired-gh-token');
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token_expires_at',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => expiresAt);
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_refresh_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'refresh-token');
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_refresh_token_expires_at',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => refreshExpiresAt);
+      final requests = <http.Request>[];
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          if (request.url.host == 'github.com') {
+            return http.Response(
+              jsonEncode({
+                'access_token': 'fresh-gh-token',
+                'expires_in': 3600,
+              }),
+              200,
+            );
+          }
+          return http.Response(
+            jsonEncode({
+              'accessTokens': {'connect': 'tunnel-connect-token'},
+            }),
+            200,
+          );
+        }),
+      );
+
+      final header = await service.resolveAuthorizationHeader(
+        'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
+      );
+
+      expect(header, 'tunnel tunnel-connect-token');
+      expect(requests, hasLength(2));
+      expect(
+        requests.first.url.toString(),
+        contains('/login/oauth/access_token'),
+      );
+      expect(requests.last.headers['authorization'], 'github fresh-gh-token');
+    });
+
+    test('clears expired sign-in when Dev Tunnels rejects the token', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'expired-gh-token');
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((_) async => http.Response('', 401)),
+      );
+
+      await expectLater(
+        service.resolveAuthorizationHeader(
+          'https://abc-22.usw2.devtunnels.ms',
+          port: 22,
+        ),
+        throwsA(isA<DevTunnelAuthException>()),
+      );
+
+      verify(
+        () => storage.delete(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).called(1);
     });
   });
 }
