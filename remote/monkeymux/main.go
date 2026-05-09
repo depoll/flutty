@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.16"
+	monkeyMuxVersion         = "0.1.17"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -173,6 +173,7 @@ type muxWindow struct {
 	lastBroadcast              time.Time
 	cursorVisible              bool
 	cursorVisibilityKnown      bool
+	focusModeEnabled           bool
 	alert                      bool
 	closed                     bool
 }
@@ -1714,7 +1715,7 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return agentToolFromCommandName(w.currentCommandLocked()) != ""
+	return w.focusModeEnabled && w.agentToolLocked() != ""
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -1987,9 +1988,13 @@ func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
 		final := data[end]
 		if final == 'h' || final == 'l' {
 			params := string(data[escapeIndex+2 : end])
+			enabled := final == 'h'
 			if csiPrivateModeEnabled(params, "25") {
-				w.cursorVisible = final == 'h'
+				w.cursorVisible = enabled
 				w.cursorVisibilityKnown = true
+			}
+			if csiPrivateModeEnabled(params, "1004") {
+				w.focusModeEnabled = enabled
 			}
 		}
 		data = data[end+1:]
