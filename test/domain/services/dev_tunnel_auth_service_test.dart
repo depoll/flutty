@@ -188,6 +188,84 @@ void main() {
       expect(requests.single.headers['authorization'], 'github gh-token');
     });
 
+    test(
+      'falls back to listed tunnel metadata when URL host is not tunnel ID',
+      () async {
+        when(
+          () => storage.read(
+            key: 'monkeyssh_dev_tunnels_github_token',
+            iOptions: any(named: 'iOptions'),
+          ),
+        ).thenAnswer((_) async => 'gh-token');
+        final requests = <http.Request>[];
+        final service = DevTunnelAuthService(
+          storage: storage,
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.host == 'usw3.rel.tunnels.api.visualstudio.com' &&
+                request.url.path == '/tunnels/39bjkbx1') {
+              return http.Response('', 404);
+            }
+            if (request.url.host == 'global.rel.tunnels.api.visualstudio.com' &&
+                request.url.path == '/tunnels') {
+              return http.Response(
+                jsonEncode({
+                  'value': [
+                    {
+                      'regionName': 'US West 3',
+                      'clusterId': 'usw3',
+                      'value': [
+                        {
+                          'tunnelId': 'swift-fog-99j495s',
+                          'name': 'Swift Fog',
+                          'ports': [
+                            {
+                              'portNumber': 31545,
+                              'protocol': 'ssh',
+                              'webForwardingUris': [
+                                'https://39bjkbx1-31545.usw3.devtunnels.ms',
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                }),
+                200,
+              );
+            }
+            expect(request.url.path, '/tunnels/swift-fog-99j495s');
+            return http.Response(
+              jsonEncode({
+                'ports': [
+                  {
+                    'portNumber': 31545,
+                    'accessTokens': {'connect': 'listed-port-token'},
+                  },
+                ],
+              }),
+              200,
+            );
+          }),
+        );
+
+        final header = await service.resolveAuthorizationHeader(
+          'https://39bjkbx1-31545.usw3.devtunnels.ms',
+          port: 31545,
+        );
+
+        expect(header, 'tunnel listed-port-token');
+        expect(requests, hasLength(3));
+        expect(
+          requests.last.url.toString(),
+          'https://usw3.rel.tunnels.api.visualstudio.com'
+          '/tunnels/swift-fog-99j495s?includePorts=true'
+          '&tokenScopes=connect&api-version=2023-09-27-preview',
+        );
+      },
+    );
+
     test('returns null authorization when not signed in', () async {
       final service = DevTunnelAuthService(
         storage: storage,
@@ -224,10 +302,14 @@ void main() {
                     {
                       'tunnelId': 'abc',
                       'name': 'Mac mini',
+                      'description': 'Desk machine',
+                      'labels': ['ssh', 'office'],
                       'ports': [
                         {
                           'portNumber': 22,
                           'protocol': 'ssh',
+                          'name': 'Shell',
+                          'description': 'Remote login',
                           'webForwardingUris': [
                             'https://abc-22.usw2.devtunnels.ms',
                           ],
@@ -247,7 +329,13 @@ void main() {
 
       expect(tunnels, hasLength(1));
       expect(tunnels.single.displayName, 'Mac mini');
+      expect(tunnels.single.description, 'Desk machine');
+      expect(tunnels.single.labels, ['ssh', 'office']);
+      expect(tunnels.single.ports.single.tunnelId, 'abc');
+      expect(tunnels.single.ports.single.clusterId, 'usw2');
       expect(tunnels.single.ports.single.portNumber, 22);
+      expect(tunnels.single.ports.single.displayName, 'Shell');
+      expect(tunnels.single.ports.single.description, 'Remote login');
       expect(
         tunnels.single.ports.single.forwardingUrl,
         'https://abc-22.usw2.devtunnels.ms',
