@@ -570,6 +570,57 @@ void main() {
       },
     );
 
+    testWidgets('handles stale SSH errors while opening the browser', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenThrow(SSHStateError('Transport is closed'));
+      when(sshClient.close).thenReturn(null);
+      addTearDown(session.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+          ],
+          child: const MaterialApp(
+            home: SftpScreen(hostId: 1, connectionId: 7),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'SFTP connection failed. Check the connection and try again.',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
     testWidgets('video preview deletes cached files when closed', (
       tester,
     ) async {
