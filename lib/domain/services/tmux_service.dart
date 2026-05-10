@@ -3041,7 +3041,6 @@ bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
 
 /// Returns whether a live tmux window snapshot should bypass the normal active
 /// session metadata refresh throttle.
-@visibleForTesting
 bool shouldForceAgentSessionMetadataRefreshForSnapshot(
   Iterable<TmuxWindow> cachedWindows,
   TmuxWindow snapshot,
@@ -3938,19 +3937,6 @@ if [ -z "\$home" ]; then
 fi
 ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
 state_dir=\$home/.copilot/session-state
-if [ -d "\$state_dir" ]; then
-  lock_rows=
-  for lock in "\$state_dir"/*/inuse.*.lock; do
-    [ -e "\$lock" ] || continue
-    file=\${lock##*/}
-    pid=\${file#inuse.}
-    pid=\${pid%.lock}
-    case "\$pid" in ''|*[!0-9]*) continue ;; esac
-    dir=\${lock%/*}
-    lock_rows="\$lock_rows\$pid\$sep\$dir
-"
-  done
-fi
 flutty_arg_value() {
   option=\$1
   command_text=\$2
@@ -4072,9 +4058,10 @@ END {
       session_id=
       title=
       confidence=medium
-      if [ "\$tool" = copilot ]; then
-        dir=\$(printf '%s' "\${lock_rows:-}" | awk -F "\$sep" -v wanted="\$pid" '\$1 == wanted { print \$2; exit }')
-        if [ -n "\$dir" ]; then
+      if [ "\$tool" = copilot ] && [ -d "\$state_dir" ]; then
+        for lock in "\$state_dir"/*/inuse."\$pid".lock; do
+          [ -e "\$lock" ] || continue
+          dir=\${lock%/*}
           session_id=\${dir##*/}
           workspace=\$dir/workspace.yaml
           if [ -r "\$workspace" ]; then
@@ -4086,7 +4073,8 @@ END {
 }
 ' "\$workspace" 2>/dev/null | tr -d '\\r' | tr "\\037" " ")
           fi
-        fi
+          break
+        done
       fi
       if [ -z "\$session_id" ]; then
         lsof_match=\$(flutty_lsof_session_match "\$pid" "\$tool" || true)

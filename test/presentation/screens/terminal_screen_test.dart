@@ -725,6 +725,74 @@ void main() {
       },
     );
 
+    testWidgets('refreshTerminalDisplay reveals latest output', (tester) async {
+      final terminal = Terminal(maxLines: 120);
+      for (var row = 0; row < 60; row += 1) {
+        terminal.write('${rowLabel(row)}\r\n');
+      }
+      final controller = TerminalController();
+
+      await pumpSelectableTerminal(
+        tester,
+        terminal: terminal,
+        controller: controller,
+        height: 160,
+      );
+      final scrollableState = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      final position = scrollableState.position;
+      expect(position.maxScrollExtent, greaterThan(0));
+
+      position.jumpTo(0);
+      await tester.pump();
+      expect(position.pixels, 0);
+
+      tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .refreshTerminalDisplay(revealLatestOutput: true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(position.pixels, position.maxScrollExtent);
+    });
+
+    testWidgets('refreshTerminalDisplay relayouts without revealing output', (
+      tester,
+    ) async {
+      final terminal = Terminal(maxLines: 120);
+      for (var row = 0; row < 60; row += 1) {
+        terminal.write('${rowLabel(row)}\r\n');
+      }
+      final controller = TerminalController();
+
+      final renderTerminal = await pumpSelectableTerminal(
+        tester,
+        terminal: terminal,
+        controller: controller,
+        height: 160,
+      );
+      final scrollableState = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      final position = scrollableState.position..jumpTo(0);
+      await tester.pump();
+      expect(renderTerminal.debugNeedsLayout, isFalse);
+
+      tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .refreshTerminalDisplay();
+
+      expect(renderTerminal.debugNeedsLayout, isTrue);
+      expect(position.pixels, 0);
+    });
+
     testWidgets(
       'handle drag keeps updating after keyboard-sized resize',
       (tester) async {
@@ -917,6 +985,20 @@ void main() {
       await tester.pump();
     }
 
+    Future<void> openTerminalOverflowMenu(WidgetTester tester) async {
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openTerminalOverflowSubmenu(
+      WidgetTester tester,
+      String label,
+    ) async {
+      await openTerminalOverflowMenu(tester);
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, label));
+      await tester.pumpAndSettle();
+    }
+
     void enablePlainTuiSignals() {
       session.terminal!.write('\x1b[?1004h');
     }
@@ -1008,13 +1090,10 @@ void main() {
       expect(utf8.decode(shellWrites.expand((chunk) => chunk).toList()), 'x');
     });
 
-    testWidgets('terminal overflow menu omits standalone copy action', (
-      tester,
-    ) async {
+    testWidgets('terminal overflow menu groups paste actions', (tester) async {
       await pumpScreen(tester);
 
-      await tester.tap(find.byType(PopupMenuButton<String>));
-      await tester.pumpAndSettle();
+      await openTerminalOverflowMenu(tester);
 
       expect(
         find.byWidgetPredicate(
@@ -1026,6 +1105,39 @@ void main() {
         find.byWidgetPredicate(
           (widget) =>
               widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_file',
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> &&
+              widget.value == 'paste_submenu',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Paste'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is PopupMenuItem<String> && widget.value == 'paste_image',
         ),
         findsOneWidget,
       );
@@ -1043,8 +1155,7 @@ void main() {
       (tester) async {
         await pumpScreen(tester);
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowSubmenu(tester, 'Options');
 
         expect(
           find.widgetWithText(
@@ -1079,8 +1190,7 @@ void main() {
               widget.value == 'create_snippet',
         );
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
         expect(createSnippetItem(), findsNothing);
 
         await tester.tapAt(const Offset(2, 2));
@@ -1100,8 +1210,7 @@ void main() {
         );
         await tester.pump();
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
         expect(createSnippetItem(), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
@@ -1859,6 +1968,132 @@ void main() {
     );
 
     testWidgets(
+      'MonkeyMux window switches reveal the replayed terminal viewport',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        for (var row = 0; row < 120; row += 1) {
+          session.terminal!.write('row $row\r\n');
+        }
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final scrollableState = tester.state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MonkeyTerminalView),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final position = scrollableState.position;
+        expect(position.maxScrollExtent, greaterThan(0));
+
+        position.jumpTo(0);
+        await tester.pump();
+        expect(position.pixels, 0);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('agent'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        expect(position.pixels, position.maxScrollExtent);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'disconnects when MonkeyMux reports no remaining windows',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -2434,8 +2669,7 @@ void main() {
     ) async {
       await pumpScreen(tester);
 
-      await tester.tap(find.byType(PopupMenuButton<String>));
-      await tester.pumpAndSettle();
+      await openTerminalOverflowSubmenu(tester, 'Options');
 
       final menuItem = find.widgetWithText(
         CheckedPopupMenuItem<String>,
@@ -3613,8 +3847,7 @@ void main() {
         expect(dismissRegion, findsOneWidget);
         expect(tester.widget<PopScope<Object?>>(popScope).canPop, isFalse);
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowSubmenu(tester, 'Options');
         await tester.tap(find.text('Hide tmux Bar'));
         await tester.pumpAndSettle();
 
@@ -4147,8 +4380,7 @@ void main() {
           isFalse,
         );
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
 
         expect(find.text('Snippets'), findsOneWidget);
         expect(tester.testTextInput.isVisible, isTrue);
@@ -4169,13 +4401,12 @@ void main() {
             ..resetDevicePixelRatio()
             ..resetViewInsets();
         });
-
         await pumpScreen(tester);
         await tester.tap(find.byType(MonkeyTerminalView));
         await tester.pump();
+        await tester.pump();
 
-        await tester.tap(find.byType(PopupMenuButton<String>));
-        await tester.pumpAndSettle();
+        await openTerminalOverflowMenu(tester);
 
         const keyboardTop = 844 - 500;
         final menuScrollable = find.ancestor(
