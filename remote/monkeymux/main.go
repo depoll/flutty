@@ -31,15 +31,15 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.18"
+	monkeyMuxVersion         = "0.1.19"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
 	oscBufferLimitBytes      = 4096
 	processMetadataTimeout   = 500 * time.Millisecond
 	processMetadataInterval  = 500 * time.Millisecond
-	runCommandOutputMaxBytes = 256 * 1024
-	runCommandTimeout        = 8 * time.Second
+	runCommandOutputMaxBytes = 8 * 1024 * 1024
+	runCommandTimeout        = 20 * time.Second
 	socketTimeout            = 2 * time.Second
 	windowUpdateMinInterval  = 750 * time.Millisecond
 	windowHistoryLimitBytes  = 128 * 1024
