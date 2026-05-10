@@ -10819,11 +10819,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           uri,
           activeLocalPorts: _activeLocalForwardPorts(),
         )) {
+      final browserUri = normalizePortForwardBrowserUri(uri);
       await context.pushNamed<void>(
         Routes.portForwardBrowser,
         queryParameters: {
-          'url': normalizePortForwardBrowserUri(uri).toString(),
-          'title': uri.authority,
+          'url': browserUri.toString(),
+          'port': browserUri.port.toString(),
+          'title': browserUri.authority,
         },
       );
       return;

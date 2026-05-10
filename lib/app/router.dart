@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
+import '../domain/services/port_forward_browser_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
@@ -215,18 +216,27 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: Routes.portForwardBrowser,
         pageBuilder: (context, state) {
           final uri = Uri.tryParse(state.uri.queryParameters['url'] ?? '');
-          if (uri == null || uri.host.isEmpty) {
+          final allowedPort = int.tryParse(
+            state.uri.queryParameters['port'] ?? '',
+          );
+          final initialUri = uri == null
+              ? null
+              : normalizePortForwardBrowserUri(uri);
+          if (initialUri == null ||
+              allowedPort == null ||
+              !isPortForwardBrowserUri(initialUri, port: allowedPort)) {
             return _buildSlideUpPage<String>(
               key: state.pageKey,
               child: const Scaffold(
-                body: Center(child: Text('Invalid browser URL')),
+                body: Center(child: Text('Invalid port-forward browser URL')),
               ),
             );
           }
           return _buildSlideUpPage<String>(
             key: state.pageKey,
             child: PortForwardBrowserScreen(
-              initialUri: uri,
+              initialUri: initialUri,
+              allowedPort: allowedPort,
               title: state.uri.queryParameters['title'],
             ),
           );

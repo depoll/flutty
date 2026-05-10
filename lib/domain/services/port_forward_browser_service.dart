@@ -2,7 +2,8 @@ import '../../data/database/database.dart';
 
 /// Returns whether [portForward] can be opened in the embedded browser.
 bool canOpenPortForwardInBrowser(PortForward portForward) =>
-    portForward.forwardType == 'local';
+    portForward.forwardType == 'local' &&
+    isPortForwardBrowserHost(portForward.localHost);
 
 /// Builds the local URL used to browse a local port forward.
 Uri buildPortForwardBrowserUri(PortForward portForward) => Uri(
@@ -19,32 +20,42 @@ bool shouldOpenUriInPortForwardBrowser(
   Uri uri, {
   required Iterable<int> activeLocalPorts,
 }) =>
+    isPortForwardBrowserHost(uri.host) &&
+    activeLocalPorts.any((port) => isPortForwardBrowserUri(uri, port: port));
+
+/// Returns whether [uri] is allowed for the forwarded local [port].
+bool isPortForwardBrowserUri(Uri uri, {required int port}) =>
+    _isValidPort(port) &&
     (uri.scheme == 'http' || uri.scheme == 'https') &&
-    _isLoopbackOrWildcardHost(uri.host) &&
-    activeLocalPorts.contains(uri.port);
+    isPortForwardBrowserHost(uri.host) &&
+    uri.port == port;
 
 /// Normalizes wildcard and IPv6 loopback hosts for embedded browser loading.
 Uri normalizePortForwardBrowserUri(Uri uri) =>
     uri.replace(host: _browserHostForBindAddress(uri.host));
 
-String _browserHostForBindAddress(String localHost) {
-  final host = localHost.trim().toLowerCase();
-  return switch (host) {
-    '' || '0.0.0.0' || '::' || '[::]' => '127.0.0.1',
-    '::1' || '[::1]' => 'localhost',
-    _ => localHost.trim(),
-  };
-}
-
-bool _isLoopbackOrWildcardHost(String host) {
+/// Returns whether [host] is a browser-safe local bind address.
+bool isPortForwardBrowserHost(String host) {
   final normalized = host.trim().toLowerCase();
-  return normalized == 'localhost' ||
+  return normalized.isEmpty ||
+      normalized == 'localhost' ||
       normalized == '0.0.0.0' ||
       normalized == '::' ||
       normalized == '::1' ||
       normalized == '[::]' ||
       normalized == '[::1]' ||
       _isLoopbackIpv4Address(normalized);
+}
+
+String _browserHostForBindAddress(String localHost) {
+  final host = localHost.trim().toLowerCase();
+  if (host.isEmpty || host == '0.0.0.0' || _isLoopbackIpv4Address(host)) {
+    return '127.0.0.1';
+  }
+  if (host == '::' || host == '[::]' || host == '::1' || host == '[::1]') {
+    return 'localhost';
+  }
+  return localHost.trim();
 }
 
 bool _isLoopbackIpv4Address(String host) {
@@ -58,3 +69,5 @@ bool _isLoopbackIpv4Address(String host) {
     return value != null && value >= 0 && value <= 255;
   });
 }
+
+bool _isValidPort(int port) => port >= 1 && port <= 65535;
