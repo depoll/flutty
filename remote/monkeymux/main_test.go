@@ -897,7 +897,7 @@ func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
 		CursorVisibilityKnown: true,
 	}
 
-	options := createWindowOptionsForRestore(state)
+	options := createWindowOptionsForRestore(state, false)
 
 	if options.command != "" {
 		t.Fatalf("command = %q, want login shell", options.command)
@@ -923,7 +923,7 @@ func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 		HistoryBase64:  base64.StdEncoding.EncodeToString([]byte("old agent screen")),
 	}
 
-	options := createWindowOptionsForRestore(state)
+	options := createWindowOptionsForRestore(state, false)
 
 	if got := options.command; got != "copilot --resume 'session'\"'\"'s id'" {
 		t.Fatalf("command = %q, want quoted copilot resume", got)
@@ -933,6 +933,121 @@ func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 	}
 	if options.agentTool != "copilot" {
 		t.Fatalf("agent tool = %q, want copilot", options.agentTool)
+	}
+}
+
+func TestReadRestoreFileKeepsCallerOwnedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caller-restore.json")
+	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("restore file was removed, want caller-owned file preserved: %v", err)
+	}
+}
+
+func TestReadRestoreFileDeletesManagedFileOnlyAfterValidation(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(
+		runDir,
+		"monkeymux-restore-aaaaaaaaaaaaaaaaaaaaaaaa-1.json",
+	)
+	if err := os.WriteFile(invalidPath, []byte(`{"schemaVersion":999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(invalidPath); err == nil {
+		t.Fatal("readRestoreFile invalid schema error = nil, want error")
+	}
+	if _, err := os.Stat(invalidPath); err != nil {
+		t.Fatalf("invalid restore file was removed before validation: %v", err)
+	}
+
+	validPath := filepath.Join(
+		runDir,
+		"monkeymux-restore-bbbbbbbbbbbbbbbbbbbbbbbb-2.json",
+	)
+	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(validPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(validPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(validPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed restore file stat error = %v, want not exist", err)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
+	tests := []struct {
+		name      string
+		state     restoreWindowState
+		want      string
+		agentTool string
+	}{
+		{
+			name: "copilot resume",
+			state: restoreWindowState{
+				Name:           "Copilot CLI",
+				CurrentCommand: "copilot",
+				AgentTool:      "copilot",
+				AgentSessionID: "session-123",
+			},
+			want:      "copilot --yolo --resume 'session-123'",
+			agentTool: "copilot",
+		},
+		{
+			name: "codex launch",
+			state: restoreWindowState{
+				Name:           "Codex",
+				CurrentCommand: "codex",
+				AgentTool:      "codex",
+			},
+			want:      "codex --yolo",
+			agentTool: "codex",
+		},
+		{
+			name: "opencode resume",
+			state: restoreWindowState{
+				Name:           "OpenCode",
+				CurrentCommand: "opencode",
+				AgentTool:      "opencode",
+				AgentSessionID: "_continue",
+			},
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
+			agentTool: "opencode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			options := createWindowOptionsForRestore(tc.state, true)
+			if got := options.command; got != tc.want {
+				t.Fatalf("command = %q, want %q", got, tc.want)
+			}
+			if options.agentTool != tc.agentTool {
+				t.Fatalf("agent tool = %q, want %q", options.agentTool, tc.agentTool)
+			}
+		})
 	}
 }
 
