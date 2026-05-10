@@ -2081,7 +2081,12 @@ void main() {
         await tester.pump();
 
         verify(
-          () => monkeyMuxService.selectWindow(session, sessionName, 1),
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).called(1);
         expect(position.pixels, position.maxScrollExtent);
       },
