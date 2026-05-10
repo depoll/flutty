@@ -118,26 +118,31 @@ void main() {
   });
 
   group('Copilot active session metadata', () {
-    test('command checks only locks for Copilot descendants of pane PIDs', () {
-      final command = buildCopilotActiveSessionMetadataCommand(const {42, 88});
+    test(
+      'command checks session metadata for agent descendants of pane PIDs',
+      () {
+        final command = buildAgentActiveSessionMetadataCommand(const {42, 88});
 
-      expect(command, contains('pane_pids=\'42 88\''));
-      expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
-      expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
-      expect(command, contains('lock_rows='));
-      expect(command, contains('inuse.*.lock'));
-      expect(command, contains('flutty_lsof_session_match'));
-      expect(command, contains('.claude'));
-      expect(command, contains('.codex'));
-      expect(command, contains('.gemini'));
-      expect(command, contains(r'awk -F "$sep" -v wanted="$pid"'));
-      expect(command, contains('workspace.yaml'));
-      expect(command, contains(r'if [ -d "$state_dir" ]; then'));
-      expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
-      expect(command, isNot(contains(r'inuse."$pid".lock')));
-      expect(command, isNot(contains(r'ps -p "$pid"')));
-      expect(command, isNot(contains('exit 0')));
-    });
+        expect(command, contains('pane_pids=\'42 88\''));
+        expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
+        expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
+        expect(command, contains('flutty_lsof_session_match'));
+        expect(command, contains('.claude'));
+        expect(command, contains('.codex'));
+        expect(command, contains('.gemini'));
+        expect(command, contains(r'inuse."$pid".lock'));
+        expect(command, contains('workspace.yaml'));
+        expect(command, contains(r'[ -d "$state_dir" ]'));
+        expect(command, isNot(contains('lock_rows=')));
+        expect(command, isNot(contains('inuse.*.lock')));
+        expect(
+          command,
+          isNot(contains('.copilot/session-state/*/inuse.*.lock')),
+        );
+        expect(command, isNot(contains(r'ps -p "$pid"')));
+        expect(command, isNot(contains('exit 0')));
+      },
+    );
 
     test('parses live session titles by matched pane PID', () {
       const sep = tmuxWindowFieldSeparator;

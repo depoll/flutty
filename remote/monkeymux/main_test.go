@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -239,6 +242,50 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 	if inactiveWindow.alert {
 		t.Fatal("selected window alert was not cleared")
+	}
+}
+
+func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	inactiveWindow.history = []byte("background output")
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
+		cursorVisibilityReplaySequence(true)
+	var signaled []int
+	foregroundProcessGroupForWindow = func(window *muxWindow) int {
+		if window == inactiveWindow {
+			return 4242
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize signaled before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(signaled, []int{4242}) {
+		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
 	}
 }
 
@@ -520,10 +567,24 @@ func TestActiveReplayPreservesHiddenCursor(t *testing.T) {
 }
 
 func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
-	for _, mode := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?1004l", "?2004l", "?1l", "?6l", "?7h"} {
-		if !strings.Contains(activeWindowReplayPrefix, mode) {
-			t.Fatalf("replay prefix %q does not reset %s", activeWindowReplayPrefix, mode)
+	for _, sequence := range []string{
+		"\x1b[?1000l",
+		"\x1b[?1002l",
+		"\x1b[?1003l",
+		"\x1b[?1006l",
+		"\x1b[?1004l",
+		"\x1b[?2004l",
+		"\x1b[?1l",
+		"\x1b[?6l",
+		"\x1b[?7h",
+		"\x1b[4l",
+	} {
+		if !strings.Contains(activeWindowReplayPrefix, sequence) {
+			t.Fatalf("replay prefix %q does not reset %q", activeWindowReplayPrefix, sequence)
 		}
+	}
+	if !strings.Contains(activeWindowReplayPrefix, "\x1b>") {
+		t.Fatalf("replay prefix %q does not reset application keypad mode", activeWindowReplayPrefix)
 	}
 }
 
@@ -532,6 +593,92 @@ func TestReplayPrefixClearsScrollbackAndMargins(t *testing.T) {
 		if !strings.Contains(activeWindowReplayPrefix, sequence) {
 			t.Fatalf("replay prefix %q does not include %q", activeWindowReplayPrefix, sequence)
 		}
+	}
+}
+
+func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("nano screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked(
+		[]byte("\x1b[?1049h\x1b[?1h\x1b=\x1b[?2004h\x1b[4h"),
+	)
+
+	replay := string(server.activeReplayLocked())
+	preModes := string(terminalModePreReplaySequence(window))
+	postModes := string(terminalModePostReplaySequence(window))
+	want := replayPrefixForTest(window) + preModes + "nano screen" +
+		postModes + cursorVisibilityReplaySequence(true)
+	if replay != want {
+		t.Fatalf("replay = %q, want %q", replay, want)
+	}
+	for _, sequence := range []string{
+		"\x1b[?1049h",
+		"\x1b[?1h",
+		"\x1b[?2004h",
+		"\x1b[4h",
+		"\x1b=",
+	} {
+		if !strings.Contains(preModes, sequence) {
+			t.Fatalf("pre-history modes = %q, want %q", preModes, sequence)
+		}
+	}
+	for _, sequence := range []string{
+		"\x1b[?1h",
+		"\x1b[?2004h",
+		"\x1b[4h",
+		"\x1b=",
+	} {
+		if !strings.Contains(postModes, sequence) {
+			t.Fatalf("post-history modes = %q, want %q", postModes, sequence)
+		}
+	}
+	if strings.Contains(postModes, "\x1b[?1049h") {
+		t.Fatalf("post-history modes = %q, should not switch buffers after replay", postModes)
+	}
+}
+
+func TestTerminalModeTrackingHandlesSplitSequences(t *testing.T) {
+	window := &muxWindow{}
+
+	window.observeTerminalModesLocked([]byte("\x1b[?1;200"))
+	window.observeTerminalModesLocked([]byte("4h\x1b"))
+	window.observeTerminalModesLocked([]byte("="))
+
+	preModes := string(terminalModePreReplaySequence(window))
+	for _, sequence := range []string{"\x1b[?1h", "\x1b[?2004h", "\x1b="} {
+		if !strings.Contains(preModes, sequence) {
+			t.Fatalf("pre-history modes = %q, want %q", preModes, sequence)
+		}
+	}
+}
+
+func TestActiveReplayRestoresResetEditorModesAfterHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{id: "@1", history: []byte("stale\x1b[4h")}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked([]byte("\x1b[4h\x1b[4l\x1b=\x1b>"))
+
+	postModes := string(terminalModePostReplaySequence(window))
+	for _, sequence := range []string{"\x1b[4l", "\x1b>"} {
+		if !strings.Contains(postModes, sequence) {
+			t.Fatalf("post-history modes = %q, want reset %q", postModes, sequence)
+		}
+	}
+	if !strings.HasSuffix(
+		string(server.activeReplayLocked()),
+		"stale\x1b[4h"+postModes+cursorVisibilityReplaySequence(true),
+	) {
+		t.Fatalf("replay did not restore reset modes after history")
 	}
 }
 
@@ -662,6 +809,26 @@ func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
 	}
 }
 
+func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
+	tests := []struct {
+		tool string
+		args string
+		want string
+	}{
+		{tool: "claude", args: "claude --resume abc123", want: "abc123"},
+		{tool: "copilot", args: "copilot --resume 'session one'", want: "session one"},
+		{tool: "codex", args: "codex resume run-42", want: "run-42"},
+		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
+		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
+	}
+
+	for _, tt := range tests {
+		if got := agentSessionIDFromArgs(tt.tool, tt.args); got != tt.want {
+			t.Fatalf("agentSessionIDFromArgs(%q, %q) = %q, want %q", tt.tool, tt.args, got, tt.want)
+		}
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -773,12 +940,223 @@ func TestCloseLastWindowRequestsShutdown(t *testing.T) {
 	}
 }
 
+func TestRestoreSnapshotIncludesShellHistory(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:                    "@1",
+			index:                 0,
+			name:                  "zsh",
+			command:               "zsh",
+			foregroundCommand:     "zsh",
+			history:               []byte("shell history"),
+			lastActivity:          time.Now(),
+			cursorVisible:         false,
+			cursorVisibilityKnown: true,
+		},
+		{
+			id:                "@2",
+			index:             1,
+			name:              "Codex",
+			command:           "codex",
+			foregroundCommand: "codex",
+			agentTool:         "codex",
+			history:           []byte("agent history"),
+			lastActivity:      time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	restore := server.restoreSnapshot()
+
+	if got := len(restore.Windows); got != 2 {
+		t.Fatalf("restore window count = %d, want 2", got)
+	}
+	if got := restore.Windows[0].HistoryBase64; got != base64.StdEncoding.EncodeToString([]byte("shell history")) {
+		t.Fatalf("shell history = %q, want encoded shell history", got)
+	}
+	if !restore.Windows[0].Active {
+		t.Fatal("active shell window was not marked active")
+	}
+	if !restore.Windows[0].CursorVisibilityKnown || restore.Windows[0].CursorVisible {
+		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", restore.Windows[0].CursorVisibilityKnown, restore.Windows[0].CursorVisible)
+	}
+	if got := restore.Windows[1].HistoryBase64; got != "" {
+		t.Fatalf("agent history = %q, want no replayed agent history", got)
+	}
+}
+
+func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
+	state := restoreWindowState{
+		Name:                  "Project shell",
+		Cwd:                   "/tmp/project",
+		CurrentCommand:        "zsh",
+		PaneTitle:             "Project shell",
+		HistoryBase64:         base64.StdEncoding.EncodeToString([]byte("prompt")),
+		CursorVisible:         false,
+		CursorVisibilityKnown: true,
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if options.command != "" {
+		t.Fatalf("command = %q, want login shell", options.command)
+	}
+	if got := string(options.history); got != "prompt" {
+		t.Fatalf("history = %q, want prompt", got)
+	}
+	if options.cwd != "/tmp/project" {
+		t.Fatalf("cwd = %q, want /tmp/project", options.cwd)
+	}
+	if !options.cursorVisibilityKnown || options.cursorVisible {
+		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", options.cursorVisibilityKnown, options.cursorVisible)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
+	state := restoreWindowState{
+		Name:           "Copilot CLI",
+		Cwd:            "/tmp/project",
+		CurrentCommand: "copilot",
+		AgentTool:      "copilot",
+		AgentSessionID: "session's id",
+		HistoryBase64:  base64.StdEncoding.EncodeToString([]byte("old agent screen")),
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got := options.command; got != "copilot --resume 'session'\"'\"'s id'" {
+		t.Fatalf("command = %q, want quoted copilot resume", got)
+	}
+	if len(options.history) != 0 {
+		t.Fatalf("agent restore history length = %d, want 0", len(options.history))
+	}
+	if options.agentTool != "copilot" {
+		t.Fatalf("agent tool = %q, want copilot", options.agentTool)
+	}
+}
+
+func TestReadRestoreFileKeepsCallerOwnedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caller-restore.json")
+	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("restore file was removed, want caller-owned file preserved: %v", err)
+	}
+}
+
+func TestReadRestoreFileDeletesManagedFileOnlyAfterValidation(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(
+		runDir,
+		"monkeymux-restore-aaaaaaaaaaaaaaaaaaaaaaaa-1.json",
+	)
+	if err := os.WriteFile(invalidPath, []byte(`{"schemaVersion":999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(invalidPath); err == nil {
+		t.Fatal("readRestoreFile invalid schema error = nil, want error")
+	}
+	if _, err := os.Stat(invalidPath); err != nil {
+		t.Fatalf("invalid restore file was removed before validation: %v", err)
+	}
+
+	validPath := filepath.Join(
+		runDir,
+		"monkeymux-restore-bbbbbbbbbbbbbbbbbbbbbbbb-2.json",
+	)
+	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(validPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(validPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(validPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed restore file stat error = %v, want not exist", err)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
+	tests := []struct {
+		name      string
+		state     restoreWindowState
+		want      string
+		agentTool string
+	}{
+		{
+			name: "copilot resume",
+			state: restoreWindowState{
+				Name:           "Copilot CLI",
+				CurrentCommand: "copilot",
+				AgentTool:      "copilot",
+				AgentSessionID: "session-123",
+			},
+			want:      "copilot --yolo --resume 'session-123'",
+			agentTool: "copilot",
+		},
+		{
+			name: "codex launch",
+			state: restoreWindowState{
+				Name:           "Codex",
+				CurrentCommand: "codex",
+				AgentTool:      "codex",
+			},
+			want:      "codex --yolo",
+			agentTool: "codex",
+		},
+		{
+			name: "opencode resume",
+			state: restoreWindowState{
+				Name:           "OpenCode",
+				CurrentCommand: "opencode",
+				AgentTool:      "opencode",
+				AgentSessionID: "_continue",
+			},
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
+			agentTool: "opencode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			options := createWindowOptionsForRestore(tc.state, true)
+			if got := options.command; got != tc.want {
+				t.Fatalf("command = %q, want %q", got, tc.want)
+			}
+			if options.agentTool != tc.agentTool {
+				t.Fatalf("agent tool = %q, want %q", options.agentTool, tc.agentTool)
+			}
+		})
+	}
+}
+
 func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 	agentWindow := &muxWindow{foregroundCommand: "codex"}
-	agentWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004h"))
+	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	agentWithoutFocus := &muxWindow{foregroundCommand: "gemini"}
 	shellWindow := &muxWindow{foregroundCommand: "zsh"}
-	shellWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004h"))
+	shellWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 
 	if !agentWindow.supportsThemeHintLocked() {
 		t.Fatal("focus-aware agent foreground window did not support theme hints")
@@ -790,7 +1168,7 @@ func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 		t.Fatal("focus-aware shell foreground window unexpectedly supported theme hints")
 	}
 
-	agentWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004l"))
+	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
 	if agentWindow.supportsThemeHintLocked() {
 		t.Fatal("agent foreground window supported theme hints after focus mode disabled")
 	}
@@ -835,7 +1213,79 @@ func TestRunShellCommandBoundsOutput(t *testing.T) {
 		t.Fatalf("runShellCommand error = %v, want output limit", err)
 	}
 	if len(output) != runCommandOutputMaxBytes {
-		t.Fatalf("output length = %d, want %d", len(output), runCommandOutputMaxBytes)
+		t.Fatalf(
+			"output length = %d, want %d",
+			len(output),
+			runCommandOutputMaxBytes,
+		)
+	}
+}
+
+func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	server := newMuxServer("test")
+	serverConn, clientConn := net.Pipe()
+	defer func() {
+		_ = clientConn.Close()
+	}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleControl(serverConn, bufio.NewReader(serverConn))
+	}()
+
+	decoder := json.NewDecoder(clientConn)
+	readResponse := func() controlResponse {
+		t.Helper()
+		if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var response controlResponse
+		if err := decoder.Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	writeRequest := func(request controlMessage) {
+		t.Helper()
+		if err := clientConn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.NewEncoder(clientConn).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if response := readResponse(); response.Type != "hello" {
+		t.Fatalf("first response type = %q, want hello", response.Type)
+	}
+	if response := readResponse(); response.Type != "window_list" {
+		t.Fatalf("second response type = %q, want window_list", response.Type)
+	}
+
+	writeRequest(controlMessage{
+		ID:      "slow",
+		Type:    "run_command",
+		Command: "sleep 0.4; printf slow",
+	})
+	writeRequest(controlMessage{
+		ID:      "fast",
+		Type:    "run_command",
+		Command: "printf fast",
+	})
+
+	if response := readResponse(); response.ID != "fast" || response.Data != "fast" {
+		t.Fatalf("first command response = %#v, want fast command output", response)
+	}
+	if response := readResponse(); response.ID != "slow" || response.Data != "slow" {
+		t.Fatalf("second command response = %#v, want slow command output", response)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control handler did not stop")
 	}
 }
 
@@ -915,7 +1365,7 @@ func TestPromptForServerUpdateWarnsWhenShutdownIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
+func TestPromptForServerUpdateDescribesWindowRestore(t *testing.T) {
 	var output bytes.Buffer
 	status := runningServerStatus{
 		version:      "0.1.1",
@@ -925,8 +1375,8 @@ func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
 	if !promptForServerUpdate(strings.NewReader("y\n"), &output, "main", status) {
 		t.Fatal("yes prompt response did not update server")
 	}
-	if got := output.String(); !strings.Contains(got, "will close existing") {
-		t.Fatalf("prompt output = %q, want close warning", got)
+	if got := output.String(); !strings.Contains(got, "try to restore existing windows") {
+		t.Fatalf("prompt output = %q, want restore message", got)
 	}
 }
 
