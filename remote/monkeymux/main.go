@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.19"
+	monkeyMuxVersion         = "0.1.20"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -47,7 +47,47 @@ const (
 	csiBufferLimitBytes      = 64
 )
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+
+var (
+	preReplayPrivateModes = []string{
+		"1049",
+		"6",
+		"7",
+		"1",
+		"1000",
+		"1002",
+		"1003",
+		"1006",
+		"1004",
+		"2004",
+		"2031",
+	}
+	postReplayPrivateModes = []string{
+		"7",
+		"1",
+		"1000",
+		"1002",
+		"1003",
+		"1006",
+		"1004",
+		"2004",
+		"2031",
+	}
+	trackedPrivateModes = map[string]struct{}{
+		"1":    {},
+		"6":    {},
+		"7":    {},
+		"1000": {},
+		"1002": {},
+		"1003": {},
+		"1004": {},
+		"1006": {},
+		"1049": {},
+		"2004": {},
+		"2031": {},
+	}
+)
 
 var capabilities = []string{
 	"attach",
@@ -191,6 +231,11 @@ type muxWindow struct {
 	lastBroadcast              time.Time
 	cursorVisible              bool
 	cursorVisibilityKnown      bool
+	privateModes               map[string]bool
+	insertModeEnabled          bool
+	insertModeKnown            bool
+	applicationKeypadEnabled   bool
+	applicationKeypadKnown     bool
 	focusModeEnabled           bool
 	alert                      bool
 	closed                     bool
@@ -640,7 +685,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	wasAlert := window.alert
 	window.lastActivity = now
 	window.observeTerminalMetadataLocked(chunk)
-	window.observeCursorVisibilityLocked(chunk)
+	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
@@ -1432,15 +1477,20 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.history)
 	history = trimReplayHistoryForAttach(history)
 	title := terminalTitleReplaySequence(window)
+	preModes := terminalModePreReplaySequence(window)
+	postModes := terminalModePostReplaySequence(window)
 	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
 	replay := make(
 		[]byte,
 		0,
-		len(activeWindowReplayPrefix)+len(title)+len(history)+len(cursor),
+		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
+			len(postModes)+len(cursor),
 	)
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, title...)
+	replay = append(replay, preModes...)
 	replay = append(replay, history...)
+	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay
 }
@@ -1461,6 +1511,56 @@ func sanitizeTerminalTitle(value string) string {
 		}
 		return r
 	}, strings.TrimSpace(value))
+}
+
+func terminalModePreReplaySequence(window *muxWindow) []byte {
+	if window == nil {
+		return nil
+	}
+	return terminalModeReplaySequence(window, preReplayPrivateModes, true)
+}
+
+func terminalModePostReplaySequence(window *muxWindow) []byte {
+	if window == nil {
+		return nil
+	}
+	return terminalModeReplaySequence(window, postReplayPrivateModes, true)
+}
+
+func terminalModeReplaySequence(
+	window *muxWindow,
+	privateModes []string,
+	includeApplicationKeypad bool,
+) []byte {
+	var replay []byte
+	for _, mode := range privateModes {
+		enabled, ok := window.privateModes[mode]
+		if !ok {
+			continue
+		}
+		final := byte('l')
+		if enabled {
+			final = 'h'
+		}
+		replay = append(replay, "\x1b[?"...)
+		replay = append(replay, mode...)
+		replay = append(replay, final)
+	}
+	if window.insertModeKnown {
+		if window.insertModeEnabled {
+			replay = append(replay, "\x1b[4h"...)
+		} else {
+			replay = append(replay, "\x1b[4l"...)
+		}
+	}
+	if includeApplicationKeypad && window.applicationKeypadKnown {
+		if window.applicationKeypadEnabled {
+			replay = append(replay, "\x1b="...)
+		} else {
+			replay = append(replay, "\x1b>"...)
+		}
+	}
+	return replay
 }
 
 func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
@@ -1985,7 +2085,7 @@ func leadingShellToken(value string) string {
 	return fields[0]
 }
 
-func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
+func (w *muxWindow) observeTerminalModesLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
@@ -2007,7 +2107,19 @@ func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
 			w.storePartialCsiLocked(data[escapeIndex:])
 			return
 		}
-		if data[escapeIndex+1] != '[' {
+		switch data[escapeIndex+1] {
+		case '[':
+		case '=':
+			w.applicationKeypadEnabled = true
+			w.applicationKeypadKnown = true
+			data = data[escapeIndex+2:]
+			continue
+		case '>':
+			w.applicationKeypadEnabled = false
+			w.applicationKeypadKnown = true
+			data = data[escapeIndex+2:]
+			continue
+		default:
 			data = data[escapeIndex+1:]
 			continue
 		}
@@ -2021,12 +2133,17 @@ func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
 		if final == 'h' || final == 'l' {
 			params := string(data[escapeIndex+2 : end])
 			enabled := final == 'h'
-			if csiPrivateModeEnabled(params, "25") {
-				w.cursorVisible = enabled
-				w.cursorVisibilityKnown = true
-			}
-			if csiPrivateModeEnabled(params, "1004") {
-				w.focusModeEnabled = enabled
+			if strings.HasPrefix(params, "?") {
+				for _, mode := range csiModeParams(strings.TrimPrefix(params, "?")) {
+					w.setPrivateModeLocked(mode, enabled)
+				}
+			} else {
+				for _, mode := range csiModeParams(params) {
+					if mode == "4" {
+						w.insertModeEnabled = enabled
+						w.insertModeKnown = true
+					}
+				}
 			}
 		}
 		data = data[end+1:]
@@ -2041,16 +2158,40 @@ func (w *muxWindow) storePartialCsiLocked(data []byte) {
 	w.csiBuffer = append(w.csiBuffer[:0], data...)
 }
 
-func csiPrivateModeEnabled(params string, mode string) bool {
-	if !strings.HasPrefix(params, "?") {
-		return false
+func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
+	if mode == "25" {
+		w.cursorVisible = enabled
+		w.cursorVisibilityKnown = true
+		return
 	}
-	for _, part := range strings.Split(strings.TrimPrefix(params, "?"), ";") {
-		if part == mode {
-			return true
+	if mode == "1004" {
+		w.focusModeEnabled = enabled
+	}
+	if _, ok := trackedPrivateModes[mode]; !ok {
+		return
+	}
+	if w.privateModes == nil {
+		w.privateModes = map[string]bool{}
+	}
+	w.privateModes[mode] = enabled
+}
+
+func csiModeParams(params string) []string {
+	if params == "" {
+		return nil
+	}
+	parts := strings.Split(params, ";")
+	modes := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		mode, _, _ := strings.Cut(part, ":")
+		if mode != "" {
+			modes = append(modes, mode)
 		}
 	}
-	return false
+	return modes
 }
 
 func (w *muxWindow) cursorVisibleForReplayLocked() bool {
