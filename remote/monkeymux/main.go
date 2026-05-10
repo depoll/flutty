@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.18"
+	monkeyMuxVersion         = "0.1.19"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
