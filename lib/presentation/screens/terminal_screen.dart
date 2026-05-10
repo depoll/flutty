@@ -2769,6 +2769,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _recentLocalClipboardText;
   DateTime? _recentLocalClipboardAt;
   bool _isTerminalSizeRefreshQueued = false;
+  bool _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
+  bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -5826,19 +5828,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalWithOwnedCallbacks = null;
   }
 
-  void _scheduleTerminalSizeRefresh() {
+  void _scheduleTerminalSizeRefresh({
+    bool forceDisplayRefresh = false,
+    bool revealLatestOutput = false,
+  }) {
+    _pendingTerminalSizeRefreshForcesDisplayRefresh =
+        _pendingTerminalSizeRefreshForcesDisplayRefresh ||
+        forceDisplayRefresh ||
+        revealLatestOutput;
+    _pendingTerminalSizeRefreshRevealsLatestOutput =
+        _pendingTerminalSizeRefreshRevealsLatestOutput || revealLatestOutput;
     if (_isTerminalSizeRefreshQueued) {
       return;
     }
     _isTerminalSizeRefreshQueued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _isTerminalSizeRefreshQueued = false;
+      final forceDisplayRefresh =
+          _pendingTerminalSizeRefreshForcesDisplayRefresh;
+      final shouldRevealLatestOutput =
+          _pendingTerminalSizeRefreshRevealsLatestOutput;
+      _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
+      _pendingTerminalSizeRefreshRevealsLatestOutput = false;
       if (!mounted) {
         return;
       }
-      _terminalViewKey.currentState?.refreshTerminalSize();
+      final revealLatestOutput =
+          shouldRevealLatestOutput && !_isTerminalOutputFollowPaused;
+      final terminalView = _terminalViewKey.currentState;
+      if (forceDisplayRefresh) {
+        terminalView?.refreshTerminalDisplay(
+          revealLatestOutput: revealLatestOutput,
+        );
+      } else {
+        terminalView?.refreshTerminalSize();
+      }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _refreshTerminalAfterMonkeyMuxWindowChange() {
+    _followLiveOutput();
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      revealLatestOutput: true,
+    );
   }
 
   SshConnectionState _readCurrentConnectionState() {
@@ -7423,7 +7457,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         forceVisibleTmux: forceVisibleTmux,
       );
     }
-    _scheduleTerminalSizeRefresh();
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _refreshTerminalAfterMonkeyMuxWindowChange();
+    } else {
+      _scheduleTerminalSizeRefresh();
+    }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
@@ -7470,7 +7508,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
       await _reattachTmuxIfNeeded(session, sessionName);
     }
-    _scheduleTerminalSizeRefresh();
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _refreshTerminalAfterMonkeyMuxWindowChange();
+    } else {
+      _scheduleTerminalSizeRefresh();
+    }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
@@ -7513,7 +7555,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
-    _scheduleTerminalSizeRefresh();
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _refreshTerminalAfterMonkeyMuxWindowChange();
+    } else {
+      _scheduleTerminalSizeRefresh();
+    }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
