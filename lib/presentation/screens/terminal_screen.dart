@@ -3825,8 +3825,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
-    _terminalTextInputController.resetImeCompletions();
+  void _handleTmuxWindowStateChanged(
+    SshSession session,
+    String sessionName, {
+    required bool activeWindowChanged,
+  }) {
+    if (activeWindowChanged) {
+      _terminalTextInputController.resetImeCompletions();
+    }
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshMuxPaneContextAfterWindowStateChange(session, sessionName);
       return;
