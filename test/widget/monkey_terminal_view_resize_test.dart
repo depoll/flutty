@@ -394,10 +394,11 @@ void main() {
     addTearDown(focusNode.dispose);
 
     const hiddenColor = Color(0xFFE53935);
+    const backgroundColor = Color(0xFF0D1A20);
     final hiddenTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .copyWith(
           foreground: hiddenColor,
-          background: hiddenColor,
+          background: backgroundColor,
           cursor: hiddenColor,
         )
         .toXtermTheme();
