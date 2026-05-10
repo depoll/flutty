@@ -51,12 +51,13 @@ void main() {
         windowName: 'Codex agent',
         launchCommand: "codex --model 'gpt-5.4'",
         serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        startInYoloMode: true,
       );
 
       expect(
         command,
-        "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never --cwd "
-        "'~/src/it'\"'\"'s app' --name 'Codex agent' --command "
+        "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never "
+        "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
     });
