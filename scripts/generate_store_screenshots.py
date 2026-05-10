@@ -60,6 +60,24 @@ class ScreenshotTarget:
     android_density: str | None = None
 
 
+@dataclass(frozen=True)
+class MonkeyMuxSessionRegistryEntry:
+    session: str
+    owner_pid: int | None = None
+    owner_start_time: int | None = None
+    registered_at: float | None = None
+
+    def to_json(self) -> dict[str, object]:
+        payload: dict[str, object] = {'session': self.session}
+        if self.owner_pid is not None:
+            payload['ownerPid'] = self.owner_pid
+        if self.owner_start_time is not None:
+            payload['ownerStartTime'] = self.owner_start_time
+        if self.registered_at is not None:
+            payload['registeredAt'] = self.registered_at
+        return payload
+
+
 TARGETS = {
     'ios_phone': ScreenshotTarget(
         name='ios_phone',
@@ -923,39 +941,60 @@ class StoreDemoEnvironment:
                 self._remember_monkeymux_window_process_group(window)
 
     def _cleanup_registered_monkeymux_sessions(self) -> None:
-        sessions = _read_registered_monkeymux_sessions()
-        if not sessions:
-            self._run_monkeymux_gc()
-            return
+        def cleanup(
+            entries: list[MonkeyMuxSessionRegistryEntry],
+        ) -> list[MonkeyMuxSessionRegistryEntry]:
+            remaining: list[MonkeyMuxSessionRegistryEntry] = []
+            for entry in entries:
+                session = entry.session
+                is_stale_screenshot_session = session.startswith(
+                    'monkeyssh-store-',
+                ) and not _is_registry_entry_owner_alive(entry)
+                if session == self.mux_session or is_stale_screenshot_session:
+                    cleaned = _shutdown_monkeymux_session(
+                        self._monkeymux,
+                        session,
+                        self._monkeymux_env,
+                    )
+                    if not cleaned:
+                        remaining.append(entry)
+                    continue
+                remaining.append(entry)
+            return remaining
 
-        remaining: list[str] = []
-        for session in sessions:
-            if session == self.mux_session or session.startswith('monkeyssh-store-'):
-                cleaned = _shutdown_monkeymux_session(
-                    self._monkeymux,
-                    session,
-                    self._monkeymux_env,
-                )
-                if not cleaned:
-                    remaining.append(session)
-                continue
-            remaining.append(session)
-        _write_registered_monkeymux_sessions(remaining)
+        _update_registered_monkeymux_sessions(cleanup)
         self._run_monkeymux_gc()
 
     def _register_monkeymux_session(self) -> None:
-        sessions = _read_registered_monkeymux_sessions()
-        if self.mux_session not in sessions:
-            sessions.append(self.mux_session)
-        _write_registered_monkeymux_sessions(sessions)
+        entry = MonkeyMuxSessionRegistryEntry(
+            session=self.mux_session,
+            owner_pid=os.getpid(),
+            owner_start_time=_process_start_time(os.getpid()),
+            registered_at=time.time(),
+        )
+
+        def register(
+            entries: list[MonkeyMuxSessionRegistryEntry],
+        ) -> list[MonkeyMuxSessionRegistryEntry]:
+            return [
+                existing
+                for existing in entries
+                if existing.session != self.mux_session
+            ] + [entry]
+
+        _update_registered_monkeymux_sessions(register)
 
     def _unregister_monkeymux_session(self) -> None:
-        sessions = [
-            session
-            for session in _read_registered_monkeymux_sessions()
-            if session != self.mux_session
-        ]
-        _write_registered_monkeymux_sessions(sessions)
+        def unregister(
+            entries: list[MonkeyMuxSessionRegistryEntry],
+        ) -> list[MonkeyMuxSessionRegistryEntry]:
+            return [
+                entry
+                for entry in entries
+                if entry.session != self.mux_session
+            ]
+
+        _update_registered_monkeymux_sessions(unregister)
 
     def _run_monkeymux_gc(self) -> None:
         result = subprocess.run(
@@ -1299,8 +1338,33 @@ def _monkeymux_session_registry_path() -> Path:
     return root / 'monkeyssh' / 'store-screenshots' / 'monkeymux-sessions.json'
 
 
-def _read_registered_monkeymux_sessions() -> list[str]:
-    path = _monkeymux_session_registry_path()
+def _monkeymux_session_registry_lock_path() -> Path:
+    registry_path = _monkeymux_session_registry_path()
+    return registry_path.with_name(f'{registry_path.name}.lock')
+
+
+def _update_registered_monkeymux_sessions(update):
+    registry_path = _monkeymux_session_registry_path()
+    lock_path = _monkeymux_session_registry_lock_path()
+    try:
+        registry_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open('a+') as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            entries = _read_registered_monkeymux_sessions_unlocked(registry_path)
+            updated_entries = update(entries)
+            _write_registered_monkeymux_sessions_unlocked(
+                registry_path,
+                updated_entries,
+            )
+            return updated_entries
+    except OSError as error:
+        _warn_cleanup(f'Could not update MonkeyMux session registry: {error}')
+        return []
+
+
+def _read_registered_monkeymux_sessions_unlocked(
+    path: Path,
+) -> list[MonkeyMuxSessionRegistryEntry]:
     if not path.exists():
         return []
     try:
@@ -1310,24 +1374,140 @@ def _read_registered_monkeymux_sessions() -> list[str]:
         return []
     if not isinstance(payload, list):
         return []
+    entries: list[MonkeyMuxSessionRegistryEntry] = []
+    for item in payload:
+        entry = _decode_registry_entry(item)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def _decode_registry_entry(item: object) -> MonkeyMuxSessionRegistryEntry | None:
+    if isinstance(item, str) and item.strip():
+        return MonkeyMuxSessionRegistryEntry(session=item.strip())
+    if not isinstance(item, dict):
+        return None
+    session = item.get('session')
+    if not isinstance(session, str) or not session.strip():
+        return None
+    return MonkeyMuxSessionRegistryEntry(
+        session=session.strip(),
+        owner_pid=_int_or_none(item.get('ownerPid')),
+        owner_start_time=_int_or_none(item.get('ownerStartTime')),
+        registered_at=_float_or_none(item.get('registeredAt')),
+    )
+
+
+def _write_registered_monkeymux_sessions_unlocked(
+    path: Path,
+    entries: list[MonkeyMuxSessionRegistryEntry],
+) -> None:
+    unique_entries = _unique_registry_entries(entries)
+    if not unique_entries:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+
+    payload = [entry.to_json() for entry in unique_entries]
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            'w',
+            dir=path.parent,
+            prefix=f'{path.name}.',
+            suffix='.tmp',
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(payload, temp_file, indent=2)
+            temp_file.write('\n')
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+
+
+def _unique_registry_entries(
+    entries: list[MonkeyMuxSessionRegistryEntry],
+) -> list[MonkeyMuxSessionRegistryEntry]:
+    unique_by_session: dict[str, MonkeyMuxSessionRegistryEntry] = {}
+    for entry in entries:
+        unique_by_session[entry.session] = entry
     return [
-        session
-        for session in payload
-        if isinstance(session, str) and session.strip()
+        unique_by_session[session]
+        for session in sorted(unique_by_session)
     ]
 
 
-def _write_registered_monkeymux_sessions(sessions: list[str]) -> None:
-    path = _monkeymux_session_registry_path()
-    unique_sessions = sorted(set(sessions))
+def _is_registry_entry_owner_alive(entry: MonkeyMuxSessionRegistryEntry) -> bool:
+    owner_pid = entry.owner_pid
+    if owner_pid is None or owner_pid <= 1:
+        return False
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if unique_sessions:
-            path.write_text(json.dumps(unique_sessions, indent=2) + '\n')
-        elif path.exists():
-            path.unlink()
-    except OSError as error:
-        _warn_cleanup(f'Could not write MonkeyMux session registry: {error}')
+        os.kill(owner_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    if entry.owner_start_time is None:
+        return True
+    current_start_time = _process_start_time(owner_pid)
+    if current_start_time is None:
+        return True
+    return current_start_time == entry.owner_start_time
+
+
+def _process_start_time(pid: int) -> int | None:
+    try:
+        result = subprocess.run(
+            ['ps', '-o', 'lstart=', '-p', str(pid)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=1,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    if not value:
+        return None
+    try:
+        return int(time.mktime(time.strptime(value, '%a %b %d %H:%M:%S %Y')))
+    except ValueError:
+        return None
+
+
+def _int_or_none(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _float_or_none(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (float, int)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _warn_cleanup(message: str) -> None:
