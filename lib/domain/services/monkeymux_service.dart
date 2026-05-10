@@ -122,13 +122,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _agentMetadataRefreshes = <_MonkeyMuxWatchKey, DateTime>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
-  static const _agentMetadataExecOpenTimeout = Duration(seconds: 10);
-  static const _agentMetadataExecOutputTimeout = Duration(seconds: 15);
-  static const _agentMetadataExecDoneMarker =
-      '__monkeymux_agent_metadata_done__';
-  static final RegExp _agentMetadataExecDoneMarkerLinePattern = RegExp(
-    '(?:^|\\n)${RegExp.escape(_agentMetadataExecDoneMarker)}:([0-9]+)\\n',
-  );
 
   /// Clears MonkeyMux caches and watchers for a connection.
   Future<void> clearCache(int connectionId) async {
@@ -455,6 +448,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   >
   _loadAgentMetadata(
     SshSession session,
+    String sessionName,
     _MonkeyMuxWatchKey key,
     Set<int> panePids,
   ) async {
@@ -471,12 +465,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           'paneCount': panePids.length,
         },
       );
-      final output = await _runAgentMetadataCommand(
-        session,
-        buildCopilotActiveSessionMetadataCommand(panePids),
-      );
+      final response = await _runControlCommand(session, sessionName, {
+        'type': 'run_command',
+        'command': buildCopilotActiveSessionMetadataCommand(panePids),
+      }, priority: SshExecPriority.low);
       final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
-        output,
+        response.data ?? '',
         panePids,
       );
       _agentMetadataRefreshes[key] = DateTime.now();
@@ -538,7 +532,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     _agentMetadataRequestPanePids[key] = panePids;
     late final Future<void> request;
-    request = _loadAgentMetadata(session, key, panePids).then((
+    request = _loadAgentMetadata(session, sessionName, key, panePids).then((
       metadataRefresh,
     ) {
       if (!identical(_agentMetadataRequests[key], request)) {
@@ -636,93 +630,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       key,
       (value) => value + 1,
       ifAbsent: () => 1,
-    );
-  }
-
-  Future<String> _runAgentMetadataCommand(SshSession session, String command) =>
-      session.runQueuedExec(
-        () => _runAgentMetadataCommandUnqueued(session, command),
-        priority: SshExecPriority.low,
-      );
-
-  Future<String> _runAgentMetadataCommandUnqueued(
-    SshSession session,
-    String command,
-  ) async {
-    final startedAt = DateTime.now();
-    final openFuture = session.execute(_markAgentMetadataCommandDone(command));
-    final execSession = await openFuture.timeout(
-      _agentMetadataExecOpenTimeout,
-      onTimeout: () {
-        openFuture.then((exec) => exec.close()).ignore();
-        throw TimeoutException(
-          'Timed out opening Copilot metadata exec channel',
-          _agentMetadataExecOpenTimeout,
-        );
-      },
-    );
-    try {
-      execSession.stderr.drain<void>().ignore();
-      final output = await _readAgentMetadataStdoutUntilDoneMarker(
-        execSession,
-        connectionId: session.connectionId,
-      );
-      DiagnosticsLogService.instance.debug(
-        'monkeymux.agent',
-        'active_session_metadata_exec_complete',
-        fields: {
-          'connectionId': session.connectionId,
-          'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
-          'outputChars': output.length,
-        },
-      );
-      return output;
-    } finally {
-      await execSession.stdin.close();
-      execSession.close();
-    }
-  }
-
-  String _markAgentMetadataCommandDone(String command) =>
-      '{ $command; __monkeymux_agent_metadata_status__=\$?; '
-      'printf ${_shellQuote('\n$_agentMetadataExecDoneMarker:%s\n')} '
-      r'"$__monkeymux_agent_metadata_status__"; }';
-
-  Future<String> _readAgentMetadataStdoutUntilDoneMarker(
-    SSHSession execSession, {
-    required int connectionId,
-  }) async {
-    final output = StringBuffer();
-    await for (final chunk
-        in execSession.stdout
-            .cast<List<int>>()
-            .transform(utf8.decoder)
-            .timeout(_agentMetadataExecOutputTimeout)) {
-      output.write(chunk);
-      final currentOutput = output.toString();
-      RegExpMatch? markerMatch;
-      for (final match in _agentMetadataExecDoneMarkerLinePattern.allMatches(
-        currentOutput,
-      )) {
-        markerMatch = match;
-      }
-      if (markerMatch != null) {
-        final statusText = markerMatch.group(1)!;
-        if (statusText != '0') {
-          throw MonkeyMuxInstallException(
-            'Copilot metadata command failed with exit status $statusText.',
-          );
-        }
-        return currentOutput.substring(0, markerMatch.start).trimRight();
-      }
-    }
-    DiagnosticsLogService.instance.warning(
-      'monkeymux.agent',
-      'active_session_metadata_closed_before_marker',
-      fields: {'connectionId': connectionId},
-    );
-    throw const MonkeyMuxInstallException(
-      'Copilot metadata command closed without a response.',
     );
   }
 }
