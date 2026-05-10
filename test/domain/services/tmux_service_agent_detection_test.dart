@@ -124,13 +124,12 @@ void main() {
       expect(command, contains('pane_pids=\'42 88\''));
       expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
       expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
-      expect(command, contains('lock_rows='));
-      expect(command, contains('inuse.*.lock'));
-      expect(command, contains(r'awk -F "$sep" -v wanted="$pid"'));
+      expect(command, contains(r'inuse."$pid".lock'));
       expect(command, contains('workspace.yaml'));
       expect(command, contains(r'if [ -d "$state_dir" ]; then'));
+      expect(command, isNot(contains('lock_rows=')));
+      expect(command, isNot(contains('inuse.*.lock')));
       expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
-      expect(command, isNot(contains(r'inuse."$pid".lock')));
       expect(command, isNot(contains(r'ps -p "$pid"')));
       expect(command, isNot(contains('exit 0')));
     });
