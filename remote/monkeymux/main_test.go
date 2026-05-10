@@ -408,6 +408,20 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 	}
 }
 
+func TestReplayStripDoesNotCopyCleanHistory(t *testing.T) {
+	history := []byte("prompt\x1b]2;Gemini\x07safe")
+
+	replay := stripTerminalQueriesFromReplay(history)
+
+	if len(replay) == 0 {
+		t.Fatal("replay is empty")
+	}
+	replay[0] = 'P'
+	if history[0] != 'P' {
+		t.Fatal("clean replay history was copied, want original slice reused")
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -1209,6 +1223,51 @@ func TestRunShellCommandUsesServerEnvironment(t *testing.T) {
 	}
 }
 
+func BenchmarkStripTerminalQueriesFromReplayClean(b *testing.B) {
+	history := bytes.Repeat([]byte("normal terminal output\n"), 4096)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(history)))
+
+	for i := 0; i < b.N; i++ {
+		replay := stripTerminalQueriesFromReplay(history)
+		if len(replay) != len(history) {
+			b.Fatalf("replay length = %d, want %d", len(replay), len(history))
+		}
+	}
+}
+
+func BenchmarkStripTerminalQueriesFromReplayWithQueries(b *testing.B) {
+	history := bytes.Repeat(
+		[]byte("before\x1b[c\x1b[6n\x1b]11;?\x07after\n"),
+		4096,
+	)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(history)))
+
+	for i := 0; i < b.N; i++ {
+		replay := stripTerminalQueriesFromReplay(history)
+		if bytes.Contains(replay, []byte("\x1b[c")) {
+			b.Fatal("unsafe device attribute query was not stripped")
+		}
+	}
+}
+
+func BenchmarkHandleWindowOutputActive(b *testing.B) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = discardConn{}
+	chunk := bytes.Repeat([]byte("screen output\n"), 2048)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(chunk)))
+
+	for i := 0; i < b.N; i++ {
+		server.handleWindowOutput("@1", chunk)
+	}
+}
+
 func TestRunShellCommandReportsExitCode(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	server := newMuxServer("test")
@@ -1431,8 +1490,42 @@ type recordingConn struct {
 
 type errReader struct{}
 
+type discardConn struct{}
+
 func (errReader) Read([]byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
+}
+
+func (discardConn) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (discardConn) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (discardConn) Close() error {
+	return nil
+}
+
+func (discardConn) LocalAddr() net.Addr {
+	return testAddr("local")
+}
+
+func (discardConn) RemoteAddr() net.Addr {
+	return testAddr("remote")
+}
+
+func (discardConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (discardConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (discardConn) SetWriteDeadline(time.Time) error {
+	return nil
 }
 
 func (c *recordingConn) Read([]byte) (int, error) {
