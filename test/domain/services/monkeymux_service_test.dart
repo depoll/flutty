@@ -3,6 +3,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 
 void main() {
@@ -113,6 +114,77 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+  });
+
+  group('applyMonkeyMuxAgentSessionMetadataForTesting', () {
+    test('applies live Copilot session titles by pane pid', () {
+      const window = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Copilot CLI',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Copilot CLI',
+      );
+
+      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(
+        const [window],
+        const {
+          42: (sessionId: 'session-1', title: 'Implement MonkeyMux refresh'),
+        },
+        refreshedPanePids: const {42},
+      );
+
+      expect(windows.single.activeAgentSessionId, 'session-1');
+      expect(windows.single.agentSessionTitle, 'Implement MonkeyMux refresh');
+      expect(windows.single.displayTitle, 'Implement MonkeyMux refresh');
+    });
+
+    test('clears stale Copilot session titles after a refreshed miss', () {
+      const window = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Copilot CLI',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Copilot CLI',
+        activeAgentSessionId: 'stale-session',
+        agentSessionTitle: 'Stale Copilot session',
+      );
+
+      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(
+        const [window],
+        const {},
+        refreshedPanePids: const {42},
+      );
+
+      expect(windows.single.activeAgentSessionId, isNull);
+      expect(windows.single.agentSessionTitle, isNull);
+      expect(windows.single.displayTitle, 'Copilot CLI');
+    });
+
+    test('keeps existing Copilot metadata when pane was not refreshed', () {
+      const window = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Copilot CLI',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Copilot CLI',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Current Copilot session',
+      );
+
+      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(const [
+        window,
+      ], const {});
+
+      expect(windows.single.activeAgentSessionId, 'session-1');
+      expect(windows.single.agentSessionTitle, 'Current Copilot session');
     });
   });
 }
