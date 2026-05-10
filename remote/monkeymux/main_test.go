@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -239,6 +241,50 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 	if inactiveWindow.alert {
 		t.Fatal("selected window alert was not cleared")
+	}
+}
+
+func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	inactiveWindow.history = []byte("background output")
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
+		cursorVisibilityReplaySequence(true)
+	var signaled []int
+	foregroundProcessGroupForWindow = func(window *muxWindow) int {
+		if window == inactiveWindow {
+			return 4242
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize signaled before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(signaled, []int{4242}) {
+		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
 	}
 }
 
@@ -840,6 +886,74 @@ func TestRunShellCommandBoundsOutput(t *testing.T) {
 			len(output),
 			runCommandOutputMaxBytes,
 		)
+	}
+}
+
+func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	server := newMuxServer("test")
+	serverConn, clientConn := net.Pipe()
+	defer func() {
+		_ = clientConn.Close()
+	}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.handleControl(serverConn, bufio.NewReader(serverConn))
+	}()
+
+	decoder := json.NewDecoder(clientConn)
+	readResponse := func() controlResponse {
+		t.Helper()
+		if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var response controlResponse
+		if err := decoder.Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	writeRequest := func(request controlMessage) {
+		t.Helper()
+		if err := clientConn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.NewEncoder(clientConn).Encode(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if response := readResponse(); response.Type != "hello" {
+		t.Fatalf("first response type = %q, want hello", response.Type)
+	}
+	if response := readResponse(); response.Type != "window_list" {
+		t.Fatalf("second response type = %q, want window_list", response.Type)
+	}
+
+	writeRequest(controlMessage{
+		ID:      "slow",
+		Type:    "run_command",
+		Command: "sleep 0.4; printf slow",
+	})
+	writeRequest(controlMessage{
+		ID:      "fast",
+		Type:    "run_command",
+		Command: "printf fast",
+	})
+
+	if response := readResponse(); response.ID != "fast" || response.Data != "fast" {
+		t.Fatalf("first command response = %#v, want fast command output", response)
+	}
+	if response := readResponse(); response.ID != "slow" || response.Data != "slow" {
+		t.Fatalf("second command response = %#v, want slow command output", response)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control handler did not stop")
 	}
 }
 
