@@ -289,6 +289,24 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
+func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		{id: "@2", index: 1, lastActivity: time.Now()},
+	}
+	server.activeID = "@2"
+	server.attachConn = attach
+
+	server.writeAttachIfActive("@1", attach, []byte("stale old output"))
+	server.writeAttachIfActive("@2", attach, []byte("fresh new output"))
+
+	if got := attach.String(); got != "fresh new output" {
+		t.Fatalf("attach output = %q, want only fresh active output", got)
+	}
+}
+
 func TestInactiveWindowBellMarksAlert(t *testing.T) {
 	server := newMuxServer("test")
 	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}

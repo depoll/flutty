@@ -148,7 +148,7 @@ void main() {
       expect(metadata[42]?.title, 'User named Copilot session');
     });
 
-    test('forces refresh when a Copilot tmux title changes', () {
+    test('does not force refresh when only Copilot tmux titles change', () {
       const existing = TmuxWindow(
         index: 1,
         id: '@7',
@@ -166,6 +166,34 @@ void main() {
         isActive: true,
         currentCommand: 'copilot',
         paneTitle: 'New title',
+      );
+
+      expect(
+        shouldForceAgentSessionMetadataRefreshForSnapshot(const [
+          existing,
+        ], updated),
+        isFalse,
+      );
+    });
+
+    test('forces refresh when a Copilot pane pid changes', () {
+      const existing = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Current title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Current title',
+      );
+      const updated = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 84,
+        name: 'Current title',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Current title',
       );
 
       expect(
