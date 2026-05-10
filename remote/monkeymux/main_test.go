@@ -567,10 +567,24 @@ func TestActiveReplayPreservesHiddenCursor(t *testing.T) {
 }
 
 func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
-	for _, mode := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?1004l", "?2004l", "?1l", "?6l", "?7h"} {
-		if !strings.Contains(activeWindowReplayPrefix, mode) {
-			t.Fatalf("replay prefix %q does not reset %s", activeWindowReplayPrefix, mode)
+	for _, sequence := range []string{
+		"\x1b[?1000l",
+		"\x1b[?1002l",
+		"\x1b[?1003l",
+		"\x1b[?1006l",
+		"\x1b[?1004l",
+		"\x1b[?2004l",
+		"\x1b[?1l",
+		"\x1b[?6l",
+		"\x1b[?7h",
+		"\x1b[4l",
+	} {
+		if !strings.Contains(activeWindowReplayPrefix, sequence) {
+			t.Fatalf("replay prefix %q does not reset %q", activeWindowReplayPrefix, sequence)
 		}
+	}
+	if !strings.Contains(activeWindowReplayPrefix, "\x1b>") {
+		t.Fatalf("replay prefix %q does not reset application keypad mode", activeWindowReplayPrefix)
 	}
 }
 
@@ -579,6 +593,92 @@ func TestReplayPrefixClearsScrollbackAndMargins(t *testing.T) {
 		if !strings.Contains(activeWindowReplayPrefix, sequence) {
 			t.Fatalf("replay prefix %q does not include %q", activeWindowReplayPrefix, sequence)
 		}
+	}
+}
+
+func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("nano screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked(
+		[]byte("\x1b[?1049h\x1b[?1h\x1b=\x1b[?2004h\x1b[4h"),
+	)
+
+	replay := string(server.activeReplayLocked())
+	preModes := string(terminalModePreReplaySequence(window))
+	postModes := string(terminalModePostReplaySequence(window))
+	want := replayPrefixForTest(window) + preModes + "nano screen" +
+		postModes + cursorVisibilityReplaySequence(true)
+	if replay != want {
+		t.Fatalf("replay = %q, want %q", replay, want)
+	}
+	for _, sequence := range []string{
+		"\x1b[?1049h",
+		"\x1b[?1h",
+		"\x1b[?2004h",
+		"\x1b[4h",
+		"\x1b=",
+	} {
+		if !strings.Contains(preModes, sequence) {
+			t.Fatalf("pre-history modes = %q, want %q", preModes, sequence)
+		}
+	}
+	for _, sequence := range []string{
+		"\x1b[?1h",
+		"\x1b[?2004h",
+		"\x1b[4h",
+		"\x1b=",
+	} {
+		if !strings.Contains(postModes, sequence) {
+			t.Fatalf("post-history modes = %q, want %q", postModes, sequence)
+		}
+	}
+	if strings.Contains(postModes, "\x1b[?1049h") {
+		t.Fatalf("post-history modes = %q, should not switch buffers after replay", postModes)
+	}
+}
+
+func TestTerminalModeTrackingHandlesSplitSequences(t *testing.T) {
+	window := &muxWindow{}
+
+	window.observeTerminalModesLocked([]byte("\x1b[?1;200"))
+	window.observeTerminalModesLocked([]byte("4h\x1b"))
+	window.observeTerminalModesLocked([]byte("="))
+
+	preModes := string(terminalModePreReplaySequence(window))
+	for _, sequence := range []string{"\x1b[?1h", "\x1b[?2004h", "\x1b="} {
+		if !strings.Contains(preModes, sequence) {
+			t.Fatalf("pre-history modes = %q, want %q", preModes, sequence)
+		}
+	}
+}
+
+func TestActiveReplayRestoresResetEditorModesAfterHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{id: "@1", history: []byte("stale\x1b[4h")}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked([]byte("\x1b[4h\x1b[4l\x1b=\x1b>"))
+
+	postModes := string(terminalModePostReplaySequence(window))
+	for _, sequence := range []string{"\x1b[4l", "\x1b>"} {
+		if !strings.Contains(postModes, sequence) {
+			t.Fatalf("post-history modes = %q, want reset %q", postModes, sequence)
+		}
+	}
+	if !strings.HasSuffix(
+		string(server.activeReplayLocked()),
+		"stale\x1b[4h"+postModes+cursorVisibilityReplaySequence(true),
+	) {
+		t.Fatalf("replay did not restore reset modes after history")
 	}
 }
 
@@ -1053,10 +1153,10 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 
 func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 	agentWindow := &muxWindow{foregroundCommand: "codex"}
-	agentWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004h"))
+	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	agentWithoutFocus := &muxWindow{foregroundCommand: "gemini"}
 	shellWindow := &muxWindow{foregroundCommand: "zsh"}
-	shellWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004h"))
+	shellWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 
 	if !agentWindow.supportsThemeHintLocked() {
 		t.Fatal("focus-aware agent foreground window did not support theme hints")
@@ -1068,7 +1168,7 @@ func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 		t.Fatal("focus-aware shell foreground window unexpectedly supported theme hints")
 	}
 
-	agentWindow.observeCursorVisibilityLocked([]byte("\x1b[?1004l"))
+	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
 	if agentWindow.supportsThemeHintLocked() {
 		t.Fatal("agent foreground window supported theme hints after focus mode disabled")
 	}
