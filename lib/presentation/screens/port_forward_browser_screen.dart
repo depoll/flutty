@@ -4,17 +4,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../domain/services/port_forward_browser_service.dart';
+
 /// Embedded browser for pages exposed through local port forwards.
 class PortForwardBrowserScreen extends StatefulWidget {
   /// Creates a port-forward browser screen.
   const PortForwardBrowserScreen({
     required this.initialUri,
+    required this.allowedPort,
     this.title,
     super.key,
-  });
+  }) : assert(allowedPort > 0 && allowedPort <= 65535);
 
   /// Initial URL to load.
   final Uri initialUri;
+
+  /// Local forwarded port this browser is allowed to load.
+  final int allowedPort;
 
   /// Optional title shown before the page title is available.
   final String? title;
@@ -38,19 +44,19 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
   @override
   void initState() {
     super.initState();
-    _addressController = TextEditingController(
-      text: widget.initialUri.toString(),
-    );
+    final initialUri = normalizePortForwardBrowserUri(widget.initialUri);
+    _addressController = TextEditingController(text: initialUri.toString());
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
         NavigationDelegate(
+          onNavigationRequest: _handleNavigationRequest,
           onProgress: _handleProgress,
           onPageStarted: _handlePageStarted,
           onPageFinished: (url) => unawaited(_handlePageFinished(url)),
         ),
       );
-    unawaited(_controller.loadRequest(widget.initialUri));
+    unawaited(_controller.loadRequest(initialUri));
   }
 
   @override
@@ -170,12 +176,29 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
   Future<void> _loadAddress(String address) async {
     final uri = _parseBrowserAddress(address);
     if (uri == null) {
-      _showMessage('Enter a valid http or https URL');
+      _showMessage('Enter a localhost URL for port ${widget.allowedPort}');
       return;
     }
 
     _addressFocusNode.unfocus();
     await _controller.loadRequest(uri);
+  }
+
+  NavigationDecision _handleNavigationRequest(NavigationRequest request) {
+    final uri = Uri.tryParse(request.url);
+    final normalizedUri = uri == null
+        ? null
+        : normalizePortForwardBrowserUri(uri);
+    if (normalizedUri == null ||
+        !isPortForwardBrowserUri(normalizedUri, port: widget.allowedPort)) {
+      _showMessage('Blocked navigation outside this port forward');
+      return NavigationDecision.prevent;
+    }
+    if (normalizedUri.toString() != uri.toString()) {
+      unawaited(_controller.loadRequest(normalizedUri));
+      return NavigationDecision.prevent;
+    }
+    return NavigationDecision.navigate;
   }
 
   Future<void> _refreshNavigationState() async {
@@ -202,7 +225,11 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (uri.scheme != 'http' && uri.scheme != 'https') {
       return null;
     }
-    return uri;
+    final normalizedUri = normalizePortForwardBrowserUri(uri);
+    if (!isPortForwardBrowserUri(normalizedUri, port: widget.allowedPort)) {
+      return null;
+    }
+    return normalizedUri;
   }
 
   bool _hasUriScheme(String value) =>

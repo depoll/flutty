@@ -114,7 +114,7 @@ class PortForwardsScreen extends ConsumerWidget {
     if (!canOpenPortForwardInBrowser(portForward)) {
       _showPortForwardMessage(
         context,
-        'Only local port forwards can open in the browser.',
+        'Only loopback local port forwards can open in the browser.',
       );
       return;
     }
@@ -175,6 +175,7 @@ class PortForwardsScreen extends ConsumerWidget {
       Routes.portForwardBrowser,
       queryParameters: {
         'url': browserUri.toString(),
+        'port': browserUri.port.toString(),
         'title': portForward.name,
       },
     );
@@ -298,6 +299,7 @@ class _PortForwardListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final canOpenInBrowser = canOpenPortForwardInBrowser(portForward);
     final isLocal = portForward.forwardType == 'local';
 
     return ListTile(
@@ -325,7 +327,7 @@ class _PortForwardListTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (isLocal)
+          if (canOpenInBrowser)
             IconButton(
               tooltip: 'Open in app browser',
               icon: const Icon(Icons.open_in_browser),
