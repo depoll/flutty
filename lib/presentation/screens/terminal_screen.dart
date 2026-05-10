@@ -6229,6 +6229,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               sessionName: sessionName,
               workingDirectory: host.tmuxWorkingDirectory,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+              startInYoloMode: _startClisInYoloMode,
             ),
             backend: RemoteMuxBackend.monkeyMux,
           );
@@ -6239,6 +6240,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sessionName: sessionName,
             workingDirectory: host.tmuxWorkingDirectory,
             serverUpdatePolicy: updatePolicy,
+            startInYoloMode: _startClisInYoloMode,
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
@@ -6392,6 +6394,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         windowName: preset.tool.label,
         launchCommand: launchCommand,
         serverUpdatePolicy: updatePolicy,
+        startInYoloMode: _startClisInYoloMode,
       );
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(

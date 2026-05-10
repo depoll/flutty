@@ -106,8 +106,26 @@ const (
 )
 
 var (
-	leadingCdCommandPattern = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
-	leadingEnvPattern       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
+	leadingCdCommandPattern       = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
+	leadingEnvPattern             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
+	restoreFileNamePattern        = regexp.MustCompile(`^monkeymux-restore-[a-f0-9]{24}-[0-9]+\.json$`)
+	agentSessionIDArgumentPattern = map[string][]*regexp.Regexp{
+		"claude": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"copilot": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"codex": {
+			regexp.MustCompile(`(?:^|\s)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"gemini": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"opencode": {
+			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+	}
 )
 
 type controlMessage struct {
@@ -161,8 +179,9 @@ type windowSnapshot struct {
 }
 
 type serverRestore struct {
-	SchemaVersion int                  `json:"schemaVersion"`
-	Windows       []restoreWindowState `json:"windows,omitempty"`
+	SchemaVersion   int                  `json:"schemaVersion"`
+	Windows         []restoreWindowState `json:"windows,omitempty"`
+	StartInYoloMode bool                 `json:"startInYoloMode,omitempty"`
 }
 
 type restoreWindowState struct {
@@ -265,7 +284,7 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
 	os.Exit(2)
 }
 
@@ -274,6 +293,7 @@ func attachCommand(args []string) {
 	cwd := fs.String("cwd", "", "initial working directory")
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
+	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
@@ -284,11 +304,16 @@ func attachCommand(args []string) {
 		fatal(err)
 	}
 	session := fs.Arg(0)
-	if err := ensureServer(session, createWindowOptions{
-		cwd:     *cwd,
-		name:    *name,
-		command: *command,
-	}, policy); err != nil {
+	if err := ensureServer(
+		session,
+		createWindowOptions{
+			cwd:     *cwd,
+			name:    *name,
+			command: *command,
+		},
+		policy,
+		*restoreYolo,
+	); err != nil {
 		fatal(err)
 	}
 
@@ -416,7 +441,12 @@ func gcCommand() {
 	}
 }
 
-func ensureServer(session string, initialWindow createWindowOptions, updatePolicy string) error {
+func ensureServer(
+	session string,
+	initialWindow createWindowOptions,
+	updatePolicy string,
+	startInYoloMode bool,
+) error {
 	var restore *serverRestore
 	if status, err := queryRunningServerStatus(session); err == nil {
 		if status.version == monkeyMuxVersion {
@@ -432,6 +462,9 @@ func ensureServer(session string, initialWindow createWindowOptions, updatePolic
 			return nil
 		}
 		restore = collectServerRestore(session, status)
+		if restore != nil {
+			restore.StartInYoloMode = startInYoloMode
+		}
 		if status.supportsCapability("shutdown") {
 			requestServerShutdown(session)
 			if !waitForServerExit(session, 2*time.Second) {
@@ -975,12 +1008,9 @@ func sessionIDFromDescendantProcessArgs(
 	panePid int,
 	tool string,
 ) string {
+	targetPanePids := map[int]struct{}{panePid: struct{}{}}
 	for _, process := range processes {
-		if ancestorPanePID(
-			processes,
-			process.pid,
-			map[int]struct{}{panePid: struct{}{}},
-		) != panePid {
+		if ancestorPanePID(processes, process.pid, targetPanePids) != panePid {
 			continue
 		}
 		command := commandNameFromProcessFields(process.comm, process.args)
@@ -995,24 +1025,7 @@ func sessionIDFromDescendantProcessArgs(
 }
 
 func agentSessionIDFromArgs(tool string, args string) string {
-	patterns := map[string][]*regexp.Regexp{
-		"claude": {
-			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
-		},
-		"copilot": {
-			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
-		},
-		"codex": {
-			regexp.MustCompile(`(?:^|\s)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))`),
-		},
-		"gemini": {
-			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
-		},
-		"opencode": {
-			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
-		},
-	}
-	for _, pattern := range patterns[tool] {
+	for _, pattern := range agentSessionIDArgumentPattern[tool] {
 		match := pattern.FindStringSubmatch(args)
 		if match == nil {
 			continue
@@ -1094,7 +1107,6 @@ func readRestoreFile(path string) (*serverRestore, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = os.Remove(path)
 	var restore serverRestore
 	if err := json.Unmarshal(data, &restore); err != nil {
 		return nil, err
@@ -1102,7 +1114,26 @@ func readRestoreFile(path string) (*serverRestore, error) {
 	if restore.SchemaVersion != restoreSchemaVersion {
 		return nil, fmt.Errorf("unsupported MonkeyMux restore schema %d", restore.SchemaVersion)
 	}
+	if isManagedRestoreFile(path) {
+		_ = os.Remove(path)
+	}
 	return &restore, nil
+}
+
+func isManagedRestoreFile(path string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil || !restoreFileNamePattern.MatchString(filepath.Base(absPath)) {
+		return false
+	}
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		return false
+	}
+	absRunDir, err := filepath.Abs(runDir)
+	if err != nil {
+		return false
+	}
+	return filepath.Dir(absPath) == absRunDir
 }
 
 func writeRestoreFile(session string, restore *serverRestore) (string, error) {
@@ -1149,7 +1180,9 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 	var firstID string
 	restored := 0
 	for _, state := range restore.Windows {
-		window, err := s.createWindow(createWindowOptionsForRestore(state))
+		window, err := s.createWindow(
+			createWindowOptionsForRestore(state, restore.StartInYoloMode),
+		)
 		if err != nil {
 			continue
 		}
@@ -1174,7 +1207,10 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 	return nil
 }
 
-func createWindowOptionsForRestore(state restoreWindowState) createWindowOptions {
+func createWindowOptionsForRestore(
+	state restoreWindowState,
+	startInYoloMode bool,
+) createWindowOptions {
 	agentTool := firstNonEmptyString(
 		state.AgentTool,
 		agentToolFromCommandName(state.CurrentCommand),
@@ -1183,9 +1219,9 @@ func createWindowOptionsForRestore(state restoreWindowState) createWindowOptions
 	)
 	command := ""
 	if agentTool != "" {
-		command = agentLaunchCommand(agentTool)
+		command = agentLaunchCommand(agentTool, startInYoloMode)
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
-			command = agentResumeCommand(agentTool, sessionID)
+			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
 		}
 	}
 	history := []byte(nil)
@@ -2673,38 +2709,69 @@ func agentToolFromCommandName(command string) string {
 	}
 }
 
-func agentLaunchCommand(tool string) string {
+func agentLaunchCommand(tool string, startInYoloMode bool) string {
 	switch tool {
 	case "claude":
+		if startInYoloMode {
+			return "claude --dangerously-skip-permissions"
+		}
 		return "claude"
 	case "copilot":
+		if startInYoloMode {
+			return "copilot --yolo"
+		}
 		return "copilot"
 	case "codex":
+		if startInYoloMode {
+			return "codex --yolo"
+		}
 		return "codex"
 	case "opencode":
+		if startInYoloMode {
+			return "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " opencode"
+		}
 		return "opencode"
 	case "gemini":
+		if startInYoloMode {
+			return "gemini --yolo"
+		}
 		return "gemini"
 	default:
 		return ""
 	}
 }
 
-func agentResumeCommand(tool string, sessionID string) string {
+func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
 	quotedSessionID := shellQuote(sessionID)
 	switch tool {
 	case "claude":
+		if startInYoloMode {
+			return "claude --dangerously-skip-permissions --resume " + quotedSessionID
+		}
 		return "claude --resume " + quotedSessionID
 	case "copilot":
+		if startInYoloMode {
+			return "copilot --yolo --resume " + quotedSessionID
+		}
 		return "copilot --resume " + quotedSessionID
 	case "codex":
+		if startInYoloMode {
+			return "codex --yolo resume " + quotedSessionID
+		}
 		return "codex resume " + quotedSessionID
 	case "opencode":
-		if sessionID == "_continue" {
-			return "opencode --continue"
+		commandPrefix := ""
+		if startInYoloMode {
+			commandPrefix = "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " "
 		}
-		return "opencode --session " + quotedSessionID
+		if sessionID == "_continue" {
+			return commandPrefix + "opencode --continue"
+		}
+		return commandPrefix + "opencode --session " + quotedSessionID
 	case "gemini":
+		if startInYoloMode {
+			return "gemini --yolo --resume " + quotedSessionID
+		}
 		return "gemini --resume " + quotedSessionID
 	default:
 		return ""
