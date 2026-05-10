@@ -16,6 +16,7 @@ import queue
 import re
 import shutil
 import select
+import signal
 import socket
 import subprocess
 import sys
@@ -273,6 +274,7 @@ class StoreDemoEnvironment:
         self._monkeymux_env = self._build_monkeymux_env()
         self._monkeymux_process: subprocess.Popen[str] | None = None
         self._monkeymux_control: _MonkeyMuxControl | None = None
+        self._owned_monkeymux_process_groups: set[int] = set()
         self._window_ids: dict[str, str] = {}
         self._copilot = shutil.which('copilot')
         if self._copilot is None:
@@ -296,13 +298,19 @@ class StoreDemoEnvironment:
         return f'SHA256:{base64.b64encode(digest).decode().rstrip("=")}'
 
     def __enter__(self) -> StoreDemoEnvironment:
-        self._create_keys()
-        self._start_sshd()
-        self._setup_monkeymux()
-        return self
+        try:
+            self._cleanup_registered_monkeymux_sessions()
+            self._register_monkeymux_session()
+            self._create_keys()
+            self._start_sshd()
+            self._setup_monkeymux()
+            return self
+        except BaseException:
+            self.__exit__(*sys.exc_info())
+            raise
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._teardown_monkeymux()
+        self._teardown_monkeymux(unregister=True)
         self._stop_sshd()
         self._remove_demo_dir()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -585,6 +593,7 @@ class StoreDemoEnvironment:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
+            start_new_session=True,
         )
         self._monkeymux_control = self._open_monkeymux_control()
         self._refresh_monkeymux_windows()
@@ -600,6 +609,7 @@ class StoreDemoEnvironment:
             snapshot = response.get('window')
             if isinstance(snapshot, dict) and isinstance(snapshot.get('id'), str):
                 self._window_ids[window] = snapshot['id']
+                self._remember_monkeymux_window_process_group(snapshot)
         self.reset_monkeymux()
 
     def _write_pane_script(self, window: str, body: str) -> None:
@@ -774,6 +784,17 @@ class StoreDemoEnvironment:
             and isinstance(window.get('name'), str)
             and isinstance(window.get('id'), str)
         }
+        for window in windows:
+            if isinstance(window, dict):
+                self._remember_monkeymux_window_process_group(window)
+
+    def _remember_monkeymux_window_process_group(
+        self,
+        window: dict[str, object],
+    ) -> None:
+        pane_pid = window.get('panePid')
+        if isinstance(pane_pid, int) and pane_pid > 1:
+            self._owned_monkeymux_process_groups.add(pane_pid)
 
     def _open_monkeymux_control(self) -> _MonkeyMuxControl:
         deadline = time.time() + 10
@@ -862,18 +883,91 @@ class StoreDemoEnvironment:
     def _shell_quote(value: str) -> str:
         return "'" + value.replace("'", "'\"'\"'") + "'"
 
-    def _teardown_monkeymux(self) -> None:
+    def _teardown_monkeymux(self, *, unregister: bool = False) -> None:
+        self._collect_monkeymux_window_process_groups()
         control = self._monkeymux_control
         self._monkeymux_control = None
         if control is not None:
             try:
                 control.request({'type': 'shutdown'}, timeout=2)
-            except RuntimeError:
-                pass
+            except RuntimeError as error:
+                _warn_cleanup(f'MonkeyMux shutdown request failed: {error}')
             control.close()
         if self._monkeymux_process is not None:
-            _terminate_process(self._monkeymux_process, timeout=5)
+            _terminate_process(
+                self._monkeymux_process,
+                timeout=5,
+                process_group=True,
+            )
             self._monkeymux_process = None
+        _terminate_process_groups(self._owned_monkeymux_process_groups)
+        self._owned_monkeymux_process_groups.clear()
+        self._run_monkeymux_gc()
+        if unregister:
+            self._unregister_monkeymux_session()
+
+    def _collect_monkeymux_window_process_groups(self) -> None:
+        control = self._monkeymux_control
+        if control is None:
+            return
+        try:
+            response = control.request({'type': 'list_windows'}, timeout=2)
+        except RuntimeError as error:
+            _warn_cleanup(f'Could not list MonkeyMux windows for cleanup: {error}')
+            return
+        windows = response.get('windows')
+        if not isinstance(windows, list):
+            return
+        for window in windows:
+            if isinstance(window, dict):
+                self._remember_monkeymux_window_process_group(window)
+
+    def _cleanup_registered_monkeymux_sessions(self) -> None:
+        sessions = _read_registered_monkeymux_sessions()
+        if not sessions:
+            self._run_monkeymux_gc()
+            return
+
+        remaining: list[str] = []
+        for session in sessions:
+            if session == self.mux_session or session.startswith('monkeyssh-store-'):
+                cleaned = _shutdown_monkeymux_session(
+                    self._monkeymux,
+                    session,
+                    self._monkeymux_env,
+                )
+                if not cleaned:
+                    remaining.append(session)
+                continue
+            remaining.append(session)
+        _write_registered_monkeymux_sessions(remaining)
+        self._run_monkeymux_gc()
+
+    def _register_monkeymux_session(self) -> None:
+        sessions = _read_registered_monkeymux_sessions()
+        if self.mux_session not in sessions:
+            sessions.append(self.mux_session)
+        _write_registered_monkeymux_sessions(sessions)
+
+    def _unregister_monkeymux_session(self) -> None:
+        sessions = [
+            session
+            for session in _read_registered_monkeymux_sessions()
+            if session != self.mux_session
+        ]
+        _write_registered_monkeymux_sessions(sessions)
+
+    def _run_monkeymux_gc(self) -> None:
+        result = subprocess.run(
+            [str(self._monkeymux), 'gc'],
+            env=self._monkeymux_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            _warn_cleanup(f'MonkeyMux gc failed: {result.stderr.strip()}')
 
     def _stop_sshd(self) -> None:
         if self._process is None:
@@ -1036,15 +1130,208 @@ def _text_after_last_visible_marker(text: str, marker: str) -> str:
     return text
 
 
-def _terminate_process(process: subprocess.Popen, *, timeout: float) -> None:
+def _terminate_process(
+    process: subprocess.Popen,
+    *,
+    timeout: float,
+    process_group: bool = False,
+) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
+    _signal_process(process, signal.SIGTERM, process_group=process_group)
     try:
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
+        _signal_process(process, signal.SIGKILL, process_group=process_group)
         process.wait(timeout=timeout)
+
+
+def _signal_process(
+    process: subprocess.Popen,
+    sig: signal.Signals,
+    *,
+    process_group: bool,
+) -> None:
+    if not process_group:
+        process.send_signal(sig)
+        return
+    try:
+        process_group_id = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    if process_group_id == os.getpgrp():
+        process.send_signal(sig)
+        return
+    try:
+        os.killpg(process_group_id, sig)
+    except ProcessLookupError:
+        return
+
+
+def _shutdown_monkeymux_session(
+    executable: Path,
+    session: str,
+    env: dict[str, str],
+) -> bool:
+    control: _MonkeyMuxControl | None = None
+    process_groups: set[int] = set()
+    try:
+        control = _MonkeyMuxControl(executable, session, env)
+    except RuntimeError:
+        return True
+    try:
+        response = control.request({'type': 'list_windows'}, timeout=2)
+        windows = response.get('windows')
+        if isinstance(windows, list):
+            process_groups = _monkeymux_window_process_groups(windows)
+        control.request({'type': 'shutdown'}, timeout=2)
+    except RuntimeError as error:
+        _warn_cleanup(f'Could not shut down stale MonkeyMux session {session}: {error}')
+        _terminate_process_groups(process_groups)
+        return False
+    finally:
+        if control is not None:
+            control.close()
+
+    if not _wait_for_monkeymux_session_exit(executable, session, env, timeout=5):
+        _warn_cleanup(f'MonkeyMux session {session} did not exit after shutdown.')
+        _terminate_process_groups(process_groups)
+        return _wait_for_monkeymux_session_exit(executable, session, env, timeout=2)
+    _terminate_process_groups(process_groups)
+    return True
+
+
+def _wait_for_monkeymux_session_exit(
+    executable: Path,
+    session: str,
+    env: dict[str, str],
+    *,
+    timeout: float,
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            control = _MonkeyMuxControl(executable, session, env)
+        except RuntimeError:
+            return True
+        control.close()
+        time.sleep(0.1)
+    return False
+
+
+def _monkeymux_window_process_groups(windows: list[object]) -> set[int]:
+    process_groups: set[int] = set()
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        pane_pid = window.get('panePid')
+        if isinstance(pane_pid, int) and pane_pid > 1:
+            process_groups.add(pane_pid)
+    return process_groups
+
+
+def _terminate_process_groups(process_groups: set[int]) -> None:
+    live_groups = set(process_groups)
+    if not live_groups:
+        return
+    if _wait_for_process_groups_exit(live_groups, timeout=2):
+        return
+    for sig, timeout in (
+        (signal.SIGTERM, 2),
+        (signal.SIGKILL, 2),
+    ):
+        for process_group_id in list(live_groups):
+            _signal_process_group(process_group_id, sig)
+        if _wait_for_process_groups_exit(live_groups, timeout=timeout):
+            return
+    _warn_cleanup(
+        'Some MonkeyMux window process groups did not exit: '
+        f'{", ".join(str(pid) for pid in sorted(live_groups))}',
+    )
+
+
+def _wait_for_process_groups_exit(process_groups: set[int], *, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        live_process_groups = {
+            pid for pid in process_groups if _is_process_group_running(pid)
+        }
+        process_groups.intersection_update(live_process_groups)
+        if not process_groups:
+            return True
+        time.sleep(0.1)
+    live_process_groups = {
+        pid for pid in process_groups if _is_process_group_running(pid)
+    }
+    process_groups.intersection_update(live_process_groups)
+    return not process_groups
+
+
+def _is_process_group_running(process_group_id: int) -> bool:
+    if process_group_id <= 1 or process_group_id == os.getpgrp():
+        return False
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
+    if process_group_id <= 1:
+        return
+    if process_group_id == os.getpgrp():
+        _warn_cleanup(f'Refusing to signal current process group {process_group_id}.')
+        return
+    try:
+        os.killpg(process_group_id, sig)
+    except ProcessLookupError:
+        return
+    except PermissionError as error:
+        _warn_cleanup(f'Could not signal process group {process_group_id}: {error}')
+
+
+def _monkeymux_session_registry_path() -> Path:
+    state_home = os.environ.get('XDG_STATE_HOME')
+    root = Path(state_home) if state_home else Path.home() / '.local/state'
+    return root / 'monkeyssh' / 'store-screenshots' / 'monkeymux-sessions.json'
+
+
+def _read_registered_monkeymux_sessions() -> list[str]:
+    path = _monkeymux_session_registry_path()
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        _warn_cleanup(f'Could not read MonkeyMux session registry: {error}')
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [
+        session
+        for session in payload
+        if isinstance(session, str) and session.strip()
+    ]
+
+
+def _write_registered_monkeymux_sessions(sessions: list[str]) -> None:
+    path = _monkeymux_session_registry_path()
+    unique_sessions = sorted(set(sessions))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if unique_sessions:
+            path.write_text(json.dumps(unique_sessions, indent=2) + '\n')
+        elif path.exists():
+            path.unlink()
+    except OSError as error:
+        _warn_cleanup(f'Could not write MonkeyMux session registry: {error}')
+
+
+def _warn_cleanup(message: str) -> None:
+    print(f'warning: {message}', file=sys.stderr)
 
 
 def _free_local_port() -> int:
