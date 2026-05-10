@@ -721,6 +721,26 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
   }
 
+  /// Forces the visible terminal viewport to repaint after remote replay.
+  void refreshTerminalDisplay({bool revealLatestOutput = false}) {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    if (renderObject is MonkeyRenderTerminal) {
+      renderObject._refreshTerminalDisplay(
+        revealLatestOutput: revealLatestOutput,
+      );
+    }
+    if (!revealLatestOutput) {
+      return;
+    }
+
+    _scrollToBottom();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _scrollToBottom();
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final cursorFocusNode = widget.cursorFocusNode ?? _focusNode;
@@ -2668,6 +2688,20 @@ class MonkeyRenderTerminal extends RenderBox
       return;
     }
     _updateViewportSize(notifyIfUnchanged: true);
+    markNeedsPaint();
+  }
+
+  void _refreshTerminalDisplay({bool revealLatestOutput = false}) {
+    if (revealLatestOutput) {
+      _stickToBottom = true;
+    }
+    if (!hasSize) {
+      markNeedsLayout();
+      return;
+    }
+    _updateViewportSize(notifyIfUnchanged: true);
+    markNeedsLayout();
+    markNeedsPaint();
   }
 
   void _resizeTerminalIfNeeded({

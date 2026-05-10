@@ -725,6 +725,74 @@ void main() {
       },
     );
 
+    testWidgets('refreshTerminalDisplay reveals latest output', (tester) async {
+      final terminal = Terminal(maxLines: 120);
+      for (var row = 0; row < 60; row += 1) {
+        terminal.write('${rowLabel(row)}\r\n');
+      }
+      final controller = TerminalController();
+
+      await pumpSelectableTerminal(
+        tester,
+        terminal: terminal,
+        controller: controller,
+        height: 160,
+      );
+      final scrollableState = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      final position = scrollableState.position;
+      expect(position.maxScrollExtent, greaterThan(0));
+
+      position.jumpTo(0);
+      await tester.pump();
+      expect(position.pixels, 0);
+
+      tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .refreshTerminalDisplay(revealLatestOutput: true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(position.pixels, position.maxScrollExtent);
+    });
+
+    testWidgets('refreshTerminalDisplay relayouts without revealing output', (
+      tester,
+    ) async {
+      final terminal = Terminal(maxLines: 120);
+      for (var row = 0; row < 60; row += 1) {
+        terminal.write('${rowLabel(row)}\r\n');
+      }
+      final controller = TerminalController();
+
+      final renderTerminal = await pumpSelectableTerminal(
+        tester,
+        terminal: terminal,
+        controller: controller,
+        height: 160,
+      );
+      final scrollableState = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      final position = scrollableState.position..jumpTo(0);
+      await tester.pump();
+      expect(renderTerminal.debugNeedsLayout, isFalse);
+
+      tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .refreshTerminalDisplay();
+
+      expect(renderTerminal.debugNeedsLayout, isTrue);
+      expect(position.pixels, 0);
+    });
+
     testWidgets(
       'handle drag keeps updating after keyboard-sized resize',
       (tester) async {
@@ -1895,6 +1963,132 @@ void main() {
         expect(shellTextAfterThemeChange, isNot(contains('\x1b]10;')));
         expect(shellTextAfterThemeChange, isNot(contains('\x1b]11;')));
         expect(shellTextAfterThemeChange, isNot(contains('\x1b]4;')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux window switches reveal the replayed terminal viewport',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        for (var row = 0; row < 120; row += 1) {
+          session.terminal!.write('row $row\r\n');
+        }
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final scrollableState = tester.state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MonkeyTerminalView),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final position = scrollableState.position;
+        expect(position.maxScrollExtent, greaterThan(0));
+
+        position.jumpTo(0);
+        await tester.pump();
+        expect(position.pixels, 0);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('agent'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            1,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        expect(position.pixels, position.maxScrollExtent);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
