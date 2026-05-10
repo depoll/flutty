@@ -1117,12 +1117,8 @@ branch refs/heads/main
           ),
         );
         when(
-          () => backend.runClientCommand(
-            any(),
-            priority: any(named: 'priority'),
-            timeout: any(named: 'timeout'),
-            maxOutputBytes: any(named: 'maxOutputBytes'),
-          ),
+          () =>
+              backend.runClientCommand(any(), priority: any(named: 'priority')),
         ).thenAnswer((invocation) async {
           final command = invocation.positionalArguments.first as String;
           commands.add(command);
@@ -1158,14 +1154,6 @@ branch refs/heads/main
           ),
           hasLength(1),
         );
-        verify(
-          () => backend.runClientCommand(
-            any(),
-            priority: SshExecPriority.low,
-            timeout: const Duration(seconds: 20),
-            maxOutputBytes: 6 * 1024 * 1024,
-          ),
-        ).called(greaterThanOrEqualTo(1));
         verifyNever(() => client.execute(any()));
       },
     );

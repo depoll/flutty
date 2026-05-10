@@ -29,8 +29,6 @@ const _geminiSessionMetadataMaxBytes = 64 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
-const _controlChannelDiscoveryTimeout = Duration(seconds: 20);
-const _controlChannelDiscoveryMaxOutputBytes = 6 * 1024 * 1024;
 const _acpResponseTimeout = Duration(seconds: 2);
 const _execOutputTimeout = Duration(seconds: 10);
 const _execDoneMarker = '__flutty_agent_discovery_exec_done__';
@@ -2543,8 +2541,6 @@ class AgentSessionDiscoveryService {
     final result = await backend.runClientCommand(
       _markCommandDone('$_profileSourcingPrefix$command'),
       priority: SshExecPriority.low,
-      timeout: _controlChannelDiscoveryTimeout,
-      maxOutputBytes: _controlChannelDiscoveryMaxOutputBytes,
     );
     return _stripDoneMarker(result.output);
   }

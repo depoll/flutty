@@ -345,16 +345,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
-    Duration? timeout,
-    int? maxOutputBytes,
   }) async {
     final response = await _runControlCommand(session, sessionName, {
       'type': 'run_command',
       'command': command,
-      if (timeout != null && timeout.inMilliseconds > 0)
-        'timeoutMs': timeout.inMilliseconds,
-      if (maxOutputBytes != null && maxOutputBytes > 0)
-        'maxOutputBytes': maxOutputBytes,
     }, priority: priority);
     return TerminalClientCommandResult(
       output: response.data ?? '',
