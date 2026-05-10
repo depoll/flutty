@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 // ignore_for_file: public_member_api_docs
@@ -209,12 +210,22 @@ class _FakeActiveSessionsSshService extends SshService {
   @override
   SshSession? getSession(int connectionId) => _sessions[connectionId];
 
+  _MockSshClient clientFor(int connectionId) =>
+      _sessions[connectionId]!.client as _MockSshClient;
+
   void completeConnection(int connectionId) {
     final completer = _clientDoneCompleters[connectionId];
     if (completer != null && !completer.isCompleted) {
       completer.complete();
     }
   }
+}
+
+Future<int> _unusedLoopbackPort() async {
+  final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final port = socket.port;
+  await socket.close();
+  return port;
 }
 
 void main() {
@@ -1218,6 +1229,128 @@ void main() {
         'Connection closed',
       );
     });
+
+    test(
+      'removes stale sessions when channel opens report a closed transport',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        expect(result.connectionId, isNotNull);
+
+        final connectionId = result.connectionId!;
+        final session = fakeSshService.getSession(connectionId)!;
+        when(
+          () => fakeSshService
+              .clientFor(connectionId)
+              .execute(any(), pty: any(named: 'pty')),
+        ).thenThrow(SSHStateError('Transport is closed'));
+
+        await expectLater(
+          session.execute('true'),
+          throwsA(isA<SSHStateError>()),
+        );
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(notifier.getSession(connectionId), isNull);
+        expect(container.read(activeSessionsProvider)[connectionId], isNull);
+        expect(
+          notifier.getConnectionAttempt(42)?.latestMessage,
+          'Connection became unresponsive. Reconnect to continue.',
+        );
+      },
+    );
+
+    test(
+      'removes stale sessions when local forwards report a closed transport',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        expect(result.connectionId, isNotNull);
+
+        final connectionId = result.connectionId!;
+        final session = fakeSshService.getSession(connectionId)!;
+        final localPort = await _unusedLoopbackPort();
+        when(
+          () => fakeSshService
+              .clientFor(connectionId)
+              .forwardLocal('remote.example.com', 80),
+        ).thenThrow(SSHStateError('Transport is closed'));
+
+        addTearDown(session.stopAllForwards);
+
+        expect(
+          await session.startLocalForward(
+            portForwardId: 1,
+            localHost: InternetAddress.loopbackIPv4.address,
+            localPort: localPort,
+            remoteHost: 'remote.example.com',
+            remotePort: 80,
+          ),
+          isTrue,
+        );
+
+        final socket = await Socket.connect(
+          InternetAddress.loopbackIPv4,
+          localPort,
+        );
+        socket.destroy();
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(notifier.getSession(connectionId), isNull);
+        expect(container.read(activeSessionsProvider)[connectionId], isNull);
+        expect(
+          notifier.getConnectionAttempt(42)?.latestMessage,
+          'Connection became unresponsive. Reconnect to continue.',
+        );
+      },
+    );
+
+    test(
+      'removes stale sessions when remote forwards report a closed transport',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        expect(result.connectionId, isNotNull);
+
+        final connectionId = result.connectionId!;
+        final session = fakeSshService.getSession(connectionId)!;
+        when(
+          () => fakeSshService
+              .clientFor(connectionId)
+              .forwardRemote(host: '127.0.0.1', port: 8022),
+        ).thenThrow(
+          SSHStateError('Connection closed while waiting for channel open'),
+        );
+
+        expect(
+          await session.startRemoteForward(
+            portForwardId: 1,
+            remoteHost: '127.0.0.1',
+            remotePort: 8022,
+            localHost: '127.0.0.1',
+            localPort: 22,
+          ),
+          isFalse,
+        );
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(notifier.getSession(connectionId), isNull);
+        expect(container.read(activeSessionsProvider)[connectionId], isNull);
+        expect(
+          notifier.getConnectionAttempt(42)?.latestMessage,
+          'Connection became unresponsive. Reconnect to continue.',
+        );
+      },
+    );
 
     test('updateSessionTheme skips unchanged theme IDs', () async {
       final notifier = container.read(activeSessionsProvider.notifier);
