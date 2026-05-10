@@ -2998,7 +2998,6 @@ bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
 
 /// Returns whether a live tmux window snapshot should bypass the normal active
 /// session metadata refresh throttle.
-@visibleForTesting
 bool shouldForceAgentSessionMetadataRefreshForSnapshot(
   Iterable<TmuxWindow> cachedWindows,
   TmuxWindow snapshot,
@@ -3896,32 +3895,13 @@ if [ -z "\$home" ]; then
 fi
 state_dir=\$home/.copilot/session-state
 if [ -d "\$state_dir" ]; then
-  lock_pids=
-  lock_rows=
-  for lock in "\$state_dir"/*/inuse.*.lock; do
-    [ -e "\$lock" ] || continue
-    file=\${lock##*/}
-    pid=\${file#inuse.}
-    pid=\${pid%.lock}
-    case "\$pid" in ''|*[!0-9]*) continue ;; esac
-    dir=\${lock%/*}
-    lock_pids="\${lock_pids:+\$lock_pids }\$pid"
-    lock_rows="\$lock_rows\$pid\$sep\$dir
-"
-  done
-  if [ -n "\$lock_pids" ]; then
-    ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
-  fi
+  ps_output=\$(ps -eo pid=,ppid=,comm=,args= 2>/dev/null || true)
   if [ -n "\${ps_output:-}" ]; then
-    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v locks="\$lock_pids" '
+    printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" '
 BEGIN {
   split(panes, pane_values, " ")
   for (i in pane_values) {
     if (pane_values[i] ~ /^[0-9]+\$/) target[pane_values[i]] = 1
-  }
-  split(locks, lock_values, " ")
-  for (i in lock_values) {
-    if (lock_values[i] ~ /^[0-9]+\$/) lock_pid[lock_values[i]] = 1
   }
 }
 {
@@ -3935,7 +3915,7 @@ BEGIN {
   command[pid] = tolower(comm " " args)
 }
 END {
-  for (pid in lock_pid) {
+  for (pid in parent) {
     if (!(pid in parent)) continue
     if (command[pid] !~ /copilot/) continue
     current = pid
@@ -3952,21 +3932,24 @@ END {
 }' | while read pane_pid pid; do
       case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
       case "\$pid" in ''|*[!0-9]*) continue ;; esac
-      dir=\$(printf '%s' "\$lock_rows" | awk -F "\$sep" -v wanted="\$pid" '\$1 == wanted { print \$2; exit }')
-      [ -n "\$dir" ] || continue
-      session_id=\${dir##*/}
-      workspace=\$dir/workspace.yaml
-      title=
-      if [ -r "\$workspace" ]; then
-        title=\$(awk '
+      for lock in "\$state_dir"/*/inuse."\$pid".lock; do
+        [ -e "\$lock" ] || continue
+        dir=\${lock%/*}
+        session_id=\${dir##*/}
+        workspace=\$dir/workspace.yaml
+        title=
+        if [ -r "\$workspace" ]; then
+          title=\$(awk '
 /^[[:space:]]*name:[[:space:]]*/ {
   sub(/^[[:space:]]*name:[[:space:]]*/, "")
   print
   exit
 }
 ' "\$workspace" 2>/dev/null | tr -d '\\r' | tr "\\037" " ")
-      fi
-      printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$title"
+        fi
+        printf '%s%s%s%s%s%s%s\\n' "\$session_id" "\$sep" "\$pid" "\$sep" "\$pane_pid" "\$sep" "\$title"
+        break
+      done
     done
   fi
 fi
