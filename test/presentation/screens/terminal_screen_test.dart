@@ -3058,6 +3058,45 @@ void main() {
 
         shellWrites.clear();
         tester.testTextInput.updateEditingValue(
+          _editingValue('background', selectionOffset: 10),
+        );
+        await tester.pump();
+        tester.testTextInput.log.clear();
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              id: '@9',
+              name: 'agent-renamed',
+              isActive: false,
+              currentCommand: 'vim',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 60));
+
+        expect(refreshCount, greaterThan(refreshCountAfterTitleAgent));
+        final backgroundClient =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          backgroundClient.currentTextEditingValue,
+          _editingValue('background', selectionOffset: 10),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+        final refreshCountAfterBackgroundWindow = refreshCount;
+
+        shellWrites.clear();
+        tester.testTextInput.updateEditingValue(
           _editingValue('stale', selectionOffset: 5),
         );
         await tester.pump();
@@ -3072,13 +3111,13 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 149));
 
-        expect(refreshCount, refreshCountAfterTitleAgent);
+        expect(refreshCount, refreshCountAfterBackgroundWindow);
 
         await tester.pump(const Duration(milliseconds: 1));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
-        expect(refreshCount, greaterThan(refreshCountAfterTitleAgent));
+        expect(refreshCount, greaterThan(refreshCountAfterBackgroundWindow));
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
