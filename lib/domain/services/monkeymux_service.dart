@@ -79,6 +79,7 @@ String buildMonkeyMuxAttachCommand({
   String? launchCommand,
   String? windowName,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
+  bool startInYoloMode = false,
 }) {
   final parts = <String>[
     _shellQuote(executablePath),
@@ -87,6 +88,7 @@ String buildMonkeyMuxAttachCommand({
       '--update-policy',
       serverUpdatePolicy.cliValue,
     ],
+    if (startInYoloMode) '--restore-yolo',
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
       _shellQuote(workingDirectory.trim()),

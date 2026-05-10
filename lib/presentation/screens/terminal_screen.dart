@@ -6229,6 +6229,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               sessionName: sessionName,
               workingDirectory: host.tmuxWorkingDirectory,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+              startInYoloMode: _startClisInYoloMode,
             ),
             backend: RemoteMuxBackend.monkeyMux,
           );
@@ -6239,6 +6240,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sessionName: sessionName,
             workingDirectory: host.tmuxWorkingDirectory,
             serverUpdatePolicy: updatePolicy,
+            startInYoloMode: _startClisInYoloMode,
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
@@ -6392,6 +6394,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         windowName: preset.tool.label,
         launchCommand: launchCommand,
         serverUpdatePolicy: updatePolicy,
+        startInYoloMode: _startClisInYoloMode,
       );
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -12386,11 +12389,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final message = supportsShutdown
         ? 'This MonkeyMux session is running helper $runningLabel. '
               'This app includes helper $bundledVersion. Updating will restart '
-              'MonkeyMux for this session and close its current windows.'
+              'MonkeyMux for this session and try to restore its current windows.'
         : 'This MonkeyMux session is running helper $runningLabel. '
               'This app includes helper $bundledVersion. This older helper '
-              'cannot close itself cleanly, so updating may abandon existing '
-              'MonkeyMux windows.';
+              'cannot close itself cleanly, so updating will try to restore '
+              'windows but may abandon the old ones.';
     final confirmed = await showDialog<bool>(
       context: context,
       requestFocus: terminalOverlayRouteRequestFocus(context),

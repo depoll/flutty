@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -808,6 +809,26 @@ func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
 	}
 }
 
+func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
+	tests := []struct {
+		tool string
+		args string
+		want string
+	}{
+		{tool: "claude", args: "claude --resume abc123", want: "abc123"},
+		{tool: "copilot", args: "copilot --resume 'session one'", want: "session one"},
+		{tool: "codex", args: "codex resume run-42", want: "run-42"},
+		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
+		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
+	}
+
+	for _, tt := range tests {
+		if got := agentSessionIDFromArgs(tt.tool, tt.args); got != tt.want {
+			t.Fatalf("agentSessionIDFromArgs(%q, %q) = %q, want %q", tt.tool, tt.args, got, tt.want)
+		}
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -916,6 +937,217 @@ func TestCloseLastWindowRequestsShutdown(t *testing.T) {
 	}
 	if snapshots := server.snapshots(); len(snapshots) != 0 {
 		t.Fatalf("snapshot count = %d, want 0", len(snapshots))
+	}
+}
+
+func TestRestoreSnapshotIncludesShellHistory(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{
+		{
+			id:                    "@1",
+			index:                 0,
+			name:                  "zsh",
+			command:               "zsh",
+			foregroundCommand:     "zsh",
+			history:               []byte("shell history"),
+			lastActivity:          time.Now(),
+			cursorVisible:         false,
+			cursorVisibilityKnown: true,
+		},
+		{
+			id:                "@2",
+			index:             1,
+			name:              "Codex",
+			command:           "codex",
+			foregroundCommand: "codex",
+			agentTool:         "codex",
+			history:           []byte("agent history"),
+			lastActivity:      time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	restore := server.restoreSnapshot()
+
+	if got := len(restore.Windows); got != 2 {
+		t.Fatalf("restore window count = %d, want 2", got)
+	}
+	if got := restore.Windows[0].HistoryBase64; got != base64.StdEncoding.EncodeToString([]byte("shell history")) {
+		t.Fatalf("shell history = %q, want encoded shell history", got)
+	}
+	if !restore.Windows[0].Active {
+		t.Fatal("active shell window was not marked active")
+	}
+	if !restore.Windows[0].CursorVisibilityKnown || restore.Windows[0].CursorVisible {
+		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", restore.Windows[0].CursorVisibilityKnown, restore.Windows[0].CursorVisible)
+	}
+	if got := restore.Windows[1].HistoryBase64; got != "" {
+		t.Fatalf("agent history = %q, want no replayed agent history", got)
+	}
+}
+
+func TestCreateWindowOptionsForRestorePreservesShellHistory(t *testing.T) {
+	state := restoreWindowState{
+		Name:                  "Project shell",
+		Cwd:                   "/tmp/project",
+		CurrentCommand:        "zsh",
+		PaneTitle:             "Project shell",
+		HistoryBase64:         base64.StdEncoding.EncodeToString([]byte("prompt")),
+		CursorVisible:         false,
+		CursorVisibilityKnown: true,
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if options.command != "" {
+		t.Fatalf("command = %q, want login shell", options.command)
+	}
+	if got := string(options.history); got != "prompt" {
+		t.Fatalf("history = %q, want prompt", got)
+	}
+	if options.cwd != "/tmp/project" {
+		t.Fatalf("cwd = %q, want /tmp/project", options.cwd)
+	}
+	if !options.cursorVisibilityKnown || options.cursorVisible {
+		t.Fatalf("cursor visibility = known:%v visible:%v, want known hidden", options.cursorVisibilityKnown, options.cursorVisible)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
+	state := restoreWindowState{
+		Name:           "Copilot CLI",
+		Cwd:            "/tmp/project",
+		CurrentCommand: "copilot",
+		AgentTool:      "copilot",
+		AgentSessionID: "session's id",
+		HistoryBase64:  base64.StdEncoding.EncodeToString([]byte("old agent screen")),
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	if got := options.command; got != "copilot --resume 'session'\"'\"'s id'" {
+		t.Fatalf("command = %q, want quoted copilot resume", got)
+	}
+	if len(options.history) != 0 {
+		t.Fatalf("agent restore history length = %d, want 0", len(options.history))
+	}
+	if options.agentTool != "copilot" {
+		t.Fatalf("agent tool = %q, want copilot", options.agentTool)
+	}
+}
+
+func TestReadRestoreFileKeepsCallerOwnedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caller-restore.json")
+	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("restore file was removed, want caller-owned file preserved: %v", err)
+	}
+}
+
+func TestReadRestoreFileDeletesManagedFileOnlyAfterValidation(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(
+		runDir,
+		"monkeymux-restore-aaaaaaaaaaaaaaaaaaaaaaaa-1.json",
+	)
+	if err := os.WriteFile(invalidPath, []byte(`{"schemaVersion":999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(invalidPath); err == nil {
+		t.Fatal("readRestoreFile invalid schema error = nil, want error")
+	}
+	if _, err := os.Stat(invalidPath); err != nil {
+		t.Fatalf("invalid restore file was removed before validation: %v", err)
+	}
+
+	validPath := filepath.Join(
+		runDir,
+		"monkeymux-restore-bbbbbbbbbbbbbbbbbbbbbbbb-2.json",
+	)
+	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(validPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRestoreFile(validPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(validPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed restore file stat error = %v, want not exist", err)
+	}
+}
+
+func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
+	tests := []struct {
+		name      string
+		state     restoreWindowState
+		want      string
+		agentTool string
+	}{
+		{
+			name: "copilot resume",
+			state: restoreWindowState{
+				Name:           "Copilot CLI",
+				CurrentCommand: "copilot",
+				AgentTool:      "copilot",
+				AgentSessionID: "session-123",
+			},
+			want:      "copilot --yolo --resume 'session-123'",
+			agentTool: "copilot",
+		},
+		{
+			name: "codex launch",
+			state: restoreWindowState{
+				Name:           "Codex",
+				CurrentCommand: "codex",
+				AgentTool:      "codex",
+			},
+			want:      "codex --yolo",
+			agentTool: "codex",
+		},
+		{
+			name: "opencode resume",
+			state: restoreWindowState{
+				Name:           "OpenCode",
+				CurrentCommand: "opencode",
+				AgentTool:      "opencode",
+				AgentSessionID: "_continue",
+			},
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
+			agentTool: "opencode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			options := createWindowOptionsForRestore(tc.state, true)
+			if got := options.command; got != tc.want {
+				t.Fatalf("command = %q, want %q", got, tc.want)
+			}
+			if options.agentTool != tc.agentTool {
+				t.Fatalf("agent tool = %q, want %q", options.agentTool, tc.agentTool)
+			}
+		})
 	}
 }
 
@@ -1133,7 +1365,7 @@ func TestPromptForServerUpdateWarnsWhenShutdownIsUnavailable(t *testing.T) {
 	}
 }
 
-func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
+func TestPromptForServerUpdateDescribesWindowRestore(t *testing.T) {
 	var output bytes.Buffer
 	status := runningServerStatus{
 		version:      "0.1.1",
@@ -1143,8 +1375,8 @@ func TestPromptForServerUpdateDescribesSafeShutdown(t *testing.T) {
 	if !promptForServerUpdate(strings.NewReader("y\n"), &output, "main", status) {
 		t.Fatal("yes prompt response did not update server")
 	}
-	if got := output.String(); !strings.Contains(got, "will close existing") {
-		t.Fatalf("prompt output = %q, want close warning", got)
+	if got := output.String(); !strings.Contains(got, "try to restore existing windows") {
+		t.Fatalf("prompt output = %q, want restore message", got)
 	}
 }
 
