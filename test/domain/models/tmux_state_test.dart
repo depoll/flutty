@@ -308,7 +308,7 @@ void main() {
       expect(window.foregroundAgentTool, AgentLaunchTool.codex);
       expect(window.agentSessionId, 'rollout-2026-04-26-session');
       expect(window.displayTitle, 'Codex · flutty');
-      expect(window.secondaryTitle, 'session rollout-...');
+      expect(window.secondaryTitle, 'active session');
     });
 
     test('uses foreground command to label MonkeyMux Codex windows', () {
@@ -359,6 +359,38 @@ void main() {
       expect(window.displayTitle, 'Fix tmux session labels');
       expect(window.handleTitle, 'Fix tmux session labels');
       expect(window.secondaryTitle, 'Copilot CLI · Editing main.dart');
+    });
+
+    test('uses session names as titles and window titles as context', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'codex',
+        isActive: false,
+        currentCommand: 'codex',
+        paneTitle: 'Editing main.dart',
+        activeAgentSessionId: '12345678-1234-1234-1234-1234567890ab',
+        agentSessionTitle: 'Fix live session labels',
+        activeAgentSessionConfidence: AgentSessionConfidence.medium,
+      );
+
+      expect(window.displayTitle, 'Fix live session labels');
+      expect(window.handleTitle, 'Fix live session labels');
+      expect(window.secondaryTitle, 'Codex · Editing main.dart');
+    });
+
+    test('does not show raw session ids as titles', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'codex',
+        isActive: false,
+        currentCommand: 'codex',
+        paneTitle: 'Editing main.dart',
+        activeAgentSessionId: '12345678-1234-1234-1234-1234567890ab',
+        activeAgentSessionConfidence: AgentSessionConfidence.medium,
+      );
+
+      expect(window.displayTitle, 'Editing main.dart');
+      expect(window.secondaryTitle, 'Codex · active session');
     });
 
     test('copyWith can clear live agent session metadata', () {

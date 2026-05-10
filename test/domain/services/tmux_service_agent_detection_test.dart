@@ -127,6 +127,12 @@ void main() {
         expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
         expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
         expect(command, contains('flutty_lsof_session_match'));
+        expect(command, contains('flutty_claude_session_title'));
+        expect(command, contains('flutty_codex_session_title'));
+        expect(command, contains('flutty_gemini_session_title'));
+        expect(command, contains('customTitle'));
+        expect(command, contains('thread_name'));
+        expect(command, contains('summary'));
         expect(command, contains('.claude'));
         expect(command, contains('.codex'));
         expect(command, contains('.gemini'));

@@ -300,18 +300,13 @@ class TmuxWindow {
   /// Short coding-agent session label suitable for secondary UI text.
   String? get agentSessionLabel {
     final title = _normalizedTmuxTitle(agentSessionTitle);
-    final confidenceLabel = _agentSessionConfidenceLabel;
     if (title != null && title.isNotEmpty) {
       final tool = foregroundAgentTool;
-      final label = tool == null ? title : '${tool.label} · $title';
-      return confidenceLabel == null ? label : '$label ($confidenceLabel)';
+      return tool == null ? title : '${tool.label} · $title';
     }
     final id = agentSessionId;
     if (id == null || id.isEmpty) return null;
-    final sessionLabel = 'session ${_shortenSessionId(id)}';
-    return confidenceLabel == null
-        ? sessionLabel
-        : '$confidenceLabel $sessionLabel';
+    return 'active session';
   }
 
   /// Live coding-agent session title suitable for primary UI text.
@@ -334,10 +329,6 @@ class TmuxWindow {
     final context = _windowContextLabelFromPath(currentPath);
     if (context != null) {
       return '${tool.label} · $context';
-    }
-    final sessionId = agentSessionId;
-    if (sessionId != null && sessionId.isNotEmpty) {
-      return '${tool.label} · ${_shortenSessionId(sessionId)}';
     }
     return tool.label;
   }
@@ -449,11 +440,9 @@ class TmuxWindow {
     final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
     if (sessionDisplayTitle != null) {
       final toolLabel = foregroundAgentTool?.label;
-      final confidenceLabel = _agentSessionConfidenceLabel;
       final tmuxTitle = _tmuxSecondaryTitleForAgentSession;
       final secondaryParts = <String>[
         if (toolLabel != null && !_titlesMatch(toolLabel, display)) toolLabel,
-        ?confidenceLabel,
         if (tmuxTitle != null &&
             !_titlesMatch(tmuxTitle, display) &&
             !_titlesMatch(tmuxTitle, sessionTitle) &&
@@ -489,6 +478,16 @@ class TmuxWindow {
     final agentTitle = agentContextTitle;
     if (agentTitle != null && display == agentTitle) {
       return sessionLabel == display ? null : sessionLabel;
+    }
+    if (sessionLabel != null &&
+        sessionTitle == null &&
+        sessionLabel != display) {
+      final toolLabel = foregroundAgentTool?.label;
+      final secondaryParts = <String>[
+        if (toolLabel != null && !_titlesMatch(toolLabel, display)) toolLabel,
+        sessionLabel,
+      ];
+      return secondaryParts.join(' · ');
     }
 
     if (_isDecoratedVariantOfTitle(name, normalizedPaneTitle)) {
@@ -595,14 +594,6 @@ class TmuxWindow {
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
-
-  String? get _agentSessionConfidenceLabel =>
-      switch (activeAgentSessionConfidence) {
-        AgentSessionConfidence.high => null,
-        AgentSessionConfidence.medium => 'inferred',
-        AgentSessionConfidence.low => 'possible',
-        null => null,
-      };
 }
 
 /// Live update emitted while watching a tmux session in control mode.
@@ -1115,12 +1106,6 @@ String? _agentSessionIdFromCommand(
   String? value, {
   required AgentLaunchTool tool,
 }) => agentSessionIdFromLaunchCommand(value, tool: tool);
-
-String _shortenSessionId(String id) {
-  final trimmed = id.trim();
-  if (trimmed.length <= 14) return trimmed;
-  return '${trimmed.substring(0, 8)}...';
-}
 
 String? _windowContextLabelFromPath(String? value) {
   final trimmed = value?.trim();
