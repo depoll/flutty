@@ -134,53 +134,6 @@ func TestNormalizeServerUpdatePolicy(t *testing.T) {
 	}
 }
 
-func TestRunCommandOptionsFromRequestUsesDefaults(t *testing.T) {
-	options := runCommandOptionsFromRequest(controlMessage{})
-
-	if options.timeout != defaultRunCommandTimeout {
-		t.Fatalf("timeout = %s, want %s", options.timeout, defaultRunCommandTimeout)
-	}
-	if options.maxOutputBytes != defaultRunCommandOutputMaxBytes {
-		t.Fatalf(
-			"maxOutputBytes = %d, want %d",
-			options.maxOutputBytes,
-			defaultRunCommandOutputMaxBytes,
-		)
-	}
-}
-
-func TestRunCommandOptionsFromRequestHonorsOverrides(t *testing.T) {
-	options := runCommandOptionsFromRequest(controlMessage{
-		TimeoutMs: 20000,
-		MaxOutput: 6 * 1024 * 1024,
-	})
-
-	if options.timeout != 20*time.Second {
-		t.Fatalf("timeout = %s, want 20s", options.timeout)
-	}
-	if options.maxOutputBytes != 6*1024*1024 {
-		t.Fatalf("maxOutputBytes = %d, want 6291456", options.maxOutputBytes)
-	}
-}
-
-func TestRunCommandOptionsFromRequestClampsOversizedOverrides(t *testing.T) {
-	options := runCommandOptionsFromRequest(controlMessage{
-		TimeoutMs: 120000,
-		MaxOutput: 64 * 1024 * 1024,
-	})
-
-	if options.timeout != maxRunCommandTimeout {
-		t.Fatalf("timeout = %s, want %s", options.timeout, maxRunCommandTimeout)
-	}
-	if options.maxOutputBytes != maxRunCommandOutputMaxBytes {
-		t.Fatalf(
-			"maxOutputBytes = %d, want %d",
-			options.maxOutputBytes,
-			maxRunCommandOutputMaxBytes,
-		)
-	}
-}
-
 func TestShouldUpdateRunningServerNeverIsSilent(t *testing.T) {
 	var output bytes.Buffer
 	update := shouldUpdateRunningServer(
@@ -881,11 +834,11 @@ func TestRunShellCommandBoundsOutput(t *testing.T) {
 	if !errors.Is(err, errRunCommandOutputLimit) {
 		t.Fatalf("runShellCommand error = %v, want output limit", err)
 	}
-	if len(output) != defaultRunCommandOutputMaxBytes {
+	if len(output) != runCommandOutputMaxBytes {
 		t.Fatalf(
 			"output length = %d, want %d",
 			len(output),
-			defaultRunCommandOutputMaxBytes,
+			runCommandOutputMaxBytes,
 		)
 	}
 }
@@ -898,12 +851,7 @@ func TestControlClientCloseCancelsRunCommand(t *testing.T) {
 
 	startedAt := time.Now()
 	go func() {
-		_, _, err := client.runShellCommand(
-			server,
-			"slow-command",
-			"sleep 30",
-			defaultRunCommandOptions(),
-		)
+		_, _, err := client.runShellCommand(server, "slow-command", "sleep 30")
 		done <- err
 	}()
 	waitForTrackedCommand(t, client)
