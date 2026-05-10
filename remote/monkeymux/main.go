@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.20"
+	monkeyMuxVersion         = "0.1.21"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -933,21 +933,35 @@ func agentToolForRestore(window restoreWindowState) string {
 type processInfo struct {
 	pid  int
 	ppid int
+	pgid int
 	comm string
 	args string
 }
 
+type processTableCache struct {
+	mu        sync.Mutex
+	loadedAt  time.Time
+	processes map[int]processInfo
+}
+
+var commandProcessTableCache processTableCache
+
 func readProcessTable() map[int]processInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,ppid=,comm=,args=").Output()
+	output, err := exec.CommandContext(
+		ctx,
+		"ps",
+		"-eo",
+		"pid=,ppid=,pgid=,comm=,args=",
+	).Output()
 	if err != nil || ctx.Err() != nil {
 		return nil
 	}
 	processes := map[int]processInfo{}
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -958,17 +972,36 @@ func readProcessTable() map[int]processInfo {
 		if err != nil {
 			continue
 		}
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
 		args := ""
-		if len(fields) > 3 {
-			args = strings.Join(fields[3:], " ")
+		if len(fields) > 4 {
+			args = strings.Join(fields[4:], " ")
 		}
 		processes[pid] = processInfo{
 			pid:  pid,
 			ppid: ppid,
-			comm: fields[2],
+			pgid: pgid,
+			comm: fields[3],
 			args: args,
 		}
 	}
+	return processes
+}
+
+func cachedProcessTable(now time.Time) map[int]processInfo {
+	commandProcessTableCache.mu.Lock()
+	defer commandProcessTableCache.mu.Unlock()
+	if commandProcessTableCache.processes != nil &&
+		!commandProcessTableCache.loadedAt.IsZero() &&
+		now.Sub(commandProcessTableCache.loadedAt) < processMetadataInterval {
+		return commandProcessTableCache.processes
+	}
+	processes := readProcessTable()
+	commandProcessTableCache.processes = processes
+	commandProcessTableCache.loadedAt = now
 	return processes
 }
 
@@ -1328,6 +1361,8 @@ type createWindowOptions struct {
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
 	var attach net.Conn
 	var replay []byte
+	var snapshots []windowSnapshot
+	var addedSnapshot *windowSnapshot
 	cwd := strings.TrimSpace(options.cwd)
 	if cwd == "" {
 		if current, err := os.Getwd(); err == nil {
@@ -1399,6 +1434,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
+	snapshots = s.snapshotsLocked()
+	addedSnapshot = snapshotByID(snapshots, window.id)
 	s.mu.Unlock()
 
 	s.writeAttach(attach, replay)
@@ -1411,10 +1448,18 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.broadcast(controlResponse{
 		Type:    "window_added",
 		Session: s.session,
-		Window:  ptrWindowSnapshot(s.snapshot(window)),
+		Window:  addedSnapshot,
 	})
-	s.broadcastWindowList("window_list")
-	s.broadcastWindowList("active_window_changed")
+	s.broadcast(controlResponse{
+		Type:    "window_list",
+		Session: s.session,
+		Windows: snapshots,
+	})
+	s.broadcast(controlResponse{
+		Type:    "active_window_changed",
+		Session: s.session,
+		Windows: snapshots,
+	})
 	return window, nil
 }
 
@@ -1423,9 +1468,7 @@ func (s *muxServer) readWindow(window *muxWindow) {
 	for {
 		n, err := window.pty.Read(buf)
 		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			s.handleWindowOutput(window.id, chunk)
+			s.handleWindowOutput(window.id, buf[:n])
 		}
 		if err != nil {
 			return
@@ -2538,42 +2581,48 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	}
 
 	var output []byte
+	copyStart := 0
 	for i := 0; i < len(data); {
 		if data[i] != '\x1b' || i+1 >= len(data) {
-			output = append(output, data[i])
 			i++
 			continue
 		}
 		next := data[i+1]
+		stripEnd := -1
 		if next == '[' {
 			end := csiSequenceEnd(data, i+2)
 			if end < 0 {
-				output = append(output, data[i:]...)
 				break
 			}
 			sequence := data[i : end+1]
 			if isReplayUnsafeCsiQuery(sequence) {
-				i = end + 1
-				continue
+				stripEnd = end + 1
 			}
 		} else if next == ']' {
 			end, terminatorLength, ok := findOscTerminator(data[i+2:])
 			if !ok {
-				output = append(output, data[i:]...)
 				break
 			}
 			payload := data[i+2 : i+2+end]
 			if isReplayUnsafeOscQuery(payload) {
-				i += 2 + end + terminatorLength
-				continue
+				stripEnd = i + 2 + end + terminatorLength
 			}
 		}
-		output = append(output, data[i])
-		i++
+		if stripEnd < 0 {
+			i++
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-(stripEnd-i))
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = stripEnd
+		i = stripEnd
 	}
 	if output == nil {
 		return data
 	}
+	output = append(output, data[copyStart:]...)
 	return output
 }
 
@@ -2706,26 +2755,22 @@ func commandNameForProcessGroup(pgrp int) string {
 		return fallback
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,pgid=,comm=,args=").Output()
-	if err != nil || ctx.Err() != nil {
+	processes := cachedProcessTable(time.Now())
+	if len(processes) == 0 {
 		return fallback
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 || fields[1] != strconv.Itoa(pgrp) {
+	for _, process := range processes {
+		if process.pgid != pgrp {
 			continue
 		}
-		command := commandNameFromProcessFields(fields[2], strings.Join(fields[3:], " "))
+		command := commandNameFromProcessFields(process.comm, process.args)
 		if command == "" {
 			continue
 		}
 		if agentToolFromCommandName(command) != "" {
 			return command
 		}
-		if fields[0] == strconv.Itoa(pgrp) &&
-			!isGenericRuntimeCommandName(command) {
+		if process.pid == pgrp && !isGenericRuntimeCommandName(command) {
 			return command
 		}
 		if fallback == "" ||
@@ -3607,6 +3652,15 @@ func dialSession(session string) (net.Conn, error) {
 
 func ptrWindowSnapshot(snapshot windowSnapshot) *windowSnapshot {
 	return &snapshot
+}
+
+func snapshotByID(snapshots []windowSnapshot, id string) *windowSnapshot {
+	for i := range snapshots {
+		if snapshots[i].ID == id {
+			return &snapshots[i]
+		}
+	}
+	return nil
 }
 
 func fatal(err error) {
