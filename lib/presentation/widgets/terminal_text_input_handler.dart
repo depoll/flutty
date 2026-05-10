@@ -168,6 +168,11 @@ class TerminalTextInputHandlerController {
     _state?._clearImeBufferForFreshInput();
   }
 
+  /// Resets platform IME completions after switching terminal contexts.
+  void resetImeCompletions() {
+    _state?._resetImeCompletions();
+  }
+
   /// Resets stale IME context after remote terminal output returns to a prompt.
   void handleExternalTerminalOutput() {
     _state?._handleExternalTerminalOutput();
@@ -865,6 +870,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _modifierChordResetTime = armModifierChordWindow
         ? _readModifierChordClock()
         : null;
+  }
+
+  void _resetImeCompletions() {
+    _clearImeBufferForFreshInput(
+      flushPlatformContext: true,
+      armSplitLeadingTokenNormalization: true,
+    );
   }
 
   void _handleExternalTerminalOutput() {
