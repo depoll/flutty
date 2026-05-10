@@ -17,6 +17,9 @@ import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'tmux_service.dart';
 
+const _oneShotControlResponseTimeout = Duration(seconds: 10);
+const _oneShotRunCommandResponseTimeout = Duration(seconds: 25);
+
 /// MonkeyMux-backed implementation of [RemoteMultiplexerService].
 final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
   (ref) =>
@@ -700,12 +703,13 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
     execSession.stderr.drain<void>().ignore();
     final requestId = request['id'] as String?;
     execSession.write(utf8.encode('${jsonEncode(request)}\n'));
+    final responseTimeout = _oneShotResponseTimeout(request);
     await for (final line
         in execSession.stdout
             .cast<List<int>>()
             .transform(utf8.decoder)
             .transform(const LineSplitter())
-            .timeout(const Duration(seconds: 10))) {
+            .timeout(responseTimeout)) {
       final response = _MonkeyMuxControlResponse.tryParse(line);
       if (response == null || response.id != requestId) {
         continue;
@@ -723,6 +727,11 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
     'MonkeyMux control command closed without a response.',
   );
 }
+
+Duration _oneShotResponseTimeout(Map<String, Object?> request) =>
+    request['type'] == 'run_command'
+    ? _oneShotRunCommandResponseTimeout
+    : _oneShotControlResponseTimeout;
 
 Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
   SshSession session,
@@ -1168,6 +1177,12 @@ TmuxWindow? parseMonkeyMuxWindowSnapshotForTesting(Object? value) =>
 @visibleForTesting
 bool? parseMonkeyMuxHasForegroundClientForTesting(String line) =>
     _MonkeyMuxControlResponse.tryParse(line)?.hasForegroundClient;
+
+/// Returns the one-shot control response timeout for protocol regression tests.
+@visibleForTesting
+Duration monkeyMuxOneShotResponseTimeoutForTesting(
+  Map<String, Object?> request,
+) => _oneShotResponseTimeout(request);
 
 AgentLaunchTool? _agentToolFromMonkeyMuxMetadata(String? value) =>
     agentLaunchToolForCommandName(value);

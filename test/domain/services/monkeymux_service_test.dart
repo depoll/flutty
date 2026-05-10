@@ -83,6 +83,21 @@ void main() {
 
       expect(hasForegroundClient, isTrue);
     });
+
+    test('allows one-shot run_command responses to reach server timeout', () {
+      expect(
+        monkeyMuxOneShotResponseTimeoutForTesting(const <String, Object?>{
+          'type': 'run_command',
+        }),
+        const Duration(seconds: 25),
+      );
+      expect(
+        monkeyMuxOneShotResponseTimeoutForTesting(const <String, Object?>{
+          'type': 'list_windows',
+        }),
+        const Duration(seconds: 10),
+      );
+    });
   });
 
   group('parseMonkeyMuxWindowSnapshotForTesting', () {
