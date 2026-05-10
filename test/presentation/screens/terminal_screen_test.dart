@@ -1992,6 +1992,13 @@ void main() {
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
         when(
+          () => tmuxService.currentPaneContext(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
           () => monkeyMuxService.hasForegroundClientOrThrow(
             session,
             sessionName,
@@ -2072,6 +2079,12 @@ void main() {
         await tester.pump();
         expect(position.pixels, 0);
 
+        tester.testTextInput.updateEditingValue(
+          _editingValue('stale', selectionOffset: 5),
+        );
+        await tester.pump();
+        tester.testTextInput.log.clear();
+
         await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
@@ -2089,6 +2102,22 @@ void main() {
           ),
         ).called(1);
         expect(position.pixels, position.maxScrollExtent);
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isNotEmpty,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -3028,6 +3057,52 @@ void main() {
         final refreshCountAfterTitleAgent = refreshCount;
 
         shellWrites.clear();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('background', selectionOffset: 10),
+        );
+        await tester.pump();
+        tester.testTextInput.log.clear();
+
+        windowEvents.add(
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              id: '@9',
+              name: 'agent-renamed',
+              isActive: false,
+              currentCommand: 'vim',
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 60));
+
+        expect(refreshCount, greaterThan(refreshCountAfterTitleAgent));
+        final backgroundClient =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          backgroundClient.currentTextEditingValue,
+          _editingValue('background', selectionOffset: 10),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+        final refreshCountAfterBackgroundWindow = refreshCount;
+
+        shellWrites.clear();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('stale', selectionOffset: 5),
+        );
+        await tester.pump();
+        shellWrites.clear();
+        tester.testTextInput.log.clear();
+
         windowEvents.add(
           const TmuxWindowSnapshotEvent(
             TmuxWindow(index: 1, id: '@9', name: 'agent', isActive: true),
@@ -3036,13 +3111,13 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 149));
 
-        expect(refreshCount, refreshCountAfterTitleAgent);
+        expect(refreshCount, refreshCountAfterBackgroundWindow);
 
         await tester.pump(const Duration(milliseconds: 1));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
-        expect(refreshCount, greaterThan(refreshCountAfterTitleAgent));
+        expect(refreshCount, greaterThan(refreshCountAfterBackgroundWindow));
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
@@ -3052,6 +3127,22 @@ void main() {
         expect(writtenShellText, contains('\x1b]10;'));
         expect(writtenShellText, contains('\x1b]11;'));
         expect(writtenShellText, contains('\x1b]4;'));
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isNotEmpty,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -4336,6 +4427,10 @@ void main() {
         await tester.pump();
 
         expect(tester.testTextInput.isVisible, isTrue);
+        tester.testTextInput.updateEditingValue(
+          _editingValue('resume', selectionOffset: 6),
+        );
+        await tester.pump();
 
         tester.testTextInput.log.clear();
         tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
@@ -4355,6 +4450,22 @@ void main() {
         expect(
           tester.testTextInput.log.where(
             (call) => call.method == 'TextInput.show',
+          ),
+          isNotEmpty,
+        );
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
           ),
           isNotEmpty,
         );

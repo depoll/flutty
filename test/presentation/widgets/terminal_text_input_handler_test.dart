@@ -54,6 +54,62 @@ const _deleteDetectionMarker = '\u200B\u200B';
 
 void main() {
   group('TerminalTextInputHandler', () {
+    testWidgets('controller resets platform IME completions', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final controller = TerminalTextInputHandlerController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              controller: controller,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}hello',
+          selection: TextSelection.collapsed(offset: 7),
+        ),
+      );
+      await tester.pump();
+
+      tester.testTextInput.log.clear();
+
+      controller.resetImeCompletions();
+      await tester.pump();
+
+      final client =
+          tester.state(find.byType(TerminalTextInputHandler))
+              as TextInputClient;
+      expect(
+        client.currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.setEditingState',
+        ),
+        isNotEmpty,
+      );
+
+      focusNode.dispose();
+    });
+
     testWidgets('clears composing IME state after a touch-driven caret move', (
       tester,
     ) async {
