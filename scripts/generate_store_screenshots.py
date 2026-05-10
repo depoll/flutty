@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
+import gzip
 import getpass
 import hashlib
 import json
 import os
+import platform
+import pty
+import queue
 import re
 import shutil
+import select
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import struct
+import termios
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +33,20 @@ ROOT = Path(__file__).resolve().parents[1]
 ADB: Path | None = None
 READY_MARKER = 'STORE_SCREENSHOT_READY '
 DONE_MARKER = 'STORE_SCREENSHOT_DONE'
+ANSI_ESCAPE_PATTERN = re.compile(
+    r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))'
+)
+KEY_BYTES = {
+    'Enter': '\r',
+    'Up': '\x1b[A',
+    'C-l': '\x0c',
+}
+CLEAR_SCREEN_SEQUENCES = (
+    '\x1b[H\x1b[2J',
+    '\x1b[2J',
+    '\x1b[3J',
+    '\x0c',
+)
 
 
 @dataclass(frozen=True)
@@ -110,7 +133,7 @@ def _targets_for_platform(platform: str) -> list[ScreenshotTarget]:
 
 def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
     print(f'Generating {target.name} screenshots...')
-    demo.reset_tmux()
+    demo.reset_monkeymux()
     if target.platform == 'ios':
         device_id = _boot_ios_simulator(_ios_simulator_name(target))
         _reset_ios_app_state(device_id)
@@ -136,6 +159,18 @@ def _run_flutter_capture(
     if java_home:
         env['JAVA_HOME'] = java_home
 
+    dart_defines = [
+        f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_PORT={demo.port}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={demo.username}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64={demo.private_key_b64}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={demo.host_key_b64}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT={demo.host_key_fingerprint}',
+        f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={demo.mux_session}',
+        '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
+        '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
+        '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
+    ]
     command = [
         'flutter',
         'run',
@@ -144,19 +179,21 @@ def _run_flutter_capture(
         device_id,
         '-t',
         'tool/store_screenshot_app.dart',
-        f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
-        f'--dart-define=STORE_SCREENSHOT_SSH_PORT={demo.port}',
-        f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={demo.username}',
-        f'--dart-define=STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64={demo.private_key_b64}',
-        f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={demo.host_key_b64}',
-        f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT={demo.host_key_fingerprint}',
-        f'--dart-define=STORE_SCREENSHOT_TMUX_SESSION={demo.tmux_session}',
-        '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
-        '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
-        '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
+        *dart_defines,
     ]
     if target.platform in ('android', 'ios'):
         command.extend(['--flavor', 'production'])
+    if target.platform == 'android':
+        apk_path = _build_android_screenshot_apk(env, dart_defines)
+        command = [
+            'flutter',
+            'run',
+            '-d',
+            device_id,
+            '--use-application-binary',
+            str(apk_path),
+            '--no-pub',
+        ]
 
     process = subprocess.Popen(
         command,
@@ -201,17 +238,42 @@ def _run_flutter_capture(
         raise RuntimeError(f'{target.name} run ended before all screenshots were captured')
 
 
+def _build_android_screenshot_apk(
+    env: dict[str, str],
+    dart_defines: list[str],
+) -> Path:
+    command = [
+        'flutter',
+        'build',
+        'apk',
+        '--debug',
+        '--flavor',
+        'production',
+        '-t',
+        'tool/store_screenshot_app.dart',
+        '--no-pub',
+        *dart_defines,
+    ]
+    subprocess.run(command, cwd=ROOT, env=env, check=True)
+    apk_path = ROOT / 'build/app/outputs/flutter-apk/app-production-debug.apk'
+    if not apk_path.exists():
+        raise RuntimeError(f'Android screenshot APK was not produced: {apk_path}')
+    return apk_path
+
+
 class StoreDemoEnvironment:
     def __init__(self) -> None:
         self._tmpdir = Path(tempfile.mkdtemp(prefix='monkeyssh-store-demo-'))
         self.username = getpass.getuser()
         self.port = _free_local_port()
-        self.tmux_session = f'monkeyssh-store-{os.getpid()}'
+        self.mux_session = f'monkeyssh-store-{os.getpid()}'
         self.demo_dir = Path('/Users/Shared/monkeyssh-release-workspace')
         self._process: subprocess.Popen[str] | None = None
-        self._tmux = shutil.which('tmux')
-        if self._tmux is None:
-            raise RuntimeError('tmux is required for the release-demo SSH workspace.')
+        self._monkeymux = self._extract_monkeymux()
+        self._monkeymux_env = self._build_monkeymux_env()
+        self._monkeymux_process: subprocess.Popen[str] | None = None
+        self._monkeymux_control: _MonkeyMuxControl | None = None
+        self._window_ids: dict[str, str] = {}
         self._copilot = shutil.which('copilot')
         if self._copilot is None:
             raise RuntimeError('GitHub Copilot CLI is required for the first store screenshot.')
@@ -236,20 +298,60 @@ class StoreDemoEnvironment:
     def __enter__(self) -> StoreDemoEnvironment:
         self._create_keys()
         self._start_sshd()
-        self._setup_tmux()
+        self._setup_monkeymux()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._teardown_tmux()
+        self._teardown_monkeymux()
         self._stop_sshd()
         self._remove_demo_dir()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def reset_tmux(self) -> None:
-        subprocess.run(
-            [self._tmux or 'tmux', 'select-window', '-t', f'{self.tmux_session}:copilot'],
-            check=False,
+    def reset_monkeymux(self) -> None:
+        self._monkeymux_select('copilot')
+
+    def _extract_monkeymux(self) -> Path:
+        manifest = json.loads((ROOT / 'assets/monkeymux/manifest.json').read_text())
+        platform_key = _monkeymux_platform_key()
+        entry = next(
+            (
+                candidate
+                for candidate in manifest.get('entries', [])
+                if candidate.get('platform') == platform_key
+            ),
+            None,
         )
+        if entry is None:
+            raise RuntimeError(f'MonkeyMux is not bundled for {platform_key}.')
+
+        asset_path = ROOT / entry['asset']
+        asset_bytes = asset_path.read_bytes()
+        encoding = entry.get('encoding')
+        if encoding == 'gzip':
+            binary_bytes = gzip.decompress(asset_bytes)
+        elif encoding in (None, '', 'none'):
+            binary_bytes = asset_bytes
+        else:
+            raise RuntimeError(f'Unsupported MonkeyMux asset encoding: {encoding}')
+
+        expected_size = entry.get('size')
+        if expected_size is not None and len(binary_bytes) != expected_size:
+            raise RuntimeError(f'Bundled MonkeyMux size mismatch for {platform_key}.')
+        expected_sha = entry.get('sha256')
+        actual_sha = hashlib.sha256(binary_bytes).hexdigest()
+        if expected_sha and actual_sha != expected_sha:
+            raise RuntimeError(f'Bundled MonkeyMux checksum mismatch for {platform_key}.')
+
+        executable = self._tmpdir / 'monkeymux'
+        executable.write_bytes(binary_bytes)
+        os.chmod(executable, 0o700)
+        return executable
+
+    def _build_monkeymux_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env.pop('XDG_RUNTIME_DIR', None)
+        env.setdefault('TERM', 'xterm-256color')
+        return env
 
     def _create_keys(self) -> None:
         host_key = self._tmpdir / 'host_key'
@@ -343,9 +445,9 @@ class StoreDemoEnvironment:
             time.sleep(0.2)
         raise RuntimeError(f'Timed out waiting for demo sshd on port {self.port}')
 
-    def _setup_tmux(self) -> None:
+    def _setup_monkeymux(self) -> None:
         self._prepare_demo_dir()
-        self._teardown_tmux()
+        self._teardown_monkeymux()
         self._write_pane_script(
             'copilot',
             f"""
@@ -386,14 +488,13 @@ class StoreDemoEnvironment:
             """
             clear
             printf 'Codex agent session ready\\n'
-            printf 'Keep long-running coding sessions alive in tmux.\\n'
+            printf 'Keep long-running coding sessions alive in MonkeyMux.\\n'
             """,
         )
-        self._start_tmux_windows()
-        self._configure_tmux_status()
+        self._start_monkeymux_windows()
         self._drive_copilot_start_screen()
         self._drive_claude_full_screen()
-        self.reset_tmux()
+        self.reset_monkeymux()
 
     def _prepare_demo_dir(self) -> None:
         marker = self.demo_dir / '.monkeyssh-release-workspace'
@@ -414,7 +515,7 @@ class StoreDemoEnvironment:
                     '',
                     '- Do not show emails, usernames, hostnames, tokens, or private identifiers.',
                     '- Prefer concise checks that fit in a mobile terminal screenshot.',
-                    '- Keep terminal output focused on SSH, tmux, agent, and store asset workflows.',
+                    '- Keep terminal output focused on SSH, MonkeyMux, agent, and store asset workflows.',
                     '',
                     'Windows:',
                     '1. copilot - GitHub Copilot CLI',
@@ -431,7 +532,7 @@ class StoreDemoEnvironment:
                     '# SSH terminal reconnect plan',
                     '',
                     '- Verify keepalive settings detect dropped links promptly.',
-                    '- Confirm tmux reattach restores the same shell, panes, and scrollback.',
+                    '- Confirm MonkeyMux reattach restores the same shell, panes, and scrollback.',
                     '- Validate reconnect behavior after suspend, network change, and app resume.',
                     '- Keep logs streamer-safe by hiding account and host identifiers.',
                     '',
@@ -445,13 +546,13 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Copilot, hosts, snippets, tmux selector, SFTP, Claude Code |',
+                    '| App Store | iPhone 6.9, iPad 13 | Copilot, hosts, snippets, MonkeyMux selector, SFTP, Claude Code |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
                     '',
                     '- Capture from the normal MonkeySSH app, not a direct-mounted screen harness.',
-                    '- Use a live SSH connection into this tmux workspace.',
+                    '- Use a live SSH connection into this MonkeyMux workspace.',
                     '- Avoid subscription or checkout screens.',
                     '- Scan visible output for emails, usernames, tokens, and private identifiers.',
                     '',
@@ -465,48 +566,41 @@ class StoreDemoEnvironment:
         if marker.exists():
             shutil.rmtree(self.demo_dir, ignore_errors=True)
 
-    def _start_tmux_windows(self) -> None:
-        self._tmux_run(
-            'new-session',
-            '-d',
-            '-s',
-            self.tmux_session,
-            '-n',
-            'copilot',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'copilot-pane.sh'),
+    def _start_monkeymux_windows(self) -> None:
+        self._monkeymux_process = subprocess.Popen(
+            [
+                str(self._monkeymux),
+                'serve',
+                '--session',
+                self.mux_session,
+                '--cwd',
+                str(self.demo_dir),
+                '--name',
+                'copilot',
+                '--command',
+                str(self._tmpdir / 'copilot-pane.sh'),
+            ],
+            env=self._monkeymux_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
         )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
-            'gemini',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'gemini-pane.sh'),
-        )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
-            'claude',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'claude-pane.sh'),
-        )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
-            'codex',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'codex-pane.sh'),
-        )
+        self._monkeymux_control = self._open_monkeymux_control()
+        self._refresh_monkeymux_windows()
+        for window in ('gemini', 'claude', 'codex'):
+            response = self._monkeymux_request(
+                {
+                    'type': 'create_window',
+                    'name': window,
+                    'cwd': str(self.demo_dir),
+                    'command': str(self._tmpdir / f'{window}-pane.sh'),
+                }
+            )
+            snapshot = response.get('window')
+            if isinstance(snapshot, dict) and isinstance(snapshot.get('id'), str):
+                self._window_ids[window] = snapshot['id']
+        self.reset_monkeymux()
 
     def _write_pane_script(self, window: str, body: str) -> None:
         rcfile = self._tmpdir / f'{window}-bashrc'
@@ -537,52 +631,55 @@ class StoreDemoEnvironment:
 
     def _drive_copilot_start_screen(self) -> None:
         time.sleep(4)
-        self._tmux_send_keys('copilot', 'Enter')
+        self._monkeymux_send_keys('copilot', 'Enter')
         time.sleep(8)
         self._ensure_copilot_streamer_mode()
-        self._tmux_send_keys('copilot', 'C-l')
+        self._monkeymux_send_keys('copilot', 'C-l')
         time.sleep(2)
         self._wait_for_visible_text('copilot', ['GitHub Copilot'])
         self._assert_copilot_pane_streamer_safe()
 
     def _drive_claude_full_screen(self) -> None:
         self._wait_for_visible_text('claude', ['Choose the text style'])
-        self._tmux_send_keys('claude', 'Enter')
+        self._monkeymux_send_keys('claude', 'Enter')
         self._wait_for_visible_text(
             'claude',
             ['Detected a custom API key', 'ANTHROPIC_API_KEY', 'dummy'],
         )
-        self._tmux_send_keys('claude', 'Up', 'Enter')
-        self._wait_for_visible_text('claude', ['Press Enter to continue'])
-        self._tmux_send_keys('claude', 'Enter')
+        self._monkeymux_send_keys('claude', 'Up', 'Enter')
+        self._wait_for_visible_text('claude', ['Press Ente'])
+        self._monkeymux_send_keys('claude', 'Enter')
         self._wait_for_visible_text('claude', ['Yes, I trust this folder'])
-        self._tmux_send_keys('claude', 'Enter')
+        self._monkeymux_send_keys('claude', 'Enter')
+        self._wait_for_visible_text('claude', ['Claude Code'])
+        self._monkeymux_send_keys('claude', 'C-l')
+        time.sleep(2)
         self._wait_for_visible_text('claude', ['Claude Code'])
         time.sleep(3)
         self._assert_claude_pane_streamer_safe()
 
     def _ensure_copilot_streamer_mode(self) -> None:
         self._wait_for_visible_text('copilot', ['GitHub Copilot'])
-        self._tmux_send_literal('copilot', '/streamer')
-        self._tmux_send_keys('copilot', 'Enter')
+        self._monkeymux_send_literal('copilot', '/streamer')
+        self._monkeymux_send_keys('copilot', 'Enter')
         time.sleep(4)
         text = self._capture_visible_pane('copilot')
-        if 'Streamer mode enabled.' in text:
+        if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
             return
-        if 'Streamer mode disabled.' in text:
-            self._tmux_send_literal('copilot', '/streamer')
-            self._tmux_send_keys('copilot', 'Enter')
+        if _visible_text_contains_marker(text, 'Streamer mode disabled.'):
+            self._monkeymux_send_literal('copilot', '/streamer')
+            self._monkeymux_send_keys('copilot', 'Enter')
             time.sleep(4)
             text = self._capture_visible_pane('copilot')
-            if 'Streamer mode enabled.' in text:
+            if _visible_text_contains_marker(text, 'Streamer mode enabled.'):
                 return
-        raise RuntimeError('Could not enable GitHub Copilot CLI streamer mode.')
+        self._assert_copilot_pane_streamer_safe()
 
     def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
         deadline = time.time() + 30
         while time.time() < deadline:
             text = self._capture_visible_pane(window)
-            if all(marker in text for marker in markers):
+            if all(_visible_text_contains_marker(text, marker) for marker in markers):
                 return
             time.sleep(1)
         raise RuntimeError(
@@ -602,6 +699,10 @@ class StoreDemoEnvironment:
         allow_billing_label: bool = False,
     ) -> None:
         text = self._capture_visible_pane(window)
+        if window == 'copilot':
+            text = _text_after_last_visible_marker(text, 'GitHub Copilot')
+        elif window == 'claude':
+            text = _text_after_last_visible_marker(text, 'Claude Code')
         private_patterns = [
             (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
             (
@@ -626,67 +727,153 @@ class StoreDemoEnvironment:
                 )
 
     def _capture_visible_pane(self, window: str) -> str:
-        result = subprocess.run(
-            [
-                self._tmux or 'tmux',
-                'capture-pane',
-                '-p',
-                '-t',
-                f'{self.tmux_session}:{window}',
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
+        self._monkeymux_select(window)
+        output = self._capture_monkeymux_attach_replay()
+        return _strip_terminal_output(output.decode(errors='ignore'))
+
+    def _monkeymux_send_keys(self, window: str, *keys: str) -> None:
+        try:
+            payload = ''.join(KEY_BYTES[key] for key in keys)
+        except KeyError as error:
+            raise RuntimeError(f'Unsupported MonkeyMux key: {error.args[0]}') from error
+        self._monkeymux_inject(window, payload)
+
+    def _monkeymux_send_literal(self, window: str, text: str) -> None:
+        self._monkeymux_inject(window, text)
+
+    def _monkeymux_inject(self, window: str, data: str) -> None:
+        window_id = self._window_id(window)
+        self._monkeymux_request(
+            {'type': 'inject_input', 'windowId': window_id, 'data': data}
         )
-        return result.stdout
 
-    def _tmux_run(self, *args: str) -> None:
-        subprocess.run([self._tmux or 'tmux', *args], check=True)
+    def _monkeymux_select(self, window: str) -> None:
+        self._monkeymux_request(
+            {'type': 'select_window', 'windowId': self._window_id(window)}
+        )
 
-    def _tmux_send_keys(self, window: str, *keys: str) -> None:
-        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', *keys)
+    def _window_id(self, window: str) -> str:
+        window_id = self._window_ids.get(window)
+        if window_id is not None:
+            return window_id
+        self._refresh_monkeymux_windows()
+        window_id = self._window_ids.get(window)
+        if window_id is None:
+            raise RuntimeError(f'MonkeyMux window not found: {window}')
+        return window_id
 
-    def _tmux_send_literal(self, window: str, text: str) -> None:
-        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', '-l', text)
+    def _refresh_monkeymux_windows(self) -> None:
+        response = self._monkeymux_request({'type': 'list_windows'})
+        windows = response.get('windows')
+        if not isinstance(windows, list):
+            raise RuntimeError('MonkeyMux did not return a window list.')
+        self._window_ids = {
+            window['name']: window['id']
+            for window in windows
+            if isinstance(window, dict)
+            and isinstance(window.get('name'), str)
+            and isinstance(window.get('id'), str)
+        }
+
+    def _open_monkeymux_control(self) -> _MonkeyMuxControl:
+        deadline = time.time() + 10
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            if (
+                self._monkeymux_process is not None
+                and self._monkeymux_process.poll() is not None
+            ):
+                raise RuntimeError('MonkeyMux server exited before accepting control.')
+            try:
+                return _MonkeyMuxControl(
+                    self._monkeymux,
+                    self.mux_session,
+                    self._monkeymux_env,
+                )
+            except RuntimeError as error:
+                last_error = error
+                time.sleep(0.2)
+        raise RuntimeError(
+            f'Timed out waiting for MonkeyMux control: {last_error}'
+        ) from last_error
+
+    def _monkeymux_request(self, message: dict[str, object]) -> dict[str, object]:
+        if self._monkeymux_control is None:
+            raise RuntimeError('MonkeyMux control is not connected.')
+        return self._monkeymux_control.request(message)
+
+    def _capture_monkeymux_attach_replay(self) -> bytes:
+        master_fd = -1
+        slave_fd = -1
+        process: subprocess.Popen[str] | None = None
+        try:
+            master_fd, slave_fd = pty.openpty()
+            _set_pty_size(slave_fd, rows=40, columns=120)
+            process = subprocess.Popen(
+                [
+                    str(self._monkeymux),
+                    'attach',
+                    '--update-policy',
+                    'never',
+                    self.mux_session,
+                ],
+                env=self._monkeymux_env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                text=False,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+            flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+            fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+            chunks: list[bytes] = []
+            deadline = time.time() + 2.0
+            last_data_at: float | None = None
+            while time.time() < deadline:
+                timeout = min(0.2, max(deadline - time.time(), 0))
+                readable, _, _ = select.select([master_fd], [], [], timeout)
+                if not readable:
+                    if last_data_at is not None and time.time() - last_data_at > 0.25:
+                        break
+                    continue
+                try:
+                    chunk = os.read(master_fd, 65536)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                last_data_at = time.time()
+            return b''.join(chunks)
+        finally:
+            if slave_fd >= 0:
+                os.close(slave_fd)
+            if master_fd >= 0:
+                os.close(master_fd)
+            if process is not None:
+                _terminate_process(process, timeout=5)
 
     @staticmethod
     def _shell_quote(value: str) -> str:
         return "'" + value.replace("'", "'\"'\"'") + "'"
 
-    def _configure_tmux_status(self) -> None:
-        self._tmux_run('set-option', '-t', self.tmux_session, 'status', 'on')
-        self._tmux_run(
-            'set-option',
-            '-t',
-            self.tmux_session,
-            'status-left',
-            '[MonkeySSH demo] ',
-        )
-        self._tmux_run('set-option', '-t', self.tmux_session, 'status-right', '%H:%M')
-        self._tmux_run(
-            'set-option',
-            '-t',
-            self.tmux_session,
-            'window-status-format',
-            '#I:#W',
-        )
-        self._tmux_run(
-            'set-option',
-            '-t',
-            self.tmux_session,
-            'window-status-current-format',
-            '#I:#W*',
-        )
-
-    def _teardown_tmux(self) -> None:
-        if self._tmux is None:
-            return
-        subprocess.run(
-            [self._tmux, 'kill-session', '-t', self.tmux_session],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+    def _teardown_monkeymux(self) -> None:
+        control = self._monkeymux_control
+        self._monkeymux_control = None
+        if control is not None:
+            try:
+                control.request({'type': 'shutdown'}, timeout=2)
+            except RuntimeError:
+                pass
+            control.close()
+        if self._monkeymux_process is not None:
+            _terminate_process(self._monkeymux_process, timeout=5)
+            self._monkeymux_process = None
 
     def _stop_sshd(self) -> None:
         if self._process is None:
@@ -700,6 +887,164 @@ class StoreDemoEnvironment:
                 self._process.wait(timeout=10)
         if self._process.stdout is not None:
             self._process.stdout.close()
+
+
+class _MonkeyMuxControl:
+    def __init__(self, executable: Path, session: str, env: dict[str, str]) -> None:
+        self._process = subprocess.Popen(
+            [str(executable), 'control', '--json', session],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        self._responses: queue.Queue[dict[str, object] | Exception] = queue.Queue()
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._counter = 0
+        self._reader.start()
+        self._wait_for_hello()
+
+    def request(
+        self,
+        message: dict[str, object],
+        *,
+        timeout: float = 10,
+    ) -> dict[str, object]:
+        if self._process.stdin is None:
+            raise RuntimeError('MonkeyMux control stdin is unavailable.')
+        if self._process.poll() is not None:
+            raise RuntimeError('MonkeyMux control process exited.')
+        self._counter += 1
+        request_id = f'capture-{os.getpid()}-{self._counter}'
+        payload = {'id': request_id, **message}
+        self._process.stdin.write(json.dumps(payload) + '\n')
+        self._process.stdin.flush()
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            response = self._read_response(max(deadline - time.time(), 0.1))
+            if response.get('id') != request_id:
+                continue
+            if response.get('status') == 'error':
+                raise RuntimeError(
+                    str(response.get('error') or 'MonkeyMux control request failed.')
+                )
+            return response
+        raise RuntimeError(f'MonkeyMux control request timed out: {message.get("type")}')
+
+    def close(self) -> None:
+        if self._process.stdin is not None:
+            self._process.stdin.close()
+        _terminate_process(self._process, timeout=2)
+        self._reader.join(timeout=1)
+
+    def _wait_for_hello(self) -> None:
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            response = self._read_response(max(deadline - time.time(), 0.1))
+            if response.get('type') == 'hello' and response.get('status') == 'ok':
+                return
+        raise RuntimeError('MonkeyMux control did not send hello.')
+
+    def _read_response(self, timeout: float) -> dict[str, object]:
+        try:
+            response = self._responses.get(timeout=timeout)
+        except queue.Empty as error:
+            if self._process.poll() is not None:
+                raise RuntimeError('MonkeyMux control process exited.') from error
+            raise RuntimeError('Timed out reading MonkeyMux control output.') from error
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def _read_loop(self) -> None:
+        if self._process.stdout is None:
+            self._responses.put(RuntimeError('MonkeyMux control stdout is unavailable.'))
+            return
+        for line in self._process.stdout:
+            try:
+                decoded = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                self._responses.put(decoded)
+        self._responses.put(RuntimeError('MonkeyMux control closed stdout.'))
+
+
+def _monkeymux_platform_key() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    os_name = {
+        'darwin': 'darwin',
+        'linux': 'linux',
+    }.get(system)
+    arch = {
+        'amd64': 'amd64',
+        'x86_64': 'amd64',
+        'arm64': 'arm64',
+        'aarch64': 'arm64',
+    }.get(machine)
+    if os_name is None or arch is None:
+        raise RuntimeError(f'MonkeyMux is not bundled for {system}-{machine}.')
+    return f'{os_name}-{arch}'
+
+
+def _set_pty_size(fd: int, *, rows: int, columns: int) -> None:
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
+
+
+def _strip_terminal_output(text: str) -> str:
+    text = _latest_visible_screen_text(text)
+    stripped = ANSI_ESCAPE_PATTERN.sub('', text)
+    stripped = stripped.replace('\r\n', '\n').replace('\r', '\n')
+    return ''.join(
+        character
+        if character in ('\n', '\t') or ord(character) >= 32
+        else ' '
+        for character in stripped
+    )
+
+
+def _latest_visible_screen_text(text: str) -> str:
+    latest_end = -1
+    for sequence in CLEAR_SCREEN_SEQUENCES:
+        index = text.rfind(sequence)
+        if index >= 0:
+            latest_end = max(latest_end, index + len(sequence))
+    return text[latest_end:] if latest_end >= 0 else text
+
+
+def _visible_text_contains_marker(text: str, marker: str) -> bool:
+    if marker in text:
+        return True
+    compact_text = re.sub(r'\s+', '', text)
+    compact_marker = re.sub(r'\s+', '', marker)
+    return compact_marker in compact_text
+
+
+def _text_after_last_visible_marker(text: str, marker: str) -> str:
+    index = text.rfind(marker)
+    if index >= 0:
+        return text[index:]
+    compact_text = re.sub(r'\s+', '', text)
+    compact_marker = re.sub(r'\s+', '', marker)
+    compact_index = compact_text.rfind(compact_marker)
+    if compact_index >= 0:
+        return compact_text[compact_index:]
+    return text
+
+
+def _terminate_process(process: subprocess.Popen, *, timeout: float) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=timeout)
 
 
 def _free_local_port() -> int:
@@ -779,6 +1124,12 @@ def _reset_ios_app_state(device_id: str) -> None:
         'xyz.depollsoft.monkeyssh',
         'xyz.depollsoft.monkeyssh.private',
     ):
+        subprocess.run(
+            ['xcrun', 'simctl', 'terminate', device_id, bundle_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
         subprocess.run(
             ['xcrun', 'simctl', 'uninstall', device_id, bundle_id],
             stdout=subprocess.DEVNULL,

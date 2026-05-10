@@ -90,6 +90,20 @@ Be respectful and constructive in all interactions.
    git push origin feature/your-feature-name
    ```
 
+### Store Screenshots
+
+Store screenshots are generated locally because the capture flow needs real
+simulators/emulators plus authenticated `copilot` and `claude` CLIs. To generate
+fresh screenshots, commit only the PNG assets, and open a PR:
+
+```bash
+./scripts/create_store_screenshots_pr.sh both
+```
+
+You can pass `ios` or `android` instead of `both` for a narrower update. After
+the screenshot PR merges to `main`, the Sync Store Metadata workflow validates
+and uploads the committed screenshots.
+
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
