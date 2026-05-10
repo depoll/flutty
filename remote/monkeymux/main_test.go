@@ -566,9 +566,20 @@ func TestActiveReplayPreservesHiddenCursor(t *testing.T) {
 }
 
 func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
-	for _, mode := range []string{"?1000l", "?1002l", "?1003l", "?1006l", "?1004l", "?2004l", "?1l", "?6l", "?7h", "4l"} {
-		if !strings.Contains(activeWindowReplayPrefix, mode) {
-			t.Fatalf("replay prefix %q does not reset %s", activeWindowReplayPrefix, mode)
+	for _, sequence := range []string{
+		"\x1b[?1000l",
+		"\x1b[?1002l",
+		"\x1b[?1003l",
+		"\x1b[?1006l",
+		"\x1b[?1004l",
+		"\x1b[?2004l",
+		"\x1b[?1l",
+		"\x1b[?6l",
+		"\x1b[?7h",
+		"\x1b[4l",
+	} {
+		if !strings.Contains(activeWindowReplayPrefix, sequence) {
+			t.Fatalf("replay prefix %q does not reset %q", activeWindowReplayPrefix, sequence)
 		}
 	}
 	if !strings.Contains(activeWindowReplayPrefix, "\x1b>") {
