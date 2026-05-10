@@ -49,6 +49,7 @@ import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
 const _minimumFaintTextContrast = 4.5;
+const _minimumCursorTextContrast = 4.5;
 
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
@@ -174,6 +175,49 @@ Color resolveMonkeyTerminalFaintForegroundColor({
       ? readableFaint
       : foreground;
 }
+
+/// Resolves a readable glyph color for text covered by a focused block cursor.
+@visibleForTesting
+Color resolveMonkeyTerminalCursorForegroundColor({
+  required Color cursor,
+  required Color background,
+  required Color foreground,
+  Color? cellBackground,
+  double minimumContrast = _minimumCursorTextContrast,
+}) {
+  final effectiveCellBackground = Color.alphaBlend(
+    cellBackground ?? background,
+    background,
+  );
+  final cursorBackground = Color.alphaBlend(cursor, effectiveCellBackground);
+  Color resolveOpaque(Color color) =>
+      Color.alphaBlend(color, effectiveCellBackground);
+
+  final preferredCandidates = <Color>[
+    if (cellBackground != null) resolveOpaque(cellBackground),
+    resolveOpaque(background),
+    resolveOpaque(foreground),
+  ];
+
+  for (final candidate in preferredCandidates) {
+    if (_contrastRatio(candidate, cursorBackground) >= minimumContrast) {
+      return candidate;
+    }
+  }
+
+  const black = Color(0xFF000000);
+  const white = Color(0xFFFFFFFF);
+  final fallbackCandidates = <Color>[...preferredCandidates, black, white];
+
+  return fallbackCandidates.reduce((best, candidate) {
+    final bestContrast = _contrastRatio(best, cursorBackground);
+    final candidateContrast = _contrastRatio(candidate, cursorBackground);
+    return candidateContrast > bestContrast ? candidate : best;
+  });
+}
+
+int _encodeRgbCellColor(Color color) =>
+    (color.toARGB32() & CellColor.valueMask) | CellColor.rgb;
 
 /// Terminal render padding.
 ///
@@ -1322,6 +1366,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
   List<Color> _palette;
   final _paragraphCache = ParagraphCache(10240);
   final _inlineUnderlineParagraphCache = ParagraphCache(1024);
+  final _cursorCellData = CellData.empty();
 
   @override
   set textStyle(TerminalStyle value) {
@@ -1359,6 +1404,54 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.clearFontCache();
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+  }
+
+  void paintReadableCursor(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData, {
+    required TerminalCursorType cursorType,
+    required bool hasFocus,
+  }) {
+    paintCursor(canvas, offset, cursorType: cursorType, hasFocus: hasFocus);
+
+    if (!hasFocus || cursorType != TerminalCursorType.block) {
+      return;
+    }
+
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return;
+    }
+
+    _cursorCellData
+      ..foreground = _encodeRgbCellColor(
+        _resolveCursorForegroundColor(cellData),
+      )
+      ..background = _encodeRgbCellColor(theme.cursor)
+      ..flags = cellData.flags & ~CellFlags.inverse & ~CellFlags.faint
+      ..content = cellData.content;
+
+    canvas
+      ..save()
+      ..clipRect(offset & cellSize);
+    paintCellForeground(canvas, offset, _cursorCellData);
+    canvas.restore();
+  }
+
+  Color _resolveCursorForegroundColor(CellData cellData) {
+    final cellFlags = cellData.flags;
+    final inverse = cellFlags & CellFlags.inverse != 0;
+    final cellBackground = inverse
+        ? resolveForegroundColor(cellData.foreground)
+        : resolveBackgroundColor(cellData.background);
+
+    return resolveMonkeyTerminalCursorForegroundColor(
+      cursor: theme.cursor,
+      background: theme.background,
+      foreground: theme.foreground,
+      cellBackground: cellBackground,
+    );
   }
 
   void paintLineInlineUnderlines(
@@ -1749,6 +1842,7 @@ class MonkeyRenderTerminal extends RenderBox
   final Set<VoidCallback> _selectionListeners = <VoidCallback>{};
 
   int _lastKnownLineCount = -1;
+  final _cursorCellData = CellData.empty();
 
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
@@ -2747,12 +2841,7 @@ class MonkeyRenderTerminal extends RenderBox
       }
 
       if (_shouldShowCursor) {
-        _painter.paintCursor(
-          canvas,
-          offset + cursorOffset,
-          cursorType: _cursorType,
-          hasFocus: _focusNode.hasFocus,
-        );
+        _paintCursor(canvas, offset + cursorOffset);
       }
     }
 
@@ -2779,6 +2868,43 @@ class MonkeyRenderTerminal extends RenderBox
     _contentOrigin.dx,
     (row * _painter.cellSize.height + _lineOffset).truncateToDouble(),
   );
+
+  void _paintCursor(Canvas canvas, Offset offset) {
+    final cellData = _cursorCellDataAtCursor();
+    if (cellData == null) {
+      _painter.paintCursor(
+        canvas,
+        offset,
+        cursorType: _cursorType,
+        hasFocus: _focusNode.hasFocus,
+      );
+      return;
+    }
+
+    _painter.paintReadableCursor(
+      canvas,
+      offset,
+      cellData,
+      cursorType: _cursorType,
+      hasFocus: _focusNode.hasFocus,
+    );
+  }
+
+  CellData? _cursorCellDataAtCursor() {
+    final cursorY = _terminal.buffer.absoluteCursorY;
+    if (cursorY < 0 || cursorY >= _terminal.buffer.lines.length) {
+      return null;
+    }
+
+    final line = _terminal.buffer.lines[cursorY];
+    final cursorX = _terminal.buffer.cursorX;
+    if (cursorX < 0 || cursorX >= line.length) {
+      return null;
+    }
+
+    line.getCellData(cursorX, _cursorCellData);
+    return _cursorCellData;
+  }
 
   void _paintInlineUnderlines(
     Canvas canvas,

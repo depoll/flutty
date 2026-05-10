@@ -385,6 +385,64 @@ void main() {
     expect(output.single, isNot(contains('\x1b]4;16;')));
   });
 
+  testWidgets('focused block cursor repaints the covered glyph', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final focusNode = FocusNode();
+    addTearDown(focusNode.dispose);
+
+    const hiddenColor = Color(0xFFE53935);
+    const backgroundColor = Color(0xFF0D1A20);
+    final hiddenTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .copyWith(
+          foreground: hiddenColor,
+          background: backgroundColor,
+          cursor: hiddenColor,
+        )
+        .toXtermTheme();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 320,
+          height: 240,
+          child: MonkeyTerminalView(
+            key: terminalKey,
+            terminal,
+            theme: hiddenTheme,
+            focusNode: focusNode,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    terminal.write('A\x1b[1D');
+    await tester.pump();
+
+    expect(focusNode.hasFocus, isTrue);
+    final renderTerminal = terminalKey.currentState!.renderTerminal;
+    expect(
+      renderTerminal,
+      paints
+        ..rect(color: hiddenColor, style: PaintingStyle.fill)
+        ..save()
+        ..paragraph()
+        ..restore(),
+    );
+    expect(
+      resolveMonkeyTerminalCursorForegroundColor(
+        cursor: hiddenColor,
+        background: hiddenColor,
+        foreground: hiddenColor,
+      ),
+      isNot(hiddenColor),
+    );
+  });
+
   test('explicit xterm palette grayscale colors stay standard', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
@@ -493,5 +551,23 @@ void main() {
       greaterThanOrEqualTo(4.5),
     );
     expect(readableFaint, isNot(theme.foreground));
+  });
+
+  test('cursor text stays readable against built-in cursor colors', () {
+    for (final theme in monkey_themes.TerminalThemes.all) {
+      final cursorForeground = resolveMonkeyTerminalCursorForegroundColor(
+        cursor: theme.cursor,
+        background: theme.background,
+        foreground: theme.foreground,
+      );
+
+      expect(
+        _contrastRatio(cursorForeground, theme.cursor),
+        greaterThanOrEqualTo(4.5),
+        reason:
+            'Theme ${theme.name} should keep text under the block cursor '
+            'readable.',
+      );
+    }
   });
 }
