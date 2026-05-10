@@ -185,8 +185,13 @@ Color resolveMonkeyTerminalCursorForegroundColor({
   Color? cellBackground,
   double minimumContrast = _minimumCursorTextContrast,
 }) {
-  final cursorBackground = Color.alphaBlend(cursor, background);
-  Color resolveOpaque(Color color) => Color.alphaBlend(color, background);
+  final effectiveCellBackground = Color.alphaBlend(
+    cellBackground ?? background,
+    background,
+  );
+  final cursorBackground = Color.alphaBlend(cursor, effectiveCellBackground);
+  Color resolveOpaque(Color color) =>
+      Color.alphaBlend(color, effectiveCellBackground);
 
   final preferredCandidates = <Color>[
     if (cellBackground != null) resolveOpaque(cellBackground),
