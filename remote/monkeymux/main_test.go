@@ -465,11 +465,29 @@ func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	window.appendHistoryLocked(bytes.Repeat([]byte("a"), windowHistoryLimitBytes-2))
 	window.appendHistoryLocked([]byte("bcdef"))
 
-	if got := len(window.history); got != windowHistoryLimitBytes {
-		t.Fatalf("history length = %d, want %d", got, windowHistoryLimitBytes)
+	if got := len(window.history); got > 2*windowHistoryLimitBytes {
+		t.Fatalf("history length = %d, want <= %d", got, 2*windowHistoryLimitBytes)
+	}
+	if got := len(window.historyTailLocked()); got != windowHistoryLimitBytes {
+		t.Fatalf("history tail length = %d, want %d", got, windowHistoryLimitBytes)
 	}
 	if got := string(window.history[len(window.history)-5:]); got != "bcdef" {
 		t.Fatalf("history suffix = %q, want bcdef", got)
+	}
+}
+
+func TestWindowHistoryAmortizedTrim(t *testing.T) {
+	window := &muxWindow{}
+	chunk := bytes.Repeat([]byte("x"), 4096)
+	// Fill past the soft limit so subsequent writes exercise the trim path.
+	for i := 0; i < (3*windowHistoryLimitBytes)/len(chunk); i++ {
+		window.appendHistoryLocked(chunk)
+	}
+	if got := len(window.history); got > 2*windowHistoryLimitBytes {
+		t.Fatalf("history length = %d, exceeds amortization budget %d", got, 2*windowHistoryLimitBytes)
+	}
+	if got := len(window.historyTailLocked()); got != windowHistoryLimitBytes {
+		t.Fatalf("history tail length = %d, want %d", got, windowHistoryLimitBytes)
 	}
 }
 
