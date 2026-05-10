@@ -116,10 +116,17 @@ String buildMonkeyMuxAttachCommand({
 /// Controls a remote MonkeyMux session through its JSON backchannel.
 class MonkeyMuxService implements RemoteMultiplexerService {
   /// Creates a MonkeyMux service.
-  const MonkeyMuxService({required MonkeyMuxInstallerService installer})
-    : _installer = installer;
+  const MonkeyMuxService({
+    required MonkeyMuxInstallerService installer,
+    Duration agentSessionMetadataPeriodicRefreshInterval = const Duration(
+      seconds: 10,
+    ),
+  }) : _installer = installer,
+       _agentSessionMetadataPeriodicRefreshInterval =
+           agentSessionMetadataPeriodicRefreshInterval;
 
   final MonkeyMuxInstallerService _installer;
+  final Duration _agentSessionMetadataPeriodicRefreshInterval;
 
   static final _observers =
       <_MonkeyMuxWatchKey, _MonkeyMuxWindowChangeObserver>{};
@@ -132,6 +139,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       <_MonkeyMuxWatchKey, List<TmuxWindow>>{};
   static final _agentMetadataPendingForced = <_MonkeyMuxWatchKey, bool>{};
   static final _agentMetadataRefreshes = <_MonkeyMuxWatchKey, DateTime>{};
+  static final _agentMetadataPeriodicTimers = <_MonkeyMuxWatchKey, Timer>{};
+  static final _agentMetadataPeriodicSessions =
+      <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
 
@@ -152,6 +162,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     _agentMetadataRefreshes.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
+    final periodicKeys = _agentMetadataPeriodicTimers.keys
+        .where((key) => key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final key in periodicKeys) {
+      _cancelAgentMetadataPeriodicRefresh(key);
+    }
     _agentMetadataRequestPanePids.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -256,9 +272,16 @@ class MonkeyMuxService implements RemoteMultiplexerService {
             );
           }
         },
-        onDispose: () => _observers.remove(key),
+        onDispose: () {
+          _observers.remove(key);
+          _cancelAgentMetadataPeriodicRefresh(key);
+        },
       ),
     );
+    final cachedWindows = _windowSnapshotCache[key];
+    if (cachedWindows != null) {
+      _scheduleAgentMetadataRefresh(session, sessionName, key, cachedWindows);
+    }
     DiagnosticsLogService.instance.info(
       'monkeymux.watch',
       'watch_requested',
@@ -518,7 +541,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) {
     final panePids = _monkeyMuxAgentPanePids(windows);
     if (panePids.isEmpty) {
+      _cancelAgentMetadataPeriodicRefresh(key);
       return;
+    }
+    if (_observers.containsKey(key)) {
+      _ensureAgentMetadataPeriodicRefresh(session, sessionName, key);
     }
     if (_agentMetadataRequests.containsKey(key)) {
       final activePanePids =
@@ -584,6 +611,54 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         );
       }
     }).ignore();
+  }
+
+  void _ensureAgentMetadataPeriodicRefresh(
+    SshSession session,
+    String sessionName,
+    _MonkeyMuxWatchKey key,
+  ) {
+    if (_agentSessionMetadataPeriodicRefreshInterval <= Duration.zero) {
+      return;
+    }
+    _agentMetadataPeriodicSessions[key] = (
+      session: session,
+      sessionName: sessionName,
+    );
+    if (_agentMetadataPeriodicTimers.containsKey(key)) {
+      return;
+    }
+    _agentMetadataPeriodicTimers[key] = Timer(
+      _agentSessionMetadataPeriodicRefreshInterval,
+      () {
+        _agentMetadataPeriodicTimers.remove(key);
+        final refreshContext = _agentMetadataPeriodicSessions[key];
+        if (refreshContext == null) {
+          return;
+        }
+        if (!_observers.containsKey(key)) {
+          _agentMetadataPeriodicSessions.remove(key);
+          return;
+        }
+        final windows = _windowSnapshotCache[key];
+        if (windows == null || _monkeyMuxAgentPanePids(windows).isEmpty) {
+          _agentMetadataPeriodicSessions.remove(key);
+          return;
+        }
+        _scheduleAgentMetadataRefresh(
+          refreshContext.session,
+          refreshContext.sessionName,
+          key,
+          windows,
+          force: true,
+        );
+      },
+    );
+  }
+
+  static void _cancelAgentMetadataPeriodicRefresh(_MonkeyMuxWatchKey key) {
+    _agentMetadataPeriodicTimers.remove(key)?.cancel();
+    _agentMetadataPeriodicSessions.remove(key);
   }
 
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {

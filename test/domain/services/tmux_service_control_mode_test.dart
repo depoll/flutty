@@ -761,6 +761,47 @@ void main() {
       }
     });
 
+    test('agent session metadata refreshes periodically for watches', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 38);
+      const service = TmuxService(
+        agentSessionMetadataRefreshDebounce: Duration(milliseconds: 5),
+        agentSessionMetadataPeriodicRefreshInterval: Duration(milliseconds: 40),
+      );
+      final commands = <String>[];
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('list-windows')) {
+          return _buildOpenExecSession(
+            stdout:
+                '${_tmuxWindowLine(id: '@42', panePid: 42)}\n${_doneMarker()}',
+          );
+        }
+        return _buildOpenExecSession(stdout: _doneMarker());
+      });
+
+      try {
+        service.watchWindowChanges(session, 'main');
+        await service.listWindows(session, 'main');
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(commands.where(_isCopilotMetadataCommand), hasLength(1));
+
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(
+          commands.where(_isCopilotMetadataCommand).length,
+          greaterThanOrEqualTo(2),
+        );
+      } finally {
+        await service.clearCache(session.connectionId);
+      }
+    });
+
     test('Copilot metadata refreshes wait for exec channel backoff', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 35);

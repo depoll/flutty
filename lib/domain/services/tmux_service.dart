@@ -70,14 +70,20 @@ class TmuxService {
     Duration agentSessionMetadataRefreshDebounce = const Duration(
       milliseconds: 150,
     ),
+    Duration agentSessionMetadataPeriodicRefreshInterval = const Duration(
+      seconds: 10,
+    ),
   }) : _execOpenTimeout = execOpenTimeout,
        _execOutputTimeout = execOutputTimeout,
        _agentSessionMetadataRefreshDebounce =
-           agentSessionMetadataRefreshDebounce;
+           agentSessionMetadataRefreshDebounce,
+       _agentSessionMetadataPeriodicRefreshInterval =
+           agentSessionMetadataPeriodicRefreshInterval;
 
   final Duration _execOpenTimeout;
   final Duration _execOutputTimeout;
   final Duration _agentSessionMetadataRefreshDebounce;
+  final Duration _agentSessionMetadataPeriodicRefreshInterval;
 
   /// Cached tmux binary paths per SSH session (by connectionId).
   static final Map<int, String> _tmuxPathCache = {};
@@ -119,6 +125,9 @@ class TmuxService {
   static final _activeAgentSessionMetadataCooldownForced = <int, bool>{};
   static final _activeAgentSessionMetadataPendingPanePids = <int, Set<int>>{};
   static final _activeAgentSessionMetadataPendingForced = <int, bool>{};
+  static final _activeAgentSessionMetadataPeriodicTimers = <int, Timer>{};
+  static final _activeAgentSessionMetadataPeriodicSessions =
+      <int, SshSession>{};
   static final _activeAgentSessionMetadataRefreshes = <int, DateTime>{};
   static final _execChannelBackoffs = <int, _TmuxExecChannelBackoff>{};
 
@@ -200,6 +209,8 @@ class TmuxService {
     _activeAgentSessionMetadataCooldownForced.remove(connectionId);
     _activeAgentSessionMetadataPendingPanePids.remove(connectionId);
     _activeAgentSessionMetadataPendingForced.remove(connectionId);
+    _activeAgentSessionMetadataPeriodicTimers.remove(connectionId)?.cancel();
+    _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
     _activeAgentSessionMetadataRefreshes.remove(connectionId);
     _execChannelBackoffs.remove(connectionId);
     _windowSnapshotCache.removeWhere(
@@ -884,7 +895,13 @@ class TmuxService {
   }) {
     final agentPanePids = _agentPanePids(windows);
     if (agentPanePids.isEmpty) {
+      if (_cachedAgentPanePidsForConnection(session.connectionId).isEmpty) {
+        _cancelAgentSessionMetadataPeriodicRefresh(session.connectionId);
+      }
       return;
+    }
+    if (_hasWindowObserverForConnection(session.connectionId)) {
+      _ensureAgentSessionMetadataPeriodicRefresh(session);
     }
     _scheduleAgentSessionMetadataRefreshForPanePids(
       session,
@@ -892,6 +909,60 @@ class TmuxService {
       force: force,
     );
   }
+
+  void _ensureAgentSessionMetadataPeriodicRefresh(SshSession session) {
+    if (_agentSessionMetadataPeriodicRefreshInterval <= Duration.zero) {
+      return;
+    }
+    final connectionId = session.connectionId;
+    _activeAgentSessionMetadataPeriodicSessions[connectionId] = session;
+    if (_activeAgentSessionMetadataPeriodicTimers.containsKey(connectionId)) {
+      return;
+    }
+    _activeAgentSessionMetadataPeriodicTimers[connectionId] = Timer(
+      _agentSessionMetadataPeriodicRefreshInterval,
+      () {
+        _activeAgentSessionMetadataPeriodicTimers.remove(connectionId);
+        final queuedSession =
+            _activeAgentSessionMetadataPeriodicSessions[connectionId];
+        if (queuedSession == null) {
+          return;
+        }
+        if (!_hasWindowObserverForConnection(connectionId)) {
+          _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
+          return;
+        }
+        final panePids = _cachedAgentPanePidsForConnection(connectionId);
+        if (panePids.isEmpty) {
+          _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
+          return;
+        }
+        _scheduleAgentSessionMetadataRefreshForPanePids(
+          queuedSession,
+          panePids,
+          force: true,
+        );
+        _ensureAgentSessionMetadataPeriodicRefresh(queuedSession);
+      },
+    );
+  }
+
+  void _cancelAgentSessionMetadataPeriodicRefresh(int connectionId) {
+    _activeAgentSessionMetadataPeriodicTimers.remove(connectionId)?.cancel();
+    _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
+  }
+
+  Set<int> _cachedAgentPanePidsForConnection(int connectionId) {
+    final panePids = <int>{};
+    for (final entry in _windowSnapshotCache.entries) {
+      if (entry.key.connectionId != connectionId) continue;
+      panePids.addAll(_agentPanePids(entry.value));
+    }
+    return panePids;
+  }
+
+  bool _hasWindowObserverForConnection(int connectionId) =>
+      _windowObservers.keys.any((key) => key.connectionId == connectionId);
 
   void _scheduleAgentSessionMetadataRefreshForPanePids(
     SshSession session,
@@ -1541,9 +1612,18 @@ class TmuxService {
         session: session,
         sessionName: sessionName,
         extraFlags: extraFlags,
-        onDispose: () => _windowObservers.remove(key),
+        onDispose: () {
+          _windowObservers.remove(key);
+          if (!_hasWindowObserverForConnection(session.connectionId)) {
+            _cancelAgentSessionMetadataPeriodicRefresh(session.connectionId);
+          }
+        },
       ),
     );
+    final cachedWindows = _windowSnapshotCache[key];
+    if (cachedWindows != null) {
+      _scheduleAgentSessionMetadataRefresh(session, cachedWindows);
+    }
     DiagnosticsLogService.instance.info(
       'tmux.watch',
       'watch_requested',
@@ -3967,48 +4047,157 @@ flutty_codex_resume_id() {
   }
 }'
 }
+flutty_json_string_field_from_stdin() {
+  field=\$1
+  awk -v field="\$field" '
+BEGIN {
+  quote = sprintf("%c", 34)
+  slash = sprintf("%c", 92)
+  key = quote field quote
+}
+index(\$0, key) {
+  line = \$0
+  sub(".*" key "[[:space:]]*:[[:space:]]*" quote, "", line)
+  out = ""
+  escaped = 0
+  for (i = 1; i <= length(line); i++) {
+    ch = substr(line, i, 1)
+    if (escaped) {
+      out = out "\\\\" ch
+      escaped = 0
+      continue
+    }
+    if (ch == slash) {
+      escaped = 1
+      continue
+    }
+    if (ch == quote) {
+      print out
+      exit
+    }
+    out = out ch
+  }
+}'
+}
+flutty_clean_session_title() {
+  printf '%s' "\$1" |
+    sed 's/\\\\"/"/g; s/\\\\\\\\/\\\\/g; s/\\\\n/ /g; s/\\\\r/ /g; s/\\\\t/ /g' |
+    tr "\\037\\r\\n" "   " |
+    awk '{ \$1=\$1; print }' |
+    cut -c 1-80
+}
+flutty_copilot_workspace_title() {
+  workspace=\$1
+  [ -r "\$workspace" ] || return 0
+  title=\$(awk '
+/^[[:space:]]*summary:[[:space:]]*/ {
+  sub(/^[[:space:]]*summary:[[:space:]]*/, "")
+  print
+  exit
+}
+/^[[:space:]]*name:[[:space:]]*/ {
+  sub(/^[[:space:]]*name:[[:space:]]*/, "")
+  print
+  exit
+}
+' "\$workspace" 2>/dev/null)
+  flutty_clean_session_title "\$title"
+}
+flutty_claude_session_title() {
+  file=\$1
+  [ -r "\$file" ] || return 0
+  title=\$(grep '"customTitle"' "\$file" 2>/dev/null | tail -n 1 | flutty_json_string_field_from_stdin customTitle)
+  if [ -z "\$title" ]; then
+    title=\$(grep '"lastPrompt"' "\$file" 2>/dev/null | tail -n 1 | flutty_json_string_field_from_stdin lastPrompt)
+  fi
+  if [ -z "\$title" ]; then
+    title=\$(grep '"type"[[:space:]]*:[[:space:]]*"user"' "\$file" 2>/dev/null |
+      grep -v '"isMeta"[[:space:]]*:[[:space:]]*true' |
+      grep '"content"' |
+      grep -v '"content"[[:space:]]*:[[:space:]]*"/' |
+      head -n 1 |
+      flutty_json_string_field_from_stdin content)
+  fi
+  flutty_clean_session_title "\$title"
+}
+flutty_codex_session_title() {
+  file=\$1
+  session_id=\$2
+  title=
+  index_file=\$home/.codex/session_index.jsonl
+  if [ -r "\$index_file" ] && [ -n "\$session_id" ]; then
+    title=\$(grep -F "\$session_id" "\$index_file" 2>/dev/null |
+      grep '"thread_name"' |
+      tail -n 1 |
+      flutty_json_string_field_from_stdin thread_name)
+  fi
+  if [ -z "\$title" ] && [ -r "\$file" ]; then
+    title=\$(grep '"user_message"' "\$file" 2>/dev/null |
+      grep '"message"' |
+      head -n 1 |
+      flutty_json_string_field_from_stdin message)
+  fi
+  flutty_clean_session_title "\$title"
+}
+flutty_gemini_session_title() {
+  file=\$1
+  [ -r "\$file" ] || return 0
+  title=\$(grep '"summary"' "\$file" 2>/dev/null | head -n 1 | flutty_json_string_field_from_stdin summary)
+  if [ -z "\$title" ]; then
+    title=\$(grep '"displayContent"' "\$file" 2>/dev/null | head -n 1 | flutty_json_string_field_from_stdin displayContent)
+  fi
+  if [ -z "\$title" ]; then
+    title=\$(grep '"text"' "\$file" 2>/dev/null | head -n 1 | flutty_json_string_field_from_stdin text)
+  fi
+  flutty_clean_session_title "\$title"
+}
+flutty_emit_lsof_match() {
+  value=\$(printf '%s' "\$1" | tr "\\037\\r\\n" "   ")
+  title=\$(flutty_clean_session_title "\$2")
+  [ -n "\$value" ] || return 0
+  printf '%s%s%s\\n' "\$value" "\$sep" "\$title"
+}
 flutty_lsof_session_match() {
   pid=\$1
   tool=\$2
   command -v lsof >/dev/null 2>&1 || return 0
-  lsof -nP -p "\$pid" -Fn 2>/dev/null | awk -v tool="\$tool" -v sep="\$sep" '
-function emit(value, title) {
-  gsub(sep, " ", value)
-  gsub(sep, " ", title)
-  print value sep title
-  exit
-}
-{
-  if (substr(\$0, 1, 1) != "n") next
-  path = substr(\$0, 2)
-  if (tool == "claude" && path ~ /\\/\\.claude\\/projects\\/.*\\/[^\\/]+\\.jsonl\$/) {
-    file = path
-    sub(/^.*\\//, "", file)
-    sub(/\\.jsonl\$/, "", file)
-    emit(file, "")
-  }
-  if (tool == "codex" && path ~ /\\/\\.codex\\/sessions\\/.*\\/rollout-[^\\/]+\\.jsonl\$/) {
-    file = path
-    sub(/^.*\\//, "", file)
-    sub(/\\.jsonl\$/, "", file)
-    if (match(file, /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\$/)) {
-      file = substr(file, RSTART, RLENGTH)
-    }
-    emit(file, "")
-  }
-  if (tool == "gemini" && path ~ /\\/\\.gemini\\/tmp\\/.*\\/chats\\/session-[^\\/]+\\.(json|jsonl)\$/) {
-    file = path
-    sub(/^.*\\//, "", file)
-    sub(/\\.(json|jsonl)\$/, "", file)
-    emit(file, "")
-  }
-  if (tool == "copilot" && path ~ /\\/\\.copilot\\/session-state\\/[^\\/]+\\/workspace\\.yaml\$/) {
-    file = path
-    sub(/^.*\\/\\.copilot\\/session-state\\//, "", file)
-    sub(/\\/workspace\\.yaml\$/, "", file)
-    emit(file, "")
-  }
-}'
+  lsof -nP -p "\$pid" -Fn 2>/dev/null | while IFS= read -r line; do
+    case "\$line" in
+      n*) path=\${line#n} ;;
+      *) continue ;;
+    esac
+    case "\$tool:\$path" in
+      claude:*/.claude/projects/*/*.jsonl)
+        file=\${path##*/}
+        session_id=\${file%.jsonl}
+        flutty_emit_lsof_match "\$session_id" "\$(flutty_claude_session_title "\$path")"
+        break
+        ;;
+      codex:*/.codex/sessions/*/rollout-*.jsonl)
+        file=\${path##*/}
+        file=\${file%.jsonl}
+        session_id=\$(printf '%s\\n' "\$file" | sed -nE 's/^.*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\$/\\1/p')
+        if [ -z "\$session_id" ]; then
+          session_id=\$file
+        fi
+        flutty_emit_lsof_match "\$session_id" "\$(flutty_codex_session_title "\$path" "\$session_id")"
+        break
+        ;;
+      gemini:*/.gemini/tmp/*/chats/session-*.json|gemini:*/.gemini/tmp/*/chats/session-*.jsonl)
+        file=\${path##*/}
+        session_id=\${file%.json}
+        session_id=\${session_id%.jsonl}
+        flutty_emit_lsof_match "\$session_id" "\$(flutty_gemini_session_title "\$path")"
+        break
+        ;;
+      copilot:*/.copilot/session-state/*/workspace.yaml)
+        session_id=\${path#*/.copilot/session-state/}
+        session_id=\${session_id%/workspace.yaml}
+        flutty_emit_lsof_match "\$session_id" "\$(flutty_copilot_workspace_title "\$path")"
+        break
+        ;;
+    esac
+  done
 }
 if [ -n "\${ps_output:-}" ]; then
   agent_rows=\$(printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v sep="\$sep" '
@@ -4065,13 +4254,7 @@ END {
           session_id=\${dir##*/}
           workspace=\$dir/workspace.yaml
           if [ -r "\$workspace" ]; then
-            title=\$(awk '
-/^[[:space:]]*name:[[:space:]]*/ {
-  sub(/^[[:space:]]*name:[[:space:]]*/, "")
-  print
-  exit
-}
-' "\$workspace" 2>/dev/null | tr -d '\\r' | tr "\\037" " ")
+            title=\$(flutty_copilot_workspace_title "\$workspace")
           fi
           break
         done
