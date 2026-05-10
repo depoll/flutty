@@ -428,7 +428,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     final observer =
         _observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)];
     if (observer != null) {
-      return observer.runCommand(command);
+      return observer.runCommand(command, priority: priority);
     }
     final installation = await _installer.ensureInstalled(
       session,
@@ -787,7 +787,8 @@ class _MonkeyMuxWindowChangeObserver {
   final ValueChanged<TmuxWindow> onWindowSnapshot;
   final VoidCallback onDispose;
   final StreamController<TmuxWindowChangeEvent> _controller;
-  final _commandQueue = Queue<_MonkeyMuxControlRequest>();
+  final _normalCommandQueue = Queue<_MonkeyMuxControlRequest>();
+  final _lowCommandQueue = Queue<_MonkeyMuxControlRequest>();
   final _pendingCommands = <String, _MonkeyMuxControlRequest>{};
 
   SSHSession? _controlSession;
@@ -815,8 +816,9 @@ class _MonkeyMuxWindowChangeObserver {
   }
 
   Future<_MonkeyMuxControlResponse> runCommand(
-    Map<String, Object?> command,
-  ) async {
+    Map<String, Object?> command, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
     if (_disposed) {
       throw const MonkeyMuxInstallException(
         'MonkeyMux control channel unavailable.',
@@ -829,7 +831,12 @@ class _MonkeyMuxWindowChangeObserver {
       );
     }
     final request = _MonkeyMuxControlRequest(command);
-    _commandQueue.add(request);
+    switch (priority) {
+      case SshExecPriority.normal:
+        _normalCommandQueue.add(request);
+      case SshExecPriority.low:
+        _lowCommandQueue.add(request);
+    }
     _drainCommands();
     return request.future;
   }
@@ -892,8 +899,10 @@ class _MonkeyMuxWindowChangeObserver {
   void _drainCommands() {
     final controlSession = _controlSession;
     if (controlSession == null) return;
-    while (_commandQueue.isNotEmpty) {
-      final request = _commandQueue.removeFirst();
+    while (_normalCommandQueue.isNotEmpty || _lowCommandQueue.isNotEmpty) {
+      final request = _normalCommandQueue.isNotEmpty
+          ? _normalCommandQueue.removeFirst()
+          : _lowCommandQueue.removeFirst();
       _pendingCommands[request.id] = request;
       controlSession.write(utf8.encode('${jsonEncode(request.payload)}\n'));
     }
@@ -960,8 +969,11 @@ class _MonkeyMuxWindowChangeObserver {
   }
 
   void _failPending(Object error, StackTrace stackTrace) {
-    while (_commandQueue.isNotEmpty) {
-      _commandQueue.removeFirst().completeError(error, stackTrace);
+    while (_normalCommandQueue.isNotEmpty) {
+      _normalCommandQueue.removeFirst().completeError(error, stackTrace);
+    }
+    while (_lowCommandQueue.isNotEmpty) {
+      _lowCommandQueue.removeFirst().completeError(error, stackTrace);
     }
     for (final request in _pendingCommands.values) {
       request.completeError(error, stackTrace);
