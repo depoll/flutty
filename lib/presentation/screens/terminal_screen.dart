@@ -3826,6 +3826,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTmuxWindowStateChanged(SshSession session, String sessionName) {
+    _terminalTextInputController.resetImeCompletions();
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshMuxPaneContextAfterWindowStateChange(session, sessionName);
       return;
@@ -7444,6 +7445,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } else {
       await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
+    _terminalTextInputController.resetImeCompletions();
 
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
@@ -7502,6 +7504,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
+    _terminalTextInputController.resetImeCompletions();
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
@@ -7553,6 +7556,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _handleMuxSessionEnded(session, sessionName);
       return;
     }
+    _terminalTextInputController.resetImeCompletions();
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
@@ -8457,6 +8461,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) {
         return;
       }
+      _terminalTextInputController.resetImeCompletions();
       _terminalFocusNode.requestFocus();
       final shouldShowKeyboard =
           forceShowSystemKeyboard ||
