@@ -2771,6 +2771,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTerminalSizeRefreshQueued = false;
   bool _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+  Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -3831,12 +3832,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String sessionName, {
     required bool activeWindowChanged,
   }) {
+    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      if (activeWindowChanged) {
+        _prepareTerminalForMuxWindowChange();
+        _refreshTerminalAfterMonkeyMuxWindowChange();
+        _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+          session: session,
+          sessionName: sessionName,
+          reason: 'monkeymux_active_window_changed',
+        );
+      }
+      _refreshMuxPaneContextAfterWindowStateChange(
+        session,
+        sessionName,
+        force: activeWindowChanged,
+      );
+      return;
+    }
     if (activeWindowChanged) {
       _terminalTextInputController.resetImeCompletions();
-    }
-    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshMuxPaneContextAfterWindowStateChange(session, sessionName);
-      return;
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
@@ -3847,10 +3861,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _refreshMuxPaneContextAfterWindowStateChange(
     SshSession session,
-    String sessionName,
-  ) {
+    String sessionName, {
+    bool force = false,
+  }) {
     final refreshedAt = _muxPaneContextRefreshedAt;
-    if (refreshedAt != null &&
+    if (!force &&
+        refreshedAt != null &&
         DateTime.now().difference(refreshedAt) <
             const Duration(milliseconds: 300)) {
       return;
@@ -5898,6 +5914,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       forceDisplayRefresh: true,
       revealLatestOutput: true,
     );
+    _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
+    _monkeyMuxWindowRefreshFollowUpTimer = Timer(
+      const Duration(milliseconds: 50),
+      () {
+        _monkeyMuxWindowRefreshFollowUpTimer = null;
+        if (!mounted || _isTerminalOutputFollowPaused) {
+          return;
+        }
+        _followLiveOutput();
+        _scheduleTerminalSizeRefresh(
+          forceDisplayRefresh: true,
+          revealLatestOutput: true,
+        );
+      },
+    );
   }
 
   SshConnectionState _readCurrentConnectionState() {
@@ -7469,13 +7500,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } else {
       await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
-    _terminalTextInputController.resetImeCompletions();
-
-    // Clear stale working directory — it will be refreshed from
-    // OSC 7 or the next tmux query.
-    _tmuxWorkingDirectory = null;
-    _tmuxCurrentCommand = null;
-    _shellCompletionTmuxContextRefreshedAt = null;
+    _prepareTerminalForMuxWindowChange();
     if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
       await _reattachTmuxIfNeeded(
         session,
@@ -7528,10 +7553,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
-    _terminalTextInputController.resetImeCompletions();
-    _tmuxWorkingDirectory = resolvedWorkingDirectory;
-    _tmuxCurrentCommand = null;
-    _shellCompletionTmuxContextRefreshedAt = null;
+    _prepareTerminalForMuxWindowChange(
+      workingDirectory: resolvedWorkingDirectory,
+    );
     if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
       await _reattachTmuxIfNeeded(session, sessionName);
     }
@@ -7580,9 +7604,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _handleMuxSessionEnded(session, sessionName);
       return;
     }
-    _terminalTextInputController.resetImeCompletions();
-    _tmuxCurrentCommand = null;
-    _shellCompletionTmuxContextRefreshedAt = null;
+    _prepareTerminalForMuxWindowChange();
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange();
     } else {
@@ -7593,6 +7615,40 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_closed',
     );
+  }
+
+  void _prepareTerminalForMuxWindowChange({String? workingDirectory}) {
+    _terminalTextInputController.resetImeCompletions();
+    _clearTerminalFollowPauseForMuxWindowChange();
+    _tmuxWorkingDirectory = workingDirectory;
+    _tmuxCurrentCommand = null;
+    _shellCompletionTmuxContextRefreshedAt = null;
+  }
+
+  void _clearTerminalFollowPauseForMuxWindowChange() {
+    var shouldRefreshFollowState = false;
+    if (_terminalOutputPauseTouchPointers.isNotEmpty) {
+      _terminalOutputPauseTouchPointers.clear();
+      shouldRefreshFollowState = true;
+    }
+    if (_isNativeSelectionMode) {
+      if (_isMobilePlatform) {
+        _dismissNativeSelectionOverlayForEditing();
+      } else {
+        _exitNativeSelectionMode();
+      }
+      shouldRefreshFollowState = true;
+    } else if (_terminalController.selection != null) {
+      _terminalController.clearSelection();
+      shouldRefreshFollowState = true;
+    }
+    if (!shouldRefreshFollowState) {
+      return;
+    }
+    _syncTerminalLiveOutputAutoScroll();
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _reattachTmuxIfNeeded(
@@ -8025,6 +8081,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
+    _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
