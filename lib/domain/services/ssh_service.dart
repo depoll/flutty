@@ -218,12 +218,16 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 
 bool _containsImmediateTerminalResponseQuery(String data) =>
     _terminalWindowQueryPattern.hasMatch(data) ||
+    _terminalDeviceAttributeQueryPattern.hasMatch(data) ||
+    _terminalDeviceStatusQueryPattern.hasMatch(data) ||
     _terminalModeReportQueryPattern.hasMatch(data) ||
     _terminalThemeModeQueryPattern.hasMatch(data) ||
     _terminalThemeOscQueryPattern.hasMatch(data) ||
     _terminalClipboardOscQueryPattern.hasMatch(data);
 
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalDeviceAttributeQueryPattern = RegExp(r'\x1b\[(?:[=>]?[0-9;]*)c');
+final _terminalDeviceStatusQueryPattern = RegExp(r'\x1b\[(?:[?]?[0-9;]*)n');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
 final _terminalThemeOscQueryPattern = RegExp(

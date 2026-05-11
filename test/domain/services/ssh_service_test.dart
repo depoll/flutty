@@ -1101,6 +1101,30 @@ void main() {
       },
     );
 
+    test('flushes device attributes queries without frame delay', () async {
+      final shell = await openShell();
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[c')));
+      await pumpEventQueue();
+
+      expect(
+        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+        '\x1b[?1;2c',
+      );
+    });
+
+    test('flushes cursor position queries without frame delay', () async {
+      final shell = await openShell();
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[6n')));
+      await pumpEventQueue();
+
+      expect(
+        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+        '\x1b[1;1R',
+      );
+    });
+
     test('flushes terminal theme OSC queries without frame delay', () async {
       final shell = await openShell();
       final session = shell.session;
