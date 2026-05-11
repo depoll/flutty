@@ -160,6 +160,8 @@ class HostRepository {
         label: '${host.label} (copy)',
         hostname: host.hostname,
         port: Value(host.port),
+        connectionType: Value(host.connectionType),
+        devTunnelUrl: Value(host.devTunnelUrl),
         username: host.username,
         password: Value(host.password),
         keyId: Value(host.keyId),
@@ -211,7 +213,7 @@ class HostRepository {
 
   /// Update an existing host.
   Future<bool> update(Host host) async {
-    final previousStoredPassword = await _storedPasswordForHost(host.id);
+    final previousStoredSecrets = await _storedSecretValuesForHost(host.id);
     final encryptedPassword = await _secretEncryptionService.encryptNullable(
       host.password,
     );
@@ -219,7 +221,7 @@ class HostRepository {
         .update(_db.hosts)
         .replace(host.copyWith(password: Value(encryptedPassword)));
     if (updated) {
-      _evictDecrypted(previousStoredPassword);
+      _evictDecryptedValues(previousStoredSecrets);
       _rememberEncryptedPlaintext(encryptedPassword, host.password);
     }
     return updated;
@@ -227,12 +229,12 @@ class HostRepository {
 
   /// Delete a host.
   Future<int> delete(int id) async {
-    final previousStoredPassword = await _storedPasswordForHost(id);
+    final previousStoredSecrets = await _storedSecretValuesForHost(id);
     final deleted = await (_db.delete(
       _db.hosts,
     )..where((h) => h.id.equals(id))).go();
     if (deleted > 0) {
-      _evictDecrypted(previousStoredPassword);
+      _evictDecryptedValues(previousStoredSecrets);
     }
     return deleted;
   }
@@ -246,22 +248,24 @@ class HostRepository {
 
   /// Update last connected timestamp.
   Future<bool> updateLastConnected(int id) async {
-    final host = await getById(id);
-    if (host == null) return false;
-    return update(host.copyWith(lastConnectedAt: Value(DateTime.now())));
+    final updated = await (_db.update(_db.hosts)..where((h) => h.id.equals(id)))
+        .write(HostsCompanion(lastConnectedAt: Value(DateTime.now())));
+    return updated > 0;
   }
 
   Future<List<Host>> _decryptHosts(List<Host> hosts) =>
       Future.wait(hosts.map(_decryptHost));
 
   Future<Host> _decryptHost(Host host) async {
+    var decryptedHost = host;
     final storedPassword = host.password;
-    if (storedPassword == null || storedPassword.isEmpty) {
-      return host;
+    if (storedPassword != null && storedPassword.isNotEmpty) {
+      decryptedHost = decryptedHost.copyWith(
+        password: Value(await _cachedDecrypt(storedPassword)),
+      );
     }
 
-    final decryptedPassword = await _cachedDecrypt(storedPassword);
-    return host.copyWith(password: Value(decryptedPassword));
+    return decryptedHost;
   }
 
   /// Returns the decrypted form of [ciphertext], using [_decryptCache] to
@@ -282,11 +286,11 @@ class HostRepository {
     return plaintext;
   }
 
-  Future<String?> _storedPasswordForHost(int id) async {
+  Future<List<String?>> _storedSecretValuesForHost(int id) async {
     final row = await (_db.select(
       _db.hosts,
     )..where((h) => h.id.equals(id))).getSingleOrNull();
-    return row?.password;
+    return [row?.password];
   }
 
   void _rememberEncryptedPlaintext(String? ciphertext, String? plaintext) {
@@ -315,14 +319,24 @@ class HostRepository {
     _decryptCache.remove(ciphertext);
   }
 
-  Future<HostsCompanion> _encryptHostCompanion(HostsCompanion host) async {
-    if (!host.password.present || host.password.value == null) {
-      return host;
+  void _evictDecryptedValues(Iterable<String?> ciphertexts) {
+    for (final ciphertext in ciphertexts) {
+      _evictDecrypted(ciphertext);
     }
-    final encryptedPassword = await _secretEncryptionService.encryptNullable(
-      host.password.value,
-    );
-    return host.copyWith(password: Value(encryptedPassword));
+  }
+
+  Future<HostsCompanion> _encryptHostCompanion(HostsCompanion host) async {
+    var encryptedHost = host;
+    if (host.password.present && host.password.value != null) {
+      final encryptedPassword = await _secretEncryptionService.encryptNullable(
+        host.password.value,
+      );
+      encryptedHost = encryptedHost.copyWith(
+        password: Value(encryptedPassword),
+      );
+      _rememberEncryptedPlaintext(encryptedPassword, host.password.value);
+    }
+    return encryptedHost;
   }
 
   SimpleSelectStatement<$HostsTable, Host> _orderedHostsQuery() =>

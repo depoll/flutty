@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show ProviderException;
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
@@ -13,11 +15,14 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_connection_type.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/dev_tunnel_auth_service.dart';
+import '../../domain/services/dev_tunnel_socket_connector.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -64,6 +69,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   final _labelFieldLocationKey = GlobalKey();
   final _hostnameFieldLocationKey = GlobalKey();
   final _portFieldLocationKey = GlobalKey();
+  final _devTunnelUrlFieldLocationKey = GlobalKey();
   final _usernameFieldLocationKey = GlobalKey();
   final _tmuxSessionFieldLocationKey = GlobalKey();
   final _agentTmuxFlagsFieldLocationKey = GlobalKey();
@@ -73,6 +79,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _labelController;
   late TextEditingController _hostnameController;
   late TextEditingController _portController;
+  late TextEditingController _devTunnelUrlController;
   late TextEditingController _usernameController;
   late TextEditingController _passwordController;
   late TextEditingController _tagsController;
@@ -87,6 +94,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late FocusNode _labelFocusNode;
   late FocusNode _hostnameFocusNode;
   late FocusNode _portFocusNode;
+  late FocusNode _devTunnelUrlFocusNode;
   late FocusNode _usernameFocusNode;
   late FocusNode _tmuxSessionFocusNode;
   late FocusNode _agentTmuxFlagsFocusNode;
@@ -96,6 +104,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   int? _selectedKeyId;
   int? _selectedGroupId;
   int? _selectedJumpHostId;
+  HostConnectionType _selectedConnectionType = HostConnectionType.ssh;
   List<String> _skipJumpHostOnSsids = const [];
   int? _selectedAutoConnectSnippetId;
   String? _selectedLightThemeId;
@@ -125,6 +134,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _labelController = TextEditingController();
     _hostnameController = TextEditingController();
     _portController = TextEditingController(text: '22');
+    _devTunnelUrlController = TextEditingController();
     _usernameController = TextEditingController();
     _passwordController = TextEditingController();
     _tagsController = TextEditingController();
@@ -139,6 +149,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _labelFocusNode = FocusNode();
     _hostnameFocusNode = FocusNode();
     _portFocusNode = FocusNode();
+    _devTunnelUrlFocusNode = FocusNode();
     _usernameFocusNode = FocusNode();
     _tmuxSessionFocusNode = FocusNode();
     _agentTmuxFlagsFocusNode = FocusNode();
@@ -149,6 +160,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _labelController,
       _hostnameController,
       _portController,
+      _devTunnelUrlController,
       _usernameController,
       _passwordController,
       _tagsController,
@@ -163,6 +175,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     ]) {
       c.addListener(_updateDirtyState);
     }
+    _devTunnelUrlController.addListener(_syncDevTunnelDerivedFields);
 
     if (widget.hostId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -202,6 +215,35 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
   }
 
+  void _syncDevTunnelDerivedFields() {
+    if (_selectedConnectionType != HostConnectionType.devTunnel) {
+      return;
+    }
+    final url = _devTunnelUrlController.text.trim();
+    if (url.isEmpty) {
+      return;
+    }
+    final parsed = _tryParseDevTunnelUrl(url);
+    if (parsed == null) {
+      return;
+    }
+    final parsedPort = parsed.port;
+    if (_hostnameController.text != parsed.uri.host) {
+      _hostnameController.text = parsed.uri.host;
+    }
+    if (parsedPort != null && _portController.text != '$parsedPort') {
+      _portController.text = '$parsedPort';
+    }
+  }
+
+  DevTunnelForwardingUrl? _tryParseDevTunnelUrl(String url, {int? port}) {
+    try {
+      return parseDevTunnelForwardingUrl(url, fallbackPort: port);
+    } on FormatException {
+      return null;
+    }
+  }
+
   Future<void> _loadHost() async {
     final result = await ref
         .read(hostEditViewModelProvider(widget.hostId).notifier)
@@ -222,13 +264,23 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _labelController.text = host.label;
       _hostnameController.text = host.hostname;
       _portController.text = host.port.toString();
+      _selectedConnectionType = hostConnectionTypeFromStorage(
+        host.connectionType,
+      );
+      _devTunnelUrlController.text = host.devTunnelUrl ?? '';
       _usernameController.text = host.username;
       _passwordController.text = host.password ?? '';
       _tagsController.text = host.tags ?? '';
       _selectedKeyId = host.keyId;
       _selectedGroupId = host.groupId;
-      _selectedJumpHostId = host.jumpHostId;
-      _skipJumpHostOnSsids = decodeSkipJumpHostSsids(host.skipJumpHostOnSsids);
+      _selectedJumpHostId =
+          _selectedConnectionType == HostConnectionType.devTunnel
+          ? null
+          : host.jumpHostId;
+      _skipJumpHostOnSsids =
+          _selectedConnectionType == HostConnectionType.devTunnel
+          ? const []
+          : decodeSkipJumpHostSsids(host.skipJumpHostOnSsids);
       _selectedAutoConnectSnippetId = host.autoConnectSnippetId;
       _selectedLightThemeId = host.terminalThemeLightId;
       _selectedDarkThemeId = host.terminalThemeDarkId;
@@ -283,6 +335,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _labelController.dispose();
     _hostnameController.dispose();
     _portController.dispose();
+    _devTunnelUrlController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
     _tagsController.dispose();
@@ -297,6 +350,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _labelFocusNode.dispose();
     _hostnameFocusNode.dispose();
     _portFocusNode.dispose();
+    _devTunnelUrlFocusNode.dispose();
     _usernameFocusNode.dispose();
     _tmuxSessionFocusNode.dispose();
     _agentTmuxFlagsFocusNode.dispose();
@@ -321,6 +375,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     label: _labelController.text,
     hostname: _hostnameController.text,
     port: _portController.text,
+    connectionType: _selectedConnectionType,
+    devTunnelUrl: _devTunnelUrlController.text,
     username: _usernameController.text,
     password: _passwordController.text,
     tags: _tagsController.text,
@@ -391,6 +447,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
+    final devTunnelSignedInAsync = ref.watch(devTunnelSignedInProvider);
+    final isDevTunnel = _selectedConnectionType == HostConnectionType.devTunnel;
+    final devTunnelListAsync =
+        isDevTunnel && (devTunnelSignedInAsync.asData?.value ?? false)
+        ? ref.watch(devTunnelListProvider)
+        : null;
+    final showManualDevTunnelUrlField =
+        isDevTunnel &&
+        _shouldShowManualDevTunnelUrlField(
+          signedInAsync: devTunnelSignedInAsync,
+          tunnelsAsync: devTunnelListAsync,
+        );
 
     // ValueListenableBuilder keeps UnsavedChangesGuard (and its PopScope) in
     // sync with dirty state without rebuilding the whole tree on every
@@ -455,57 +523,131 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         ),
                         const SizedBox(height: 16),
 
-                        // Hostname
-                        KeyedSubtree(
-                          key: _hostnameFieldLocationKey,
-                          child: TextFormField(
-                            key: const Key('host-hostname-field'),
-                            controller: _hostnameController,
-                            focusNode: _hostnameFocusNode,
-                            decoration: const InputDecoration(
-                              labelText: 'Hostname',
-                              hintText: 'example.com or 192.168.1.1',
-                              prefixIcon: Icon(Icons.dns),
-                            ),
-                            keyboardType: TextInputType.url,
-                            textInputAction: TextInputAction.next,
-                            autocorrect: false,
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter a hostname';
-                              }
-                              return null;
-                            },
+                        DropdownButtonFormField<HostConnectionType>(
+                          key: const Key('host-connection-type-field'),
+                          // ignore: deprecated_member_use
+                          value: _selectedConnectionType,
+                          decoration: const InputDecoration(
+                            labelText: 'Connection method',
+                            prefixIcon: Icon(Icons.cable_outlined),
                           ),
+                          items: HostConnectionType.values
+                              .map(
+                                (type) => DropdownMenuItem<HostConnectionType>(
+                                  value: type,
+                                  child: Text(type.label),
+                                ),
+                              )
+                              .toList(growable: false),
+                          onChanged: _handleConnectionTypeChanged,
                         ),
                         const SizedBox(height: 16),
 
-                        // Port
-                        KeyedSubtree(
-                          key: _portFieldLocationKey,
-                          child: TextFormField(
-                            key: const Key('host-port-field'),
-                            controller: _portController,
-                            focusNode: _portFocusNode,
-                            decoration: const InputDecoration(
-                              labelText: 'Port',
-                              hintText: '22',
-                              prefixIcon: Icon(Icons.numbers),
+                        if (!isDevTunnel) ...[
+                          // Hostname
+                          KeyedSubtree(
+                            key: _hostnameFieldLocationKey,
+                            child: TextFormField(
+                              key: const Key('host-hostname-field'),
+                              controller: _hostnameController,
+                              focusNode: _hostnameFocusNode,
+                              decoration: const InputDecoration(
+                                labelText: 'Hostname',
+                                hintText: 'example.com or 192.168.1.1',
+                                prefixIcon: Icon(Icons.dns),
+                              ),
+                              keyboardType: TextInputType.url,
+                              textInputAction: TextInputAction.next,
+                              autocorrect: false,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Please enter a hostname';
+                                }
+                                return null;
+                              },
                             ),
-                            keyboardType: TextInputType.number,
-                            textInputAction: TextInputAction.next,
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter a port';
-                              }
-                              final port = int.tryParse(value);
-                              if (port == null || port < 1 || port > 65535) {
-                                return 'Port must be between 1 and 65535';
-                              }
-                              return null;
-                            },
                           ),
-                        ),
+                          const SizedBox(height: 16),
+
+                          // Port
+                          KeyedSubtree(
+                            key: _portFieldLocationKey,
+                            child: TextFormField(
+                              key: const Key('host-port-field'),
+                              controller: _portController,
+                              focusNode: _portFocusNode,
+                              decoration: const InputDecoration(
+                                labelText: 'Port',
+                                hintText: '22',
+                                prefixIcon: Icon(Icons.numbers),
+                              ),
+                              keyboardType: TextInputType.number,
+                              textInputAction: TextInputAction.next,
+                              validator: (value) {
+                                if (value == null || value.isEmpty) {
+                                  return 'Please enter a port';
+                                }
+                                final port = int.tryParse(value);
+                                if (port == null || port < 1 || port > 65535) {
+                                  return 'Port must be between 1 and 65535';
+                                }
+                                return null;
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
+
+                        if (isDevTunnel) ...[
+                          Card(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(Icons.info_outline),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      'Choose the Dev Tunnel port that forwards to SSH. '
+                                      'Dev Tunnels replace the hostname and port; '
+                                      'MonkeySSH still signs in to the SSH server behind the tunnel. '
+                                      'VS Code or HTTP tunnel ports do not have an SSH username.',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodyMedium,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          _buildDevTunnelLoginCard(
+                            context,
+                            signedInAsync: devTunnelSignedInAsync,
+                          ),
+                          if (devTunnelListAsync != null) ...[
+                            const SizedBox(height: 16),
+                            if (showManualDevTunnelUrlField)
+                              _buildDevTunnelPickerCard(devTunnelListAsync)
+                            else
+                              KeyedSubtree(
+                                key: _devTunnelUrlFieldLocationKey,
+                                child: _buildDevTunnelPickerCard(
+                                  devTunnelListAsync,
+                                  ownsValidationFocus: true,
+                                ),
+                              ),
+                          ],
+                          if (showManualDevTunnelUrlField) ...[
+                            const SizedBox(height: 16),
+                            KeyedSubtree(
+                              key: _devTunnelUrlFieldLocationKey,
+                              child: _buildDevTunnelUrlField(),
+                            ),
+                          ],
+                        ],
                         const SizedBox(height: 16),
 
                         // Username
@@ -515,10 +657,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             key: const Key('host-username-field'),
                             controller: _usernameController,
                             focusNode: _usernameFocusNode,
-                            decoration: const InputDecoration(
-                              labelText: 'Username',
-                              hintText: 'root',
-                              prefixIcon: Icon(Icons.person),
+                            decoration: InputDecoration(
+                              labelText: isDevTunnel
+                                  ? 'SSH username'
+                                  : 'Username',
+                              hintText: isDevTunnel
+                                  ? 'User on tunneled SSH host'
+                                  : 'root',
+                              prefixIcon: const Icon(Icons.person),
                             ),
                             textInputAction: TextInputAction.next,
                             autocorrect: false,
@@ -549,7 +695,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                         // Authentication section
                         Text(
-                          'Authentication',
+                          isDevTunnel
+                              ? 'SSH login for tunneled host'
+                              : 'Authentication',
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const SizedBox(height: 12),
@@ -559,7 +707,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           controller: _passwordController,
                           decoration: InputDecoration(
                             labelText: 'Password (optional)',
-                            hintText: 'Leave empty for key-only auth',
+                            hintText: isDevTunnel
+                                ? 'SSH password for the tunneled host'
+                                : 'Leave empty for key-only auth',
                             prefixIcon: const Icon(Icons.lock),
                             suffixIcon: IconButton(
                               icon: Icon(
@@ -605,7 +755,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 labelText: 'SSH Key (optional)',
                                 prefixIcon: Icon(Icons.key),
                                 helperText:
-                                    'Auto tries up to 5 installed keys when password is empty',
+                                    'Used for SSH login. Auto tries up to 5 installed keys when password is empty',
                                 helperMaxLines: _hostFieldHelperMaxLines,
                               ),
                               items: [
@@ -640,67 +790,74 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         ExpansionTile(
                           key: const Key('host-advanced-tile'),
                           title: const Text('Advanced'),
-                          initiallyExpanded: _selectedJumpHostId != null,
+                          initiallyExpanded:
+                              !isDevTunnel && _selectedJumpHostId != null,
                           children: [
-                            const SizedBox(height: 8),
-                            // Jump host dropdown
-                            hostsAsync.when(
-                              loading: () => const LinearProgressIndicator(),
-                              error: (_, _) =>
-                                  const Text('Error loading hosts'),
-                              data: (hosts) {
-                                // Filter out current host from jump host options
-                                final availableHosts = hosts
-                                    .where((h) => h.id != widget.hostId)
-                                    .toList();
-                                // Validate selected jump host still exists
-                                final validJumpHostId =
-                                    _selectedJumpHostId != null &&
-                                        availableHosts.any(
-                                          (h) => h.id == _selectedJumpHostId,
-                                        )
-                                    ? _selectedJumpHostId
-                                    : null;
-                                if (validJumpHostId != _selectedJumpHostId) {
-                                  WidgetsBinding.instance.addPostFrameCallback((
-                                    _,
-                                  ) {
-                                    if (mounted) {
+                            if (!isDevTunnel) ...[
+                              const SizedBox(height: 8),
+                              // Jump host dropdown
+                              hostsAsync.when(
+                                loading: () => const LinearProgressIndicator(),
+                                error: (_, _) =>
+                                    const Text('Error loading hosts'),
+                                data: (hosts) {
+                                  // Filter out current host from jump host options
+                                  final availableHosts = hosts
+                                      .where((h) => h.id != widget.hostId)
+                                      .toList();
+                                  // Validate selected jump host still exists
+                                  final validJumpHostId =
+                                      _selectedJumpHostId != null &&
+                                          availableHosts.any(
+                                            (h) => h.id == _selectedJumpHostId,
+                                          )
+                                      ? _selectedJumpHostId
+                                      : null;
+                                  if (validJumpHostId != _selectedJumpHostId) {
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                          if (mounted) {
+                                            setState(
+                                              () => _selectedJumpHostId = null,
+                                            );
+                                            _updateDirtyState();
+                                          }
+                                        });
+                                  }
+                                  return DropdownButtonFormField<int?>(
+                                    // ignore: deprecated_member_use
+                                    value: validJumpHostId,
+                                    isExpanded: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Jump Host (optional)',
+                                      prefixIcon: Icon(Icons.hub),
+                                      helperText:
+                                          'Connect through another host (bastion)',
+                                      helperMaxLines: _hostFieldHelperMaxLines,
+                                    ),
+                                    items: [
+                                      const DropdownMenuItem(
+                                        child: Text('None'),
+                                      ),
+                                      ...availableHosts.map(
+                                        (host) => DropdownMenuItem(
+                                          value: host.id,
+                                          child: Text(host.label),
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (value) {
                                       setState(
-                                        () => _selectedJumpHostId = null,
+                                        () => _selectedJumpHostId = value,
                                       );
                                       _updateDirtyState();
-                                    }
-                                  });
-                                }
-                                return DropdownButtonFormField<int?>(
-                                  // ignore: deprecated_member_use
-                                  value: validJumpHostId,
-                                  isExpanded: true,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Jump Host (optional)',
-                                    prefixIcon: Icon(Icons.hub),
-                                    helperText:
-                                        'Connect through another host (bastion)',
-                                    helperMaxLines: _hostFieldHelperMaxLines,
-                                  ),
-                                  items: [
-                                    const DropdownMenuItem(child: Text('None')),
-                                    ...availableHosts.map(
-                                      (host) => DropdownMenuItem(
-                                        value: host.id,
-                                        child: Text(host.label),
-                                      ),
-                                    ),
-                                  ],
-                                  onChanged: (value) {
-                                    setState(() => _selectedJumpHostId = value);
-                                    _updateDirtyState();
-                                  },
-                                );
-                              },
-                            ),
-                            if (_selectedJumpHostId != null) ...[
+                                    },
+                                  );
+                                },
+                              ),
+                            ],
+                            if (!isDevTunnel &&
+                                _selectedJumpHostId != null) ...[
                               const SizedBox(height: 16),
                               _SkipJumpHostOnWifiSection(
                                 ssids: _skipJumpHostOnSsids,
@@ -1484,6 +1641,356 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     target?.focusNode.requestFocus();
   }
 
+  void _handleConnectionTypeChanged(HostConnectionType? value) {
+    if (value == null) {
+      return;
+    }
+    setState(() {
+      _selectedConnectionType = value;
+    });
+    _syncDevTunnelDerivedFields();
+    _updateDirtyState();
+  }
+
+  Widget _buildDevTunnelLoginCard(
+    BuildContext context, {
+    required AsyncValue<bool> signedInAsync,
+  }) => signedInAsync.when(
+    loading: () => const LinearProgressIndicator(),
+    error: (_, _) => Card(
+      child: ListTile(
+        leading: const Icon(Icons.error_outline),
+        title: const Text('Dev Tunnels sign-in unavailable'),
+        subtitle: const Text(
+          'Try again before connecting to a private tunnel.',
+        ),
+        trailing: TextButton(
+          onPressed: () => ref.invalidate(devTunnelSignedInProvider),
+          child: const Text('Retry'),
+        ),
+      ),
+    ),
+    data: (isSignedIn) => Card(
+      child: ListTile(
+        leading: Icon(
+          isSignedIn ? Icons.verified_user_outlined : Icons.login_outlined,
+        ),
+        title: Text(
+          isSignedIn ? 'Signed in to Dev Tunnels' : 'Sign in to Dev Tunnels',
+        ),
+        subtitle: Text(
+          isSignedIn
+              ? 'Private tunnels use your GitHub login. No per-host token is stored.'
+              : 'Required for private tunnels. Anonymous tunnels can connect without sign-in.',
+        ),
+        trailing: isSignedIn
+            ? TextButton(
+                onPressed: _handleDevTunnelSignOut,
+                child: const Text('Sign out'),
+              )
+            : FilledButton(
+                onPressed: () => unawaited(_handleDevTunnelSignIn()),
+                child: const Text('Sign in'),
+              ),
+      ),
+    ),
+  );
+
+  Widget _buildDevTunnelUrlField() => TextFormField(
+    key: const Key('host-dev-tunnel-url-field'),
+    controller: _devTunnelUrlController,
+    focusNode: _devTunnelUrlFocusNode,
+    decoration: const InputDecoration(
+      labelText: 'Manual Dev Tunnel URL',
+      hintText: 'https://abc-22.usw2.devtunnels.ms',
+      prefixIcon: Icon(Icons.cloud_outlined),
+      helperText: 'Usually filled by selecting a tunnel above.',
+    ),
+    keyboardType: TextInputType.url,
+    textInputAction: TextInputAction.next,
+    autocorrect: false,
+    validator: (value) {
+      if (_selectedConnectionType != HostConnectionType.devTunnel) {
+        return null;
+      }
+      try {
+        parseDevTunnelForwardingUrl(
+          value ?? '',
+          fallbackPort: int.tryParse(_portController.text),
+        );
+        return null;
+      } on FormatException {
+        return 'Enter a valid Dev Tunnel URL';
+      }
+    },
+  );
+
+  bool _shouldShowManualDevTunnelUrlField({
+    required AsyncValue<bool> signedInAsync,
+    required AsyncValue<List<DevTunnel>>? tunnelsAsync,
+  }) {
+    final signedIn = signedInAsync.asData?.value ?? false;
+    if (!signedIn || tunnelsAsync == null) {
+      return true;
+    }
+    final tunnels = tunnelsAsync.asData?.value;
+    if (tunnels == null) {
+      return tunnelsAsync.hasError;
+    }
+    final selections = _devTunnelSelections(tunnels);
+    if (selections.isEmpty) {
+      return true;
+    }
+    final currentUrl = _devTunnelUrlController.text.trim();
+    return currentUrl.isNotEmpty &&
+        !selections.any((selection) => selection.forwardingUrl == currentUrl);
+  }
+
+  List<_DevTunnelPortSelection> _devTunnelSelections(List<DevTunnel> tunnels) =>
+      [
+        for (final tunnel in tunnels)
+          for (final port in tunnel.ports)
+            if (port.forwardingUrl != null)
+              _DevTunnelPortSelection(tunnel: tunnel, port: port),
+      ];
+
+  Widget _buildDevTunnelPickerCard(
+    AsyncValue<List<DevTunnel>> tunnelsAsync, {
+    bool ownsValidationFocus = false,
+  }) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: tunnelsAsync.when(
+        loading: () => const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Loading Dev Tunnels…'),
+            SizedBox(height: 12),
+            LinearProgressIndicator(),
+          ],
+        ),
+        error: (error, _) {
+          final message = _devTunnelListErrorMessage(error);
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: _retryDevTunnelList,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Retry'),
+              ),
+            ],
+          );
+        },
+        data: (tunnels) {
+          final selections = _devTunnelSelections(tunnels);
+          if (selections.isEmpty) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('No open Dev Tunnel ports found.'),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: _retryDevTunnelList,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Refresh'),
+                ),
+              ],
+            );
+          }
+          final currentUrl = _devTunnelUrlController.text.trim();
+          _DevTunnelPortSelection? selectedSelection;
+          for (final selection in selections) {
+            if (selection.forwardingUrl == currentUrl) {
+              selectedSelection = selection;
+              break;
+            }
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DropdownButtonFormField<String>(
+                key: const Key('host-dev-tunnel-picker-field'),
+                focusNode: ownsValidationFocus ? _devTunnelUrlFocusNode : null,
+                // ignore: deprecated_member_use
+                value: selectedSelection?.forwardingUrl,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: 'Dev Tunnel port',
+                  prefixIcon: const Icon(Icons.cloud_queue_outlined),
+                  suffixIcon: IconButton(
+                    tooltip: 'Refresh tunnels',
+                    onPressed: _retryDevTunnelList,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ),
+                items: selections
+                    .map(
+                      (selection) => DropdownMenuItem<String>(
+                        value: selection.forwardingUrl,
+                        enabled: selection.isSshCompatible,
+                        child: Text(
+                          selection.label,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+                validator: ownsValidationFocus
+                    ? (value) {
+                        if (_selectedConnectionType !=
+                            HostConnectionType.devTunnel) {
+                          return null;
+                        }
+                        if ((value == null || value.isEmpty) &&
+                            _devTunnelUrlController.text.trim().isEmpty) {
+                          return 'Choose a Dev Tunnel port';
+                        }
+                        final matchingSelection = selections.where(
+                          (selection) => selection.forwardingUrl == value,
+                        );
+                        if (matchingSelection.isNotEmpty &&
+                            !matchingSelection.first.isSshCompatible) {
+                          return 'Choose an SSH or TCP Dev Tunnel port';
+                        }
+                        return null;
+                      }
+                    : null,
+                onChanged: (url) {
+                  _DevTunnelPortSelection? selection;
+                  for (final candidate in selections) {
+                    if (candidate.forwardingUrl == url) {
+                      selection = candidate;
+                      break;
+                    }
+                  }
+                  if (selection != null) {
+                    _applyDevTunnelPortSelection(selection);
+                  }
+                },
+              ),
+              if (selectedSelection != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  selectedSelection.details,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    ),
+  );
+
+  String _devTunnelListErrorMessage(Object error) {
+    var current = error;
+    while (current is ProviderException) {
+      current = current.exception;
+    }
+    if (current is DevTunnelAuthException) {
+      return current.message;
+    }
+    final rawMessages = <String>[current.toString(), error.toString()];
+    for (final rawMessage in rawMessages) {
+      for (final line in rawMessage.split('\n')) {
+        final message = line.trim();
+        if (_isDevTunnelErrorMessage(message)) {
+          return message;
+        }
+      }
+    }
+    return 'Could not load Dev Tunnels.';
+  }
+
+  bool _isDevTunnelErrorMessage(String message) =>
+      message.startsWith('Dev Tunnels ') ||
+      message.startsWith('Sign in to Dev Tunnels') ||
+      message.startsWith('Signed-in account does not have access');
+
+  void _retryDevTunnelList() {
+    ref
+      ..invalidate(devTunnelSignedInProvider)
+      ..invalidate(devTunnelListProvider);
+  }
+
+  void _applyDevTunnelPortSelection(_DevTunnelPortSelection selection) {
+    final parsed = parseDevTunnelForwardingUrl(
+      selection.forwardingUrl,
+      fallbackPort: selection.port.portNumber,
+    );
+    final previousHostname = _hostnameController.text.trim();
+    final previousLabel = _labelController.text.trim();
+    setState(() {
+      _devTunnelUrlController.text = selection.forwardingUrl;
+      _hostnameController.text = parsed.uri.host;
+      _portController.text = selection.port.portNumber.toString();
+      if (previousLabel.isEmpty || previousLabel == previousHostname) {
+        _labelController.text = selection.defaultHostLabel;
+      }
+    });
+    _updateDirtyState();
+  }
+
+  Future<void> _handleDevTunnelSignIn() async {
+    final service = ref.read(devTunnelAuthServiceProvider);
+    late final DevTunnelDeviceLogin login;
+    try {
+      login = await service.startGitHubDeviceLogin();
+    } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'hosts',
+          context: ErrorDescription('while starting Dev Tunnels sign-in'),
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not start Dev Tunnels sign-in.')),
+      );
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+    final signedIn = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) =>
+          _DevTunnelLoginDialog(login: login, service: service),
+    );
+    if (!mounted || signedIn != true) {
+      return;
+    }
+    ref
+      ..invalidate(devTunnelSignedInProvider)
+      ..invalidate(devTunnelListProvider);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Signed in to Dev Tunnels.')));
+  }
+
+  Future<void> _handleDevTunnelSignOut() async {
+    await ref.read(devTunnelAuthServiceProvider).signOutGitHub();
+    ref
+      ..invalidate(devTunnelSignedInProvider)
+      ..invalidate(devTunnelListProvider);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Signed out of Dev Tunnels.')));
+  }
+
   ({GlobalKey locationKey, FocusNode focusNode, String message})?
   _firstInvalidHostField() {
     final issue = ref
@@ -1505,6 +2012,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       HostEditValidationTarget.port => (
         locationKey: _portFieldLocationKey,
         focusNode: _portFocusNode,
+      ),
+      HostEditValidationTarget.devTunnelUrl => (
+        locationKey: _devTunnelUrlFieldLocationKey,
+        focusNode: _devTunnelUrlFocusNode,
       ),
       HostEditValidationTarget.username => (
         locationKey: _usernameFieldLocationKey,
@@ -1603,7 +2114,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       }
 
       SshConnectionConfig? jumpHostConfig;
-      if (_selectedJumpHostId != null) {
+      if (_selectedConnectionType != HostConnectionType.devTunnel &&
+          _selectedJumpHostId != null) {
         final jumpHost = await ref
             .read(hostRepositoryProvider)
             .getById(_selectedJumpHostId!);
@@ -1620,6 +2132,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         hostname: _hostnameController.text.trim(),
         port: int.parse(_portController.text),
         username: _usernameController.text.trim(),
+        connectionType: _selectedConnectionType,
+        devTunnelUrl: _selectedConnectionType == HostConnectionType.devTunnel
+            ? _devTunnelUrlController.text.trim()
+            : null,
         password: _passwordController.text.isEmpty
             ? null
             : _passwordController.text,
@@ -2177,6 +2693,229 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       }
     }
   }
+}
+
+class _DevTunnelPortSelection {
+  const _DevTunnelPortSelection({required this.tunnel, required this.port});
+
+  final DevTunnel tunnel;
+  final DevTunnelPort port;
+
+  String get forwardingUrl => port.forwardingUrl!;
+
+  bool get isSshCompatible => port.isSshCompatible;
+
+  String get defaultHostLabel {
+    final portName = port.name?.trim();
+    if (portName != null && portName.isNotEmpty) {
+      return '${tunnel.displayName} - $portName';
+    }
+    return '${tunnel.displayName} :${port.portNumber}';
+  }
+
+  String get label {
+    final portName = port.name?.trim();
+    final portLabel = portName == null || portName.isEmpty
+        ? port.displayName
+        : '$portName :${port.portNumber}';
+    final protocol = port.protocol?.trim();
+    final protocolLabel =
+        portName == null ||
+            portName.isEmpty ||
+            protocol == null ||
+            protocol.isEmpty
+        ? ''
+        : ' ${protocol.toUpperCase()}';
+    final compatibilityLabel = port.isKnownWebOnly ? ' - not SSH' : '';
+    return '${tunnel.displayName} - $portLabel$protocolLabel'
+        '$compatibilityLabel (${port.clusterId})';
+  }
+
+  String get details {
+    final status = _statusLabel;
+    final region = tunnel.regionName?.trim();
+    final parts = <String>[
+      'Tunnel ${tunnel.tunnelId}',
+      if (region != null && region.isNotEmpty) region,
+      ?status,
+      if (tunnel.description?.trim().isNotEmpty ?? false)
+        tunnel.description!.trim(),
+      if (port.description?.trim().isNotEmpty ?? false)
+        port.description!.trim(),
+      if (tunnel.labels.isNotEmpty) 'Labels: ${tunnel.labels.join(', ')}',
+      if (tunnel.lastHostConnectionTime != null)
+        'Last host: ${_formatDateTime(tunnel.lastHostConnectionTime!)}',
+      if (tunnel.expiresAt != null)
+        'Expires: ${_formatDateTime(tunnel.expiresAt!)}',
+      if (port.webForwardingUrl != null) 'Web: ${port.webForwardingUrl}',
+      if (port.portForwardingUrl != null) 'Port: ${port.portForwardingUrl}',
+      if (port.webForwardingUrl == null && port.portForwardingUrl == null)
+        forwardingUrl,
+    ];
+    return parts.join(' • ');
+  }
+
+  String? get _statusLabel {
+    final hostCount = tunnel.hostConnectionCount;
+    if (hostCount == null) {
+      return null;
+    }
+    if (hostCount == 0) {
+      return 'No host connected';
+    }
+    return hostCount == 1 ? '1 host connected' : '$hostCount hosts connected';
+  }
+
+  String _formatDateTime(DateTime value) {
+    final local = value.toLocal();
+    String twoDigits(int number) => number.toString().padLeft(2, '0');
+    return '${local.year}-${twoDigits(local.month)}-${twoDigits(local.day)} '
+        '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
+  }
+}
+
+class _DevTunnelLoginDialog extends StatefulWidget {
+  const _DevTunnelLoginDialog({required this.login, required this.service});
+
+  final DevTunnelDeviceLogin login;
+  final DevTunnelAuthService service;
+
+  @override
+  State<_DevTunnelLoginDialog> createState() => _DevTunnelLoginDialogState();
+}
+
+class _DevTunnelLoginDialogState extends State<_DevTunnelLoginDialog> {
+  String _status = 'Open GitHub and enter the code to finish signing in.';
+  bool _openedBrowser = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_pollLogin());
+  }
+
+  Future<void> _openGitHub() async {
+    late final bool launched;
+    try {
+      launched = await launchUrl(
+        widget.login.verificationUri,
+        mode: LaunchMode.externalApplication,
+      );
+    } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'hosts',
+          context: ErrorDescription('while opening Dev Tunnels sign-in'),
+        ),
+      );
+      launched = false;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _openedBrowser = launched;
+      if (!launched) {
+        _status =
+            'Open ${widget.login.verificationUri} and enter the code below.';
+      }
+    });
+  }
+
+  Future<void> _pollLogin() async {
+    final deadline = DateTime.now().add(widget.login.expiresIn);
+    var pollInterval = widget.login.interval;
+    while (mounted && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(pollInterval);
+      if (!mounted) {
+        return;
+      }
+
+      late final DevTunnelDeviceLoginPollResult result;
+      try {
+        result = await widget.service.pollGitHubDeviceLogin(
+          widget.login.deviceCode,
+        );
+      } on Exception catch (error) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            library: 'hosts',
+            context: ErrorDescription('while polling Dev Tunnels sign-in'),
+          ),
+        );
+        if (mounted) {
+          setState(() => _status = 'Could not complete Dev Tunnels sign-in.');
+        }
+        return;
+      }
+      if (!mounted) {
+        return;
+      }
+      switch (result.status) {
+        case DevTunnelDeviceLoginPollStatus.authorized:
+          Navigator.of(context).pop(true);
+          return;
+        case DevTunnelDeviceLoginPollStatus.pending:
+          setState(() => _status = 'Waiting for GitHub approval…');
+          break;
+        case DevTunnelDeviceLoginPollStatus.slowDown:
+          pollInterval += const Duration(seconds: 5);
+          setState(() => _status = 'Waiting for GitHub approval…');
+          break;
+        case DevTunnelDeviceLoginPollStatus.expired:
+          setState(() => _status = 'This sign-in code expired.');
+          return;
+        case DevTunnelDeviceLoginPollStatus.denied:
+          setState(() => _status = result.message ?? 'Sign-in was denied.');
+          return;
+        case DevTunnelDeviceLoginPollStatus.error:
+          setState(() => _status = result.message ?? 'Sign-in failed.');
+          return;
+      }
+    }
+    if (mounted) {
+      setState(() => _status = 'This sign-in code expired.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Sign in to Dev Tunnels'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Enter this code on GitHub:'),
+        const SizedBox(height: 12),
+        Center(
+          child: SelectableText(
+            widget.login.userCode,
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              letterSpacing: 2,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SelectableText(widget.login.verificationUri.toString()),
+        const SizedBox(height: 12),
+        Text(_status),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(false),
+        child: const Text('Cancel'),
+      ),
+      FilledButton.icon(
+        onPressed: _openGitHub,
+        icon: Icon(_openedBrowser ? Icons.open_in_new : Icons.login),
+        label: Text(_openedBrowser ? 'Opened' : 'Open GitHub'),
+      ),
+    ],
+  );
 }
 
 class _ThemeSelectionTile extends StatelessWidget {

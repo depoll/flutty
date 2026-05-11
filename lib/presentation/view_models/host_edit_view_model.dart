@@ -8,9 +8,11 @@ import '../../domain/commands/save_host_command.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
+import '../../domain/models/host_connection_type.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
+import '../../domain/services/dev_tunnel_socket_connector.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../providers/entity_list_providers.dart';
 
@@ -116,6 +118,8 @@ typedef HostEditDraft = ({
   String label,
   String hostname,
   String port,
+  HostConnectionType connectionType,
+  String devTunnelUrl,
   String username,
   String password,
   String tags,
@@ -155,6 +159,9 @@ enum HostEditValidationTarget {
 
   /// Port field.
   port,
+
+  /// Dev Tunnel forwarding URL field.
+  devTunnelUrl,
 
   /// Username field.
   username,
@@ -339,13 +346,15 @@ class HostEditViewModel extends Notifier<HostEditState> {
 
   /// Returns the first validation issue for [draft], if any.
   HostEditValidationIssue? validateDraft(HostEditDraft draft) {
+    final isDevTunnel = draft.connectionType == HostConnectionType.devTunnel;
+    DevTunnelForwardingUrl? devTunnelUrl;
     if (draft.label.isEmpty) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.label,
         message: 'Fix label to save this host',
       );
     }
-    if (draft.hostname.isEmpty) {
+    if (!isDevTunnel && draft.hostname.isEmpty) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.hostname,
         message: 'Fix hostname to save this host',
@@ -353,11 +362,31 @@ class HostEditViewModel extends Notifier<HostEditState> {
     }
 
     final port = int.tryParse(draft.port);
-    if (draft.port.isEmpty || port == null || port < 1 || port > 65535) {
+    if (!isDevTunnel &&
+        (draft.port.isEmpty || port == null || port < 1 || port > 65535)) {
       return const HostEditValidationIssue(
         target: HostEditValidationTarget.port,
         message: 'Fix port to save this host',
       );
+    }
+    if (isDevTunnel) {
+      try {
+        devTunnelUrl = parseDevTunnelForwardingUrl(
+          draft.devTunnelUrl,
+          fallbackPort: port,
+        );
+      } on FormatException {
+        return const HostEditValidationIssue(
+          target: HostEditValidationTarget.devTunnelUrl,
+          message: 'Fix Dev Tunnel URL to save this host',
+        );
+      }
+      if (devTunnelUrl.port == null) {
+        return const HostEditValidationIssue(
+          target: HostEditValidationTarget.devTunnelUrl,
+          message: 'Fix Dev Tunnel URL to save this host',
+        );
+      }
     }
     if (draft.username.isEmpty) {
       return const HostEditValidationIssue(
@@ -454,7 +483,14 @@ class HostEditViewModel extends Notifier<HostEditState> {
     required bool hasAutomationAccess,
   }) async {
     final existingHost = state.existingHost;
-    final port = int.parse(draft.port);
+    final devTunnelUrl = draft.connectionType == HostConnectionType.devTunnel
+        ? parseDevTunnelForwardingUrl(
+            draft.devTunnelUrl,
+            fallbackPort: int.tryParse(draft.port),
+          )
+        : null;
+    final port = devTunnelUrl?.port ?? int.parse(draft.port);
+    final hostname = devTunnelUrl?.uri.host ?? draft.hostname;
     final password = draft.password.isEmpty ? null : draft.password;
     final tags = draft.tags.trim().isEmpty ? null : draft.tags.trim();
 
@@ -588,15 +624,23 @@ class HostEditViewModel extends Notifier<HostEditState> {
 
     return SaveHostInput(
       label: draft.label,
-      hostname: draft.hostname,
+      hostname: hostname,
       port: port,
+      connectionType: draft.connectionType,
+      devTunnelUrl: draft.connectionType == HostConnectionType.devTunnel
+          ? draft.devTunnelUrl.trim()
+          : null,
       username: draft.username,
       password: password,
       tags: tags,
       keyId: draft.selectedKeyId,
       groupId: draft.selectedGroupId,
-      jumpHostId: draft.selectedJumpHostId,
-      skipJumpHostOnSsids: draft.selectedJumpHostId == null
+      jumpHostId: draft.connectionType == HostConnectionType.devTunnel
+          ? null
+          : draft.selectedJumpHostId,
+      skipJumpHostOnSsids:
+          draft.connectionType == HostConnectionType.devTunnel ||
+              draft.selectedJumpHostId == null
           ? null
           : draft.skipJumpHostOnSsids,
       terminalThemeLightId: draft.selectedLightThemeId,

@@ -1,0 +1,576 @@
+// ignore_for_file: public_member_api_docs
+
+import 'dart:convert';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/services/dev_tunnel_auth_service.dart';
+
+class _MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
+
+void main() {
+  setUpAll(() {
+    registerFallbackValue(IOSOptions.defaultOptions);
+  });
+
+  group('DevTunnelAuthService', () {
+    late _MockFlutterSecureStorage storage;
+
+    setUp(() {
+      storage = _MockFlutterSecureStorage();
+      when(
+        () => storage.read(
+          key: any(named: 'key'),
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => null);
+      when(
+        () => storage.write(
+          key: any(named: 'key'),
+          value: any(named: 'value'),
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async {});
+      when(
+        () => storage.delete(
+          key: any(named: 'key'),
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async {});
+    });
+
+    test('starts GitHub device login', () async {
+      final requests = <http.Request>[];
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response(
+            jsonEncode({
+              'device_code': 'device-code',
+              'user_code': 'ABCD-1234',
+              'verification_uri': 'https://github.com/login/device',
+              'expires_in': 900,
+              'interval': 5,
+            }),
+            200,
+          );
+        }),
+      );
+
+      final login = await service.startGitHubDeviceLogin();
+
+      expect(login.deviceCode, 'device-code');
+      expect(login.userCode, 'ABCD-1234');
+      expect(
+        login.verificationUri.toString(),
+        'https://github.com/login/device',
+      );
+      expect(login.expiresIn, const Duration(seconds: 900));
+      expect(login.interval, const Duration(seconds: 5));
+      expect(
+        requests.single.url.toString(),
+        'https://github.com/login/device/code',
+      );
+      expect(requests.single.body, contains('client_id=Iv1.e7b89e013f801f03'));
+      expect(requests.single.body, isNot(contains('scope=')));
+    });
+
+    test('stores GitHub token when device login is approved', () async {
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'access_token': 'gh-token',
+              'expires_in': 3600,
+              'refresh_token': 'refresh-token',
+              'refresh_token_expires_in': 7200,
+            }),
+            200,
+          ),
+        ),
+      );
+
+      final result = await service.pollGitHubDeviceLogin('device-code');
+
+      expect(result.status, DevTunnelDeviceLoginPollStatus.authorized);
+      verify(
+        () => storage.write(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          value: 'gh-token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).called(1);
+      verify(
+        () => storage.write(
+          key: 'monkeyssh_dev_tunnels_github_refresh_token',
+          value: 'refresh-token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).called(1);
+    });
+
+    test(
+      'returns pending while GitHub login is waiting for approval',
+      () async {
+        final service = DevTunnelAuthService(
+          storage: storage,
+          httpClient: MockClient(
+            (_) async => http.Response(
+              jsonEncode({'error': 'authorization_pending'}),
+              200,
+            ),
+          ),
+        );
+
+        final result = await service.pollGitHubDeviceLogin('device-code');
+
+        expect(result.status, DevTunnelDeviceLoginPollStatus.pending);
+      },
+    );
+
+    test('returns slowDown when GitHub asks polling to slow down', () async {
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(jsonEncode({'error': 'slow_down'}), 200),
+        ),
+      );
+
+      final result = await service.pollGitHubDeviceLogin('device-code');
+
+      expect(result.status, DevTunnelDeviceLoginPollStatus.slowDown);
+    });
+
+    test('resolves a Dev Tunnel connect authorization header', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final requests = <http.Request>[];
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response(
+            jsonEncode({
+              'accessTokens': {'connect': 'tunnel-connect-token'},
+              'ports': [
+                {
+                  'portNumber': 22,
+                  'accessTokens': {'connect': 'port-connect-token'},
+                },
+              ],
+            }),
+            200,
+          );
+        }),
+      );
+
+      final header = await service.resolveAuthorizationHeader(
+        'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
+      );
+
+      expect(header, 'tunnel port-connect-token');
+      expect(
+        requests.single.url.toString(),
+        'https://usw2.rel.tunnels.api.visualstudio.com/tunnels/abc'
+        '?includePorts=true&tokenScopes=connect'
+        '&api-version=2023-09-27-preview',
+      );
+      expect(requests.single.headers['authorization'], 'github gh-token');
+    });
+
+    test('resolves relay connection metadata for raw SSH ports', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'accessTokens': {'connect': 'tunnel-connect-token'},
+              'endpoints': [
+                {
+                  'connectionMode': 'TunnelRelay',
+                  'clientRelayUri': 'wss://relay.example.test/client',
+                },
+              ],
+              'ports': [
+                {
+                  'portNumber': 22,
+                  'protocol': 'ssh',
+                  'accessTokens': {'connect': 'port-connect-token'},
+                },
+              ],
+            }),
+            200,
+          ),
+        ),
+      );
+
+      final info = await service.resolveConnectionInfo(
+        'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
+      );
+
+      expect(info.authorizationHeader, 'tunnel port-connect-token');
+      expect(info.clientRelayUri, Uri.parse('wss://relay.example.test/client'));
+      expect(info.portNumber, 22);
+      expect(info.protocol, 'ssh');
+    });
+
+    test(
+      'falls back to listed tunnel metadata when URL host is not tunnel ID',
+      () async {
+        when(
+          () => storage.read(
+            key: 'monkeyssh_dev_tunnels_github_token',
+            iOptions: any(named: 'iOptions'),
+          ),
+        ).thenAnswer((_) async => 'gh-token');
+        final requests = <http.Request>[];
+        final service = DevTunnelAuthService(
+          storage: storage,
+          httpClient: MockClient((request) async {
+            requests.add(request);
+            if (request.url.host == 'usw3.rel.tunnels.api.visualstudio.com' &&
+                request.url.path == '/tunnels/39bjkbx1') {
+              return http.Response('', 404);
+            }
+            if (request.url.host == 'global.rel.tunnels.api.visualstudio.com' &&
+                request.url.path == '/tunnels') {
+              return http.Response(
+                jsonEncode({
+                  'value': [
+                    {
+                      'regionName': 'US West 3',
+                      'clusterId': 'usw3',
+                      'value': [
+                        {
+                          'tunnelId': 'swift-fog-99j495s',
+                          'name': 'Swift Fog',
+                          'endpoints': [
+                            {
+                              'connectionMode': 'TunnelRelay',
+                              'clientRelayUri':
+                                  'wss://relay.usw3.example.test/client',
+                            },
+                          ],
+                          'ports': [
+                            {
+                              'portNumber': 31545,
+                              'protocol': 'ssh',
+                              'webForwardingUris': [
+                                'https://39bjkbx1-31545.usw3.devtunnels.ms',
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                }),
+                200,
+              );
+            }
+            expect(request.url.path, '/tunnels/swift-fog-99j495s');
+            return http.Response(
+              jsonEncode({
+                'ports': [
+                  {
+                    'portNumber': 31545,
+                    'accessTokens': {'connect': 'listed-port-token'},
+                  },
+                ],
+              }),
+              200,
+            );
+          }),
+        );
+
+        final info = await service.resolveConnectionInfo(
+          'https://39bjkbx1-31545.usw3.devtunnels.ms',
+          port: 31545,
+        );
+
+        expect(info.authorizationHeader, 'tunnel listed-port-token');
+        expect(
+          info.clientRelayUri,
+          Uri.parse('wss://relay.usw3.example.test/client'),
+        );
+        expect(requests, hasLength(3));
+        expect(
+          requests.last.url.toString(),
+          'https://usw3.rel.tunnels.api.visualstudio.com'
+          '/tunnels/swift-fog-99j495s?includePorts=true'
+          '&tokenScopes=connect&api-version=2023-09-27-preview',
+        );
+      },
+    );
+
+    test('returns null authorization when not signed in', () async {
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((_) async => http.Response('', 500)),
+      );
+
+      final header = await service.resolveAuthorizationHeader(
+        'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
+      );
+
+      expect(header, isNull);
+    });
+
+    test('lists Dev Tunnels visible to signed-in account', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final requests = <http.Request>[];
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response(
+            jsonEncode({
+              'value': [
+                {
+                  'regionName': 'US West 2',
+                  'clusterId': 'usw2',
+                  'value': [
+                    {
+                      'tunnelId': 'abc',
+                      'name': 'Mac mini',
+                      'description': 'Desk machine',
+                      'labels': ['ssh', 'office'],
+                      'status': {
+                        'hostConnectionCount': 1,
+                        'lastHostConnectionTime': '2026-05-09T16:00:00Z',
+                      },
+                      'endpoints': [
+                        {
+                          'connectionMode': 'TunnelRelay',
+                          'clientRelayUri': 'wss://relay.example.test',
+                        },
+                      ],
+                      'ports': [
+                        {
+                          'portNumber': 22,
+                          'protocol': 'ssh',
+                          'name': 'Shell',
+                          'description': 'Remote login',
+                          'webForwardingUris': [
+                            'https://abc-22.usw2.devtunnels.ms',
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+            200,
+          );
+        }),
+      );
+
+      final tunnels = await service.listTunnels();
+
+      expect(tunnels, hasLength(1));
+      expect(tunnels.single.displayName, 'Mac mini');
+      expect(tunnels.single.description, 'Desk machine');
+      expect(tunnels.single.labels, ['ssh', 'office']);
+      expect(tunnels.single.regionName, 'US West 2');
+      expect(tunnels.single.hostConnectionCount, 1);
+      expect(tunnels.single.lastHostConnectionTime, isNotNull);
+      expect(
+        tunnels.single.clientRelayUri,
+        Uri.parse('wss://relay.example.test'),
+      );
+      expect(tunnels.single.ports.single.tunnelId, 'abc');
+      expect(tunnels.single.ports.single.clusterId, 'usw2');
+      expect(tunnels.single.ports.single.portNumber, 22);
+      expect(tunnels.single.ports.single.displayName, 'Shell');
+      expect(tunnels.single.ports.single.description, 'Remote login');
+      expect(
+        tunnels.single.ports.single.forwardingUrl,
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+      expect(
+        requests.single.url.toString(),
+        'https://global.rel.tunnels.api.visualstudio.com/tunnels'
+        '?includePorts=true&global=true&api-version=2023-09-27-preview',
+      );
+      expect(requests.single.headers['authorization'], 'github gh-token');
+    });
+
+    test('uses HTTP forwarding URLs from portForwardingUris', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'gh-token');
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'value': [
+                {
+                  'tunnelId': 'abc',
+                  'clusterId': 'usw2',
+                  'ports': [
+                    {
+                      'portNumber': 22,
+                      'portForwardingUris': [
+                        'tcp://abc-22.usw2.devtunnels.ms',
+                        'https://abc-22.usw2.devtunnels.ms',
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+            200,
+          ),
+        ),
+      );
+
+      final tunnels = await service.listTunnels();
+
+      expect(
+        tunnels.single.ports.single.forwardingUrl,
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+    });
+
+    test(
+      'rejects non-Dev-Tunnel forwarding URLs before checking login',
+      () async {
+        final service = DevTunnelAuthService(
+          storage: storage,
+          httpClient: MockClient((_) async => http.Response('', 500)),
+        );
+
+        await expectLater(
+          service.resolveAuthorizationHeader('https://example.com'),
+          throwsA(isA<DevTunnelAuthException>()),
+        );
+      },
+    );
+
+    test('refreshes expired GitHub tokens before resolving access', () async {
+      final expiresAt = DateTime.now()
+          .toUtc()
+          .subtract(const Duration(minutes: 1))
+          .toIso8601String();
+      final refreshExpiresAt = DateTime.now()
+          .toUtc()
+          .add(const Duration(hours: 1))
+          .toIso8601String();
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'expired-gh-token');
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token_expires_at',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => expiresAt);
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_refresh_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'refresh-token');
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_refresh_token_expires_at',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => refreshExpiresAt);
+      final requests = <http.Request>[];
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          if (request.url.host == 'github.com') {
+            return http.Response(
+              jsonEncode({
+                'access_token': 'fresh-gh-token',
+                'expires_in': 3600,
+              }),
+              200,
+            );
+          }
+          return http.Response(
+            jsonEncode({
+              'accessTokens': {'connect': 'tunnel-connect-token'},
+            }),
+            200,
+          );
+        }),
+      );
+
+      final header = await service.resolveAuthorizationHeader(
+        'https://abc-22.usw2.devtunnels.ms',
+        port: 22,
+      );
+
+      expect(header, 'tunnel tunnel-connect-token');
+      expect(requests, hasLength(2));
+      expect(
+        requests.first.url.toString(),
+        contains('/login/oauth/access_token'),
+      );
+      expect(requests.last.headers['authorization'], 'github fresh-gh-token');
+    });
+
+    test('clears expired sign-in when Dev Tunnels rejects the token', () async {
+      when(
+        () => storage.read(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).thenAnswer((_) async => 'expired-gh-token');
+      final service = DevTunnelAuthService(
+        storage: storage,
+        httpClient: MockClient((_) async => http.Response('', 401)),
+      );
+
+      await expectLater(
+        service.resolveAuthorizationHeader(
+          'https://abc-22.usw2.devtunnels.ms',
+          port: 22,
+        ),
+        throwsA(isA<DevTunnelAuthException>()),
+      );
+
+      verify(
+        () => storage.delete(
+          key: 'monkeyssh_dev_tunnels_github_token',
+          iOptions: any(named: 'iOptions'),
+        ),
+      ).called(1);
+    });
+  });
+}

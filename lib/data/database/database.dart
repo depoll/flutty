@@ -24,6 +24,12 @@ class Hosts extends Table {
   /// SSH port (default 22).
   IntColumn get port => integer().withDefault(const Constant(22))();
 
+  /// Connection method (`ssh`, `dev_tunnel`). Null is treated as `ssh`.
+  TextColumn get connectionType => text().nullable()();
+
+  /// GitHub/Microsoft Dev Tunnel forwarding URL.
+  TextColumn get devTunnelUrl => text().nullable()();
+
   /// Username for authentication.
   TextColumn get username => text().withLength(min: 1, max: 255)();
 
@@ -326,7 +332,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -395,6 +401,18 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 9) {
         final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.remoteMuxBackend.$name)) {
+          await m.addColumn(hosts, hosts.remoteMuxBackend);
+        }
+      }
+      if (from < 10) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.connectionType.$name)) {
+          await m.addColumn(hosts, hosts.connectionType);
+        }
+        if (!hostColumnNames.contains(hosts.devTunnelUrl.$name)) {
+          await m.addColumn(hosts, hosts.devTunnelUrl);
+        }
         if (!hostColumnNames.contains(hosts.remoteMuxBackend.$name)) {
           await m.addColumn(hosts, hosts.remoteMuxBackend);
         }

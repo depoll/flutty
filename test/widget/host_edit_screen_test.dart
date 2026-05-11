@@ -19,6 +19,7 @@ import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/dev_tunnel_auth_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
 import 'package:monkeyssh/presentation/view_models/host_edit_view_model.dart';
@@ -179,6 +180,8 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
   WidgetTester tester, {
   bool hasPro = false,
   List<Snippet> snippets = const [],
+  bool devTunnelSignedIn = false,
+  Future<List<DevTunnel>> Function()? devTunnelList,
 }) async {
   final database = AppDatabase.forTesting(NativeDatabase.memory());
   final encryptionService = SecretEncryptionService.forTesting();
@@ -230,6 +233,11 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
           ),
         ],
         databaseProvider.overrideWithValue(database),
+        devTunnelSignedInProvider.overrideWith(
+          (ref) async => devTunnelSignedIn,
+        ),
+        if (devTunnelList != null)
+          devTunnelListProvider.overrideWith((ref) => devTunnelList()),
         hostRepositoryProvider.overrideWithValue(hostRepository),
         agentLaunchPresetServiceProvider.overrideWithValue(presetService),
         keyRepositoryProvider.overrideWithValue(
@@ -462,6 +470,156 @@ void main() {
         expect(harness.hostRepository.insertedHost, isNull);
       },
     );
+
+    testWidgets('saves dev tunnel connection fields for new hosts', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(tester);
+      await _fillRequiredHostFields(tester);
+
+      final connectionTypeField = find.byKey(
+        const Key('host-connection-type-field'),
+      );
+      await tester.ensureVisible(connectionTypeField);
+      await tester.tap(connectionTypeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Dev Tunnel').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.enterText(
+        find.byKey(const Key('host-dev-tunnel-url-field')),
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+
+      await _tapBottomSave(tester);
+
+      final insertedHost = harness.hostRepository.insertedHost;
+      expect(insertedHost, isNotNull);
+      expect(insertedHost!.connectionType.value, 'dev_tunnel');
+      expect(
+        insertedHost.devTunnelUrl.value,
+        'https://abc-22.usw2.devtunnels.ms',
+      );
+      expect(insertedHost.jumpHostId.value, isNull);
+      expect(find.text('Sign in to Dev Tunnels'), findsOneWidget);
+    });
+
+    testWidgets('shows dev tunnel list error details and retries', (
+      tester,
+    ) async {
+      var listAttempts = 0;
+      await _pumpHostCreateScreen(
+        tester,
+        devTunnelSignedIn: true,
+        devTunnelList: () async {
+          listAttempts += 1;
+          throw const DevTunnelAuthException(
+            'Dev Tunnels failed while listing Dev Tunnels (404).',
+          );
+        },
+      );
+
+      final connectionTypeField = find.byKey(
+        const Key('host-connection-type-field'),
+      );
+      await tester.ensureVisible(connectionTypeField);
+      await tester.tap(connectionTypeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Dev Tunnel').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (var i = 0; i < 5 && listAttempts == 0; i += 1) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(listAttempts, greaterThanOrEqualTo(1));
+      expect(
+        find.text('Dev Tunnels failed while listing Dev Tunnels (404).'),
+        findsOneWidget,
+      );
+
+      final attemptsBeforeRetry = listAttempts;
+      await tester.tap(find.widgetWithText(TextButton, 'Retry'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (var i = 0; i < 5 && listAttempts == attemptsBeforeRetry; i += 1) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(listAttempts, greaterThan(attemptsBeforeRetry));
+    });
+
+    testWidgets('uses recognizable Dev Tunnel metadata from picker', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(
+        tester,
+        devTunnelSignedIn: true,
+        devTunnelList: () async => const [
+          DevTunnel(
+            tunnelId: 'swift-fog-99j495s',
+            clusterId: 'usw3',
+            name: 'Swift Fog',
+            description: 'Office Mac mini',
+            labels: ['ssh'],
+            ports: [
+              DevTunnelPort(
+                tunnelId: 'swift-fog-99j495s',
+                clusterId: 'usw3',
+                portNumber: 31545,
+                forwardingUrl: 'https://39bjkbx1-31545.usw3.devtunnels.ms',
+                protocol: 'ssh',
+                name: 'Shell',
+                description: 'Remote SSH port',
+              ),
+            ],
+          ),
+        ],
+      );
+      await _fillRequiredHostFields(tester);
+
+      final connectionTypeField = find.byKey(
+        const Key('host-connection-type-field'),
+      );
+      await tester.ensureVisible(connectionTypeField);
+      await tester.tap(connectionTypeField);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Dev Tunnel').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byKey(const Key('host-hostname-field')), findsNothing);
+      expect(find.byKey(const Key('host-port-field')), findsNothing);
+      expect(find.byKey(const Key('host-dev-tunnel-url-field')), findsNothing);
+      final picker = find.byKey(const Key('host-dev-tunnel-picker-field'));
+      await tester.ensureVisible(picker);
+      await tester.tap(picker);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Swift Fog - Shell :31545 SSH (usw3)').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.textContaining('Office Mac mini'), findsOneWidget);
+      expect(find.textContaining('Remote SSH port'), findsOneWidget);
+      expect(find.textContaining('ssh'), findsWidgets);
+
+      await _tapBottomSave(tester);
+
+      final insertedHost = harness.hostRepository.insertedHost;
+      expect(insertedHost, isNotNull);
+      expect(insertedHost!.label.value, 'New Host');
+      expect(
+        insertedHost.devTunnelUrl.value,
+        'https://39bjkbx1-31545.usw3.devtunnels.ms',
+      );
+      expect(insertedHost.hostname.value, '39bjkbx1-31545.usw3.devtunnels.ms');
+      expect(insertedHost.port.value, 31545);
+    });
 
     testWidgets('shows one selected coding agent icon in closed dropdown', (
       tester,
@@ -1179,6 +1337,12 @@ void main() {
         expect(yoloFinder, findsOneWidget);
         expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
 
+        await tester.scrollUntilVisible(
+          yoloFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(yoloFinder);
         await tester.tap(yoloFinder);
         await tester.pump();
 
