@@ -236,7 +236,7 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 
 	want := replayPrefixForTest(inactiveWindow) + "background output" +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}
@@ -265,7 +265,7 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	}()
 
 	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	var signaled []int
 	foregroundProcessGroupForWindow = func(window *muxWindow) int {
 		if window == inactiveWindow {
@@ -339,7 +339,7 @@ func TestActiveReplayIncludesWindowHistory(t *testing.T) {
 
 	window := server.windows[0]
 	want := replayPrefixForTest(window) + "previous screen" +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}
@@ -364,7 +364,7 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 		string(replay),
 		cursorVisibilityReplaySequence(true),
 	)
-	trimmedReplay = strings.TrimSuffix(trimmedReplay, synchronizedOutputResetSequence)
+	trimmedReplay = strings.TrimSuffix(trimmedReplay, postHistoryReplayResetSequence)
 	if !strings.HasSuffix(trimmedReplay, "suffix") {
 		t.Fatalf("replay did not preserve recent output suffix")
 	}
@@ -466,7 +466,7 @@ func TestCreateWindowClearsAttachBeforePromptOutput(t *testing.T) {
 
 	output := attach.String()
 	wantPrefix := replayPrefixForTest(&muxWindow{name: "sh", paneTitle: "sh"}) +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if !strings.HasPrefix(output, wantPrefix) {
 		t.Fatalf("attach output = %q, want replay prefix before prompt", output)
 	}
@@ -669,6 +669,7 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 		"\x1b[?1004l",
 		"\x1b[?2004l",
 		"\x1b[?2026l",
+		"\x1b[?2027l",
 		"\x1b[?1l",
 		"\x1b[?6l",
 		"\x1b[?7h",
@@ -683,12 +684,12 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 	}
 }
 
-func TestActiveReplayEndsSynchronizedOutputAfterHistory(t *testing.T) {
+func TestActiveReplayEndsBufferedModesAfterHistory(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:           "@1",
 		index:        0,
-		history:      []byte("prompt\x1b[?2026hbuffered codex frame"),
+		history:      []byte("prompt\x1b[?2026h\x1b[?2027hbuffered tui frame"),
 		lastActivity: time.Now(),
 	}
 	server.windows = []*muxWindow{window}
@@ -696,13 +697,18 @@ func TestActiveReplayEndsSynchronizedOutputAfterHistory(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 
-	want := replayPrefixForTest(window) + "prompt\x1b[?2026hbuffered codex frame" +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+	want := replayPrefixForTest(window) + "prompt\x1b[?2026h\x1b[?2027hbuffered tui frame" +
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
 	}
-	if lastReset := strings.LastIndex(replay, synchronizedOutputResetSequence); lastReset < strings.LastIndex(replay, "buffered codex frame") {
-		t.Fatalf("replay = %q, want synchronized output reset after history", replay)
+	for _, sequence := range []string{
+		synchronizedOutputResetSequence,
+		graphemeClusterResetSequence,
+	} {
+		if lastReset := strings.LastIndex(replay, sequence); lastReset < strings.LastIndex(replay, "buffered tui frame") {
+			t.Fatalf("replay = %q, want reset %q after history", replay, sequence)
+		}
 	}
 }
 
@@ -733,7 +739,7 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	preModes := string(terminalModePreReplaySequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
 	want := replayPrefixForTest(window) + preModes + "nano screen" +
-		synchronizedOutputResetSequence + postModes +
+		postHistoryReplayResetSequence + postModes +
 		cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
@@ -795,7 +801,7 @@ func TestActiveReplayRestoresResetEditorModesAfterHistory(t *testing.T) {
 	}
 	if !strings.HasSuffix(
 		string(server.activeReplayLocked()),
-		"stale\x1b[4h"+synchronizedOutputResetSequence+postModes+
+		"stale\x1b[4h"+postHistoryReplayResetSequence+postModes+
 			cursorVisibilityReplaySequence(true),
 	) {
 		t.Fatalf("replay did not restore reset modes after history")
@@ -975,7 +981,7 @@ func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 		t.Fatal("closed window was not marked closed immediately")
 	}
 	want := replayPrefixForTest(server.windows[2]) + "three" +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}
@@ -1003,7 +1009,7 @@ func TestCloseLastIndexedActiveWindowWrapsToFirstWindow(t *testing.T) {
 		t.Fatalf("active window = %q, want wrapped window @1", got)
 	}
 	want := replayPrefixForTest(server.windows[0]) + "one" +
-		synchronizedOutputResetSequence + cursorVisibilityReplaySequence(true)
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
 	}

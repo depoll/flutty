@@ -39,6 +39,8 @@ typedef TerminalControlModeState = ({
   bool reportFocusMode,
   bool bracketedPasteMode,
   bool colorSchemeUpdatesMode,
+  bool synchronizedOutputMode,
+  bool graphemeClusterMode,
   bool isUsingAltBuffer,
   bool mouseTrackingMode,
   bool mouseDragTrackingMode,
@@ -157,32 +159,46 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
-/// Extracts terminal color-scheme update mode changes from shell output.
+/// Extracts terminal control mode changes from shell output.
 ///
-/// Some TUIs enable DEC private mode 2031 to request a report when the
-/// terminal switches between light and dark color schemes. xterm.dart does not
-/// currently model that mode, so MonkeySSH tracks it while scanning the same
-/// shell output used for other terminal control queries.
-({bool? colorSchemeUpdatesMode, String pendingInput})
+/// xterm.dart does not currently model every modern DEC private mode that TUIs
+/// query, so MonkeySSH tracks the missing modes while scanning the same shell
+/// output used for other terminal control queries.
+({
+  bool? colorSchemeUpdatesMode,
+  bool? synchronizedOutputMode,
+  bool? graphemeClusterMode,
+  String pendingInput,
+})
 extractTerminalControlModeUpdates({
   required String input,
   required String pendingInput,
 }) {
   final combinedInput = pendingInput + input;
   bool? colorSchemeUpdatesMode;
+  bool? synchronizedOutputMode;
+  bool? graphemeClusterMode;
 
   for (final match in _terminalPrivateModeSetResetPattern.allMatches(
     combinedInput,
   )) {
     final params = match.group(1)?.split(';') ?? const <String>[];
-    if (!params.contains('2031')) {
-      continue;
+    final enabled = match.group(2) == 'h';
+    if (params.contains('2026')) {
+      synchronizedOutputMode = enabled;
     }
-    colorSchemeUpdatesMode = match.group(2) == 'h';
+    if (params.contains('2027')) {
+      graphemeClusterMode = enabled;
+    }
+    if (params.contains('2031')) {
+      colorSchemeUpdatesMode = enabled;
+    }
   }
 
   return (
     colorSchemeUpdatesMode: colorSchemeUpdatesMode,
+    synchronizedOutputMode: synchronizedOutputMode,
+    graphemeClusterMode: graphemeClusterMode,
     pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
   );
 }
@@ -277,13 +293,19 @@ String? _buildTerminalModeReportResponse(
       mode,
       modeState.bracketedPasteMode ? _terminalModeSet : _terminalModeReset,
     ),
+    2026 => _formatTerminalModeReport(
+      mode,
+      modeState.synchronizedOutputMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    2027 => _formatTerminalModeReport(
+      mode,
+      modeState.graphemeClusterMode ? _terminalModeSet : _terminalModeReset,
+    ),
     2031 => _formatTerminalModeReport(
       mode,
       modeState.colorSchemeUpdatesMode ? _terminalModeSet : _terminalModeReset,
     ),
-    1016 ||
-    2026 ||
-    2027 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+    1016 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
     _ => null,
   };
 }

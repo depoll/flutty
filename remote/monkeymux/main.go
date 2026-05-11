@@ -51,8 +51,10 @@ const (
 )
 
 const synchronizedOutputResetSequence = "\x1b[?2026l"
+const graphemeClusterResetSequence = "\x1b[?2027l"
+const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + synchronizedOutputResetSequence + "\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 var (
 	preReplayPrivateModes = []string{
@@ -2348,13 +2350,13 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 		[]byte,
 		0,
 		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
-			len(synchronizedOutputResetSequence)+len(postModes)+len(cursor),
+			len(postHistoryReplayResetSequence)+len(postModes)+len(cursor),
 	)
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
-	replay = append(replay, synchronizedOutputResetSequence...)
+	replay = append(replay, postHistoryReplayResetSequence...)
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay

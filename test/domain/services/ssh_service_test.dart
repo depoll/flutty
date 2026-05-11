@@ -458,13 +458,15 @@ void main() {
       final result = buildTerminalWindowControlQueryResponses(
         input:
             'before\x1b[?1004\$p\x1b[?2004\$p\x1b[?1006\$p'
-            '\x1b[?2026\$pafter',
+            '\x1b[?2026\$p\x1b[?2027\$p\x1b[?1016\$pafter',
         pendingInput: '',
         metrics: null,
         modeState: const (
           reportFocusMode: true,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: true,
+          synchronizedOutputMode: true,
+          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -478,7 +480,9 @@ void main() {
         '\x1b[?1004;1\$y'
         '\x1b[?2004;2\$y'
         '\x1b[?1006;1\$y'
-        '\x1b[?2026;0\$y',
+        '\x1b[?2026;1\$y'
+        '\x1b[?2027;2\$y'
+        '\x1b[?1016;0\$y',
       );
       expect(result.pendingInput, isEmpty);
 
@@ -490,6 +494,8 @@ void main() {
           reportFocusMode: false,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: false,
+          synchronizedOutputMode: false,
+          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -510,6 +516,8 @@ void main() {
           reportFocusMode: true,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: false,
+          synchronizedOutputMode: false,
+          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -529,6 +537,8 @@ void main() {
           reportFocusMode: true,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: false,
+          synchronizedOutputMode: false,
+          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -541,12 +551,14 @@ void main() {
       expect(second.pendingInput, isEmpty);
     });
 
-    test('extracts color scheme update mode changes', () {
+    test('extracts unmodeled private mode changes', () {
       final enabled = extractTerminalControlModeUpdates(
-        input: 'before\x1b[?2031hafter',
+        input: 'before\x1b[?2026;2027;2031hafter',
         pendingInput: '',
       );
 
+      expect(enabled.synchronizedOutputMode, isTrue);
+      expect(enabled.graphemeClusterMode, isTrue);
       expect(enabled.colorSchemeUpdatesMode, isTrue);
       expect(enabled.pendingInput, isEmpty);
 
@@ -556,6 +568,8 @@ void main() {
       );
 
       expect(first.colorSchemeUpdatesMode, isNull);
+      expect(first.synchronizedOutputMode, isNull);
+      expect(first.graphemeClusterMode, isNull);
       expect(first.pendingInput, '\x1b[?203');
 
       final disabled = extractTerminalControlModeUpdates(
@@ -564,6 +578,8 @@ void main() {
       );
 
       expect(disabled.colorSchemeUpdatesMode, isFalse);
+      expect(disabled.synchronizedOutputMode, isNull);
+      expect(disabled.graphemeClusterMode, isNull);
       expect(disabled.pendingInput, isEmpty);
     });
 

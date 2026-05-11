@@ -31,6 +31,8 @@ class _SshSessionRuntime {
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   bool _terminalColorSchemeUpdatesMode = false;
+  bool _terminalSynchronizedOutputMode = false;
+  bool _terminalGraphemeClusterMode = false;
 
   Terminal? _terminal;
 
@@ -200,6 +202,8 @@ class _SshSessionRuntime {
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
+    _terminalSynchronizedOutputMode = false;
+    _terminalGraphemeClusterMode = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -539,6 +543,16 @@ class _SshSessionRuntime {
         nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
       _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
     }
+    final nextSynchronizedOutputMode = modeUpdateResult.synchronizedOutputMode;
+    if (nextSynchronizedOutputMode != null &&
+        nextSynchronizedOutputMode != _terminalSynchronizedOutputMode) {
+      _terminalSynchronizedOutputMode = nextSynchronizedOutputMode;
+    }
+    final nextGraphemeClusterMode = modeUpdateResult.graphemeClusterMode;
+    if (nextGraphemeClusterMode != null &&
+        nextGraphemeClusterMode != _terminalGraphemeClusterMode) {
+      _terminalGraphemeClusterMode = nextGraphemeClusterMode;
+    }
 
     final result = buildTerminalWindowControlQueryResponses(
       input: data,
@@ -570,6 +584,8 @@ class _SshSessionRuntime {
     reportFocusMode: terminal.reportFocusMode,
     bracketedPasteMode: terminal.bracketedPasteMode,
     colorSchemeUpdatesMode: _terminalColorSchemeUpdatesMode,
+    synchronizedOutputMode: _terminalSynchronizedOutputMode,
+    graphemeClusterMode: _terminalGraphemeClusterMode,
     isUsingAltBuffer: terminal.isUsingAltBuffer,
     mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
     mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,
