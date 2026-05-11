@@ -29,10 +29,12 @@ class _SshSessionRuntime {
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
+  String _terminalMonkeyMuxAttachAltPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalSynchronizedOutputMode = false;
   bool _terminalGraphemeClusterMode = false;
+  bool _terminalMonkeyMuxAttachAltActive = false;
 
   Terminal? _terminal;
 
@@ -200,10 +202,12 @@ class _SshSessionRuntime {
     _terminalWindowMetrics = null;
     _terminalWindowQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
+    _terminalMonkeyMuxAttachAltPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
     _terminalSynchronizedOutputMode = false;
     _terminalGraphemeClusterMode = false;
+    _terminalMonkeyMuxAttachAltActive = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -229,7 +233,9 @@ class _SshSessionRuntime {
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
-            final terminalData = _unwrapTerminalTmuxPassthrough(data);
+            final terminalData = _rewriteTerminalOutputForLocalTerminal(
+              _unwrapTerminalTmuxPassthrough(data),
+            );
             if (identical(_shell, shell) &&
                 (terminalData.isNotEmpty || data.isNotEmpty)) {
               _enqueueShellOutput(
@@ -580,13 +586,30 @@ class _SshSessionRuntime {
     return result.output;
   }
 
+  String _rewriteTerminalOutputForLocalTerminal(String data) {
+    if (_session.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return data;
+    }
+    final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+      input: data,
+      pendingInput: _terminalMonkeyMuxAttachAltPendingInput,
+    );
+    _terminalMonkeyMuxAttachAltPendingInput = result.pendingInput;
+    final attachOwnedAltBufferActive = result.attachOwnedAltBufferActive;
+    if (attachOwnedAltBufferActive != null) {
+      _terminalMonkeyMuxAttachAltActive = attachOwnedAltBufferActive;
+    }
+    return result.output;
+  }
+
   TerminalControlModeState _terminalModeState(Terminal terminal) => (
     reportFocusMode: terminal.reportFocusMode,
     bracketedPasteMode: terminal.bracketedPasteMode,
     colorSchemeUpdatesMode: _terminalColorSchemeUpdatesMode,
     synchronizedOutputMode: _terminalSynchronizedOutputMode,
     graphemeClusterMode: _terminalGraphemeClusterMode,
-    isUsingAltBuffer: terminal.isUsingAltBuffer,
+    isUsingAltBuffer:
+        terminal.isUsingAltBuffer || _terminalMonkeyMuxAttachAltActive,
     mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
     mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,
     mouseMoveTrackingMode: terminal.mouseMode == MouseMode.upDownScrollMove,

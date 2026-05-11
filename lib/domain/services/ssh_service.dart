@@ -107,6 +107,86 @@ typedef TerminalControlModeState = ({
   return (output: output.toString(), pendingInput: '');
 }
 
+/// Rewrites MonkeyMux helper-owned alternate-buffer transitions for local xterm.
+///
+/// MonkeyMux owns an outer alternate buffer for terminal clients, while child
+/// TUIs run inside that isolated attach surface. The embedded app terminal
+/// already has its own viewport and scrollback, so it should not enter that
+/// helper-owned alternate buffer. Strip only the alternate-buffer private modes
+/// and preserve any grouped modes, such as mouse reporting.
+({String output, String pendingInput, bool? attachOwnedAltBufferActive})
+rewriteMonkeyMuxAttachOwnedAltBufferSequences({
+  required String input,
+  required String pendingInput,
+}) {
+  final combinedInput = pendingInput + input;
+  final output = StringBuffer();
+  var cursor = 0;
+  bool? attachOwnedAltBufferActive;
+
+  while (cursor < combinedInput.length) {
+    final escapeIndex = combinedInput.indexOf(_terminalEscape, cursor);
+    if (escapeIndex == -1) {
+      output.write(combinedInput.substring(cursor));
+      return (
+        output: output.toString(),
+        pendingInput: '',
+        attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+      );
+    }
+
+    output.write(combinedInput.substring(cursor, escapeIndex));
+    if (escapeIndex + 1 >= combinedInput.length) {
+      return (
+        output: output.toString(),
+        pendingInput: combinedInput.substring(escapeIndex),
+        attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+      );
+    }
+
+    if (combinedInput.codeUnitAt(escapeIndex + 1) != '['.codeUnitAt(0)) {
+      output.write(combinedInput.substring(escapeIndex, escapeIndex + 2));
+      cursor = escapeIndex + 2;
+      continue;
+    }
+
+    final endIndex = _terminalCsiEndIndex(combinedInput, escapeIndex + 2);
+    if (endIndex == -1) {
+      final pending = combinedInput.substring(escapeIndex);
+      if (pending.length <= _terminalCsiPendingLimit) {
+        return (
+          output: output.toString(),
+          pendingInput: pending,
+          attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+        );
+      }
+      output.write(pending);
+      return (
+        output: output.toString(),
+        pendingInput: '',
+        attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+      );
+    }
+
+    final sequence = combinedInput.substring(escapeIndex, endIndex + 1);
+    final rewrite = _monkeyMuxAttachOwnedAltBufferReplacement(sequence);
+    if (rewrite == null) {
+      output.write(sequence);
+    } else {
+      output.write(rewrite.replacement);
+      attachOwnedAltBufferActive =
+          rewrite.attachOwnedAltBufferActive ?? attachOwnedAltBufferActive;
+    }
+    cursor = endIndex + 1;
+  }
+
+  return (
+    output: output.toString(),
+    pendingInput: '',
+    attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+  );
+}
+
 /// Builds responses for terminal window/cell size and theme reports in shell
 /// output.
 ///
@@ -335,6 +415,8 @@ const _terminalEscape = '\x1b';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
+const _terminalCsiPendingLimit = 64;
+const _monkeyMuxAttachOwnedAltBufferTransitionSequence = '\x1b[H\x1b[2J\x1b[3J';
 
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
@@ -372,6 +454,85 @@ String _terminalTmuxPassthroughPendingSuffix(String input) {
     }
   }
   return '';
+}
+
+int _terminalCsiEndIndex(String input, int start) {
+  for (var index = start; index < input.length; index += 1) {
+    final codeUnit = input.codeUnitAt(index);
+    if (codeUnit >= 0x40 && codeUnit <= 0x7e) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+({String replacement, bool? attachOwnedAltBufferActive})?
+_monkeyMuxAttachOwnedAltBufferReplacement(String sequence) {
+  if (sequence.length < 3 ||
+      !sequence.startsWith('$_terminalEscape[') ||
+      (sequence.codeUnitAt(sequence.length - 1) != 'h'.codeUnitAt(0) &&
+          sequence.codeUnitAt(sequence.length - 1) != 'l'.codeUnitAt(0))) {
+    return null;
+  }
+
+  final finalByte = sequence.substring(sequence.length - 1);
+  final params = sequence.substring(2, sequence.length - 1);
+  if (!params.startsWith('?')) {
+    return null;
+  }
+
+  final preserved = <String>[];
+  var foundAttachOwnedAltBufferMode = false;
+  var updatesActiveState = false;
+  for (final part in params.substring(1).split(';')) {
+    if (part.isEmpty) {
+      continue;
+    }
+    final mode = part.split(':').first;
+    if (_isMonkeyMuxAttachOwnedAltBufferMode(mode)) {
+      foundAttachOwnedAltBufferMode = true;
+      updatesActiveState =
+          updatesActiveState || _isMonkeyMuxAttachOwnedScreenBufferMode(mode);
+    } else {
+      preserved.add(part);
+    }
+  }
+
+  if (!foundAttachOwnedAltBufferMode) {
+    return null;
+  }
+
+  final replacement = preserved.isEmpty
+      ? _monkeyMuxAttachOwnedAltBufferTransitionSequence
+      : '$_monkeyMuxAttachOwnedAltBufferTransitionSequence'
+            '$_terminalEscape[?${preserved.join(';')}$finalByte';
+  return (
+    replacement: replacement,
+    attachOwnedAltBufferActive: updatesActiveState ? finalByte == 'h' : null,
+  );
+}
+
+bool _isMonkeyMuxAttachOwnedAltBufferMode(String mode) {
+  switch (mode) {
+    case '47':
+    case '1047':
+    case '1048':
+    case '1049':
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool _isMonkeyMuxAttachOwnedScreenBufferMode(String mode) {
+  switch (mode) {
+    case '47':
+    case '1047':
+    case '1049':
+      return true;
+    default:
+      return false;
+  }
 }
 
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>

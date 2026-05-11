@@ -18,6 +18,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
@@ -384,6 +385,50 @@ void main() {
 
       expect(second.output, '\x1b[14tafter');
       expect(second.pendingInput, isEmpty);
+    });
+
+    test('rewrites MonkeyMux attach-owned alt buffer transitions', () {
+      final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+        input: 'before\x1b[?1049hinside\x1b[?1049lafter',
+        pendingInput: '',
+      );
+
+      expect(
+        result.output,
+        'before\x1b[H\x1b[2J\x1b[3Jinside\x1b[H\x1b[2J\x1b[3Jafter',
+      );
+      expect(result.pendingInput, isEmpty);
+      expect(result.attachOwnedAltBufferActive, isFalse);
+    });
+
+    test('preserves modes grouped with MonkeyMux attach-owned alt', () {
+      final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+        input: '\x1b[?1000;1006;1049;2004h',
+        pendingInput: '',
+      );
+
+      expect(result.output, '\x1b[H\x1b[2J\x1b[3J\x1b[?1000;1006;2004h');
+      expect(result.pendingInput, isEmpty);
+      expect(result.attachOwnedAltBufferActive, isTrue);
+    });
+
+    test('preserves split MonkeyMux attach-owned alt sequences', () {
+      final first = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+        input: 'before\x1b[?10',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1b[?10');
+
+      final second = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+        input: '49hafter',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[H\x1b[2J\x1b[3Jafter');
+      expect(second.pendingInput, isEmpty);
+      expect(second.attachOwnedAltBufferActive, isTrue);
     });
 
     test('answers terminal window and cell size reports', () {
@@ -979,7 +1024,7 @@ void main() {
         List<List<int>> shellWrites,
       })
     >
-    openShell() async {
+    openShell({RemoteMuxBackend? remoteMuxBackend}) async {
       final client = _MockSshClient();
       final shell = _MockExecSession();
       final stdout = StreamController<Uint8List>();
@@ -995,7 +1040,7 @@ void main() {
           port: 22,
           username: 'tester',
         ),
-      );
+      )..remoteMuxBackend = remoteMuxBackend;
 
       when(
         () => client.shell(pty: any(named: 'pty')),
@@ -1083,6 +1128,54 @@ void main() {
 
         expect(firstLineText(terminal), 'hello world');
         expect(stdoutEvents, ['\x1b[?2026hhello \x1b[?2026lworld']);
+      },
+    );
+
+    test(
+      'keeps MonkeyMux attach-owned alt buffer out of the local terminal',
+      () async {
+        final shell = await openShell(
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final terminal = shell.session.terminal!..resize(20, 3);
+
+        shell.stdout.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\x1b[?1049h'
+              'line 1\r\n'
+              'line 2\r\n'
+              'line 3\r\n'
+              'line 4\r\n'
+              'line 5\r\n',
+            ),
+          ),
+        );
+
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(terminal.isUsingAltBuffer, isFalse);
+        expect(terminal.buffer.scrollBack, greaterThan(0));
+      },
+    );
+
+    test(
+      'reports MonkeyMux attach-owned alt buffer to remote queries',
+      () async {
+        final shell = await openShell(
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('\x1b[?1049h\x1b[?1049\$p')),
+        );
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[?1049;1\$y',
+        );
+        expect(shell.session.terminal!.isUsingAltBuffer, isFalse);
       },
     );
 
