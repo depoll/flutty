@@ -69,6 +69,18 @@ class TerminalSessionController {
   bool isObservingSession(SshSession session) =>
       identical(_observedSession, session);
 
+  /// Stops observing terminal metadata for the current session.
+  void clearObservedSession({SshSession? session}) {
+    final observedSession = _observedSession;
+    if (observedSession == null ||
+        (session != null && !identical(observedSession, session))) {
+      return;
+    }
+
+    observedSession.removeMetadataListener(_onSessionMetadataChanged);
+    _observedSession = null;
+  }
+
   /// Resolves the session that should receive a coordinated terminal setting.
   SshSession? resolveTargetSession({SshSession? session}) {
     final connectionId = _connectionId();
