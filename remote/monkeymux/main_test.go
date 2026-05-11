@@ -19,7 +19,7 @@ import (
 )
 
 func replayPrefixForTest(window *muxWindow) string {
-	return string(activeWindowReplayPrefixForWindow(window)) + string(terminalTitleReplaySequence(window))
+	return activeWindowReplayPrefix + string(terminalTitleReplaySequence(window))
 }
 
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
@@ -458,6 +458,64 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	}
 }
 
+func TestActiveOutputFiltersNestedAlternateBufferModes(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput(
+		"@1",
+		[]byte("before\x1b[?1049hinside\x1b[?1049lafter"),
+	)
+
+	want := "before" + nestedAlternateBufferTransitionSequence + "inside" +
+		nestedAlternateBufferTransitionSequence + "after"
+	if got := attach.String(); got != want {
+		t.Fatalf("active attach output = %q, want %q", got, want)
+	}
+	if got := string(window.history); got != "before\x1b[?1049hinside\x1b[?1049lafter" {
+		t.Fatalf("history = %q, want raw PTY bytes", got)
+	}
+}
+
+func TestActiveOutputFiltersSplitNestedAlternateBufferMode(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput("@1", []byte("before\x1b[?10"))
+	server.handleWindowOutput("@1", []byte("49hafter"))
+
+	want := "before" + nestedAlternateBufferTransitionSequence + "after"
+	if got := attach.String(); got != want {
+		t.Fatalf("active attach output = %q, want %q", got, want)
+	}
+}
+
+func TestActiveOutputPreservesModesGroupedWithNestedAlternateBuffer(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput("@1", []byte("\x1b[?1049;25;2004h"))
+
+	want := nestedAlternateBufferTransitionSequence + "\x1b[?25;2004h"
+	if got := attach.String(); got != want {
+		t.Fatalf("active attach output = %q, want %q", got, want)
+	}
+}
+
 func TestCreateWindowClearsAttachBeforePromptOutput(t *testing.T) {
 	server := newMuxServer("test")
 	t.Cleanup(server.close)
@@ -702,35 +760,26 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 	}
 }
 
-func TestReplayPrefixClearsStaleOuterAlternateBuffer(t *testing.T) {
-	if !strings.Contains(activeWindowReplayPrefix, "\x1b[?1049l") {
-		t.Fatalf("replay prefix %q does not leave stale alternate buffer", activeWindowReplayPrefix)
+func TestAttachSessionOwnsOuterAlternateBuffer(t *testing.T) {
+	if attachSessionEnterSequence != "\x1b[?1049h" {
+		t.Fatalf("attach enter sequence = %q, want outer alternate buffer enter", attachSessionEnterSequence)
 	}
-	if strings.Contains(activeWindowReplayPrefix, "\x1b[?1049h") {
-		t.Fatalf("replay prefix %q forces alternate buffer", activeWindowReplayPrefix)
+	if attachSessionExitSequence != "\x1b[?1049l" {
+		t.Fatalf("attach exit sequence = %q, want outer alternate buffer leave", attachSessionExitSequence)
 	}
-}
-
-func TestCodexReplayUsesOuterAlternateBuffer(t *testing.T) {
-	window := &muxWindow{id: "@1", agentTool: "codex", lastActivity: time.Now()}
-	replayPrefix := string(activeWindowReplayPrefixForWindow(window))
-
-	if !strings.Contains(replayPrefix, "\x1b[?1049h") {
-		t.Fatalf("codex replay prefix %q does not enter alternate buffer", replayPrefix)
-	}
-	if strings.Contains(replayPrefix, "\x1b[?1049l") {
-		t.Fatalf("codex replay prefix %q leaves alternate buffer", replayPrefix)
+	if strings.Contains(activeWindowReplayPrefix, "\x1b[?1049") {
+		t.Fatalf("replay prefix %q should not toggle the attach-owned alternate buffer", activeWindowReplayPrefix)
 	}
 }
 
-func TestTrackedAlternateBufferReplayUsesOuterAlternateBuffer(t *testing.T) {
+func TestTrackedAlternateBufferReplayDoesNotToggleOuterAlternateBuffer(t *testing.T) {
 	window := &muxWindow{id: "@1", lastActivity: time.Now()}
 	window.observeTerminalModesLocked([]byte("\x1b[?1049h"))
 
-	replayPrefix := string(activeWindowReplayPrefixForWindow(window))
+	replayPrefix := replayPrefixForTest(window)
 
-	if !strings.Contains(replayPrefix, "\x1b[?1049h") {
-		t.Fatalf("tracked alt replay prefix %q does not enter alternate buffer", replayPrefix)
+	if strings.Contains(replayPrefix, "\x1b[?1049") {
+		t.Fatalf("tracked alt replay prefix %q should not toggle the attach-owned alternate buffer", replayPrefix)
 	}
 }
 
@@ -794,8 +843,8 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
 	}
-	if !strings.Contains(replayPrefixForTest(window), "\x1b[?1049h") {
-		t.Fatalf("replay prefix for tracked alt window = %q, want outer alt buffer", replayPrefixForTest(window))
+	if strings.Contains(replayPrefixForTest(window), "\x1b[?1049") {
+		t.Fatalf("replay prefix for tracked alt window = %q, should not toggle outer alt buffer", replayPrefixForTest(window))
 	}
 	for _, sequence := range []string{
 		"\x1b[?1h",

@@ -6,9 +6,12 @@ per-user helper that runs on the SSH target and exposes:
 - `monkeymux attach <session>` for the foreground terminal path.
 - `monkeymux control <session> --json` for newline-delimited JSON control.
 
-The foreground path is intentionally a direct byte relay. MonkeyMux does not
-parse, cache, wrap, or rewrite terminal control sequences in the hot path. All
-structured state and commands belong on the control backchannel.
+The foreground path is intentionally close to a direct byte relay. MonkeyMux
+does not emulate a full terminal grid like tmux; it only owns the attached
+client's outer alternate buffer and filters nested alternate-buffer toggles
+from child PTYs so full-screen TUIs cannot push the app terminal back to the
+main buffer mid-session. All structured state and commands belong on the
+control backchannel.
 
 `attach` is the only command that starts a session server. Optional `--cwd`,
 `--name`, and `--command` flags seed the initial window only when a new server
@@ -21,12 +24,11 @@ synthesized by MonkeyMux.
 Window switching and reconnect repaint from a bounded raw byte history for the
 selected window. MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to the
-selected PTY. Replay chooses the outer alternate-buffer state per window:
-Codex and windows that entered the alternate buffer repaint there, while plain
-shell windows leave stale alternate-buffer state before repainting. Replay
-strips old terminal response queries, such as device attributes, window reports,
-mode reports, and OSC color queries, so re-showing history does not synthesize
-new input into the live PTY.
+selected PTY. Replay clears and repaints inside the attach-owned alternate
+buffer without letting per-window alternate-buffer state leak into the app
+terminal. Replay strips old terminal response queries, such as device
+attributes, window reports, mode reports, and OSC color queries, so re-showing
+history does not synthesize new input into the live PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also

@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.26"
+	monkeyMuxVersion         = "0.1.27"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -53,11 +53,13 @@ const (
 const synchronizedOutputResetSequence = "\x1b[?2026l"
 const graphemeClusterResetSequence = "\x1b[?2027l"
 const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence
+const attachSessionEnterSequence = "\x1b[?1049h"
+const attachSessionExitSequence = "\x1b[?1049l"
+const nestedAlternateBufferTransitionSequence = "\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l"
 const activeWindowReplayPrefixAfterAlt = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
-const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + "\x1b[?1049l" + activeWindowReplayPrefixAfterAlt
-const activeWindowAlternateReplayPrefix = activeWindowReplayPrefixBeforeAlt + "\x1b[?1049h" + activeWindowReplayPrefixAfterAlt
+const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAlt
 
 var (
 	preReplayPrivateModes = []string{
@@ -277,6 +279,7 @@ type muxWindow struct {
 	history                    []byte
 	oscBuffer                  []byte
 	csiBuffer                  []byte
+	attachOutputBuffer         []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -381,12 +384,22 @@ func attachCommand(args []string) {
 		Width:   width,
 		Height:  height,
 	}
-	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+
+	restoreTerminal := makeTerminalRaw()
+	restoreAttachTerminal := func() {
+		_, _ = os.Stdout.Write([]byte(attachSessionExitSequence))
+		restoreTerminal()
+	}
+	defer restoreAttachTerminal()
+	if _, err := os.Stdout.Write([]byte(attachSessionEnterSequence)); err != nil {
+		restoreTerminal()
 		fatal(err)
 	}
 
-	restoreTerminal := makeTerminalRaw()
-	defer restoreTerminal()
+	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+		restoreAttachTerminal()
+		fatal(err)
+	}
 
 	stopResize := forwardResizeSignals(session)
 	defer stopResize()
@@ -402,6 +415,7 @@ func attachCommand(args []string) {
 	}()
 
 	if err := <-errs; err != nil && !errors.Is(err, io.EOF) {
+		restoreAttachTerminal()
 		fatal(err)
 	}
 }
@@ -1503,7 +1517,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
 		attach = s.attachConn
-		shouldWrite = attach != nil
+		if attach != nil {
+			chunk = window.attachOutputForClientLocked(chunk)
+			shouldWrite = len(chunk) > 0
+		}
 	} else if containsTerminalBell(chunk) {
 		window.alert = true
 	}
@@ -2344,7 +2361,6 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	history = trimReplayHistoryForAttach(history)
-	prefix := activeWindowReplayPrefixForWindow(window)
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	postModes := terminalModePostReplaySequence(window)
@@ -2352,10 +2368,10 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay := make(
 		[]byte,
 		0,
-		len(prefix)+len(title)+len(preModes)+len(history)+
+		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
 			len(postHistoryReplayResetSequence)+len(postModes)+len(cursor),
 	)
-	replay = append(replay, prefix...)
+	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
@@ -2363,23 +2379,6 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay
-}
-
-func activeWindowReplayPrefixForWindow(window *muxWindow) []byte {
-	if window != nil && window.usesOuterAlternateBufferForReplayLocked() {
-		return []byte(activeWindowAlternateReplayPrefix)
-	}
-	return []byte(activeWindowReplayPrefix)
-}
-
-func (w *muxWindow) usesOuterAlternateBufferForReplayLocked() bool {
-	if w == nil {
-		return false
-	}
-	if w.privateModes != nil && w.privateModes["1049"] {
-		return true
-	}
-	return w.agentToolLocked() == "codex"
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -2593,6 +2592,83 @@ func (w *muxWindow) historyTailLocked() []byte {
 	return w.history[len(w.history)-windowHistoryLimitBytes:]
 }
 
+func (w *muxWindow) attachOutputForClientLocked(chunk []byte) []byte {
+	if len(chunk) == 0 {
+		return nil
+	}
+	data := chunk
+	if len(w.attachOutputBuffer) > 0 {
+		combined := make([]byte, 0, len(w.attachOutputBuffer)+len(chunk))
+		combined = append(combined, w.attachOutputBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.attachOutputBuffer = nil
+	}
+
+	var output []byte
+	copyStart := 0
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' {
+			i++
+			continue
+		}
+		if i+1 >= len(data) {
+			if w.storePartialAttachOutputLocked(data[i:]) {
+				return appendAttachOutput(output, data[copyStart:i])
+			}
+			return appendAttachOutput(output, data[copyStart:])
+		}
+		if data[i+1] != '[' {
+			i += 2
+			continue
+		}
+		end := csiSequenceEnd(data, i+2)
+		if end < 0 {
+			if w.storePartialAttachOutputLocked(data[i:]) {
+				return appendAttachOutput(output, data[copyStart:i])
+			}
+			return appendAttachOutput(output, data[copyStart:])
+		}
+		sequence := data[i : end+1]
+		if replacement, ok := alternateBufferCsiReplacement(sequence); ok {
+			output = appendAttachOutputForRewrite(output, data[copyStart:i])
+			output = append(output, replacement...)
+			copyStart = end + 1
+		}
+		i = end + 1
+	}
+	return appendAttachOutput(output, data[copyStart:])
+}
+
+func appendAttachOutput(output []byte, data []byte) []byte {
+	if len(data) == 0 {
+		return output
+	}
+	if output == nil {
+		return data
+	}
+	return append(output, data...)
+}
+
+func appendAttachOutputForRewrite(output []byte, data []byte) []byte {
+	if len(data) == 0 {
+		return output
+	}
+	if output == nil {
+		return append([]byte(nil), data...)
+	}
+	return append(output, data...)
+}
+
+func (w *muxWindow) storePartialAttachOutputLocked(data []byte) bool {
+	if len(data) > csiBufferLimitBytes {
+		w.attachOutputBuffer = nil
+		return false
+	}
+	w.attachOutputBuffer = append(w.attachOutputBuffer[:0], data...)
+	return true
+}
+
 func trimReplayHistoryForAttach(history []byte) []byte {
 	if len(history) <= windowReplayLimitBytes {
 		return history
@@ -2683,16 +2759,7 @@ func isReplayUnsafeCsiSequence(sequence []byte) bool {
 	params := string(sequence[2 : len(sequence)-1])
 	switch final {
 	case 'h', 'l':
-		if !strings.HasPrefix(params, "?") {
-			return false
-		}
-		for _, mode := range csiModeParams(strings.TrimPrefix(params, "?")) {
-			switch mode {
-			case "47", "1047", "1048", "1049":
-				return true
-			}
-		}
-		return false
+		return isAlternateBufferCsiSequence(sequence)
 	case 'c':
 		return params == "" ||
 			params == "0" ||
@@ -2710,6 +2777,53 @@ func isReplayUnsafeCsiSequence(sequence []byte) bool {
 	case 'p':
 		return strings.HasSuffix(params, "$")
 	case 't':
+		return true
+	default:
+		return false
+	}
+}
+
+func isAlternateBufferCsiSequence(sequence []byte) bool {
+	_, ok := alternateBufferCsiReplacement(sequence)
+	return ok
+}
+
+func alternateBufferCsiReplacement(sequence []byte) ([]byte, bool) {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return nil, false
+	}
+	final := sequence[len(sequence)-1]
+	if final != 'h' && final != 'l' {
+		return nil, false
+	}
+	params := string(sequence[2 : len(sequence)-1])
+	if !strings.HasPrefix(params, "?") {
+		return nil, false
+	}
+	var preserved []string
+	foundAlternateBufferMode := false
+	for _, mode := range csiModeParams(strings.TrimPrefix(params, "?")) {
+		if isAlternateBufferMode(mode) {
+			foundAlternateBufferMode = true
+		} else {
+			preserved = append(preserved, mode)
+		}
+	}
+	if !foundAlternateBufferMode {
+		return nil, false
+	}
+	replacement := []byte(nestedAlternateBufferTransitionSequence)
+	if len(preserved) > 0 {
+		replacement = append(replacement, "\x1b[?"...)
+		replacement = append(replacement, strings.Join(preserved, ";")...)
+		replacement = append(replacement, final)
+	}
+	return replacement, true
+}
+
+func isAlternateBufferMode(mode string) bool {
+	switch mode {
+	case "47", "1047", "1048", "1049":
 		return true
 	default:
 		return false
