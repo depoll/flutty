@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.24"
+	monkeyMuxVersion         = "0.1.25"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -54,11 +54,10 @@ const synchronizedOutputResetSequence = "\x1b[?2026l"
 const graphemeClusterResetSequence = "\x1b[?2027l"
 const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l\x1b[?1049h\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 var (
 	preReplayPrivateModes = []string{
-		"1049",
 		"6",
 		"7",
 		"1",
@@ -2615,7 +2614,7 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 				break
 			}
 			sequence := data[i : end+1]
-			if isReplayUnsafeCsiQuery(sequence) {
+			if isReplayUnsafeCsiSequence(sequence) {
 				stripEnd = end + 1
 			}
 		} else if next == ']' {
@@ -2655,13 +2654,24 @@ func csiSequenceEnd(data []byte, start int) int {
 	return -1
 }
 
-func isReplayUnsafeCsiQuery(sequence []byte) bool {
+func isReplayUnsafeCsiSequence(sequence []byte) bool {
 	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
 		return false
 	}
 	final := sequence[len(sequence)-1]
 	params := string(sequence[2 : len(sequence)-1])
 	switch final {
+	case 'h', 'l':
+		if !strings.HasPrefix(params, "?") {
+			return false
+		}
+		for _, mode := range csiModeParams(strings.TrimPrefix(params, "?")) {
+			switch mode {
+			case "47", "1047", "1048", "1049":
+				return true
+			}
+		}
+		return false
 	case 'c':
 		return params == "" ||
 			params == "0" ||
@@ -2674,7 +2684,12 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 			params == "?15" ||
 			params == "?25" ||
 			params == "?26" ||
-			params == "?53"
+			params == "?53" ||
+			params == "?996"
+	case 'p':
+		return strings.HasSuffix(params, "$")
+	case 't':
+		return true
 	default:
 		return false
 	}

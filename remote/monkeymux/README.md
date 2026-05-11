@@ -20,10 +20,11 @@ synthesized by MonkeyMux.
 
 Window switching and reconnect repaint from a bounded raw byte history for the
 selected window. MonkeyMux still does not parse terminal state; the history is
-only a best-effort direct replay so the foreground terminal visibly moves to
-the selected PTY. Replay strips old terminal response queries, such as device
-attributes and OSC color queries, so re-showing history does not synthesize new
-input into the live PTY.
+only a best-effort direct replay so the foreground terminal visibly moves to the
+selected PTY. As a foreground multiplexer, replay enters the outer alternate
+buffer before repainting. Replay strips old terminal response queries, such as
+device attributes, window reports, mode reports, and OSC color queries, so
+re-showing history does not synthesize new input into the live PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also

@@ -372,33 +372,51 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 
 func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 	server := newMuxServer("test")
+	window := &muxWindow{
+		id:    "@1",
+		index: 0,
+		history: []byte(
+			"before" +
+				"\x1b[c" +
+				"\x1b[>0c" +
+				"\x1b[6n" +
+				"\x1b[?996n" +
+				"\x1b[14t" +
+				"\x1b[16t" +
+				"\x1b[22;2t" +
+				"\x1b[?1049h" +
+				"\x1b[?1049l" +
+				"\x1b[?2026$p" +
+				"\x1b[?2027$p" +
+				"\x1b]11;?\x07" +
+				"\x1b]2;Gemini\x07" +
+				"after",
+		),
+		lastActivity: time.Now(),
+	}
 	server.windows = []*muxWindow{
-		{
-			id:    "@1",
-			index: 0,
-			history: []byte(
-				"before" +
-					"\x1b[c" +
-					"\x1b[>0c" +
-					"\x1b[6n" +
-					"\x1b]11;?\x07" +
-					"\x1b]2;Gemini\x07" +
-					"after",
-			),
-			lastActivity: time.Now(),
-		},
+		window,
 	}
 	server.activeID = "@1"
 
 	replay := string(server.activeReplayLocked())
+	historyReplay := strings.TrimPrefix(replay, replayPrefixForTest(window))
 
 	for _, stripped := range []string{
 		"\x1b[c",
 		"\x1b[>0c",
 		"\x1b[6n",
+		"\x1b[?996n",
+		"\x1b[14t",
+		"\x1b[16t",
+		"\x1b[22;2t",
+		"\x1b[?1049h",
+		"\x1b[?1049l",
+		"\x1b[?2026$p",
+		"\x1b[?2027$p",
 		"\x1b]11;?\x07",
 	} {
-		if strings.Contains(replay, stripped) {
+		if strings.Contains(historyReplay, stripped) {
 			t.Fatalf("replay retained terminal query %q in %q", stripped, replay)
 		}
 	}
@@ -433,9 +451,9 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server.activeID = "@1"
 	server.attachConn = attach
 
-	server.handleWindowOutput("@1", []byte("live\x1b[c\x1b]11;?\x07query"))
+	server.handleWindowOutput("@1", []byte("live\x1b[c\x1b[14t\x1b[?2026$p\x1b]11;?\x07query"))
 
-	if got := attach.String(); got != "live\x1b[c\x1b]11;?\x07query" {
+	if got := attach.String(); got != "live\x1b[c\x1b[14t\x1b[?2026$p\x1b]11;?\x07query" {
 		t.Fatalf("active attach output = %q, want unmodified live query", got)
 	}
 }
@@ -684,6 +702,15 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 	}
 }
 
+func TestReplayPrefixUsesOuterAlternateBuffer(t *testing.T) {
+	if !strings.Contains(activeWindowReplayPrefix, "\x1b[?1049h") {
+		t.Fatalf("replay prefix %q does not enter alternate buffer", activeWindowReplayPrefix)
+	}
+	if strings.Contains(activeWindowReplayPrefix, "\x1b[?1049l") {
+		t.Fatalf("replay prefix %q leaves alternate buffer", activeWindowReplayPrefix)
+	}
+}
+
 func TestActiveReplayEndsBufferedModesAfterHistory(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -745,7 +772,6 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 		t.Fatalf("replay = %q, want %q", replay, want)
 	}
 	for _, sequence := range []string{
-		"\x1b[?1049h",
 		"\x1b[?1h",
 		"\x1b[?2004h",
 		"\x1b[4h",
@@ -754,6 +780,9 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 		if !strings.Contains(preModes, sequence) {
 			t.Fatalf("pre-history modes = %q, want %q", preModes, sequence)
 		}
+	}
+	if strings.Contains(preModes, "\x1b[?1049") {
+		t.Fatalf("pre-history modes = %q, should leave outer alt buffer ownership to replay prefix", preModes)
 	}
 	for _, sequence := range []string{
 		"\x1b[?1h",
