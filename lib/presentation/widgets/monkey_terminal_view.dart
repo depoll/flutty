@@ -1862,6 +1862,7 @@ class MonkeyRenderTerminal extends RenderBox
   final Set<VoidCallback> _selectionListeners = <VoidCallback>{};
 
   int _lastKnownLineCount = -1;
+  int _forceLayoutOnTerminalChangeCount = 0;
   final _cursorCellData = CellData.empty();
 
   void _onScroll() {
@@ -1891,7 +1892,11 @@ class MonkeyRenderTerminal extends RenderBox
       _syncSelectableSelectionFromController();
     }
     final lineCount = _terminal.buffer.lines.length;
-    if (lineCount != _lastKnownLineCount) {
+    if (_forceLayoutOnTerminalChangeCount > 0) {
+      _forceLayoutOnTerminalChangeCount -= 1;
+      _lastKnownLineCount = lineCount;
+      markNeedsLayout();
+    } else if (lineCount != _lastKnownLineCount) {
       _lastKnownLineCount = lineCount;
       markNeedsLayout();
     } else {
@@ -2694,6 +2699,8 @@ class MonkeyRenderTerminal extends RenderBox
   void _refreshTerminalDisplay({bool revealLatestOutput = false}) {
     if (revealLatestOutput) {
       _stickToBottom = true;
+      _lastKnownLineCount = -1;
+      _forceLayoutOnTerminalChangeCount = 4;
     }
     if (!hasSize) {
       markNeedsLayout();
