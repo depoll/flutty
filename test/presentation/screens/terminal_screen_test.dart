@@ -2066,6 +2066,134 @@ void main() {
     );
 
     testWidgets(
+      'replays and reveals MonkeyMux viewport when reopening existing terminal',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'shell', isActive: false, id: '@1'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        session
+          ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+          ..remoteMuxSessionName = sessionName;
+        for (var row = 0; row < 120; row += 1) {
+          session.terminal!.write('stale row $row\r\n');
+        }
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            0,
+            windowId: '@0',
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pump();
+
+        verify(
+          () => monkeyMuxService.selectWindow(
+            session,
+            sessionName,
+            0,
+            windowId: '@0',
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        final scrollableState = tester.state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MonkeyTerminalView),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final position = scrollableState.position;
+        expect(position.maxScrollExtent, greaterThan(0));
+        expect(position.pixels, position.maxScrollExtent);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'MonkeyMux window switches reveal the replayed terminal viewport',
       (tester) async {
         final tmuxService = _MockTmuxService();

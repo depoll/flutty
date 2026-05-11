@@ -5709,7 +5709,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isConnecting = false;
         });
         _syncTerminalWakeLock(SshConnectionState.connected);
-        _scheduleTerminalSizeRefresh();
+        _revealLatestTerminalOutput();
         _restoreTerminalFocus();
 
         // Detect tmux on existing sessions too (may not have been detected
@@ -5791,7 +5791,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       });
       _syncTerminalWakeLock(SshConnectionState.connected);
-      _scheduleTerminalSizeRefresh();
+      _revealLatestTerminalOutput();
       _restoreTerminalFocus();
 
       // Start port forwards
@@ -5995,13 +5995,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  void _refreshTerminalAfterMonkeyMuxWindowChange() {
+  void _revealLatestTerminalOutput() {
     _followLiveOutput();
+    _syncTerminalLiveOutputAutoScroll();
     _scheduleTerminalSizeRefresh(
       forceDisplayRefresh: true,
       revealLatestOutput: true,
       ignoreFollowPauseForReveal: true,
     );
+  }
+
+  void _refreshTerminalAfterMonkeyMuxWindowChange() {
+    _revealLatestTerminalOutput();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
       const Duration(milliseconds: 50),
@@ -6010,12 +6015,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted || _isTerminalOutputFollowPaused) {
           return;
         }
-        _followLiveOutput();
-        _scheduleTerminalSizeRefresh(
-          forceDisplayRefresh: true,
-          revealLatestOutput: true,
-          ignoreFollowPauseForReveal: true,
-        );
+        _revealLatestTerminalOutput();
       },
     );
   }
@@ -7080,6 +7080,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (muxBackend == RemoteMuxBackend.tmux) {
           _primeTmuxTerminalTheme(session);
         }
+        if (isReopeningExistingTerminal &&
+            muxBackend == RemoteMuxBackend.monkeyMux) {
+          unawaited(
+            _requestMonkeyMuxActiveWindowReplay(
+              session,
+              sessionName,
+              windows,
+              detectionGeneration: detectionGeneration,
+              reason: 'reopen_existing_terminal',
+            ),
+          );
+        }
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return true;
       }
@@ -7192,6 +7204,53 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } on Exception catch (error) {
       _showTmuxActionFailure(error);
     }
+  }
+
+  Future<void> _requestMonkeyMuxActiveWindowReplay(
+    SshSession session,
+    String sessionName,
+    List<TmuxWindow> windows, {
+    required int detectionGeneration,
+    required String reason,
+  }) async {
+    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
+    if (activeWindow == null) {
+      return;
+    }
+
+    _revealLatestTerminalOutput();
+    try {
+      await _monkeyMuxService.selectWindow(
+        session,
+        sessionName,
+        activeWindow.index,
+        windowId: activeWindow.id,
+        extraFlags: _activeTmuxExtraFlags,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'monkeymux_active_replay_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'reason': reason,
+          'errorType': error.runtimeType,
+        },
+      );
+      return;
+    }
+
+    if (!mounted ||
+        _connectionId != session.connectionId ||
+        detectionGeneration != _tmuxDetectionGeneration) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'monkeymux_active_replay_requested',
+      fields: {'connectionId': session.connectionId, 'reason': reason},
+    );
+    _refreshTerminalAfterMonkeyMuxWindowChange();
   }
 
   String? _resolveStoredAutoConnectCommand(Host? host) {
