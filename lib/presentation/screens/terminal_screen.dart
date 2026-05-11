@@ -2073,8 +2073,13 @@ bool shouldUseSyntheticAltBufferScrollFallback({
   required bool isUsingAltBuffer,
   required bool preferExplicitMouseReporting,
   required bool terminalReportsMouseWheel,
+  bool isAttachOwnedAltBuffer = false,
 }) {
   if (!isUsingAltBuffer) {
+    return false;
+  }
+
+  if (isAttachOwnedAltBuffer) {
     return false;
   }
 
@@ -2094,7 +2099,16 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+  bool isAttachOwnedAltBuffer = false,
+}) {
+  if (!isMobile) {
+    return false;
+  }
+  if (isAttachOwnedAltBuffer) {
+    return terminalReportsMouseWheel;
+  }
+  return isUsingAltBuffer || terminalReportsMouseWheel;
+}
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2875,10 +2889,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
+  bool get _usesAttachOwnedAltBuffer =>
+      _isTmuxActive && _activeMuxBackend == RemoteMuxBackend.monkeyMux;
+
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
+    isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
   );
 
   BoxConstraints? _terminalOverflowMenuConstraints({
@@ -9195,6 +9213,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
+        isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,

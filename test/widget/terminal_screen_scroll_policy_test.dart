@@ -58,6 +58,21 @@ void main() {
       },
     );
 
+    test(
+      'does not synthesize arrows for attach-owned alt buffers without wheel reporting',
+      () {
+        expect(
+          shouldUseSyntheticAltBufferScrollFallback(
+            isUsingAltBuffer: true,
+            preferExplicitMouseReporting: true,
+            terminalReportsMouseWheel: false,
+            isAttachOwnedAltBuffer: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
     test('can still opt into the synthetic fallback when desired', () {
       expect(
         shouldUseSyntheticAltBufferScrollFallback(
@@ -81,6 +96,36 @@ void main() {
         isTrue,
       );
     });
+
+    test(
+      'keeps mobile attach-owned alt buffers viewport-scrollable without wheel reporting',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: true,
+            terminalReportsMouseWheel: false,
+            isAttachOwnedAltBuffer: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'routes mobile attach-owned alt buffers when the app reports mouse wheel',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: true,
+            terminalReportsMouseWheel: true,
+            isAttachOwnedAltBuffer: true,
+          ),
+          isTrue,
+        );
+      },
+    );
 
     test('routes mobile mouse-reporting apps into terminal scroll input', () {
       expect(

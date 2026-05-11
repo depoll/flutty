@@ -43,6 +43,9 @@ class _MonkeyTerminalScrollGestureHandlerState
   /// widget does nothing.
   var isAltBuffer = false;
 
+  /// Whether the application has explicitly enabled mouse wheel reporting.
+  var reportsMouseWheel = false;
+
   /// Tracks the last scroll offset reported by [InfiniteScrollView].
   var lastScrollOffset = 0.0;
 
@@ -58,6 +61,7 @@ class _MonkeyTerminalScrollGestureHandlerState
   void initState() {
     widget.terminal.addListener(_onTerminalUpdated);
     isAltBuffer = widget.terminal.isUsingAltBuffer;
+    reportsMouseWheel = widget.terminal.mouseMode.reportScroll;
     super.initState();
   }
 
@@ -73,14 +77,19 @@ class _MonkeyTerminalScrollGestureHandlerState
       oldWidget.terminal.removeListener(_onTerminalUpdated);
       widget.terminal.addListener(_onTerminalUpdated);
       isAltBuffer = widget.terminal.isUsingAltBuffer;
+      reportsMouseWheel = widget.terminal.mouseMode.reportScroll;
       _resetScrollTracking();
     }
     super.didUpdateWidget(oldWidget);
   }
 
   void _onTerminalUpdated() {
-    if (isAltBuffer != widget.terminal.isUsingAltBuffer) {
-      isAltBuffer = widget.terminal.isUsingAltBuffer;
+    final nextIsAltBuffer = widget.terminal.isUsingAltBuffer;
+    final nextReportsMouseWheel = widget.terminal.mouseMode.reportScroll;
+    if (isAltBuffer != nextIsAltBuffer ||
+        reportsMouseWheel != nextReportsMouseWheel) {
+      isAltBuffer = nextIsAltBuffer;
+      reportsMouseWheel = nextReportsMouseWheel;
       _resetScrollTracking();
       setState(() {});
     }
@@ -136,6 +145,9 @@ class _MonkeyTerminalScrollGestureHandlerState
   @override
   Widget build(BuildContext context) {
     if (!isAltBuffer) {
+      return widget.child;
+    }
+    if (!reportsMouseWheel && !widget.simulateScroll) {
       return widget.child;
     }
 

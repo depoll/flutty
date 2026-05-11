@@ -77,6 +77,55 @@ void main() {
   );
 
   testWidgets(
+    'alt buffer without mouse reporting can scroll the child when simulation is disabled',
+    (tester) async {
+      final terminal = Terminal()..useAltBuffer();
+      final output = <String>[];
+      terminal.onOutput = output.add;
+      final scrollController = ScrollController();
+      addTearDown(scrollController.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Directionality(
+            textDirection: TextDirection.ltr,
+            child: Center(
+              child: SizedBox(
+                width: 200,
+                height: 200,
+                child: MonkeyTerminalScrollGestureHandler(
+                  terminal: terminal,
+                  simulateScroll: false,
+                  getCellOffset: (_) => const CellOffset(1, 1),
+                  getLineHeight: () => 10,
+                  child: SingleChildScrollView(
+                    key: const ValueKey('plain-scroll-viewport'),
+                    controller: scrollController,
+                    child: const SizedBox(
+                      key: ValueKey('plain-scroll-target'),
+                      height: 1000,
+                      width: 200,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.drag(
+        find.byKey(const ValueKey('plain-scroll-viewport')),
+        const Offset(0, -120),
+      );
+      await tester.pump();
+
+      expect(scrollController.offset, greaterThan(0));
+      expect(output, isEmpty);
+    },
+  );
+
+  testWidgets(
     'trackpad reversal waits for a full line before sending a reverse step',
     (tester) async {
       final terminal = Terminal()
