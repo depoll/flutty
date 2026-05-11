@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.28"
+	monkeyMuxVersion         = "0.1.33"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -277,6 +277,7 @@ type muxWindow struct {
 	pty                        *os.File
 	cmd                        *exec.Cmd
 	history                    []byte
+	replayHistory              []byte
 	oscBuffer                  []byte
 	csiBuffer                  []byte
 	attachOutputBuffer         []byte
@@ -1445,6 +1446,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		pty:                   file,
 		cmd:                   cmd,
 		history:               append([]byte(nil), options.history...),
+		replayHistory:         append([]byte(nil), options.history...),
 		lastActivity:          time.Now(),
 		cursorVisible:         cursorVisible,
 		cursorVisibilityKnown: options.cursorVisibilityKnown,
@@ -1520,9 +1522,17 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		if attach != nil {
 			chunk = window.attachOutputForClientLocked(chunk)
 			shouldWrite = len(chunk) > 0
+			if shouldCaptureReplayOutput(chunk) {
+				window.appendReplayHistoryLocked(chunk)
+			}
+		} else if window.shouldCaptureInactiveReplayOutputLocked(chunk) {
+			window.appendReplayHistoryLocked(chunk)
 		}
 	} else if containsTerminalBell(chunk) {
 		window.alert = true
+	}
+	if s.activeID != windowID && window.shouldCaptureInactiveReplayOutputLocked(chunk) {
+		window.appendReplayHistoryLocked(chunk)
 	}
 	after := window.broadcastIdentityLocked()
 	if before != after ||
@@ -1552,7 +1562,6 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
-	var foregroundProcessGroup int
 	var shouldShutdown bool
 
 	s.attachMu.Lock()
@@ -1576,7 +1585,6 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
-				foregroundProcessGroup = candidate.foregroundProcessGroupLocked()
 				activeChanged = true
 				break
 			}
@@ -1606,7 +1614,6 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
 	}
 	if shouldShutdown {
 		go s.close()
@@ -2206,7 +2213,6 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
-	var foregroundProcessGroup int
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -2220,12 +2226,10 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
-	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	s.mu.Unlock()
 	s.writeAttachLocked(attach, replay)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
-	signalForegroundResize(foregroundProcessGroup)
 	return nil
 }
 
@@ -2233,7 +2237,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
-	var foregroundProcessGroup int
 	var shouldShutdown bool
 	var command *exec.Cmd
 	var windowPty *os.File
@@ -2261,7 +2264,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
-			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -2296,7 +2298,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
 	if windowPty != nil {
@@ -2335,6 +2336,11 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
+	if size, err := pty.GetsizeFull(window.pty); err == nil &&
+		int(size.Cols) == width &&
+		int(size.Rows) == height {
+		return
+	}
 	_ = pty.Setsize(window.pty, &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
@@ -2359,7 +2365,11 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
-	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
+	historySource := window.replayHistoryTailLocked()
+	if len(historySource) == 0 {
+		historySource = window.historyTailLocked()
+	}
+	history := stripTerminalQueriesFromReplay(historySource)
 	history = trimReplayHistoryForAttach(history)
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
@@ -2563,26 +2573,37 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+	w.history = appendLimitedBufferLocked(w.history, chunk)
+}
+
+func (w *muxWindow) appendReplayHistoryLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	w.replayHistory = appendLimitedBufferLocked(w.replayHistory, chunk)
+}
+
+func appendLimitedBufferLocked(buffer []byte, chunk []byte) []byte {
 	if len(chunk) >= windowHistoryLimitBytes {
-		w.history = append(
-			w.history[:0],
+		return append(
+			buffer[:0],
 			chunk[len(chunk)-windowHistoryLimitBytes:]...,
 		)
-		return
 	}
 	// Grow the underlying buffer to 2x the limit so trims are amortized:
 	// each byte gets shifted at most once before falling out of history.
-	if cap(w.history) < 2*windowHistoryLimitBytes {
-		grown := make([]byte, len(w.history), 2*windowHistoryLimitBytes)
-		copy(grown, w.history)
-		w.history = grown
+	if cap(buffer) < 2*windowHistoryLimitBytes {
+		grown := make([]byte, len(buffer), 2*windowHistoryLimitBytes)
+		copy(grown, buffer)
+		buffer = grown
 	}
-	w.history = append(w.history, chunk...)
-	if len(w.history) > 2*windowHistoryLimitBytes {
+	buffer = append(buffer, chunk...)
+	if len(buffer) > 2*windowHistoryLimitBytes {
 		// copy() handles the overlap correctly because src is after dst.
-		n := copy(w.history, w.history[len(w.history)-windowHistoryLimitBytes:])
-		w.history = w.history[:n]
+		n := copy(buffer, buffer[len(buffer)-windowHistoryLimitBytes:])
+		buffer = buffer[:n]
 	}
+	return buffer
 }
 
 func (w *muxWindow) historyTailLocked() []byte {
@@ -2590,6 +2611,27 @@ func (w *muxWindow) historyTailLocked() []byte {
 		return w.history
 	}
 	return w.history[len(w.history)-windowHistoryLimitBytes:]
+}
+
+func (w *muxWindow) replayHistoryTailLocked() []byte {
+	if len(w.replayHistory) <= windowHistoryLimitBytes {
+		return w.replayHistory
+	}
+	return w.replayHistory[len(w.replayHistory)-windowHistoryLimitBytes:]
+}
+
+func (w *muxWindow) shouldCaptureInactiveReplayOutputLocked(chunk []byte) bool {
+	if len(chunk) == 0 || w.agentToolLocked() != "" {
+		return false
+	}
+	return shouldCaptureReplayOutput(chunk)
+}
+
+func shouldCaptureReplayOutput(chunk []byte) bool {
+	if len(chunk) == 0 {
+		return false
+	}
+	return containsReplayVisibleText(chunk) || !containsReplayStatefulControl(chunk)
 }
 
 func (w *muxWindow) attachOutputForClientLocked(chunk []byte) []byte {
@@ -2782,6 +2824,74 @@ func isReplayUnsafeCsiSequence(sequence []byte) bool {
 	default:
 		return false
 	}
+}
+
+func containsReplayStatefulControl(data []byte) bool {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\b', '\r':
+			return true
+		case '\x1b':
+			if i+1 >= len(data) {
+				return true
+			}
+			if data[i+1] != '[' {
+				return true
+			}
+			end := csiSequenceEnd(data, i+2)
+			if end < 0 {
+				return true
+			}
+			if isReplayStatefulCsiSequence(data[i : end+1]) {
+				return true
+			}
+			i = end
+		}
+	}
+	return false
+}
+
+func containsReplayVisibleText(data []byte) bool {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\x1b':
+			if i+1 >= len(data) {
+				return false
+			}
+			switch data[i+1] {
+			case '[':
+				end := csiSequenceEnd(data, i+2)
+				if end < 0 {
+					return false
+				}
+				i = end
+			case ']':
+				end, terminatorLength, ok := findOscTerminator(data[i+2:])
+				if !ok {
+					return false
+				}
+				i += 1 + end + terminatorLength
+			default:
+				i++
+			}
+		default:
+			if data[i] >= 0x20 && data[i] != 0x7f {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isReplayStatefulCsiSequence(sequence []byte) bool {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return false
+	}
+	final := sequence[len(sequence)-1]
+	if strings.ContainsRune("ABCDEFGHJKSTX`abcdefhlnrst", rune(final)) {
+		return true
+	}
+	return isReplayUnsafeCsiSequence(sequence)
 }
 
 func isAlternateBufferCsiSequence(sequence []byte) bool {
@@ -3766,19 +3876,25 @@ func forwardResizeSignals(session string) func() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGWINCH)
 	done := make(chan struct{})
+	ticker := time.NewTicker(500 * time.Millisecond)
+	sendCurrentSize := func() {
+		width, height := terminalSize()
+		sendResize(session, width, height)
+	}
+	sendCurrentSize()
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-signals:
-				width, height := terminalSize()
-				sendResize(session, width, height)
+				sendCurrentSize()
+			case <-ticker.C:
+				sendCurrentSize()
 			case <-done:
 				return
 			}
 		}
 	}()
-	width, height := terminalSize()
-	sendResize(session, width, height)
 	return func() {
 		close(done)
 		signal.Stop(signals)

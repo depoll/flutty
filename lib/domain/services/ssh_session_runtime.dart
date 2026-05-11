@@ -70,6 +70,7 @@ class _SshSessionRuntime {
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
     );
+    _resizeShellToTerminalWindowMetrics();
   }
 
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
@@ -117,6 +118,7 @@ class _SshSessionRuntime {
                 command,
                 pty: pty ?? const SSHPtyConfig(),
               );
+        _resizeShellToTerminalWindowMetrics();
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'open_success',
@@ -152,6 +154,20 @@ class _SshSessionRuntime {
     }
     _ensureShellStreamPipes();
     return _shell!;
+  }
+
+  void _resizeShellToTerminalWindowMetrics() {
+    final shell = _shell;
+    final metrics = _terminalWindowMetrics;
+    if (shell == null || metrics == null) {
+      return;
+    }
+    shell.resizeTerminal(
+      metrics.columns,
+      metrics.rows,
+      metrics.pixelWidth,
+      metrics.pixelHeight,
+    );
   }
 
   /// Close only the interactive shell channel while keeping the SSH client.

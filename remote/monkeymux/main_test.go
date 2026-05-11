@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 func replayPrefixForTest(window *muxWindow) string {
@@ -245,47 +247,64 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 }
 
-func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
+func TestSelectWindowResizesPtyWithoutPostReplaySignal(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
-	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = slave.Close()
+	})
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		pty:          slave,
+		lastActivity: time.Now(),
+	}
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
 		inactiveWindow,
 	}
 	server.activeID = "@1"
 	server.attachConn = attach
+	server.width = 48
+	server.height = 40
 	inactiveWindow.history = []byte("background output")
 
 	originalSignalForegroundResize := signalForegroundResize
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
 	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
 		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	var signaled []int
-	foregroundProcessGroupForWindow = func(window *muxWindow) int {
-		if window == inactiveWindow {
-			return 4242
-		}
-		return 0
-	}
 	signalForegroundResize = func(processGroup int) {
 		signaled = append(signaled, processGroup)
-		if got := attach.String(); got != wantReplay {
-			t.Fatalf("resize signaled before replay was written: got %q, want %q", got, wantReplay)
-		}
 	}
 
 	if err := server.selectWindow("@2"); err != nil {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(signaled, []int{4242}) {
-		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
+	if got := attach.String(); got != wantReplay {
+		t.Fatalf("attach output = %q, want %q", got, wantReplay)
+	}
+	size, err := pty.GetsizeFull(slave)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size.Cols != 48 || size.Rows != 40 {
+		t.Fatalf("pty size = %dx%d, want 48x40", size.Cols, size.Rows)
+	}
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
 	}
 }
 
@@ -487,6 +506,75 @@ func TestActiveOutputFiltersNestedAlternateBufferModes(t *testing.T) {
 	}
 	if got := string(window.history); got != "before\x1b[?1049hinside\x1b[?1049lafter" {
 		t.Fatalf("history = %q, want raw PTY bytes", got)
+	}
+	if got := string(window.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want attach-visible bytes %q", got, want)
+	}
+}
+
+func TestInactiveAgentOutputDoesNotReplaceVisibleReplayHistory(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	agentWindow := &muxWindow{
+		id:            "@2",
+		index:         1,
+		agentTool:     "codex",
+		replayHistory: []byte("visible codex screen"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		agentWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput(
+		"@2",
+		[]byte("\x1b[2;1H\x1b[K\x1b[3;1H\x1b[K"),
+	)
+
+	if got := string(agentWindow.history); got == "" {
+		t.Fatal("raw inactive agent output was not retained in history")
+	}
+	if got := string(agentWindow.replayHistory); got != "visible codex screen" {
+		t.Fatalf("replay history = %q, want last attached screen", got)
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := replayPrefixForTest(agentWindow) + "visible codex screen" +
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
+	if got := attach.String(); got != want {
+		t.Fatalf("attach output = %q, want %q", got, want)
+	}
+}
+
+func TestActiveControlOnlyOutputDoesNotReplaceVisibleReplayHistory(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		replayHistory: []byte("visible screen"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput("@1", []byte("\x1b[2;1H\x1b[K\x1b[3;1H\x1b[K"))
+
+	if got := string(window.history); got == "" {
+		t.Fatal("raw control-only output was not retained in history")
+	}
+	if got := string(window.replayHistory); got != "visible screen" {
+		t.Fatalf("replay history = %q, want last visible screen", got)
+	}
+	if got := attach.String(); got == "" {
+		t.Fatal("active control-only output was not passed through to attach")
 	}
 }
 
