@@ -19,7 +19,7 @@ import (
 )
 
 func replayPrefixForTest(window *muxWindow) string {
-	return activeWindowReplayPrefix + string(terminalTitleReplaySequence(window))
+	return string(activeWindowReplayPrefixForWindow(window)) + string(terminalTitleReplaySequence(window))
 }
 
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
@@ -702,12 +702,35 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 	}
 }
 
-func TestReplayPrefixUsesOuterAlternateBuffer(t *testing.T) {
-	if !strings.Contains(activeWindowReplayPrefix, "\x1b[?1049h") {
-		t.Fatalf("replay prefix %q does not enter alternate buffer", activeWindowReplayPrefix)
+func TestReplayPrefixClearsStaleOuterAlternateBuffer(t *testing.T) {
+	if !strings.Contains(activeWindowReplayPrefix, "\x1b[?1049l") {
+		t.Fatalf("replay prefix %q does not leave stale alternate buffer", activeWindowReplayPrefix)
 	}
-	if strings.Contains(activeWindowReplayPrefix, "\x1b[?1049l") {
-		t.Fatalf("replay prefix %q leaves alternate buffer", activeWindowReplayPrefix)
+	if strings.Contains(activeWindowReplayPrefix, "\x1b[?1049h") {
+		t.Fatalf("replay prefix %q forces alternate buffer", activeWindowReplayPrefix)
+	}
+}
+
+func TestCodexReplayUsesOuterAlternateBuffer(t *testing.T) {
+	window := &muxWindow{id: "@1", agentTool: "codex", lastActivity: time.Now()}
+	replayPrefix := string(activeWindowReplayPrefixForWindow(window))
+
+	if !strings.Contains(replayPrefix, "\x1b[?1049h") {
+		t.Fatalf("codex replay prefix %q does not enter alternate buffer", replayPrefix)
+	}
+	if strings.Contains(replayPrefix, "\x1b[?1049l") {
+		t.Fatalf("codex replay prefix %q leaves alternate buffer", replayPrefix)
+	}
+}
+
+func TestTrackedAlternateBufferReplayUsesOuterAlternateBuffer(t *testing.T) {
+	window := &muxWindow{id: "@1", lastActivity: time.Now()}
+	window.observeTerminalModesLocked([]byte("\x1b[?1049h"))
+
+	replayPrefix := string(activeWindowReplayPrefixForWindow(window))
+
+	if !strings.Contains(replayPrefix, "\x1b[?1049h") {
+		t.Fatalf("tracked alt replay prefix %q does not enter alternate buffer", replayPrefix)
 	}
 }
 
@@ -770,6 +793,9 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 		cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
+	}
+	if !strings.Contains(replayPrefixForTest(window), "\x1b[?1049h") {
+		t.Fatalf("replay prefix for tracked alt window = %q, want outer alt buffer", replayPrefixForTest(window))
 	}
 	for _, sequence := range []string{
 		"\x1b[?1h",

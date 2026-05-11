@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.25"
+	monkeyMuxVersion         = "0.1.26"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -54,7 +54,10 @@ const synchronizedOutputResetSequence = "\x1b[?2026l"
 const graphemeClusterResetSequence = "\x1b[?2027l"
 const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l\x1b[?1049h\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l"
+const activeWindowReplayPrefixAfterAlt = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + "\x1b[?1049l" + activeWindowReplayPrefixAfterAlt
+const activeWindowAlternateReplayPrefix = activeWindowReplayPrefixBeforeAlt + "\x1b[?1049h" + activeWindowReplayPrefixAfterAlt
 
 var (
 	preReplayPrivateModes = []string{
@@ -2341,6 +2344,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	history = trimReplayHistoryForAttach(history)
+	prefix := activeWindowReplayPrefixForWindow(window)
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	postModes := terminalModePostReplaySequence(window)
@@ -2348,10 +2352,10 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay := make(
 		[]byte,
 		0,
-		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
+		len(prefix)+len(title)+len(preModes)+len(history)+
 			len(postHistoryReplayResetSequence)+len(postModes)+len(cursor),
 	)
-	replay = append(replay, activeWindowReplayPrefix...)
+	replay = append(replay, prefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
@@ -2359,6 +2363,23 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func activeWindowReplayPrefixForWindow(window *muxWindow) []byte {
+	if window != nil && window.usesOuterAlternateBufferForReplayLocked() {
+		return []byte(activeWindowAlternateReplayPrefix)
+	}
+	return []byte(activeWindowReplayPrefix)
+}
+
+func (w *muxWindow) usesOuterAlternateBufferForReplayLocked() bool {
+	if w == nil {
+		return false
+	}
+	if w.privateModes != nil && w.privateModes["1049"] {
+		return true
+	}
+	return w.agentToolLocked() == "codex"
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
