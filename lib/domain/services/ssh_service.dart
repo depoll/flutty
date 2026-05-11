@@ -216,9 +216,22 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       return '\x1b[${row + 1};${column + 1}R';
     });
 
+bool _containsImmediateTerminalResponseQuery(String data) =>
+    _terminalWindowQueryPattern.hasMatch(data) ||
+    _terminalModeReportQueryPattern.hasMatch(data) ||
+    _terminalThemeModeQueryPattern.hasMatch(data) ||
+    _terminalThemeOscQueryPattern.hasMatch(data) ||
+    _terminalClipboardOscQueryPattern.hasMatch(data);
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
+final _terminalThemeOscQueryPattern = RegExp(
+  r'\x1b\](?:4(?:;[0-9]+;\?)+|(?:10|11|12|17|19);\?)(?:\x07|\x1b\\)',
+);
+final _terminalClipboardOscQueryPattern = RegExp(
+  r'\x1b\]52;[^\x07\x1b]*;\?(?:\x07|\x1b\\)',
+);
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(

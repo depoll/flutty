@@ -439,7 +439,7 @@ class _SshSessionRuntime {
   }
 
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
-      terminalData.contains('\x1b]') || terminalData.contains('\x1b[?');
+      _containsImmediateTerminalResponseQuery(terminalData);
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();

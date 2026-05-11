@@ -1059,6 +1059,48 @@ void main() {
       expect(terminalNotifications, 1);
     });
 
+    test(
+      'coalesces DEC private mode changes instead of forcing flush',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        final terminal = session.terminal!;
+        final stdoutEvents = <String>[];
+        final stdoutSubscription = session.shellStdoutStream.listen(
+          stdoutEvents.add,
+        );
+        addTearDown(stdoutSubscription.cancel);
+
+        shell.stdout
+          ..add(Uint8List.fromList(utf8.encode('\x1b[?2026hhello ')))
+          ..add(Uint8List.fromList(utf8.encode('\x1b[?2026lworld')));
+        await pumpEventQueue();
+
+        expect(firstLineText(terminal), isNot(contains('hello')));
+        expect(stdoutEvents, isEmpty);
+
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(firstLineText(terminal), 'hello world');
+        expect(stdoutEvents, ['\x1b[?2026hhello \x1b[?2026lworld']);
+      },
+    );
+
+    test(
+      'flushes DEC private mode report queries without frame delay',
+      () async {
+        final shell = await openShell();
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026\$p')));
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[?2026;2\$y',
+        );
+      },
+    );
+
     test('flushes terminal theme OSC queries without frame delay', () async {
       final shell = await openShell();
       final session = shell.session;
