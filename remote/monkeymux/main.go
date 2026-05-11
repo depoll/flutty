@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.21"
+	monkeyMuxVersion         = "0.1.22"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2004,7 +2004,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			Active:                s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
-			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.history)
+			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
 		}
 		restore.Windows = append(restore.Windows, state)
 	}
@@ -2336,7 +2336,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
-	history := stripTerminalQueriesFromReplay(window.history)
+	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	history = trimReplayHistoryForAttach(history)
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
@@ -2546,11 +2546,26 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 		)
 		return
 	}
-	w.history = append(w.history, chunk...)
-	if overflow := len(w.history) - windowHistoryLimitBytes; overflow > 0 {
-		copy(w.history, w.history[overflow:])
-		w.history = w.history[:windowHistoryLimitBytes]
+	// Grow the underlying buffer to 2x the limit so trims are amortized:
+	// each byte gets shifted at most once before falling out of history.
+	if cap(w.history) < 2*windowHistoryLimitBytes {
+		grown := make([]byte, len(w.history), 2*windowHistoryLimitBytes)
+		copy(grown, w.history)
+		w.history = grown
 	}
+	w.history = append(w.history, chunk...)
+	if len(w.history) > 2*windowHistoryLimitBytes {
+		// copy() handles the overlap correctly because src is after dst.
+		n := copy(w.history, w.history[len(w.history)-windowHistoryLimitBytes:])
+		w.history = w.history[:n]
+	}
+}
+
+func (w *muxWindow) historyTailLocked() []byte {
+	if len(w.history) <= windowHistoryLimitBytes {
+		return w.history
+	}
+	return w.history[len(w.history)-windowHistoryLimitBytes:]
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
