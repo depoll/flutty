@@ -3017,9 +3017,7 @@ bool shouldForceAgentSessionMetadataRefreshForSnapshot(
     return true;
   }
 
-  return existingWindow.name != snapshot.name ||
-      existingWindow.paneTitle != snapshot.paneTitle ||
-      existingWindow.panePid != snapshot.panePid ||
+  return existingWindow.panePid != snapshot.panePid ||
       existingWindow.currentCommand != snapshot.currentCommand ||
       existingWindow.agentTool != snapshot.agentTool;
 }
