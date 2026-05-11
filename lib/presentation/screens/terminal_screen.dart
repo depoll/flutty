@@ -2847,6 +2847,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // when it resumes if the OS killed the socket.
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
+  int? _suppressNextAutomaticReconnectConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
 
@@ -5805,7 +5806,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       _clearDetectedSensitiveKeyboardPromptAfterInput(output);
       _handleTerminalOutputForShellCompletion(output);
-      _shell?.write(utf8.encode(output));
+      try {
+        _shell?.write(utf8.encode(output));
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.input',
+          'write_failed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        unawaited(
+          _cleanupUnexpectedDisconnect(
+            session.connectionId,
+            message: 'Connection became unresponsive. Reconnecting…',
+          ),
+        );
+      }
     }
 
     _terminalOutputHandler = handleTerminalOutput;
@@ -7869,11 +7887,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _shell = null;
-    unawaited(_doneSubscription?.cancel());
-    _doneSubscription = null;
+    final suppressAutomaticReconnect =
+        _suppressNextAutomaticReconnectConnectionId == connectionId;
+    _suppressNextAutomaticReconnectConnectionId = null;
+    _prepareTerminalForLostConnection(_observedSession);
     if (_wasBackgrounded) {
-      _connectionLostWhileBackgrounded = true;
+      _connectionLostWhileBackgrounded = !suppressAutomaticReconnect;
       return;
     }
     if (!mounted) {
@@ -7882,12 +7901,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
     _terminalFocusNode.unfocus();
+    if (suppressAutomaticReconnect) {
+      setState(() {
+        _isConnecting = false;
+        _error ??= 'Connection closed';
+      });
+      return;
+    }
+
+    _startAutomaticReconnect(
+      connectionId,
+      reason: 'tracked_connection_disconnected',
+    );
+  }
+
+  void _prepareTerminalForLostConnection(SshSession? session) {
+    _shell = null;
+    unawaited(_doneSubscription?.cancel());
+    _doneSubscription = null;
+    unawaited(_shellStdoutSubscription?.cancel());
+    _shellStdoutSubscription = null;
+    _promptOutputImeResetTimer?.cancel();
+    _promptOutputImeResetTimer = null;
+    _stopSharedClipboardSync();
     _hideShellCompletionPopup();
-    setState(() {
-      _clearTmuxState();
-      _isConnecting = false;
-      _error ??= 'Connection closed';
-    });
+    _clearOwnedTerminalCallbacks();
+    _sessionController.clearObservedSession(session: session);
+    _clearTmuxState();
+    _detectedSensitiveKeyboardPrompt = false;
+  }
+
+  void _startAutomaticReconnect(int connectionId, {required String reason}) {
+    if (_isConnecting || _connectionId != connectionId) {
+      return;
+    }
+
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'auto_reconnect_start',
+      fields: {'connectionId': connectionId, 'reason': reason},
+    );
+    _terminal.write('\r\n[reconnecting...]\r\n');
+    unawaited(_reconnect());
   }
 
   void _handleShellClosed() {
@@ -7912,6 +7967,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_wasBackgrounded) {
       _connectionLostWhileBackgrounded = true;
     } else {
+      _suppressNextAutomaticReconnectConnectionId = connectionId;
       setState(() {
         _clearTmuxState();
         _detectedSensitiveKeyboardPrompt = false;
@@ -7950,6 +8006,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _clearAppThemeOverride();
     _cancelTerminalThemeRefreshTimers();
     _clearTmuxState();
+    _sessionController.clearObservedSession();
+    _suppressNextAutomaticReconnectConnectionId = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
@@ -7983,6 +8041,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final previousConnectionId = _connectionId;
     _connectionId = null;
     _clearAppThemeOverride();
+    _sessionController.clearObservedSession();
+    _suppressNextAutomaticReconnectConnectionId = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     _connectionLostWhileBackgrounded = false;
     try {
