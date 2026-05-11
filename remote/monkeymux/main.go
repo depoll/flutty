@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.22"
+	monkeyMuxVersion         = "0.1.23"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3215,7 +3215,6 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) {
 			return
 		}
 		w.paneTitle = title
-		w.name = title
 	case "7":
 		path := pathFromOsc7(value)
 		if path != "" {
