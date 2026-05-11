@@ -131,37 +131,78 @@ class _RecordingLocalNotificationService extends LocalNotificationService {
 }
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
-  _TestActiveSessionsNotifier(this.session);
+  _TestActiveSessionsNotifier(this.session, {SshSession? reconnectSession})
+    : reconnectSession = reconnectSession ?? session;
 
   final SshSession session;
+  final SshSession reconnectSession;
   final disconnectedConnectionIds = <int>[];
+  final connectForceNewValues = <bool>[];
+
+  Iterable<SshSession> get _sessions sync* {
+    yield session;
+    if (!identical(reconnectSession, session)) {
+      yield reconnectSession;
+    }
+  }
 
   @override
   Map<int, SshConnectionState> build() => <int, SshConnectionState>{
-    if (!disconnectedConnectionIds.contains(session.connectionId))
-      session.connectionId: SshConnectionState.connected,
+    for (final testSession in _sessions)
+      if (!disconnectedConnectionIds.contains(testSession.connectionId))
+        testSession.connectionId: SshConnectionState.connected,
   };
 
   @override
   ConnectionAttemptStatus? getConnectionAttempt(int hostId) => null;
 
   @override
-  List<int> getConnectionsForHost(int hostId) =>
-      hostId == session.hostId ? <int>[session.connectionId] : const <int>[];
+  List<int> getConnectionsForHost(int hostId) => _sessions
+      .where(
+        (testSession) =>
+            testSession.hostId == hostId &&
+            !disconnectedConnectionIds.contains(testSession.connectionId),
+      )
+      .map((testSession) => testSession.connectionId)
+      .toList(growable: false);
 
   @override
   ActiveConnection? getActiveConnection(int connectionId) => null;
 
   @override
-  SshSession? getSession(int connectionId) =>
-      connectionId == session.connectionId &&
-          !disconnectedConnectionIds.contains(connectionId)
-      ? session
-      : null;
+  SshSession? getSession(int connectionId) {
+    for (final testSession in _sessions) {
+      if (testSession.connectionId == connectionId &&
+          !disconnectedConnectionIds.contains(connectionId)) {
+        return testSession;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Future<SshConnectionResult> connect(
+    int hostId, {
+    bool forceNew = false,
+    bool useHostThemeOverrides = true,
+  }) async {
+    connectForceNewValues.add(forceNew);
+    disconnectedConnectionIds.remove(reconnectSession.connectionId);
+    state = {
+      ...state,
+      reconnectSession.connectionId: SshConnectionState.connected,
+    };
+    return SshConnectionResult(
+      success: true,
+      connectionId: reconnectSession.connectionId,
+    );
+  }
 
   @override
   Future<void> disconnect(int connectionId) async {
-    disconnectedConnectionIds.add(connectionId);
+    if (!disconnectedConnectionIds.contains(connectionId)) {
+      disconnectedConnectionIds.add(connectionId);
+    }
     state = {...state}..remove(connectionId);
   }
 
@@ -951,6 +992,7 @@ void main() {
     Future<void> pumpScreen(
       WidgetTester tester, {
       ThemeMode themeMode = ThemeMode.light,
+      ActiveSessionsNotifier? activeSessions,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -966,7 +1008,7 @@ void main() {
             ),
             sharedClipboardProvider.overrideWith((ref) async => false),
             activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
+              () => activeSessions ?? _TestActiveSessionsNotifier(session),
             ),
           ],
           child: MaterialApp(
@@ -1002,6 +1044,62 @@ void main() {
     void enablePlainTuiSignals() {
       session.terminal!.write('\x1b[?1004h');
     }
+
+    testWidgets(
+      'automatically reconnects when the active session disappears unexpectedly',
+      (tester) async {
+        final reconnectClient = _MockSshClient();
+        final reconnectShell = _MockShellChannel();
+        final reconnectDoneCompleter = Completer<void>();
+        final reconnectStdoutController =
+            StreamController<Uint8List>.broadcast();
+        addTearDown(reconnectStdoutController.close);
+
+        when(
+          () => reconnectClient.shell(pty: any(named: 'pty')),
+        ).thenAnswer((_) async => reconnectShell);
+        when(
+          () => reconnectShell.stdout,
+        ).thenAnswer((_) => reconnectStdoutController.stream);
+        when(
+          () => reconnectShell.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(
+          () => reconnectShell.done,
+        ).thenAnswer((_) => reconnectDoneCompleter.future);
+        when(() => reconnectShell.write(any())).thenAnswer((_) {});
+
+        final reconnectSession = SshSession(
+          connectionId: 8,
+          hostId: host.id,
+          client: reconnectClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        final activeSessions = _TestActiveSessionsNotifier(
+          session,
+          reconnectSession: reconnectSession,
+        )..disconnectedConnectionIds.add(reconnectSession.connectionId);
+
+        await pumpScreen(tester, activeSessions: activeSessions);
+        verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
+
+        await activeSessions.disconnect(session.connectionId);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(activeSessions.connectForceNewValues, <bool>[true]);
+        verify(() => reconnectClient.shell(pty: any(named: 'pty'))).called(1);
+        expect(activeSessions.disconnectedConnectionIds, <int>[
+          session.connectionId,
+        ]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     testWidgets('holds wake lock while an opted-in terminal is active', (
       tester,

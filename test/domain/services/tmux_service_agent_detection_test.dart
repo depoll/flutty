@@ -148,7 +148,7 @@ void main() {
       expect(metadata[42]?.title, 'User named Copilot session');
     });
 
-    test('does not force refresh when only Copilot tmux titles change', () {
+    test('does not force refresh when only a Copilot tmux title changes', () {
       const existing = TmuxWindow(
         index: 1,
         id: '@7',
@@ -176,7 +176,7 @@ void main() {
       );
     });
 
-    test('forces refresh when a Copilot pane pid changes', () {
+    test('forces refresh when the Copilot pane process changes', () {
       const existing = TmuxWindow(
         index: 1,
         id: '@7',
@@ -189,7 +189,7 @@ void main() {
       const updated = TmuxWindow(
         index: 1,
         id: '@7',
-        panePid: 84,
+        panePid: 99,
         name: 'Current title',
         isActive: true,
         currentCommand: 'copilot',

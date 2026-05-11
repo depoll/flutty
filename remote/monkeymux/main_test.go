@@ -509,16 +509,55 @@ func TestWindowHistoryAmortizedTrim(t *testing.T) {
 	}
 }
 
-func TestWindowMetadataTracksOscTitle(t *testing.T) {
+func TestWindowMetadataTracksOscTitleAsPaneTitle(t *testing.T) {
 	window := &muxWindow{name: "zsh", paneTitle: "zsh"}
 
 	window.observeTerminalMetadataLocked([]byte("\x1b]2;Claude Code · flutty\x1b\\"))
 
-	if window.name != "Claude Code · flutty" {
-		t.Fatalf("name = %q, want OSC title", window.name)
+	if window.name != "zsh" {
+		t.Fatalf("name = %q, want stable window name", window.name)
 	}
 	if window.paneTitle != "Claude Code · flutty" {
 		t.Fatalf("pane title = %q, want OSC title", window.paneTitle)
+	}
+}
+
+func TestWindowTitleUpdatesStillBroadcast(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	control := &recordingConn{}
+	client := newControlClient(control)
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "Copilot CLI",
+		command:           "copilot",
+		foregroundCommand: "copilot",
+		foregroundPid:     4242,
+		paneTitle:         "Copilot CLI",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.controls[client] = struct{}{}
+
+	server.handleWindowOutput("@1", []byte("\x1b]2;Search one\x07"))
+	firstBroadcasts := strings.Count(control.String(), `"type":"window_updated"`)
+	if firstBroadcasts != 1 {
+		t.Fatalf("first title update broadcasts = %d, want 1", firstBroadcasts)
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b]2;Search two\x07"))
+
+	if got := strings.Count(control.String(), `"type":"window_updated"`); got != 2 {
+		t.Fatalf("title update broadcasts = %d, want 2", got)
+	}
+	if window.name != "Copilot CLI" {
+		t.Fatalf("name = %q, want stable window name", window.name)
+	}
+	if window.paneTitle != "Search two" {
+		t.Fatalf("pane title = %q, want latest OSC title", window.paneTitle)
 	}
 }
 
@@ -568,8 +607,11 @@ func TestWindowMetadataTracksSplitOscTitle(t *testing.T) {
 	window.observeTerminalMetadataLocked([]byte("prefix\x1b]0;Copilot"))
 	window.observeTerminalMetadataLocked([]byte(" CLI\aafter"))
 
-	if window.name != "Copilot CLI" {
-		t.Fatalf("name = %q, want split OSC title", window.name)
+	if window.name != "zsh" {
+		t.Fatalf("name = %q, want stable window name", window.name)
+	}
+	if window.paneTitle != "Copilot CLI" {
+		t.Fatalf("pane title = %q, want split OSC title", window.paneTitle)
 	}
 	if string(window.oscBuffer) != "" {
 		t.Fatalf("osc buffer = %q, want empty", window.oscBuffer)
