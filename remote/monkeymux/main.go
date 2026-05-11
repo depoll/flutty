@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.27"
+	monkeyMuxVersion         = "0.1.28"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2759,7 +2759,8 @@ func isReplayUnsafeCsiSequence(sequence []byte) bool {
 	params := string(sequence[2 : len(sequence)-1])
 	switch final {
 	case 'h', 'l':
-		return isAlternateBufferCsiSequence(sequence)
+		return isAlternateBufferCsiSequence(sequence) ||
+			isSynchronizedOutputCsiSequence(sequence)
 	case 'c':
 		return params == "" ||
 			params == "0" ||
@@ -2786,6 +2787,22 @@ func isReplayUnsafeCsiSequence(sequence []byte) bool {
 func isAlternateBufferCsiSequence(sequence []byte) bool {
 	_, ok := alternateBufferCsiReplacement(sequence)
 	return ok
+}
+
+func isSynchronizedOutputCsiSequence(sequence []byte) bool {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return false
+	}
+	params := string(sequence[2 : len(sequence)-1])
+	if !strings.HasPrefix(params, "?") {
+		return false
+	}
+	for _, mode := range csiModeParams(strings.TrimPrefix(params, "?")) {
+		if mode == "2026" {
+			return true
+		}
+	}
+	return false
 }
 
 func alternateBufferCsiReplacement(sequence []byte) ([]byte, bool) {

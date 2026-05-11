@@ -386,6 +386,8 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 				"\x1b[22;2t" +
 				"\x1b[?1049h" +
 				"\x1b[?1049l" +
+				"\x1b[?2026h" +
+				"\x1b[?2026l" +
 				"\x1b[?2026$p" +
 				"\x1b[?2027$p" +
 				"\x1b]11;?\x07" +
@@ -401,6 +403,11 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 	historyReplay := strings.TrimPrefix(replay, replayPrefixForTest(window))
+	historyReplay = strings.TrimSuffix(
+		historyReplay,
+		cursorVisibilityReplaySequence(true),
+	)
+	historyReplay = strings.TrimSuffix(historyReplay, postHistoryReplayResetSequence)
 
 	for _, stripped := range []string{
 		"\x1b[c",
@@ -412,6 +419,8 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 		"\x1b[22;2t",
 		"\x1b[?1049h",
 		"\x1b[?1049l",
+		"\x1b[?2026h",
+		"\x1b[?2026l",
 		"\x1b[?2026$p",
 		"\x1b[?2027$p",
 		"\x1b]11;?\x07",
@@ -796,10 +805,13 @@ func TestActiveReplayEndsBufferedModesAfterHistory(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 
-	want := replayPrefixForTest(window) + "prompt\x1b[?2026h\x1b[?2027hbuffered tui frame" +
+	want := replayPrefixForTest(window) + "prompt\x1b[?2027hbuffered tui frame" +
 		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
+	}
+	if strings.Contains(replay, "\x1b[?2026h") {
+		t.Fatalf("replay = %q, want synchronized-output enable stripped from replayed history", replay)
 	}
 	for _, sequence := range []string{
 		synchronizedOutputResetSequence,

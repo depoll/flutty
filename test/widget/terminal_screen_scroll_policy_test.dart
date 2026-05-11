@@ -186,6 +186,50 @@ void main() {
         );
       },
     );
+
+    test('auto-resumes attach-owned agent TUI scrollback', () {
+      expect(
+        shouldAutoResumeAttachOwnedTerminalOutputFollow(
+          isAttachOwnedAltBuffer: true,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('auto-resumes attach-owned TUI-signaling scrollback', () {
+      expect(
+        shouldAutoResumeAttachOwnedTerminalOutputFollow(
+          isAttachOwnedAltBuffer: true,
+          hasForegroundAgentTool: false,
+          tuiSignalingActive: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not auto-resume plain attach-owned shell scrollback', () {
+      expect(
+        shouldAutoResumeAttachOwnedTerminalOutputFollow(
+          isAttachOwnedAltBuffer: true,
+          hasForegroundAgentTool: false,
+          tuiSignalingActive: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not auto-resume non-MonkeyMux terminal scrollback', () {
+      expect(
+        shouldAutoResumeAttachOwnedTerminalOutputFollow(
+          isAttachOwnedAltBuffer: false,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: true,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('terminal scroll policy change helper', () {

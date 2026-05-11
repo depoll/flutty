@@ -841,6 +841,7 @@ bool terminalTextLooksLikeSensitiveInputPrompt(String? textBeforeCursor) {
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
+const _attachOwnedAltBufferFollowResumeDelay = Duration(milliseconds: 700);
 const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
@@ -2514,6 +2515,15 @@ bool shouldFollowTerminalOutput({
   return currentOffset >= maxScrollExtent - tolerance;
 }
 
+/// Whether MonkeyMux should automatically return to live output after a
+/// temporary viewport scroll.
+@visibleForTesting
+bool shouldAutoResumeAttachOwnedTerminalOutputFollow({
+  required bool isAttachOwnedAltBuffer,
+  required bool hasForegroundAgentTool,
+  required bool tuiSignalingActive,
+}) => isAttachOwnedAltBuffer && (hasForegroundAgentTool || tuiSignalingActive);
+
 /// Whether terminal scroll policy state changed enough to require a rebuild.
 @visibleForTesting
 bool didTerminalScrollPolicyChange({
@@ -2673,6 +2683,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _shouldFollowLiveOutput = true;
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
+  Timer? _attachOwnedAltBufferFollowResumeTimer;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   late final TerminalSessionController _sessionController;
   bool _showsTerminalMetadata = false;
@@ -2785,6 +2796,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTerminalSizeRefreshQueued = false;
   bool _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+  bool _pendingTerminalSizeRefreshIgnoresFollowPauseForReveal = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
@@ -2891,6 +2903,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool get _usesAttachOwnedAltBuffer =>
       _isTmuxActive && _activeMuxBackend == RemoteMuxBackend.monkeyMux;
+
+  bool get _hasForegroundAgentToolCommand =>
+      agentLaunchToolForCommandName(_tmuxCurrentCommand) != null;
+
+  bool get _shouldAutoResumeAttachOwnedAltBufferFollow {
+    final connectionId = _connectionId;
+    final session = connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(connectionId);
+    return shouldAutoResumeAttachOwnedTerminalOutputFollow(
+      isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
+      hasForegroundAgentTool: _hasForegroundAgentToolCommand,
+      tuiSignalingActive:
+          session != null && _isOuterTuiSignalingActive(session),
+    );
+  }
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
@@ -4721,13 +4749,46 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             : 0,
       );
     }
+    if (didScrollOffsetChange && !_shouldFollowLiveOutput) {
+      _scheduleAttachOwnedAltBufferFollowResume();
+    }
     _syncNativeScrollFromTerminal();
     _refreshVisibleTerminalPathUnderlines();
   }
 
   void _followLiveOutput() {
+    _attachOwnedAltBufferFollowResumeTimer?.cancel();
+    _attachOwnedAltBufferFollowResumeTimer = null;
     _shouldFollowLiveOutput = true;
     _queueTerminalScrollToBottom();
+  }
+
+  void _scheduleAttachOwnedAltBufferFollowResume() {
+    if (!_shouldAutoResumeAttachOwnedAltBufferFollow) {
+      _attachOwnedAltBufferFollowResumeTimer?.cancel();
+      _attachOwnedAltBufferFollowResumeTimer = null;
+      return;
+    }
+
+    _attachOwnedAltBufferFollowResumeTimer?.cancel();
+    _attachOwnedAltBufferFollowResumeTimer = Timer(
+      _attachOwnedAltBufferFollowResumeDelay,
+      () {
+        _attachOwnedAltBufferFollowResumeTimer = null;
+        if (!mounted ||
+            !_shouldAutoResumeAttachOwnedAltBufferFollow ||
+            _isTerminalOutputFollowPaused) {
+          return;
+        }
+        _followLiveOutput();
+        _syncTerminalLiveOutputAutoScroll();
+        _scheduleTerminalSizeRefresh(
+          forceDisplayRefresh: true,
+          revealLatestOutput: true,
+          ignoreFollowPauseForReveal: true,
+        );
+      },
+    );
   }
 
   void _handleTerminalOutputForShellCompletion(String output) {
@@ -5890,6 +5951,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _scheduleTerminalSizeRefresh({
     bool forceDisplayRefresh = false,
     bool revealLatestOutput = false,
+    bool ignoreFollowPauseForReveal = false,
   }) {
     _pendingTerminalSizeRefreshForcesDisplayRefresh =
         _pendingTerminalSizeRefreshForcesDisplayRefresh ||
@@ -5897,6 +5959,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         revealLatestOutput;
     _pendingTerminalSizeRefreshRevealsLatestOutput =
         _pendingTerminalSizeRefreshRevealsLatestOutput || revealLatestOutput;
+    _pendingTerminalSizeRefreshIgnoresFollowPauseForReveal =
+        _pendingTerminalSizeRefreshIgnoresFollowPauseForReveal ||
+        ignoreFollowPauseForReveal;
     if (_isTerminalSizeRefreshQueued) {
       return;
     }
@@ -5907,13 +5972,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _pendingTerminalSizeRefreshForcesDisplayRefresh;
       final shouldRevealLatestOutput =
           _pendingTerminalSizeRefreshRevealsLatestOutput;
+      final ignoreFollowPauseForReveal =
+          _pendingTerminalSizeRefreshIgnoresFollowPauseForReveal;
       _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
       _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+      _pendingTerminalSizeRefreshIgnoresFollowPauseForReveal = false;
       if (!mounted) {
         return;
       }
       final revealLatestOutput =
-          shouldRevealLatestOutput && !_isTerminalOutputFollowPaused;
+          shouldRevealLatestOutput &&
+          (ignoreFollowPauseForReveal || !_isTerminalOutputFollowPaused);
       final terminalView = _terminalViewKey.currentState;
       if (forceDisplayRefresh) {
         terminalView?.refreshTerminalDisplay(
@@ -5931,6 +6000,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _scheduleTerminalSizeRefresh(
       forceDisplayRefresh: true,
       revealLatestOutput: true,
+      ignoreFollowPauseForReveal: true,
     );
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
@@ -5944,6 +6014,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _scheduleTerminalSizeRefresh(
           forceDisplayRefresh: true,
           revealLatestOutput: true,
+          ignoreFollowPauseForReveal: true,
         );
       },
     );
@@ -8100,6 +8171,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
+    _attachOwnedAltBufferFollowResumeTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
@@ -10312,6 +10384,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _attachOwnedAltBufferFollowResumeTimer?.cancel();
+    _attachOwnedAltBufferFollowResumeTimer = null;
     if (_terminalOutputPauseTouchPointers.add(event.pointer)) {
       if (_terminalScrollController.hasClients) {
         _lastTerminalScrollOffset = _terminalScrollController.offset;
@@ -10334,8 +10408,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _syncTerminalLiveOutputAutoScroll();
     setState(() {});
     if (_terminalOutputPauseTouchPointers.isNotEmpty ||
-        !_shouldFollowLiveOutput ||
         _isTerminalOutputFollowPaused) {
+      return;
+    }
+
+    if (!_shouldFollowLiveOutput) {
+      _scheduleAttachOwnedAltBufferFollowResume();
       return;
     }
 

@@ -34,11 +34,12 @@ MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also
 tracks the PTY foreground process group for snapshots, so shell-launched tools
 such as Codex can be surfaced as agent windows even when the terminal title is
-only the current directory. Window replay resets stale local mouse/focus,
-synchronized-output, and grapheme-cluster modes before replaying history so
-touch input, buffered paint state, or Unicode editing state from one window is
-not leaked into a plain shell prompt in another. Closing the active window
-selects the next open window immediately before the old PTY is torn down.
+only the current directory. Window replay resets stale local mouse/focus, synchronized-output, and
+grapheme-cluster modes before replaying history, and strips synchronized-output
+batching controls from the replayed bytes, so touch input, buffered paint state,
+or Unicode editing state from one window is not leaked into a plain shell prompt
+in another. Closing the active window selects the next open window immediately
+before the old PTY is torn down.
 
 Control clients can ask MonkeyMux to run bounded metadata commands through the
 server process. This keeps app-side probes on the MonkeyMux backchannel and
