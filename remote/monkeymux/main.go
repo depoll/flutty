@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.42"
+	monkeyMuxVersion         = "0.1.43"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -164,30 +164,26 @@ var nudgeForegroundResize = func(window *muxWindow, width int, height int) {
 		return
 	}
 	if width <= 0 || height <= 0 {
-		if window.pty == nil {
-			return
-		}
-		size, err := pty.GetsizeFull(window.pty)
+		size, _, err := window.ptySize()
 		if err != nil {
 			return
 		}
 		width = int(size.Cols)
 		height = int(size.Rows)
 	}
-	if window.pty != nil && width > 0 && width <= 65535 &&
-		height > 0 && height <= 65535 {
+	if width > 0 && width <= 65535 && height > 0 && height <= 65535 {
 		if nudgeWidth, nudgeHeight, ok := resizeNudgeSize(width, height); ok {
-			ptyFile := window.pty
-			if err := pty.Setsize(ptyFile, &pty.Winsize{
+			generation, err := window.setPtySize(&pty.Winsize{
 				Rows: uint16(nudgeHeight),
 				Cols: uint16(nudgeWidth),
-			}); err == nil {
+			})
+			if err == nil {
 				go func() {
 					time.Sleep(nudgeRestoreDelay)
-					size, err := pty.GetsizeFull(ptyFile)
-					if err == nil && int(size.Cols) == nudgeWidth &&
-						int(size.Rows) == nudgeHeight {
-						_ = pty.Setsize(ptyFile, &pty.Winsize{
+					size, currentGeneration, err := window.ptySize()
+					if err == nil && currentGeneration == generation &&
+						int(size.Cols) == nudgeWidth && int(size.Rows) == nudgeHeight {
+						_ = window.setPtySizeIfGeneration(generation, &pty.Winsize{
 							Rows: uint16(height),
 							Cols: uint16(width),
 						})
@@ -223,14 +219,7 @@ func resizeNudgeSize(width int, height int) (int, int, bool) {
 }
 
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
-	if window == nil || window.pty == nil {
-		return 0
-	}
-	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
-		return 0
-	}
-	return pgrp
+	return window.foregroundProcessGroup()
 }
 
 const (
@@ -360,7 +349,10 @@ type muxWindow struct {
 	foregroundPid              int
 	foregroundCommand          string
 	paneTitle                  string
+	ptyMu                      sync.Mutex
 	pty                        *os.File
+	ptyClosed                  bool
+	ptyResizeGeneration        int64
 	cmd                        *exec.Cmd
 	history                    []byte
 	replayHistory              []byte
@@ -382,6 +374,87 @@ type muxWindow struct {
 	focusModeEnabled           bool
 	alert                      bool
 	closed                     bool
+}
+
+func (w *muxWindow) ptySize() (*pty.Winsize, int64, error) {
+	if w == nil {
+		return nil, 0, os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return nil, w.ptyResizeGeneration, os.ErrClosed
+	}
+	size, err := pty.GetsizeFull(w.pty)
+	return size, w.ptyResizeGeneration, err
+}
+
+func (w *muxWindow) setPtySize(size *pty.Winsize) (int64, error) {
+	if w == nil {
+		return 0, os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return w.ptyResizeGeneration, os.ErrClosed
+	}
+	if err := pty.Setsize(w.pty, size); err != nil {
+		return w.ptyResizeGeneration, err
+	}
+	w.ptyResizeGeneration++
+	return w.ptyResizeGeneration, nil
+}
+
+func (w *muxWindow) setPtySizeIfGeneration(
+	generation int64,
+	size *pty.Winsize,
+) error {
+	if w == nil {
+		return os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return os.ErrClosed
+	}
+	if w.ptyResizeGeneration != generation {
+		return nil
+	}
+	if err := pty.Setsize(w.pty, size); err != nil {
+		return err
+	}
+	w.ptyResizeGeneration++
+	return nil
+}
+
+func (w *muxWindow) closePty() error {
+	if w == nil {
+		return nil
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return nil
+	}
+	w.ptyClosed = true
+	w.ptyResizeGeneration++
+	return w.pty.Close()
+}
+
+func (w *muxWindow) foregroundProcessGroup() int {
+	if w == nil {
+		return 0
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
 }
 
 type windowBroadcastIdentity struct {
@@ -1671,7 +1744,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
-	_ = window.pty.Close()
+	_ = window.closePty()
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		s.activeID = ""
@@ -2360,7 +2433,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var redrawWidth int
 	var redrawHeight int
 	var command *exec.Cmd
-	var windowPty *os.File
 	var snapshots []windowSnapshot
 
 	s.attachMu.Lock()
@@ -2396,7 +2468,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	window.closed = true
 	window.alert = false
 	command = window.cmd
-	windowPty = window.pty
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
@@ -2425,9 +2496,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		})
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
-	if windowPty != nil {
-		_ = windowPty.Close()
-	}
+	_ = window.closePty()
 	return shouldShutdown, nil
 }
 
@@ -2458,15 +2527,15 @@ func (s *muxServer) resize(width int, height int) {
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
-	if window == nil || window.closed || window.pty == nil {
+	if window == nil || window.closed {
 		return
 	}
-	if size, err := pty.GetsizeFull(window.pty); err == nil &&
+	if size, _, err := window.ptySize(); err == nil &&
 		int(size.Cols) == width &&
 		int(size.Rows) == height {
 		return
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
+	_, _ = window.setPtySize(&pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
@@ -3161,7 +3230,7 @@ func alternateBufferCsiReplacement(sequence []byte) ([]byte, bool) {
 
 func isAlternateBufferMode(mode string) bool {
 	switch mode {
-	case "47", "1047", "1048", "1049":
+	case "47", "1047", "1049":
 		return true
 	default:
 		return false
@@ -3840,9 +3909,7 @@ func (s *muxServer) close() {
 	}
 	for _, window := range windows {
 		signalCommandProcessGroup(window.cmd, syscall.SIGHUP)
-		if window.pty != nil {
-			_ = window.pty.Close()
-		}
+		_ = window.closePty()
 	}
 }
 
@@ -4099,8 +4166,12 @@ func forwardResizeSignals(session string) func() {
 	signal.Notify(signals, syscall.SIGWINCH)
 	done := make(chan struct{})
 	ticker := time.NewTicker(500 * time.Millisecond)
+	var state resizeForwarderState
 	sendCurrentSize := func() {
 		width, height := terminalSize()
+		if !state.shouldSend(width, height) {
+			return
+		}
 		sendResize(session, width, height)
 	}
 	sendCurrentSize()
@@ -4121,6 +4192,22 @@ func forwardResizeSignals(session string) func() {
 		close(done)
 		signal.Stop(signals)
 	}
+}
+
+type resizeForwarderState struct {
+	width   int
+	height  int
+	hasSize bool
+}
+
+func (s *resizeForwarderState) shouldSend(width int, height int) bool {
+	if s.hasSize && s.width == width && s.height == height {
+		return false
+	}
+	s.width = width
+	s.height = height
+	s.hasSize = true
+	return true
 }
 
 func sendResize(session string, width int, height int) {

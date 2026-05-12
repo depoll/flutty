@@ -260,10 +260,6 @@ func TestSelectWindowResizesPtyWithoutPostReplayNudge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = master.Close()
-		_ = slave.Close()
-	})
 	if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +269,10 @@ func TestSelectWindowResizesPtyWithoutPostReplayNudge(t *testing.T) {
 		pty:          slave,
 		lastActivity: time.Now(),
 	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = inactiveWindow.closePty()
+	})
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
 		inactiveWindow,
@@ -444,15 +444,16 @@ func TestNudgeForegroundResizeAppliesNudgeImmediatelyAndRestoresAsync(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	window := &muxWindow{pty: slave}
 	t.Cleanup(func() {
 		_ = master.Close()
-		_ = slave.Close()
+		_ = window.closePty()
 	})
 	if err := pty.Setsize(slave, &pty.Winsize{Rows: 40, Cols: 48}); err != nil {
 		t.Fatal(err)
 	}
 
-	nudgeForegroundResize(&muxWindow{pty: slave}, 48, 40)
+	nudgeForegroundResize(window, 48, 40)
 
 	size, err := pty.GetsizeFull(slave)
 	if err != nil {
@@ -474,6 +475,41 @@ func TestNudgeForegroundResizeAppliesNudgeImmediatelyAndRestoresAsync(t *testing
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("pty size did not restore; got %dx%d, want 48x40", size.Cols, size.Rows)
+}
+
+func TestNudgeForegroundResizeSkipsRestoreAfterWindowClose(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := &muxWindow{pty: slave}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = window.closePty()
+	})
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 40, Cols: 48}); err != nil {
+		t.Fatal(err)
+	}
+
+	nudgeForegroundResize(window, 48, 40)
+	if err := window.closePty(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(nudgeRestoreDelay + 25*time.Millisecond)
+}
+
+func TestResizeForwarderStateSkipsUnchangedSizes(t *testing.T) {
+	var state resizeForwarderState
+
+	if !state.shouldSend(80, 24) {
+		t.Fatal("initial resize should be sent")
+	}
+	if state.shouldSend(80, 24) {
+		t.Fatal("unchanged resize should be skipped")
+	}
+	if !state.shouldSend(81, 24) {
+		t.Fatal("changed resize should be sent")
+	}
 }
 
 func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
@@ -677,6 +713,25 @@ func TestActiveOutputFiltersNestedAlternateBufferModes(t *testing.T) {
 	}
 	if got := string(window.replayHistory); got != want {
 		t.Fatalf("replay history = %q, want attach-visible bytes %q", got, want)
+	}
+}
+
+func TestActiveOutputPreservesStandaloneCursorSaveRestoreMode(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{id: "@1", index: 0, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput("@1", []byte("before\x1b[?1048hinside\x1b[?1048lafter"))
+
+	want := "before\x1b[?1048hinside\x1b[?1048lafter"
+	if got := attach.String(); got != want {
+		t.Fatalf("active attach output = %q, want %q", got, want)
+	}
+	if got := string(window.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want %q", got, want)
 	}
 }
 

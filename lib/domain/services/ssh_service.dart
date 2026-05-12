@@ -164,7 +164,6 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
           attachOwnedAltBufferActive: attachOwnedAltBufferActive,
         );
       }
-      output.write(pending);
       return (
         output: output.toString(),
         pendingInput: '',
@@ -448,7 +447,8 @@ const _terminalEscape = '\x1b';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
-const _terminalCsiPendingLimit = 64;
+const _terminalCsiPendingLimit = 1024;
+const _terminalControlQueryPendingLimit = 128;
 const _terminalMonkeyMuxAttachEnterSequence = '$_terminalEscape[?1049h';
 const _terminalMonkeyMuxAttachExitSequence = '$_terminalEscape[?1049l';
 String _formatTerminalModeReport(int mode, int status) =>
@@ -545,7 +545,6 @@ bool _isMonkeyMuxAttachOwnedAltBufferMode(String mode) {
   switch (mode) {
     case '47':
     case '1047':
-    case '1048':
     case '1049':
       return true;
     default:
@@ -572,8 +571,13 @@ bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics.pixelHeight > 0;
 
 String _terminalControlQueryPendingSuffix(String input) {
-  final start = input.length > 16 ? input.length - 16 : 0;
-  for (var index = start; index < input.length; index += 1) {
+  final start = input.length > _terminalControlQueryPendingLimit
+      ? input.length - _terminalControlQueryPendingLimit
+      : 0;
+  for (var index = input.length - 1; index >= start; index -= 1) {
+    if (input.codeUnitAt(index) != _terminalEscape.codeUnitAt(0)) {
+      continue;
+    }
     final suffix = input.substring(index);
     if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
       return suffix;

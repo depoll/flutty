@@ -428,6 +428,18 @@ void main() {
       expect(second.attachOwnedAltBufferActive, isTrue);
     });
 
+    test('drops overlong incomplete MonkeyMux CSI instead of flushing it', () {
+      final longIncompleteCsi = '\x1b[${List.filled(600, '1;').join()}';
+      final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+        input: 'before$longIncompleteCsi',
+        pendingInput: '',
+      );
+
+      expect(result.output, 'before');
+      expect(result.pendingInput, isEmpty);
+      expect(result.attachOwnedAltBufferActive, isNull);
+    });
+
     test(
       'strips immediate MonkeyMux attach enter before inline replay exit',
       () {
@@ -473,6 +485,28 @@ void main() {
       expect(result.output, 'before\x1b[H\x1b[2J\x1b[3Jafter');
       expect(result.pendingInput, isEmpty);
       expect(result.attachOwnedAltBufferActive, isNull);
+    });
+
+    test('preserves long split terminal control mode updates', () {
+      final first = extractTerminalControlModeUpdates(
+        input: '\x1b[?2026;2027;2031',
+        pendingInput: '',
+      );
+
+      expect(first.synchronizedOutputMode, isNull);
+      expect(first.graphemeClusterMode, isNull);
+      expect(first.colorSchemeUpdatesMode, isNull);
+      expect(first.pendingInput, '\x1b[?2026;2027;2031');
+
+      final second = extractTerminalControlModeUpdates(
+        input: 'h',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.synchronizedOutputMode, isTrue);
+      expect(second.graphemeClusterMode, isTrue);
+      expect(second.colorSchemeUpdatesMode, isTrue);
+      expect(second.pendingInput, isEmpty);
     });
 
     test('answers terminal window and cell size reports', () {
@@ -1224,7 +1258,7 @@ void main() {
     );
 
     test(
-      'keeps MonkeyMux main-buffer replay on the full scroll region',
+      'resets stale MonkeyMux main-buffer scroll regions before linefeeds',
       () async {
         final shell = await openShell(
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
@@ -1236,7 +1270,7 @@ void main() {
 
         expect(terminal.isUsingAltBuffer, isFalse);
         expect(terminal.buffer.marginTop, 0);
-        expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
+        expect(terminal.buffer.marginBottom, 1);
 
         shell.stdout.add(Uint8List.fromList(utf8.encode('line 1\vline 2')));
         await Future<void>.delayed(const Duration(milliseconds: 25));
