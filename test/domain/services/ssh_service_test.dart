@@ -464,13 +464,13 @@ void main() {
       },
     );
 
-    test('strips MonkeyMux helper-owned scrollback clears', () {
+    test('preserves MonkeyMux per-window scrollback clears', () {
       final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
         input: 'before\x1b[H\x1b[2J\x1b[3Jafter',
         pendingInput: '',
       );
 
-      expect(result.output, 'before\x1b[H\x1b[2Jafter');
+      expect(result.output, 'before\x1b[H\x1b[2J\x1b[3Jafter');
       expect(result.pendingInput, isEmpty);
       expect(result.attachOwnedAltBufferActive, isNull);
     });

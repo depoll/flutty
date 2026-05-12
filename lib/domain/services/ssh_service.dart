@@ -115,7 +115,9 @@ typedef TerminalControlModeState = ({
 /// terminal scroll operations can corrupt xterm's main scrollback buffer. When
 /// MonkeyMux immediately exits the helper-owned alt buffer for inline-viewport
 /// sessions, strip the helper enter while preserving the exit so xterm can
-/// ingest replayed history directly into its main-buffer scrollback.
+/// ingest replayed history directly into its main-buffer scrollback. Preserve
+/// ED 3 scrollback clears so each MonkeyMux window gets an isolated local
+/// history buffer before its own replay bytes are written.
 ({String output, String pendingInput, bool? attachOwnedAltBufferActive})
 rewriteMonkeyMuxAttachOwnedAltBufferSequences({
   required String input,
@@ -171,10 +173,6 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
     }
 
     final sequence = combinedInput.substring(escapeIndex, endIndex + 1);
-    if (_isMonkeyMuxAttachOwnedScrollbackClear(sequence)) {
-      cursor = endIndex + 1;
-      continue;
-    }
     if (_isMonkeyMuxAttachOwnedScreenBufferEnter(sequence)) {
       final sequenceEnd = endIndex + 1;
       if (sequenceEnd == combinedInput.length) {
@@ -218,9 +216,6 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
     attachOwnedAltBufferActive: attachOwnedAltBufferActive,
   );
 }
-
-bool _isMonkeyMuxAttachOwnedScrollbackClear(String sequence) =>
-    sequence == '$_terminalEscape[3J';
 
 bool _isMonkeyMuxAttachOwnedScreenBufferEnter(String sequence) =>
     sequence == _terminalMonkeyMuxAttachEnterSequence;
