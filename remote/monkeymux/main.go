@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.43"
+	monkeyMuxVersion         = "0.1.44"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2586,7 +2586,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	needsRedraw := window.replayNeedsRedrawLocked()
 	var history []byte
 	if !needsRedraw {
-		historySource := window.replayHistoryTailLocked()
+		historySource := window.replayHistoryForAttachLocked()
 		if len(historySource) == 0 {
 			historySource = window.historyTailLocked()
 		}
@@ -2872,6 +2872,23 @@ func (w *muxWindow) replayHistoryTailLocked() []byte {
 		return w.replayHistory
 	}
 	return w.replayHistory[len(w.replayHistory)-windowHistoryLimitBytes:]
+}
+
+func (w *muxWindow) replayHistoryForAttachLocked() []byte {
+	if len(w.pendingReplayControls) == 0 {
+		return w.replayHistoryTailLocked()
+	}
+	history := make(
+		[]byte,
+		0,
+		len(w.replayHistory)+len(w.pendingReplayControls),
+	)
+	history = append(history, w.replayHistory...)
+	history = append(history, w.pendingReplayControls...)
+	if len(history) <= windowHistoryLimitBytes {
+		return history
+	}
+	return history[len(history)-windowHistoryLimitBytes:]
 }
 
 func (w *muxWindow) appendInactiveReplayCandidateLocked(chunk []byte) {

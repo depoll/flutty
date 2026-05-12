@@ -975,6 +975,31 @@ func TestActiveControlOnlyOutputDoesNotReplaceVisibleReplayHistory(t *testing.T)
 	}
 }
 
+func TestActiveReplayIncludesPendingControlOnlyOutput(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		replayHistory: []byte("visible screen"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@1", []byte("\x1b[2;1H\x1b[48;5;250m\x1b[K"))
+
+	if got := string(window.replayHistory); got != "visible screen" {
+		t.Fatalf("replay history = %q, want last visible screen", got)
+	}
+	if got := string(window.pendingReplayControls); got != "\x1b[2;1H\x1b[48;5;250m\x1b[K" {
+		t.Fatalf("pending replay controls = %q, want composer background redraw", got)
+	}
+	replay := string(server.activeReplayLocked())
+	if !strings.Contains(replay, "visible screen\x1b[2;1H\x1b[48;5;250m\x1b[K") {
+		t.Fatalf("replay = %q, want pending composer background controls included", replay)
+	}
+}
+
 func TestControlOnlyOutputIsCapturedWhenVisibleTextFollows(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
