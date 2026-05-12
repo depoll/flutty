@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.44"
+	monkeyMuxVersion         = "0.1.45"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -53,10 +53,11 @@ const (
 
 const synchronizedOutputResetSequence = "\x1b[?2026l"
 const graphemeClusterResetSequence = "\x1b[?2027l"
-const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence
+const terminalCharsetResetSequence = "\x0f\x1b(B\x1b)B"
+const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence + terminalCharsetResetSequence
 const attachSessionEnterSequence = "\x1b[?1049h"
 const attachSessionExitSequence = "\x1b[?1049l"
-const nestedAlternateBufferTransitionSequence = "\x1b[H\x1b[2J\x1b[3J"
+const nestedAlternateBufferTransitionSequence = terminalCharsetResetSequence + "\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l"
 
@@ -66,7 +67,7 @@ const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b
 // that will redraw their full UI from process metadata: any stale content
 // in xterm.dart's local buffers would otherwise leak through. The `\x1b[3J`
 // ED-3 invalidates scrollback for those reattaches.
-const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharsetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 // activeWindowReplayPrefixAfterAltHistory performs the same mode/attribute reset
 // as the clear prefix and clears the local terminal's stale saved-lines before
@@ -74,7 +75,7 @@ const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x
 // history lines back into the outer terminal's scrollback immediately after
 // this prefix, so drag-to-scroll still reveals the restored conversation while
 // scrollback from the previously active window cannot leak behind a new window.
-const activeWindowReplayPrefixAfterAltHistory = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefixAfterAltHistory = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharsetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear
 

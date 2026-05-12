@@ -1363,10 +1363,20 @@ func TestActiveReplayEndsBufferedModesAfterHistory(t *testing.T) {
 }
 
 func TestReplayPrefixClearsScrollbackAndMargins(t *testing.T) {
-	for _, sequence := range []string{"\x1b[r", "\x1b[2J", "\x1b[3J", "\x1b(B"} {
+	for _, sequence := range []string{"\x1b[r", "\x1b[2J", "\x1b[3J", "\x0f", "\x1b(B", "\x1b)B"} {
 		if !strings.Contains(activeWindowReplayPrefix, sequence) {
 			t.Fatalf("replay prefix %q does not include %q", activeWindowReplayPrefix, sequence)
 		}
+	}
+}
+
+func TestNestedAlternateBufferRewriteResetsCharsets(t *testing.T) {
+	if !strings.HasPrefix(nestedAlternateBufferTransitionSequence, terminalCharsetResetSequence) {
+		t.Fatalf(
+			"nested alternate buffer rewrite = %q, want charset reset prefix %q",
+			nestedAlternateBufferTransitionSequence,
+			terminalCharsetResetSequence,
+		)
 	}
 }
 

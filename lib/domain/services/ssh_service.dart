@@ -264,6 +264,24 @@ buildTerminalWindowControlQueryResponses({
     responses.write(buildTerminalThemeModeReport(isDark: theme.isDark));
   }
 
+  if (theme != null) {
+    for (final match in _terminalThemeOscQueryPattern.allMatches(
+      combinedInput,
+    )) {
+      final sequence = match.group(0);
+      if (sequence == null) {
+        continue;
+      }
+      final response = _buildDirectTerminalThemeOscQueryResponse(
+        sequence,
+        theme,
+      );
+      if (response != null) {
+        responses.write(response);
+      }
+    }
+  }
+
   final response = responses.isEmpty ? null : responses.toString();
   return (
     response: response,
@@ -312,6 +330,47 @@ extractTerminalControlModeUpdates({
     synchronizedOutputMode: synchronizedOutputMode,
     graphemeClusterMode: graphemeClusterMode,
     pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
+  );
+}
+
+({String pendingInput, String? response, String terminalInput})
+_consumeTerminalThemeOscQueries({
+  required String input,
+  required String pendingInput,
+  required TerminalThemeData? theme,
+}) {
+  final combinedInput = pendingInput + input;
+  if (theme == null) {
+    return (pendingInput: '', response: null, terminalInput: combinedInput);
+  }
+
+  final pendingSuffix = _terminalThemeOscQueryPendingSuffix(combinedInput);
+  final scanInput = pendingSuffix.isEmpty
+      ? combinedInput
+      : combinedInput.substring(0, combinedInput.length - pendingSuffix.length);
+  final terminalInput = StringBuffer();
+  final responses = StringBuffer();
+  var cursor = 0;
+
+  for (final match in _terminalThemeOscQueryPattern.allMatches(scanInput)) {
+    terminalInput.write(scanInput.substring(cursor, match.start));
+    final sequence = match.group(0);
+    final response = sequence == null
+        ? null
+        : _buildDirectTerminalThemeOscQueryResponse(sequence, theme);
+    if (response == null) {
+      terminalInput.write(scanInput.substring(match.start, match.end));
+    } else {
+      responses.write(response);
+    }
+    cursor = match.end;
+  }
+
+  terminalInput.write(scanInput.substring(cursor));
+  return (
+    pendingInput: pendingSuffix,
+    response: responses.isEmpty ? null : responses.toString(),
+    terminalInput: terminalInput.toString(),
   );
 }
 
@@ -437,6 +496,30 @@ String? _buildTerminalModeReportResponse(
     1016 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
     _ => null,
   };
+}
+
+String? _buildDirectTerminalThemeOscQueryResponse(
+  String sequence,
+  TerminalThemeData theme,
+) {
+  if (!sequence.startsWith('$_terminalEscape]') ||
+      !(sequence.endsWith('\x07') ||
+          sequence.endsWith(_terminalStringTerminator))) {
+    return null;
+  }
+  final terminatorLength = sequence.endsWith('\x07')
+      ? 1
+      : _terminalStringTerminator.length;
+  final payload = sequence.substring(2, sequence.length - terminatorLength);
+  final parts = payload.split(';');
+  if (parts.isEmpty) {
+    return null;
+  }
+  return buildTerminalThemeOscResponse(
+    theme: theme,
+    code: parts.first,
+    args: parts.sublist(1),
+  );
 }
 
 const _terminalModeNotRecognized = 0;
@@ -579,11 +662,35 @@ String _terminalControlQueryPendingSuffix(String input) {
       continue;
     }
     final suffix = input.substring(index);
-    if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
+    if (_terminalControlQueryPrefixPattern.hasMatch(suffix) ||
+        _isTerminalOscQueryPendingSuffix(suffix)) {
       return suffix;
     }
   }
   return '';
+}
+
+String _terminalThemeOscQueryPendingSuffix(String input) {
+  final index = input.lastIndexOf('$_terminalEscape]');
+  if (index < 0) {
+    return '';
+  }
+  final suffix = input.substring(index);
+  if (suffix.length > _terminalControlQueryPendingLimit ||
+      !_isTerminalOscQueryPendingSuffix(suffix)) {
+    return '';
+  }
+  return suffix;
+}
+
+bool _isTerminalOscQueryPendingSuffix(String suffix) {
+  if (!suffix.startsWith('$_terminalEscape]')) {
+    return false;
+  }
+  if (suffix.contains('\x07') || suffix.contains(_terminalStringTerminator)) {
+    return false;
+  }
+  return true;
 }
 
 /// Connection state for an SSH session.

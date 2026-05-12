@@ -28,6 +28,7 @@ class _SshSessionRuntime {
   int _shellStdinCharCount = 0;
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
+  String _terminalThemeOscQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalMonkeyMuxAttachAltPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
@@ -249,6 +250,7 @@ class _SshSessionRuntime {
     _session._resetShellRuntimeMetadata();
     _terminalWindowMetrics = null;
     _terminalWindowQueryPendingInput = '';
+    _terminalThemeOscQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
     _terminalMonkeyMuxAttachAltPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
@@ -493,7 +495,11 @@ class _SshSessionRuntime {
   }
 
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
-      _containsImmediateTerminalResponseQuery(terminalData);
+      _containsImmediateTerminalResponseQuery(terminalData) ||
+      (_terminalThemeOscQueryPendingInput.isNotEmpty &&
+          _containsImmediateTerminalResponseQuery(
+            _terminalThemeOscQueryPendingInput + terminalData,
+          ));
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();
@@ -508,12 +514,25 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
+      final themeOscResult = _consumeTerminalThemeOscQueries(
+        input: output.terminalData,
+        pendingInput: _terminalThemeOscQueryPendingInput,
+        theme: _session.terminalTheme,
+      );
+      _terminalThemeOscQueryPendingInput = themeOscResult.pendingInput;
+      final themeOscResponse = themeOscResult.response;
+      if (themeOscResponse != null) {
+        _shell?.write(utf8.encode(themeOscResponse));
+      }
+
       final terminalData = _protectMonkeyMuxMainBufferScroll(
-        output.terminalData,
+        themeOscResult.terminalInput,
         terminal,
       );
-      terminal.write(terminalData);
-      _respondToTerminalWindowControlQueries(output.terminalData, terminal);
+      if (terminalData.isNotEmpty) {
+        terminal.write(terminalData);
+        _respondToTerminalWindowControlQueries(terminalData, terminal);
+      }
       _scheduleTerminalPreviewRefresh();
     }
 
@@ -531,16 +550,14 @@ class _SshSessionRuntime {
       }
     }
 
-    if (_pendingShellOutputs.isNotEmpty) {
+    if (_pendingShellOutputs.isEmpty) {
+      _clearPendingShellOutput();
+    } else {
       _terminalOutputFlushTimer = Timer(
         _terminalOutputFlushInterval,
         _flushPendingShellOutput,
       );
-      return;
     }
-
-    _pendingShellOutputShell = null;
-    _pendingShellOutputTerminal = null;
   }
 
   ({String stderrData, String stdoutData, String terminalData})
