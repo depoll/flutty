@@ -21,7 +21,13 @@ import (
 )
 
 func replayPrefixForTest(window *muxWindow) string {
-	return activeWindowReplayPrefix + string(terminalTitleReplaySequence(window))
+	prefix := activeWindowReplayPrefixBeforeAlt
+	if window.replayNeedsRedrawLocked() {
+		prefix = attachSessionEnterSequence + prefix + activeWindowReplayPrefixAfterAltClear
+	} else {
+		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltKeep
+	}
+	return prefix + string(terminalTitleReplaySequence(window))
 }
 
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
@@ -317,7 +323,12 @@ func TestSelectAgentWindowClearsReplayHistoryAndNudgesRedraw(t *testing.T) {
 		name:          "Codex",
 		agentTool:     "codex",
 		replayHistory: []byte("stale codex partial frame"),
-		lastActivity:  time.Now(),
+		// Most TUI agents (claude-code, opencode, gemini, plus Codex's
+		// transcript overlay) own the outer alt buffer. Those replays must
+		// clear screen + scrollback so xterm.dart's circular buffer does
+		// not crash on cursor-addressed redraws.
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
 	}
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
@@ -677,7 +688,11 @@ func TestInactiveAgentOutputDoesNotReplaceVisibleReplayHistory(t *testing.T) {
 		index:         1,
 		agentTool:     "codex",
 		replayHistory: []byte("visible codex screen"),
-		lastActivity:  time.Now(),
+		// Treat this window as an alt-buffer agent so the replay still
+		// follows the clear+redraw path; the inline-viewport case is
+		// covered by TestInlineViewportAgentReplaysHistoryForScrollback.
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
 	}
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
@@ -719,7 +734,12 @@ func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
 		index:         1,
 		agentTool:     "codex",
 		replayHistory: []byte("old visible screen"),
-		lastActivity:  time.Now(),
+		// Alt-buffer agents (claude-code, opencode, gemini, Codex's
+		// transcript overlay) keep their replay frame frozen so reattach
+		// just nudges the agent to redraw via SIGWINCH instead of replaying
+		// cursor-addressed bytes that would crash xterm.dart.
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
 	}
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
@@ -736,6 +756,76 @@ func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
 	}
 	if got := string(agentWindow.pendingReplayControls); got != "" {
 		t.Fatalf("pending replay controls = %q, want empty", got)
+	}
+}
+
+// TestInlineViewportAgentReplaysHistoryForScrollback asserts that an agent
+// running in ratatui inline-viewport mode (no alt-buffer DEC modes) replays
+// its captured history bytes on reattach so the outer terminal's main-buffer
+// scrollback gets repopulated. This is what makes drag-to-scroll work for
+// resumed Codex sessions just like it does in tmux.
+func TestInlineViewportAgentReplaysHistoryForScrollback(t *testing.T) {
+	server := newMuxServer("test")
+	codexWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		history:      []byte("first turn\nsecond turn\nthird turn\n> prompt"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	for _, marker := range []string{"first turn", "second turn", "third turn", "> prompt"} {
+		if !strings.Contains(replay, marker) {
+			t.Fatalf("replay = %q, want history marker %q", replay, marker)
+		}
+	}
+	if strings.Contains(replay, "\x1b[3J") {
+		t.Fatalf("replay = %q, should not erase scrollback for inline-viewport agent", replay)
+	}
+	if !strings.Contains(replay, activeWindowReplayPrefixAfterAltKeep) {
+		t.Fatalf("replay = %q, want non-clearing after-alt prefix for inline-viewport agent", replay)
+	}
+	if !strings.Contains(replay, attachSessionExitSequence) {
+		t.Fatalf("replay = %q, want attach alt-buffer exit before inline history", replay)
+	}
+}
+
+// TestAltBufferAgentSkipsHistoryAndClearsScrollback asserts that an agent
+// known to own the outer alt buffer (e.g. claude-code) still falls back to
+// the clear+redraw path on reattach, leaving xterm.dart's circular buffer
+// untouched.
+func TestAltBufferAgentSkipsHistoryAndClearsScrollback(t *testing.T) {
+	server := newMuxServer("test")
+	altAgentWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "claude",
+		agentTool:    "claude-code",
+		history:      []byte("\x1b[1;1Hframe1\x1b[2;1Hframe2"),
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{altAgentWindow}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, "\x1b[3J") {
+		t.Fatalf("replay = %q, want ED-3 scrollback clear for alt-buffer agent", replay)
+	}
+	if strings.Contains(replay, "frame1") || strings.Contains(replay, "frame2") {
+		t.Fatalf("replay = %q, history must be skipped for alt-buffer agent", replay)
+	}
+	if strings.Contains(replay, attachSessionExitSequence) {
+		t.Fatalf("replay = %q, alt-buffer agent must stay in attach-owned alt buffer", replay)
+	}
+	if !strings.Contains(replay, attachSessionEnterSequence) {
+		t.Fatalf("replay = %q, alt-buffer agent must enter attach-owned alt buffer", replay)
 	}
 }
 
@@ -1119,14 +1209,17 @@ func TestAttachSessionOwnsOuterAlternateBuffer(t *testing.T) {
 	}
 }
 
-func TestTrackedAlternateBufferReplayDoesNotToggleOuterAlternateBuffer(t *testing.T) {
+func TestTrackedAlternateBufferReplayReentersOuterAlternateBuffer(t *testing.T) {
 	window := &muxWindow{id: "@1", lastActivity: time.Now()}
 	window.observeTerminalModesLocked([]byte("\x1b[?1049h"))
 
 	replayPrefix := replayPrefixForTest(window)
 
-	if strings.Contains(replayPrefix, "\x1b[?1049") {
-		t.Fatalf("tracked alt replay prefix %q should not toggle the attach-owned alternate buffer", replayPrefix)
+	if !strings.Contains(replayPrefix, attachSessionEnterSequence) {
+		t.Fatalf("tracked alt replay prefix %q should re-enter the attach-owned alternate buffer", replayPrefix)
+	}
+	if strings.Contains(replayPrefix, attachSessionExitSequence) {
+		t.Fatalf("tracked alt replay prefix %q should not leave the attach-owned alternate buffer", replayPrefix)
 	}
 }
 
@@ -1193,8 +1286,11 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
 	}
-	if strings.Contains(replayPrefixForTest(window), "\x1b[?1049") {
-		t.Fatalf("replay prefix for tracked alt window = %q, should not toggle outer alt buffer", replayPrefixForTest(window))
+	if !strings.Contains(replayPrefixForTest(window), attachSessionEnterSequence) {
+		t.Fatalf("replay prefix for tracked alt window = %q, should re-enter outer alt buffer", replayPrefixForTest(window))
+	}
+	if strings.Contains(replayPrefixForTest(window), attachSessionExitSequence) {
+		t.Fatalf("replay prefix for tracked alt window = %q, should not leave outer alt buffer", replayPrefixForTest(window))
 	}
 	for _, sequence := range []string{
 		"\x1b[?1h",

@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.38"
+	monkeyMuxVersion         = "0.1.40"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -59,8 +59,25 @@ const attachSessionExitSequence = "\x1b[?1049l"
 const nestedAlternateBufferTransitionSequence = "\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l"
-const activeWindowReplayPrefixAfterAlt = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
-const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAlt
+
+// activeWindowReplayPrefixAfterAltClear resets scroll region, charset, and
+// graphic attributes, then wipes both the visible screen and the outer
+// terminal's saved-lines buffer. It is the right prefix for alt-buffer agents
+// that will redraw their full UI from process metadata: any stale content
+// in xterm.dart's local buffers would otherwise leak through. The `\x1b[3J`
+// ED-3 invalidates scrollback for those reattaches.
+const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+
+// activeWindowReplayPrefixAfterAltKeep performs the same mode/attribute reset
+// as the clear prefix but leaves the outer terminal's main-buffer scrollback
+// intact. Inline-viewport agents (Codex's default chat) push history lines
+// into the outer terminal's scrollback, so a drag-to-scroll gesture on
+// reattach can still reveal earlier conversation without an emulator-level
+// copy-mode in MonkeyMux. The intentionally omitted `\x1b[3J` is what
+// distinguishes this prefix from the clear variant.
+const activeWindowReplayPrefixAfterAltKeep = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m"
+
+const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear
 
 var (
 	preReplayPrivateModes = []string{
@@ -962,8 +979,16 @@ func normalizeCapturedReplayHistory(history []byte) []byte {
 	if len(history) == 0 {
 		return nil
 	}
-	if bytes.HasPrefix(history, []byte(activeWindowReplayPrefix)) {
-		history = history[len(activeWindowReplayPrefix):]
+	for _, prefix := range []string{
+		attachSessionEnterSequence + activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear,
+		activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear,
+		attachSessionExitSequence + activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltKeep,
+		activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltKeep,
+	} {
+		if bytes.HasPrefix(history, []byte(prefix)) {
+			history = history[len(prefix):]
+			break
+		}
 	}
 	if len(history) > windowHistoryLimitBytes {
 		history = history[len(history)-windowHistoryLimitBytes:]
@@ -2490,8 +2515,9 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	needsRedraw := window.replayNeedsRedrawLocked()
 	var history []byte
-	if !window.replayNeedsRedrawLocked() {
+	if !needsRedraw {
 		historySource := window.replayHistoryTailLocked()
 		if len(historySource) == 0 {
 			historySource = window.historyTailLocked()
@@ -2503,13 +2529,19 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	preModes := terminalModePreReplaySequence(window)
 	postModes := terminalModePostReplaySequence(window)
 	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
+	prefix := activeWindowReplayPrefixBeforeAlt
+	if needsRedraw {
+		prefix = attachSessionEnterSequence + prefix + activeWindowReplayPrefixAfterAltClear
+	} else {
+		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltKeep
+	}
 	replay := make(
 		[]byte,
 		0,
-		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
+		len(prefix)+len(title)+len(preModes)+len(history)+
 			len(postHistoryReplayResetSequence)+len(postModes)+len(cursor),
 	)
-	replay = append(replay, activeWindowReplayPrefix...)
+	replay = append(replay, prefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
@@ -2519,12 +2551,23 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	return replay
 }
 
+// replayNeedsRedrawLocked reports whether the active replay should clear the
+// outer terminal's screen and scrollback before redrawing.
+//
+// Alt-buffer agents (claude-code, opencode, gemini, Codex's transcript
+// overlay) cursor-address a virtual screen and would corrupt xterm.dart's
+// circular buffer if their raw history were replayed. Replay those by
+// clearing the screen and letting the agent redraw via process metadata
+// nudges.
+//
+// Inline-viewport agents (Codex's default chat view) push conversation
+// content into the outer terminal's main-buffer scrollback through ordinary
+// line writes. Replay them by sending the recorded history bytes, which
+// preserves drag-to-scroll over earlier conversation just like tmux does
+// for the same pane.
 func (w *muxWindow) replayNeedsRedrawLocked() bool {
 	if w == nil {
 		return false
-	}
-	if w.agentToolLocked() != "" {
-		return true
 	}
 	for _, mode := range []string{"47", "1047", "1049"} {
 		if w.privateModes[mode] {

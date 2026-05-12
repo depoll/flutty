@@ -2106,7 +2106,7 @@ bool shouldRouteTouchScrollToTerminal({
     return false;
   }
   if (isAttachOwnedAltBuffer) {
-    return terminalReportsMouseWheel;
+    return isUsingAltBuffer;
   }
   return isUsingAltBuffer || terminalReportsMouseWheel;
 }
@@ -2919,7 +2919,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ? null
         : _sessionsNotifier?.getSession(connectionId);
     return shouldAutoResumeAttachOwnedTerminalOutputFollow(
-      isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
+      isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer && _isUsingAltBuffer,
       hasForegroundAgentTool: _hasForegroundAgentToolCommand,
       tuiSignalingActive:
           session != null && _isOuterTuiSignalingActive(session),

@@ -119,13 +119,28 @@ void main() {
     });
 
     test(
-      'keeps mobile attach-owned alt buffers viewport-scrollable without wheel reporting',
+      'routes mobile attach-owned fullscreen alt buffers into terminal scroll input',
       () {
         expect(
           shouldRouteTouchScrollToTerminal(
             isMobile: true,
             isUsingAltBuffer: true,
             terminalReportsMouseWheel: false,
+            isAttachOwnedAltBuffer: true,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'keeps mobile attach-owned inline buffers viewport-scrollable with wheel reporting',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: false,
+            terminalReportsMouseWheel: true,
             isAttachOwnedAltBuffer: true,
           ),
           isFalse,

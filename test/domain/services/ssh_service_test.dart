@@ -428,6 +428,42 @@ void main() {
       expect(second.attachOwnedAltBufferActive, isTrue);
     });
 
+    test(
+      'strips immediate MonkeyMux attach enter before inline replay exit',
+      () {
+        final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+          input: '\x1b[?1049h\x1b[?1049lreplayed history',
+          pendingInput: '',
+        );
+
+        expect(result.output, '\x1b[?1049lreplayed history');
+        expect(result.pendingInput, isEmpty);
+        expect(result.attachOwnedAltBufferActive, isFalse);
+      },
+    );
+
+    test(
+      'strips split immediate MonkeyMux attach enter before inline exit',
+      () {
+        final first = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+          input: '\x1b[?1049h\x1b[?10',
+          pendingInput: '',
+        );
+
+        expect(first.output, isEmpty);
+        expect(first.pendingInput, '\x1b[?1049h\x1b[?10');
+
+        final second = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+          input: '49lreplayed history',
+          pendingInput: first.pendingInput,
+        );
+
+        expect(second.output, '\x1b[?1049lreplayed history');
+        expect(second.pendingInput, isEmpty);
+        expect(second.attachOwnedAltBufferActive, isFalse);
+      },
+    );
+
     test('strips MonkeyMux helper-owned scrollback clears', () {
       final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
         input: 'before\x1b[H\x1b[2J\x1b[3Jafter',
@@ -1184,6 +1220,30 @@ void main() {
           '\x1b[?1049;1\$y',
         );
         expect(shell.session.terminal!.isUsingAltBuffer, isTrue);
+      },
+    );
+
+    test(
+      'keeps MonkeyMux main-buffer replay on the full scroll region',
+      () async {
+        final shell = await openShell(
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final terminal = shell.session.terminal!..resize(20, 4);
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[1;2r')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(terminal.isUsingAltBuffer, isFalse);
+        expect(terminal.buffer.marginTop, 0);
+        expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('line 1\vline 2')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(terminal.buffer.marginTop, 0);
+        expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
+        expect(firstLineText(terminal), contains('line'));
       },
     );
 

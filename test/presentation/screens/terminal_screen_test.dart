@@ -275,6 +275,30 @@ void main() {
   });
 
   group('terminal native selection helpers', () {
+    test('routes MonkeyMux inline viewport drags to viewport scrollback', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: false,
+          terminalReportsMouseWheel: true,
+          isAttachOwnedAltBuffer: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('routes MonkeyMux fullscreen drags to terminal input', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: true,
+          terminalReportsMouseWheel: false,
+          isAttachOwnedAltBuffer: true,
+        ),
+        isTrue,
+      );
+    });
+
     test('starts selection on separator characters', () {
       final terminal = Terminal(maxLines: 100)..write('foo/bar');
 
@@ -800,6 +824,45 @@ void main() {
 
       expect(position.pixels, position.maxScrollExtent);
     });
+
+    testWidgets(
+      'system selection does not swallow touch drag viewport scroll',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        final renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        final scrollableState = tester.state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MonkeyTerminalView),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final position = scrollableState.position;
+        expect(position.maxScrollExtent, greaterThan(0));
+
+        position.jumpTo(position.maxScrollExtent);
+        await tester.pump();
+        final startingOffset = position.pixels;
+
+        await tester.dragFrom(
+          renderTerminal.localToGlobal(renderTerminal.size.center(Offset.zero)),
+          const Offset(0, 96),
+        );
+        await tester.pumpAndSettle();
+
+        expect(position.pixels, lessThan(startingOffset));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     testWidgets('refreshTerminalDisplay relayouts without revealing output', (
       tester,

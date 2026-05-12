@@ -333,6 +333,8 @@ const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
 /// A terminal cell range rendered with text underline decoration.
 typedef TerminalTextUnderline = ({int row, int startColumn, int endColumn});
 
+enum _TouchScrollTarget { terminal, viewport }
+
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
   const MonkeyTerminalView(
@@ -540,6 +542,7 @@ class MonkeyTerminalView extends StatefulWidget {
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with SingleTickerProviderStateMixin {
   static const _touchScrollReportedWheelLinesPerEvent = 3.0;
+  static const _viewportTouchScrollSlop = kTouchSlop;
 
   late FocusNode _focusNode;
 
@@ -558,6 +561,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
   int? _touchScrollPointer;
+  _TouchScrollTarget? _touchScrollTarget;
+  bool _touchScrollViewportDragAccepted = false;
   VelocityTracker? _touchScrollVelocityTracker;
   Duration? _lastTouchScrollPointerTime;
   double? _lastTouchScrollPointerVelocity;
@@ -631,9 +636,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _clearTouchScrollPointer();
       _touchScrollRemainder = 0;
     }
-    if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
+    if (oldWidget.touchScrollToTerminal != widget.touchScrollToTerminal ||
+        oldWidget.useSystemSelection != widget.useSystemSelection) {
       _stopTouchScrollInertia();
-      _clearTouchScrollPointer();
+      _clearTouchScrollPointer(clearTarget: true);
       _touchScrollRemainder = 0;
     }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
@@ -874,7 +880,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       child: child,
     );
 
-    if (widget.touchScrollToTerminal) {
+    if (widget.touchScrollToTerminal || widget.useSystemSelection) {
       child = Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: _handleTouchScrollPointerDown,
@@ -1006,11 +1012,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _handleTouchScrollPointerDown(PointerDownEvent event) {
-    if (event.kind != PointerDeviceKind.touch || _touchScrollPointer != null) {
+    final target = _touchScrollTargetForPointerDown(event);
+    if (target == null) {
       return;
     }
     _stopTouchScrollInertia();
     _touchScrollPointer = event.pointer;
+    _touchScrollTarget = target;
+    _touchScrollViewportDragAccepted = target == _TouchScrollTarget.terminal;
     _touchScrollVelocityTracker = VelocityTracker.withKind(event.kind)
       ..addPosition(event.timeStamp, event.localPosition);
     _lastTouchScrollPointerTime = event.timeStamp;
@@ -1021,6 +1030,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void _handleTouchScrollPointerMove(PointerMoveEvent event) {
     if (event.pointer != _touchScrollPointer) {
+      return;
+    }
+    if (_touchScrollTarget == _TouchScrollTarget.viewport &&
+        _controller.selection != null) {
+      _clearTouchScrollPointer(clearTarget: true);
       return;
     }
     _touchScrollVelocityTracker?.addPosition(
@@ -1050,23 +1064,48 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         fallbackVelocity != null) {
       primaryVelocity = fallbackVelocity;
     }
-    _clearTouchScrollPointer();
-    if (primaryVelocity != null) {
+    final canStartInertia =
+        _touchScrollTarget == _TouchScrollTarget.terminal ||
+        _touchScrollViewportDragAccepted;
+    _clearTouchScrollPointer(clearTarget: primaryVelocity == null);
+    if (primaryVelocity != null &&
+        primaryVelocity.abs() >= kMinFlingVelocity &&
+        canStartInertia) {
       _startTouchScrollInertia(primaryVelocity);
+    } else {
+      _touchScrollTarget = null;
+      _touchScrollViewportDragAccepted = false;
     }
   }
 
   void _handleTouchScrollPointerCancel(PointerCancelEvent event) {
     if (event.pointer == _touchScrollPointer) {
-      _clearTouchScrollPointer();
+      _clearTouchScrollPointer(clearTarget: true);
     }
   }
 
-  void _clearTouchScrollPointer() {
+  _TouchScrollTarget? _touchScrollTargetForPointerDown(PointerDownEvent event) {
+    if (event.kind != PointerDeviceKind.touch || _touchScrollPointer != null) {
+      return null;
+    }
+    if (widget.touchScrollToTerminal) {
+      return _TouchScrollTarget.terminal;
+    }
+    if (widget.useSystemSelection && _controller.selection == null) {
+      return _TouchScrollTarget.viewport;
+    }
+    return null;
+  }
+
+  void _clearTouchScrollPointer({bool clearTarget = false}) {
     _touchScrollPointer = null;
     _touchScrollVelocityTracker = null;
     _lastTouchScrollPointerTime = null;
     _lastTouchScrollPointerVelocity = null;
+    if (clearTarget) {
+      _touchScrollTarget = null;
+      _touchScrollViewportDragAccepted = false;
+    }
   }
 
   void _updateTouchScrollPointerVelocity(Duration timeStamp, double delta) {
@@ -1107,6 +1146,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _applyTouchScrollDelta(double delta) {
+    switch (_touchScrollTarget) {
+      case _TouchScrollTarget.terminal:
+        _applyTerminalTouchScrollDelta(delta);
+        return;
+      case _TouchScrollTarget.viewport:
+        _applyViewportTouchScrollDelta(delta);
+        return;
+      case null:
+        return;
+    }
+  }
+
+  void _applyTerminalTouchScrollDelta(double delta) {
     _touchScrollRemainder += delta;
 
     final stepHeight = _touchScrollStepHeight;
@@ -1131,6 +1183,37 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
   }
 
+  void _applyViewportTouchScrollDelta(double delta) {
+    if (_controller.selection != null) {
+      _stopTouchScrollInertia();
+      _clearTouchScrollPointer(clearTarget: true);
+      return;
+    }
+    if (!_scrollController.hasClients) {
+      return;
+    }
+
+    var scrollDelta = delta;
+    if (!_touchScrollViewportDragAccepted) {
+      _touchScrollRemainder += delta;
+      if (_touchScrollRemainder.abs() < _viewportTouchScrollSlop) {
+        return;
+      }
+      scrollDelta = _touchScrollRemainder;
+      _touchScrollRemainder = 0;
+      _touchScrollViewportDragAccepted = true;
+    }
+
+    final position = _scrollController.position;
+    final nextOffset = (position.pixels - scrollDelta).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (nextOffset != position.pixels) {
+      position.jumpTo(nextOffset);
+    }
+  }
+
   void _startTouchScrollInertia(double velocity) {
     final clampedVelocity = velocity.clamp(
       -kMaxFlingVelocity,
@@ -1140,7 +1223,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return;
     }
 
+    final target = _touchScrollTarget;
+    final viewportDragAccepted = _touchScrollViewportDragAccepted;
     _stopTouchScrollInertia();
+    _touchScrollTarget = target;
+    _touchScrollViewportDragAccepted = viewportDragAccepted;
     _touchScrollInertiaSimulation = ClampingScrollSimulation(
       position: 0,
       velocity: clampedVelocity,
@@ -1153,6 +1240,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _touchScrollInertiaTicker.stop();
     _touchScrollInertiaSimulation = null;
     _lastTouchScrollInertiaOffset = 0;
+    _touchScrollTarget = null;
+    _touchScrollViewportDragAccepted = false;
   }
 
   void _onTouchScrollInertiaTick(Duration elapsed) {

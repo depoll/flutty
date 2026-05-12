@@ -112,9 +112,10 @@ typedef TerminalControlModeState = ({
 /// MonkeyMux owns an outer alternate buffer for terminal clients, while child
 /// TUIs run inside that isolated attach surface. The embedded app terminal must
 /// honor that outer alternate buffer too; otherwise fullscreen redraws that use
-/// terminal scroll operations can corrupt xterm's main scrollback buffer. Strip
-/// only helper replay scrollback clears, which are unnecessary for the embedded
-/// viewport and can hit xterm's scrollback mutation edge cases.
+/// terminal scroll operations can corrupt xterm's main scrollback buffer. When
+/// MonkeyMux immediately exits the helper-owned alt buffer for inline-viewport
+/// sessions, strip the helper enter while preserving the exit so xterm can
+/// ingest replayed history directly into its main-buffer scrollback.
 ({String output, String pendingInput, bool? attachOwnedAltBufferActive})
 rewriteMonkeyMuxAttachOwnedAltBufferSequences({
   required String input,
@@ -174,6 +175,32 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
       cursor = endIndex + 1;
       continue;
     }
+    if (_isMonkeyMuxAttachOwnedScreenBufferEnter(sequence)) {
+      final sequenceEnd = endIndex + 1;
+      if (sequenceEnd == combinedInput.length) {
+        return (
+          output: output.toString(),
+          pendingInput: sequence,
+          attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+        );
+      }
+      final remaining = combinedInput.substring(sequenceEnd);
+      if (_terminalMonkeyMuxAttachExitSequence.startsWith(remaining)) {
+        return (
+          output: output.toString(),
+          pendingInput: combinedInput.substring(escapeIndex),
+          attachOwnedAltBufferActive: attachOwnedAltBufferActive,
+        );
+      }
+      if (combinedInput.startsWith(
+        _terminalMonkeyMuxAttachExitSequence,
+        sequenceEnd,
+      )) {
+        cursor = sequenceEnd;
+        attachOwnedAltBufferActive = false;
+        continue;
+      }
+    }
     final rewrite = _monkeyMuxAttachOwnedAltBufferReplacement(sequence);
     if (rewrite == null) {
       output.write(sequence);
@@ -194,6 +221,9 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
 
 bool _isMonkeyMuxAttachOwnedScrollbackClear(String sequence) =>
     sequence == '$_terminalEscape[3J';
+
+bool _isMonkeyMuxAttachOwnedScreenBufferEnter(String sequence) =>
+    sequence == _terminalMonkeyMuxAttachEnterSequence;
 
 /// Builds responses for terminal window/cell size and theme reports in shell
 /// output.
@@ -424,6 +454,8 @@ const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
 const _terminalCsiPendingLimit = 64;
+const _terminalMonkeyMuxAttachEnterSequence = '$_terminalEscape[?1049h';
+const _terminalMonkeyMuxAttachExitSequence = '$_terminalEscape[?1049l';
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
 
