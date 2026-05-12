@@ -247,7 +247,7 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 	}
 }
 
-func TestSelectWindowResizesPtyWithoutPostReplaySignal(t *testing.T) {
+func TestSelectWindowResizesPtyWithoutPostReplayNudge(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	master, slave, err := pty.Open()
@@ -277,16 +277,16 @@ func TestSelectWindowResizesPtyWithoutPostReplaySignal(t *testing.T) {
 	server.height = 40
 	inactiveWindow.history = []byte("background output")
 
-	originalSignalForegroundResize := signalForegroundResize
+	originalNudgeForegroundResize := nudgeForegroundResize
 	defer func() {
-		signalForegroundResize = originalSignalForegroundResize
+		nudgeForegroundResize = originalNudgeForegroundResize
 	}()
 
 	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
 		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
-	var signaled []int
-	signalForegroundResize = func(processGroup int) {
-		signaled = append(signaled, processGroup)
+	var nudged []*muxWindow
+	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+		nudged = append(nudged, window)
 	}
 
 	if err := server.selectWindow("@2"); err != nil {
@@ -303,9 +303,166 @@ func TestSelectWindowResizesPtyWithoutPostReplaySignal(t *testing.T) {
 	if size.Cols != 48 || size.Rows != 40 {
 		t.Fatalf("pty size = %dx%d, want 48x40", size.Cols, size.Rows)
 	}
-	if len(signaled) != 0 {
-		t.Fatalf("signaled process groups = %#v, want none", signaled)
+	if len(nudged) != 0 {
+		t.Fatalf("nudged windows = %#v, want none", nudged)
 	}
+}
+
+func TestSelectAgentWindowClearsReplayHistoryAndNudgesRedraw(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	agentWindow := &muxWindow{
+		id:            "@2",
+		index:         1,
+		name:          "Codex",
+		agentTool:     "codex",
+		replayHistory: []byte("stale codex partial frame"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		agentWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 48
+	server.height = 40
+
+	originalNudgeForegroundResize := nudgeForegroundResize
+	defer func() {
+		nudgeForegroundResize = originalNudgeForegroundResize
+	}()
+
+	var nudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+		nudged = append(nudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window: window, width: width, height: height})
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	wantReplay := replayPrefixForTest(agentWindow) +
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
+	if got := attach.String(); got != wantReplay {
+		t.Fatalf("attach output = %q, want %q", got, wantReplay)
+	}
+	if strings.Contains(attach.String(), "stale codex partial frame") {
+		t.Fatalf("agent replay included stale history: %q", attach.String())
+	}
+	wantNudged := []struct {
+		window *muxWindow
+		width  int
+		height int
+	}{{window: agentWindow, width: 48, height: 40}}
+	if !reflect.DeepEqual(nudged, wantNudged) {
+		t.Fatalf("nudged windows = %#v, want %#v", nudged, wantNudged)
+	}
+}
+
+func TestSelectAlternateBufferWindowClearsReplayHistoryAndNudgesRedraw(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	altWindow := &muxWindow{
+		id:            "@2",
+		index:         1,
+		name:          "editor",
+		replayHistory: []byte("stale fullscreen frame"),
+		privateModes:  map[string]bool{"1049": true},
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		altWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 90
+	server.height = 30
+
+	originalNudgeForegroundResize := nudgeForegroundResize
+	defer func() {
+		nudgeForegroundResize = originalNudgeForegroundResize
+	}()
+
+	var nudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+		nudged = append(nudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window: window, width: width, height: height})
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	wantReplay := replayPrefixForTest(altWindow) +
+		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
+	if got := attach.String(); got != wantReplay {
+		t.Fatalf("attach output = %q, want %q", got, wantReplay)
+	}
+	if strings.Contains(attach.String(), "stale fullscreen frame") {
+		t.Fatalf("alternate-buffer replay included stale history: %q", attach.String())
+	}
+	wantNudged := []struct {
+		window *muxWindow
+		width  int
+		height int
+	}{{window: altWindow, width: 90, height: 30}}
+	if !reflect.DeepEqual(nudged, wantNudged) {
+		t.Fatalf("nudged windows = %#v, want %#v", nudged, wantNudged)
+	}
+}
+
+func TestNudgeForegroundResizeAppliesNudgeImmediatelyAndRestoresAsync(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = slave.Close()
+	})
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 40, Cols: 48}); err != nil {
+		t.Fatal(err)
+	}
+
+	nudgeForegroundResize(&muxWindow{pty: slave}, 48, 40)
+
+	size, err := pty.GetsizeFull(slave)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size.Cols != 49 || size.Rows != 40 {
+		t.Fatalf("immediate pty size = %dx%d, want 49x40", size.Cols, size.Rows)
+	}
+
+	deadline := time.Now().Add(nudgeRestoreDelay + 250*time.Millisecond)
+	for time.Now().Before(deadline) {
+		size, err = pty.GetsizeFull(slave)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if size.Cols == 48 && size.Rows == 40 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pty size did not restore; got %dx%d, want 48x40", size.Cols, size.Rows)
 }
 
 func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
@@ -540,15 +697,79 @@ func TestInactiveAgentOutputDoesNotReplaceVisibleReplayHistory(t *testing.T) {
 	if got := string(agentWindow.replayHistory); got != "visible codex screen" {
 		t.Fatalf("replay history = %q, want last attached screen", got)
 	}
+	if got := string(agentWindow.pendingReplayControls); got != "" {
+		t.Fatalf("pending replay controls = %q, want empty", got)
+	}
 
 	if err := server.selectWindow("@2"); err != nil {
 		t.Fatal(err)
 	}
 
-	want := replayPrefixForTest(agentWindow) + "visible codex screen" +
+	want := replayPrefixForTest(agentWindow) +
 		postHistoryReplayResetSequence + cursorVisibilityReplaySequence(true)
 	if got := attach.String(); got != want {
 		t.Fatalf("attach output = %q, want %q", got, want)
+	}
+}
+
+func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
+	server := newMuxServer("test")
+	agentWindow := &muxWindow{
+		id:            "@2",
+		index:         1,
+		agentTool:     "codex",
+		replayHistory: []byte("old visible screen"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		agentWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte("\x1b[2;1H\x1b[K"))
+	server.handleWindowOutput("@2", []byte("\x1b[2;1Hnew codex screen"))
+
+	want := "old visible screen"
+	if got := string(agentWindow.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want %q", got, want)
+	}
+	if got := string(agentWindow.pendingReplayControls); got != "" {
+		t.Fatalf("pending replay controls = %q, want empty", got)
+	}
+}
+
+func TestInactiveReplayCaptureUsesSeparatePartialBuffer(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:            "@2",
+		index:         1,
+		replayHistory: []byte("screen"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		window,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte("before\x1b[31"))
+
+	if got := string(window.attachOutputBuffer); got != "" {
+		t.Fatalf("live attach partial buffer = %q, want empty", got)
+	}
+	if got := string(window.replayCaptureBuffer); got != "\x1b[31" {
+		t.Fatalf("replay partial buffer = %q, want split CSI suffix", got)
+	}
+	if got := string(window.attachOutputForClientLocked([]byte("live"))); got != "live" {
+		t.Fatalf("live attach output = %q, want no replay partial prefix", got)
+	}
+
+	server.handleWindowOutput("@2", []byte("mafter"))
+
+	want := "screenbefore\x1b[31mafter"
+	if got := string(window.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want %q", got, want)
 	}
 }
 
@@ -573,8 +794,36 @@ func TestActiveControlOnlyOutputDoesNotReplaceVisibleReplayHistory(t *testing.T)
 	if got := string(window.replayHistory); got != "visible screen" {
 		t.Fatalf("replay history = %q, want last visible screen", got)
 	}
+	if got := string(window.pendingReplayControls); got != "\x1b[2;1H\x1b[K\x1b[3;1H\x1b[K" {
+		t.Fatalf("pending replay controls = %q, want control-only frame", got)
+	}
 	if got := attach.String(); got == "" {
 		t.Fatal("active control-only output was not passed through to attach")
+	}
+}
+
+func TestControlOnlyOutputIsCapturedWhenVisibleTextFollows(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		replayHistory: []byte("visible screen"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput("@1", []byte("\x1b[2;1H\x1b[K"))
+	server.handleWindowOutput("@1", []byte("\x1b[2;1Hnew visible text"))
+
+	want := "visible screen\x1b[2;1H\x1b[K\x1b[2;1Hnew visible text"
+	if got := string(window.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want %q", got, want)
+	}
+	if got := string(window.pendingReplayControls); got != "" {
+		t.Fatalf("pending replay controls = %q, want empty", got)
 	}
 }
 
@@ -937,7 +1186,7 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	replay := string(server.activeReplayLocked())
 	preModes := string(terminalModePreReplaySequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
-	want := replayPrefixForTest(window) + preModes + "nano screen" +
+	want := replayPrefixForTest(window) + preModes +
 		postHistoryReplayResetSequence + postModes +
 		cursorVisibilityReplaySequence(true)
 	if replay != want {

@@ -107,13 +107,14 @@ typedef TerminalControlModeState = ({
   return (output: output.toString(), pendingInput: '');
 }
 
-/// Rewrites MonkeyMux helper-owned alternate-buffer transitions for local xterm.
+/// Normalizes MonkeyMux helper-owned terminal transitions for local xterm.
 ///
 /// MonkeyMux owns an outer alternate buffer for terminal clients, while child
-/// TUIs run inside that isolated attach surface. The embedded app terminal
-/// already has its own viewport and scrollback, so it should not enter that
-/// helper-owned alternate buffer. Strip only the alternate-buffer private modes
-/// and preserve any grouped modes, such as mouse reporting.
+/// TUIs run inside that isolated attach surface. The embedded app terminal must
+/// honor that outer alternate buffer too; otherwise fullscreen redraws that use
+/// terminal scroll operations can corrupt xterm's main scrollback buffer. Strip
+/// only helper replay scrollback clears, which are unnecessary for the embedded
+/// viewport and can hit xterm's scrollback mutation edge cases.
 ({String output, String pendingInput, bool? attachOwnedAltBufferActive})
 rewriteMonkeyMuxAttachOwnedAltBufferSequences({
   required String input,
@@ -169,6 +170,10 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
     }
 
     final sequence = combinedInput.substring(escapeIndex, endIndex + 1);
+    if (_isMonkeyMuxAttachOwnedScrollbackClear(sequence)) {
+      cursor = endIndex + 1;
+      continue;
+    }
     final rewrite = _monkeyMuxAttachOwnedAltBufferReplacement(sequence);
     if (rewrite == null) {
       output.write(sequence);
@@ -186,6 +191,9 @@ rewriteMonkeyMuxAttachOwnedAltBufferSequences({
     attachOwnedAltBufferActive: attachOwnedAltBufferActive,
   );
 }
+
+bool _isMonkeyMuxAttachOwnedScrollbackClear(String sequence) =>
+    sequence == '$_terminalEscape[3J';
 
 /// Builds responses for terminal window/cell size and theme reports in shell
 /// output.
@@ -416,8 +424,6 @@ const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
 const _terminalCsiPendingLimit = 64;
-const _monkeyMuxAttachOwnedAltBufferTransitionSequence = '\x1b[H\x1b[2J\x1b[3J';
-
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
 
@@ -502,12 +508,8 @@ _monkeyMuxAttachOwnedAltBufferReplacement(String sequence) {
     return null;
   }
 
-  final replacement = preserved.isEmpty
-      ? _monkeyMuxAttachOwnedAltBufferTransitionSequence
-      : '$_monkeyMuxAttachOwnedAltBufferTransitionSequence'
-            '$_terminalEscape[?${preserved.join(';')}$finalByte';
   return (
-    replacement: replacement,
+    replacement: sequence,
     attachOwnedAltBufferActive: updatesActiveState ? finalByte == 'h' : null,
   );
 }

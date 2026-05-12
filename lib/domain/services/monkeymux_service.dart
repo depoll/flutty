@@ -513,6 +513,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     if (panePids.isEmpty) {
       return;
     }
+    final observer = _observers[key];
+    if (observer != null && !observer.isControlChannelReady) {
+      return;
+    }
     if (_agentMetadataRequests.containsKey(key)) {
       final activePanePids =
           _agentMetadataRequestPanePids[key] ?? const <int>{};
@@ -735,6 +739,15 @@ Duration _oneShotResponseTimeout(Map<String, Object?> request) =>
     ? _oneShotRunCommandResponseTimeout
     : _oneShotControlResponseTimeout;
 
+bool _isClosedSshConnectionError(Object error) {
+  if (error is! SSHStateError) {
+    return false;
+  }
+  final message = error.message.toLowerCase();
+  return message.contains('transport is closed') ||
+      message.contains('connection closed');
+}
+
 Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
   SshSession session,
   String command,
@@ -806,6 +819,8 @@ class _MonkeyMuxWindowChangeObserver {
   int _reconnectAttempts = 0;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  bool get isControlChannelReady => !_disposed && _controlSession != null;
 
   void emitWindowList(List<TmuxWindow> windows) {
     if (_disposed || _controller.isClosed || windows.isEmpty) {
@@ -947,15 +962,21 @@ class _MonkeyMuxWindowChangeObserver {
 
   void _handleError(Object error, StackTrace stackTrace) {
     if (_disposed) return;
+    final isClosedConnection = _isClosedSshConnectionError(error);
     DiagnosticsLogService.instance.warning(
       'monkeymux.watch',
       'failed',
       fields: {
         'connectionId': session.connectionId,
         'errorType': error.runtimeType,
+        if (isClosedConnection) 'reason': 'connection_closed',
       },
     );
     _failPending(error, stackTrace);
+    if (isClosedConnection) {
+      unawaited(_cleanup());
+      return;
+    }
     unawaited(_cleanup().whenComplete(_scheduleReconnect));
   }
 

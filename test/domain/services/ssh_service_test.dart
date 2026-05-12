@@ -387,16 +387,13 @@ void main() {
       expect(second.pendingInput, isEmpty);
     });
 
-    test('rewrites MonkeyMux attach-owned alt buffer transitions', () {
+    test('preserves MonkeyMux attach-owned alt buffer transitions', () {
       final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
         input: 'before\x1b[?1049hinside\x1b[?1049lafter',
         pendingInput: '',
       );
 
-      expect(
-        result.output,
-        'before\x1b[H\x1b[2J\x1b[3Jinside\x1b[H\x1b[2J\x1b[3Jafter',
-      );
+      expect(result.output, 'before\x1b[?1049hinside\x1b[?1049lafter');
       expect(result.pendingInput, isEmpty);
       expect(result.attachOwnedAltBufferActive, isFalse);
     });
@@ -407,7 +404,7 @@ void main() {
         pendingInput: '',
       );
 
-      expect(result.output, '\x1b[H\x1b[2J\x1b[3J\x1b[?1000;1006;2004h');
+      expect(result.output, '\x1b[?1000;1006;1049;2004h');
       expect(result.pendingInput, isEmpty);
       expect(result.attachOwnedAltBufferActive, isTrue);
     });
@@ -426,9 +423,20 @@ void main() {
         pendingInput: first.pendingInput,
       );
 
-      expect(second.output, '\x1b[H\x1b[2J\x1b[3Jafter');
+      expect(second.output, '\x1b[?1049hafter');
       expect(second.pendingInput, isEmpty);
       expect(second.attachOwnedAltBufferActive, isTrue);
+    });
+
+    test('strips MonkeyMux helper-owned scrollback clears', () {
+      final result = rewriteMonkeyMuxAttachOwnedAltBufferSequences(
+        input: 'before\x1b[H\x1b[2J\x1b[3Jafter',
+        pendingInput: '',
+      );
+
+      expect(result.output, 'before\x1b[H\x1b[2Jafter');
+      expect(result.pendingInput, isEmpty);
+      expect(result.attachOwnedAltBufferActive, isNull);
     });
 
     test('answers terminal window and cell size reports', () {
@@ -1132,7 +1140,7 @@ void main() {
     );
 
     test(
-      'keeps MonkeyMux attach-owned alt buffer out of the local terminal',
+      'keeps MonkeyMux attach-owned alt buffer in the local terminal',
       () async {
         final shell = await openShell(
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
@@ -1154,8 +1162,8 @@ void main() {
 
         await Future<void>.delayed(const Duration(milliseconds: 25));
 
-        expect(terminal.isUsingAltBuffer, isFalse);
-        expect(terminal.buffer.scrollBack, greaterThan(0));
+        expect(terminal.isUsingAltBuffer, isTrue);
+        expect(terminal.buffer.scrollBack, 0);
       },
     );
 
@@ -1175,7 +1183,7 @@ void main() {
           utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
           '\x1b[?1049;1\$y',
         );
-        expect(shell.session.terminal!.isUsingAltBuffer, isFalse);
+        expect(shell.session.terminal!.isUsingAltBuffer, isTrue);
       },
     );
 

@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.33"
+	monkeyMuxVersion         = "0.1.37"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -42,6 +42,7 @@ const (
 	runCommandOutputMaxBytes = 8 * 1024 * 1024
 	runCommandTimeout        = 20 * time.Second
 	socketTimeout            = 2 * time.Second
+	nudgeRestoreDelay        = 80 * time.Millisecond
 	windowUpdateMinInterval  = 750 * time.Millisecond
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
@@ -87,6 +88,7 @@ var (
 	}
 	trackedPrivateModes = map[string]struct{}{
 		"1":    {},
+		"47":   {},
 		"6":    {},
 		"7":    {},
 		"1000": {},
@@ -94,6 +96,7 @@ var (
 		"1003": {},
 		"1004": {},
 		"1006": {},
+		"1047": {},
 		"1049": {},
 		"2004": {},
 		"2031": {},
@@ -119,6 +122,7 @@ var capabilities = []string{
 	"shutdown",
 	"attach-update-policy",
 	"attach-state",
+	"active-redraw",
 	"upgrade-restore-v1",
 }
 
@@ -134,6 +138,69 @@ var signalForegroundResize = func(processGroup int) {
 		return
 	}
 	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+var nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+	if window == nil {
+		return
+	}
+	if width <= 0 || height <= 0 {
+		if window.pty == nil {
+			return
+		}
+		size, err := pty.GetsizeFull(window.pty)
+		if err != nil {
+			return
+		}
+		width = int(size.Cols)
+		height = int(size.Rows)
+	}
+	if window.pty != nil && width > 0 && width <= 65535 &&
+		height > 0 && height <= 65535 {
+		if nudgeWidth, nudgeHeight, ok := resizeNudgeSize(width, height); ok {
+			ptyFile := window.pty
+			if err := pty.Setsize(ptyFile, &pty.Winsize{
+				Rows: uint16(nudgeHeight),
+				Cols: uint16(nudgeWidth),
+			}); err == nil {
+				go func() {
+					time.Sleep(nudgeRestoreDelay)
+					size, err := pty.GetsizeFull(ptyFile)
+					if err == nil && int(size.Cols) == nudgeWidth &&
+						int(size.Rows) == nudgeHeight {
+						_ = pty.Setsize(ptyFile, &pty.Winsize{
+							Rows: uint16(height),
+							Cols: uint16(width),
+						})
+					}
+				}()
+				return
+			}
+		}
+	}
+	signalForegroundResize(foregroundProcessGroupForWindow(window))
+}
+
+func nudgeForegroundResizeIfNeeded(window *muxWindow, width int, height int) {
+	if window == nil {
+		return
+	}
+	nudgeForegroundResize(window, width, height)
+}
+
+func resizeNudgeSize(width int, height int) (int, int, bool) {
+	switch {
+	case width > 0 && width < 65535:
+		return width + 1, height, true
+	case width > 1:
+		return width - 1, height, true
+	case height > 0 && height < 65535:
+		return width, height + 1, true
+	case height > 1:
+		return width, height - 1, true
+	default:
+		return width, height, false
+	}
 }
 
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
@@ -278,9 +345,11 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	replayHistory              []byte
+	pendingReplayControls      []byte
 	oscBuffer                  []byte
 	csiBuffer                  []byte
 	attachOutputBuffer         []byte
+	replayCaptureBuffer        []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -1522,17 +1591,15 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		if attach != nil {
 			chunk = window.attachOutputForClientLocked(chunk)
 			shouldWrite = len(chunk) > 0
-			if shouldCaptureReplayOutput(chunk) {
-				window.appendReplayHistoryLocked(chunk)
-			}
-		} else if window.shouldCaptureInactiveReplayOutputLocked(chunk) {
-			window.appendReplayHistoryLocked(chunk)
+			window.appendReplayCandidateLocked(chunk)
+		} else {
+			window.appendInactiveReplayCandidateLocked(chunk)
 		}
 	} else if containsTerminalBell(chunk) {
 		window.alert = true
 	}
-	if s.activeID != windowID && window.shouldCaptureInactiveReplayOutputLocked(chunk) {
-		window.appendReplayHistoryLocked(chunk)
+	if s.activeID != windowID {
+		window.appendInactiveReplayCandidateLocked(chunk)
 	}
 	after := window.broadcastIdentityLocked()
 	if before != after ||
@@ -1563,6 +1630,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var replay []byte
 	var activeChanged bool
 	var shouldShutdown bool
+	var redrawWindow *muxWindow
+	var redrawWidth int
+	var redrawHeight int
 
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -1585,6 +1655,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
+				redrawWindow = s.redrawWindowForWindowLocked(candidate)
+				redrawWidth = s.width
+				redrawHeight = s.height
 				activeChanged = true
 				break
 			}
@@ -1597,6 +1670,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		s.writeAttachLocked(attach, replay)
 	}
 	s.attachMu.Unlock()
+	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -1644,6 +1718,9 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
+	var redrawWindow *muxWindow
+	var redrawWidth int
+	var redrawHeight int
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -1655,8 +1732,12 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
+	redrawWindow = s.activeRedrawWindowLocked()
+	redrawWidth = s.width
+	redrawHeight = s.height
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
+	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
 	s.broadcastWindowList("active_window_changed")
 
 	defer func() {
@@ -1796,6 +1877,9 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		}
 		s.resize(request.Width, request.Height)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
+	case "redraw_active":
+		s.redrawActive()
+		client.send(controlResponse{ID: request.ID, Type: "active_redraw", Status: "ok"})
 	case "query_active_context":
 		s.mu.Lock()
 		window := s.windowByIDLocked(s.activeID)
@@ -2213,6 +2297,9 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
+	var redrawWindow *muxWindow
+	var redrawWidth int
+	var redrawHeight int
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -2226,9 +2313,13 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
+	redrawWindow = s.redrawWindowForWindowLocked(window)
+	redrawWidth = s.width
+	redrawHeight = s.height
 	s.mu.Unlock()
 	s.writeAttachLocked(attach, replay)
 	s.attachMu.Unlock()
+	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
 	s.broadcastWindowList("active_window_changed")
 	return nil
 }
@@ -2238,6 +2329,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var replay []byte
 	var activeChanged bool
 	var shouldShutdown bool
+	var redrawWindow *muxWindow
+	var redrawWidth int
+	var redrawHeight int
 	var command *exec.Cmd
 	var windowPty *os.File
 	var snapshots []windowSnapshot
@@ -2264,6 +2358,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
+			redrawWindow = s.redrawWindowForWindowLocked(replacement)
+			redrawWidth = s.width
+			redrawHeight = s.height
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -2281,6 +2378,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		s.writeAttachLocked(attach, replay)
 	}
 	s.attachMu.Unlock()
+	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -2347,6 +2445,30 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 	})
 }
 
+func (s *muxServer) redrawActive() {
+	s.mu.Lock()
+	window := s.activeRedrawWindowLocked()
+	width := s.width
+	height := s.height
+	s.mu.Unlock()
+	nudgeForegroundResizeIfNeeded(window, width, height)
+}
+
+func (s *muxServer) activeRedrawWindowLocked() *muxWindow {
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil {
+		return nil
+	}
+	return s.redrawWindowForWindowLocked(window)
+}
+
+func (s *muxServer) redrawWindowForWindowLocked(window *muxWindow) *muxWindow {
+	if window == nil || window.closed || !window.replayNeedsRedrawLocked() {
+		return nil
+	}
+	return window
+}
+
 func (w *muxWindow) foregroundProcessGroupLocked() int {
 	pgrp := foregroundProcessGroupForWindow(w)
 	if pgrp <= 0 {
@@ -2365,12 +2487,15 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
-	historySource := window.replayHistoryTailLocked()
-	if len(historySource) == 0 {
-		historySource = window.historyTailLocked()
+	var history []byte
+	if !window.replayNeedsRedrawLocked() {
+		historySource := window.replayHistoryTailLocked()
+		if len(historySource) == 0 {
+			historySource = window.historyTailLocked()
+		}
+		history = stripTerminalQueriesFromReplay(historySource)
+		history = trimReplayHistoryForAttach(history)
 	}
-	history := stripTerminalQueriesFromReplay(historySource)
-	history = trimReplayHistoryForAttach(history)
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	postModes := terminalModePostReplaySequence(window)
@@ -2389,6 +2514,21 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func (w *muxWindow) replayNeedsRedrawLocked() bool {
+	if w == nil {
+		return false
+	}
+	if w.agentToolLocked() != "" {
+		return true
+	}
+	for _, mode := range []string{"47", "1047", "1049"} {
+		if w.privateModes[mode] {
+			return true
+		}
+	}
+	return false
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -2620,31 +2760,57 @@ func (w *muxWindow) replayHistoryTailLocked() []byte {
 	return w.replayHistory[len(w.replayHistory)-windowHistoryLimitBytes:]
 }
 
-func (w *muxWindow) shouldCaptureInactiveReplayOutputLocked(chunk []byte) bool {
-	if len(chunk) == 0 || w.agentToolLocked() != "" {
-		return false
+func (w *muxWindow) appendInactiveReplayCandidateLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
 	}
-	return shouldCaptureReplayOutput(chunk)
+	w.appendReplayCandidateLocked(w.attachOutputForReplayCaptureLocked(chunk))
 }
 
-func shouldCaptureReplayOutput(chunk []byte) bool {
+func (w *muxWindow) appendReplayCandidateLocked(chunk []byte) {
 	if len(chunk) == 0 {
-		return false
+		return
 	}
-	return containsReplayVisibleText(chunk) || !containsReplayStatefulControl(chunk)
+	if w.replayNeedsRedrawLocked() {
+		w.pendingReplayControls = w.pendingReplayControls[:0]
+		return
+	}
+	if containsReplayVisibleText(chunk) || !containsReplayStatefulControl(chunk) {
+		if len(w.pendingReplayControls) > 0 {
+			w.appendReplayHistoryLocked(w.pendingReplayControls)
+			w.pendingReplayControls = w.pendingReplayControls[:0]
+		}
+		w.appendReplayHistoryLocked(chunk)
+		return
+	}
+	w.pendingReplayControls = appendLimitedBufferLocked(
+		w.pendingReplayControls,
+		chunk,
+	)
 }
 
 func (w *muxWindow) attachOutputForClientLocked(chunk []byte) []byte {
+	return w.attachOutputForBufferLocked(chunk, &w.attachOutputBuffer)
+}
+
+func (w *muxWindow) attachOutputForReplayCaptureLocked(chunk []byte) []byte {
+	return w.attachOutputForBufferLocked(chunk, &w.replayCaptureBuffer)
+}
+
+func (w *muxWindow) attachOutputForBufferLocked(
+	chunk []byte,
+	pendingBuffer *[]byte,
+) []byte {
 	if len(chunk) == 0 {
 		return nil
 	}
 	data := chunk
-	if len(w.attachOutputBuffer) > 0 {
-		combined := make([]byte, 0, len(w.attachOutputBuffer)+len(chunk))
-		combined = append(combined, w.attachOutputBuffer...)
+	if len(*pendingBuffer) > 0 {
+		combined := make([]byte, 0, len(*pendingBuffer)+len(chunk))
+		combined = append(combined, (*pendingBuffer)...)
 		combined = append(combined, chunk...)
 		data = combined
-		w.attachOutputBuffer = nil
+		*pendingBuffer = nil
 	}
 
 	var output []byte
@@ -2655,7 +2821,7 @@ func (w *muxWindow) attachOutputForClientLocked(chunk []byte) []byte {
 			continue
 		}
 		if i+1 >= len(data) {
-			if w.storePartialAttachOutputLocked(data[i:]) {
+			if storePartialAttachOutputLocked(pendingBuffer, data[i:]) {
 				return appendAttachOutput(output, data[copyStart:i])
 			}
 			return appendAttachOutput(output, data[copyStart:])
@@ -2666,7 +2832,7 @@ func (w *muxWindow) attachOutputForClientLocked(chunk []byte) []byte {
 		}
 		end := csiSequenceEnd(data, i+2)
 		if end < 0 {
-			if w.storePartialAttachOutputLocked(data[i:]) {
+			if storePartialAttachOutputLocked(pendingBuffer, data[i:]) {
 				return appendAttachOutput(output, data[copyStart:i])
 			}
 			return appendAttachOutput(output, data[copyStart:])
@@ -2702,12 +2868,12 @@ func appendAttachOutputForRewrite(output []byte, data []byte) []byte {
 	return append(output, data...)
 }
 
-func (w *muxWindow) storePartialAttachOutputLocked(data []byte) bool {
+func storePartialAttachOutputLocked(buffer *[]byte, data []byte) bool {
 	if len(data) > csiBufferLimitBytes {
-		w.attachOutputBuffer = nil
+		*buffer = nil
 		return false
 	}
-	w.attachOutputBuffer = append(w.attachOutputBuffer[:0], data...)
+	*buffer = append((*buffer)[:0], data...)
 	return true
 }
 
