@@ -1814,11 +1814,12 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			name: "copilot resume",
 			state: restoreWindowState{
 				Name:           "Copilot CLI",
+				Cwd:            "/tmp/project with space",
 				CurrentCommand: "copilot",
 				AgentTool:      "copilot",
 				AgentSessionID: "session-123",
 			},
-			want:      "copilot --yolo --resume 'session-123'",
+			want:      "copilot --yolo --add-dir '/tmp/project with space' --resume 'session-123'",
 			agentTool: "copilot",
 		},
 		{

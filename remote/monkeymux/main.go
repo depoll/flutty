@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.41"
+	monkeyMuxVersion         = "0.1.42"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1414,9 +1414,9 @@ func createWindowOptionsForRestore(
 	)
 	command := ""
 	if agentTool != "" {
-		command = agentLaunchCommand(agentTool, startInYoloMode)
+		command = agentLaunchCommand(agentTool, startInYoloMode, state.Cwd)
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
-			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			command = agentResumeCommand(agentTool, sessionID, startInYoloMode, state.Cwd)
 		}
 	}
 	history := []byte(nil)
@@ -3396,7 +3396,7 @@ func agentToolFromCommandName(command string) string {
 	}
 }
 
-func agentLaunchCommand(tool string, startInYoloMode bool) string {
+func agentLaunchCommand(tool string, startInYoloMode bool, cwd string) string {
 	switch tool {
 	case "claude":
 		if startInYoloMode {
@@ -3405,7 +3405,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 		return "claude"
 	case "copilot":
 		if startInYoloMode {
-			return "copilot --yolo"
+			return "copilot --yolo" + copilotAllowedDirectoryFlag(cwd)
 		}
 		return "copilot"
 	case "codex":
@@ -3428,7 +3428,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 	}
 }
 
-func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
+func agentResumeCommand(tool string, sessionID string, startInYoloMode bool, cwd string) string {
 	quotedSessionID := shellQuote(sessionID)
 	switch tool {
 	case "claude":
@@ -3438,7 +3438,7 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 		return "claude --resume " + quotedSessionID
 	case "copilot":
 		if startInYoloMode {
-			return "copilot --yolo --resume " + quotedSessionID
+			return "copilot --yolo" + copilotAllowedDirectoryFlag(cwd) + " --resume " + quotedSessionID
 		}
 		return "copilot --resume " + quotedSessionID
 	case "codex":
@@ -3463,6 +3463,17 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 	default:
 		return ""
 	}
+}
+
+func copilotAllowedDirectoryFlag(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	if expanded, err := expandHomePath(cwd); err == nil {
+		cwd = expanded
+	}
+	return " --add-dir " + shellQuote(cwd)
 }
 
 func canonicalAgentCommandName(command string) string {
