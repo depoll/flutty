@@ -2697,6 +2697,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   String? _tmuxCurrentCommand;
+  AgentLaunchTool? _tmuxForegroundAgentTool;
   int _muxPaneContextRefreshGeneration = 0;
   DateTime? _muxPaneContextRefreshedAt;
   DateTime? _shellCompletionTmuxContextRefreshedAt;
@@ -2905,6 +2906,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isTmuxActive && _activeMuxBackend == RemoteMuxBackend.monkeyMux;
 
   bool get _hasForegroundAgentToolCommand =>
+      _tmuxForegroundAgentTool != null ||
+      resolveTmuxBarActiveWindowTool(
+            _tmuxBarKey.currentState?.currentWindowsSnapshot,
+          ) !=
+          null ||
       agentLaunchToolForCommandName(_tmuxCurrentCommand) != null;
 
   bool get _shouldAutoResumeAttachOwnedAltBufferFollow {
@@ -3452,6 +3458,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final previousTheme = targetSession.terminalTheme;
     targetSession.terminalTheme = theme;
+    final shouldPushThemeModeReport =
+        targetSession.terminalColorSchemeUpdatesMode &&
+        (previousTheme == null ||
+            forceRemoteRefresh ||
+            !_terminalThemesMatchForRemoteRefresh(previousTheme, theme));
+    if (shouldPushThemeModeReport) {
+      targetSession.refreshTerminalThemeModeReport(
+        reason: '${reason}_color_scheme_update',
+      );
+    }
     if (targetSession.terminal != _terminal) {
       if (reason != 'build') {
         DiagnosticsLogService.instance.info(
@@ -3878,6 +3894,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String sessionName, {
     required bool activeWindowChanged,
   }) {
+    _syncTmuxForegroundAgentToolFromWindowBar();
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
@@ -3903,6 +3920,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
     );
+  }
+
+  void _syncTmuxForegroundAgentToolFromWindowBar() {
+    final foregroundAgentTool = resolveTmuxBarActiveWindowTool(
+      _tmuxBarKey.currentState?.currentWindowsSnapshot,
+    );
+    if (_tmuxForegroundAgentTool == foregroundAgentTool) {
+      return;
+    }
+    if (!mounted) {
+      _tmuxForegroundAgentTool = foregroundAgentTool;
+      return;
+    }
+    setState(() => _tmuxForegroundAgentTool = foregroundAgentTool);
   }
 
   void _refreshMuxPaneContextAfterWindowStateChange(
@@ -6643,6 +6674,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _tmuxLaunchWorkingDirectory = _host?.tmuxWorkingDirectory;
       _tmuxWorkingDirectory = _host?.tmuxWorkingDirectory;
       _tmuxCurrentCommand = null;
+      _tmuxForegroundAgentTool = command.tool;
       _shellCompletionTmuxContextRefreshedAt = null;
       _shellCompletionTmuxContextConnectionId = null;
       _shellCompletionTmuxContextSessionName = null;
@@ -6708,6 +6740,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
+    _tmuxForegroundAgentTool = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     _shellCompletionTmuxContextConnectionId = null;
     _shellCompletionTmuxContextSessionName = null;
@@ -7055,6 +7088,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
           _tmuxCurrentCommand = tmuxCurrentCommand;
+          _tmuxForegroundAgentTool = resolveTmuxBarActiveWindowTool(windows);
           _connectionOpenedWorkingDirectory ??= normalizeSftpAbsolutePath(
             tmuxLaunchCwd,
           );

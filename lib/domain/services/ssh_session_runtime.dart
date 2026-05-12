@@ -88,6 +88,38 @@ class _SshSessionRuntime {
     _shell?.write(utf8.encode(data));
   }
 
+  void sendTerminalThemeModeReport({String reason = 'unspecified'}) {
+    final shell = _shell;
+    final theme = _session.terminalTheme;
+    if (shell == null || theme == null) {
+      DiagnosticsLogService.instance.debug(
+        'terminal.theme',
+        'mode_report_skipped',
+        fields: {
+          'reason': reason,
+          'connectionId': _session.connectionId,
+          'hasShell': shell != null,
+          'hasTheme': theme != null,
+        },
+      );
+      return;
+    }
+
+    final report = buildTerminalThemeModeReport(isDark: theme.isDark);
+    shell.write(utf8.encode(report));
+    DiagnosticsLogService.instance.debug(
+      'terminal.theme',
+      'mode_report_sent',
+      fields: {
+        'reason': reason,
+        'connectionId': _session.connectionId,
+        'themeId': theme.id,
+        'isDark': theme.isDark,
+        'bytes': report.length,
+      },
+    );
+  }
+
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,
     bool forceNew = false,
@@ -560,10 +592,14 @@ class _SshSessionRuntime {
       pendingInput: _terminalControlModeUpdatePendingInput,
     );
     _terminalControlModeUpdatePendingInput = modeUpdateResult.pendingInput;
+    final previousColorSchemeUpdatesMode = _terminalColorSchemeUpdatesMode;
     final nextColorSchemeUpdatesMode = modeUpdateResult.colorSchemeUpdatesMode;
     if (nextColorSchemeUpdatesMode != null &&
         nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
       _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
+      if (nextColorSchemeUpdatesMode && !previousColorSchemeUpdatesMode) {
+        sendTerminalThemeModeReport(reason: 'color_scheme_updates_enabled');
+      }
     }
     final nextSynchronizedOutputMode = modeUpdateResult.synchronizedOutputMode;
     if (nextSynchronizedOutputMode != null &&

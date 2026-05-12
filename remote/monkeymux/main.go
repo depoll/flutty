@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.37"
+	monkeyMuxVersion         = "0.1.38"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -58,7 +58,7 @@ const attachSessionEnterSequence = "\x1b[?1049h"
 const attachSessionExitSequence = "\x1b[?1049l"
 const nestedAlternateBufferTransitionSequence = "\x1b[H\x1b[2J\x1b[3J"
 
-const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l"
+const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1004l\x1b[?2004l" + postHistoryReplayResetSequence + "\x1b[?2031l"
 const activeWindowReplayPrefixAfterAlt = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAlt
 
@@ -71,6 +71,7 @@ var (
 		"1002",
 		"1003",
 		"1006",
+		"1007",
 		"1004",
 		"2004",
 		"2031",
@@ -82,6 +83,7 @@ var (
 		"1002",
 		"1003",
 		"1006",
+		"1007",
 		"1004",
 		"2004",
 		"2031",
@@ -96,6 +98,7 @@ var (
 		"1003": {},
 		"1004": {},
 		"1006": {},
+		"1007": {},
 		"1047": {},
 		"1049": {},
 		"2004": {},

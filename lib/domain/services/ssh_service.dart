@@ -2165,6 +2165,11 @@ class SshSession {
   bool get terminalColorSchemeUpdatesMode =>
       _runtime.terminalColorSchemeUpdatesMode;
 
+  /// Sends the current terminal theme mode to foreground apps that subscribed
+  /// to xterm color-scheme updates.
+  void refreshTerminalThemeModeReport({String reason = 'unspecified'}) =>
+      _runtime.sendTerminalThemeModeReport(reason: reason);
+
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 

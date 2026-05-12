@@ -1188,6 +1188,44 @@ void main() {
     );
 
     test(
+      'sends theme mode report when color-scheme updates are enabled',
+      () async {
+        final shell = await openShell();
+        shell.session.terminalTheme = monkey_themes.TerminalThemes.monkeyDark;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2031h')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[?997;1n',
+        );
+        expect(shell.session.terminalColorSchemeUpdatesMode, isTrue);
+      },
+    );
+
+    test(
+      'pushes updated theme mode while color-scheme updates are enabled',
+      () async {
+        final shell = await openShell();
+        shell.session.terminalTheme = monkey_themes.TerminalThemes.monkeyDark;
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2031h')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+        shell.shellWrites.clear();
+
+        shell.session.terminalTheme = monkey_themes.TerminalThemes.monkeyLight;
+        shell.session.refreshTerminalThemeModeReport(
+          reason: 'test_theme_change',
+        );
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '\x1b[?997;2n',
+        );
+      },
+    );
+
+    test(
       'flushes DEC private mode report queries without frame delay',
       () async {
         final shell = await openShell();
