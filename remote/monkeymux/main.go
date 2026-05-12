@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.40"
+	monkeyMuxVersion         = "0.1.41"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -68,14 +68,13 @@ const activeWindowReplayPrefixBeforeAlt = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b
 // ED-3 invalidates scrollback for those reattaches.
 const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
-// activeWindowReplayPrefixAfterAltKeep performs the same mode/attribute reset
-// as the clear prefix but leaves the outer terminal's main-buffer scrollback
-// intact. Inline-viewport agents (Codex's default chat) push history lines
-// into the outer terminal's scrollback, so a drag-to-scroll gesture on
-// reattach can still reveal earlier conversation without an emulator-level
-// copy-mode in MonkeyMux. The intentionally omitted `\x1b[3J` is what
-// distinguishes this prefix from the clear variant.
-const activeWindowReplayPrefixAfterAltKeep = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m"
+// activeWindowReplayPrefixAfterAltHistory performs the same mode/attribute reset
+// as the clear prefix and clears the local terminal's stale saved-lines before
+// replaying inline history. Inline-viewport agents (Codex's default chat) push
+// history lines back into the outer terminal's scrollback immediately after
+// this prefix, so drag-to-scroll still reveals the restored conversation while
+// scrollback from the previously active window cannot leak behind a new window.
+const activeWindowReplayPrefixAfterAltHistory = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear
 
@@ -982,8 +981,8 @@ func normalizeCapturedReplayHistory(history []byte) []byte {
 	for _, prefix := range []string{
 		attachSessionEnterSequence + activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear,
 		activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear,
-		attachSessionExitSequence + activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltKeep,
-		activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltKeep,
+		attachSessionExitSequence + activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltHistory,
+		activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltHistory,
 	} {
 		if bytes.HasPrefix(history, []byte(prefix)) {
 			history = history[len(prefix):]
@@ -2533,7 +2532,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	if needsRedraw {
 		prefix = attachSessionEnterSequence + prefix + activeWindowReplayPrefixAfterAltClear
 	} else {
-		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltKeep
+		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltHistory
 	}
 	replay := make(
 		[]byte,

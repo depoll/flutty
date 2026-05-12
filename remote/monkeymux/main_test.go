@@ -25,7 +25,7 @@ func replayPrefixForTest(window *muxWindow) string {
 	if window.replayNeedsRedrawLocked() {
 		prefix = attachSessionEnterSequence + prefix + activeWindowReplayPrefixAfterAltClear
 	} else {
-		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltKeep
+		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltHistory
 	}
 	return prefix + string(terminalTitleReplaySequence(window))
 }
@@ -784,14 +784,42 @@ func TestInlineViewportAgentReplaysHistoryForScrollback(t *testing.T) {
 			t.Fatalf("replay = %q, want history marker %q", replay, marker)
 		}
 	}
-	if strings.Contains(replay, "\x1b[3J") {
-		t.Fatalf("replay = %q, should not erase scrollback for inline-viewport agent", replay)
+	if !strings.Contains(replay, "\x1b[3J") {
+		t.Fatalf("replay = %q, should clear stale local scrollback before inline replay", replay)
 	}
-	if !strings.Contains(replay, activeWindowReplayPrefixAfterAltKeep) {
-		t.Fatalf("replay = %q, want non-clearing after-alt prefix for inline-viewport agent", replay)
+	if !strings.Contains(replay, activeWindowReplayPrefixAfterAltHistory) {
+		t.Fatalf("replay = %q, want inline-history after-alt prefix", replay)
 	}
 	if !strings.Contains(replay, attachSessionExitSequence) {
 		t.Fatalf("replay = %q, want attach alt-buffer exit before inline history", replay)
+	}
+}
+
+func TestNewInlineWindowClearsPreviousLocalScrollback(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@2",
+		index:        1,
+		name:         "Copilot CLI",
+		agentTool:    "copilot",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, history: []byte("previous window"), lastActivity: time.Now()},
+		window,
+	}
+	server.activeID = "@2"
+
+	replay := string(server.activeReplayLocked())
+
+	if strings.Contains(replay, "previous window") {
+		t.Fatalf("replay = %q, should not include prior window history", replay)
+	}
+	if !strings.Contains(replay, "\x1b[3J") {
+		t.Fatalf("replay = %q, want scrollback clear even when new inline window has no history yet", replay)
+	}
+	if !strings.HasPrefix(replay, attachSessionExitSequence) {
+		t.Fatalf("replay = %q, want inline replay to leave attach-owned alt buffer", replay)
 	}
 }
 
