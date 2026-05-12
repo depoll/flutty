@@ -665,19 +665,22 @@ class _SshSessionRuntime {
     }
 
     // xterm.dart's main-buffer scrollback path can assert when MonkeyMux
-    // replays inline history while a stale scroll region is active. Reset
-    // stale local margins before linefeed batches without stripping legitimate
-    // scroll-region changes from the live PTY stream.
+    // replays inline history while a stale scroll region is active.
+    final normalizedData = data.replaceAll(
+      _terminalScrollRegionPattern,
+      '\x1b[r',
+    );
     final buffer = terminal.buffer;
-    if (!data.contains(_terminalLineFeedPattern) ||
+    if (!normalizedData.contains(_terminalLineFeedPattern) ||
         (buffer.marginTop == 0 &&
             buffer.marginBottom == terminal.viewHeight - 1)) {
-      return data;
+      return normalizedData;
     }
 
-    return '\x1b[r$data';
+    return '\x1b[r$normalizedData';
   }
 
+  static final _terminalScrollRegionPattern = RegExp(r'\x1b\[[0-9;]*r');
   static final _terminalLineFeedPattern = RegExp('[\n\v\f]');
 
   TerminalControlModeState _terminalModeState(Terminal terminal) => (

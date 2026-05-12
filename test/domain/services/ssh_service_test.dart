@@ -1258,7 +1258,7 @@ void main() {
     );
 
     test(
-      'resets stale MonkeyMux main-buffer scroll regions before linefeeds',
+      'keeps MonkeyMux main-buffer replay on the full scroll region',
       () async {
         final shell = await openShell(
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
@@ -1270,11 +1270,31 @@ void main() {
 
         expect(terminal.isUsingAltBuffer, isFalse);
         expect(terminal.buffer.marginTop, 0);
-        expect(terminal.buffer.marginBottom, 1);
+        expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
 
         shell.stdout.add(Uint8List.fromList(utf8.encode('line 1\vline 2')));
         await Future<void>.delayed(const Duration(milliseconds: 25));
 
+        expect(terminal.buffer.marginTop, 0);
+        expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
+        expect(firstLineText(terminal), contains('line'));
+      },
+    );
+
+    test(
+      'keeps same-chunk MonkeyMux scroll-region replay on the full region',
+      () async {
+        final shell = await openShell(
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final terminal = shell.session.terminal!..resize(20, 4);
+
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('\x1b[1;2rline 1\vline 2')),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(terminal.isUsingAltBuffer, isFalse);
         expect(terminal.buffer.marginTop, 0);
         expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
         expect(firstLineText(terminal), contains('line'));
