@@ -2848,6 +2848,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
   int? _suppressNextAutomaticReconnectConnectionId;
+  int? _suppressAutoConnectAfterStartupConnectionId;
+  int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
 
@@ -5721,8 +5723,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
+      final suppressAutoConnect =
+          _suppressAutoConnectAfterStartupConnectionId == session.connectionId;
+      if (suppressAutoConnect) {
+        _suppressAutoConnectAfterStartupConnectionId = null;
+      }
       if (startupCommand == null) {
-        await _runAutoConnectCommand(session);
+        if (suppressAutoConnect) {
+          DiagnosticsLogService.instance.info(
+            'terminal',
+            'auto_connect_suppressed',
+            fields: {'connectionId': session.connectionId},
+          );
+        } else {
+          await _runAutoConnectCommand(session);
+        }
       } else {
         DiagnosticsLogService.instance.info(
           'terminal.agent_launch',
@@ -5739,7 +5754,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // Detect tmux after the auto-connect command has had time to start.
       // A small delay ensures tmux has initialized if the auto-connect
       // command launches a tmux session.
-      unawaited(_detectTmux(session));
+      final suppressRemoteMuxDetection =
+          _suppressRemoteMuxDetectionConnectionId == session.connectionId;
+      if (suppressRemoteMuxDetection) {
+        _suppressRemoteMuxDetectionConnectionId = null;
+      } else {
+        unawaited(_detectTmux(session));
+      }
     } on Object catch (e) {
       DiagnosticsLogService.instance.error(
         'terminal',
@@ -6236,6 +6257,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _applyPreparedRemoteMuxCommand(session, command);
         return command;
       }
+      _suppressAutoConnectAfterStartupConnectionId = session.connectionId;
       return null;
     }
 
@@ -6271,6 +6293,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       host,
       sessionName,
     );
+    if (attachCommand == null) {
+      return null;
+    }
     final review = assessAutoConnectCommandExecution(
       attachCommand.command,
       importedNeedsReview: host.autoConnectRequiresConfirmation,
@@ -6296,7 +6321,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<({String command, RemoteMuxBackend backend})>
+  Future<({String command, RemoteMuxBackend backend})?>
   _buildRemoteMuxAttachCommand(
     SshSession session,
     Host host,
@@ -6339,6 +6364,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
+      } on MonkeyMuxInstallDeclinedException {
+        _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'attach_declined',
+          fields: {
+            'connectionId': session.connectionId,
+            'configuredBackend': configuredBackend.storageValue,
+          },
+        );
+        return null;
       } on Exception catch (error) {
         DiagnosticsLogService.instance.warning(
           'monkeymux.install',
@@ -7809,6 +7845,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         host,
         sessionName,
       );
+      if (attachCommand == null) {
+        return;
+      }
       _activeMuxBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }

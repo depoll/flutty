@@ -4611,7 +4611,7 @@ void main() {
     );
 
     testWidgets(
-      'falls back to tmux when MonkeyMux install prompt is declined',
+      'opens a regular terminal when MonkeyMux install prompt is declined',
       (tester) async {
         final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
           request: const MonkeyMuxInstallRequest(
@@ -4647,41 +4647,6 @@ void main() {
         });
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => tmuxService.foregroundSessionNameOrThrow(
-            session,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => sessionName);
-        when(
-          () => tmuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer(
-          (_) async => const <TmuxWindow>[
-            TmuxWindow(index: 0, name: 'shell', isActive: true),
-          ],
-        );
-        when(
-          () => tmuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
-        when(
-          () => tmuxService.detectInstalledAgentTools(session),
-        ).thenAnswer((_) async => const <AgentLaunchTool>{});
-        when(
-          () => tmuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-          ),
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
@@ -4724,22 +4689,15 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(
-          executedCommands.where((command) => command.contains('monkeymux')),
-          isEmpty,
-        );
-        final writtenShellText = utf8.decode(
-          shellWrites.expand((chunk) => chunk).toList(growable: false),
-        );
-        final launchedText = [...executedCommands, writtenShellText].join('\n');
-        expect(launchedText, contains('tmux'));
-        expect(launchedText, isNot(contains('monkeymux')));
+        expect(executedCommands, isEmpty);
+        expect(shellWrites, isEmpty);
         expect(find.text('Install MonkeyMux helper?'), findsNothing);
-        expect(session.remoteMuxBackend, RemoteMuxBackend.tmux);
-        expect(session.remoteMuxSessionName, sessionName);
+        expect(session.remoteMuxBackend, isNull);
+        expect(session.remoteMuxSessionName, isNull);
         expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[false]);
-        await tester.pump(const Duration(milliseconds: 200));
+        verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
+        verifyNever(() => sshClient.execute(any(), pty: any(named: 'pty')));
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
       },
