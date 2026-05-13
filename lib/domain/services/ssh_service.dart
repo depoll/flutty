@@ -2360,6 +2360,10 @@ class SshSession {
     pixelHeight: pixelHeight,
   );
 
+  /// The latest visible terminal dimensions, if the terminal has reported them.
+  TerminalWindowMetrics? get terminalWindowMetrics =>
+      _runtime.terminalWindowMetrics;
+
   /// Adds a listener for terminal preview and preview-adjacent metadata changes.
   void addPreviewListener(VoidCallback listener) {
     _previewListeners.add(listener);

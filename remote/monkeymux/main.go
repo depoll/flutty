@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.48"
+	monkeyMuxVersion         = "0.1.49"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -300,6 +300,15 @@ type controlMessage struct {
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
+}
+
+type terminalResizeRequest struct {
+	width  int
+	height int
+}
+
+func (r terminalResizeRequest) valid() bool {
+	return r.width > 0 && r.height > 0
 }
 
 type controlResponse struct {
@@ -1503,7 +1512,7 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		activeID = firstID
 	}
 	if activeID != "" {
-		_ = s.selectWindow(activeID)
+		_ = s.selectWindow(activeID, terminalResizeRequest{})
 	}
 	return nil
 }
@@ -1972,7 +1981,10 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("missing target window"))
 			return
 		}
-		if err := s.selectWindow(id); err != nil {
+		if err := s.selectWindow(id, terminalResizeRequest{
+			width:  request.Width,
+			height: request.Height,
+		}); err != nil {
 			client.sendError(request, err)
 			return
 		}
@@ -2419,7 +2431,10 @@ func (o *boundedCommandOutput) exceeded() bool {
 	return o.overLimit
 }
 
-func (s *muxServer) selectWindow(windowID string) error {
+func (s *muxServer) selectWindow(
+	windowID string,
+	resizeRequest terminalResizeRequest,
+) error {
 	var attach net.Conn
 	var replay []byte
 	var redrawNudge redrawNudgeRequest
@@ -2433,6 +2448,10 @@ func (s *muxServer) selectWindow(windowID string) error {
 	}
 	s.activeID = windowID
 	window.alert = false
+	if resizeRequest.valid() {
+		s.width = resizeRequest.width
+		s.height = resizeRequest.height
+	}
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2536,10 +2555,12 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 
 func (s *muxServer) resize(width int, height int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
 	s.resizeActiveLocked(width, height)
+	redrawNudge := s.activeRedrawNudgeLocked()
+	s.mu.Unlock()
+	runRedrawNudgeIfNeeded(redrawNudge)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {

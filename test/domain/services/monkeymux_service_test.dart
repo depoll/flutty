@@ -99,6 +99,32 @@ void main() {
         const Duration(seconds: 10),
       );
     });
+
+    test('includes terminal dimensions for window selection requests', () {
+      expect(
+        monkeyMuxTerminalWindowMetricFieldsForTesting((
+          columns: 100,
+          rows: 32,
+          pixelWidth: 1200,
+          pixelHeight: 1600,
+        )),
+        const <String, Object?>{
+          'width': 100,
+          'height': 32,
+          'pixelWidth': 1200,
+          'pixelHeight': 1600,
+        },
+      );
+      expect(
+        monkeyMuxTerminalWindowMetricFieldsForTesting((
+          columns: 100,
+          rows: 32,
+          pixelWidth: 0,
+          pixelHeight: 0,
+        )),
+        const <String, Object?>{'width': 100, 'height': 32},
+      );
+    });
   });
 
   group('parseMonkeyMuxWindowSnapshotForTesting', () {

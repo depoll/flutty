@@ -239,7 +239,7 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 		t.Fatal("ordinary inactive output marked the window alert")
 	}
 
-	if err := server.selectWindow("@2"); err != nil {
+	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +295,7 @@ func TestSelectWindowResizesPtyWithoutPostReplayNudge(t *testing.T) {
 		nudged = append(nudged, window)
 	}
 
-	if err := server.selectWindow("@2"); err != nil {
+	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -311,6 +311,80 @@ func TestSelectWindowResizesPtyWithoutPostReplayNudge(t *testing.T) {
 	}
 	if len(nudged) != 0 {
 		t.Fatalf("nudged windows = %#v, want none", nudged)
+	}
+}
+
+func TestSelectWindowAppliesRequestedSizeBeforeReplayAndRedraw(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	codexWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		name:         "Codex",
+		agentTool:    "codex",
+		pty:          slave,
+		history:      []byte("codex history"),
+		lastActivity: time.Now(),
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = codexWindow.closePty()
+	})
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		codexWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 80
+	server.height = 24
+
+	originalNudgeForegroundSameSize := nudgeForegroundSameSize
+	defer func() {
+		nudgeForegroundSameSize = originalNudgeForegroundSameSize
+	}()
+
+	var sameSizeNudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+		sameSizeNudged = append(sameSizeNudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window: window, width: width, height: height})
+	}
+
+	if err := server.selectWindow("@2", terminalResizeRequest{width: 100, height: 32}); err != nil {
+		t.Fatal(err)
+	}
+
+	size, err := pty.GetsizeFull(slave)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size.Cols != 100 || size.Rows != 32 {
+		t.Fatalf("pty size = %dx%d, want 100x32", size.Cols, size.Rows)
+	}
+	if server.width != 100 || server.height != 32 {
+		t.Fatalf("server size = %dx%d, want 100x32", server.width, server.height)
+	}
+	wantSameSizeNudged := []struct {
+		window *muxWindow
+		width  int
+		height int
+	}{{window: codexWindow, width: 100, height: 32}}
+	if !reflect.DeepEqual(sameSizeNudged, wantSameSizeNudged) {
+		t.Fatalf("same-size nudged windows = %#v, want %#v", sameSizeNudged, wantSameSizeNudged)
 	}
 }
 
@@ -371,7 +445,7 @@ func TestSelectCodexWindowClearsReplayHistoryAndSignalsRedraw(t *testing.T) {
 		}{window: window, width: width, height: height})
 	}
 
-	if err := server.selectWindow("@2"); err != nil {
+	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -434,7 +508,7 @@ func TestSelectAlternateBufferWindowClearsReplayHistoryAndNudgesRedraw(t *testin
 		}{window: window, width: width, height: height})
 	}
 
-	if err := server.selectWindow("@2"); err != nil {
+	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -555,6 +629,69 @@ func TestNudgeForegroundSameSizeKeepsPtyGeometry(t *testing.T) {
 	}
 	if !reflect.DeepEqual(signaled, []int{4242}) {
 		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
+	}
+}
+
+func TestResizeRedrawsCodexAtNewSize(t *testing.T) {
+	server := newMuxServer("test")
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	codexWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		pty:          slave,
+		lastActivity: time.Now(),
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = codexWindow.closePty()
+	})
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+	server.width = 80
+	server.height = 24
+
+	originalNudgeForegroundSameSize := nudgeForegroundSameSize
+	defer func() {
+		nudgeForegroundSameSize = originalNudgeForegroundSameSize
+	}()
+
+	var sameSizeNudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+		sameSizeNudged = append(sameSizeNudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window: window, width: width, height: height})
+	}
+
+	server.resize(100, 32)
+
+	size, err := pty.GetsizeFull(slave)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size.Cols != 100 || size.Rows != 32 {
+		t.Fatalf("pty size = %dx%d, want 100x32", size.Cols, size.Rows)
+	}
+	wantSameSizeNudged := []struct {
+		window *muxWindow
+		width  int
+		height int
+	}{{window: codexWindow, width: 100, height: 32}}
+	if !reflect.DeepEqual(sameSizeNudged, wantSameSizeNudged) {
+		t.Fatalf("same-size nudged windows = %#v, want %#v", sameSizeNudged, wantSameSizeNudged)
 	}
 }
 
@@ -831,7 +968,7 @@ func TestInactiveAgentOutputDoesNotReplaceVisibleReplayHistory(t *testing.T) {
 		t.Fatalf("pending replay controls = %q, want empty", got)
 	}
 
-	if err := server.selectWindow("@2"); err != nil {
+	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
 		t.Fatal(err)
 	}
 

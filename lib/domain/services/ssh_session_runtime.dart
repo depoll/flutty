@@ -48,6 +48,8 @@ class _SshSessionRuntime {
 
   Terminal? get terminal => _terminal;
 
+  TerminalWindowMetrics? get terminalWindowMetrics => _terminalWindowMetrics;
+
   bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
 
   Stream<String> get shellStdoutStream =>

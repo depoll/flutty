@@ -31,10 +31,12 @@ history replay and are asked to redraw like they are under tmux. Codex is
 special-cased because its default chat view uses the main buffer for scrollback:
 MonkeyMux replays its main-buffer history, then sends Codex a same-size WINCH
 repaint instead of a temporary PTY resize, so stale partial frames do
-not remain and Codex never paints against the wrong viewport width. Replay
-strips old terminal response queries, such as device attributes, window reports,
-mode reports, and OSC color queries, so re-showing history does not synthesize
-new input into the live PTY.
+not remain and Codex never paints against the wrong viewport width. Window
+selection carries the current attach dimensions, and later attach resizes also
+redraw Codex, so keyboard or system UI viewport changes cannot leave Codex
+painted at a stale row count. Replay strips old terminal response queries, such
+as device attributes, window reports, mode reports, and OSC color queries, so
+re-showing history does not synthesize new input into the live PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also
