@@ -1091,16 +1091,35 @@ void main() {
     }
 
     Future<void> openTerminalOverflowMenu(WidgetTester tester) async {
-      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
     }
+
+    String? terminalMenuLabel(Widget? child) =>
+        child is Text ? child.data : null;
+
+    Finder terminalMenuItemButton(String label) => find.byWidgetPredicate(
+      (widget) =>
+          widget is MenuItemButton && terminalMenuLabel(widget.child) == label,
+    );
+
+    Finder terminalSubmenuButton(String label) => find.byWidgetPredicate(
+      (widget) =>
+          widget is SubmenuButton && terminalMenuLabel(widget.child) == label,
+    );
+
+    Finder terminalCheckboxMenuButton(String label) => find.byWidgetPredicate(
+      (widget) =>
+          widget is CheckboxMenuButton &&
+          terminalMenuLabel(widget.child) == label,
+    );
 
     Future<void> openTerminalOverflowSubmenu(
       WidgetTester tester,
       String label,
     ) async {
       await openTerminalOverflowMenu(tester);
-      await tester.tap(find.widgetWithText(PopupMenuItem<String>, label));
+      await tester.tap(terminalSubmenuButton(label));
       await tester.pumpAndSettle();
     }
 
@@ -1251,64 +1270,25 @@ void main() {
       expect(utf8.decode(shellWrites.expand((chunk) => chunk).toList()), 'x');
     });
 
-    testWidgets('terminal overflow menu groups paste actions', (tester) async {
+    testWidgets('terminal overflow menu folds out paste actions', (
+      tester,
+    ) async {
       await pumpScreen(tester);
 
       await openTerminalOverflowMenu(tester);
 
-      expect(
-        find.byWidgetPredicate(
-          (widget) => widget is PopupMenuItem<String> && widget.value == 'copy',
-        ),
-        findsNothing,
-      );
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> && widget.value == 'paste',
-        ),
-        findsNothing,
-      );
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> && widget.value == 'paste_file',
-        ),
-        findsNothing,
-      );
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> &&
-              widget.value == 'paste_submenu',
-        ),
-        findsOneWidget,
-      );
+      expect(terminalMenuItemButton('Paste'), findsNothing);
+      expect(terminalMenuItemButton('Paste Files'), findsNothing);
+      expect(terminalSubmenuButton('Paste'), findsOneWidget);
 
-      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Paste'));
+      await tester.tap(terminalSubmenuButton('Paste'));
       await tester.pumpAndSettle();
 
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> && widget.value == 'paste',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> && widget.value == 'paste_image',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> && widget.value == 'paste_file',
-        ),
-        findsOneWidget,
-      );
+      expect(terminalMenuItemButton('Snippets'), findsOneWidget);
+      expect(terminalSubmenuButton('Paste'), findsOneWidget);
+      expect(terminalMenuItemButton('Paste'), findsOneWidget);
+      expect(terminalMenuItemButton('Paste Images'), findsOneWidget);
+      expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
     });
 
     testWidgets(
@@ -1319,19 +1299,8 @@ void main() {
         await openTerminalOverflowSubmenu(tester, 'Options');
 
         expect(
-          find.widgetWithText(
-            CheckedPopupMenuItem<String>,
-            'Tap to Show Keyboard',
-          ),
+          terminalCheckboxMenuButton('Tap to Show Keyboard'),
           findsOneWidget,
-        );
-        expect(
-          find.byWidgetPredicate(
-            (widget) =>
-                widget is CheckedPopupMenuItem<String> &&
-                widget.value == 'toggle_sensitive_keyboard',
-          ),
-          findsNothing,
         );
         expect(find.text('Sensitive Keyboard'), findsNothing);
       },
@@ -1345,11 +1314,7 @@ void main() {
         await pumpScreen(tester);
         await tester.pump();
 
-        Finder createSnippetItem() => find.byWidgetPredicate(
-          (widget) =>
-              widget is PopupMenuItem<String> &&
-              widget.value == 'create_snippet',
-        );
+        Finder createSnippetItem() => terminalMenuItemButton('Create Snippet');
 
         await openTerminalOverflowMenu(tester);
         expect(createSnippetItem(), findsNothing);
@@ -3123,15 +3088,9 @@ void main() {
 
       await openTerminalOverflowSubmenu(tester, 'Options');
 
-      final menuItem = find.widgetWithText(
-        CheckedPopupMenuItem<String>,
-        'Shell Completion Popups',
-      );
+      final menuItem = terminalCheckboxMenuButton('Shell Completion Popups');
       expect(menuItem, findsOneWidget);
-      expect(
-        tester.widget<CheckedPopupMenuItem<String>>(menuItem).checked,
-        isTrue,
-      );
+      expect(tester.widget<CheckboxMenuButton>(menuItem).value, isTrue);
 
       await tester.tap(menuItem);
       await tester.pumpAndSettle();
@@ -4905,14 +4864,7 @@ void main() {
         await tester.pump();
 
         expect(tester.testTextInput.isVisible, isTrue);
-        expect(
-          tester
-              .widget<PopupMenuButton<String>>(
-                find.byType(PopupMenuButton<String>),
-              )
-              .requestFocus,
-          isFalse,
-        );
+        expect(find.byType(MenuAnchor), findsOneWidget);
 
         await openTerminalOverflowMenu(tester);
 
@@ -4967,18 +4919,15 @@ void main() {
     );
 
     testWidgets(
-      'terminal overflow menu uses default route focus on desktop',
+      'terminal overflow menu uses a cascading menu anchor on desktop',
       (tester) async {
         await pumpScreen(tester);
 
-        expect(
-          tester
-              .widget<PopupMenuButton<String>>(
-                find.byType(PopupMenuButton<String>),
-              )
-              .requestFocus,
-          isNull,
-        );
+        expect(find.byType(MenuAnchor), findsOneWidget);
+
+        await openTerminalOverflowMenu(tester);
+
+        expect(terminalSubmenuButton('Options'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

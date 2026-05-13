@@ -2933,7 +2933,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
   );
 
-  BoxConstraints? _terminalOverflowMenuConstraints({
+  MenuStyle _terminalOverflowMenuStyle({
     required BuildContext context,
     required bool isMobilePlatform,
   }) {
@@ -2944,14 +2944,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isMobilePlatform: isMobilePlatform,
       anchorTop: anchorTop,
     );
-    if (maxHeight == null) {
-      return null;
-    }
+    return MenuStyle(
+      minimumSize: const WidgetStatePropertyAll<Size>(
+        Size(_terminalOverflowMenuMinWidth, 0),
+      ),
+      maximumSize: WidgetStatePropertyAll<Size>(
+        Size(_terminalOverflowMenuMaxWidth, maxHeight ?? double.infinity),
+      ),
+    );
+  }
 
-    return BoxConstraints(
-      minWidth: _terminalOverflowMenuMinWidth,
-      maxWidth: _terminalOverflowMenuMaxWidth,
-      maxHeight: maxHeight,
+  EdgeInsetsGeometry _terminalOverflowMenuReservedPadding({
+    required BuildContext context,
+    required bool isMobilePlatform,
+  }) {
+    final mediaQuery = MediaQuery.of(context);
+    return EdgeInsets.only(
+      left: _terminalOverflowMenuScreenPadding,
+      top: _terminalOverflowMenuScreenPadding,
+      right: _terminalOverflowMenuScreenPadding,
+      bottom:
+          _terminalOverflowMenuScreenPadding +
+          (isMobilePlatform ? mediaQuery.viewInsets.bottom : 0),
     );
   }
 
@@ -2976,113 +2990,103 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .dy;
   }
 
-  RelativeRect _terminalOverflowSubmenuPosition(BuildContext context) {
-    final anchorContext = _terminalOverflowMenuButtonKey.currentContext;
-    final overlayRenderObject = Navigator.of(
-      context,
-    ).overlay?.context.findRenderObject();
-    final anchorRenderObject = anchorContext?.findRenderObject();
-    if (anchorRenderObject is! RenderBox ||
-        overlayRenderObject is! RenderBox ||
-        !anchorRenderObject.attached ||
-        !overlayRenderObject.attached) {
-      return RelativeRect.fill;
-    }
-
-    final anchorOffset = anchorRenderObject.localToGlobal(
-      Offset.zero,
-      ancestor: overlayRenderObject,
-    );
-    return RelativeRect.fromRect(
-      anchorOffset & anchorRenderObject.size,
-      Offset.zero & overlayRenderObject.size,
-    );
-  }
-
-  Future<void> _showTerminalOverflowSubmenu({
-    required BuildContext context,
-    required List<PopupMenuEntry<String>> items,
-  }) async {
-    final action = await showMenu<String>(
-      context: context,
-      position: _terminalOverflowSubmenuPosition(context),
-      requestFocus: terminalOverlayRouteRequestFocus(context),
-      constraints: _terminalOverflowMenuConstraints(
-        context: context,
-        isMobilePlatform: _isMobilePlatform,
-      ),
-      items: items,
-    );
-    if (!mounted || action == null) {
-      return;
-    }
-
-    await _handleMenuAction(action);
-  }
-
-  Widget _terminalOverflowMenuRow(
-    IconData icon,
-    String label, {
-    bool showsSubmenu = false,
-  }) => Row(
-    children: [
-      Icon(icon, size: 20),
-      const SizedBox(width: 12),
-      Expanded(child: Text(label)),
-      if (showsSubmenu) ...const [
-        SizedBox(width: 12),
-        Icon(Icons.chevron_right_rounded, size: 20),
-      ],
-    ],
+  Widget _terminalOverflowMenuLabel(String label) => Text(
+    label,
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+    softWrap: false,
   );
 
-  List<PopupMenuEntry<String>> _terminalPastingMenuItems() => [
-    PopupMenuItem<String>(
-      value: 'paste',
-      child: _terminalOverflowMenuRow(Icons.paste_rounded, 'Paste'),
+  Widget _terminalOverflowMenuItem({
+    required IconData icon,
+    required String label,
+    required String action,
+  }) => MenuItemButton(
+    leadingIcon: Icon(icon, size: 20),
+    onPressed: () => unawaited(_handleMenuAction(action)),
+    child: _terminalOverflowMenuLabel(label),
+  );
+
+  Widget _terminalOverflowCheckboxMenuItem({
+    required String label,
+    required bool checked,
+    required String action,
+  }) => CheckboxMenuButton(
+    value: checked,
+    onChanged: (_) => unawaited(_handleMenuAction(action)),
+    child: _terminalOverflowMenuLabel(label),
+  );
+
+  Widget _terminalOverflowSubmenuButton({
+    required BuildContext context,
+    required bool isMobile,
+    required IconData icon,
+    required String label,
+    required List<Widget> menuChildren,
+  }) => SubmenuButton(
+    leadingIcon: Icon(icon, size: 20),
+    menuStyle: _terminalOverflowMenuStyle(
+      context: context,
+      isMobilePlatform: isMobile,
     ),
-    PopupMenuItem<String>(
-      value: 'paste_image',
-      child: _terminalOverflowMenuRow(Icons.image_outlined, 'Paste Images'),
+    menuChildren: menuChildren,
+    child: _terminalOverflowMenuLabel(label),
+  );
+
+  Widget _terminalOverflowMenuDivider(BuildContext context) => Divider(
+    height: 1,
+    thickness: 1,
+    color: Theme.of(context).colorScheme.outlineVariant,
+  );
+
+  List<Widget> _terminalPastingMenuItems() => [
+    _terminalOverflowMenuItem(
+      icon: Icons.paste_rounded,
+      label: 'Paste',
+      action: 'paste',
     ),
-    PopupMenuItem<String>(
-      value: 'paste_file',
-      child: _terminalOverflowMenuRow(Icons.attach_file_rounded, 'Paste Files'),
+    _terminalOverflowMenuItem(
+      icon: Icons.image_outlined,
+      label: 'Paste Images',
+      action: 'paste_image',
+    ),
+    _terminalOverflowMenuItem(
+      icon: Icons.attach_file_rounded,
+      label: 'Paste Files',
+      action: 'paste_file',
     ),
   ];
 
-  List<PopupMenuEntry<String>> _terminalOptionsMenuItems({
+  List<Widget> _terminalOptionsMenuItems({
     required bool hasTerminalInfo,
     required bool isMobile,
   }) => [
     if (hasTerminalInfo)
-      PopupMenuItem<String>(
-        value: 'toggle_terminal_info',
-        child: _terminalOverflowMenuRow(
-          _showsTerminalMetadata
-              ? Icons.info_outlined
-              : Icons.info_outline_rounded,
-          _showsTerminalMetadata ? 'Hide Terminal Info' : 'Show Terminal Info',
-        ),
+      _terminalOverflowMenuItem(
+        icon: _showsTerminalMetadata
+            ? Icons.info_outlined
+            : Icons.info_outline_rounded,
+        label: _showsTerminalMetadata
+            ? 'Hide Terminal Info'
+            : 'Show Terminal Info',
+        action: 'toggle_terminal_info',
       ),
     if (_isTmuxActive)
-      PopupMenuItem<String>(
-        value: 'toggle_tmux_bar',
-        child: _terminalOverflowMenuRow(
-          _showTmuxBar ? Icons.window_outlined : Icons.window_rounded,
-          _showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar',
-        ),
+      _terminalOverflowMenuItem(
+        icon: _showTmuxBar ? Icons.window_outlined : Icons.window_rounded,
+        label: _showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar',
+        action: 'toggle_tmux_bar',
       ),
     if (isMobile)
-      CheckedPopupMenuItem<String>(
-        value: 'toggle_tap_keyboard',
+      _terminalOverflowCheckboxMenuItem(
+        label: 'Tap to Show Keyboard',
         checked: ref.read(tapToShowKeyboardNotifierProvider),
-        child: const Text('Tap to Show Keyboard'),
+        action: 'toggle_tap_keyboard',
       ),
-    CheckedPopupMenuItem<String>(
-      value: 'toggle_shell_completions',
+    _terminalOverflowCheckboxMenuItem(
+      label: 'Shell Completion Popups',
       checked: ref.read(shellCompletionsNotifierProvider),
-      child: const Text('Shell Completion Popups'),
+      action: 'toggle_shell_completions',
     ),
   ];
 
@@ -8604,88 +8608,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ? 'Hide extra keys'
                   : 'Show extra keys',
             ),
-            PopupMenuButton<String>(
+            MenuAnchor(
               key: _terminalOverflowMenuButtonKey,
-              onSelected: (action) => _handleTerminalOverflowMenuAction(
-                context,
-                action,
-                hasTerminalInfo: statusChips.isNotEmpty,
-                isMobile: isMobile,
-              ),
-              requestFocus: terminalOverlayRouteRequestFocus(context),
-              constraints: _terminalOverflowMenuConstraints(
+              style: _terminalOverflowMenuStyle(
                 context: context,
                 isMobilePlatform: isMobile,
               ),
-              itemBuilder: (context) => [
-                PopupMenuItem<String>(
-                  value: 'snippets',
-                  child: _terminalOverflowMenuRow(
-                    Icons.code_rounded,
-                    'Snippets',
+              reservedPadding: _terminalOverflowMenuReservedPadding(
+                context: context,
+                isMobilePlatform: isMobile,
+              ),
+              menuChildren: [
+                _terminalOverflowMenuItem(
+                  icon: Icons.code_rounded,
+                  label: 'Snippets',
+                  action: 'snippets',
+                ),
+                _terminalOverflowMenuItem(
+                  icon: Icons.palette_outlined,
+                  label: 'Change Theme',
+                  action: 'change_theme',
+                ),
+                _terminalOverflowSubmenuButton(
+                  context: context,
+                  isMobile: isMobile,
+                  icon: Icons.tune_rounded,
+                  label: 'Options',
+                  menuChildren: _terminalOptionsMenuItems(
+                    hasTerminalInfo: statusChips.isNotEmpty,
+                    isMobile: isMobile,
                   ),
                 ),
-                PopupMenuItem<String>(
-                  value: 'change_theme',
-                  child: _terminalOverflowMenuRow(
-                    Icons.palette_outlined,
-                    'Change Theme',
-                  ),
-                ),
-                PopupMenuItem<String>(
-                  value: 'options_submenu',
-                  child: _terminalOverflowMenuRow(
-                    Icons.tune_rounded,
-                    'Options',
-                    showsSubmenu: true,
-                  ),
-                ),
-                const PopupMenuDivider(),
+                _terminalOverflowMenuDivider(context),
                 if (!isMobile)
-                  PopupMenuItem<String>(
-                    value: 'native_select',
-                    child: _terminalOverflowMenuRow(
-                      _isNativeSelectionMode
-                          ? Icons.deselect_rounded
-                          : Icons.select_all_rounded,
-                      _isNativeSelectionMode
-                          ? 'Exit Native Selection'
-                          : 'Native Selection',
-                    ),
+                  _terminalOverflowMenuItem(
+                    icon: _isNativeSelectionMode
+                        ? Icons.deselect_rounded
+                        : Icons.select_all_rounded,
+                    label: _isNativeSelectionMode
+                        ? 'Exit Native Selection'
+                        : 'Native Selection',
+                    action: 'native_select',
                   ),
                 if (_workingDirectoryPath != null)
-                  PopupMenuItem<String>(
-                    value: 'copy_working_directory',
-                    child: _terminalOverflowMenuRow(
-                      Icons.folder_copy_outlined,
-                      'Copy Current Directory',
-                    ),
+                  _terminalOverflowMenuItem(
+                    icon: Icons.folder_copy_outlined,
+                    label: 'Copy Current Directory',
+                    action: 'copy_working_directory',
                   ),
                 if (_currentTerminalSelectionText() != null)
-                  PopupMenuItem<String>(
-                    value: 'create_snippet',
-                    child: _terminalOverflowMenuRow(
-                      Icons.code_rounded,
-                      'Create Snippet',
-                    ),
+                  _terminalOverflowMenuItem(
+                    icon: Icons.code_rounded,
+                    label: 'Create Snippet',
+                    action: 'create_snippet',
                   ),
-                PopupMenuItem<String>(
-                  value: 'paste_submenu',
-                  child: _terminalOverflowMenuRow(
-                    Icons.paste_rounded,
-                    'Paste',
-                    showsSubmenu: true,
-                  ),
+                _terminalOverflowSubmenuButton(
+                  context: context,
+                  isMobile: isMobile,
+                  icon: Icons.paste_rounded,
+                  label: 'Paste',
+                  menuChildren: _terminalPastingMenuItems(),
                 ),
-                const PopupMenuDivider(),
-                PopupMenuItem<String>(
-                  value: 'disconnect',
-                  child: _terminalOverflowMenuRow(
-                    Icons.link_off_rounded,
-                    'Disconnect',
-                  ),
+                _terminalOverflowMenuDivider(context),
+                _terminalOverflowMenuItem(
+                  icon: Icons.link_off_rounded,
+                  label: 'Disconnect',
+                  action: 'disconnect',
                 ),
               ],
+              builder: (context, controller, _) => IconButton(
+                icon: const Icon(Icons.more_vert),
+                tooltip: MaterialLocalizations.of(context).showMenuTooltip,
+                onPressed: () {
+                  if (controller.isOpen) {
+                    controller.close();
+                  } else {
+                    controller.open();
+                  }
+                },
+              ),
             ),
           ],
         ),
@@ -9695,34 +9696,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       });
     }
     return paneDirectory;
-  }
-
-  Future<void> _handleTerminalOverflowMenuAction(
-    BuildContext context,
-    String action, {
-    required bool hasTerminalInfo,
-    required bool isMobile,
-  }) async {
-    switch (action) {
-      case 'options_submenu':
-        await _showTerminalOverflowSubmenu(
-          context: context,
-          items: _terminalOptionsMenuItems(
-            hasTerminalInfo: hasTerminalInfo,
-            isMobile: isMobile,
-          ),
-        );
-        break;
-      case 'paste_submenu':
-        await _showTerminalOverflowSubmenu(
-          context: context,
-          items: _terminalPastingMenuItems(),
-        );
-        break;
-      default:
-        await _handleMenuAction(action);
-        break;
-    }
   }
 
   Future<void> _handleMenuAction(String action) async {
