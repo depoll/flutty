@@ -1161,6 +1161,7 @@ class _HostRow extends ConsumerWidget {
                         SshConnectionState.disconnected,
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
+                    sessionTitle: connection?.sessionTitle,
                     windowTitle: connection?.windowTitle,
                     iconName: connection?.iconName,
                     workingDirectory: connection?.workingDirectory,
@@ -1534,6 +1535,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.endpoint,
     required this.onTap,
     this.preview,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -1547,6 +1549,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final SshConnectionState state;
   final String endpoint;
   final String? preview;
+  final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
   final Uri? workingDirectory;
@@ -1570,6 +1573,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
+        sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
         workingDirectory: workingDirectory,
@@ -1697,6 +1701,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                             endpoint:
                                 '$endpoint  •  Connection #${connection.connectionId}',
                             preview: preview,
+                            sessionTitle: connection.sessionTitle,
                             windowTitle: connection.windowTitle,
                             iconName: connection.iconName,
                             workingDirectory: connection.workingDirectory,
@@ -1768,6 +1773,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   const _ConnectionPreviewText({
     required this.endpoint,
     this.preview,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -1778,6 +1784,7 @@ class _ConnectionPreviewText extends StatelessWidget {
 
   final String endpoint;
   final String? preview;
+  final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
   final Uri? workingDirectory;
@@ -1789,6 +1796,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
     preview: preview,
+    sessionTitle: sessionTitle,
     windowTitle: windowTitle,
     iconName: iconName,
     workingDirectory: workingDirectory,
@@ -2999,6 +3007,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _hasInitializedSessionProviders = false;
         }
       });
+      _syncConnectionSessionTitle(null);
       unawaited(_queryTmux());
     }
   }
@@ -3194,6 +3203,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     );
   }
 
+  String? _activeConnectionSessionTitle(List<TmuxWindow>? windows) => windows
+      ?.where((window) => window.isActive)
+      .firstOrNull
+      ?.agentSessionDisplayTitle;
+
+  void _syncConnectionSessionTitle(List<TmuxWindow>? windows) {
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateConnectionSessionTitle(
+          widget.connectionId,
+          _activeConnectionSessionTitle(windows),
+        );
+  }
+
   Future<void> _prefetchPreferredSessionProvider() async {
     if (!_hasAgentSessionAccess) return;
     final toolName = _preferredSessionToolName;
@@ -3228,6 +3251,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final session = sessionsNotifier.getSession(widget.connectionId);
     if (session == null) {
+      _syncConnectionSessionTitle(null);
       // Session not available yet — retry after a delay so the badge
       // still appears for connections that finish establishing shortly.
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
@@ -3242,6 +3266,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
     if (sessionName == null) {
+      _syncConnectionSessionTitle(null);
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
@@ -3306,18 +3331,21 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _muxBackend = muxBackend;
           _queried = true;
         });
+        _syncConnectionSessionTitle(const <TmuxWindow>[]);
         unawaited(_disconnectEndedMonkeyMuxSession(session));
         return;
       }
       final currentWindows = _windows;
+      final nextWindows = currentWindows == null
+          ? event.windows
+          : applyTmuxWindowChangeEvent(currentWindows, event);
       setState(() {
-        _windows = currentWindows == null
-            ? event.windows
-            : applyTmuxWindowChangeEvent(currentWindows, event);
+        _windows = nextWindows;
         _sessionName = sessionName;
         _muxBackend = muxBackend;
         _queried = true;
       });
+      _syncConnectionSessionTitle(nextWindows);
       return;
     }
     final currentWindows = _windows;
@@ -3333,12 +3361,14 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _windowReloadGeneration += 1;
     _tmuxRetryTimer?.cancel();
     _tmuxRetryTimer = null;
+    final nextWindows = applyTmuxWindowChangeEvent(currentWindows, event);
     setState(() {
-      _windows = applyTmuxWindowChangeEvent(currentWindows, event);
+      _windows = nextWindows;
       _sessionName = sessionName;
       _muxBackend = muxBackend;
       _queried = true;
     });
+    _syncConnectionSessionTitle(nextWindows);
   }
 
   Future<void> _refreshTmuxWindows(
@@ -3378,6 +3408,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _muxBackend = muxBackend;
           _queried = true;
         });
+        _syncConnectionSessionTitle(const <TmuxWindow>[]);
         await _disconnectEndedMonkeyMuxSession(session);
         return;
       }
@@ -3393,6 +3424,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         _muxBackend = muxBackend;
         _queried = true;
       });
+      _syncConnectionSessionTitle(windows);
     } on Object {
       if (!_isCurrentTmuxQuery(queryGeneration)) {
         return;

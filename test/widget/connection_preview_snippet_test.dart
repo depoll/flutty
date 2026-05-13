@@ -9,11 +9,16 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
 
 void main() {
-  Widget buildSnippet({String? windowTitle, String? iconName}) => MaterialApp(
+  Widget buildSnippet({
+    String? sessionTitle,
+    String? windowTitle,
+    String? iconName,
+  }) => MaterialApp(
     home: Scaffold(
       body: ConnectionPreviewSnippet(
         endpoint: 'depoll@mac-mini.home:22 - Connection #1',
         preview: 'ready',
+        sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
       ),
@@ -44,7 +49,22 @@ void main() {
     expect(find.text('Active: codex'), findsNothing);
   });
 
-  test('stack preview titles do not duplicate matching metadata', () {
+  testWidgets('prefers the session title over terminal metadata', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      buildSnippet(
+        sessionTitle: 'Implement onboarding',
+        windowTitle: 'Designing app prompt',
+        iconName: 'codex',
+      ),
+    );
+
+    expect(find.text('Active: Implement onboarding'), findsOneWidget);
+    expect(find.text('Active: Designing app prompt'), findsNothing);
+  });
+
+  test('stack preview titles prefer session title over terminal metadata', () {
     final entry = buildConnectionPreviewStackEntry(
       connectionId: 1,
       state: SshConnectionState.connected,
@@ -54,14 +74,13 @@ void main() {
         darkThemeId: TerminalThemes.defaultDarkThemeId,
       ),
       availableThemes: TerminalThemes.all,
+      sessionTitle: 'Implement onboarding',
       windowTitle: 'Designing app prompt',
       iconName: 'Designing app prompt',
     );
 
     expect(entry.title, startsWith('Connection #1'));
-    expect(
-      RegExp('Designing app prompt').allMatches(entry.title),
-      hasLength(1),
-    );
+    expect(entry.title, contains('Implement onboarding'));
+    expect(RegExp('Designing app prompt').allMatches(entry.title), isEmpty);
   });
 }

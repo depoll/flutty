@@ -2703,6 +2703,7 @@ class ActiveConnection {
     required this.createdAt,
     required this.config,
     this.preview,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -2731,6 +2732,9 @@ class ActiveConnection {
 
   /// The latest terminal preview snippet, when available.
   final String? preview;
+
+  /// The active coding-agent session title, when available.
+  final String? sessionTitle;
 
   /// The latest remote window title, when available.
   final String? windowTitle;
@@ -2838,6 +2842,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
+  final Map<int, String> _connectionSessionTitles = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
@@ -2863,6 +2868,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       _connectionHealthFailureSubscriptions.clear();
     });
     _connectionHostIds.clear();
+    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     return {};
   }
@@ -2954,6 +2960,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
+    _connectionSessionTitles.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
     await _queueBackgroundStatusSync();
@@ -2971,6 +2978,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
+    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     state = {};
     await _queueBackgroundStatusSync();
@@ -2999,6 +3007,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       createdAt: session.createdAt,
       config: session.config,
       preview: session.terminalPreview,
+      sessionTitle: _connectionSessionTitles[connectionId],
       windowTitle: session.windowTitle,
       iconName: session.iconName,
       workingDirectory: session.workingDirectory,
@@ -3068,6 +3077,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           createdAt: session.createdAt,
           config: session.config,
           preview: session.terminalPreview,
+          sessionTitle: _connectionSessionTitles[connectionId],
           windowTitle: session.windowTitle,
           iconName: session.iconName,
           workingDirectory: session.workingDirectory,
@@ -3172,6 +3182,27 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     });
   }
 
+  /// Update the active coding-agent session title attached to a connection.
+  void updateConnectionSessionTitle(int connectionId, String? sessionTitle) {
+    final normalizedTitle = _normalizeConnectionSessionTitle(sessionTitle);
+    final currentTitle = _connectionSessionTitles[connectionId];
+    if (normalizedTitle == currentTitle ||
+        (normalizedTitle == null && currentTitle == null)) {
+      return;
+    }
+    if (normalizedTitle == null) {
+      _connectionSessionTitles.remove(connectionId);
+    } else {
+      _connectionSessionTitles[connectionId] = normalizedTitle;
+    }
+    state = {...state};
+  }
+
+  String? _normalizeConnectionSessionTitle(String? sessionTitle) {
+    final trimmed = sessionTitle?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
   void _updateConnectionAttempt(
     int hostId,
     ConnectionProgressUpdate update, {
@@ -3235,6 +3266,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _detachSessionListeners(connectionId, session: session);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
+    _connectionSessionTitles.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
     if (hostId != null) {

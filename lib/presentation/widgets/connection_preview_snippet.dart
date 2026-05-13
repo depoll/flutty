@@ -42,9 +42,13 @@ String? _trimmedNonEmpty(String? value) {
 }
 
 String? _connectionActivityTitle({
+  required String? sessionTitle,
   required String? windowTitle,
   required String? iconName,
-}) => _trimmedNonEmpty(windowTitle) ?? _trimmedNonEmpty(iconName);
+}) =>
+    _trimmedNonEmpty(sessionTitle) ??
+    _trimmedNonEmpty(windowTitle) ??
+    _trimmedNonEmpty(iconName);
 
 /// Builds a stacked preview entry for a connection.
 ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
@@ -54,6 +58,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required TerminalThemeSettings themeSettings,
   required Iterable<TerminalThemeData> availableThemes,
   String? preview,
+  String? sessionTitle,
   String? windowTitle,
   String? iconName,
   Uri? workingDirectory,
@@ -65,6 +70,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   String? connectionDarkThemeId,
 }) {
   final activityTitle = _connectionActivityTitle(
+    sessionTitle: sessionTitle,
     windowTitle: windowTitle,
     iconName: iconName,
   );
@@ -114,6 +120,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   const ConnectionPreviewSnippet({
     required this.endpoint,
     this.preview,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -131,6 +138,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 
   /// Latest terminal preview text, when available.
   final String? preview;
+
+  /// Active coding-agent session title, when available.
+  final String? sessionTitle;
 
   /// Latest remote window title, when available.
   final String? windowTitle;
@@ -165,6 +175,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     final theme = Theme.of(context);
     final previewText = preview?.trim();
     final activityTitle = _connectionActivityTitle(
+      sessionTitle: sessionTitle,
       windowTitle: windowTitle,
       iconName: iconName,
     );
