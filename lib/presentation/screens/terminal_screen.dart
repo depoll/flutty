@@ -6232,7 +6232,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         host,
         tmuxSession,
       );
-      if (command != null && command.backend == RemoteMuxBackend.monkeyMux) {
+      if (command != null) {
         _applyPreparedRemoteMuxCommand(session, command);
         return command;
       }
@@ -6310,6 +6310,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final installation = await _monkeyMuxInstallerService.ensureInstalled(
           session,
           priority: SshExecPriority.normal,
+          confirmInstall: _confirmMonkeyMuxInstall,
         );
         final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
           session,
@@ -6409,6 +6410,63 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return MonkeyMuxServerUpdatePolicy.always;
   }
 
+  Future<bool> _confirmMonkeyMuxInstall(MonkeyMuxInstallRequest request) async {
+    if (!mounted) {
+      return false;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (context) => AlertDialog(
+        title: const Text('Install MonkeyMux helper?'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'MonkeySSH needs to upload its bundled MonkeyMux helper before '
+                'using MonkeyMux on this connected host.',
+              ),
+              const SizedBox(height: 12),
+              Text('Version: ${request.version}'),
+              Text('Platform: ${request.platform}'),
+              Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
+              const SizedBox(height: 12),
+              const Text(
+                'It will be installed under ~/.monkeyssh/bin/monkeymux on the '
+                'connected host.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Use tmux'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Install'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  String _formatMonkeyMuxInstallSize(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    }
+    final kibibytes = bytes / 1024;
+    if (kibibytes < 1024) {
+      return '${kibibytes.toStringAsFixed(kibibytes < 10 ? 1 : 0)} KB';
+    }
+    final mebibytes = kibibytes / 1024;
+    return '${mebibytes.toStringAsFixed(mebibytes < 10 ? 1 : 0)} MB';
+  }
+
   Future<void> _runMonkeyMuxAgentLaunchCommand(
     SshSession session,
     Host host,
@@ -6466,6 +6524,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
+        confirmInstall: _confirmMonkeyMuxInstall,
       );
       DiagnosticsLogService.instance.info(
         'terminal.agent_launch',
