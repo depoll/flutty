@@ -467,6 +467,7 @@ class SftpScreen extends ConsumerStatefulWidget {
 
 class _SftpScreenState extends ConsumerState<SftpScreen> {
   SftpClient? _sftp;
+  int? _connectionId;
   final ScrollController _breadcrumbScrollController = ScrollController();
   final ScrollController _fileListScrollController = ScrollController();
   String _currentPath = '/';
@@ -590,18 +591,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
 
+      _connectionId = connectionId;
       await sessionsNotifier.syncBackgroundStatus();
       if (!mounted) {
         return;
       }
-      final sftpOpenFuture = session.sftp();
-      late final SftpClient sftp;
-      try {
-        sftp = await withSftpOperationTimeout(sftpOpenFuture);
-      } on TimeoutException {
-        sftpOpenFuture.then((sftp) => sftp.close()).ignore();
-        rethrow;
-      }
+      final sftp = await _openSftpClient(session);
       if (!mounted) {
         sftp.close();
         return;
@@ -640,6 +635,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _handleConnectFailure(e, pendingSftp);
     } on Exception catch (e) {
       _handleConnectFailure(e, pendingSftp);
+    }
+  }
+
+  Future<SftpClient> _openSftpClient(SshSession session) async {
+    final sftpOpenFuture = session.sftp();
+    try {
+      return await withSftpOperationTimeout(sftpOpenFuture);
+    } on TimeoutException {
+      sftpOpenFuture.then((sftp) => sftp.close()).ignore();
+      rethrow;
     }
   }
 
@@ -738,6 +743,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     List<String>? nextHistory,
     bool rethrowTimeout = false,
     bool showError = true,
+    bool allowReconnect = true,
   }) async {
     if (_sftp == null) {
       return false;
@@ -776,28 +782,170 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _rememberCurrentPath(path);
       _queueScrollBreadcrumbTailIntoView();
       return true;
-    } on Exception catch (e) {
-      if (e is TimeoutException && rethrowTimeout) {
+    } on TimeoutException catch (e) {
+      if (rethrowTimeout) {
         rethrow;
       }
-      DiagnosticsLogService.instance.warning(
-        'sftp',
-        'list_failed',
-        fields: {'errorType': e.runtimeType},
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
       );
-      if (!mounted) {
-        return false;
+    } on SSHError catch (e) {
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
+      );
+    } on SftpStatusError catch (e) {
+      return _handleLoadDirectoryFailure(e, path, showError: showError);
+    } on SftpError catch (e) {
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
+      );
+    } on Exception catch (e) {
+      return _handleLoadDirectoryFailure(e, path, showError: showError);
+    }
+  }
+
+  Future<bool> _handleLoadDirectoryFailure(
+    Object error,
+    String path, {
+    List<String>? nextHistory,
+    bool showError = true,
+    bool allowReconnect = true,
+  }) async {
+    if (allowReconnect && _shouldReconnectSftpAfterDirectoryError(error)) {
+      final reconnected = await _reconnectSftpAndLoadDirectory(
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+      );
+      if (reconnected || !mounted) {
+        return reconnected;
       }
-      setState(() {
-        _isLoading = false;
-        if (showError) {
-          _error = e is TimeoutException
-              ? sftpTimeoutMessage('listing this directory')
-              : 'Failed to list this directory. Try another folder.';
-        }
-      });
+    }
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      'list_failed',
+      fields: {'errorType': error.runtimeType},
+    );
+    if (!mounted) {
       return false;
     }
+    setState(() {
+      _isLoading = false;
+      if (showError) {
+        _error = error is TimeoutException
+            ? sftpTimeoutMessage('listing this directory')
+            : 'Failed to list this directory. Try another folder.';
+      }
+    });
+    return false;
+  }
+
+  bool _shouldReconnectSftpAfterDirectoryError(Object error) =>
+      error is TimeoutException ||
+      error is SSHError ||
+      (error is SftpError && error is! SftpStatusError);
+
+  Future<bool> _reconnectSftpAndLoadDirectory(
+    String path, {
+    List<String>? nextHistory,
+    bool showError = true,
+  }) async {
+    final connectionId = _connectionId ?? widget.connectionId;
+    if (connectionId == null) {
+      return false;
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      return false;
+    }
+
+    DiagnosticsLogService.instance.info(
+      'sftp',
+      'reconnect_start',
+      fields: {'connectionId': connectionId},
+    );
+    _sftp?.close();
+    _sftp = null;
+
+    try {
+      final sftp = await _openSftpClient(session);
+      if (!mounted) {
+        sftp.close();
+        return false;
+      }
+      _sftp = sftp;
+      DiagnosticsLogService.instance.info(
+        'sftp',
+        'reconnect_success',
+        fields: {'connectionId': connectionId},
+      );
+      return _loadDirectory(
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: false,
+      );
+    } on TimeoutException catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    } on SSHError catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    } on SftpError catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    } on Exception catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    }
+  }
+
+  bool _handleSftpReconnectFailure(
+    int connectionId,
+    Object error, {
+    required bool showError,
+  }) {
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      'reconnect_failed',
+      fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
+    );
+    if (!mounted || !showError) {
+      return false;
+    }
+    setState(() {
+      _isLoading = false;
+      _error = error is TimeoutException
+          ? sftpTimeoutMessage('reconnecting the SFTP browser')
+          : 'SFTP connection failed. Check the connection and try again.';
+    });
+    return false;
   }
 
   Future<void> _navigateTo(String path) async {
@@ -838,7 +986,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final key = (hostId: widget.hostId, connectionId: widget.connectionId);
+    final key = (
+      hostId: widget.hostId,
+      connectionId: _connectionId ?? widget.connectionId,
+    );
     final notifier = ref.read(sftpBrowserLastPathsProvider.notifier);
     notifier.state = <SftpBrowserLocationKey, String>{
       ...notifier.state,
