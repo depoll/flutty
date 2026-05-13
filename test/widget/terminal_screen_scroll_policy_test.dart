@@ -266,6 +266,69 @@ void main() {
         isFalse,
       );
     });
+
+    test('does not timer-resume attach-owned inline agent scrollback', () {
+      expect(
+        shouldAutoResumeAttachOwnedTerminalOutputFollow(
+          isAttachOwnedAltBuffer: false,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('live output resumes attach-owned TUI follow when paused', () {
+      expect(
+        shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
+          shouldFollowLiveOutput: false,
+          isAttachOwnedTerminal: true,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: false,
+          isTerminalOutputFollowPaused: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('live output keeps an already-following viewport unchanged', () {
+      expect(
+        shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
+          shouldFollowLiveOutput: true,
+          isAttachOwnedTerminal: true,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: false,
+          isTerminalOutputFollowPaused: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('live output does not resume ordinary terminal scrollback', () {
+      expect(
+        shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
+          shouldFollowLiveOutput: false,
+          isAttachOwnedTerminal: false,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: true,
+          isTerminalOutputFollowPaused: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('live output waits while touch scrolling is paused', () {
+      expect(
+        shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
+          shouldFollowLiveOutput: false,
+          isAttachOwnedTerminal: true,
+          hasForegroundAgentTool: true,
+          tuiSignalingActive: false,
+          isTerminalOutputFollowPaused: true,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('terminal scroll policy change helper', () {

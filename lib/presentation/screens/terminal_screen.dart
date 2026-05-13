@@ -2524,6 +2524,20 @@ bool shouldAutoResumeAttachOwnedTerminalOutputFollow({
   required bool tuiSignalingActive,
 }) => isAttachOwnedAltBuffer && (hasForegroundAgentTool || tuiSignalingActive);
 
+/// Whether live output should restore follow mode for an attach-owned TUI.
+@visibleForTesting
+bool shouldResumeAttachOwnedTerminalFollowOnLiveOutput({
+  required bool shouldFollowLiveOutput,
+  required bool isAttachOwnedTerminal,
+  required bool hasForegroundAgentTool,
+  required bool tuiSignalingActive,
+  required bool isTerminalOutputFollowPaused,
+}) =>
+    !shouldFollowLiveOutput &&
+    isAttachOwnedTerminal &&
+    (hasForegroundAgentTool || tuiSignalingActive) &&
+    !isTerminalOutputFollowPaused;
+
 /// Whether terminal scroll policy state changed enough to require a rebuild.
 @visibleForTesting
 bool didTerminalScrollPolicyChange({
@@ -4828,6 +4842,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _resumeAttachOwnedTerminalFollowForLiveOutput() {
+    final connectionId = _connectionId;
+    final session = connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(connectionId);
+    if (!mounted ||
+        !shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
+          shouldFollowLiveOutput: _shouldFollowLiveOutput,
+          isAttachOwnedTerminal: _usesAttachOwnedAltBuffer,
+          hasForegroundAgentTool: _hasForegroundAgentToolCommand,
+          tuiSignalingActive:
+              session != null && _isOuterTuiSignalingActive(session),
+          isTerminalOutputFollowPaused: _isTerminalOutputFollowPaused,
+        )) {
+      return;
+    }
+
+    _followLiveOutput();
+    _syncTerminalLiveOutputAutoScroll();
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      revealLatestOutput: true,
+      ignoreFollowPauseForReveal: true,
+    );
+  }
+
   void _handleTerminalOutputForShellCompletion(String output) {
     if (!ref.read(shellCompletionsNotifierProvider)) {
       _hideShellCompletionPopup();
@@ -5932,7 +5972,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     });
     _shellStdoutSubscription = session.shellStdoutStream.listen(
-      _schedulePromptOutputImeResetCheck,
+      (data) {
+        _schedulePromptOutputImeResetCheck(data);
+        _resumeAttachOwnedTerminalFollowForLiveOutput();
+      },
       onError: (Object error, StackTrace stackTrace) {
         if (kDebugMode) {
           debugPrint('Terminal stdout stream error: $error');
