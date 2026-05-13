@@ -104,7 +104,7 @@ class TerminalSessionController {
       return;
     }
 
-    observedSession.removeMetadataListener(_onSessionMetadataChanged);
+    observedSession.removeMetadataListener(_handleSessionMetadataChanged);
     _observedSession = null;
   }
 
@@ -152,6 +152,9 @@ class TerminalSessionController {
   ) {
     final connectionId = _connectionId();
     if (connectionId == null) {
+      return SshConnectionState.disconnected;
+    }
+    if (_getSession(connectionId) == null) {
       return SshConnectionState.disconnected;
     }
     return states[connectionId] ?? SshConnectionState.disconnected;

@@ -5940,6 +5940,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionId == null) {
       return SshConnectionState.disconnected;
     }
+    if (ref.read(activeSessionsProvider.notifier).getSession(connectionId) ==
+        null) {
+      return SshConnectionState.disconnected;
+    }
     return ref.read(activeSessionsProvider)[connectionId] ??
         SshConnectionState.disconnected;
   }
@@ -7930,6 +7934,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopSharedClipboardSync();
     _hideShellCompletionPopup();
     _clearOwnedTerminalCallbacks();
+    _disposeTerminalPathVerificationSftp();
     _sessionController.clearObservedSession(session: session);
     _clearTmuxState();
     _detectedSensitiveKeyboardPrompt = false;
@@ -8011,6 +8016,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelTerminalThemeRefreshTimers();
     _clearTmuxState();
     _sessionController.clearObservedSession();
+    _disposeTerminalPathVerificationSftp();
     _suppressNextAutomaticReconnectConnectionId = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     unawaited(_doneSubscription?.cancel());
@@ -8046,6 +8052,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _connectionId = null;
     _clearAppThemeOverride();
     _sessionController.clearObservedSession();
+    _disposeTerminalPathVerificationSftp();
     _suppressNextAutomaticReconnectConnectionId = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     _connectionLostWhileBackgrounded = false;
@@ -9436,6 +9443,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final initialPath = rememberedPath ?? cwd;
       final shouldRestoreKeyboard = _temporarilyDismissTerminalKeyboard();
       try {
+        _disposeTerminalPathVerificationSftp();
         await context.pushNamed<String>(
           Routes.sftp,
           pathParameters: {'hostId': widget.hostId.toString()},
@@ -11903,6 +11911,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final remoteFileService = ref.read(remoteFileServiceProvider);
+    _disposeTerminalPathVerificationSftp();
     final sftp = await session.sftp();
     try {
       final homeDirectory = await remoteFileService.resolveInitialDirectory(
