@@ -2938,8 +2938,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .dy;
   }
 
-  Widget _terminalOverflowMenuLabel(String label) =>
-      Text(label, overflow: TextOverflow.ellipsis);
+  Widget _terminalOverflowMenuLabel(String label) => Text(
+    label,
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+    softWrap: false,
+  );
 
   Widget _terminalOverflowMenuItem({
     required IconData icon,
@@ -8489,7 +8493,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   action: 'disconnect',
                 ),
               ],
-              builder: (context, controller, child) => IconButton(
+              builder: (context, controller, _) => IconButton(
                 icon: const Icon(Icons.more_vert),
                 tooltip: MaterialLocalizations.of(context).showMenuTooltip,
                 onPressed: () {
