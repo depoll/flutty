@@ -621,6 +621,71 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
+    testWidgets('reopens SFTP when the directory channel goes stale', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final staleSftp = _MockSftpClient();
+      final freshSftp = _MockSftpClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      var sftpOpenAttempts = 0;
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async {
+        sftpOpenAttempts++;
+        return sftpOpenAttempts == 1 ? staleSftp : freshSftp;
+      });
+      when(() => staleSftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+      when(
+        () => staleSftp.listdir('/home/demo'),
+      ).thenThrow(SSHStateError('Connection closed'));
+      when(() => freshSftp.listdir('/home/demo')).thenAnswer(
+        (_) async => [
+          SftpName(
+            filename: 'notes.txt',
+            longname: 'notes.txt',
+            attr: SftpFileAttrs(mode: const SftpFileMode.value(1 << 15)),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+          ],
+          child: const MaterialApp(
+            home: SftpScreen(hostId: 1, connectionId: 7),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('notes.txt'), findsOneWidget);
+      expect(sftpOpenAttempts, 2);
+      verify(staleSftp.close).called(1);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
     testWidgets('video preview deletes cached files when closed', (
       tester,
     ) async {

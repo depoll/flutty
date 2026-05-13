@@ -206,6 +206,13 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
     state = {...state}..remove(connectionId);
   }
 
+  void dropSessionButKeepConnectedState(int connectionId) {
+    if (!disconnectedConnectionIds.contains(connectionId)) {
+      disconnectedConnectionIds.add(connectionId);
+    }
+    state = {...state, connectionId: SshConnectionState.connected};
+  }
+
   @override
   Future<void> syncBackgroundStatus() async {}
 }
@@ -1116,6 +1123,59 @@ void main() {
         expect(activeSessions.disconnectedConnectionIds, <int>[
           session.connectionId,
         ]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'automatically reconnects when the session lookup is stale',
+      (tester) async {
+        final reconnectClient = _MockSshClient();
+        final reconnectShell = _MockShellChannel();
+        final reconnectDoneCompleter = Completer<void>();
+        final reconnectStdoutController =
+            StreamController<Uint8List>.broadcast();
+        addTearDown(reconnectStdoutController.close);
+
+        when(
+          () => reconnectClient.shell(pty: any(named: 'pty')),
+        ).thenAnswer((_) async => reconnectShell);
+        when(
+          () => reconnectShell.stdout,
+        ).thenAnswer((_) => reconnectStdoutController.stream);
+        when(
+          () => reconnectShell.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(
+          () => reconnectShell.done,
+        ).thenAnswer((_) => reconnectDoneCompleter.future);
+        when(() => reconnectShell.write(any())).thenAnswer((_) {});
+
+        final reconnectSession = SshSession(
+          connectionId: 8,
+          hostId: host.id,
+          client: reconnectClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        final activeSessions = _TestActiveSessionsNotifier(
+          session,
+          reconnectSession: reconnectSession,
+        )..disconnectedConnectionIds.add(reconnectSession.connectionId);
+
+        await pumpScreen(tester, activeSessions: activeSessions);
+        verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
+
+        activeSessions.dropSessionButKeepConnectedState(session.connectionId);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(activeSessions.connectForceNewValues, <bool>[true]);
+        verify(() => reconnectClient.shell(pty: any(named: 'pty'))).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
