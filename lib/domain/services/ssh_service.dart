@@ -1907,6 +1907,10 @@ class SshSession {
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
+  static const _sftpOpenRetryDelays = [
+    Duration(milliseconds: 250),
+    Duration(milliseconds: 750),
+  ];
   static const _previewLineCount = 3;
   static const _previewMaxChars = 220;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
@@ -2408,27 +2412,67 @@ class SshSession {
       'open_start',
       fields: {'connectionId': connectionId, 'hostId': hostId},
     );
-    try {
-      final sftpClient = await client.sftp();
-      DiagnosticsLogService.instance.info(
-        'ssh.sftp',
-        'open_success',
-        fields: {'connectionId': connectionId, 'hostId': hostId},
-      );
-      return sftpClient;
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.error(
-        'ssh.sftp',
-        'open_failed',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          ..._diagnosticSshExecErrorFields(error),
-        },
-      );
-      _reportConnectionHealthFailureIfClosed(error, operation: 'sftp');
-      rethrow;
+
+    for (var attempt = 0; ; attempt += 1) {
+      try {
+        final sftpClient = await client.sftp();
+        DiagnosticsLogService.instance.info(
+          'ssh.sftp',
+          'open_success',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'attempt': attempt + 1,
+          },
+        );
+        return sftpClient;
+      } on Object catch (error) {
+        final retryDelay = _sftpOpenRetryDelay(error, attempt);
+        if (retryDelay != null) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.sftp',
+            'open_retry',
+            fields: {
+              'connectionId': connectionId,
+              'hostId': hostId,
+              'attempt': attempt + 1,
+              'delayMs': retryDelay.inMilliseconds,
+              ..._diagnosticSshExecErrorFields(error),
+            },
+          );
+          await Future<void>.delayed(retryDelay);
+          continue;
+        }
+
+        DiagnosticsLogService.instance.error(
+          'ssh.sftp',
+          'open_failed',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'attempt': attempt + 1,
+            ..._diagnosticSshExecErrorFields(error),
+          },
+        );
+        _reportConnectionHealthFailureIfClosed(error, operation: 'sftp');
+        rethrow;
+      }
     }
+  }
+
+  Duration? _sftpOpenRetryDelay(Object error, int attempt) {
+    if (attempt >= _sftpOpenRetryDelays.length ||
+        !_isTransientSftpOpenError(error)) {
+      return null;
+    }
+    return _sftpOpenRetryDelays[attempt];
+  }
+
+  bool _isTransientSftpOpenError(Object error) {
+    if (error is! SSHChannelOpenError) {
+      return false;
+    }
+    return error.code == 2 || error.code == 4;
   }
 
   /// Start a local port forward tunnel.
