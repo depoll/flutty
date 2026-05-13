@@ -2848,6 +2848,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
   int? _suppressNextAutomaticReconnectConnectionId;
+  int? _suppressAutoConnectAfterStartupConnectionId;
+  int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
 
@@ -5749,8 +5751,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
+      final suppressAutoConnect =
+          _suppressAutoConnectAfterStartupConnectionId == session.connectionId;
+      if (suppressAutoConnect) {
+        _suppressAutoConnectAfterStartupConnectionId = null;
+      }
       if (startupCommand == null) {
-        await _runAutoConnectCommand(session);
+        if (suppressAutoConnect) {
+          DiagnosticsLogService.instance.info(
+            'terminal',
+            'auto_connect_suppressed',
+            fields: {'connectionId': session.connectionId},
+          );
+        } else {
+          await _runAutoConnectCommand(session);
+        }
       } else {
         DiagnosticsLogService.instance.info(
           'terminal.agent_launch',
@@ -5767,7 +5782,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // Detect tmux after the auto-connect command has had time to start.
       // A small delay ensures tmux has initialized if the auto-connect
       // command launches a tmux session.
-      unawaited(_detectTmux(session));
+      final suppressRemoteMuxDetection =
+          _suppressRemoteMuxDetectionConnectionId == session.connectionId;
+      if (suppressRemoteMuxDetection) {
+        _suppressRemoteMuxDetectionConnectionId = null;
+      } else {
+        unawaited(_detectTmux(session));
+      }
     } on Object catch (e) {
       DiagnosticsLogService.instance.error(
         'terminal',
@@ -6264,10 +6285,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         host,
         tmuxSession,
       );
-      if (command != null && command.backend == RemoteMuxBackend.monkeyMux) {
+      if (command != null) {
         _applyPreparedRemoteMuxCommand(session, command);
         return command;
       }
+      _suppressAutoConnectAfterStartupConnectionId = session.connectionId;
       return null;
     }
 
@@ -6303,6 +6325,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       host,
       sessionName,
     );
+    if (attachCommand == null) {
+      return null;
+    }
     final review = assessAutoConnectCommandExecution(
       attachCommand.command,
       importedNeedsReview: host.autoConnectRequiresConfirmation,
@@ -6328,7 +6353,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<({String command, RemoteMuxBackend backend})>
+  Future<({String command, RemoteMuxBackend backend})?>
   _buildRemoteMuxAttachCommand(
     SshSession session,
     Host host,
@@ -6342,6 +6367,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final installation = await _monkeyMuxInstallerService.ensureInstalled(
           session,
           priority: SshExecPriority.normal,
+          confirmInstall: _confirmMonkeyMuxInstall,
         );
         final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
           session,
@@ -6370,6 +6396,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
+      } on MonkeyMuxInstallDeclinedException {
+        _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'attach_declined',
+          fields: {
+            'connectionId': session.connectionId,
+            'configuredBackend': configuredBackend.storageValue,
+          },
+        );
+        return null;
       } on Exception catch (error) {
         DiagnosticsLogService.instance.warning(
           'monkeymux.install',
@@ -6441,6 +6478,63 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return MonkeyMuxServerUpdatePolicy.always;
   }
 
+  Future<bool> _confirmMonkeyMuxInstall(MonkeyMuxInstallRequest request) async {
+    if (!mounted) {
+      return false;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (context) => AlertDialog(
+        title: const Text('Install MonkeyMux helper?'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'MonkeySSH needs to upload its bundled MonkeyMux helper before '
+                'using MonkeyMux on this connected host.',
+              ),
+              const SizedBox(height: 12),
+              Text('Version: ${request.version}'),
+              Text('Platform: ${request.platform}'),
+              Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
+              const SizedBox(height: 12),
+              const Text(
+                'It will be installed under ~/.monkeyssh/bin/monkeymux on the '
+                'connected host.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Use tmux'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Install'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  String _formatMonkeyMuxInstallSize(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    }
+    final kibibytes = bytes / 1024;
+    if (kibibytes < 1024) {
+      return '${kibibytes.toStringAsFixed(kibibytes < 10 ? 1 : 0)} KB';
+    }
+    final mebibytes = kibibytes / 1024;
+    return '${mebibytes.toStringAsFixed(mebibytes < 10 ? 1 : 0)} MB';
+  }
+
   Future<void> _runMonkeyMuxAgentLaunchCommand(
     SshSession session,
     Host host,
@@ -6498,6 +6592,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
+        confirmInstall: _confirmMonkeyMuxInstall,
       );
       DiagnosticsLogService.instance.info(
         'terminal.agent_launch',
@@ -7782,6 +7877,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         host,
         sessionName,
       );
+      if (attachCommand == null) {
+        return;
+      }
       _activeMuxBackend = attachCommand.backend;
       reattachCommand = attachCommand.command;
     }
