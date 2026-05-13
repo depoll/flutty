@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.46"
+	monkeyMuxVersion         = "0.1.47"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2560,7 +2560,7 @@ func (s *muxServer) activeRedrawWindowLocked() *muxWindow {
 }
 
 func (s *muxServer) redrawWindowForWindowLocked(window *muxWindow) *muxWindow {
-	if window == nil || window.closed || !window.replayNeedsRedrawLocked() {
+	if window == nil || window.closed || !window.replayNeedsProcessRedrawLocked() {
 		return nil
 	}
 	return window
@@ -2620,8 +2620,18 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	return replay
 }
 
-// replayNeedsRedrawLocked reports whether the active replay should clear the
-// outer terminal's screen and scrollback before redrawing.
+// replayNeedsProcessRedrawLocked reports whether the child process should be
+// nudged to redraw after replay. Codex gets this treatment even though it stays
+// in the main buffer so the outer terminal retains scrollback.
+func (w *muxWindow) replayNeedsProcessRedrawLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.agentToolLocked() == "codex" || w.replayNeedsRedrawLocked()
+}
+
+// replayNeedsRedrawLocked reports whether replay should enter the attach-owned
+// alternate buffer, skip raw history, and wait for a child redraw.
 //
 // Alt-buffer agents cursor-address a virtual screen and would corrupt
 // xterm.dart's circular buffer if their raw history were replayed. Replay those
@@ -2630,14 +2640,12 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 //
 // Codex's default chat view does not always enter the alternate buffer itself,
 // but it still repaints a TUI viewport with cursor-addressed synchronized
-// frames. Treat it like tmux does: keep the attached client on the clear+redraw
-// path instead of replaying stale main-buffer history.
+// frames. It remains on the main-buffer replay path for scrollback, but
+// [replayNeedsProcessRedrawLocked] still nudges it after replay so the visible
+// viewport is repainted like it is under tmux.
 func (w *muxWindow) replayNeedsRedrawLocked() bool {
 	if w == nil {
 		return false
-	}
-	if w.agentToolLocked() == "codex" {
-		return true
 	}
 	for _, mode := range []string{"47", "1047", "1049"} {
 		if w.privateModes[mode] {

@@ -814,11 +814,10 @@ func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
 	}
 }
 
-// TestCodexAgentUsesRedrawPathWithoutAltBuffer asserts that Codex stays on the
-// clear+redraw path even when its default chat view does not enter a child
-// alternate buffer. Codex repaints a cursor-addressed TUI viewport in the main
-// buffer, so replaying raw history can leave partially composed frames behind.
-func TestCodexAgentUsesRedrawPathWithoutAltBuffer(t *testing.T) {
+// TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw asserts that Codex
+// keeps main-buffer history replay for scrollback while also getting a redraw
+// nudge so its cursor-addressed viewport is repainted after replay.
+func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	server := newMuxServer("test")
 	codexWindow := &muxWindow{
 		id:           "@1",
@@ -834,18 +833,18 @@ func TestCodexAgentUsesRedrawPathWithoutAltBuffer(t *testing.T) {
 	replay := string(server.activeReplayLocked())
 
 	for _, marker := range []string{"first turn", "second turn", "third turn", "> prompt"} {
-		if strings.Contains(replay, marker) {
-			t.Fatalf("replay = %q, should not include stale Codex history marker %q", replay, marker)
+		if !strings.Contains(replay, marker) {
+			t.Fatalf("replay = %q, want Codex history marker %q for scrollback", replay, marker)
 		}
 	}
 	if !strings.Contains(replay, "\x1b[3J") {
-		t.Fatalf("replay = %q, should clear stale local scrollback before Codex redraw", replay)
+		t.Fatalf("replay = %q, should clear stale local scrollback before Codex history replay", replay)
 	}
-	if strings.Contains(replay, attachSessionExitSequence) {
-		t.Fatalf("replay = %q, should not leave attach-owned alt buffer for Codex", replay)
+	if !strings.Contains(replay, attachSessionExitSequence) {
+		t.Fatalf("replay = %q, should leave attach-owned alt buffer for Codex main-buffer scrollback", replay)
 	}
-	if !strings.Contains(replay, attachSessionEnterSequence) {
-		t.Fatalf("replay = %q, should enter attach-owned alt buffer for Codex redraw", replay)
+	if strings.Contains(replay, attachSessionEnterSequence) {
+		t.Fatalf("replay = %q, should not force Codex into attach-owned alt buffer", replay)
 	}
 	if server.activeRedrawWindowLocked() != codexWindow {
 		t.Fatal("Codex window should be nudged to redraw after replay")
