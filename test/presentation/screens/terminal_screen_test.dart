@@ -72,6 +72,45 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
 class _MockMonkeyMuxInstallerService extends Mock
     implements MonkeyMuxInstallerService {}
 
+class _PromptingMonkeyMuxInstallerService implements MonkeyMuxInstallerService {
+  _PromptingMonkeyMuxInstallerService({required this.request});
+
+  final MonkeyMuxInstallRequest request;
+  final acceptedConfirmations = <bool>[];
+  int ensureInstalledCalls = 0;
+
+  @override
+  Future<MonkeyMuxInstallation> ensureInstalled(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.low,
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  }) async {
+    ensureInstalledCalls++;
+    if (confirmInstall == null) {
+      throw const MonkeyMuxInstallConfirmationRequiredException();
+    }
+    final accepted = await confirmInstall(request);
+    acceptedConfirmations.add(accepted);
+    if (!accepted) {
+      throw const MonkeyMuxInstallDeclinedException();
+    }
+    return MonkeyMuxInstallation(
+      executablePath: '/tmp/monkeymux',
+      platform: request.platform,
+      version: request.version,
+    );
+  }
+
+  @override
+  void clearCache(int connectionId) {}
+
+  @override
+  Future<String> probePlatform(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.low,
+  }) async => request.platform;
+}
+
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
 
@@ -4353,6 +4392,7 @@ void main() {
           () => monkeyMuxInstallerService.ensureInstalled(
             session,
             priority: any(named: 'priority'),
+            confirmInstall: any(named: 'confirmInstall'),
           ),
         ).thenAnswer(
           (_) async => const MonkeyMuxInstallation(
@@ -4441,6 +4481,7 @@ void main() {
           () => monkeyMuxInstallerService.ensureInstalled(
             session,
             priority: SshExecPriority.normal,
+            confirmInstall: any(named: 'confirmInstall'),
           ),
         ).called(1);
         verifyNever(
@@ -4455,9 +4496,15 @@ void main() {
     );
 
     testWidgets(
-      'opens structured MonkeyMux attach as the foreground shell command',
+      'prompts before installing MonkeyMux for foreground attach',
       (tester) async {
-        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
+          request: const MonkeyMuxInstallRequest(
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+            size: 1536,
+          ),
+        );
         final monkeyMuxService = _MockMonkeyMuxService();
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -4475,18 +4522,6 @@ void main() {
           id: host.id,
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
-        );
-        when(
-          () => monkeyMuxInstallerService.ensureInstalled(
-            session,
-            priority: any(named: 'priority'),
-          ),
-        ).thenAnswer(
-          (_) async => const MonkeyMuxInstallation(
-            executablePath: '/tmp/monkeymux',
-            platform: 'darwin-arm64',
-            version: '0.1.14',
-          ),
         );
         final executedCommands = <String>[];
         when(
@@ -4545,6 +4580,15 @@ void main() {
 
         await tester.pump();
         await tester.pump();
+
+        expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
+        expect(find.text('Version: 0.1.14'), findsOneWidget);
+        expect(find.text('Platform: darwin-arm64'), findsOneWidget);
+        expect(find.text('Size: 1.5 KB'), findsOneWidget);
+        expect(executedCommands, isEmpty);
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Install'));
+        await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
         expect(shellWrites, isEmpty);
@@ -4558,6 +4602,144 @@ void main() {
         expect(session.remoteMuxSessionName, sessionName);
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
+        expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
+        expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'falls back to tmux when MonkeyMux install prompt is declined',
+      (tester) async {
+        final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
+          request: const MonkeyMuxInstallRequest(
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+            size: 1536,
+          ),
+        );
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => sessionName);
+        when(
+          () => tmuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer(
+          (_) async => const <TmuxWindow>[
+            TmuxWindow(index: 0, name: 'shell', isActive: true),
+          ],
+        );
+        when(
+          () => tmuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
+        expect(executedCommands, isEmpty);
+
+        await tester.tap(find.widgetWithText(TextButton, 'Use tmux'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(
+          executedCommands.where((command) => command.contains('monkeymux')),
+          isEmpty,
+        );
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        final launchedText = [...executedCommands, writtenShellText].join('\n');
+        expect(launchedText, contains('tmux'));
+        expect(launchedText, isNot(contains('monkeymux')));
+        expect(find.text('Install MonkeyMux helper?'), findsNothing);
+        expect(session.remoteMuxBackend, RemoteMuxBackend.tmux);
+        expect(session.remoteMuxSessionName, sessionName);
+        expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
+        expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[false]);
+        await tester.pump(const Duration(milliseconds: 200));
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
       },

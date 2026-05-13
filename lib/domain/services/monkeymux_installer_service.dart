@@ -132,6 +132,29 @@ class MonkeyMuxInstallation {
   final String version;
 }
 
+/// Details for a pending MonkeyMux helper install.
+class MonkeyMuxInstallRequest {
+  /// Creates pending MonkeyMux install details.
+  const MonkeyMuxInstallRequest({
+    required this.platform,
+    required this.version,
+    required this.size,
+  });
+
+  /// Remote platform key for the helper, for example `linux-amd64`.
+  final String platform;
+
+  /// MonkeyMux helper version that would be installed.
+  final String version;
+
+  /// Helper binary size in bytes.
+  final int size;
+}
+
+/// Confirms whether MonkeyMux may install its helper on the connected host.
+typedef MonkeyMuxInstallConfirmation =
+    Future<bool> Function(MonkeyMuxInstallRequest request);
+
 /// Error thrown when MonkeyMux cannot be installed or used.
 class MonkeyMuxInstallException implements Exception {
   /// Creates a MonkeyMux installation error.
@@ -142,6 +165,21 @@ class MonkeyMuxInstallException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// Error thrown when MonkeyMux needs app-level install confirmation.
+class MonkeyMuxInstallConfirmationRequiredException
+    extends MonkeyMuxInstallException {
+  /// Creates a confirmation-required install error.
+  const MonkeyMuxInstallConfirmationRequiredException()
+    : super('MonkeyMux install requires confirmation.');
+}
+
+/// Error thrown when the user declines a MonkeyMux helper install.
+class MonkeyMuxInstallDeclinedException extends MonkeyMuxInstallException {
+  /// Creates a declined install error.
+  const MonkeyMuxInstallDeclinedException()
+    : super('MonkeyMux install was canceled.');
 }
 
 /// Installs and verifies the bundled MonkeyMux helper on a remote host.
@@ -165,6 +203,7 @@ class MonkeyMuxInstallerService {
   Future<MonkeyMuxInstallation> ensureInstalled(
     SshSession session, {
     SshExecPriority priority = SshExecPriority.low,
+    MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     final connectionId = session.connectionId;
     final cachedInstallation = _installCache[connectionId];
@@ -190,7 +229,11 @@ class MonkeyMuxInstallerService {
       return existingRequest;
     }
 
-    final request = _ensureInstalled(session, priority: priority);
+    final request = _ensureInstalled(
+      session,
+      priority: priority,
+      confirmInstall: confirmInstall,
+    );
     _installRequests[connectionId] = request;
     request.then((installation) {
       if (identical(_installRequests[connectionId], request)) {
@@ -214,6 +257,7 @@ class MonkeyMuxInstallerService {
   Future<MonkeyMuxInstallation> _ensureInstalled(
     SshSession session, {
     required SshExecPriority priority,
+    required MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     final platform = await probePlatform(session, priority: priority);
     final manifest = await _manifestFuture;
@@ -258,6 +302,43 @@ class MonkeyMuxInstallerService {
           version: manifest.version,
         );
       }
+
+      final installRequest = MonkeyMuxInstallRequest(
+        platform: platform,
+        version: manifest.version,
+        size: entry.size,
+      );
+      if (confirmInstall == null) {
+        DiagnosticsLogService.instance.warning(
+          'monkeymux.install',
+          'confirmation_required',
+          fields: {'connectionId': session.connectionId, 'platform': platform},
+        );
+        throw const MonkeyMuxInstallConfirmationRequiredException();
+      }
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'confirmation_requested',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': platform,
+          'size': entry.size,
+        },
+      );
+      final confirmed = await confirmInstall(installRequest);
+      if (!confirmed) {
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'confirmation_declined',
+          fields: {'connectionId': session.connectionId, 'platform': platform},
+        );
+        throw const MonkeyMuxInstallDeclinedException();
+      }
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'confirmation_accepted',
+        fields: {'connectionId': session.connectionId, 'platform': platform},
+      );
 
       DiagnosticsLogService.instance.info(
         'monkeymux.install',
