@@ -532,6 +532,7 @@ class _SshSessionRuntime {
         terminal,
       );
       if (terminalData.isNotEmpty) {
+        _session._notifyBeforeTerminalWrite();
         terminal.write(terminalData);
         _respondToTerminalWindowControlQueries(terminalData, terminal);
       }

@@ -1285,6 +1285,29 @@ void main() {
       expect(terminalNotifications, 1);
     });
 
+    test('notifies before writing shell output to the terminal', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+      final events = <String>[];
+      void terminalListener() => events.add('terminal');
+      terminal.addListener(terminalListener);
+      addTearDown(() => terminal.removeListener(terminalListener));
+      final stdoutSubscription = session.shellStdoutStream.listen(
+        (_) => events.add('stdout'),
+      );
+      addTearDown(stdoutSubscription.cancel);
+      final terminalWillWriteSubscription = session.terminalWriteWillBeginStream
+          .listen((_) => events.add('before'));
+      addTearDown(terminalWillWriteSubscription.cancel);
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('hello')));
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(firstLineText(terminal), 'hello');
+      expect(events, ['before', 'terminal', 'stdout']);
+    });
+
     test(
       'coalesces DEC private mode changes instead of forcing flush',
       () async {

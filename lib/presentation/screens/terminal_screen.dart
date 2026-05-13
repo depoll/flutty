@@ -2670,6 +2670,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
   StreamSubscription<String>? _shellStdoutSubscription;
+  StreamSubscription<void>? _terminalWriteWillBeginSubscription;
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
@@ -4842,7 +4843,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _resumeAttachOwnedTerminalFollowForLiveOutput() {
+  void _resumeAttachOwnedTerminalFollowForLiveOutput({
+    bool jumpImmediately = false,
+  }) {
     final connectionId = _connectionId;
     final session = connectionId == null
         ? null
@@ -4861,11 +4864,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _followLiveOutput();
     _syncTerminalLiveOutputAutoScroll();
+    if (jumpImmediately) {
+      _jumpTerminalToBottomNow();
+    }
     _scheduleTerminalSizeRefresh(
       forceDisplayRefresh: true,
       revealLatestOutput: true,
       ignoreFollowPauseForReveal: true,
     );
+  }
+
+  void _jumpTerminalToBottomNow() {
+    if (!_terminalScrollController.hasClients) {
+      return;
+    }
+
+    final position = _terminalScrollController.position;
+    _terminalScrollController.jumpTo(position.maxScrollExtent);
   }
 
   void _handleTerminalOutputForShellCompletion(String output) {
@@ -5992,6 +6007,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
 
+    _terminalWriteWillBeginSubscription = session.terminalWriteWillBeginStream
+        .listen((_) {
+          _resumeAttachOwnedTerminalFollowForLiveOutput(jumpImmediately: true);
+        });
+
     void handleTerminalOutput(String data) {
       // On iOS/Android soft keyboards, Return sends a lone '\n' via
       // textInput(), but SSH expects '\r'. The proper
@@ -6073,6 +6093,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _terminalResizeHandler = null;
     _terminalWithOwnedCallbacks = null;
+    _terminalWriteWillBeginSubscription?.cancel();
+    _terminalWriteWillBeginSubscription = null;
   }
 
   void _scheduleTerminalSizeRefresh({

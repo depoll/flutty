@@ -2319,6 +2319,7 @@ class SshSession {
   final _metadataListeners = <VoidCallback>{};
   final _connectionHealthFailures =
       StreamController<_SshConnectionHealthFailure>.broadcast();
+  final _terminalWriteWillBegin = StreamController<void>.broadcast(sync: true);
   bool _connectionHealthFailureReported = false;
   String? _terminalPreview;
   String? _windowTitle;
@@ -2439,6 +2440,10 @@ class SshSession {
   /// Shell stdout as a broadcast stream for screen re-attachment.
   Stream<String> get shellStdoutStream => _runtime.shellStdoutStream;
 
+  /// Fires synchronously before shell output is written to the terminal.
+  Stream<void> get terminalWriteWillBeginStream =>
+      _terminalWriteWillBegin.stream;
+
   /// Shell stderr as a broadcast stream for screen re-attachment.
   Stream<String> get shellStderrStream => _runtime.shellStderrStream;
 
@@ -2448,6 +2453,14 @@ class SshSession {
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) =>
       _runtime.closeShell(waitForStreams: waitForStreams);
+
+  void _notifyBeforeTerminalWrite() {
+    if (_terminalWriteWillBegin.isClosed) {
+      return;
+    }
+
+    _terminalWriteWillBegin.add(null);
+  }
 
   void _resetShellRuntimeMetadata() {
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
@@ -3039,6 +3052,7 @@ class SshSession {
     await stopAllForwards();
     await closeShell();
     await _connectionHealthFailures.close();
+    await _terminalWriteWillBegin.close();
     client.close();
     for (final dependentClient in dependentClients) {
       dependentClient.close();
