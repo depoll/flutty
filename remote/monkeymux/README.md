@@ -29,11 +29,12 @@ buffer without letting per-window alternate-buffer state leak into the app
 terminal. Cursor-addressed agent TUIs that own an alternate buffer skip raw
 history replay and are asked to redraw like they are under tmux. Codex is
 special-cased because its default chat view uses the main buffer for scrollback:
-MonkeyMux replays its main-buffer history, then nudges Codex to repaint the
-visible viewport so stale partial frames do not remain. Replay strips old
-terminal response queries, such as device attributes, window reports, mode
-reports, and OSC color queries, so re-showing history does not synthesize new
-input into the live PTY.
+MonkeyMux replays its main-buffer history, then sends Codex a same-size WINCH
+repaint instead of a temporary PTY resize, so stale partial frames do
+not remain and Codex never paints against the wrong viewport width. Replay
+strips old terminal response queries, such as device attributes, window reports,
+mode reports, and OSC color queries, so re-showing history does not synthesize
+new input into the live PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also

@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.47"
+	monkeyMuxVersion         = "0.1.48"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -197,11 +197,43 @@ var nudgeForegroundResize = func(window *muxWindow, width int, height int) {
 	signalForegroundResize(foregroundProcessGroupForWindow(window))
 }
 
-func nudgeForegroundResizeIfNeeded(window *muxWindow, width int, height int) {
+var nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
 	if window == nil {
 		return
 	}
-	nudgeForegroundResize(window, width, height)
+	if width <= 0 || height <= 0 {
+		size, _, err := window.ptySize()
+		if err != nil {
+			return
+		}
+		width = int(size.Cols)
+		height = int(size.Rows)
+	}
+	if width > 0 && width <= 65535 && height > 0 && height <= 65535 {
+		_, _ = window.setPtySize(&pty.Winsize{
+			Rows: uint16(height),
+			Cols: uint16(width),
+		})
+	}
+	signalForegroundResize(foregroundProcessGroupForWindow(window))
+}
+
+type redrawNudgeRequest struct {
+	window   *muxWindow
+	width    int
+	height   int
+	sameSize bool
+}
+
+func runRedrawNudgeIfNeeded(request redrawNudgeRequest) {
+	if request.window == nil {
+		return
+	}
+	if request.sameSize {
+		nudgeForegroundSameSize(request.window, request.width, request.height)
+		return
+	}
+	nudgeForegroundResize(request.window, request.width, request.height)
 }
 
 func resizeNudgeSize(width int, height int) (int, int, bool) {
@@ -1731,9 +1763,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var replay []byte
 	var activeChanged bool
 	var shouldShutdown bool
-	var redrawWindow *muxWindow
-	var redrawWidth int
-	var redrawHeight int
+	var redrawNudge redrawNudgeRequest
 
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -1756,9 +1786,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
-				redrawWindow = s.redrawWindowForWindowLocked(candidate)
-				redrawWidth = s.width
-				redrawHeight = s.height
+				redrawNudge = s.redrawNudgeForWindowLocked(candidate)
 				activeChanged = true
 				break
 			}
@@ -1771,7 +1799,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		s.writeAttachLocked(attach, replay)
 	}
 	s.attachMu.Unlock()
-	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
+	runRedrawNudgeIfNeeded(redrawNudge)
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -1819,9 +1847,7 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
-	var redrawWindow *muxWindow
-	var redrawWidth int
-	var redrawHeight int
+	var redrawNudge redrawNudgeRequest
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -1833,12 +1859,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
-	redrawWindow = s.activeRedrawWindowLocked()
-	redrawWidth = s.width
-	redrawHeight = s.height
+	redrawNudge = s.activeRedrawNudgeLocked()
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
-	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
+	runRedrawNudgeIfNeeded(redrawNudge)
 	s.broadcastWindowList("active_window_changed")
 
 	defer func() {
@@ -2398,9 +2422,7 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
-	var redrawWindow *muxWindow
-	var redrawWidth int
-	var redrawHeight int
+	var redrawNudge redrawNudgeRequest
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -2414,13 +2436,11 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
-	redrawWindow = s.redrawWindowForWindowLocked(window)
-	redrawWidth = s.width
-	redrawHeight = s.height
+	redrawNudge = s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
 	s.writeAttachLocked(attach, replay)
 	s.attachMu.Unlock()
-	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
+	runRedrawNudgeIfNeeded(redrawNudge)
 	s.broadcastWindowList("active_window_changed")
 	return nil
 }
@@ -2430,9 +2450,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var replay []byte
 	var activeChanged bool
 	var shouldShutdown bool
-	var redrawWindow *muxWindow
-	var redrawWidth int
-	var redrawHeight int
+	var redrawNudge redrawNudgeRequest
 	var command *exec.Cmd
 	var snapshots []windowSnapshot
 
@@ -2458,9 +2476,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
-			redrawWindow = s.redrawWindowForWindowLocked(replacement)
-			redrawWidth = s.width
-			redrawHeight = s.height
+			redrawNudge = s.redrawNudgeForWindowLocked(replacement)
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -2477,7 +2493,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		s.writeAttachLocked(attach, replay)
 	}
 	s.attachMu.Unlock()
-	nudgeForegroundResizeIfNeeded(redrawWindow, redrawWidth, redrawHeight)
+	runRedrawNudgeIfNeeded(redrawNudge)
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -2544,26 +2560,37 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 
 func (s *muxServer) redrawActive() {
 	s.mu.Lock()
-	window := s.activeRedrawWindowLocked()
-	width := s.width
-	height := s.height
+	redrawNudge := s.activeRedrawNudgeLocked()
 	s.mu.Unlock()
-	nudgeForegroundResizeIfNeeded(window, width, height)
+	runRedrawNudgeIfNeeded(redrawNudge)
 }
 
 func (s *muxServer) activeRedrawWindowLocked() *muxWindow {
+	return s.activeRedrawNudgeLocked().window
+}
+
+func (s *muxServer) activeRedrawNudgeLocked() redrawNudgeRequest {
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil {
-		return nil
+		return redrawNudgeRequest{}
 	}
-	return s.redrawWindowForWindowLocked(window)
+	return s.redrawNudgeForWindowLocked(window)
 }
 
 func (s *muxServer) redrawWindowForWindowLocked(window *muxWindow) *muxWindow {
+	return s.redrawNudgeForWindowLocked(window).window
+}
+
+func (s *muxServer) redrawNudgeForWindowLocked(window *muxWindow) redrawNudgeRequest {
 	if window == nil || window.closed || !window.replayNeedsProcessRedrawLocked() {
-		return nil
+		return redrawNudgeRequest{}
 	}
-	return window
+	return redrawNudgeRequest{
+		window:   window,
+		width:    s.width,
+		height:   s.height,
+		sameSize: window.redrawNudgeShouldUseSameSizeLocked(),
+	}
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -2628,6 +2655,10 @@ func (w *muxWindow) replayNeedsProcessRedrawLocked() bool {
 		return false
 	}
 	return w.agentToolLocked() == "codex" || w.replayNeedsRedrawLocked()
+}
+
+func (w *muxWindow) redrawNudgeShouldUseSameSizeLocked() bool {
+	return w != nil && w.agentToolLocked() == "codex"
 }
 
 // replayNeedsRedrawLocked reports whether replay should enter the attach-owned

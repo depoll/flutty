@@ -314,7 +314,7 @@ func TestSelectWindowResizesPtyWithoutPostReplayNudge(t *testing.T) {
 	}
 }
 
-func TestSelectAgentWindowClearsReplayHistoryAndNudgesRedraw(t *testing.T) {
+func TestSelectCodexWindowClearsReplayHistoryAndSignalsRedraw(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	agentWindow := &muxWindow{
@@ -339,18 +339,32 @@ func TestSelectAgentWindowClearsReplayHistoryAndNudgesRedraw(t *testing.T) {
 	server.width = 48
 	server.height = 40
 
+	originalNudgeForegroundSameSize := nudgeForegroundSameSize
 	originalNudgeForegroundResize := nudgeForegroundResize
 	defer func() {
+		nudgeForegroundSameSize = originalNudgeForegroundSameSize
 		nudgeForegroundResize = originalNudgeForegroundResize
 	}()
 
-	var nudged []struct {
+	var sameSizeNudged []struct {
 		window *muxWindow
 		width  int
 		height int
 	}
+	var resizeNudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+		sameSizeNudged = append(sameSizeNudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window: window, width: width, height: height})
+	}
 	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
-		nudged = append(nudged, struct {
+		resizeNudged = append(resizeNudged, struct {
 			window *muxWindow
 			width  int
 			height int
@@ -369,13 +383,16 @@ func TestSelectAgentWindowClearsReplayHistoryAndNudgesRedraw(t *testing.T) {
 	if strings.Contains(attach.String(), "stale codex partial frame") {
 		t.Fatalf("agent replay included stale history: %q", attach.String())
 	}
-	wantNudged := []struct {
+	wantSameSizeNudged := []struct {
 		window *muxWindow
 		width  int
 		height int
 	}{{window: agentWindow, width: 48, height: 40}}
-	if !reflect.DeepEqual(nudged, wantNudged) {
-		t.Fatalf("nudged windows = %#v, want %#v", nudged, wantNudged)
+	if !reflect.DeepEqual(sameSizeNudged, wantSameSizeNudged) {
+		t.Fatalf("same-size nudged windows = %#v, want %#v", sameSizeNudged, wantSameSizeNudged)
+	}
+	if len(resizeNudged) != 0 {
+		t.Fatalf("resize nudged windows = %#v, want none", resizeNudged)
 	}
 }
 
@@ -496,6 +513,49 @@ func TestNudgeForegroundResizeSkipsRestoreAfterWindowClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(nudgeRestoreDelay + 25*time.Millisecond)
+}
+
+func TestNudgeForegroundSameSizeKeepsPtyGeometry(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := &muxWindow{pty: slave}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = window.closePty()
+	})
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 40, Cols: 48}); err != nil {
+		t.Fatal(err)
+	}
+
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	originalSignalForegroundResize := signalForegroundResize
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+		signalForegroundResize = originalSignalForegroundResize
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(window *muxWindow) int {
+		return 4242
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	nudgeForegroundSameSize(window, 48, 40)
+
+	size, err := pty.GetsizeFull(slave)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size.Cols != 48 || size.Rows != 40 {
+		t.Fatalf("pty size = %dx%d, want unchanged 48x40", size.Cols, size.Rows)
+	}
+	if !reflect.DeepEqual(signaled, []int{4242}) {
+		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
+	}
 }
 
 func TestResizeForwarderStateSkipsUnchangedSizes(t *testing.T) {
@@ -848,6 +908,13 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	}
 	if server.activeRedrawWindowLocked() != codexWindow {
 		t.Fatal("Codex window should be nudged to redraw after replay")
+	}
+	redrawNudge := server.activeRedrawNudgeLocked()
+	if redrawNudge.window != codexWindow {
+		t.Fatalf("Codex redraw nudge window = %#v, want Codex window", redrawNudge.window)
+	}
+	if !redrawNudge.sameSize {
+		t.Fatal("Codex redraw nudge should use same-size WINCH instead of a transient PTY resize")
 	}
 }
 
