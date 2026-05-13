@@ -72,6 +72,45 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
 class _MockMonkeyMuxInstallerService extends Mock
     implements MonkeyMuxInstallerService {}
 
+class _PromptingMonkeyMuxInstallerService implements MonkeyMuxInstallerService {
+  _PromptingMonkeyMuxInstallerService({required this.request});
+
+  final MonkeyMuxInstallRequest request;
+  final acceptedConfirmations = <bool>[];
+  int ensureInstalledCalls = 0;
+
+  @override
+  Future<MonkeyMuxInstallation> ensureInstalled(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.low,
+    MonkeyMuxInstallConfirmation? confirmInstall,
+  }) async {
+    ensureInstalledCalls++;
+    if (confirmInstall == null) {
+      throw const MonkeyMuxInstallConfirmationRequiredException();
+    }
+    final accepted = await confirmInstall(request);
+    acceptedConfirmations.add(accepted);
+    if (!accepted) {
+      throw const MonkeyMuxInstallDeclinedException();
+    }
+    return MonkeyMuxInstallation(
+      executablePath: '/tmp/monkeymux',
+      platform: request.platform,
+      version: request.version,
+    );
+  }
+
+  @override
+  void clearCache(int connectionId) {}
+
+  @override
+  Future<String> probePlatform(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.low,
+  }) async => request.platform;
+}
+
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
 
@@ -204,6 +243,13 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
       disconnectedConnectionIds.add(connectionId);
     }
     state = {...state}..remove(connectionId);
+  }
+
+  void dropSessionButKeepConnectedState(int connectionId) {
+    if (!disconnectedConnectionIds.contains(connectionId)) {
+      disconnectedConnectionIds.add(connectionId);
+    }
+    state = {...state, connectionId: SshConnectionState.connected};
   }
 
   @override
@@ -1179,6 +1225,59 @@ void main() {
         expect(activeSessions.disconnectedConnectionIds, <int>[
           session.connectionId,
         ]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'automatically reconnects when the session lookup is stale',
+      (tester) async {
+        final reconnectClient = _MockSshClient();
+        final reconnectShell = _MockShellChannel();
+        final reconnectDoneCompleter = Completer<void>();
+        final reconnectStdoutController =
+            StreamController<Uint8List>.broadcast();
+        addTearDown(reconnectStdoutController.close);
+
+        when(
+          () => reconnectClient.shell(pty: any(named: 'pty')),
+        ).thenAnswer((_) async => reconnectShell);
+        when(
+          () => reconnectShell.stdout,
+        ).thenAnswer((_) => reconnectStdoutController.stream);
+        when(
+          () => reconnectShell.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(
+          () => reconnectShell.done,
+        ).thenAnswer((_) => reconnectDoneCompleter.future);
+        when(() => reconnectShell.write(any())).thenAnswer((_) {});
+
+        final reconnectSession = SshSession(
+          connectionId: 8,
+          hostId: host.id,
+          client: reconnectClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        final activeSessions = _TestActiveSessionsNotifier(
+          session,
+          reconnectSession: reconnectSession,
+        )..disconnectedConnectionIds.add(reconnectSession.connectionId);
+
+        await pumpScreen(tester, activeSessions: activeSessions);
+        verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
+
+        activeSessions.dropSessionButKeepConnectedState(session.connectionId);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(activeSessions.connectForceNewValues, <bool>[true]);
+        verify(() => reconnectClient.shell(pty: any(named: 'pty'))).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -4544,6 +4643,7 @@ void main() {
           () => monkeyMuxInstallerService.ensureInstalled(
             session,
             priority: any(named: 'priority'),
+            confirmInstall: any(named: 'confirmInstall'),
           ),
         ).thenAnswer(
           (_) async => const MonkeyMuxInstallation(
@@ -4632,6 +4732,7 @@ void main() {
           () => monkeyMuxInstallerService.ensureInstalled(
             session,
             priority: SshExecPriority.normal,
+            confirmInstall: any(named: 'confirmInstall'),
           ),
         ).called(1);
         verifyNever(
@@ -4646,9 +4747,15 @@ void main() {
     );
 
     testWidgets(
-      'opens structured MonkeyMux attach as the foreground shell command',
+      'prompts before installing MonkeyMux for foreground attach',
       (tester) async {
-        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
+          request: const MonkeyMuxInstallRequest(
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+            size: 1536,
+          ),
+        );
         final monkeyMuxService = _MockMonkeyMuxService();
         final tmuxService = _MockTmuxService();
         const sessionName = 'work';
@@ -4666,18 +4773,6 @@ void main() {
           id: host.id,
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
-        );
-        when(
-          () => monkeyMuxInstallerService.ensureInstalled(
-            session,
-            priority: any(named: 'priority'),
-          ),
-        ).thenAnswer(
-          (_) async => const MonkeyMuxInstallation(
-            executablePath: '/tmp/monkeymux',
-            platform: 'darwin-arm64',
-            version: '0.1.14',
-          ),
         );
         final executedCommands = <String>[];
         when(
@@ -4736,6 +4831,15 @@ void main() {
 
         await tester.pump();
         await tester.pump();
+
+        expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
+        expect(find.text('Version: 0.1.14'), findsOneWidget);
+        expect(find.text('Platform: darwin-arm64'), findsOneWidget);
+        expect(find.text('Size: 1.5 KB'), findsOneWidget);
+        expect(executedCommands, isEmpty);
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Install'));
+        await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
         expect(shellWrites, isEmpty);
@@ -4749,6 +4853,102 @@ void main() {
         expect(session.remoteMuxSessionName, sessionName);
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
+        expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
+        expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'opens a regular terminal when MonkeyMux install prompt is declined',
+      (tester) async {
+        final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
+          request: const MonkeyMuxInstallRequest(
+            platform: 'darwin-arm64',
+            version: '0.1.14',
+            size: 1536,
+          ),
+        );
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
+        expect(executedCommands, isEmpty);
+
+        await tester.tap(find.widgetWithText(TextButton, 'Use tmux'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(executedCommands, isEmpty);
+        expect(shellWrites, isEmpty);
+        expect(find.text('Install MonkeyMux helper?'), findsNothing);
+        expect(session.remoteMuxBackend, isNull);
+        expect(session.remoteMuxSessionName, isNull);
+        expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
+        expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[false]);
+        verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
+        verifyNever(() => sshClient.execute(any(), pty: any(named: 'pty')));
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
       },

@@ -102,6 +102,36 @@ class _MutableActiveSessionsNotifier extends ActiveSessionsNotifier {
   List<ActiveConnection> getActiveConnections() =>
       _connections.values.toList(growable: false);
 
+  @override
+  void updateConnectionSessionTitle(int connectionId, String? sessionTitle) {
+    final existing = _connections[connectionId];
+    if (existing == null) return;
+    final normalizedTitle = sessionTitle?.trim();
+    final nextSessionTitle = normalizedTitle == null || normalizedTitle.isEmpty
+        ? null
+        : normalizedTitle;
+    if (existing.sessionTitle == nextSessionTitle) return;
+    _connections[connectionId] = ActiveConnection(
+      connectionId: existing.connectionId,
+      hostId: existing.hostId,
+      state: existing.state,
+      createdAt: existing.createdAt,
+      config: existing.config,
+      preview: existing.preview,
+      sessionTitle: nextSessionTitle,
+      windowTitle: existing.windowTitle,
+      iconName: existing.iconName,
+      workingDirectory: existing.workingDirectory,
+      shellStatus: existing.shellStatus,
+      lastExitCode: existing.lastExitCode,
+      remoteMuxBackend: existing.remoteMuxBackend,
+      remoteMuxSessionName: existing.remoteMuxSessionName,
+      terminalThemeLightId: existing.terminalThemeLightId,
+      terminalThemeDarkId: existing.terminalThemeDarkId,
+    );
+    state = {...state};
+  }
+
   void setActiveConnections(List<ActiveConnection> connections) {
     _connections
       ..clear()
@@ -210,6 +240,10 @@ ActiveConnection _buildActiveConnection({
   required int connectionId,
   required int hostId,
   SshConnectionState state = SshConnectionState.connected,
+  String? preview,
+  String? sessionTitle,
+  String? windowTitle,
+  String? iconName,
   RemoteMuxBackend? remoteMuxBackend,
   String? remoteMuxSessionName,
 }) => ActiveConnection(
@@ -222,6 +256,10 @@ ActiveConnection _buildActiveConnection({
     port: 22,
     username: 'root',
   ),
+  preview: preview,
+  sessionTitle: sessionTitle,
+  windowTitle: windowTitle,
+  iconName: iconName,
   remoteMuxBackend: remoteMuxBackend,
   remoteMuxSessionName: remoteMuxSessionName,
 );
@@ -616,6 +654,80 @@ void main() {
         ),
       ).called(greaterThanOrEqualTo(1));
       verifyNever(() => tmuxService.listWindows(session, any()));
+    },
+  );
+
+  testWidgets(
+    'connection preview prefers active agent session title from mux',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final tmuxService = _MockTmuxService();
+      final sshClient = _MockSshClient();
+      const sessionName = 'work';
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'alpha.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      );
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            preview: 'ready',
+            windowTitle: 'Designing app prompt',
+            iconName: 'Designing app prompt',
+          ),
+        ],
+        initialSessions: [session],
+      );
+
+      when(
+        () => tmuxService.watchWindowChanges(session, sessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(() => tmuxService.listWindows(session, sessionName)).thenAnswer(
+        (_) async => const <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            name: 'codex',
+            isActive: true,
+            agentSessionTitle: 'Implement onboarding',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(
+                  id: 1,
+                  label: 'Alpha',
+                  sortOrder: 0,
+                  tmuxSessionName: sessionName,
+                ),
+              ]),
+            ),
+            tmuxServiceProvider.overrideWithValue(tmuxService),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('Connections').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Active: Implement onboarding'), findsOneWidget);
+      expect(find.text('Active: Designing app prompt'), findsNothing);
     },
   );
 

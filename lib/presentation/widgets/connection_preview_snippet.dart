@@ -36,6 +36,20 @@ String fallbackConnectionPreviewStatus(SshConnectionState state) =>
       _ => 'Waiting for terminal output…',
     };
 
+String? _trimmedNonEmpty(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
+}
+
+String? _connectionActivityTitle({
+  required String? sessionTitle,
+  required String? windowTitle,
+  required String? iconName,
+}) =>
+    _trimmedNonEmpty(sessionTitle) ??
+    _trimmedNonEmpty(windowTitle) ??
+    _trimmedNonEmpty(iconName);
+
 /// Builds a stacked preview entry for a connection.
 ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required int connectionId,
@@ -44,6 +58,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required TerminalThemeSettings themeSettings,
   required Iterable<TerminalThemeData> availableThemes,
   String? preview,
+  String? sessionTitle,
   String? windowTitle,
   String? iconName,
   Uri? workingDirectory,
@@ -54,14 +69,14 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   String? connectionLightThemeId,
   String? connectionDarkThemeId,
 }) {
-  final resolvedWindowTitle = windowTitle?.trim();
-  final resolvedIconName = iconName?.trim();
+  final activityTitle = _connectionActivityTitle(
+    sessionTitle: sessionTitle,
+    windowTitle: windowTitle,
+    iconName: iconName,
+  );
   final titleSegments = <String>['Connection #$connectionId'];
-  if ((resolvedIconName ?? '').isNotEmpty) {
-    titleSegments.add(resolvedIconName!);
-  }
-  if ((resolvedWindowTitle ?? '').isNotEmpty) {
-    titleSegments.add(resolvedWindowTitle!);
+  if (activityTitle != null) {
+    titleSegments.add(activityTitle);
   }
   final resolvedPreview = preview?.trim();
   final workingDirectoryLabel = formatTerminalWorkingDirectoryLabel(
@@ -105,6 +120,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   const ConnectionPreviewSnippet({
     required this.endpoint,
     this.preview,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -123,10 +139,14 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   /// Latest terminal preview text, when available.
   final String? preview;
 
+  /// Active coding-agent session title, when available.
+  final String? sessionTitle;
+
   /// Latest remote window title, when available.
   final String? windowTitle;
 
-  /// Latest remote icon name, when available.
+  /// Latest remote icon name, when available. Used as a fallback when the
+  /// window title is unavailable.
   final String? iconName;
 
   /// Latest working-directory URI, when available.
@@ -154,8 +174,11 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final previewText = preview?.trim();
-    final resolvedWindowTitle = windowTitle?.trim();
-    final resolvedIconName = iconName?.trim();
+    final activityTitle = _connectionActivityTitle(
+      sessionTitle: sessionTitle,
+      windowTitle: windowTitle,
+      iconName: iconName,
+    );
     final workingDirectoryLabel = formatTerminalWorkingDirectoryLabel(
       workingDirectory,
     );
@@ -187,22 +210,10 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (showEndpoint) Text(endpoint, style: endpointStyle),
-        if (resolvedIconName != null && resolvedIconName.isNotEmpty) ...[
+        if (activityTitle != null) ...[
           if (showEndpoint) const SizedBox(height: 2),
           Text(
-            resolvedIconName,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-        if (resolvedWindowTitle != null && resolvedWindowTitle.isNotEmpty) ...[
-          if (showEndpoint || (resolvedIconName?.isNotEmpty ?? false))
-            const SizedBox(height: 2),
-          Text(
-            resolvedWindowTitle,
+            'Active: $activityTitle',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.labelSmall?.copyWith(
@@ -213,10 +224,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
         ],
         if ((workingDirectoryLabel?.isNotEmpty ?? false) ||
             (shellStatusLabel?.isNotEmpty ?? false)) ...[
-          if (showEndpoint ||
-              (resolvedIconName?.isNotEmpty ?? false) ||
-              (resolvedWindowTitle?.isNotEmpty ?? false))
-            const SizedBox(height: 2),
+          if (showEndpoint || activityTitle != null) const SizedBox(height: 2),
           Text(
             [
               if ((workingDirectoryLabel ?? '').isNotEmpty)
@@ -232,8 +240,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
         ],
         if (previewText != null && previewText.isNotEmpty) ...[
           if (showEndpoint ||
-              (resolvedIconName?.isNotEmpty ?? false) ||
-              (resolvedWindowTitle?.isNotEmpty ?? false) ||
+              activityTitle != null ||
               (workingDirectoryLabel?.isNotEmpty ?? false) ||
               (shellStatusLabel?.isNotEmpty ?? false))
             const SizedBox(height: 4),
