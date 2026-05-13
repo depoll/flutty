@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.45"
+	monkeyMuxVersion         = "0.1.46"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2623,20 +2623,21 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 // replayNeedsRedrawLocked reports whether the active replay should clear the
 // outer terminal's screen and scrollback before redrawing.
 //
-// Alt-buffer agents (claude-code, opencode, gemini, Codex's transcript
-// overlay) cursor-address a virtual screen and would corrupt xterm.dart's
-// circular buffer if their raw history were replayed. Replay those by
-// clearing the screen and letting the agent redraw via process metadata
+// Alt-buffer agents cursor-address a virtual screen and would corrupt
+// xterm.dart's circular buffer if their raw history were replayed. Replay those
+// by clearing the screen and letting the agent redraw via process metadata
 // nudges.
 //
-// Inline-viewport agents (Codex's default chat view) push conversation
-// content into the outer terminal's main-buffer scrollback through ordinary
-// line writes. Replay them by sending the recorded history bytes, which
-// preserves drag-to-scroll over earlier conversation just like tmux does
-// for the same pane.
+// Codex's default chat view does not always enter the alternate buffer itself,
+// but it still repaints a TUI viewport with cursor-addressed synchronized
+// frames. Treat it like tmux does: keep the attached client on the clear+redraw
+// path instead of replaying stale main-buffer history.
 func (w *muxWindow) replayNeedsRedrawLocked() bool {
 	if w == nil {
 		return false
+	}
+	if w.agentToolLocked() == "codex" {
+		return true
 	}
 	for _, mode := range []string{"47", "1047", "1049"} {
 		if w.privateModes[mode] {

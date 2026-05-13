@@ -26,9 +26,11 @@ selected window. MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to the
 selected PTY. Replay clears and repaints inside the attach-owned alternate
 buffer without letting per-window alternate-buffer state leak into the app
-terminal. Replay strips old terminal response queries, such as device
-attributes, window reports, mode reports, and OSC color queries, so re-showing
-history does not synthesize new input into the live PTY.
+terminal. Cursor-addressed agent TUIs, including Codex even when it does not
+enter a child alternate buffer itself, skip raw history replay and are asked to
+redraw like they are under tmux. Replay strips old terminal response queries,
+such as device attributes, window reports, mode reports, and OSC color queries,
+so re-showing history does not synthesize new input into the live PTY.
 
 MonkeyMux observes OSC title and working-directory reports for metadata only,
 without stripping or rewriting those bytes from the foreground stream. It also

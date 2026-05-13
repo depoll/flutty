@@ -814,12 +814,11 @@ func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
 	}
 }
 
-// TestInlineViewportAgentReplaysHistoryForScrollback asserts that an agent
-// running in ratatui inline-viewport mode (no alt-buffer DEC modes) replays
-// its captured history bytes on reattach so the outer terminal's main-buffer
-// scrollback gets repopulated. This is what makes drag-to-scroll work for
-// resumed Codex sessions just like it does in tmux.
-func TestInlineViewportAgentReplaysHistoryForScrollback(t *testing.T) {
+// TestCodexAgentUsesRedrawPathWithoutAltBuffer asserts that Codex stays on the
+// clear+redraw path even when its default chat view does not enter a child
+// alternate buffer. Codex repaints a cursor-addressed TUI viewport in the main
+// buffer, so replaying raw history can leave partially composed frames behind.
+func TestCodexAgentUsesRedrawPathWithoutAltBuffer(t *testing.T) {
 	server := newMuxServer("test")
 	codexWindow := &muxWindow{
 		id:           "@1",
@@ -835,18 +834,21 @@ func TestInlineViewportAgentReplaysHistoryForScrollback(t *testing.T) {
 	replay := string(server.activeReplayLocked())
 
 	for _, marker := range []string{"first turn", "second turn", "third turn", "> prompt"} {
-		if !strings.Contains(replay, marker) {
-			t.Fatalf("replay = %q, want history marker %q", replay, marker)
+		if strings.Contains(replay, marker) {
+			t.Fatalf("replay = %q, should not include stale Codex history marker %q", replay, marker)
 		}
 	}
 	if !strings.Contains(replay, "\x1b[3J") {
-		t.Fatalf("replay = %q, should clear stale local scrollback before inline replay", replay)
+		t.Fatalf("replay = %q, should clear stale local scrollback before Codex redraw", replay)
 	}
-	if !strings.Contains(replay, activeWindowReplayPrefixAfterAltHistory) {
-		t.Fatalf("replay = %q, want inline-history after-alt prefix", replay)
+	if strings.Contains(replay, attachSessionExitSequence) {
+		t.Fatalf("replay = %q, should not leave attach-owned alt buffer for Codex", replay)
 	}
-	if !strings.Contains(replay, attachSessionExitSequence) {
-		t.Fatalf("replay = %q, want attach alt-buffer exit before inline history", replay)
+	if !strings.Contains(replay, attachSessionEnterSequence) {
+		t.Fatalf("replay = %q, should enter attach-owned alt buffer for Codex redraw", replay)
+	}
+	if server.activeRedrawWindowLocked() != codexWindow {
+		t.Fatal("Codex window should be nudged to redraw after replay")
 	}
 }
 
