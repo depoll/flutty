@@ -4921,6 +4921,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_shellCompletionAnchorRetryCount < _shellCompletionMaxAnchorRetries) {
         _shellCompletionAnchorRetryCount += 1;
         _queueShellCompletionRefreshAfterFrame(generation);
+      } else if (_filterVisibleShellCompletionsForCurrentInput()) {
+        return;
       } else {
         _hideShellCompletionPopup(resetPromptPrefix: false);
       }
@@ -4942,14 +4944,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           !ref.read(shellCompletionsNotifierProvider)) {
         return;
       }
-      if (suggestions.isEmpty) {
+      final latestInvocation = _buildCurrentShellCompletionInvocation(
+        workingDirectory: invocation.workingDirectory,
+        shellCommand: invocation.shellCommand,
+      );
+      if (latestInvocation == null) {
+        if (_filterVisibleShellCompletionsForCurrentInput()) {
+          return;
+        }
         _hideShellCompletionPopup(resetPromptPrefix: false);
         return;
       }
-      _showShellCompletions(
-        invocation: invocation,
+      final latestSuggestions = filterShellCompletionSuggestionsForCurrentInput(
+        originalInvocation: invocation,
+        currentInvocation: latestInvocation,
         suggestions: suggestions,
-        anchor: anchor,
+      );
+      if (latestSuggestions.isEmpty) {
+        if (_filterVisibleShellCompletionsForCurrentInput()) {
+          return;
+        }
+        _hideShellCompletionPopup(resetPromptPrefix: false);
+        return;
+      }
+      final latestAnchor = _resolveTerminalCursorGlobalRect() ?? anchor;
+      _showShellCompletions(
+        invocation: latestInvocation,
+        suggestions: latestSuggestions,
+        anchor: latestAnchor,
+        sourceInvocation: invocation,
+        sourceSuggestions: suggestions,
       );
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
@@ -4960,7 +4984,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
-      if (mounted && generation == _shellCompletionGeneration) {
+      if (mounted &&
+          generation == _shellCompletionGeneration &&
+          !_filterVisibleShellCompletionsForCurrentInput()) {
         _hideShellCompletionPopup(resetPromptPrefix: false);
       }
     } finally {
@@ -5198,10 +5224,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required ShellCompletionInvocation invocation,
     required List<ShellCompletionSuggestion> suggestions,
     required Rect anchor,
+    ShellCompletionInvocation? sourceInvocation,
+    List<ShellCompletionSuggestion>? sourceSuggestions,
   }) {
     setState(() {
-      _shellCompletionSourceInvocation = invocation;
-      _shellCompletionSourceSuggestions = suggestions;
+      _shellCompletionSourceInvocation = sourceInvocation ?? invocation;
+      _shellCompletionSourceSuggestions = sourceSuggestions ?? suggestions;
       _shellCompletionInvocation = invocation;
       _shellCompletionSuggestions = suggestions;
       _shellCompletionAnchorGlobalRect = anchor;
