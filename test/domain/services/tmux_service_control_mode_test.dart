@@ -92,7 +92,10 @@ void main() {
           '#{pane_start_command}$sep'
           '#{@flutty_agent_tool}$sep'
           '#{window_id}$sep'
-          "#{pane_pid}'",
+          '#{pane_pid}$sep'
+          '#{@flutty_agent_session_id}$sep'
+          '#{@flutty_agent_session_title}$sep'
+          "#{@flutty_agent_session_confidence}'",
         );
       },
     );
@@ -758,6 +761,47 @@ void main() {
       }
     });
 
+    test('agent session metadata refreshes periodically for watches', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 38);
+      const service = TmuxService(
+        agentSessionMetadataRefreshDebounce: Duration(milliseconds: 5),
+        agentSessionMetadataPeriodicRefreshInterval: Duration(milliseconds: 40),
+      );
+      final commands = <String>[];
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('list-windows')) {
+          return _buildOpenExecSession(
+            stdout:
+                '${_tmuxWindowLine(id: '@42', panePid: 42)}\n${_doneMarker()}',
+          );
+        }
+        return _buildOpenExecSession(stdout: _doneMarker());
+      });
+
+      try {
+        service.watchWindowChanges(session, 'main');
+        await service.listWindows(session, 'main');
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(commands.where(_isCopilotMetadataCommand), hasLength(1));
+
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(
+          commands.where(_isCopilotMetadataCommand).length,
+          greaterThanOrEqualTo(2),
+        );
+      } finally {
+        await service.clearCache(session.connectionId);
+      }
+    });
+
     test('Copilot metadata refreshes wait for exec channel backoff', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 35);
@@ -838,6 +882,9 @@ void main() {
         'gemini',
         '@12',
         '4321',
+        'gemini-session',
+        'Gemini live title',
+        'medium',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
@@ -854,6 +901,12 @@ void main() {
       expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
       expect(snapshot.window.id, '@12');
       expect(snapshot.window.panePid, 4321);
+      expect(snapshot.window.activeAgentSessionId, 'gemini-session');
+      expect(snapshot.window.agentSessionTitle, 'Gemini live title');
+      expect(
+        snapshot.window.activeAgentSessionConfidence,
+        AgentSessionConfidence.medium,
+      );
     });
 
     test('normalizes the wrapped first control-mode line', () {
@@ -1273,7 +1326,7 @@ void main() {
         await service.createWindow(
           session,
           'main',
-          command: 'gemini --yolo',
+          command: 'gemini --resume gemini-session --yolo',
           name: 'gemini',
           workingDirectory: '/tmp/project',
         );
@@ -1294,7 +1347,12 @@ void main() {
             any(
               that: contains(
                 "tmux -u set-option -w -t 'main:4' "
-                "@flutty_agent_tool 'gemini'",
+                r"@flutty_agent_tool 'gemini' \; "
+                "set-option -w -t 'main:4' "
+                r"@flutty_agent_session_id 'gemini-session' \; "
+                "set-option -w -t 'main:4' "
+                r"@flutty_agent_session_confidence 'high' \; "
+                "set-option -w -t 'main:4' @flutty_agent_session_updated_at",
               ),
             ),
             pty: any(named: 'pty'),
@@ -1304,7 +1362,8 @@ void main() {
           () => client.execute(
             any(
               that: contains(
-                "tmux -u send-keys -t 'main:4' 'gemini --yolo' Enter",
+                "tmux -u send-keys -t 'main:4' "
+                "'gemini --resume gemini-session --yolo' Enter",
               ),
             ),
             pty: any(named: 'pty'),
@@ -1650,7 +1709,7 @@ void main() {
       await service.createWindow(
         session,
         'main',
-        command: 'gemini --yolo',
+        command: 'gemini --resume gemini-session --yolo',
         name: 'gemini',
         workingDirectory: '/tmp/project',
       );
@@ -1663,10 +1722,22 @@ void main() {
         ),
       );
       expect(
-        writes,
-        contains("set-option -w -t 'main:4' @flutty_agent_tool 'gemini'\n"),
+        writes.any(
+          (write) =>
+              write.contains("@flutty_agent_tool 'gemini'") &&
+              write.contains("@flutty_agent_session_id 'gemini-session'") &&
+              write.contains("@flutty_agent_session_confidence 'high'") &&
+              write.contains('@flutty_agent_session_updated_at '),
+        ),
+        isTrue,
       );
-      expect(writes, contains("send-keys -t 'main:4' 'gemini --yolo' Enter\n"));
+      expect(
+        writes,
+        contains(
+          "send-keys -t 'main:4' "
+          "'gemini --resume gemini-session --yolo' Enter\n",
+        ),
+      );
       verifyNever(
         () => client.execute(
           any(that: contains('new-window')),

@@ -118,21 +118,58 @@ void main() {
   });
 
   group('Copilot active session metadata', () {
-    test('command checks only locks for Copilot descendants of pane PIDs', () {
-      final command = buildCopilotActiveSessionMetadataCommand(const {42, 88});
+    test(
+      'command checks session metadata for agent descendants of pane PIDs',
+      () {
+        final command = buildAgentActiveSessionMetadataCommand(const {42, 88});
 
-      expect(command, contains('pane_pids=\'42 88\''));
-      expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
-      expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
-      expect(command, contains(r'inuse."$pid".lock'));
-      expect(command, contains('workspace.yaml'));
-      expect(command, contains(r'if [ -d "$state_dir" ]; then'));
-      expect(command, isNot(contains('lock_rows=')));
-      expect(command, isNot(contains('inuse.*.lock')));
-      expect(command, isNot(contains('.copilot/session-state/*/inuse.*.lock')));
-      expect(command, isNot(contains(r'ps -p "$pid"')));
-      expect(command, isNot(contains('exit 0')));
-    });
+        expect(command, contains('pane_pids=\'42 88\''));
+        expect(command, contains('unsetopt nomatch 2>/dev/null || true'));
+        expect(command, contains('ps -eo pid=,ppid=,comm=,args='));
+        expect(command, contains('flutty_lsof_session_match'));
+        expect(command, contains('flutty_claude_session_title'));
+        expect(command, contains('flutty_codex_session_title'));
+        expect(command, contains('flutty_gemini_session_title'));
+        expect(command, contains('flutty_process_cwd'));
+        expect(command, contains('flutty_process_start_epoch'));
+        expect(command, contains('flutty_file_is_newer_than_process'));
+        expect(command, contains('flutty_iso8601_epoch'));
+        expect(command, contains('flutty_codex_index_resume_match'));
+        expect(command, contains('flutty_codex_logs_resume_match'));
+        expect(command, contains('flutty_codex_recent_session_match'));
+        expect(command, contains('flutty_gemini_recent_session_match'));
+        expect(command, contains('customTitle'));
+        expect(command, contains('thread_name'));
+        expect(command, contains('summary'));
+        expect(command, contains('.claude'));
+        expect(command, contains('.codex'));
+        expect(command, contains('.gemini'));
+        expect(command, contains(r'find "$home/.codex/sessions"'));
+        expect(command, contains(r'find "$home/.gemini/tmp"'));
+        expect(command, contains('session_index.jsonl'));
+        expect(command, contains('logs_2.sqlite'));
+        expect(command, contains(r'sqlite3 "$logs_db"'));
+        expect(command, contains('thread_id'));
+        expect(command, contains(r"process_uuid like 'pid:$pid:%'"));
+        expect(command, contains('updated_at'));
+        expect(
+          command,
+          contains(r'process_start_epoch=$(flutty_process_start_epoch "$pid")'),
+        );
+        expect(command, contains('sessionId'));
+        expect(command, contains(r'inuse."$pid".lock'));
+        expect(command, contains('workspace.yaml'));
+        expect(command, contains(r'[ -d "$state_dir" ]'));
+        expect(command, isNot(contains('lock_rows=')));
+        expect(command, isNot(contains('inuse.*.lock')));
+        expect(
+          command,
+          isNot(contains('.copilot/session-state/*/inuse.*.lock')),
+        );
+        expect(command, contains(r'ps -p "$pid" -o etime='));
+        expect(command, isNot(contains('exit 0')));
+      },
+    );
 
     test('parses live session titles by matched pane PID', () {
       const sep = tmuxWindowFieldSeparator;
@@ -147,6 +184,43 @@ void main() {
       expect(metadata[42]?.sessionId, 'session-1');
       expect(metadata[42]?.title, 'User named Copilot session');
     });
+
+    test('parses live metadata for every supported agent tool', () {
+      const sep = tmuxWindowFieldSeparator;
+
+      final metadata = parseAgentActiveSessionMetadataOutput(
+        'claude${sep}claude-1${sep}501${sep}42${sep}medium$sep\n'
+        'codex${sep}codex-1${sep}502${sep}43${sep}medium$sep\n'
+        'gemini${sep}gemini-1${sep}503${sep}44${sep}medium$sep\n'
+        'opencode${sep}opencode-1${sep}504${sep}45${sep}medium$sep\n'
+        'copilot${sep}copilot-1${sep}505${sep}46${sep}medium${sep}Title\n',
+        const {42, 43, 44, 45, 46},
+      );
+
+      expect(metadata[42]?.tool, AgentLaunchTool.claudeCode);
+      expect(metadata[43]?.tool, AgentLaunchTool.codex);
+      expect(metadata[44]?.tool, AgentLaunchTool.geminiCli);
+      expect(metadata[45]?.tool, AgentLaunchTool.openCode);
+      expect(metadata[46]?.tool, AgentLaunchTool.copilotCli);
+      expect(metadata[46]?.title, 'Title');
+      expect(metadata[46]?.confidence, AgentSessionConfidence.medium);
+    });
+
+    test(
+      'prefers higher confidence when multiple matches exist for a pane',
+      () {
+        const sep = tmuxWindowFieldSeparator;
+
+        final metadata = parseAgentActiveSessionMetadataOutput(
+          'claude${sep}inferred${sep}501${sep}42${sep}medium$sep\n'
+          'claude${sep}explicit${sep}502${sep}42${sep}high$sep\n',
+          const {42},
+        );
+
+        expect(metadata[42]?.sessionId, 'explicit');
+        expect(metadata[42]?.confidence, AgentSessionConfidence.high);
+      },
+    );
 
     test('does not force refresh when only a Copilot tmux title changes', () {
       const existing = TmuxWindow(
