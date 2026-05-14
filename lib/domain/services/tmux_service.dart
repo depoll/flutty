@@ -4164,6 +4164,54 @@ substr(\$0, 1, 1) == "n" {
   exit
 }'
 }
+flutty_process_start_epoch() {
+  pid=\$1
+  etime=\$(ps -p "\$pid" -o etime= 2>/dev/null | awk 'NR == 1 { gsub(/^[[:space:]]+|[[:space:]]+\$/, ""); print; exit }')
+  [ -n "\$etime" ] || return 0
+  elapsed=\$(printf '%s\\n' "\$etime" | awk '
+{
+  days = 0
+  rest = \$0
+  if (index(rest, "-") > 0) {
+    split(rest, day_parts, "-")
+    days = day_parts[1] + 0
+    rest = day_parts[2]
+  }
+  count = split(rest, parts, ":")
+  if (count == 3) {
+    hours = parts[1] + 0
+    minutes = parts[2] + 0
+    seconds = parts[3] + 0
+  } else if (count == 2) {
+    hours = 0
+    minutes = parts[1] + 0
+    seconds = parts[2] + 0
+  } else {
+    hours = 0
+    minutes = 0
+    seconds = parts[1] + 0
+  }
+  print days * 86400 + hours * 3600 + minutes * 60 + seconds
+}')
+  case "\$elapsed" in ''|*[!0-9]*) return 0 ;; esac
+  now=\$(date +%s 2>/dev/null || true)
+  case "\$now" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "\$((now - elapsed))"
+}
+flutty_file_mtime_epoch() {
+  file=\$1
+  stat -f %m "\$file" 2>/dev/null ||
+    stat -c %Y "\$file" 2>/dev/null ||
+    return 0
+}
+flutty_file_is_newer_than_process() {
+  file=\$1
+  process_start_epoch=\$2
+  case "\$process_start_epoch" in ''|*[!0-9]*) return 1 ;; esac
+  mtime=\$(flutty_file_mtime_epoch "\$file")
+  case "\$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  [ "\$mtime" -ge "\$((process_start_epoch - 2))" ]
+}
 flutty_codex_rollout_id() {
   file=\$1
   name=\${file##*/}
@@ -4192,23 +4240,17 @@ flutty_codex_rollout_line() {
 }
 flutty_codex_recent_session_match() {
   process_cwd=\$1
+  process_start_epoch=\$2
+  [ -n "\$process_cwd" ] || return 0
+  case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
   [ -d "\$home/.codex/sessions" ] || return 0
   files=\$(find "\$home/.codex/sessions" -name 'rollout-*.jsonl' -type f -exec ls -1t {} + 2>/dev/null | head -n 30)
   [ -n "\$files" ] || return 0
-  if [ -n "\$process_cwd" ]; then
-    match=\$(printf '%s\\n' "\$files" | while IFS= read -r file; do
-      [ -r "\$file" ] || continue
-      file_cwd=\$(flutty_codex_rollout_cwd "\$file")
-      [ "\$file_cwd" = "\$process_cwd" ] || continue
-      flutty_codex_rollout_line "\$file"
-      break
-    done)
-    if [ -n "\$match" ]; then
-      printf '%s\\n' "\$match"
-    fi
-    return 0
-  fi
   printf '%s\\n' "\$files" | while IFS= read -r file; do
+    [ -r "\$file" ] || continue
+    flutty_file_is_newer_than_process "\$file" "\$process_start_epoch" || continue
+    file_cwd=\$(flutty_codex_rollout_cwd "\$file")
+    [ "\$file_cwd" = "\$process_cwd" ] || continue
     flutty_codex_rollout_line "\$file"
     break
   done
@@ -4232,22 +4274,16 @@ flutty_gemini_file_line() {
 }
 flutty_gemini_recent_session_match() {
   process_cwd=\$1
+  process_start_epoch=\$2
+  [ -n "\$process_cwd" ] || return 0
+  case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
   [ -d "\$home/.gemini/tmp" ] || return 0
   files=\$(find "\$home/.gemini/tmp" -type f -name 'session-*.json*' -path '*/chats/*' -exec ls -1t {} + 2>/dev/null | head -n 30)
   [ -n "\$files" ] || return 0
-  if [ -n "\$process_cwd" ]; then
-    match=\$(printf '%s\\n' "\$files" | while IFS= read -r file; do
-      [ -r "\$file" ] || continue
-      grep -F "\$process_cwd" "\$file" >/dev/null 2>&1 || continue
-      flutty_gemini_file_line "\$file"
-      break
-    done)
-    if [ -n "\$match" ]; then
-      printf '%s\\n' "\$match"
-    fi
-    return 0
-  fi
   printf '%s\\n' "\$files" | while IFS= read -r file; do
+    [ -r "\$file" ] || continue
+    flutty_file_is_newer_than_process "\$file" "\$process_start_epoch" || continue
+    grep -F "\$process_cwd" "\$file" >/dev/null 2>&1 || continue
     flutty_gemini_file_line "\$file"
     break
   done
@@ -4369,9 +4405,10 @@ END {
       fi
       if [ -z "\$session_id" ]; then
         process_cwd=\$(flutty_process_cwd "\$pid")
+        process_start_epoch=\$(flutty_process_start_epoch "\$pid")
         case "\$tool" in
-          codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" || true) ;;
-          gemini) recent_match=\$(flutty_gemini_recent_session_match "\$process_cwd" || true) ;;
+          codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
+          gemini) recent_match=\$(flutty_gemini_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
           *) recent_match= ;;
         esac
         if [ -n "\$recent_match" ]; then
