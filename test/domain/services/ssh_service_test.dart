@@ -1336,6 +1336,37 @@ void main() {
     );
 
     test(
+      'buffers synchronized output until the terminal frame completes',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        final terminal = session.terminal!;
+        final events = <String>[];
+        terminal.addListener(() => events.add('terminal'));
+        final stdoutSubscription = session.shellStdoutStream.listen(
+          (_) => events.add('stdout'),
+        );
+        addTearDown(stdoutSubscription.cancel);
+        final terminalWillWriteSubscription = session
+            .terminalWriteWillBeginStream
+            .listen((_) => events.add('before'));
+        addTearDown(terminalWillWriteSubscription.cancel);
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026hhello ')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(firstLineText(terminal), isNot(contains('hello')));
+        expect(events, isEmpty);
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026lworld')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(firstLineText(terminal), 'hello world');
+        expect(events, ['before', 'terminal', 'stdout']);
+      },
+    );
+
+    test(
       'keeps MonkeyMux attach-owned alt buffer in the local terminal',
       () async {
         final shell = await openShell(

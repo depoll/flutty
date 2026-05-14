@@ -695,6 +695,68 @@ func TestResizeRedrawsCodexAtNewSize(t *testing.T) {
 	}
 }
 
+func TestResizeClearsCodexInlineViewportBandBeforeRedraw(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	codexWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		pty:          slave,
+		lastActivity: time.Now(),
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = codexWindow.closePty()
+	})
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 80
+	server.height = 24
+
+	originalNudgeForegroundSameSize := nudgeForegroundSameSize
+	defer func() {
+		nudgeForegroundSameSize = originalNudgeForegroundSameSize
+	}()
+
+	var sameSizeNudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+		sameSizeNudged = append(sameSizeNudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window: window, width: width, height: height})
+	}
+
+	server.resize(100, 32)
+
+	wantClear := string(activeResizeVisibleBandClearSequence(24, 32))
+	if got := attach.String(); got != wantClear {
+		t.Fatalf("attach output = %q, want resize clear band %q", got, wantClear)
+	}
+	wantSameSizeNudged := []struct {
+		window *muxWindow
+		width  int
+		height int
+	}{{window: codexWindow, width: 100, height: 32}}
+	if !reflect.DeepEqual(sameSizeNudged, wantSameSizeNudged) {
+		t.Fatalf("same-size nudged windows = %#v, want %#v", sameSizeNudged, wantSameSizeNudged)
+	}
+}
+
 func TestResizeForwarderStateSkipsUnchangedSizes(t *testing.T) {
 	var state resizeForwarderState
 
@@ -1034,6 +1096,20 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 			t.Fatalf("replay = %q, want Codex history marker %q for scrollback", replay, marker)
 		}
 	}
+	promptIndex := strings.Index(replay, "> prompt")
+	visibleClearIndex := strings.LastIndex(
+		replay,
+		postHistoryVisibleScreenClearSequence,
+	)
+	if visibleClearIndex < 0 {
+		t.Fatalf("replay = %q, want visible-screen clear before Codex redraw", replay)
+	}
+	if visibleClearIndex < promptIndex {
+		t.Fatalf(
+			"replay = %q, visible-screen clear must happen after history replay",
+			replay,
+		)
+	}
 	if !strings.Contains(replay, "\x1b[3J") {
 		t.Fatalf("replay = %q, should clear stale local scrollback before Codex history replay", replay)
 	}
@@ -1202,6 +1278,104 @@ func TestActiveReplayIncludesPendingControlOnlyOutput(t *testing.T) {
 	replay := string(server.activeReplayLocked())
 	if !strings.Contains(replay, "visible screen\x1b[2;1H\x1b[48;5;250m\x1b[K") {
 		t.Fatalf("replay = %q, want pending composer background controls included", replay)
+	}
+}
+
+func TestCodexSynchronizedCursorFrameDoesNotBuildReplayHistory(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		agentTool:     "codex",
+		replayHistory: []byte("prompt\n"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput(
+		"@1",
+		[]byte(
+			"assistant line\n"+
+				"\x1b[?2026h"+
+				"\x1b[23;1H\x1b[Kstale status"+
+				"\x1b[24;1H> stale composer"+
+				"\x1b[?2026l",
+		),
+	)
+
+	if got := attach.String(); !strings.Contains(got, "stale status") {
+		t.Fatalf("live attach output = %q, want synchronized frame passed through", got)
+	}
+	if got := string(window.replayHistory); strings.Contains(got, "stale") {
+		t.Fatalf("replay history = %q, want cursor-addressed synchronized frame omitted", got)
+	}
+	if got := string(window.replayHistory); !strings.Contains(got, "assistant line") {
+		t.Fatalf("replay history = %q, want non-frame output preserved", got)
+	}
+	if got := string(window.replaySyncOutputBuffer); got != "" {
+		t.Fatalf("sync replay buffer = %q, want empty after complete frame", got)
+	}
+}
+
+func TestCodexSynchronizedReplayFilterBuffersSplitFrame(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		agentTool:     "codex",
+		replayHistory: []byte("prompt\n"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.handleWindowOutput(
+		"@1",
+		[]byte("\x1b[?2026h\x1b[23;1Hpartial status"),
+	)
+
+	if got := string(window.replayHistory); strings.Contains(got, "partial status") {
+		t.Fatalf("replay history = %q, want split synchronized frame buffered", got)
+	}
+	if got := string(window.replaySyncOutputBuffer); !strings.Contains(got, "partial status") {
+		t.Fatalf("sync replay buffer = %q, want partial frame held", got)
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b[?2026lafter\n"))
+
+	if got := string(window.replayHistory); strings.Contains(got, "partial status") {
+		t.Fatalf("replay history = %q, want completed cursor frame omitted", got)
+	}
+	if got := string(window.replayHistory); !strings.Contains(got, "after\n") {
+		t.Fatalf("replay history = %q, want post-frame output preserved", got)
+	}
+	if got := string(window.replaySyncOutputBuffer); got != "" {
+		t.Fatalf("sync replay buffer = %q, want empty after frame close", got)
+	}
+}
+
+func TestCodexSynchronizedLinearOutputStillBuildsReplayHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		agentTool:     "codex",
+		replayHistory: []byte("prompt\n"),
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@1", []byte("\x1b[?2026hlinear output\n\x1b[?2026l"))
+
+	if got := string(window.replayHistory); !strings.Contains(got, "linear output\n") {
+		t.Fatalf("replay history = %q, want linear synchronized output preserved", got)
+	}
+	if got := string(window.replayHistory); strings.Contains(got, "\x1b[?2026") {
+		t.Fatalf("replay history = %q, want synchronized-output controls stripped", got)
 	}
 }
 

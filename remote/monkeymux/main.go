@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.49"
+	monkeyMuxVersion         = "0.1.50"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -47,6 +47,7 @@ const (
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
 	csiBufferLimitBytes      = 64
+	activeResizeClearRows    = 10
 	restoreFileMode          = 0o600
 	restoreSchemaVersion     = 1
 )
@@ -55,6 +56,7 @@ const synchronizedOutputResetSequence = "\x1b[?2026l"
 const graphemeClusterResetSequence = "\x1b[?2027l"
 const terminalCharsetResetSequence = "\x0f\x1b(B\x1b)B"
 const postHistoryReplayResetSequence = synchronizedOutputResetSequence + graphemeClusterResetSequence + terminalCharsetResetSequence
+const postHistoryVisibleScreenClearSequence = "\x1b[0m\x1b[H\x1b[2J"
 const attachSessionEnterSequence = "\x1b[?1049h"
 const attachSessionExitSequence = "\x1b[?1049l"
 const nestedAlternateBufferTransitionSequence = terminalCharsetResetSequence + "\x1b[H\x1b[2J\x1b[3J"
@@ -403,6 +405,9 @@ type muxWindow struct {
 	csiBuffer                  []byte
 	attachOutputBuffer         []byte
 	replayCaptureBuffer        []byte
+	replaySyncOutputBuffer     []byte
+	replaySyncOutputActive     bool
+	replaySyncOutputDiscarded  bool
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -2554,12 +2559,29 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	var attach net.Conn
+	var clear []byte
+	var redrawNudge redrawNudgeRequest
+
+	s.attachMu.Lock()
 	s.mu.Lock()
+	oldWidth := s.width
+	oldHeight := s.height
 	s.width = width
 	s.height = height
 	s.resizeActiveLocked(width, height)
-	redrawNudge := s.activeRedrawNudgeLocked()
+	window := s.windowByIDLocked(s.activeID)
+	if window != nil &&
+		s.attachConn != nil &&
+		(oldWidth != width || oldHeight != height) &&
+		window.needsInlineViewportInvalidationLocked() {
+		attach = s.attachConn
+		clear = activeResizeVisibleBandClearSequence(oldHeight, height)
+	}
+	redrawNudge = s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
+	s.writeAttachLocked(attach, clear)
+	s.attachMu.Unlock()
 	runRedrawNudgeIfNeeded(redrawNudge)
 }
 
@@ -2633,6 +2655,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	needsRedraw := window.replayNeedsRedrawLocked()
+	needsVisibleClear := !needsRedraw && window.replayNeedsProcessRedrawLocked()
 	var history []byte
 	if !needsRedraw {
 		historySource := window.replayHistoryForAttachLocked()
@@ -2656,12 +2679,16 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 		[]byte,
 		0,
 		len(prefix)+len(title)+len(preModes)+len(history)+
+			len(postHistoryVisibleScreenClearSequence)+
 			len(postHistoryReplayResetSequence)+len(postModes)+len(cursor),
 	)
 	replay = append(replay, prefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
+	if needsVisibleClear {
+		replay = append(replay, postHistoryVisibleScreenClearSequence...)
+	}
 	replay = append(replay, postHistoryReplayResetSequence...)
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
@@ -2680,6 +2707,31 @@ func (w *muxWindow) replayNeedsProcessRedrawLocked() bool {
 
 func (w *muxWindow) redrawNudgeShouldUseSameSizeLocked() bool {
 	return w != nil && w.agentToolLocked() == "codex"
+}
+
+func (w *muxWindow) needsInlineViewportInvalidationLocked() bool {
+	return w != nil && w.replayNeedsProcessRedrawLocked() && !w.replayNeedsRedrawLocked()
+}
+
+func activeResizeVisibleBandClearSequence(oldHeight int, newHeight int) []byte {
+	if newHeight <= 0 {
+		return nil
+	}
+	startFrom := oldHeight
+	if startFrom <= 0 || newHeight < startFrom {
+		startFrom = newHeight
+	}
+	start := startFrom - activeResizeClearRows + 1
+	if start < 1 {
+		start = 1
+	}
+	var buffer bytes.Buffer
+	buffer.WriteString("\x1b7\x1b[0m")
+	for row := start; row <= newHeight; row++ {
+		_, _ = fmt.Fprintf(&buffer, "\x1b[%d;1H\x1b[2K", row)
+	}
+	buffer.WriteString("\x1b8")
+	return buffer.Bytes()
 }
 
 // replayNeedsRedrawLocked reports whether replay should enter the attach-owned
@@ -2964,8 +3016,21 @@ func (w *muxWindow) appendReplayCandidateLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+	if w.filtersSynchronizedReplayLocked() {
+		chunk = w.filterSynchronizedReplayOutputLocked(chunk)
+		if len(chunk) == 0 {
+			return
+		}
+	}
+	w.appendReplayCandidateChunkLocked(chunk)
+}
+
+func (w *muxWindow) appendReplayCandidateChunkLocked(chunk []byte) {
 	if w.replayNeedsRedrawLocked() {
 		w.pendingReplayControls = w.pendingReplayControls[:0]
+		w.replaySyncOutputBuffer = w.replaySyncOutputBuffer[:0]
+		w.replaySyncOutputActive = false
+		w.replaySyncOutputDiscarded = false
 		return
 	}
 	if containsReplayVisibleText(chunk) || !containsReplayStatefulControl(chunk) {
@@ -2980,6 +3045,141 @@ func (w *muxWindow) appendReplayCandidateLocked(chunk []byte) {
 		w.pendingReplayControls,
 		chunk,
 	)
+}
+
+func (w *muxWindow) filtersSynchronizedReplayLocked() bool {
+	return w.agentToolLocked() == "codex" && !w.replayNeedsRedrawLocked()
+}
+
+func (w *muxWindow) filterSynchronizedReplayOutputLocked(chunk []byte) []byte {
+	data := chunk
+	if len(w.replaySyncOutputBuffer) > 0 {
+		combined := make(
+			[]byte,
+			0,
+			len(w.replaySyncOutputBuffer)+len(chunk),
+		)
+		combined = append(combined, w.replaySyncOutputBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.replaySyncOutputBuffer = w.replaySyncOutputBuffer[:0]
+	}
+
+	var output []byte
+	copyStart := 0
+	for i := 0; i < len(data); {
+		if !w.replaySyncOutputActive {
+			start, end := nextSynchronizedOutputModeCsi(
+				data,
+				i,
+				true,
+			)
+			if start < 0 {
+				return appendReplayOutput(output, data[copyStart:])
+			}
+			output = appendReplayOutputForRewrite(output, data[copyStart:start])
+			w.replaySyncOutputActive = true
+			w.replaySyncOutputDiscarded = false
+			copyStart = start
+			i = end
+			continue
+		}
+
+		_, end := nextSynchronizedOutputModeCsi(data, i, false)
+		if end < 0 {
+			w.storeSynchronizedReplayOutputLocked(data[copyStart:])
+			return output
+		}
+		var frame []byte
+		if !w.replaySyncOutputDiscarded {
+			frame = replaySynchronizedOutputFrameForHistory(data[copyStart:end])
+		}
+		output = appendReplayOutput(output, frame)
+		w.replaySyncOutputActive = false
+		w.replaySyncOutputDiscarded = false
+		copyStart = end
+		i = end
+	}
+
+	if w.replaySyncOutputActive {
+		w.storeSynchronizedReplayOutputLocked(data[copyStart:])
+		return output
+	}
+	return appendReplayOutput(output, data[copyStart:])
+}
+
+func nextSynchronizedOutputModeCsi(
+	data []byte,
+	start int,
+	enabled bool,
+) (int, int) {
+	for i := start; i < len(data); {
+		escapeIndex := bytes.IndexByte(data[i:], '\x1b')
+		if escapeIndex < 0 {
+			return -1, -1
+		}
+		i += escapeIndex
+		if i+1 >= len(data) {
+			return -1, -1
+		}
+		if data[i+1] != '[' {
+			i++
+			continue
+		}
+		end := csiSequenceEnd(data, i+2)
+		if end < 0 {
+			return -1, -1
+		}
+		sequence := data[i : end+1]
+		if isSynchronizedOutputModeCsiSequence(sequence, enabled) {
+			return i, end + 1
+		}
+		i = end + 1
+	}
+	return -1, -1
+}
+
+func (w *muxWindow) storeSynchronizedReplayOutputLocked(data []byte) {
+	if len(data) > windowHistoryLimitBytes {
+		w.replaySyncOutputBuffer = w.replaySyncOutputBuffer[:0]
+		w.replaySyncOutputDiscarded = true
+		return
+	}
+	if w.replaySyncOutputDiscarded {
+		return
+	}
+	w.replaySyncOutputBuffer = append(w.replaySyncOutputBuffer[:0], data...)
+}
+
+func replaySynchronizedOutputFrameForHistory(frame []byte) []byte {
+	if len(frame) == 0 {
+		return nil
+	}
+	stripped := stripTerminalQueriesFromReplay(frame)
+	if containsReplayStatefulControl(stripped) {
+		return nil
+	}
+	return stripped
+}
+
+func appendReplayOutput(output []byte, data []byte) []byte {
+	if len(data) == 0 {
+		return output
+	}
+	if output == nil {
+		return data
+	}
+	return append(output, data...)
+}
+
+func appendReplayOutputForRewrite(output []byte, data []byte) []byte {
+	if len(data) == 0 {
+		return output
+	}
+	if output == nil {
+		return append([]byte(nil), data...)
+	}
+	return append(output, data...)
 }
 
 func (w *muxWindow) attachOutputForClientLocked(chunk []byte) []byte {
@@ -3259,7 +3459,19 @@ func isAlternateBufferCsiSequence(sequence []byte) bool {
 }
 
 func isSynchronizedOutputCsiSequence(sequence []byte) bool {
+	return isSynchronizedOutputModeCsiSequence(sequence, true) ||
+		isSynchronizedOutputModeCsiSequence(sequence, false)
+}
+
+func isSynchronizedOutputModeCsiSequence(sequence []byte, enabled bool) bool {
 	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return false
+	}
+	final := sequence[len(sequence)-1]
+	if enabled && final != 'h' {
+		return false
+	}
+	if !enabled && final != 'l' {
 		return false
 	}
 	params := string(sequence[2 : len(sequence)-1])

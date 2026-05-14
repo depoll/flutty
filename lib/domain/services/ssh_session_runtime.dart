@@ -32,6 +32,10 @@ class _SshSessionRuntime {
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalMonkeyMuxAttachAltPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
+  String _terminalSynchronizedOutputPendingInput = '';
+  StringBuffer? _terminalSynchronizedOutputBuffer;
+  StringBuffer? _terminalSynchronizedStdoutBuffer;
+  StringBuffer? _terminalSynchronizedStderrBuffer;
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalSynchronizedOutputMode = false;
   bool _terminalGraphemeClusterMode = false;
@@ -41,6 +45,8 @@ class _SshSessionRuntime {
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  static const _terminalSynchronizedOutputBegin = '\x1b[?2026h';
+  static const _terminalSynchronizedOutputEnd = '\x1b[?2026l';
 
   SSHSession? get shell => _shell;
 
@@ -256,6 +262,10 @@ class _SshSessionRuntime {
     _terminalTmuxPassthroughPendingInput = '';
     _terminalMonkeyMuxAttachAltPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
+    _terminalSynchronizedOutputPendingInput = '';
+    _terminalSynchronizedOutputBuffer = null;
+    _terminalSynchronizedStdoutBuffer = null;
+    _terminalSynchronizedStderrBuffer = null;
     _terminalColorSchemeUpdatesMode = false;
     _terminalSynchronizedOutputMode = false;
     _terminalGraphemeClusterMode = false;
@@ -527,32 +537,86 @@ class _SshSessionRuntime {
         _shell?.write(utf8.encode(themeOscResponse));
       }
 
-      final terminalData = _protectMonkeyMuxMainBufferScroll(
+      final protectedTerminalData = _protectMonkeyMuxMainBufferScroll(
         themeOscResult.terminalInput,
         terminal,
       );
+      final synchronizedOutput = _coalesceSynchronizedTerminalOutput(
+        terminalData: protectedTerminalData,
+        stdoutData: output.stdoutData,
+        stderrData: output.stderrData,
+        drainAll: drainAll,
+      );
+      final terminalData = synchronizedOutput.terminalData;
       if (terminalData.isNotEmpty) {
         _session._notifyBeforeTerminalWrite();
         terminal.write(terminalData);
         _respondToTerminalWindowControlQueries(terminalData, terminal);
       }
       _scheduleTerminalPreviewRefresh();
-    }
-
-    if (output.stdoutData.isNotEmpty) {
-      final stdoutController = _shellStdoutController;
-      if (stdoutController != null && !stdoutController.isClosed) {
-        stdoutController.add(output.stdoutData);
+      if (synchronizedOutput.stdoutData.isNotEmpty) {
+        final stdoutController = _shellStdoutController;
+        if (stdoutController != null && !stdoutController.isClosed) {
+          stdoutController.add(synchronizedOutput.stdoutData);
+        }
       }
-    }
-
-    if (output.stderrData.isNotEmpty) {
-      final stderrController = _shellStderrController;
-      if (stderrController != null && !stderrController.isClosed) {
-        stderrController.add(output.stderrData);
+      if (synchronizedOutput.stderrData.isNotEmpty) {
+        final stderrController = _shellStderrController;
+        if (stderrController != null && !stderrController.isClosed) {
+          stderrController.add(synchronizedOutput.stderrData);
+        }
       }
+    } else if (_hasPendingSynchronizedTerminalOutput) {
+      final synchronizedOutput = _coalesceSynchronizedTerminalOutput(
+        terminalData: '',
+        stdoutData: output.stdoutData,
+        stderrData: output.stderrData,
+        drainAll: drainAll,
+      );
+      if (synchronizedOutput.stdoutData.isNotEmpty) {
+        final stdoutController = _shellStdoutController;
+        if (stdoutController != null && !stdoutController.isClosed) {
+          stdoutController.add(synchronizedOutput.stdoutData);
+        }
+      }
+      if (synchronizedOutput.stderrData.isNotEmpty) {
+        final stderrController = _shellStderrController;
+        if (stderrController != null && !stderrController.isClosed) {
+          stderrController.add(synchronizedOutput.stderrData);
+        }
+      }
+      if (synchronizedOutput.terminalData.isNotEmpty) {
+        _session._notifyBeforeTerminalWrite();
+        terminal.write(synchronizedOutput.terminalData);
+        _respondToTerminalWindowControlQueries(
+          synchronizedOutput.terminalData,
+          terminal,
+        );
+        _scheduleTerminalPreviewRefresh();
+      }
+      _scheduleNextShellOutputFlushIfNeeded();
+      return;
+    } else {
+      if (output.stdoutData.isNotEmpty) {
+        final stdoutController = _shellStdoutController;
+        if (stdoutController != null && !stdoutController.isClosed) {
+          stdoutController.add(output.stdoutData);
+        }
+      }
+      if (output.stderrData.isNotEmpty) {
+        final stderrController = _shellStderrController;
+        if (stderrController != null && !stderrController.isClosed) {
+          stderrController.add(output.stderrData);
+        }
+      }
+      _scheduleNextShellOutputFlushIfNeeded();
+      return;
     }
 
+    _scheduleNextShellOutputFlushIfNeeded();
+  }
+
+  void _scheduleNextShellOutputFlushIfNeeded() {
     if (_pendingShellOutputs.isEmpty) {
       _clearPendingShellOutput();
     } else {
@@ -561,6 +625,156 @@ class _SshSessionRuntime {
         _flushPendingShellOutput,
       );
     }
+  }
+
+  bool get _hasPendingSynchronizedTerminalOutput =>
+      _hasPendingSynchronizedTerminalFrame ||
+      _terminalSynchronizedStdoutBuffer != null ||
+      _terminalSynchronizedStderrBuffer != null;
+
+  bool get _hasPendingSynchronizedTerminalFrame =>
+      _terminalSynchronizedOutputBuffer != null ||
+      _terminalSynchronizedOutputPendingInput.isNotEmpty;
+
+  ({String stderrData, String stdoutData, String terminalData})
+  _coalesceSynchronizedTerminalOutput({
+    required String terminalData,
+    required String stdoutData,
+    required String stderrData,
+    required bool drainAll,
+  }) {
+    final hadPendingSynchronizedOutput = _hasPendingSynchronizedTerminalOutput;
+    final terminalOutput = StringBuffer();
+    final scanInput = _terminalSynchronizedOutputPendingInput + terminalData;
+    _terminalSynchronizedOutputPendingInput = '';
+    var cursor = 0;
+
+    while (cursor < scanInput.length) {
+      final activeBuffer = _terminalSynchronizedOutputBuffer;
+      if (activeBuffer == null) {
+        final beginIndex = scanInput.indexOf(
+          _terminalSynchronizedOutputBegin,
+          cursor,
+        );
+        if (beginIndex == -1) {
+          final pendingSuffix = _synchronizedOutputPendingBeginSuffix(
+            scanInput.substring(cursor),
+          );
+          final emitEnd = scanInput.length - pendingSuffix.length;
+          if (emitEnd > cursor) {
+            terminalOutput.write(scanInput.substring(cursor, emitEnd));
+          }
+          _terminalSynchronizedOutputPendingInput = pendingSuffix;
+          break;
+        }
+        if (beginIndex > cursor) {
+          terminalOutput.write(scanInput.substring(cursor, beginIndex));
+        }
+        _terminalSynchronizedOutputBuffer = StringBuffer(
+          _terminalSynchronizedOutputBegin,
+        );
+        cursor = beginIndex + _terminalSynchronizedOutputBegin.length;
+        continue;
+      }
+
+      final endIndex = scanInput.indexOf(
+        _terminalSynchronizedOutputEnd,
+        cursor,
+      );
+      if (endIndex == -1) {
+        final pendingSuffix = _synchronizedOutputPendingEndSuffix(
+          scanInput.substring(cursor),
+        );
+        final bufferEnd = scanInput.length - pendingSuffix.length;
+        if (bufferEnd > cursor) {
+          activeBuffer.write(scanInput.substring(cursor, bufferEnd));
+        }
+        _terminalSynchronizedOutputPendingInput = pendingSuffix;
+        break;
+      }
+      activeBuffer.write(
+        scanInput.substring(
+          cursor,
+          endIndex + _terminalSynchronizedOutputEnd.length,
+        ),
+      );
+      terminalOutput.write(activeBuffer.toString());
+      _terminalSynchronizedOutputBuffer = null;
+      cursor = endIndex + _terminalSynchronizedOutputEnd.length;
+    }
+
+    if (drainAll && _hasPendingSynchronizedTerminalFrame) {
+      if (_terminalSynchronizedOutputPendingInput.isNotEmpty) {
+        final pendingInput = _terminalSynchronizedOutputPendingInput;
+        _terminalSynchronizedOutputPendingInput = '';
+        if (_terminalSynchronizedOutputBuffer == null) {
+          terminalOutput.write(pendingInput);
+        } else {
+          _terminalSynchronizedOutputBuffer!.write(pendingInput);
+        }
+      }
+      final activeBuffer = _terminalSynchronizedOutputBuffer;
+      if (activeBuffer != null) {
+        terminalOutput.write(activeBuffer.toString());
+        _terminalSynchronizedOutputBuffer = null;
+      }
+    }
+
+    final shouldBufferStreamData =
+        hadPendingSynchronizedOutput ||
+        _hasPendingSynchronizedTerminalFrame ||
+        scanInput.contains(_terminalSynchronizedOutputBegin);
+    if (!shouldBufferStreamData) {
+      return (
+        terminalData: terminalOutput.toString(),
+        stdoutData: stdoutData,
+        stderrData: stderrData,
+      );
+    }
+
+    if (stdoutData.isNotEmpty) {
+      (_terminalSynchronizedStdoutBuffer ??= StringBuffer()).write(stdoutData);
+    }
+    if (stderrData.isNotEmpty) {
+      (_terminalSynchronizedStderrBuffer ??= StringBuffer()).write(stderrData);
+    }
+
+    if (_hasPendingSynchronizedTerminalFrame) {
+      return (
+        terminalData: terminalOutput.toString(),
+        stdoutData: '',
+        stderrData: '',
+      );
+    }
+
+    final synchronizedStdout =
+        _terminalSynchronizedStdoutBuffer?.toString() ?? '';
+    final synchronizedStderr =
+        _terminalSynchronizedStderrBuffer?.toString() ?? '';
+    _terminalSynchronizedStdoutBuffer = null;
+    _terminalSynchronizedStderrBuffer = null;
+    return (
+      terminalData: terminalOutput.toString(),
+      stdoutData: synchronizedStdout,
+      stderrData: synchronizedStderr,
+    );
+  }
+
+  static String _synchronizedOutputPendingBeginSuffix(String input) =>
+      _terminalPendingSequenceSuffix(input, _terminalSynchronizedOutputBegin);
+
+  static String _synchronizedOutputPendingEndSuffix(String input) =>
+      _terminalPendingSequenceSuffix(input, _terminalSynchronizedOutputEnd);
+
+  static String _terminalPendingSequenceSuffix(String input, String sequence) {
+    final maxSuffixLength = math.min(input.length, sequence.length - 1);
+    for (var length = maxSuffixLength; length > 0; length -= 1) {
+      final suffix = input.substring(input.length - length);
+      if (sequence.startsWith(suffix)) {
+        return suffix;
+      }
+    }
+    return '';
   }
 
   ({String stderrData, String stdoutData, String terminalData})
