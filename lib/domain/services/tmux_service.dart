@@ -4212,6 +4212,14 @@ flutty_file_is_newer_than_process() {
   case "\$mtime" in ''|*[!0-9]*) return 1 ;; esac
   [ "\$mtime" -ge "\$((process_start_epoch - 2))" ]
 }
+flutty_iso8601_epoch() {
+  value=\$1
+  [ -n "\$value" ] || return 0
+  normalized=\$(printf '%s' "\$value" | sed 's/Z\$//; s/\\.[0-9][0-9]*//')
+  date -u -j -f '%Y-%m-%dT%H:%M:%S' "\$normalized" +%s 2>/dev/null ||
+    date -u -d "\$value" +%s 2>/dev/null ||
+    return 0
+}
 flutty_codex_rollout_id() {
   file=\$1
   name=\${file##*/}
@@ -4238,12 +4246,44 @@ flutty_codex_rollout_line() {
   [ -n "\$session_id" ] || return 0
   flutty_emit_lsof_match "\$session_id" "\$(flutty_codex_session_title "\$file" "\$session_id")"
 }
+flutty_codex_index_resume_match() {
+  process_cwd=\$1
+  process_start_epoch=\$2
+  [ -n "\$process_cwd" ] || return 0
+  case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
+  index_file=\$home/.codex/session_index.jsonl
+  [ -r "\$index_file" ] || return 0
+  tail -n 80 "\$index_file" 2>/dev/null | awk '{ lines[NR] = \$0 } END { for (i = NR; i > 0; i--) print lines[i] }' |
+    while IFS= read -r line; do
+      session_id=\$(printf '%s\\n' "\$line" | flutty_json_string_field_from_stdin id)
+      case "\$session_id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      updated_at=\$(printf '%s\\n' "\$line" | flutty_json_string_field_from_stdin updated_at)
+      updated_epoch=\$(flutty_iso8601_epoch "\$updated_at")
+      case "\$updated_epoch" in ''|*[!0-9]*) continue ;; esac
+      [ "\$updated_epoch" -ge "\$((process_start_epoch - 2))" ] || continue
+      rollout_file=\$(find "\$home/.codex/sessions" -name "*\$session_id*.jsonl" -type f -print -quit 2>/dev/null)
+      [ -r "\$rollout_file" ] || continue
+      file_cwd=\$(flutty_codex_rollout_cwd "\$rollout_file")
+      [ "\$file_cwd" = "\$process_cwd" ] || continue
+      title=\$(printf '%s\\n' "\$line" | flutty_json_string_field_from_stdin thread_name)
+      if [ -z "\$title" ]; then
+        title=\$(flutty_codex_session_title "\$rollout_file" "\$session_id")
+      fi
+      flutty_emit_lsof_match "\$session_id" "\$title"
+      break
+    done
+}
 flutty_codex_recent_session_match() {
   process_cwd=\$1
   process_start_epoch=\$2
   [ -n "\$process_cwd" ] || return 0
   case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
   [ -d "\$home/.codex/sessions" ] || return 0
+  index_match=\$(flutty_codex_index_resume_match "\$process_cwd" "\$process_start_epoch")
+  if [ -n "\$index_match" ]; then
+    printf '%s\\n' "\$index_match"
+    return 0
+  fi
   files=\$(find "\$home/.codex/sessions" -name 'rollout-*.jsonl' -type f -exec ls -1t {} + 2>/dev/null | head -n 30)
   [ -n "\$files" ] || return 0
   printf '%s\\n' "\$files" | while IFS= read -r file; do
