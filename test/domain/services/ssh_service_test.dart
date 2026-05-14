@@ -104,6 +104,8 @@ class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockExecSession extends Mock implements SSHSession {}
 
+class _MockSftpClient extends Mock implements SftpClient {}
+
 class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   _FakeHostKeySocket(this._hostKeyBytes);
 
@@ -882,6 +884,60 @@ void main() {
           pty: const SSHPtyConfig(width: 120, height: 30),
         ),
       ).called(1);
+    });
+
+    test('retries transient SFTP channel open failures', () async {
+      final client = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final session = SshSession(
+        connectionId: 11,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      var openAttempts = 0;
+
+      when(client.sftp).thenAnswer((_) {
+        openAttempts++;
+        if (openAttempts == 1) {
+          return Future<SftpClient>.error(
+            SSHChannelOpenError(2, 'open failed'),
+          );
+        }
+        return Future.value(sftp);
+      });
+
+      await expectLater(session.sftp(), completion(same(sftp)));
+      expect(openAttempts, 2);
+    });
+
+    test('does not retry non-transient SFTP channel open failures', () async {
+      final client = _MockSshClient();
+      final session = SshSession(
+        connectionId: 11,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      var openAttempts = 0;
+
+      when(client.sftp).thenAnswer((_) {
+        openAttempts++;
+        return Future<SftpClient>.error(
+          SSHChannelOpenError(1, 'administratively prohibited'),
+        );
+      });
+
+      await expectLater(session.sftp(), throwsA(isA<SSHChannelOpenError>()));
+      expect(openAttempts, 1);
     });
 
     test('runs queued exec work against the session connection', () async {

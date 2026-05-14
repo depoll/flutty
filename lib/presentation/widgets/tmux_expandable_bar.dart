@@ -409,7 +409,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     String? id,
     int index,
     bool isActive,
-    String name,
     int? panePid,
     String? paneStartCommand,
   })
@@ -419,7 +418,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     id: window.id,
     index: window.index,
     isActive: window.isActive,
-    name: window.name,
     panePid: window.panePid,
     paneStartCommand: window.paneStartCommand,
   );
