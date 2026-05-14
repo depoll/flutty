@@ -4077,6 +4077,12 @@ index(\$0, key) {
   }
 }'
 }
+flutty_json_string_field_from_file() {
+  file=\$1
+  field=\$2
+  [ -r "\$file" ] || return 0
+  flutty_json_string_field_from_stdin "\$field" < "\$file" 2>/dev/null
+}
 flutty_clean_session_title() {
   printf '%s' "\$1" |
     sed 's/\\\\"/"/g; s/\\\\\\\\/\\\\/g; s/\\\\n/ /g; s/\\\\r/ /g; s/\\\\t/ /g' |
@@ -4149,6 +4155,103 @@ flutty_gemini_session_title() {
   fi
   flutty_clean_session_title "\$title"
 }
+flutty_process_cwd() {
+  pid=\$1
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -nP -a -p "\$pid" -d cwd -Fn 2>/dev/null | awk '
+substr(\$0, 1, 1) == "n" {
+  print substr(\$0, 2)
+  exit
+}'
+}
+flutty_codex_rollout_id() {
+  file=\$1
+  name=\${file##*/}
+  name=\${name%.jsonl}
+  session_id=\$(printf '%s\\n' "\$name" | sed -nE 's/^.*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\$/\\1/p')
+  if [ -z "\$session_id" ]; then
+    session_id=\$(flutty_json_string_field_from_file "\$file" id)
+  fi
+  if [ -z "\$session_id" ]; then
+    session_id=\$name
+  fi
+  printf '%s' "\$session_id"
+}
+flutty_codex_rollout_cwd() {
+  file=\$1
+  grep '"cwd"' "\$file" 2>/dev/null |
+    head -n 1 |
+    flutty_json_string_field_from_stdin cwd
+}
+flutty_codex_rollout_line() {
+  file=\$1
+  [ -r "\$file" ] || return 0
+  session_id=\$(flutty_codex_rollout_id "\$file")
+  [ -n "\$session_id" ] || return 0
+  flutty_emit_lsof_match "\$session_id" "\$(flutty_codex_session_title "\$file" "\$session_id")"
+}
+flutty_codex_recent_session_match() {
+  process_cwd=\$1
+  [ -d "\$home/.codex/sessions" ] || return 0
+  files=\$(find "\$home/.codex/sessions" -name 'rollout-*.jsonl' -type f -exec ls -1t {} + 2>/dev/null | head -n 30)
+  [ -n "\$files" ] || return 0
+  if [ -n "\$process_cwd" ]; then
+    match=\$(printf '%s\\n' "\$files" | while IFS= read -r file; do
+      [ -r "\$file" ] || continue
+      file_cwd=\$(flutty_codex_rollout_cwd "\$file")
+      [ "\$file_cwd" = "\$process_cwd" ] || continue
+      flutty_codex_rollout_line "\$file"
+      break
+    done)
+    if [ -n "\$match" ]; then
+      printf '%s\\n' "\$match"
+    fi
+    return 0
+  fi
+  printf '%s\\n' "\$files" | while IFS= read -r file; do
+    flutty_codex_rollout_line "\$file"
+    break
+  done
+}
+flutty_gemini_session_id() {
+  file=\$1
+  session_id=\$(flutty_json_string_field_from_file "\$file" sessionId)
+  if [ -z "\$session_id" ]; then
+    name=\${file##*/}
+    session_id=\${name%.json}
+    session_id=\${session_id%.jsonl}
+  fi
+  printf '%s' "\$session_id"
+}
+flutty_gemini_file_line() {
+  file=\$1
+  [ -r "\$file" ] || return 0
+  session_id=\$(flutty_gemini_session_id "\$file")
+  [ -n "\$session_id" ] || return 0
+  flutty_emit_lsof_match "\$session_id" "\$(flutty_gemini_session_title "\$file")"
+}
+flutty_gemini_recent_session_match() {
+  process_cwd=\$1
+  [ -d "\$home/.gemini/tmp" ] || return 0
+  files=\$(find "\$home/.gemini/tmp" -type f -name 'session-*.json*' -path '*/chats/*' -exec ls -1t {} + 2>/dev/null | head -n 30)
+  [ -n "\$files" ] || return 0
+  if [ -n "\$process_cwd" ]; then
+    match=\$(printf '%s\\n' "\$files" | while IFS= read -r file; do
+      [ -r "\$file" ] || continue
+      grep -F "\$process_cwd" "\$file" >/dev/null 2>&1 || continue
+      flutty_gemini_file_line "\$file"
+      break
+    done)
+    if [ -n "\$match" ]; then
+      printf '%s\\n' "\$match"
+    fi
+    return 0
+  fi
+  printf '%s\\n' "\$files" | while IFS= read -r file; do
+    flutty_gemini_file_line "\$file"
+    break
+  done
+}
 flutty_emit_lsof_match() {
   value=\$(printf '%s' "\$1" | tr "\\037\\r\\n" "   ")
   title=\$(flutty_clean_session_title "\$2")
@@ -4219,11 +4322,11 @@ BEGIN {
 END {
   for (pid in parent) {
     tool = ""
-    if (command[pid] ~ /(^|[\\/[:space:]])claude([[:space:]-]|\$)/) tool = "claude"
-    else if (command[pid] ~ /(^|[\\/[:space:]])copilot([[:space:]-]|\$)/) tool = "copilot"
-    else if (command[pid] ~ /(^|[\\/[:space:]])codex([[:space:]-]|\$)/) tool = "codex"
-    else if (command[pid] ~ /(^|[\\/[:space:]])gemini([[:space:]-]|\$)/) tool = "gemini"
-    else if (command[pid] ~ /(^|[\\/[:space:]])opencode([[:space:]-]|\$)/) tool = "opencode"
+    if (command[pid] ~ /(^|[\\/@[:space:]])claude([\\/._[:space:]-]|\$)/) tool = "claude"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])copilot([\\/._[:space:]-]|\$)/) tool = "copilot"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])codex([\\/._[:space:]-]|\$)/) tool = "codex"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])gemini([\\/._[:space:]-]|\$)/) tool = "gemini"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])opencode([\\/._[:space:]-]|\$)/) tool = "opencode"
     if (tool == "") continue
     current = pid
     seen = 0
@@ -4262,6 +4365,18 @@ END {
         if [ -n "\$lsof_match" ]; then
           session_id=\$(printf '%s' "\$lsof_match" | awk -F "\$sep" '{ print \$1; exit }')
           title=\$(printf '%s' "\$lsof_match" | awk -F "\$sep" '{ print \$2; exit }')
+        fi
+      fi
+      if [ -z "\$session_id" ]; then
+        process_cwd=\$(flutty_process_cwd "\$pid")
+        case "\$tool" in
+          codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" || true) ;;
+          gemini) recent_match=\$(flutty_gemini_recent_session_match "\$process_cwd" || true) ;;
+          *) recent_match= ;;
+        esac
+        if [ -n "\$recent_match" ]; then
+          session_id=\$(printf '%s' "\$recent_match" | awk -F "\$sep" '{ print \$1; exit }')
+          title=\$(printf '%s' "\$recent_match" | awk -F "\$sep" '{ print \$2; exit }')
         fi
       fi
       if [ -z "\$session_id" ]; then
