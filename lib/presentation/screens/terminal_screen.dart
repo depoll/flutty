@@ -2524,17 +2524,18 @@ bool shouldAutoResumeAttachOwnedTerminalOutputFollow({
   required bool tuiSignalingActive,
 }) => isAttachOwnedAltBuffer && (hasForegroundAgentTool || tuiSignalingActive);
 
-/// Whether live output should restore follow mode for an attach-owned TUI.
+/// Whether live output should restore follow mode for an attach-owned alt
+/// buffer TUI.
 @visibleForTesting
 bool shouldResumeAttachOwnedTerminalFollowOnLiveOutput({
   required bool shouldFollowLiveOutput,
-  required bool isAttachOwnedTerminal,
+  required bool isAttachOwnedAltBuffer,
   required bool hasForegroundAgentTool,
   required bool tuiSignalingActive,
   required bool isTerminalOutputFollowPaused,
 }) =>
     !shouldFollowLiveOutput &&
-    isAttachOwnedTerminal &&
+    isAttachOwnedAltBuffer &&
     (hasForegroundAgentTool || tuiSignalingActive) &&
     !isTerminalOutputFollowPaused;
 
@@ -4853,7 +4854,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted ||
         !shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
           shouldFollowLiveOutput: _shouldFollowLiveOutput,
-          isAttachOwnedTerminal: _usesAttachOwnedAltBuffer,
+          isAttachOwnedAltBuffer:
+              _usesAttachOwnedAltBuffer && _isUsingAltBuffer,
           hasForegroundAgentTool: _hasForegroundAgentToolCommand,
           tuiSignalingActive:
               session != null && _isOuterTuiSignalingActive(session),

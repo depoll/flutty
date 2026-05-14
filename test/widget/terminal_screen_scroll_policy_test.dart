@@ -282,7 +282,7 @@ void main() {
       expect(
         shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
           shouldFollowLiveOutput: false,
-          isAttachOwnedTerminal: true,
+          isAttachOwnedAltBuffer: true,
           hasForegroundAgentTool: true,
           tuiSignalingActive: false,
           isTerminalOutputFollowPaused: false,
@@ -295,7 +295,7 @@ void main() {
       expect(
         shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
           shouldFollowLiveOutput: true,
-          isAttachOwnedTerminal: true,
+          isAttachOwnedAltBuffer: true,
           hasForegroundAgentTool: true,
           tuiSignalingActive: false,
           isTerminalOutputFollowPaused: false,
@@ -308,7 +308,7 @@ void main() {
       expect(
         shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
           shouldFollowLiveOutput: false,
-          isAttachOwnedTerminal: false,
+          isAttachOwnedAltBuffer: false,
           hasForegroundAgentTool: true,
           tuiSignalingActive: true,
           isTerminalOutputFollowPaused: false,
@@ -317,11 +317,27 @@ void main() {
       );
     });
 
+    test(
+      'live output does not resume attach-owned inline agent scrollback',
+      () {
+        expect(
+          shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
+            shouldFollowLiveOutput: false,
+            isAttachOwnedAltBuffer: false,
+            hasForegroundAgentTool: true,
+            tuiSignalingActive: false,
+            isTerminalOutputFollowPaused: false,
+          ),
+          isFalse,
+        );
+      },
+    );
+
     test('live output waits while touch scrolling is paused', () {
       expect(
         shouldResumeAttachOwnedTerminalFollowOnLiveOutput(
           shouldFollowLiveOutput: false,
-          isAttachOwnedTerminal: true,
+          isAttachOwnedAltBuffer: true,
           hasForegroundAgentTool: true,
           tuiSignalingActive: false,
           isTerminalOutputFollowPaused: true,
