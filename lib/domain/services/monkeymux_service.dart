@@ -17,6 +17,13 @@ import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'tmux_service.dart';
 
+typedef _MonkeyMuxAgentSessionMetadata = ({
+  AgentLaunchTool tool,
+  String sessionId,
+  String? title,
+  AgentSessionConfidence confidence,
+});
+
 const _oneShotControlResponseTimeout = Duration(seconds: 10);
 const _oneShotRunCommandResponseTimeout = Duration(seconds: 25);
 
@@ -109,10 +116,17 @@ String buildMonkeyMuxAttachCommand({
 /// Controls a remote MonkeyMux session through its JSON backchannel.
 class MonkeyMuxService implements RemoteMultiplexerService {
   /// Creates a MonkeyMux service.
-  const MonkeyMuxService({required MonkeyMuxInstallerService installer})
-    : _installer = installer;
+  const MonkeyMuxService({
+    required MonkeyMuxInstallerService installer,
+    Duration agentSessionMetadataPeriodicRefreshInterval = const Duration(
+      seconds: 10,
+    ),
+  }) : _installer = installer,
+       _agentSessionMetadataPeriodicRefreshInterval =
+           agentSessionMetadataPeriodicRefreshInterval;
 
   final MonkeyMuxInstallerService _installer;
+  final Duration _agentSessionMetadataPeriodicRefreshInterval;
 
   static final _observers =
       <_MonkeyMuxWatchKey, _MonkeyMuxWindowChangeObserver>{};
@@ -125,6 +139,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       <_MonkeyMuxWatchKey, List<TmuxWindow>>{};
   static final _agentMetadataPendingForced = <_MonkeyMuxWatchKey, bool>{};
   static final _agentMetadataRefreshes = <_MonkeyMuxWatchKey, DateTime>{};
+  static final _agentMetadataPeriodicTimers = <_MonkeyMuxWatchKey, Timer>{};
+  static final _agentMetadataPeriodicSessions =
+      <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
 
@@ -145,6 +162,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     _agentMetadataRefreshes.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
+    final periodicKeys = _agentMetadataPeriodicTimers.keys
+        .where((key) => key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final key in periodicKeys) {
+      _cancelAgentMetadataPeriodicRefresh(key);
+    }
     _agentMetadataRequestPanePids.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -249,9 +272,16 @@ class MonkeyMuxService implements RemoteMultiplexerService {
             );
           }
         },
-        onDispose: () => _observers.remove(key),
+        onDispose: () {
+          _observers.remove(key);
+          _cancelAgentMetadataPeriodicRefresh(key);
+        },
       ),
     );
+    final cachedWindows = _windowSnapshotCache[key];
+    if (cachedWindows != null) {
+      _scheduleAgentMetadataRefresh(session, sessionName, key, cachedWindows);
+    }
     DiagnosticsLogService.instance.info(
       'monkeymux.watch',
       'watch_requested',
@@ -447,7 +477,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
 
   Future<
     ({
-      Map<int, ({String sessionId, String? title})> metadataByPanePid,
+      Map<int, _MonkeyMuxAgentSessionMetadata> metadataByPanePid,
       Set<int> panePids,
     })?
   >
@@ -472,9 +502,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       );
       final response = await _runControlCommand(session, sessionName, {
         'type': 'run_command',
-        'command': buildCopilotActiveSessionMetadataCommand(panePids),
+        'command': buildAgentActiveSessionMetadataCommand(panePids),
       }, priority: SshExecPriority.low);
-      final metadataByPanePid = parseCopilotActiveSessionMetadataOutput(
+      final metadataByPanePid = parseAgentActiveSessionMetadataOutput(
         response.data ?? '',
         panePids,
       );
@@ -509,9 +539,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     List<TmuxWindow> windows, {
     bool force = false,
   }) {
-    final panePids = _copilotPanePids(windows);
+    final panePids = _monkeyMuxAgentPanePids(windows);
     if (panePids.isEmpty) {
+      _cancelAgentMetadataPeriodicRefresh(key);
       return;
+    }
+    if (_observers.containsKey(key)) {
+      _ensureAgentMetadataPeriodicRefresh(session, sessionName, key);
     }
     if (_agentMetadataRequests.containsKey(key)) {
       final activePanePids =
@@ -579,14 +613,53 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }).ignore();
   }
 
-  Set<int> _copilotPanePids(Iterable<TmuxWindow> windows) => windows
-      .where(
-        (window) =>
-            window.foregroundAgentTool == AgentLaunchTool.copilotCli &&
-            window.panePid != null,
-      )
-      .map((window) => window.panePid!)
-      .toSet();
+  void _ensureAgentMetadataPeriodicRefresh(
+    SshSession session,
+    String sessionName,
+    _MonkeyMuxWatchKey key,
+  ) {
+    if (_agentSessionMetadataPeriodicRefreshInterval <= Duration.zero) {
+      return;
+    }
+    _agentMetadataPeriodicSessions[key] = (
+      session: session,
+      sessionName: sessionName,
+    );
+    if (_agentMetadataPeriodicTimers.containsKey(key)) {
+      return;
+    }
+    _agentMetadataPeriodicTimers[key] = Timer(
+      _agentSessionMetadataPeriodicRefreshInterval,
+      () {
+        _agentMetadataPeriodicTimers.remove(key);
+        final refreshContext = _agentMetadataPeriodicSessions[key];
+        if (refreshContext == null) {
+          return;
+        }
+        if (!_observers.containsKey(key)) {
+          _agentMetadataPeriodicSessions.remove(key);
+          return;
+        }
+        final windows = _windowSnapshotCache[key];
+        if (windows == null || _monkeyMuxAgentPanePids(windows).isEmpty) {
+          _agentMetadataPeriodicSessions.remove(key);
+          return;
+        }
+        _scheduleAgentMetadataRefresh(
+          refreshContext.session,
+          refreshContext.sessionName,
+          key,
+          windows,
+          force: true,
+        );
+      },
+    );
+  }
+
+  static void _cancelAgentMetadataPeriodicRefresh(_MonkeyMuxWatchKey key) {
+    _agentMetadataPeriodicTimers.remove(key)?.cancel();
+    _agentMetadataPeriodicSessions.remove(key);
+  }
 
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
     if (windows.isEmpty) {
@@ -641,47 +714,44 @@ class MonkeyMuxService implements RemoteMultiplexerService {
 
 ({List<TmuxWindow> windows, bool changed}) _applyMonkeyMuxAgentSessionMetadata(
   List<TmuxWindow> windows,
-  Map<int, ({String sessionId, String? title})> metadataByPanePid, {
+  Map<int, _MonkeyMuxAgentSessionMetadata> metadataByPanePid, {
   Set<int>? refreshedPanePids,
 }) {
   var changed = false;
   final enriched = windows
       .map((window) {
         final panePid = window.panePid;
-        if (panePid != null &&
-            window.foregroundAgentTool != AgentLaunchTool.copilotCli) {
-          if (window.activeAgentSessionId != null ||
-              window.agentSessionTitle != null) {
-            changed = true;
-            return window.copyWith(clearActiveAgentSessionMetadata: true);
-          }
-          return window;
-        }
         final metadata = panePid == null ? null : metadataByPanePid[panePid];
-        if (metadata == null) {
+        if (metadata == null || metadata.tool != window.foregroundAgentTool) {
           if (panePid != null &&
               refreshedPanePids != null &&
               refreshedPanePids.contains(panePid) &&
-              (window.activeAgentSessionId != null ||
-                  window.agentSessionTitle != null)) {
+              _hasMonkeyMuxAgentSessionMetadata(window)) {
             changed = true;
             return window.copyWith(clearActiveAgentSessionMetadata: true);
           }
           return window;
         }
         if (window.activeAgentSessionId == metadata.sessionId &&
-            window.agentSessionTitle == metadata.title) {
+            window.agentSessionTitle == metadata.title &&
+            window.activeAgentSessionConfidence == metadata.confidence) {
           return window;
         }
         changed = true;
         return window.copyWith(
           activeAgentSessionId: metadata.sessionId,
           agentSessionTitle: metadata.title,
+          activeAgentSessionConfidence: metadata.confidence,
         );
       })
       .toList(growable: false);
   return (windows: changed ? enriched : windows, changed: changed);
 }
+
+bool _hasMonkeyMuxAgentSessionMetadata(TmuxWindow window) =>
+    window.activeAgentSessionId != null ||
+    window.agentSessionTitle != null ||
+    window.activeAgentSessionConfidence != null;
 
 /// Applies live Copilot metadata to MonkeyMux windows for regression tests.
 @visibleForTesting
@@ -689,11 +759,22 @@ List<TmuxWindow> applyMonkeyMuxAgentSessionMetadataForTesting(
   List<TmuxWindow> windows,
   Map<int, ({String sessionId, String? title})> metadataByPanePid, {
   Set<int>? refreshedPanePids,
-}) => _applyMonkeyMuxAgentSessionMetadata(
-  windows,
-  metadataByPanePid,
-  refreshedPanePids: refreshedPanePids,
-).windows;
+}) {
+  final agentMetadataByPanePid = <int, _MonkeyMuxAgentSessionMetadata>{
+    for (final entry in metadataByPanePid.entries)
+      entry.key: (
+        tool: AgentLaunchTool.copilotCli,
+        sessionId: entry.value.sessionId,
+        title: entry.value.title,
+        confidence: AgentSessionConfidence.medium,
+      ),
+  };
+  return _applyMonkeyMuxAgentSessionMetadata(
+    windows,
+    agentMetadataByPanePid,
+    refreshedPanePids: refreshedPanePids,
+  ).windows;
+}
 
 Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
   SshSession session,
@@ -1182,10 +1263,37 @@ TmuxWindow? _windowFromJson(Object? value) {
   );
 }
 
+Set<int> _monkeyMuxAgentPanePids(Iterable<TmuxWindow> windows) => windows
+    .where(
+      (window) => window.foregroundAgentTool != null && window.panePid != null,
+    )
+    .map((window) => window.panePid!)
+    .toSet();
+
 /// Parses a MonkeyMux window snapshot for protocol regression tests.
 @visibleForTesting
 TmuxWindow? parseMonkeyMuxWindowSnapshotForTesting(Object? value) =>
     _windowFromJson(value);
+
+/// Returns whether a MonkeyMux window list contains panes needing agent probes.
+@visibleForTesting
+bool shouldRefreshMonkeyMuxAgentMetadataForTesting(
+  Iterable<TmuxWindow> windows,
+) => _monkeyMuxAgentPanePids(windows).isNotEmpty;
+
+/// Applies live agent metadata to MonkeyMux windows for regression tests.
+@visibleForTesting
+List<TmuxWindow> applyMonkeyMuxAgentMetadataForTesting(
+  List<TmuxWindow> windows,
+  String output,
+) {
+  final panePids = _monkeyMuxAgentPanePids(windows);
+  return _applyMonkeyMuxAgentSessionMetadata(
+    windows,
+    parseAgentActiveSessionMetadataOutput(output, panePids),
+    refreshedPanePids: panePids,
+  ).windows;
+}
 
 /// Parses a MonkeyMux attach-state response for protocol regression tests.
 @visibleForTesting
