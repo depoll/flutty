@@ -131,6 +131,8 @@ void main() {
         expect(command, contains('flutty_codex_session_title'));
         expect(command, contains('flutty_gemini_session_title'));
         expect(command, contains('flutty_process_cwd'));
+        expect(command, contains('flutty_process_start_epoch'));
+        expect(command, contains('flutty_file_is_newer_than_process'));
         expect(command, contains('flutty_codex_recent_session_match'));
         expect(command, contains('flutty_gemini_recent_session_match'));
         expect(command, contains('customTitle'));
@@ -141,6 +143,10 @@ void main() {
         expect(command, contains('.gemini'));
         expect(command, contains(r'find "$home/.codex/sessions"'));
         expect(command, contains(r'find "$home/.gemini/tmp"'));
+        expect(
+          command,
+          contains(r'process_start_epoch=$(flutty_process_start_epoch "$pid")'),
+        );
         expect(command, contains('sessionId'));
         expect(command, contains(r'inuse."$pid".lock'));
         expect(command, contains('workspace.yaml'));
@@ -151,7 +157,7 @@ void main() {
           command,
           isNot(contains('.copilot/session-state/*/inuse.*.lock')),
         );
-        expect(command, isNot(contains(r'ps -p "$pid"')));
+        expect(command, contains(r'ps -p "$pid" -o etime='));
         expect(command, isNot(contains('exit 0')));
       },
     );
