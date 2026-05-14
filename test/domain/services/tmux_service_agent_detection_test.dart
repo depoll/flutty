@@ -135,6 +135,7 @@ void main() {
         expect(command, contains('flutty_file_is_newer_than_process'));
         expect(command, contains('flutty_iso8601_epoch'));
         expect(command, contains('flutty_codex_index_resume_match'));
+        expect(command, contains('flutty_codex_logs_resume_match'));
         expect(command, contains('flutty_codex_recent_session_match'));
         expect(command, contains('flutty_gemini_recent_session_match'));
         expect(command, contains('customTitle'));
@@ -146,6 +147,10 @@ void main() {
         expect(command, contains(r'find "$home/.codex/sessions"'));
         expect(command, contains(r'find "$home/.gemini/tmp"'));
         expect(command, contains('session_index.jsonl'));
+        expect(command, contains('logs_2.sqlite'));
+        expect(command, contains(r'sqlite3 "$logs_db"'));
+        expect(command, contains('thread_id'));
+        expect(command, contains(r"process_uuid like 'pid:$pid:%'"));
         expect(command, contains('updated_at'));
         expect(
           command,

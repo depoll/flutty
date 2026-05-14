@@ -4273,12 +4273,42 @@ flutty_codex_index_resume_match() {
       break
     done
 }
+flutty_codex_logs_resume_match() {
+  process_cwd=\$1
+  process_start_epoch=\$2
+  pid=\$3
+  [ -n "\$process_cwd" ] || return 0
+  case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
+  case "\$pid" in ''|*[!0-9]*) return 0 ;; esac
+  logs_db=\$home/.codex/logs_2.sqlite
+  [ -r "\$logs_db" ] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  cutoff=\$((process_start_epoch - 2))
+  sqlite3 "\$logs_db" "select thread_id from logs where process_uuid like 'pid:\$pid:%' and thread_id is not null and thread_id != '' and ts >= \$cutoff order by ts desc, ts_nanos desc, id desc limit 80;" 2>/dev/null |
+    awk '!seen[\$0]++' |
+    while IFS= read -r session_id; do
+      case "\$session_id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      rollout_file=\$(find "\$home/.codex/sessions" -name "*\$session_id*.jsonl" -type f -print -quit 2>/dev/null)
+      [ -r "\$rollout_file" ] || continue
+      file_cwd=\$(flutty_codex_rollout_cwd "\$rollout_file")
+      [ "\$file_cwd" = "\$process_cwd" ] || continue
+      title=\$(flutty_codex_session_title "\$rollout_file" "\$session_id")
+      flutty_emit_lsof_match "\$session_id" "\$title"
+      break
+    done
+}
 flutty_codex_recent_session_match() {
   process_cwd=\$1
   process_start_epoch=\$2
+  pid=\$3
   [ -n "\$process_cwd" ] || return 0
   case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
   [ -d "\$home/.codex/sessions" ] || return 0
+  logs_match=\$(flutty_codex_logs_resume_match "\$process_cwd" "\$process_start_epoch" "\$pid")
+  if [ -n "\$logs_match" ]; then
+    printf '%s\\n' "\$logs_match"
+    return 0
+  fi
   index_match=\$(flutty_codex_index_resume_match "\$process_cwd" "\$process_start_epoch")
   if [ -n "\$index_match" ]; then
     printf '%s\\n' "\$index_match"
@@ -4447,7 +4477,7 @@ END {
         process_cwd=\$(flutty_process_cwd "\$pid")
         process_start_epoch=\$(flutty_process_start_epoch "\$pid")
         case "\$tool" in
-          codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
+          codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" "\$pid" || true) ;;
           gemini) recent_match=\$(flutty_gemini_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
           *) recent_match= ;;
         esac
