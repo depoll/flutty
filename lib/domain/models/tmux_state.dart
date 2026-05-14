@@ -9,6 +9,18 @@ import 'agent_launch_preset.dart';
 /// stable without constraining user-controlled window names.
 const tmuxWindowFieldSeparator = '\x1f';
 
+/// Confidence level for a live AI session inferred for a tmux pane.
+enum AgentSessionConfidence {
+  /// Flutty explicitly launched or resumed this session in this pane.
+  high,
+
+  /// Process metadata or open files strongly matched this session.
+  medium,
+
+  /// Directory and recency heuristics weakly matched this session.
+  low,
+}
+
 /// Current tmux pane metadata needed for side-channel terminal features.
 @immutable
 class TmuxPaneContext {
@@ -102,6 +114,7 @@ class TmuxWindow {
     this.agentTool,
     this.activeAgentSessionId,
     this.agentSessionTitle,
+    this.activeAgentSessionConfidence,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
@@ -112,7 +125,8 @@ class TmuxWindow {
   /// Separator-delimited:
   /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
   /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool<US>`
-  /// `window_id<US>pane_pid`
+  /// `window_id<US>pane_pid<US>agent_session_id<US>agent_session_title<US>`
+  /// `agent_session_confidence`
   ///
   /// Legacy pipe-delimited snapshots are still accepted for older tests and
   /// stale control-mode messages.
@@ -142,6 +156,11 @@ class TmuxWindow {
           : null,
       paneStartCommand: parsed.paneStartCommand,
       agentTool: fields.length > 9 ? _agentToolFromMetadata(fields[9]) : null,
+      activeAgentSessionId: fields.length > 12 ? _nonEmpty(fields[12]) : null,
+      agentSessionTitle: fields.length > 13 ? _nonEmpty(fields[13]) : null,
+      activeAgentSessionConfidence: _agentSessionConfidenceFromWindowFields(
+        fields,
+      ),
     );
   }
 
@@ -184,6 +203,9 @@ class TmuxWindow {
   /// Live coding-agent session title observed from process metadata, if
   /// available.
   final String? agentSessionTitle;
+
+  /// Confidence level for [activeAgentSessionId] and [agentSessionTitle].
+  final AgentSessionConfidence? activeAgentSessionConfidence;
 
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
@@ -237,6 +259,7 @@ class TmuxWindow {
     AgentLaunchTool? agentTool,
     String? activeAgentSessionId,
     String? agentSessionTitle,
+    AgentSessionConfidence? activeAgentSessionConfidence,
     bool clearActiveAgentSessionMetadata = false,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
@@ -257,6 +280,9 @@ class TmuxWindow {
     agentSessionTitle: clearActiveAgentSessionMetadata
         ? null
         : agentSessionTitle ?? this.agentSessionTitle,
+    activeAgentSessionConfidence: clearActiveAgentSessionMetadata
+        ? null
+        : activeAgentSessionConfidence ?? this.activeAgentSessionConfidence,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
@@ -280,7 +306,7 @@ class TmuxWindow {
     }
     final id = agentSessionId;
     if (id == null || id.isEmpty) return null;
-    return 'session ${_shortenSessionId(id)}';
+    return 'active session';
   }
 
   /// Live coding-agent session title suitable for primary UI text.
@@ -303,10 +329,6 @@ class TmuxWindow {
     final context = _windowContextLabelFromPath(currentPath);
     if (context != null) {
       return '${tool.label} · $context';
-    }
-    final sessionId = agentSessionId;
-    if (sessionId != null && sessionId.isNotEmpty) {
-      return '${tool.label} · ${_shortenSessionId(sessionId)}';
     }
     return tool.label;
   }
@@ -457,6 +479,16 @@ class TmuxWindow {
     if (agentTitle != null && display == agentTitle) {
       return sessionLabel == display ? null : sessionLabel;
     }
+    if (sessionLabel != null &&
+        sessionTitle == null &&
+        sessionLabel != display) {
+      final toolLabel = foregroundAgentTool?.label;
+      final secondaryParts = <String>[
+        if (toolLabel != null && !_titlesMatch(toolLabel, display)) toolLabel,
+        sessionLabel,
+      ];
+      return secondaryParts.join(' · ');
+    }
 
     if (_isDecoratedVariantOfTitle(name, normalizedPaneTitle)) {
       return null;
@@ -539,6 +571,7 @@ class TmuxWindow {
           agentTool == other.agentTool &&
           activeAgentSessionId == other.activeAgentSessionId &&
           agentSessionTitle == other.agentSessionTitle &&
+          activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -557,6 +590,7 @@ class TmuxWindow {
     agentTool,
     activeAgentSessionId,
     agentSessionTitle,
+    activeAgentSessionConfidence,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
@@ -663,6 +697,7 @@ TmuxWindow _preserveActiveAgentSessionMetadata(
   return updated.copyWith(
     activeAgentSessionId: existing.activeAgentSessionId,
     agentSessionTitle: existing.agentSessionTitle,
+    activeAgentSessionConfidence: existing.activeAgentSessionConfidence,
   );
 }
 
@@ -1007,7 +1042,32 @@ AgentLaunchTool? _agentToolFromMetadata(String? value) =>
     agentLaunchToolForCommandName(value) ??
     agentLaunchToolForCommandText(value);
 
-String? _agentSessionIdFromCommand(
+AgentSessionConfidence? _agentSessionConfidenceFromWindowFields(
+  List<String> fields,
+) {
+  final confidence = fields.length > 14
+      ? _agentSessionConfidenceFromMetadata(fields[14])
+      : null;
+  if (confidence != null) return confidence;
+  final sessionId = fields.length > 12 ? _nonEmpty(fields[12]) : null;
+  final title = fields.length > 13 ? _nonEmpty(fields[13]) : null;
+  if (sessionId != null || title != null) return AgentSessionConfidence.high;
+  return null;
+}
+
+AgentSessionConfidence? _agentSessionConfidenceFromMetadata(String? value) {
+  final normalized = value?.trim().toLowerCase();
+  if (normalized == null || normalized.isEmpty) return null;
+  return switch (normalized) {
+    'high' => AgentSessionConfidence.high,
+    'medium' => AgentSessionConfidence.medium,
+    'low' => AgentSessionConfidence.low,
+    _ => null,
+  };
+}
+
+/// Extracts a tool-specific session ID from a launch/resume command.
+String? agentSessionIdFromLaunchCommand(
   String? value, {
   required AgentLaunchTool tool,
 }) {
@@ -1042,11 +1102,10 @@ String? _agentSessionIdFromCommand(
   return null;
 }
 
-String _shortenSessionId(String id) {
-  final trimmed = id.trim();
-  if (trimmed.length <= 14) return trimmed;
-  return '${trimmed.substring(0, 8)}...';
-}
+String? _agentSessionIdFromCommand(
+  String? value, {
+  required AgentLaunchTool tool,
+}) => agentSessionIdFromLaunchCommand(value, tool: tool);
 
 String? _windowContextLabelFromPath(String? value) {
   final trimmed = value?.trim();
