@@ -1907,6 +1907,10 @@ class SshSession {
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
+  static const _sftpOpenRetryDelays = [
+    Duration(milliseconds: 250),
+    Duration(milliseconds: 750),
+  ];
   static const _previewLineCount = 3;
   static const _previewMaxChars = 220;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
@@ -2408,27 +2412,67 @@ class SshSession {
       'open_start',
       fields: {'connectionId': connectionId, 'hostId': hostId},
     );
-    try {
-      final sftpClient = await client.sftp();
-      DiagnosticsLogService.instance.info(
-        'ssh.sftp',
-        'open_success',
-        fields: {'connectionId': connectionId, 'hostId': hostId},
-      );
-      return sftpClient;
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.error(
-        'ssh.sftp',
-        'open_failed',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          ..._diagnosticSshExecErrorFields(error),
-        },
-      );
-      _reportConnectionHealthFailureIfClosed(error, operation: 'sftp');
-      rethrow;
+
+    for (var attempt = 0; ; attempt += 1) {
+      try {
+        final sftpClient = await client.sftp();
+        DiagnosticsLogService.instance.info(
+          'ssh.sftp',
+          'open_success',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'attempt': attempt + 1,
+          },
+        );
+        return sftpClient;
+      } on Object catch (error) {
+        final retryDelay = _sftpOpenRetryDelay(error, attempt);
+        if (retryDelay != null) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.sftp',
+            'open_retry',
+            fields: {
+              'connectionId': connectionId,
+              'hostId': hostId,
+              'attempt': attempt + 1,
+              'delayMs': retryDelay.inMilliseconds,
+              ..._diagnosticSshExecErrorFields(error),
+            },
+          );
+          await Future<void>.delayed(retryDelay);
+          continue;
+        }
+
+        DiagnosticsLogService.instance.error(
+          'ssh.sftp',
+          'open_failed',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'attempt': attempt + 1,
+            ..._diagnosticSshExecErrorFields(error),
+          },
+        );
+        _reportConnectionHealthFailureIfClosed(error, operation: 'sftp');
+        rethrow;
+      }
     }
+  }
+
+  Duration? _sftpOpenRetryDelay(Object error, int attempt) {
+    if (attempt >= _sftpOpenRetryDelays.length ||
+        !_isTransientSftpOpenError(error)) {
+      return null;
+    }
+    return _sftpOpenRetryDelays[attempt];
+  }
+
+  bool _isTransientSftpOpenError(Object error) {
+    if (error is! SSHChannelOpenError) {
+      return false;
+    }
+    return error.code == 2 || error.code == 4;
   }
 
   /// Start a local port forward tunnel.
@@ -2703,6 +2747,7 @@ class ActiveConnection {
     required this.createdAt,
     required this.config,
     this.preview,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -2731,6 +2776,9 @@ class ActiveConnection {
 
   /// The latest terminal preview snippet, when available.
   final String? preview;
+
+  /// The active coding-agent session title, when available.
+  final String? sessionTitle;
 
   /// The latest remote window title, when available.
   final String? windowTitle;
@@ -2838,6 +2886,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
+  final Map<int, String> _connectionSessionTitles = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
@@ -2863,6 +2912,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       _connectionHealthFailureSubscriptions.clear();
     });
     _connectionHostIds.clear();
+    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     return {};
   }
@@ -2954,6 +3004,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
+    _connectionSessionTitles.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
     await _queueBackgroundStatusSync();
@@ -2971,6 +3022,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
+    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     state = {};
     await _queueBackgroundStatusSync();
@@ -2999,6 +3051,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       createdAt: session.createdAt,
       config: session.config,
       preview: session.terminalPreview,
+      sessionTitle: _connectionSessionTitles[connectionId],
       windowTitle: session.windowTitle,
       iconName: session.iconName,
       workingDirectory: session.workingDirectory,
@@ -3068,6 +3121,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           createdAt: session.createdAt,
           config: session.config,
           preview: session.terminalPreview,
+          sessionTitle: _connectionSessionTitles[connectionId],
           windowTitle: session.windowTitle,
           iconName: session.iconName,
           workingDirectory: session.workingDirectory,
@@ -3172,6 +3226,27 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     });
   }
 
+  /// Update the active coding-agent session title attached to a connection.
+  void updateConnectionSessionTitle(int connectionId, String? sessionTitle) {
+    final normalizedTitle = _normalizeConnectionSessionTitle(sessionTitle);
+    final currentTitle = _connectionSessionTitles[connectionId];
+    if (normalizedTitle == currentTitle ||
+        (normalizedTitle == null && currentTitle == null)) {
+      return;
+    }
+    if (normalizedTitle == null) {
+      _connectionSessionTitles.remove(connectionId);
+    } else {
+      _connectionSessionTitles[connectionId] = normalizedTitle;
+    }
+    state = {...state};
+  }
+
+  String? _normalizeConnectionSessionTitle(String? sessionTitle) {
+    final trimmed = sessionTitle?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
   void _updateConnectionAttempt(
     int hostId,
     ConnectionProgressUpdate update, {
@@ -3235,6 +3310,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _detachSessionListeners(connectionId, session: session);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
+    _connectionSessionTitles.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
     if (hostId != null) {

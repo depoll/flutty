@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.22"
+	monkeyMuxVersion         = "0.1.23"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1513,7 +1513,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	s.mu.Unlock()
 
 	if shouldWrite {
-		s.writeAttach(attach, chunk)
+		s.writeAttachIfActive(windowID, attach, chunk)
 	}
 
 	if snapshot != nil {
@@ -1532,10 +1532,12 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var foregroundProcessGroup int
 	var shouldShutdown bool
 
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return
 	}
 	window.closed = true
@@ -1560,6 +1562,10 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	snapshots := s.snapshotsLocked()
 	shouldShutdown = len(snapshots) == 0
 	s.mu.Unlock()
+	if activeChanged {
+		s.writeAttachLocked(attach, replay)
+	}
+	s.attachMu.Unlock()
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -1577,7 +1583,6 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		s.writeAttach(attach, replay)
 		signalForegroundResize(foregroundProcessGroup)
 	}
 	if shouldShutdown {
@@ -2179,10 +2184,12 @@ func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
 	var foregroundProcessGroup int
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return fmt.Errorf("window %q not found", windowID)
 	}
 	s.activeID = windowID
@@ -2192,8 +2199,9 @@ func (s *muxServer) selectWindow(windowID string) error {
 	replay = s.replayBytesLocked(window)
 	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	s.mu.Unlock()
+	s.writeAttachLocked(attach, replay)
+	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
-	s.writeAttach(attach, replay)
 	signalForegroundResize(foregroundProcessGroup)
 	return nil
 }
@@ -2208,10 +2216,12 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var windowPty *os.File
 	var snapshots []windowSnapshot
 
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return false, fmt.Errorf("window %q not found", windowID)
 	}
 	openCount := 0
@@ -2242,6 +2252,10 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
 	s.mu.Unlock()
+	if activeChanged {
+		s.writeAttachLocked(attach, replay)
+	}
+	s.attachMu.Unlock()
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -2259,7 +2273,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		s.writeAttach(attach, replay)
 		signalForegroundResize(foregroundProcessGroup)
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
@@ -2417,8 +2430,15 @@ func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
 		return
 	}
 	s.attachMu.Lock()
-	_, err := conn.Write(data)
+	s.writeAttachLocked(conn, data)
 	s.attachMu.Unlock()
+}
+
+func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) {
+	if conn == nil || len(data) == 0 {
+		return
+	}
+	_, err := conn.Write(data)
 	if err != nil {
 		s.mu.Lock()
 		if s.attachConn == conn {
@@ -2426,6 +2446,20 @@ func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
+	if conn == nil || len(data) == 0 {
+		return
+	}
+	s.attachMu.Lock()
+	s.mu.Lock()
+	shouldWrite := s.activeID == windowID && s.attachConn == conn
+	s.mu.Unlock()
+	if shouldWrite {
+		s.writeAttachLocked(conn, data)
+	}
+	s.attachMu.Unlock()
 }
 
 func (s *muxServer) writeActive(data []byte) {
@@ -3215,7 +3249,6 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) {
 			return
 		}
 		w.paneTitle = title
-		w.name = title
 	case "7":
 		path := pathFromOsc7(value)
 		if path != "" {

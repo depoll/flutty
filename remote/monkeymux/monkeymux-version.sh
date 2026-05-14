@@ -1,2 +1,2 @@
 #!/usr/bin/env sh
-printf '0.1.22\n'
+printf '0.1.23\n'
