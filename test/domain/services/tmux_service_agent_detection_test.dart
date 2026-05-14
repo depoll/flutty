@@ -130,12 +130,18 @@ void main() {
         expect(command, contains('flutty_claude_session_title'));
         expect(command, contains('flutty_codex_session_title'));
         expect(command, contains('flutty_gemini_session_title'));
+        expect(command, contains('flutty_process_cwd'));
+        expect(command, contains('flutty_codex_recent_session_match'));
+        expect(command, contains('flutty_gemini_recent_session_match'));
         expect(command, contains('customTitle'));
         expect(command, contains('thread_name'));
         expect(command, contains('summary'));
         expect(command, contains('.claude'));
         expect(command, contains('.codex'));
         expect(command, contains('.gemini'));
+        expect(command, contains(r'find "$home/.codex/sessions"'));
+        expect(command, contains(r'find "$home/.gemini/tmp"'));
+        expect(command, contains('sessionId'));
         expect(command, contains(r'inuse."$pid".lock'));
         expect(command, contains('workspace.yaml'));
         expect(command, contains(r'[ -d "$state_dir" ]'));
