@@ -743,9 +743,9 @@ func TestResizeClearsCodexInlineViewportBandBeforeRedraw(t *testing.T) {
 
 	server.resize(100, 32)
 
-	wantClear := string(activeResizeVisibleBandClearSequence(24, 32))
+	wantClear := codexVisibleRedrawSequence
 	if got := attach.String(); got != wantClear {
-		t.Fatalf("attach output = %q, want resize clear band %q", got, wantClear)
+		t.Fatalf("attach output = %q, want Codex visible redraw invalidation %q", got, wantClear)
 	}
 	wantSameSizeNudged := []struct {
 		window *muxWindow
@@ -977,6 +977,52 @@ func TestActiveOutputFiltersNestedAlternateBufferModes(t *testing.T) {
 	}
 }
 
+func TestCodexActiveOutputStripsNestedAlternateBufferModes(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "codex",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	chunk := []byte("before\x1b[?1049;2004hinside")
+	server.handleWindowOutput("@1", chunk)
+
+	want := codexVisibleRedrawSequence + "before\x1b[?2004hinside"
+	if got := attach.String(); got != want {
+		t.Fatalf("active attach output = %q, want nested Codex alt-buffer stripped to %q", got, want)
+	}
+	if got := string(window.history); got != string(chunk) {
+		t.Fatalf("history = %q, want raw PTY bytes", got)
+	}
+	if got := string(window.replayHistory); got != "" {
+		t.Fatalf("replay history = %q, want redraw-only replay after Codex enters alt buffer", got)
+	}
+}
+
+func TestAgentToolFromShellCommandArgsDetectsCodex(t *testing.T) {
+	args := []string{
+		"/bin/zsh",
+		"-lc",
+		"cd /tmp/proof && HOME=/Users/example codex resume abc123",
+	}
+
+	if got := agentToolFromCommandArgs(args); got != "codex" {
+		t.Fatalf("agentToolFromCommandArgs() = %q, want codex", got)
+	}
+}
+
+func TestAgentToolFromTitleDetectsOpenAICodex(t *testing.T) {
+	if got := agentToolFromTerminalTitle("OpenAI Codex (v0.130.0)"); got != "codex" {
+		t.Fatalf("agentToolFromTerminalTitle() = %q, want codex", got)
+	}
+}
+
 func TestActiveOutputPreservesStandaloneCursorSaveRestoreMode(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -1118,8 +1164,15 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	if !strings.Contains(replay, attachSessionExitSequence) {
 		t.Fatalf("replay = %q, should leave attach-owned alt buffer for Codex main-buffer scrollback", replay)
 	}
-	if strings.Contains(replay, attachSessionEnterSequence) {
-		t.Fatalf("replay = %q, should not force Codex into attach-owned alt buffer", replay)
+	redrawEnterIndex := strings.LastIndex(replay, attachSessionEnterSequence)
+	if redrawEnterIndex < 0 {
+		t.Fatalf("replay = %q, should enter attach-owned alt buffer before Codex redraw", replay)
+	}
+	if redrawEnterIndex < promptIndex {
+		t.Fatalf(
+			"replay = %q, attach-owned alt buffer should be re-entered after history replay",
+			replay,
+		)
 	}
 	if server.activeRedrawWindowLocked() != codexWindow {
 		t.Fatal("Codex window should be nudged to redraw after replay")
@@ -1160,8 +1213,8 @@ func TestRedrawActiveClearsCodexInlineViewportBeforeNudge(t *testing.T) {
 
 	server.redrawActive()
 
-	if got := attach.String(); got != postHistoryVisibleScreenClearSequence {
-		t.Fatalf("attach output = %q, want visible-screen clear before redraw", got)
+	if got := attach.String(); got != codexVisibleRedrawSequence {
+		t.Fatalf("attach output = %q, want Codex visible redraw invalidation", got)
 	}
 	if nudged != window {
 		t.Fatalf("redraw nudge window = %#v, want Codex window", nudged)
@@ -1195,8 +1248,8 @@ func TestThemeHintClearsCodexInlineViewportBeforeFocusNudge(t *testing.T) {
 	if !server.sendThemeHint("\x1b[I") {
 		t.Fatal("sendThemeHint returned false, want true")
 	}
-	if got := attach.String(); got != postHistoryVisibleScreenClearSequence {
-		t.Fatalf("attach output = %q, want visible-screen clear before focus nudge", got)
+	if got := attach.String(); got != codexVisibleRedrawSequence {
+		t.Fatalf("attach output = %q, want Codex visible redraw invalidation before focus nudge", got)
 	}
 }
 

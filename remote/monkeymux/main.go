@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.52"
+	monkeyMuxVersion         = "0.1.56"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -80,6 +80,7 @@ const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x
 const activeWindowReplayPrefixAfterAltHistory = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharsetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear
+const codexVisibleRedrawSequence = attachSessionEnterSequence + activeWindowReplayPrefixAfterAltClear
 
 var (
 	preReplayPrivateModes = []string{
@@ -297,6 +298,7 @@ type controlMessage struct {
 	Cwd         string   `json:"cwd,omitempty"`
 	Command     string   `json:"command,omitempty"`
 	Args        []string `json:"args,omitempty"`
+	AgentTool   string   `json:"agentTool,omitempty"`
 	Data        string   `json:"data,omitempty"`
 	Width       int      `json:"width,omitempty"`
 	Height      int      `json:"height,omitempty"`
@@ -419,6 +421,7 @@ type muxWindow struct {
 	applicationKeypadEnabled   bool
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
+	attachSurfaceAlt           bool
 	alert                      bool
 	closed                     bool
 }
@@ -1678,6 +1681,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	agentTool := firstNonEmptyString(
 		options.agentTool,
 		agentToolFromCommandText(options.command),
+		agentToolFromCommandArgs(options.args),
+		agentToolFromTerminalTitle(name),
 		agentToolFromCommandName(name),
 	)
 	paneTitle := firstNonEmptyString(options.paneTitle, name)
@@ -1789,8 +1794,11 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		attach = s.attachConn
 		if attach != nil {
 			chunk = window.attachOutputForClientLocked(chunk)
-			shouldWrite = len(chunk) > 0
 			window.appendReplayCandidateLocked(chunk)
+			if prefix := window.liveAttachPreparationLocked(); len(prefix) > 0 {
+				chunk = append(append([]byte(nil), prefix...), chunk...)
+			}
+			shouldWrite = len(chunk) > 0
 		} else {
 			window.appendInactiveReplayCandidateLocked(chunk)
 		}
@@ -2013,10 +2021,11 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		})
 	case "create_window":
 		window, err := s.createWindow(createWindowOptions{
-			name:    request.Name,
-			cwd:     request.Cwd,
-			command: request.Command,
-			args:    request.Args,
+			name:      request.Name,
+			cwd:       request.Cwd,
+			command:   request.Command,
+			args:      request.Args,
+			agentTool: request.AgentTool,
 		})
 		if err != nil {
 			client.sendError(request, err)
@@ -2628,7 +2637,7 @@ func (s *muxServer) resize(width int, height int) {
 		(oldWidth != width || oldHeight != height) &&
 		window.needsInlineViewportInvalidationLocked() {
 		attach = s.attachConn
-		clear = activeResizeVisibleBandClearSequence(oldHeight, height)
+		clear = window.visibleRedrawInvalidationSequenceLocked()
 	}
 	redrawNudge = s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
@@ -2662,7 +2671,7 @@ func (s *muxServer) redrawActive() {
 	window := s.windowByIDLocked(s.activeID)
 	if window != nil && s.attachConn != nil && window.needsInlineViewportInvalidationLocked() {
 		attach = s.attachConn
-		clear = []byte(postHistoryVisibleScreenClearSequence)
+		clear = window.visibleRedrawInvalidationSequenceLocked()
 	}
 	redrawNudge := s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
@@ -2718,7 +2727,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	needsRedraw := window.replayNeedsRedrawLocked()
-	needsVisibleClear := !needsRedraw && window.replayNeedsProcessRedrawLocked()
+	visibleInvalidation := window.visibleRedrawInvalidationSequenceLocked()
 	var history []byte
 	if !needsRedraw {
 		historySource := window.replayHistoryForAttachLocked()
@@ -2738,20 +2747,22 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	} else {
 		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltHistory
 	}
+	window.attachSurfaceAlt = needsRedraw || bytes.Contains(
+		visibleInvalidation,
+		[]byte(attachSessionEnterSequence),
+	)
 	replay := make(
 		[]byte,
 		0,
 		len(prefix)+len(title)+len(preModes)+len(history)+
-			len(postHistoryVisibleScreenClearSequence)+
+			len(visibleInvalidation)+
 			len(postHistoryReplayResetSequence)+len(postModes)+len(cursor),
 	)
 	replay = append(replay, prefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
-	if needsVisibleClear {
-		replay = append(replay, postHistoryVisibleScreenClearSequence...)
-	}
+	replay = append(replay, visibleInvalidation...)
 	replay = append(replay, postHistoryReplayResetSequence...)
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
@@ -2774,6 +2785,24 @@ func (w *muxWindow) redrawNudgeShouldUseSameSizeLocked() bool {
 
 func (w *muxWindow) needsInlineViewportInvalidationLocked() bool {
 	return w != nil && w.replayNeedsProcessRedrawLocked() && !w.replayNeedsRedrawLocked()
+}
+
+func (w *muxWindow) visibleRedrawInvalidationSequenceLocked() []byte {
+	if !w.needsInlineViewportInvalidationLocked() {
+		return nil
+	}
+	if w.agentToolLocked() == "codex" {
+		return []byte(codexVisibleRedrawSequence)
+	}
+	return []byte(postHistoryVisibleScreenClearSequence)
+}
+
+func (w *muxWindow) liveAttachPreparationLocked() []byte {
+	if w == nil || w.attachSurfaceAlt || w.agentToolLocked() != "codex" {
+		return nil
+	}
+	w.attachSurfaceAlt = true
+	return []byte(codexVisibleRedrawSequence)
 }
 
 func activeResizeVisibleBandClearSequence(oldHeight int, newHeight int) []byte {
@@ -2953,7 +2982,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	windowID = window.id
 	if s.attachConn != nil && window.needsInlineViewportInvalidationLocked() {
 		attach = s.attachConn
-		clear = []byte(postHistoryVisibleScreenClearSequence)
+		clear = window.visibleRedrawInvalidationSequenceLocked()
 	}
 	s.mu.Unlock()
 	s.writeAttachLocked(attach, clear)
@@ -3281,6 +3310,7 @@ func (w *muxWindow) attachOutputForBufferLocked(
 		data = combined
 		*pendingBuffer = nil
 	}
+	stripNestedAlternateBuffer := w.agentToolLocked() == "codex"
 
 	var output []byte
 	copyStart := 0
@@ -3307,7 +3337,11 @@ func (w *muxWindow) attachOutputForBufferLocked(
 			return appendAttachOutput(output, data[copyStart:])
 		}
 		sequence := data[i : end+1]
-		if replacement, ok := alternateBufferCsiReplacement(sequence); ok {
+		replacement, ok := alternateBufferCsiReplacement(sequence)
+		if stripNestedAlternateBuffer {
+			replacement, ok = alternateBufferCsiStripReplacement(sequence)
+		}
+		if ok {
 			output = appendAttachOutputForRewrite(output, data[copyStart:i])
 			output = append(output, replacement...)
 			copyStart = end + 1
@@ -3565,6 +3599,14 @@ func isSynchronizedOutputModeCsiSequence(sequence []byte, enabled bool) bool {
 }
 
 func alternateBufferCsiReplacement(sequence []byte) ([]byte, bool) {
+	return alternateBufferCsiReplacementWithClear(sequence, true)
+}
+
+func alternateBufferCsiStripReplacement(sequence []byte) ([]byte, bool) {
+	return alternateBufferCsiReplacementWithClear(sequence, false)
+}
+
+func alternateBufferCsiReplacementWithClear(sequence []byte, clear bool) ([]byte, bool) {
 	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
 		return nil, false
 	}
@@ -3588,7 +3630,10 @@ func alternateBufferCsiReplacement(sequence []byte) ([]byte, bool) {
 	if !foundAlternateBufferMode {
 		return nil, false
 	}
-	replacement := []byte(nestedAlternateBufferTransitionSequence)
+	var replacement []byte
+	if clear {
+		replacement = []byte(nestedAlternateBufferTransitionSequence)
+	}
 	if len(preserved) > 0 {
 		replacement = append(replacement, "\x1b[?"...)
 		replacement = append(replacement, strings.Join(preserved, ";")...)
@@ -3816,6 +3861,13 @@ func agentToolFromCommandText(command string) string {
 	)
 }
 
+func agentToolFromCommandArgs(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return agentToolFromCommandName(agentCommandNameFromProcessArgs(strings.Join(args, " ")))
+}
+
 func agentToolFromCommandName(command string) string {
 	normalized := strings.ToLower(cleanProcessCommandName(command))
 	switch normalized {
@@ -3928,7 +3980,10 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "copilot" || normalized == "copilot cli" ||
 		strings.HasPrefix(normalized, "copilot cli "):
 		return "copilot"
-	case normalized == "codex" || strings.HasPrefix(normalized, "codex "):
+	case normalized == "codex" || strings.HasPrefix(normalized, "codex ") ||
+		normalized == "openai codex" ||
+		strings.HasPrefix(normalized, "openai codex ") ||
+		strings.Contains(normalized, " codex "):
 		return "codex"
 	case normalized == "opencode" || normalized == "open code" ||
 		strings.HasPrefix(normalized, "opencode "):
