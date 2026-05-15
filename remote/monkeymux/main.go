@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.60"
+	monkeyMuxVersion         = "0.1.61"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3023,87 +3023,64 @@ func (w *muxWindow) scrollbackTextLinesLocked(width int, height int) []string {
 }
 
 func terminalTextLines(data []byte, width int, height int) []string {
-	var lines []string
-	var line strings.Builder
 	frame := newTerminalTextFrame(width, height)
-	inSynchronizedFrame := false
-	flushLine := func() {
-		lines = appendDeduplicatedLine(lines, line.String())
-		line.Reset()
-	}
-	flushNonEmptyLine := func() {
-		if line.Len() > 0 {
-			flushLine()
-		}
-	}
-	flushFrame := func() {
-		lines = appendTerminalSnapshotLines(lines, frame.visibleLines(), frame.width)
-		frame.reset()
-	}
 
 	for i := 0; i < len(data); {
 		switch data[i] {
 		case '\x1b':
 			if i+1 >= len(data) {
-				return lines
+				return frame.lines()
 			}
-			if data[i+1] == '[' {
+			switch data[i+1] {
+			case '[':
 				end := csiSequenceEnd(data, i+2)
 				if end < 0 {
-					return lines
+					return frame.lines()
 				}
-				sequence := data[i : end+1]
-				switch {
-				case isSynchronizedOutputModeCsiSequence(sequence, true):
-					flushNonEmptyLine()
-					inSynchronizedFrame = true
-					frame.reset()
-				case isSynchronizedOutputModeCsiSequence(sequence, false):
-					if inSynchronizedFrame {
-						flushFrame()
-					}
-					inSynchronizedFrame = false
-				case inSynchronizedFrame:
-					frame.applyCsi(sequence)
-				default:
-					if terminalTextActionForCsiSequence(sequence) ==
-						terminalTextControlBreakLine {
-						flushNonEmptyLine()
-					}
-				}
+				frame.applyCsi(data[i : end+1])
 				i = end + 1
-				continue
-			}
-			if inSynchronizedFrame {
-				i = skipEscapeSequenceWithoutAction(data, i)
-			} else {
-				var action terminalTextControlAction
-				i, action = skipEscapeSequence(data, i)
-				if action == terminalTextControlBreakLine {
-					flushNonEmptyLine()
+			case ']':
+				end, terminatorLength, ok := findOscTerminator(data[i+2:])
+				if !ok {
+					return frame.lines()
 				}
-			}
-		case '\r':
-			if inSynchronizedFrame {
-				frame.carriageReturn()
-			} else {
-				line.Reset()
-			}
-			i++
-		case '\n':
-			if inSynchronizedFrame {
+				i += 2 + end + terminatorLength
+			case 'D':
+				frame.newline()
+				i += 2
+			case 'E':
 				frame.carriageReturn()
 				frame.newline()
-			} else {
-				flushLine()
+				i += 2
+			case 'M':
+				frame.reverseIndex()
+				i += 2
+			case '7':
+				frame.saveCursor()
+				i += 2
+			case '8':
+				frame.restoreCursor()
+				i += 2
+			case '(', ')', '*', '+', '-', '.', '/':
+				if i+2 >= len(data) {
+					return frame.lines()
+				}
+				i += 3
+			default:
+				i += 2
 			}
+		case '\r':
+			frame.carriageReturn()
+			i++
+		case '\n':
+			frame.carriageReturn()
+			frame.newline()
 			i++
 		case '\t':
-			if inSynchronizedFrame {
-				frame.writeRune('\t')
-			} else {
-				line.WriteByte('\t')
-			}
+			frame.writeRune('\t')
+			i++
+		case '\b':
+			frame.backspace()
 			i++
 		default:
 			r, size := utf8.DecodeRune(data[i:])
@@ -3111,30 +3088,26 @@ func terminalTextLines(data []byte, width int, height int) []string {
 				r = rune(data[i])
 			}
 			if r >= 0x20 && r != 0x7f {
-				if inSynchronizedFrame {
-					frame.writeRune(r)
-				} else {
-					line.WriteRune(r)
-				}
+				frame.writeRune(r)
 			}
 			i += size
 		}
 	}
-	if inSynchronizedFrame {
-		flushFrame()
-	}
-	flushNonEmptyLine()
-	return lines
+	return frame.lines()
 }
 
 type terminalTextFrame struct {
-	width  int
-	height int
-	rows   [][]rune
-	row    int
-	col    int
-	top    int
-	bottom int
+	width    int
+	height   int
+	rows     [][]rune
+	row      int
+	col      int
+	top      int
+	bottom   int
+	savedRow int
+	savedCol int
+
+	scrollback []string
 }
 
 func newTerminalTextFrame(width int, height int) *terminalTextFrame {
@@ -3150,8 +3123,11 @@ func newTerminalTextFrame(width int, height int) *terminalTextFrame {
 }
 
 func (f *terminalTextFrame) reset() {
+	f.scrollback = nil
 	f.top = 0
 	f.bottom = f.height - 1
+	f.savedRow = 0
+	f.savedCol = 0
 	f.clearScreen()
 }
 
@@ -3167,6 +3143,14 @@ func (f *terminalTextFrame) clearScreen() {
 	f.col = 0
 }
 
+func (f *terminalTextFrame) lines() []string {
+	lines := append([]string(nil), f.scrollback...)
+	for _, line := range f.visibleLines() {
+		lines = appendDeduplicatedLine(lines, line)
+	}
+	return lines
+}
+
 func (f *terminalTextFrame) visibleLines() []string {
 	lines := []string{}
 	for _, row := range f.rows {
@@ -3176,38 +3160,6 @@ func (f *terminalTextFrame) visibleLines() []string {
 		}
 	}
 	return lines
-}
-
-func appendTerminalSnapshotLines(
-	lines []string,
-	snapshot []string,
-	width int,
-) []string {
-	for _, line := range snapshot {
-		if !isUsefulTerminalSnapshotLine(line, width) {
-			continue
-		}
-		lines = appendDeduplicatedLine(lines, line)
-	}
-	return lines
-}
-
-func isUsefulTerminalSnapshotLine(line string, width int) bool {
-	trimmed := strings.TrimSpace(line)
-	if len([]rune(trimmed)) < 3 {
-		return false
-	}
-	if width <= 0 {
-		width = defaultColumns
-	}
-	// Cursor-addressed redraws can briefly expose heavily indented partial rows
-	// while an agent is repainting a status/composer line. Keep transcript-like
-	// rows, but drop those narrow intermediate fragments from scrollback.
-	leadingSpaces := len([]rune(line)) - len([]rune(strings.TrimLeft(line, " ")))
-	if leadingSpaces > width/4 && len([]rune(trimmed)) < width/3 {
-		return false
-	}
-	return true
 }
 
 func appendDeduplicatedLine(lines []string, line string) []string {
@@ -3240,6 +3192,12 @@ func (f *terminalTextFrame) carriageReturn() {
 	f.col = 0
 }
 
+func (f *terminalTextFrame) backspace() {
+	if f.col > 0 {
+		f.col--
+	}
+}
+
 func (f *terminalTextFrame) newline() {
 	if f.row == f.bottom {
 		f.scrollUp(1)
@@ -3250,11 +3208,27 @@ func (f *terminalTextFrame) newline() {
 	}
 }
 
+func (f *terminalTextFrame) reverseIndex() {
+	if f.row == f.top {
+		f.scrollDown(1)
+		return
+	}
+	if f.row > 0 {
+		f.row--
+	}
+}
+
 func (f *terminalTextFrame) scrollUp(count int) {
 	if count <= 0 {
 		count = 1
 	}
 	for i := 0; i < count; i++ {
+		if f.top == 0 {
+			line := strings.TrimRight(string(f.rows[f.top]), " ")
+			if strings.TrimSpace(line) != "" {
+				f.scrollback = appendDeduplicatedLine(f.scrollback, line)
+			}
+		}
 		for row := f.top; row < f.bottom; row++ {
 			copy(f.rows[row], f.rows[row+1])
 		}
@@ -3306,18 +3280,29 @@ func (f *terminalTextFrame) applyCsi(sequence []byte) {
 	case 'd':
 		f.setCursor(param(0, 1)-1, f.col)
 	case 'J':
-		mode := param(0, 0)
-		if mode == 2 || mode == 3 {
-			f.clearScreen()
-		}
+		f.eraseScreen(param(0, 0))
 	case 'K':
 		f.eraseLine(param(0, 0))
+	case '@':
+		f.insertChars(param(0, 1))
+	case 'P':
+		f.deleteChars(param(0, 1))
+	case 'X':
+		f.eraseChars(param(0, 1))
+	case 'L':
+		f.insertLines(param(0, 1))
+	case 'M':
+		f.deleteLines(param(0, 1))
 	case 'S':
 		f.scrollUp(param(0, 1))
 	case 'T':
 		f.scrollDown(param(0, 1))
 	case 'r':
 		f.setScrollRegion(param(0, 1)-1, param(1, f.height)-1)
+	case 's':
+		f.saveCursor()
+	case 'u':
+		f.restoreCursor()
 	}
 }
 
@@ -3353,6 +3338,101 @@ func (f *terminalTextFrame) eraseLine(mode int) {
 	}
 }
 
+func (f *terminalTextFrame) eraseScreen(mode int) {
+	switch mode {
+	case 1:
+		for row := 0; row < f.row; row++ {
+			f.clearRow(row)
+		}
+		for col := 0; col <= f.col && col < f.width; col++ {
+			f.rows[f.row][col] = ' '
+		}
+	case 2, 3:
+		f.clearScreen()
+		if mode == 3 {
+			f.scrollback = nil
+		}
+	default:
+		for col := f.col; col < f.width; col++ {
+			f.rows[f.row][col] = ' '
+		}
+		for row := f.row + 1; row < f.height; row++ {
+			f.clearRow(row)
+		}
+	}
+}
+
+func (f *terminalTextFrame) insertChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	if count > f.width-f.col {
+		count = f.width - f.col
+	}
+	row := f.rows[f.row]
+	copy(row[f.col+count:], row[f.col:f.width-count])
+	for col := f.col; col < f.col+count; col++ {
+		row[col] = ' '
+	}
+}
+
+func (f *terminalTextFrame) deleteChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	if count > f.width-f.col {
+		count = f.width - f.col
+	}
+	row := f.rows[f.row]
+	copy(row[f.col:], row[f.col+count:])
+	for col := f.width - count; col < f.width; col++ {
+		row[col] = ' '
+	}
+}
+
+func (f *terminalTextFrame) eraseChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	end := f.col + count
+	if end > f.width {
+		end = f.width
+	}
+	for col := f.col; col < end; col++ {
+		f.rows[f.row][col] = ' '
+	}
+}
+
+func (f *terminalTextFrame) insertLines(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	if f.row < f.top || f.row > f.bottom {
+		return
+	}
+	for i := 0; i < count; i++ {
+		for row := f.bottom; row > f.row; row-- {
+			copy(f.rows[row], f.rows[row-1])
+		}
+		f.clearRow(f.row)
+	}
+}
+
+func (f *terminalTextFrame) deleteLines(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	if f.row < f.top || f.row > f.bottom {
+		return
+	}
+	for i := 0; i < count; i++ {
+		for row := f.row; row < f.bottom; row++ {
+			copy(f.rows[row], f.rows[row+1])
+		}
+		f.clearRow(f.bottom)
+	}
+}
+
 func (f *terminalTextFrame) clearRow(row int) {
 	for col := range f.rows[row] {
 		f.rows[row][col] = ' '
@@ -3373,6 +3453,15 @@ func (f *terminalTextFrame) setScrollRegion(top int, bottom int) {
 	f.top = top
 	f.bottom = bottom
 	f.setCursor(0, 0)
+}
+
+func (f *terminalTextFrame) saveCursor() {
+	f.savedRow = f.row
+	f.savedCol = f.col
+}
+
+func (f *terminalTextFrame) restoreCursor() {
+	f.setCursor(f.savedRow, f.savedCol)
 }
 
 func terminalCsiNumericParams(sequence []byte) []int {

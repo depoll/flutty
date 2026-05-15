@@ -1255,14 +1255,13 @@ func TestCodexScrollbackTextSplitsSynchronizedCursorFrames(t *testing.T) {
 				"\x1b[?2026h" +
 				"\x1b[23;1Hstatus" +
 				"\x1b[24;1H> composer" +
-				"\x1b[?2026l" +
-				"turn2\n",
+				"\x1b[?2026l",
 		),
 	}
 
 	lines := window.scrollbackTextLinesLocked(defaultColumns, defaultRows)
 
-	want := []string{"turn1", "status", "> composer", "turn2"}
+	want := []string{"turn1", "status", "> composer"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
 	}
@@ -1284,6 +1283,26 @@ func TestCodexScrollbackTextAssemblesSynchronizedFrameRows(t *testing.T) {
 	lines := window.scrollbackTextLinesLocked(40, 5)
 
 	want := []string{"Working", "full width row"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestCodexScrollbackTextAssemblesUnsynchronizedCursorRows(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			"turn1\n" +
+				"\x1b[2;1HWa" +
+				"\x1b[2;1HWai" +
+				"\x1b[2;4Hting" +
+				"\x1b[2;9Hfor background terminal",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 5)
+
+	want := []string{"turn1", "Waiting for background terminal"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
 	}
