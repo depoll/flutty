@@ -438,11 +438,13 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       key: _pasteButtonKey,
       icon: Icons.paste_rounded,
       label: 'Paste',
+      longPressIndicatorIcon: Icons.keyboard_arrow_up_rounded,
       onTap: _pasteClipboard,
       onLongPressStartWithDetails: _showPasteOptions,
       onLongPressMoveUpdate: _updatePasteOptionsHighlight,
       onLongPressEnd: _chooseHighlightedPasteOption,
       onLongPressCancel: _hidePasteOptionsMenu,
+      semanticsHint: 'Press and hold for paste options',
       tooltip: 'Paste',
     ),
   ];
@@ -1322,6 +1324,8 @@ class _ToolbarButton extends StatefulWidget {
     this.onLongPressCancel,
     this.onLongPressRepeat,
     this.tooltip,
+    this.semanticsHint,
+    this.longPressIndicatorIcon,
     super.key,
   });
 
@@ -1336,6 +1340,8 @@ class _ToolbarButton extends StatefulWidget {
   final VoidCallback? onLongPressCancel;
   final VoidCallback? onLongPressRepeat;
   final String? tooltip;
+  final String? semanticsHint;
+  final IconData? longPressIndicatorIcon;
 
   bool get hasLongPressHandler =>
       onLongPressStart != null ||
@@ -1398,9 +1404,37 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
     return Transform.flip(flipX: true, child: icon);
   }
 
+  Widget _buildContent(Color color) {
+    if (widget.icon != null && widget.label.isNotEmpty) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildIcon(14, color),
+          const SizedBox(width: 3),
+          Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+              color: color,
+            ),
+          ),
+        ],
+      );
+    }
+    if (widget.icon != null) {
+      return _buildIcon(18, color);
+    }
+    return Text(
+      widget.label,
+      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: color),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final foregroundColor = colorScheme.onSurfaceVariant;
 
     Widget button = GestureDetector(
       onTapDown: (_) => _setPressed(true),
@@ -1438,39 +1472,29 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
           borderRadius: BorderRadius.circular(6),
           border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Center(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: widget.icon != null && widget.label.isNotEmpty
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _buildIcon(14, colorScheme.onSurfaceVariant),
-                        const SizedBox(width: 3),
-                        Text(
-                          widget.label,
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    )
-                  : widget.icon != null
-                  ? _buildIcon(18, colorScheme.onSurfaceVariant)
-                  : Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Center(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: _buildContent(foregroundColor),
+                ),
+              ),
             ),
-          ),
+            if (widget.longPressIndicatorIcon case final indicatorIcon?)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Icon(
+                  indicatorIcon,
+                  size: 11,
+                  color: colorScheme.primary,
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -1482,6 +1506,7 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
     return Semantics(
       button: true,
       label: widget.tooltip ?? widget.label,
+      hint: widget.semanticsHint,
       child: button,
     );
   }
