@@ -200,6 +200,47 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       return '\x1b[${row + 1};${column + 1}R';
     });
 
+/// Normalizes remote terminal output before it is parsed by xterm.dart.
+///
+/// Recent TUIs, including newer Copilot CLI builds, emit colon-delimited SGR
+/// truecolor sequences such as `CSI 38:2::r:g:b m`. xterm.dart 4.0 only accepts
+/// semicolon-delimited `38;2;r;g;b`, so without this translation it can miss the
+/// intended foreground/background colors and erase-to-EOL background fills.
+({String output, String pendingInput}) normalizeTerminalInputForXtermParser({
+  required String input,
+  required String pendingInput,
+}) {
+  final combinedInput = pendingInput + input;
+  final output = StringBuffer();
+  var cursor = 0;
+
+  while (cursor < combinedInput.length) {
+    final startIndex = combinedInput.indexOf(_terminalCsiPrefix, cursor);
+    if (startIndex == -1) {
+      output.write(combinedInput.substring(cursor));
+      return _splitPendingTerminalCsi(output.toString());
+    }
+
+    output.write(combinedInput.substring(cursor, startIndex));
+    final finalIndex = _findTerminalCsiFinalByte(
+      combinedInput,
+      startIndex + _terminalCsiPrefix.length,
+    );
+    if (finalIndex == -1) {
+      return (
+        output: output.toString(),
+        pendingInput: combinedInput.substring(startIndex),
+      );
+    }
+
+    final sequence = combinedInput.substring(startIndex, finalIndex + 1);
+    output.write(_normalizeTerminalSgrColonSequence(sequence));
+    cursor = finalIndex + 1;
+  }
+
+  return (output: output.toString(), pendingInput: '');
+}
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
@@ -293,6 +334,7 @@ const _terminalModeSet = 1;
 const _terminalModeReset = 2;
 
 const _terminalEscape = '\x1b';
+const _terminalCsiPrefix = '$_terminalEscape[';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
@@ -351,6 +393,134 @@ String _terminalControlQueryPendingSuffix(String input) {
     }
   }
   return '';
+}
+
+({String output, String pendingInput}) _splitPendingTerminalCsi(String output) {
+  final pendingInput = _terminalSgrNormalizerPendingSuffix(output);
+  if (pendingInput.isEmpty) {
+    return (output: output, pendingInput: '');
+  }
+  return (
+    output: output.substring(0, output.length - pendingInput.length),
+    pendingInput: pendingInput,
+  );
+}
+
+String _terminalSgrNormalizerPendingSuffix(String output) {
+  final escapeIndex = output.lastIndexOf(_terminalEscape);
+  if (escapeIndex == -1) {
+    return '';
+  }
+
+  final suffix = output.substring(escapeIndex);
+  if (suffix == _terminalEscape) {
+    return suffix;
+  }
+  if (!suffix.startsWith(_terminalCsiPrefix)) {
+    return '';
+  }
+  final finalIndex = _findTerminalCsiFinalByte(
+    suffix,
+    _terminalCsiPrefix.length,
+  );
+  return finalIndex == -1 ? suffix : '';
+}
+
+int _findTerminalCsiFinalByte(String input, int startIndex) {
+  for (var index = startIndex; index < input.length; index += 1) {
+    final codeUnit = input.codeUnitAt(index);
+    if (codeUnit >= 0x40 && codeUnit <= 0x7E) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+String _normalizeTerminalSgrColonSequence(String sequence) {
+  if (!sequence.endsWith('m') || !sequence.contains(':')) {
+    return sequence;
+  }
+
+  final params = sequence.substring(
+    _terminalCsiPrefix.length,
+    sequence.length - 1,
+  );
+  final normalizedParams = <String>[];
+  for (final param in params.split(';')) {
+    normalizedParams.addAll(_normalizeTerminalSgrParam(param));
+  }
+
+  if (normalizedParams.isEmpty) {
+    return '';
+  }
+  return '$_terminalCsiPrefix${normalizedParams.join(';')}m';
+}
+
+List<String> _normalizeTerminalSgrParam(String param) {
+  if (!param.contains(':')) {
+    return param.isEmpty ? const <String>[] : <String>[param];
+  }
+
+  final parts = param.split(':');
+  final code = parts.first;
+  return switch (code) {
+    '38' || '48' => _normalizeTerminalSgrColorParam(code, parts),
+    '4' => _normalizeTerminalSgrUnderlineParam(parts),
+    '58' || '59' => const <String>[],
+    _ => code.isEmpty ? const <String>[] : <String>[code],
+  };
+}
+
+List<String> _normalizeTerminalSgrColorParam(String code, List<String> parts) {
+  if (parts.length < 3) {
+    return const <String>[];
+  }
+
+  final mode = parts[1];
+  final values = parts.skip(2).where((part) => part.isNotEmpty).toList();
+  switch (mode) {
+    case '2':
+      if (values.length < 3) {
+        return const <String>[];
+      }
+      final rgbValues = values.length >= 4
+          ? values.sublist(values.length - 3)
+          : values;
+      if (!_areTerminalSgrByteValues(rgbValues)) {
+        return const <String>[];
+      }
+      return <String>[code, mode, ...rgbValues];
+    case '5':
+      if (values.isEmpty) {
+        return const <String>[];
+      }
+      final paletteIndex = values.first;
+      final parsedIndex = int.tryParse(paletteIndex);
+      if (parsedIndex == null || parsedIndex < 0 || parsedIndex > 255) {
+        return const <String>[];
+      }
+      return <String>[code, mode, paletteIndex];
+    default:
+      return const <String>[];
+  }
+}
+
+List<String> _normalizeTerminalSgrUnderlineParam(List<String> parts) {
+  final style = parts.length > 1 ? int.tryParse(parts[1]) : null;
+  if (style == 0) {
+    return const <String>['24'];
+  }
+  return const <String>['4'];
+}
+
+bool _areTerminalSgrByteValues(List<String> values) {
+  for (final value in values) {
+    final parsed = int.tryParse(value);
+    if (parsed == null || parsed < 0 || parsed > 255) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// Connection state for an SSH session.
