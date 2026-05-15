@@ -332,6 +332,57 @@ void main() {
       },
     );
 
+    test('normalizes colon-delimited SGR colors for xterm parsing', () {
+      final result = normalizeTerminalInputForXtermParser(
+        input:
+            'before\x1b[1;38:2::230:240:250;48:2:0:20:30:40mtext'
+            '\x1b[0m',
+        pendingInput: '',
+      );
+
+      expect(
+        result.output,
+        'before\x1b[1;38;2;230;240;250;48;2;20;30;40mtext\x1b[0m',
+      );
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split colon-delimited SGR colors across chunks', () {
+      final first = normalizeTerminalInputForXtermParser(
+        input: 'before\x1b[38:2::230',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1b[38:2::230');
+
+      final second = normalizeTerminalInputForXtermParser(
+        input: ':240:250mfg',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[38;2;230;240;250mfg');
+      expect(second.pendingInput, isEmpty);
+    });
+
+    test('xterm applies normalized SGR colors through erase-to-line-end', () {
+      final result = normalizeTerminalInputForXtermParser(
+        input: '\x1b[38:2::250:251:252;48:2::1:2:3mYou\x1b[K',
+        pendingInput: '',
+      );
+      final terminal = Terminal()
+        ..resize(12, 2)
+        ..write(result.output);
+
+      final line = terminal.buffer.lines[0];
+      const expectedForeground = CellColor.rgb | 0xFAFBFC;
+      const expectedBackground = CellColor.rgb | 0x010203;
+      expect(line.getForeground(0), expectedForeground);
+      expect(line.getBackground(0), expectedBackground);
+      expect(line.getBackground(11), expectedBackground);
+      expect(line.getCodePoint(11), 0);
+    });
+
     test('unwraps complete tmux passthrough sequences', () {
       final result = unwrapTerminalTmuxPassthroughSequences(
         input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',

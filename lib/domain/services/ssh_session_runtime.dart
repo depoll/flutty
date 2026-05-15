@@ -30,6 +30,7 @@ class _SshSessionRuntime {
   String _terminalWindowQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
+  String _terminalSgrNormalizerPendingInput = '';
   bool _terminalColorSchemeUpdatesMode = false;
 
   Terminal? _terminal;
@@ -199,6 +200,7 @@ class _SshSessionRuntime {
     _terminalWindowQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
+    _terminalSgrNormalizerPendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
@@ -450,7 +452,14 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      terminal.write(output.terminalData);
+      final normalizedTerminalInput = normalizeTerminalInputForXtermParser(
+        input: output.terminalData,
+        pendingInput: _terminalSgrNormalizerPendingInput,
+      );
+      _terminalSgrNormalizerPendingInput = normalizedTerminalInput.pendingInput;
+      if (normalizedTerminalInput.output.isNotEmpty) {
+        terminal.write(normalizedTerminalInput.output);
+      }
       _respondToTerminalWindowControlQueries(output.terminalData, terminal);
       _scheduleTerminalPreviewRefresh();
     }
