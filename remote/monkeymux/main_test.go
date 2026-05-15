@@ -1260,9 +1260,30 @@ func TestCodexScrollbackTextSplitsSynchronizedCursorFrames(t *testing.T) {
 		),
 	}
 
-	lines := window.scrollbackTextLinesLocked()
+	lines := window.scrollbackTextLinesLocked(defaultColumns, defaultRows)
 
 	want := []string{"turn1", "status", "> composer", "turn2"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestCodexScrollbackTextAssemblesSynchronizedFrameRows(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			"\x1b[?2026h" +
+				"\x1b[1;1HWo" +
+				"\x1b[1;3Hrk" +
+				"\x1b[1;5Hing" +
+				"\x1b[2;1Hfull width row" +
+				"\x1b[?2026l",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(40, 5)
+
+	want := []string{"Working", "full width row"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
 	}
@@ -2254,6 +2275,32 @@ func TestDiscoverCopilotSessionIDsChoosesNewestLockForPane(t *testing.T) {
 	)
 	if got[100] != "new-session" {
 		t.Fatalf("discoverCopilotSessionIDs() = %#v, want newest lock new-session", got)
+	}
+}
+
+func TestDiscoverCopilotSessionIDsUsesPaneDescendantLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionDir := filepath.Join(home, ".copilot", "session-state", "active-session")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "inuse.300.lock"), []byte("300\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "node", args: "node /opt/copilot/cli.js"},
+		300: {pid: 300, ppid: 200, comm: "node", args: "node"},
+	}
+
+	got := discoverCopilotSessionIDs(
+		processes,
+		map[int]struct{}{100: struct{}{}},
+	)
+	if got[100] != "active-session" {
+		t.Fatalf("discoverCopilotSessionIDs() = %#v, want active-session", got)
 	}
 }
 

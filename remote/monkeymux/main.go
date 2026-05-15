@@ -25,6 +25,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -32,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.59"
+	monkeyMuxVersion         = "0.1.60"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1296,8 +1297,7 @@ func discoverCopilotSessionIDs(
 			if pid <= 0 {
 				continue
 			}
-			process, ok := processes[pid]
-			if !ok || !strings.Contains(strings.ToLower(process.comm+" "+process.args), "copilot") {
+			if _, ok := processes[pid]; !ok {
 				continue
 			}
 			if panePid := ancestorPanePID(processes, pid, panePids); panePid > 0 {
@@ -2128,6 +2128,9 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		s.redrawActive()
 		client.send(controlResponse{ID: request.ID, Type: "active_redraw", Status: "ok"})
 	case "scroll_active":
+		if request.Width > 0 && request.Height > 0 {
+			s.resize(request.Width, request.Height)
+		}
 		if err := s.scrollActiveWindow(request.Lines); err != nil {
 			client.sendError(request, err)
 			return
@@ -2348,6 +2351,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
 	restore := &serverRestore{
 		SchemaVersion: restoreSchemaVersion,
 		Windows:       make([]restoreWindowState, 0, len(s.windows)),
@@ -2356,7 +2360,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 		if window.closed {
 			continue
 		}
-		window.refreshProcessMetadataLocked(time.Now())
+		window.forceRefreshProcessMetadataLocked(now)
 		state := restoreWindowState{
 			ID:                    window.id,
 			Index:                 window.index,
@@ -2766,7 +2770,7 @@ func (s *muxServer) scrollbackReplayLocked(
 	window *muxWindow,
 	lines int,
 ) ([]byte, redrawNudgeRequest) {
-	scrollbackLines := window.scrollbackTextLinesLocked()
+	scrollbackLines := window.scrollbackTextLinesLocked(s.width, s.height)
 	viewportHeight := s.height
 	if viewportHeight <= 0 {
 		viewportHeight = defaultRows
@@ -3008,53 +3012,391 @@ func (w *muxWindow) replayNeedsRedrawLocked() bool {
 }
 
 func (w *muxWindow) supportsServerScrollbackLocked() bool {
-	return w != nil && w.replayNeedsRedrawLocked() && w.agentToolLocked() != ""
+	return w != nil && w.replayNeedsRedrawLocked() && w.agentToolLocked() == "codex"
 }
 
-func (w *muxWindow) scrollbackTextLinesLocked() []string {
+func (w *muxWindow) scrollbackTextLinesLocked(width int, height int) []string {
 	if w == nil {
 		return nil
 	}
-	return terminalTextLines(w.historyTailLocked())
+	return terminalTextLines(w.historyTailLocked(), width, height)
 }
 
-func terminalTextLines(data []byte) []string {
+func terminalTextLines(data []byte, width int, height int) []string {
 	var lines []string
 	var line strings.Builder
+	frame := newTerminalTextFrame(width, height)
+	inSynchronizedFrame := false
+	flushLine := func() {
+		lines = appendDeduplicatedLine(lines, line.String())
+		line.Reset()
+	}
+	flushNonEmptyLine := func() {
+		if line.Len() > 0 {
+			flushLine()
+		}
+	}
+	flushFrame := func() {
+		lines = appendTerminalSnapshotLines(lines, frame.visibleLines(), frame.width)
+		frame.reset()
+	}
+
 	for i := 0; i < len(data); {
 		switch data[i] {
 		case '\x1b':
-			var action terminalTextControlAction
-			i, action = skipEscapeSequence(data, i)
-			switch action {
-			case terminalTextControlBreakLine:
-				if line.Len() > 0 {
-					lines = append(lines, line.String())
-					line.Reset()
+			if i+1 >= len(data) {
+				return lines
+			}
+			if data[i+1] == '[' {
+				end := csiSequenceEnd(data, i+2)
+				if end < 0 {
+					return lines
 				}
-			case terminalTextControlNone:
+				sequence := data[i : end+1]
+				switch {
+				case isSynchronizedOutputModeCsiSequence(sequence, true):
+					flushNonEmptyLine()
+					inSynchronizedFrame = true
+					frame.reset()
+				case isSynchronizedOutputModeCsiSequence(sequence, false):
+					if inSynchronizedFrame {
+						flushFrame()
+					}
+					inSynchronizedFrame = false
+				case inSynchronizedFrame:
+					frame.applyCsi(sequence)
+				default:
+					if terminalTextActionForCsiSequence(sequence) ==
+						terminalTextControlBreakLine {
+						flushNonEmptyLine()
+					}
+				}
+				i = end + 1
+				continue
+			}
+			if inSynchronizedFrame {
+				i = skipEscapeSequenceWithoutAction(data, i)
+			} else {
+				var action terminalTextControlAction
+				i, action = skipEscapeSequence(data, i)
+				if action == terminalTextControlBreakLine {
+					flushNonEmptyLine()
+				}
 			}
 		case '\r':
-			line.Reset()
-			i++
-		case '\n':
-			lines = append(lines, line.String())
-			line.Reset()
-			i++
-		case '\t':
-			line.WriteByte('\t')
-			i++
-		default:
-			if data[i] >= 0x20 && data[i] != 0x7f {
-				line.WriteByte(data[i])
+			if inSynchronizedFrame {
+				frame.carriageReturn()
+			} else {
+				line.Reset()
 			}
 			i++
+		case '\n':
+			if inSynchronizedFrame {
+				frame.carriageReturn()
+				frame.newline()
+			} else {
+				flushLine()
+			}
+			i++
+		case '\t':
+			if inSynchronizedFrame {
+				frame.writeRune('\t')
+			} else {
+				line.WriteByte('\t')
+			}
+			i++
+		default:
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size == 1 {
+				r = rune(data[i])
+			}
+			if r >= 0x20 && r != 0x7f {
+				if inSynchronizedFrame {
+					frame.writeRune(r)
+				} else {
+					line.WriteRune(r)
+				}
+			}
+			i += size
 		}
 	}
-	if line.Len() > 0 {
-		lines = append(lines, line.String())
+	if inSynchronizedFrame {
+		flushFrame()
+	}
+	flushNonEmptyLine()
+	return lines
+}
+
+type terminalTextFrame struct {
+	width  int
+	height int
+	rows   [][]rune
+	row    int
+	col    int
+	top    int
+	bottom int
+}
+
+func newTerminalTextFrame(width int, height int) *terminalTextFrame {
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	frame := &terminalTextFrame{width: width, height: height}
+	frame.reset()
+	return frame
+}
+
+func (f *terminalTextFrame) reset() {
+	f.top = 0
+	f.bottom = f.height - 1
+	f.clearScreen()
+}
+
+func (f *terminalTextFrame) clearScreen() {
+	f.rows = make([][]rune, f.height)
+	for row := range f.rows {
+		f.rows[row] = make([]rune, f.width)
+		for col := range f.rows[row] {
+			f.rows[row][col] = ' '
+		}
+	}
+	f.row = 0
+	f.col = 0
+}
+
+func (f *terminalTextFrame) visibleLines() []string {
+	lines := []string{}
+	for _, row := range f.rows {
+		line := strings.TrimRight(string(row), " ")
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
 	}
 	return lines
+}
+
+func appendTerminalSnapshotLines(
+	lines []string,
+	snapshot []string,
+	width int,
+) []string {
+	for _, line := range snapshot {
+		if !isUsefulTerminalSnapshotLine(line, width) {
+			continue
+		}
+		lines = appendDeduplicatedLine(lines, line)
+	}
+	return lines
+}
+
+func isUsefulTerminalSnapshotLine(line string, width int) bool {
+	trimmed := strings.TrimSpace(line)
+	if len([]rune(trimmed)) < 3 {
+		return false
+	}
+	if width <= 0 {
+		width = defaultColumns
+	}
+	// Cursor-addressed redraws can briefly expose heavily indented partial rows
+	// while an agent is repainting a status/composer line. Keep transcript-like
+	// rows, but drop those narrow intermediate fragments from scrollback.
+	leadingSpaces := len([]rune(line)) - len([]rune(strings.TrimLeft(line, " ")))
+	if leadingSpaces > width/4 && len([]rune(trimmed)) < width/3 {
+		return false
+	}
+	return true
+}
+
+func appendDeduplicatedLine(lines []string, line string) []string {
+	if len(lines) > 0 && lines[len(lines)-1] == line {
+		return lines
+	}
+	return append(lines, line)
+}
+
+func (f *terminalTextFrame) writeRune(r rune) {
+	if r == '\t' {
+		spaces := 8 - (f.col % 8)
+		for i := 0; i < spaces; i++ {
+			f.writeRune(' ')
+		}
+		return
+	}
+	if r < 0x20 || r == 0x7f {
+		return
+	}
+	f.rows[f.row][f.col] = r
+	f.col++
+	if f.col >= f.width {
+		f.col = 0
+		f.newline()
+	}
+}
+
+func (f *terminalTextFrame) carriageReturn() {
+	f.col = 0
+}
+
+func (f *terminalTextFrame) newline() {
+	if f.row == f.bottom {
+		f.scrollUp(1)
+		return
+	}
+	if f.row < f.height-1 {
+		f.row++
+	}
+}
+
+func (f *terminalTextFrame) scrollUp(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	for i := 0; i < count; i++ {
+		for row := f.top; row < f.bottom; row++ {
+			copy(f.rows[row], f.rows[row+1])
+		}
+		f.clearRow(f.bottom)
+	}
+}
+
+func (f *terminalTextFrame) scrollDown(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	for i := 0; i < count; i++ {
+		for row := f.bottom; row > f.top; row-- {
+			copy(f.rows[row], f.rows[row-1])
+		}
+		f.clearRow(f.top)
+	}
+}
+
+func (f *terminalTextFrame) applyCsi(sequence []byte) {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return
+	}
+	final := sequence[len(sequence)-1]
+	params := terminalCsiNumericParams(sequence)
+	param := func(index int, defaultValue int) int {
+		if index >= len(params) || params[index] <= 0 {
+			return defaultValue
+		}
+		return params[index]
+	}
+	switch final {
+	case 'H', 'f':
+		f.setCursor(param(0, 1)-1, param(1, 1)-1)
+	case 'A':
+		f.setCursor(f.row-param(0, 1), f.col)
+	case 'B':
+		f.setCursor(f.row+param(0, 1), f.col)
+	case 'C', 'a':
+		f.setCursor(f.row, f.col+param(0, 1))
+	case 'D':
+		f.setCursor(f.row, f.col-param(0, 1))
+	case 'E':
+		f.setCursor(f.row+param(0, 1), 0)
+	case 'F':
+		f.setCursor(f.row-param(0, 1), 0)
+	case 'G', '`':
+		f.setCursor(f.row, param(0, 1)-1)
+	case 'd':
+		f.setCursor(param(0, 1)-1, f.col)
+	case 'J':
+		mode := param(0, 0)
+		if mode == 2 || mode == 3 {
+			f.clearScreen()
+		}
+	case 'K':
+		f.eraseLine(param(0, 0))
+	case 'S':
+		f.scrollUp(param(0, 1))
+	case 'T':
+		f.scrollDown(param(0, 1))
+	case 'r':
+		f.setScrollRegion(param(0, 1)-1, param(1, f.height)-1)
+	}
+}
+
+func (f *terminalTextFrame) setCursor(row int, col int) {
+	if row < 0 {
+		row = 0
+	} else if row >= f.height {
+		row = f.height - 1
+	}
+	if col < 0 {
+		col = 0
+	} else if col >= f.width {
+		col = f.width - 1
+	}
+	f.row = row
+	f.col = col
+}
+
+func (f *terminalTextFrame) eraseLine(mode int) {
+	switch mode {
+	case 1:
+		for col := 0; col <= f.col && col < f.width; col++ {
+			f.rows[f.row][col] = ' '
+		}
+	case 2:
+		for col := range f.rows[f.row] {
+			f.rows[f.row][col] = ' '
+		}
+	default:
+		for col := f.col; col < f.width; col++ {
+			f.rows[f.row][col] = ' '
+		}
+	}
+}
+
+func (f *terminalTextFrame) clearRow(row int) {
+	for col := range f.rows[row] {
+		f.rows[row][col] = ' '
+	}
+}
+
+func (f *terminalTextFrame) setScrollRegion(top int, bottom int) {
+	if top < 0 {
+		top = 0
+	}
+	if bottom < 0 || bottom >= f.height {
+		bottom = f.height - 1
+	}
+	if top >= bottom {
+		top = 0
+		bottom = f.height - 1
+	}
+	f.top = top
+	f.bottom = bottom
+	f.setCursor(0, 0)
+}
+
+func terminalCsiNumericParams(sequence []byte) []int {
+	body := string(sequence[2 : len(sequence)-1])
+	body = strings.TrimLeft(body, "?>!")
+	if body == "" {
+		return nil
+	}
+	parts := strings.Split(body, ";")
+	params := make([]int, 0, len(parts))
+	for _, part := range parts {
+		part = strings.Trim(part, " :")
+		if part == "" {
+			params = append(params, 0)
+			continue
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil {
+			params = append(params, 0)
+			continue
+		}
+		params = append(params, value)
+	}
+	return params
 }
 
 type terminalTextControlAction int
@@ -3089,6 +3431,11 @@ func skipEscapeSequence(data []byte, index int) (int, terminalTextControlAction)
 	default:
 		return index + 2, terminalTextControlNone
 	}
+}
+
+func skipEscapeSequenceWithoutAction(data []byte, index int) int {
+	next, _ := skipEscapeSequence(data, index)
+	return next
 }
 
 func terminalTextActionForCsiSequence(sequence []byte) terminalTextControlAction {
@@ -4001,10 +4348,22 @@ func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 }
 
 func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
+	w.refreshProcessMetadataLockedWithForce(now, false)
+}
+
+func (w *muxWindow) forceRefreshProcessMetadataLocked(now time.Time) {
+	w.refreshProcessMetadataLockedWithForce(now, true)
+}
+
+func (w *muxWindow) refreshProcessMetadataLockedWithForce(
+	now time.Time,
+	force bool,
+) {
 	if w == nil || w.pty == nil {
 		return
 	}
-	if !w.lastProcessMetadataRefresh.IsZero() &&
+	if !force &&
+		!w.lastProcessMetadataRefresh.IsZero() &&
 		now.Sub(w.lastProcessMetadataRefresh) < processMetadataInterval {
 		return
 	}

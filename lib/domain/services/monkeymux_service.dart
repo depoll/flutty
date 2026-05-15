@@ -411,15 +411,20 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     SshSession session,
     String sessionName,
     int lines, {
+    int? width,
+    int? height,
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
     if (lines == 0) {
       return;
     }
-    await _runControlCommand(session, sessionName, {
+    final request = {
       'type': 'scroll_active',
       'lines': lines,
-    }, priority: priority);
+      if (width != null && width > 0) 'width': width,
+      if (height != null && height > 0) 'height': height,
+    };
+    await _runControlCommand(session, sessionName, request, priority: priority);
   }
 
   /// Runs a short-lived command through the MonkeyMux control client.

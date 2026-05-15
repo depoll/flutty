@@ -379,7 +379,7 @@ void main() {
         shouldUseMonkeyMuxScrollbackControl(
           isUsingAltBuffer: true,
           isAttachOwnedAltBuffer: true,
-          hasForegroundAgentTool: true,
+          foregroundAgentTool: AgentLaunchTool.codex,
         ),
         isTrue,
       );
@@ -387,7 +387,15 @@ void main() {
         shouldUseMonkeyMuxScrollbackControl(
           isUsingAltBuffer: true,
           isAttachOwnedAltBuffer: true,
-          hasForegroundAgentTool: false,
+          foregroundAgentTool: AgentLaunchTool.copilotCli,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldUseMonkeyMuxScrollbackControl(
+          isUsingAltBuffer: true,
+          isAttachOwnedAltBuffer: true,
+          foregroundAgentTool: null,
         ),
         isFalse,
       );

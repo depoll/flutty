@@ -2118,8 +2118,11 @@ bool shouldRouteTouchScrollToTerminal({
 bool shouldUseMonkeyMuxScrollbackControl({
   required bool isUsingAltBuffer,
   required bool isAttachOwnedAltBuffer,
-  required bool hasForegroundAgentTool,
-}) => isUsingAltBuffer && isAttachOwnedAltBuffer && hasForegroundAgentTool;
+  required AgentLaunchTool? foregroundAgentTool,
+}) =>
+    isUsingAltBuffer &&
+    isAttachOwnedAltBuffer &&
+    foregroundAgentTool == AgentLaunchTool.codex;
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2936,13 +2939,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _usesAttachOwnedAltBuffer =>
       _isTmuxActive && _activeMuxBackend == RemoteMuxBackend.monkeyMux;
 
-  bool get _hasForegroundAgentToolCommand =>
-      _tmuxForegroundAgentTool != null ||
+  AgentLaunchTool? get _foregroundAgentToolCommand =>
+      _tmuxForegroundAgentTool ??
       resolveTmuxBarActiveWindowTool(
-            _tmuxBarKey.currentState?.currentWindowsSnapshot,
-          ) !=
-          null ||
-      agentLaunchToolForCommandName(_tmuxCurrentCommand) != null;
+        _tmuxBarKey.currentState?.currentWindowsSnapshot,
+      ) ??
+      agentLaunchToolForCommandName(_tmuxCurrentCommand);
+
+  bool get _hasForegroundAgentToolCommand =>
+      _foregroundAgentToolCommand != null;
 
   bool get _shouldAutoResumeAttachOwnedAltBufferFollow {
     final connectionId = _connectionId;
@@ -2968,7 +2973,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       shouldUseMonkeyMuxScrollbackControl(
         isUsingAltBuffer: _isUsingAltBuffer,
         isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
-        hasForegroundAgentTool: _hasForegroundAgentToolCommand,
+        foregroundAgentTool: _foregroundAgentToolCommand,
       );
 
   MenuStyle _terminalOverflowMenuStyle({
@@ -4864,7 +4869,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
 
-        await _monkeyMuxService.scrollActiveWindow(session, sessionName, lines);
+        await _monkeyMuxService.scrollActiveWindow(
+          session,
+          sessionName,
+          lines,
+          width: _terminal.viewWidth,
+          height: _terminal.viewHeight,
+        );
       }
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
