@@ -307,6 +307,24 @@ void main() {
       expect(keyPressedCount, 1);
     });
 
+    testWidgets('Paste button shows a long-press options indicator', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      expect(
+        find.descendant(
+          of: find.byTooltip('Paste'),
+          matching: find.byIcon(Icons.keyboard_arrow_up_rounded),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('Paste long press opens an anchored drag-release menu', (
       tester,
     ) async {
