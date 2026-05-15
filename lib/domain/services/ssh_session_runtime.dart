@@ -537,12 +537,8 @@ class _SshSessionRuntime {
         _shell?.write(utf8.encode(themeOscResponse));
       }
 
-      final protectedTerminalData = _protectMonkeyMuxMainBufferScroll(
-        themeOscResult.terminalInput,
-        terminal,
-      );
       final synchronizedOutput = _coalesceSynchronizedTerminalOutput(
-        terminalData: protectedTerminalData,
+        terminalData: themeOscResult.terminalInput,
         stdoutData: output.stdoutData,
         stderrData: output.stderrData,
         drainAll: drainAll,
@@ -891,31 +887,6 @@ class _SshSessionRuntime {
     }
     return result.output;
   }
-
-  String _protectMonkeyMuxMainBufferScroll(String data, Terminal terminal) {
-    if (_session.remoteMuxBackend != RemoteMuxBackend.monkeyMux ||
-        terminal.isUsingAltBuffer) {
-      return data;
-    }
-
-    // xterm.dart's main-buffer scrollback path can assert when MonkeyMux
-    // replays inline history while a stale scroll region is active.
-    final normalizedData = data.replaceAll(
-      _terminalScrollRegionPattern,
-      '\x1b[r',
-    );
-    final buffer = terminal.buffer;
-    if (!normalizedData.contains(_terminalLineFeedPattern) ||
-        (buffer.marginTop == 0 &&
-            buffer.marginBottom == terminal.viewHeight - 1)) {
-      return normalizedData;
-    }
-
-    return '\x1b[r$normalizedData';
-  }
-
-  static final _terminalScrollRegionPattern = RegExp(r'\x1b\[[0-9;]*r');
-  static final _terminalLineFeedPattern = RegExp('[\n\v\f]');
 
   TerminalControlModeState _terminalModeState(Terminal terminal) => (
     reportFocusMode: terminal.reportFocusMode,

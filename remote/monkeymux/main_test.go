@@ -872,6 +872,7 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 				"\x1b[?2026l" +
 				"\x1b[?2026$p" +
 				"\x1b[?2027$p" +
+				"\x1b[1;2r" +
 				"\x1b]11;?\x07" +
 				"\x1b]2;Gemini\x07" +
 				"after",
@@ -905,6 +906,7 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 		"\x1b[?2026l",
 		"\x1b[?2026$p",
 		"\x1b[?2027$p",
+		"\x1b[1;2r",
 		"\x1b]11;?\x07",
 	} {
 		if strings.Contains(historyReplay, stripped) {

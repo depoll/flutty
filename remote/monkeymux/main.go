@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.50"
+	monkeyMuxVersion         = "0.1.51"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3378,6 +3378,8 @@ func isReplayUnsafeCsiSequence(sequence []byte) bool {
 			params == "?996"
 	case 'p':
 		return strings.HasSuffix(params, "$")
+	case 'r':
+		return true
 	case 't':
 		return true
 	default:
