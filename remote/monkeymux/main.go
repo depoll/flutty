@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.61"
+	monkeyMuxVersion         = "0.1.62"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3024,6 +3024,7 @@ func (w *muxWindow) scrollbackTextLinesLocked(width int, height int) []string {
 
 func terminalTextLines(data []byte, width int, height int) []string {
 	frame := newTerminalTextFrame(width, height)
+	var appFrameLines []string
 
 	for i := 0; i < len(data); {
 		switch data[i] {
@@ -3035,14 +3036,22 @@ func terminalTextLines(data []byte, width int, height int) []string {
 			case '[':
 				end := csiSequenceEnd(data, i+2)
 				if end < 0 {
-					return frame.lines()
+					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
 				}
-				frame.applyCsi(data[i : end+1])
+				sequence := data[i : end+1]
+				if isSynchronizedOutputModeCsiSequence(sequence, false) {
+					appFrameLines = appendTerminalAppFrameLines(
+						appFrameLines,
+						frame.visibleLines(),
+						frame.width,
+					)
+				}
+				frame.applyCsi(sequence)
 				i = end + 1
 			case ']':
 				end, terminatorLength, ok := findOscTerminator(data[i+2:])
 				if !ok {
-					return frame.lines()
+					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
 				}
 				i += 2 + end + terminatorLength
 			case 'D':
@@ -3063,7 +3072,7 @@ func terminalTextLines(data []byte, width int, height int) []string {
 				i += 2
 			case '(', ')', '*', '+', '-', '.', '/':
 				if i+2 >= len(data) {
-					return frame.lines()
+					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
 				}
 				i += 3
 			default:
@@ -3093,7 +3102,7 @@ func terminalTextLines(data []byte, width int, height int) []string {
 			i += size
 		}
 	}
-	return frame.lines()
+	return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
 }
 
 type terminalTextFrame struct {
@@ -3167,6 +3176,105 @@ func appendDeduplicatedLine(lines []string, line string) []string {
 		return lines
 	}
 	return append(lines, line)
+}
+
+func containsTerminalLine(lines []string, line string) bool {
+	for _, existing := range lines {
+		if existing == line {
+			return true
+		}
+	}
+	return false
+}
+
+func appendTerminalAppFrameLines(
+	lines []string,
+	snapshot []string,
+	width int,
+) []string {
+	for _, line := range snapshot {
+		if !isUsefulTerminalAppFrameLine(line, width) {
+			continue
+		}
+		lines = appendDeduplicatedLine(lines, line)
+	}
+	return lines
+}
+
+func codexScrollbackLines(appFrameLines []string, terminalLines []string, width int) []string {
+	lines := cleanTerminalAppFrameLines(appFrameLines, width)
+	lines = appendUsefulTerminalLines(lines, terminalLines, width)
+	if len(lines) > len(terminalLines) {
+		return lines
+	}
+	return terminalLines
+}
+
+func appendUsefulTerminalLines(lines []string, next []string, width int) []string {
+	for _, line := range next {
+		if !isUsefulTerminalAppFrameLine(line, width) {
+			continue
+		}
+		if containsTerminalLine(lines, line) {
+			continue
+		}
+		lines = appendDeduplicatedLine(lines, line)
+	}
+	return lines
+}
+
+func cleanTerminalAppFrameLines(lines []string, width int) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+	cleaned := make([]string, 0, len(lines))
+	for index, line := range lines {
+		if isTransientTerminalAppFragment(line, lines[index+1:], width) {
+			continue
+		}
+		cleaned = appendDeduplicatedLine(cleaned, line)
+	}
+	return cleaned
+}
+
+func isUsefulTerminalAppFrameLine(line string, width int) bool {
+	trimmed := strings.TrimSpace(line)
+	if len([]rune(trimmed)) < 2 {
+		return false
+	}
+	if width <= 0 {
+		width = defaultColumns
+	}
+	leadingSpaces := len([]rune(line)) - len([]rune(strings.TrimLeft(line, " ")))
+	if leadingSpaces > width/3 && len([]rune(trimmed)) < width/3 {
+		return false
+	}
+	return true
+}
+
+func isTransientTerminalAppFragment(line string, later []string, width int) bool {
+	trimmed := strings.TrimSpace(line)
+	runeCount := len([]rune(trimmed))
+	if runeCount == 0 || runeCount >= 24 {
+		return false
+	}
+	if width <= 0 {
+		width = defaultColumns
+	}
+	searchLimit := 32
+	if len(later) < searchLimit {
+		searchLimit = len(later)
+	}
+	for _, candidate := range later[:searchLimit] {
+		candidate = strings.TrimSpace(candidate)
+		if len([]rune(candidate)) <= runeCount+2 {
+			continue
+		}
+		if strings.Contains(candidate, trimmed) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *terminalTextFrame) writeRune(r rune) {

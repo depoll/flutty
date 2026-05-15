@@ -30,6 +30,15 @@ func replayPrefixForTest(window *muxWindow) string {
 	return prefix + string(terminalTitleReplaySequence(window))
 }
 
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
 	base := []string{
 		"PATH=/custom/bin:/usr/bin",
@@ -1247,6 +1256,42 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 	}
 }
 
+func TestCodexScrollActiveUsesAppViewportHistory(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	codexWindow := &muxWindow{
+		id:        "@1",
+		index:     0,
+		name:      "Codex",
+		agentTool: "codex",
+		history: []byte(
+			"\x1b[?2026h\x1b[1;1HLine 1\x1b[2;1HLine 2\x1b[3;1Hstatus\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HLine 2\x1b[2;1HLine 3\x1b[3;1Hstatus\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HLine 3\x1b[2;1HLine 4\x1b[3;1Hstatus\x1b[?2026l",
+		),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 40
+	server.height = 3
+
+	if err := server.scrollActiveWindow(6); err != nil {
+		t.Fatal(err)
+	}
+
+	scrolled := attach.String()
+	if !strings.Contains(scrolled, "\x1b[1;1HLine 1\x1b[K") ||
+		!strings.Contains(scrolled, "\x1b[2;1HLine 2\x1b[K") ||
+		!strings.Contains(scrolled, "\x1b[3;1Hstatus\x1b[K") {
+		t.Fatalf("scroll viewport = %q, want app viewport history rows", scrolled)
+	}
+	if got := codexWindow.scrollbackLineOffset; got != 6 {
+		t.Fatalf("scrollback offset = %d, want 6", got)
+	}
+}
+
 func TestCodexScrollbackTextSplitsSynchronizedCursorFrames(t *testing.T) {
 	window := &muxWindow{
 		agentTool: "codex",
@@ -1303,6 +1348,46 @@ func TestCodexScrollbackTextAssemblesUnsynchronizedCursorRows(t *testing.T) {
 	lines := window.scrollbackTextLinesLocked(80, 5)
 
 	want := []string{"turn1", "Waiting for background terminal"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestCodexScrollbackTextKeepsAppViewportHistory(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			"\x1b[?2026h\x1b[1;1HLine 1\x1b[2;1HLine 2\x1b[3;1Hstatus\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HLine 2\x1b[2;1HLine 3\x1b[3;1Hstatus\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HLine 3\x1b[2;1HLine 4\x1b[3;1Hstatus\x1b[?2026l",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(40, 3)
+
+	if len(lines) <= 3 {
+		t.Fatalf("scrollback lines = %#v, want app-level history beyond viewport height", lines)
+	}
+	for _, want := range []string{"Line 1", "Line 2", "Line 3", "Line 4"} {
+		if !containsString(lines, want) {
+			t.Fatalf("scrollback lines = %#v, want %q", lines, want)
+		}
+	}
+}
+
+func TestCodexScrollbackTextDropsTransientAppFrameFragments(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			"\x1b[?2026h\x1b[1;1HWa\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HWai\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HWaiting for background terminal\x1b[?2026l",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 5)
+
+	want := []string{"Waiting for background terminal"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
 	}
