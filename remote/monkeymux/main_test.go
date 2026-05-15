@@ -1265,9 +1265,9 @@ func TestCodexScrollActiveUsesAppViewportHistory(t *testing.T) {
 		name:      "Codex",
 		agentTool: "codex",
 		history: []byte(
-			"\x1b[?2026h\x1b[1;1HLine 1\x1b[2;1HLine 2\x1b[3;1Hstatus\x1b[?2026l" +
-				"\x1b[?2026h\x1b[1;1HLine 2\x1b[2;1HLine 3\x1b[3;1Hstatus\x1b[?2026l" +
-				"\x1b[?2026h\x1b[1;1HLine 3\x1b[2;1HLine 4\x1b[3;1Hstatus\x1b[?2026l",
+			"\x1b[?2026h\x1b[1;1HLine 1\x1b[2;1HLine 2\x1b[3;1H◦ Working (1s • esc to interrupt)\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HLine 2\x1b[2;1HLine 3\x1b[3;1H◦ Working (2s • esc to interrupt)\x1b[?2026l" +
+				"\x1b[?2026h\x1b[1;1HLine 3\x1b[2;1HLine 4\x1b[3;1H◦ Working (3s • esc to interrupt)\x1b[?2026l",
 		),
 		lastActivity: time.Now(),
 	}
@@ -1284,11 +1284,11 @@ func TestCodexScrollActiveUsesAppViewportHistory(t *testing.T) {
 	scrolled := attach.String()
 	if !strings.Contains(scrolled, "\x1b[1;1HLine 1\x1b[K") ||
 		!strings.Contains(scrolled, "\x1b[2;1HLine 2\x1b[K") ||
-		!strings.Contains(scrolled, "\x1b[3;1Hstatus\x1b[K") {
+		!strings.Contains(scrolled, "\x1b[3;1HLine 3\x1b[K") {
 		t.Fatalf("scroll viewport = %q, want app viewport history rows", scrolled)
 	}
-	if got := codexWindow.scrollbackLineOffset; got != 6 {
-		t.Fatalf("scrollback offset = %d, want 6", got)
+	if got := codexWindow.scrollbackLineOffset; got != 1 {
+		t.Fatalf("scrollback offset = %d, want 1", got)
 	}
 }
 
@@ -1388,6 +1388,57 @@ func TestCodexScrollbackTextDropsTransientAppFrameFragments(t *testing.T) {
 	lines := window.scrollbackTextLinesLocked(80, 5)
 
 	want := []string{"Waiting for background terminal"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestCodexScrollbackTextFiltersRepeatedCodexChrome(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			"\x1b[?2026h" +
+				"\x1b[1;1H╭────╮\x1b[K" +
+				"\x1b[2;1H│ >_ OpenAI Codex (v0.130.0)\x1b[K" +
+				"\x1b[3;1Hmodel:       gpt-5.5 medium\x1b[K" +
+				"\x1b[4;1HTip: Run codex app to open Codex Desktop\x1b[K" +
+				"\x1b[5;1H› count to 100 with 1 second between each number\x1b[K" +
+				"\x1b[6;1H• 1\x1b[K" +
+				"\x1b[7;1H◦ Working (2s • esc to interrupt) • 1 background terminal running\x1b[K" +
+				"\x1b[8;1H│                                               │\x1b[K" +
+				"\x1b[?2026l" +
+				"\x1b[?2026h" +
+				"\x1b[1;1H╭────╮\x1b[K" +
+				"\x1b[2;1H│ >_ OpenAI Codex (v0.130.0)\x1b[K" +
+				"\x1b[3;1Hmodel:       gpt-5.5 medium\x1b[K" +
+				"\x1b[4;1HTip: Run codex app to open Codex Desktop\x1b[K" +
+				"\x1b[5;1H› count to 100 with 1 second between each number\x1b[K" +
+				"\x1b[6;1H• 1\x1b[K" +
+				"\x1b[7;1H• 2\x1b[K" +
+				"\x1b[8;1H◦ Working (3s • esc to interrupt) • 1 background terminal running\x1b[K" +
+				"\x1b[9;1H│                                               │\x1b[K" +
+				"\x1b[?2026l",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 10)
+
+	for _, notWant := range []string{
+		"│ >_ OpenAI Codex (v0.130.0)",
+		"model:       gpt-5.5 medium",
+		"Tip: Run codex app to open Codex Desktop",
+		"◦ Working (2s • esc to interrupt) • 1 background terminal running",
+		"│                                               │",
+	} {
+		if containsString(lines, notWant) {
+			t.Fatalf("scrollback lines = %#v, should filter chrome %q", lines, notWant)
+		}
+	}
+	want := []string{
+		"› count to 100 with 1 second between each number",
+		"• 1",
+		"• 2",
+	}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
 	}

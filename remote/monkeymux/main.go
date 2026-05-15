@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.62"
+	monkeyMuxVersion         = "0.1.63"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3196,6 +3196,9 @@ func appendTerminalAppFrameLines(
 		if !isUsefulTerminalAppFrameLine(line, width) {
 			continue
 		}
+		if containsTerminalLine(lines, line) {
+			continue
+		}
 		lines = appendDeduplicatedLine(lines, line)
 	}
 	return lines
@@ -3204,10 +3207,7 @@ func appendTerminalAppFrameLines(
 func codexScrollbackLines(appFrameLines []string, terminalLines []string, width int) []string {
 	lines := cleanTerminalAppFrameLines(appFrameLines, width)
 	lines = appendUsefulTerminalLines(lines, terminalLines, width)
-	if len(lines) > len(terminalLines) {
-		return lines
-	}
-	return terminalLines
+	return lines
 }
 
 func appendUsefulTerminalLines(lines []string, next []string, width int) []string {
@@ -3232,6 +3232,9 @@ func cleanTerminalAppFrameLines(lines []string, width int) []string {
 		if isTransientTerminalAppFragment(line, lines[index+1:], width) {
 			continue
 		}
+		if containsTerminalLine(cleaned, line) {
+			continue
+		}
 		cleaned = appendDeduplicatedLine(cleaned, line)
 	}
 	return cleaned
@@ -3239,7 +3242,10 @@ func cleanTerminalAppFrameLines(lines []string, width int) []string {
 
 func isUsefulTerminalAppFrameLine(line string, width int) bool {
 	trimmed := strings.TrimSpace(line)
-	if len([]rune(trimmed)) < 2 {
+	if trimmed == "" {
+		return false
+	}
+	if isCodexAppChromeLine(trimmed) {
 		return false
 	}
 	if width <= 0 {
@@ -3250,6 +3256,35 @@ func isUsefulTerminalAppFrameLine(line string, width int) bool {
 		return false
 	}
 	return true
+}
+
+func isCodexAppChromeLine(trimmed string) bool {
+	trimmed = strings.TrimLeft(trimmed, "•◦ ")
+	chrome := strings.TrimSpace(strings.TrimLeft(trimmed, "│┃║ "))
+	switch {
+	case strings.HasPrefix(chrome, ">_ OpenAI Codex") ||
+		strings.HasPrefix(chrome, "OpenAI Codex"):
+		return true
+	case strings.HasPrefix(chrome, "model:"),
+		strings.HasPrefix(chrome, "directory:"),
+		strings.HasPrefix(chrome, "permissions:"):
+		return true
+	case strings.HasPrefix(chrome, "Tip: Run codex app"):
+		return true
+	case strings.HasPrefix(chrome, "gpt-") && strings.Contains(chrome, " · "):
+		return true
+	case strings.HasPrefix(chrome, "Working (") ||
+		strings.Contains(chrome, " esc to interrupt") ||
+		strings.Contains(chrome, "background terminal running"):
+		return true
+	case strings.Trim(trimmed, "│┃║ ") == "":
+		return true
+	case strings.HasPrefix(trimmed, "╭") ||
+		strings.HasPrefix(trimmed, "╰"):
+		return true
+	default:
+		return false
+	}
 }
 
 func isTransientTerminalAppFragment(line string, later []string, width int) bool {
