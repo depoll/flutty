@@ -6555,7 +6555,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final installation = await _monkeyMuxInstallerService.ensureInstalled(
           session,
           priority: SshExecPriority.normal,
-          confirmInstall: _confirmMonkeyMuxInstall,
+          confirmInstall: (request) => _confirmMonkeyMuxInstall(
+            request,
+            resolveRunningStatus: () => _monkeyMuxService
+                .runningServerStatusFromInstalledHelpers(session, sessionName),
+          ),
         );
         final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
           session,
@@ -6679,26 +6683,47 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return MonkeyMuxServerUpdatePolicy.always;
   }
 
-  Future<bool> _confirmMonkeyMuxInstall(MonkeyMuxInstallRequest request) async {
+  Future<bool> _confirmMonkeyMuxInstall(
+    MonkeyMuxInstallRequest request, {
+    Future<MonkeyMuxServerStatus?> Function()? resolveRunningStatus,
+  }) async {
     if (!mounted) {
       return false;
     }
+    MonkeyMuxServerStatus? runningStatus;
+    if (resolveRunningStatus != null) {
+      runningStatus = await resolveRunningStatus();
+      if (!mounted) {
+        return false;
+      }
+    }
+    final updateStatus =
+        runningStatus != null && runningStatus.needsUpdate(request.version)
+        ? runningStatus
+        : null;
+    final title = updateStatus == null
+        ? 'Install MonkeyMux helper?'
+        : 'Update MonkeyMux helper?';
+    final confirmLabel = updateStatus == null ? 'Install' : 'Update';
     final confirmed = await showDialog<bool>(
       context: context,
       requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
-        title: const Text('Install MonkeyMux helper?'),
+        title: Text(title),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'MonkeySSH needs to upload its bundled MonkeyMux helper before '
-                'using MonkeyMux on this connected host.',
+              Text(
+                updateStatus == null
+                    ? 'MonkeySSH needs to upload its bundled MonkeyMux helper before using MonkeyMux on this connected host.'
+                    : 'This MonkeyMux session is running helper ${updateStatus.version ?? 'unknown'}. MonkeySSH needs to upload helper ${request.version}, restart MonkeyMux for this session, and try to restore its current windows.',
               ),
               const SizedBox(height: 12),
-              Text('Version: ${request.version}'),
+              if (updateStatus != null)
+                Text('Running version: ${updateStatus.version ?? 'unknown'}'),
+              Text('Bundled version: ${request.version}'),
               Text('Platform: ${request.platform}'),
               Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
               const SizedBox(height: 12),
@@ -6716,7 +6741,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Install'),
+            child: Text(confirmLabel),
           ),
         ],
       ),
@@ -6793,7 +6818,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
-        confirmInstall: _confirmMonkeyMuxInstall,
+        confirmInstall: (request) => _confirmMonkeyMuxInstall(
+          request,
+          resolveRunningStatus: () => _monkeyMuxService
+              .runningServerStatusFromInstalledHelpers(session, sessionName),
+        ),
       );
       DiagnosticsLogService.instance.info(
         'terminal.agent_launch',

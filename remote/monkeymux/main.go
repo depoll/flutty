@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.57"
+	monkeyMuxVersion         = "0.1.58"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1274,7 +1274,11 @@ func discoverCopilotSessionIDs(
 	if err != nil {
 		return nil
 	}
-	sessions := map[int]string{}
+	type paneSessionCandidate struct {
+		sessionID string
+		modTime   time.Time
+	}
+	candidates := map[int]paneSessionCandidate{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -1294,9 +1298,25 @@ func discoverCopilotSessionIDs(
 				continue
 			}
 			if panePid := ancestorPanePID(processes, pid, panePids); panePid > 0 {
-				sessions[panePid] = entry.Name()
+				info, err := os.Stat(lock)
+				modTime := time.Time{}
+				if err == nil {
+					modTime = info.ModTime()
+				}
+				if existing, ok := candidates[panePid]; ok &&
+					!existing.modTime.Before(modTime) {
+					continue
+				}
+				candidates[panePid] = paneSessionCandidate{
+					sessionID: entry.Name(),
+					modTime:   modTime,
+				}
 			}
 		}
+	}
+	sessions := map[int]string{}
+	for panePid, candidate := range candidates {
+		sessions[panePid] = candidate.sessionID
 	}
 	return sessions
 }
@@ -1813,7 +1833,6 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
-	window.clearAttachFilteredPrivateModesLocked()
 	if s.activeID == windowID {
 		attach = s.attachConn
 		if attach != nil {
@@ -2790,8 +2809,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 }
 
 // replayNeedsProcessRedrawLocked reports whether the child process should be
-// nudged to redraw after replay. Codex gets this treatment even though it stays
-// in the main buffer so the outer terminal retains scrollback.
+// nudged to redraw after replay.
 func (w *muxWindow) replayNeedsProcessRedrawLocked() bool {
 	if w == nil {
 		return false
@@ -2847,13 +2865,16 @@ func activeResizeVisibleBandClearSequence(oldHeight int, newHeight int) []byte {
 // nudges.
 //
 // Codex's default chat view does not always enter the alternate buffer itself,
-// but it still repaints a TUI viewport with cursor-addressed synchronized
-// frames. It remains on the main-buffer replay path for scrollback, but
-// [replayNeedsProcessRedrawLocked] still nudges it after replay so the visible
-// viewport is repainted like it is under tmux.
+// but it still repaints a fullscreen-style TUI viewport with cursor-addressed
+// synchronized frames. Keep Codex on the same redraw-only alternate-buffer path
+// as other TUI agents so those redraw controls never run against xterm.dart's
+// main scrollback buffer.
 func (w *muxWindow) replayNeedsRedrawLocked() bool {
 	if w == nil {
 		return false
+	}
+	if w.agentToolLocked() == "codex" {
+		return true
 	}
 	for _, mode := range []string{"47", "1047", "1049"} {
 		if w.privateModes[mode] {
@@ -3322,8 +3343,6 @@ func (w *muxWindow) attachOutputForBufferLocked(
 		data = combined
 		*pendingBuffer = nil
 	}
-	sanitizeInlineCodex := w.agentToolLocked() == "codex"
-
 	var output []byte
 	copyStart := 0
 	for i := 0; i < len(data); {
@@ -3336,12 +3355,6 @@ func (w *muxWindow) attachOutputForBufferLocked(
 				return appendAttachOutput(output, data[copyStart:i])
 			}
 			return appendAttachOutput(output, data[copyStart:])
-		}
-		if sanitizeInlineCodex && data[i+1] == 'M' {
-			output = appendAttachOutputForRewrite(output, data[copyStart:i])
-			copyStart = i + 2
-			i += 2
-			continue
 		}
 		if data[i+1] != '[' {
 			i += 2
@@ -3356,9 +3369,6 @@ func (w *muxWindow) attachOutputForBufferLocked(
 		}
 		sequence := data[i : end+1]
 		replacement, ok := alternateBufferCsiReplacement(sequence)
-		if sanitizeInlineCodex {
-			replacement, ok = inlineCodexCsiReplacement(sequence)
-		}
 		if ok {
 			output = appendAttachOutputForRewrite(output, data[copyStart:i])
 			output = append(output, replacement...)
@@ -3622,38 +3632,6 @@ func alternateBufferCsiReplacement(sequence []byte) ([]byte, bool) {
 
 func alternateBufferCsiStripReplacement(sequence []byte) ([]byte, bool) {
 	return alternateBufferCsiReplacementWithClear(sequence, false)
-}
-
-func inlineCodexCsiReplacement(sequence []byte) ([]byte, bool) {
-	if replacement, ok := alternateBufferCsiStripReplacement(sequence); ok {
-		return replacement, true
-	}
-	if isScrollRegionCsiSequence(sequence) || isEraseScrollbackCsiSequence(sequence) {
-		return nil, true
-	}
-	return nil, false
-}
-
-func isScrollRegionCsiSequence(sequence []byte) bool {
-	return len(sequence) >= 3 &&
-		sequence[0] == '\x1b' &&
-		sequence[1] == '[' &&
-		sequence[len(sequence)-1] == 'r'
-}
-
-func isEraseScrollbackCsiSequence(sequence []byte) bool {
-	if len(sequence) < 4 || sequence[0] != '\x1b' || sequence[1] != '[' {
-		return false
-	}
-	if sequence[len(sequence)-1] != 'J' {
-		return false
-	}
-	for _, param := range csiModeParams(string(sequence[2 : len(sequence)-1])) {
-		if param == "3" {
-			return true
-		}
-	}
-	return false
 }
 
 func alternateBufferCsiReplacementWithClear(sequence []byte, clear bool) ([]byte, bool) {
@@ -4193,29 +4171,10 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 	if _, ok := trackedPrivateModes[mode]; !ok {
 		return
 	}
-	if w.filtersInlineCodexModesLocked() && isAlternateBufferMode(mode) {
-		if w.privateModes != nil {
-			w.privateModes[mode] = false
-		}
-		return
-	}
 	if w.privateModes == nil {
 		w.privateModes = map[string]bool{}
 	}
 	w.privateModes[mode] = enabled
-}
-
-func (w *muxWindow) clearAttachFilteredPrivateModesLocked() {
-	if !w.filtersInlineCodexModesLocked() || w.privateModes == nil {
-		return
-	}
-	for _, mode := range []string{"47", "1047", "1049"} {
-		w.privateModes[mode] = false
-	}
-}
-
-func (w *muxWindow) filtersInlineCodexModesLocked() bool {
-	return w.agentToolLocked() == "codex"
 }
 
 func csiModeParams(params string) []string {

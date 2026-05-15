@@ -67,6 +67,13 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async => null;
+
+  @override
+  Future<MonkeyMuxServerStatus?> runningServerStatusFromInstalledHelpers(
+    SshSession session,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async => null;
 }
 
 class _StatusMonkeyMuxService extends _MockMonkeyMuxService {
@@ -78,6 +85,13 @@ class _StatusMonkeyMuxService extends _MockMonkeyMuxService {
   Future<MonkeyMuxServerStatus?> runningServerStatus(
     SshSession session,
     MonkeyMuxInstallation installation,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async => status;
+
+  @override
+  Future<MonkeyMuxServerStatus?> runningServerStatusFromInstalledHelpers(
+    SshSession session,
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async => status;
@@ -4848,7 +4862,7 @@ void main() {
         await tester.pump();
 
         expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
-        expect(find.text('Version: 0.1.14'), findsOneWidget);
+        expect(find.text('Bundled version: 0.1.14'), findsOneWidget);
         expect(find.text('Platform: darwin-arm64'), findsOneWidget);
         expect(find.text('Size: 1.5 KB'), findsOneWidget);
         expect(executedCommands, isEmpty);
@@ -4967,9 +4981,15 @@ void main() {
         await tester.pump();
         await tester.pump();
 
-        expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
+        expect(find.text('Update MonkeyMux helper?'), findsOneWidget);
+        expect(find.text('Running version: 0.1.51'), findsOneWidget);
+        expect(find.text('Bundled version: 0.1.52'), findsOneWidget);
+        expect(
+          find.textContaining('restore its current windows'),
+          findsOneWidget,
+        );
 
-        await tester.tap(find.widgetWithText(FilledButton, 'Install'));
+        await tester.tap(find.widgetWithText(FilledButton, 'Update'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 

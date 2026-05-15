@@ -976,7 +976,7 @@ func TestActiveOutputFiltersNestedAlternateBufferModes(t *testing.T) {
 	}
 }
 
-func TestCodexActiveOutputStripsNestedAlternateBufferModes(t *testing.T) {
+func TestCodexActiveOutputRewritesNestedAlternateBufferModes(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	window := &muxWindow{
@@ -992,22 +992,22 @@ func TestCodexActiveOutputStripsNestedAlternateBufferModes(t *testing.T) {
 	chunk := []byte("before\x1b[?1049;2004hinside")
 	server.handleWindowOutput("@1", chunk)
 
-	want := "before\x1b[?2004hinside"
+	want := "before" + nestedAlternateBufferTransitionSequence + "\x1b[?2004hinside"
 	if got := attach.String(); got != want {
-		t.Fatalf("active attach output = %q, want nested Codex alt-buffer stripped to %q", got, want)
+		t.Fatalf("active attach output = %q, want nested Codex alt-buffer rewrite %q", got, want)
 	}
 	if got := string(window.history); got != string(chunk) {
 		t.Fatalf("history = %q, want raw PTY bytes", got)
 	}
-	if got := string(window.replayHistory); got != want {
-		t.Fatalf("replay history = %q, want attach-visible bytes %q", got, want)
+	if got := string(window.replayHistory); got != "" {
+		t.Fatalf("replay history = %q, want Codex redraw-only replay", got)
 	}
-	if window.privateModes["1049"] {
-		t.Fatal("Codex nested alt-buffer mode should not mark the outer attach surface as alt-buffer")
+	if !window.privateModes["1049"] {
+		t.Fatal("Codex nested alt-buffer mode should mark the window for redraw-only replay")
 	}
 }
 
-func TestCodexActiveOutputStripsMainBufferUnsafeRedrawControls(t *testing.T) {
+func TestCodexActiveOutputPassesFullscreenRedrawControls(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	window := &muxWindow{
@@ -1025,12 +1025,12 @@ func TestCodexActiveOutputStripsMainBufferUnsafeRedrawControls(t *testing.T) {
 		[]byte("before\x1b[3J\x1b[1;31r\x1bMafter"),
 	)
 
-	want := "beforeafter"
+	want := "before\x1b[3J\x1b[1;31r\x1bMafter"
 	if got := attach.String(); got != want {
-		t.Fatalf("active attach output = %q, want main-buffer unsafe controls stripped to %q", got, want)
+		t.Fatalf("active attach output = %q, want fullscreen redraw controls preserved as %q", got, want)
 	}
-	if got := string(window.replayHistory); got != want {
-		t.Fatalf("replay history = %q, want attach-visible bytes %q", got, want)
+	if got := string(window.replayHistory); got != "" {
+		t.Fatalf("replay history = %q, want Codex redraw-only replay", got)
 	}
 }
 
@@ -1143,10 +1143,11 @@ func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
 	}
 }
 
-// TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw asserts that Codex
-// keeps main-buffer history replay for scrollback while also getting a redraw
-// nudge so its cursor-addressed viewport is repainted after replay.
-func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
+// TestCodexAgentUsesAltBufferRedraw asserts that Codex follows tmux's model:
+// keep the outer terminal in an isolated alternate buffer and let Codex redraw
+// its cursor-addressed viewport instead of replaying raw history into xterm's
+// main scrollback buffer.
+func TestCodexAgentUsesAltBufferRedraw(t *testing.T) {
 	server := newMuxServer("test")
 	codexWindow := &muxWindow{
 		id:           "@1",
@@ -1162,32 +1163,18 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	replay := string(server.activeReplayLocked())
 
 	for _, marker := range []string{"first turn", "second turn", "third turn", "> prompt"} {
-		if !strings.Contains(replay, marker) {
-			t.Fatalf("replay = %q, want Codex history marker %q for scrollback", replay, marker)
+		if strings.Contains(replay, marker) {
+			t.Fatalf("replay = %q, should not replay Codex history marker %q into xterm main buffer", replay, marker)
 		}
 	}
-	promptIndex := strings.Index(replay, "> prompt")
-	visibleClearIndex := strings.LastIndex(
-		replay,
-		postHistoryVisibleScreenClearSequence,
-	)
-	if visibleClearIndex < 0 {
-		t.Fatalf("replay = %q, want stale local scrollback clear before Codex history replay", replay)
+	if !strings.Contains(replay, activeWindowReplayPrefix) {
+		t.Fatalf("replay = %q, want redraw-only active-window prefix", replay)
 	}
-	if visibleClearIndex > promptIndex {
-		t.Fatalf(
-			"replay = %q, visible-screen clear must not erase replayed Codex history",
-			replay,
-		)
+	if !strings.Contains(replay, attachSessionEnterSequence) {
+		t.Fatalf("replay = %q, should stay in attach-owned alt buffer for Codex redraw", replay)
 	}
-	if !strings.Contains(replay, "\x1b[3J") {
-		t.Fatalf("replay = %q, should clear stale local scrollback before Codex history replay", replay)
-	}
-	if !strings.Contains(replay, attachSessionExitSequence) {
-		t.Fatalf("replay = %q, should leave attach-owned alt buffer for Codex main-buffer scrollback", replay)
-	}
-	if strings.Contains(replay, attachSessionEnterSequence) {
-		t.Fatalf("replay = %q, should not enter attach-owned alt buffer for Codex scrollback", replay)
+	if strings.Contains(replay, attachSessionExitSequence) {
+		t.Fatalf("replay = %q, should not leave attach-owned alt buffer for Codex", replay)
 	}
 	if server.activeRedrawWindowLocked() != codexWindow {
 		t.Fatal("Codex window should be nudged to redraw after replay")
@@ -1446,11 +1433,8 @@ func TestCodexSynchronizedCursorFrameDoesNotBuildReplayHistory(t *testing.T) {
 	if got := attach.String(); !strings.Contains(got, "stale status") {
 		t.Fatalf("live attach output = %q, want synchronized frame passed through", got)
 	}
-	if got := string(window.replayHistory); strings.Contains(got, "stale") {
-		t.Fatalf("replay history = %q, want cursor-addressed synchronized frame omitted", got)
-	}
-	if got := string(window.replayHistory); !strings.Contains(got, "assistant line") {
-		t.Fatalf("replay history = %q, want non-frame output preserved", got)
+	if got := string(window.replayHistory); got != "prompt\n" {
+		t.Fatalf("replay history = %q, want Codex redraw-only replay to leave history unchanged", got)
 	}
 	if got := string(window.replaySyncOutputBuffer); got != "" {
 		t.Fatalf("sync replay buffer = %q, want empty after complete frame", got)
@@ -1474,20 +1458,17 @@ func TestCodexSynchronizedReplayFilterBuffersSplitFrame(t *testing.T) {
 		[]byte("\x1b[?2026h\x1b[23;1Hpartial status"),
 	)
 
-	if got := string(window.replayHistory); strings.Contains(got, "partial status") {
-		t.Fatalf("replay history = %q, want split synchronized frame buffered", got)
+	if got := string(window.replayHistory); got != "prompt\n" {
+		t.Fatalf("replay history = %q, want Codex redraw-only replay to leave history unchanged", got)
 	}
-	if got := string(window.replaySyncOutputBuffer); !strings.Contains(got, "partial status") {
-		t.Fatalf("sync replay buffer = %q, want partial frame held", got)
+	if got := string(window.replaySyncOutputBuffer); got != "" {
+		t.Fatalf("sync replay buffer = %q, want no replay buffering for redraw-only Codex", got)
 	}
 
 	server.handleWindowOutput("@1", []byte("\x1b[?2026lafter\n"))
 
-	if got := string(window.replayHistory); strings.Contains(got, "partial status") {
-		t.Fatalf("replay history = %q, want completed cursor frame omitted", got)
-	}
-	if got := string(window.replayHistory); !strings.Contains(got, "after\n") {
-		t.Fatalf("replay history = %q, want post-frame output preserved", got)
+	if got := string(window.replayHistory); got != "prompt\n" {
+		t.Fatalf("replay history = %q, want Codex redraw-only replay to leave history unchanged", got)
 	}
 	if got := string(window.replaySyncOutputBuffer); got != "" {
 		t.Fatalf("sync replay buffer = %q, want empty after frame close", got)
@@ -1508,11 +1489,8 @@ func TestCodexSynchronizedLinearOutputStillBuildsReplayHistory(t *testing.T) {
 
 	server.handleWindowOutput("@1", []byte("\x1b[?2026hlinear output\n\x1b[?2026l"))
 
-	if got := string(window.replayHistory); !strings.Contains(got, "linear output\n") {
-		t.Fatalf("replay history = %q, want linear synchronized output preserved", got)
-	}
-	if got := string(window.replayHistory); strings.Contains(got, "\x1b[?2026") {
-		t.Fatalf("replay history = %q, want synchronized-output controls stripped", got)
+	if got := string(window.replayHistory); got != "prompt\n" {
+		t.Fatalf("replay history = %q, want Codex redraw-only replay to leave history unchanged", got)
 	}
 }
 
@@ -2155,6 +2133,47 @@ func TestAgentSessionIDFromCommandParsesCreateWindowResumeCommand(t *testing.T) 
 		[]string{"codex", "resume", "run-42"},
 	); got != "run-42" {
 		t.Fatalf("agentSessionIDFromCommand(args) = %q, want run-42", got)
+	}
+}
+
+func TestDiscoverCopilotSessionIDsChoosesNewestLockForPane(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stateDir := filepath.Join(home, ".copilot", "session-state")
+	oldSession := filepath.Join(stateDir, "old-session")
+	newSession := filepath.Join(stateDir, "new-session")
+	if err := os.MkdirAll(oldSession, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(newSession, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldLock := filepath.Join(oldSession, "inuse.200.lock")
+	newLock := filepath.Join(newSession, "inuse.200.lock")
+	for _, path := range []string{oldLock, newLock} {
+		if err := os.WriteFile(path, []byte("200\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if err := os.Chtimes(oldLock, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newLock, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "copilot", args: "copilot"},
+	}
+
+	got := discoverCopilotSessionIDs(
+		processes,
+		map[int]struct{}{100: struct{}{}},
+	)
+	if got[100] != "new-session" {
+		t.Fatalf("discoverCopilotSessionIDs() = %#v, want newest lock new-session", got)
 	}
 }
 
