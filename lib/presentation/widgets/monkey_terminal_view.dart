@@ -374,6 +374,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
     this.forceTouchScrollMouseInput = false,
+    this.onTerminalScrollInput,
     this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
@@ -511,6 +512,9 @@ class MonkeyTerminalView extends StatefulWidget {
   /// If true, touch scroll emits SGR wheel reports even when the local xterm
   /// state has not observed the remote application's mouse mode.
   final bool forceTouchScrollMouseInput;
+
+  /// Optional handler that can consume terminal scroll before bytes are sent.
+  final TerminalScrollInputHandler? onTerminalScrollInput;
 
   /// If true, the terminal keeps the viewport pinned to the newest output while
   /// it is already scrolled to the bottom.
@@ -818,6 +822,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       child = MonkeyTerminalScrollGestureHandler(
         terminal: widget.terminal,
         simulateScroll: widget.simulateScroll,
+        onTerminalScrollInput: widget.onTerminalScrollInput,
         getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
         getLineHeight: () => renderTerminal.lineHeight,
         child: child,
@@ -1168,10 +1173,21 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
-      final handled = _sendTouchScrollMouseInput(
-        scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
-        _resolveViewportMousePosition(_lastTouchScrollPosition),
-      );
+      var handled =
+          widget.onTerminalScrollInput?.call(
+            scrollUp
+                ? TerminalScrollDirection.up
+                : TerminalScrollDirection.down,
+          ) ??
+          false;
+      if (!handled) {
+        handled = _sendTouchScrollMouseInput(
+          scrollUp
+              ? TerminalMouseButton.wheelUp
+              : TerminalMouseButton.wheelDown,
+          _resolveViewportMousePosition(_lastTouchScrollPosition),
+        );
+      }
 
       if (!handled && widget.simulateScroll) {
         widget.terminal.keyInput(

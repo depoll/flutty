@@ -374,6 +374,25 @@ void main() {
       );
     });
 
+    test('uses MonkeyMux scrollback control for fullscreen agent scroll', () {
+      expect(
+        shouldUseMonkeyMuxScrollbackControl(
+          isUsingAltBuffer: true,
+          isAttachOwnedAltBuffer: true,
+          hasForegroundAgentTool: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUseMonkeyMuxScrollbackControl(
+          isUsingAltBuffer: true,
+          isAttachOwnedAltBuffer: true,
+          hasForegroundAgentTool: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('starts selection on separator characters', () {
       final terminal = Terminal(maxLines: 100)..write('foo/bar');
 

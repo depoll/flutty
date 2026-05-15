@@ -406,6 +406,22 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }, priority: SshExecPriority.low);
   }
 
+  /// Scrolls the active MonkeyMux window using the server-side scrollback view.
+  Future<void> scrollActiveWindow(
+    SshSession session,
+    String sessionName,
+    int lines, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    if (lines == 0) {
+      return;
+    }
+    await _runControlCommand(session, sessionName, {
+      'type': 'scroll_active',
+      'lines': lines,
+    }, priority: priority);
+  }
+
   /// Runs a short-lived command through the MonkeyMux control client.
   Future<TerminalClientCommandResult> runClientCommand(
     SshSession session,

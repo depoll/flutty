@@ -1,5 +1,18 @@
 import 'package:xterm/core.dart';
 
+/// Direction for terminal scroll input before it is converted to bytes.
+enum TerminalScrollDirection {
+  /// Scroll toward older terminal content.
+  up,
+
+  /// Scroll toward newer terminal content.
+  down,
+}
+
+/// Returns true when custom scroll handling consumed the terminal scroll input.
+typedef TerminalScrollInputHandler =
+    bool Function(TerminalScrollDirection direction);
+
 /// Sends terminal scroll mouse input with corrected SGR wheel button IDs.
 ///
 /// Honors DEC private mode 1007 ("alternate-screen alternate-scroll"): when an

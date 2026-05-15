@@ -59,6 +59,7 @@ import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
+import '../widgets/terminal_scroll_mouse_input.dart';
 import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
@@ -2111,6 +2112,15 @@ bool shouldRouteTouchScrollToTerminal({
   return isUsingAltBuffer || terminalReportsMouseWheel;
 }
 
+/// Whether scroll gestures should use MonkeyMux server-side scrollback instead
+/// of being sent to the foreground process.
+@visibleForTesting
+bool shouldUseMonkeyMuxScrollbackControl({
+  required bool isUsingAltBuffer,
+  required bool isAttachOwnedAltBuffer,
+  required bool hasForegroundAgentTool,
+}) => isUsingAltBuffer && isAttachOwnedAltBuffer && hasForegroundAgentTool;
+
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
 bool shouldShowNativeSelectionOverlay({
@@ -2701,6 +2711,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
   Timer? _attachOwnedAltBufferFollowResumeTimer;
+  int _pendingMonkeyMuxScrollLines = 0;
+  bool _monkeyMuxScrollControlInFlight = false;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   late final TerminalSessionController _sessionController;
   bool _showsTerminalMetadata = false;
@@ -2951,6 +2963,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
     isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
   );
+
+  bool get _usesMonkeyMuxScrollbackControl =>
+      shouldUseMonkeyMuxScrollbackControl(
+        isUsingAltBuffer: _isUsingAltBuffer,
+        isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
+        hasForegroundAgentTool: _hasForegroundAgentToolCommand,
+      );
 
   MenuStyle _terminalOverflowMenuStyle({
     required BuildContext context,
@@ -4808,6 +4827,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _syncNativeScrollFromTerminal();
     _refreshVisibleTerminalPathUnderlines();
+  }
+
+  bool _handleTerminalScrollInput(TerminalScrollDirection direction) {
+    if (!_usesMonkeyMuxScrollbackControl) {
+      return false;
+    }
+
+    _pendingMonkeyMuxScrollLines += switch (direction) {
+      TerminalScrollDirection.up => 1,
+      TerminalScrollDirection.down => -1,
+    };
+    unawaited(_drainMonkeyMuxScrollRequests());
+    return true;
+  }
+
+  Future<void> _drainMonkeyMuxScrollRequests() async {
+    if (_monkeyMuxScrollControlInFlight) {
+      return;
+    }
+    _monkeyMuxScrollControlInFlight = true;
+    try {
+      while (mounted && _pendingMonkeyMuxScrollLines != 0) {
+        final lines = _pendingMonkeyMuxScrollLines;
+        _pendingMonkeyMuxScrollLines = 0;
+
+        final sessionName = _tmuxSessionName;
+        final connectionId = _connectionId;
+        final session = connectionId == null
+            ? null
+            : _sessionsNotifier?.getSession(connectionId);
+        if (!_usesMonkeyMuxScrollbackControl ||
+            session == null ||
+            sessionName == null) {
+          _pendingMonkeyMuxScrollLines = 0;
+          return;
+        }
+
+        await _monkeyMuxService.scrollActiveWindow(session, sessionName, lines);
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.scroll',
+        'control_failed',
+        fields: {'connectionId': _connectionId, 'errorType': error.runtimeType},
+      );
+      _pendingMonkeyMuxScrollLines = 0;
+    } finally {
+      _monkeyMuxScrollControlInFlight = false;
+      if (mounted && _pendingMonkeyMuxScrollLines != 0) {
+        unawaited(_drainMonkeyMuxScrollRequests());
+      }
+    }
   }
 
   void _followLiveOutput() {
@@ -9625,6 +9696,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isAttachOwnedAltBuffer: _usesAttachOwnedAltBuffer,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      onTerminalScrollInput: _usesMonkeyMuxScrollbackControl
+          ? _handleTerminalScrollInput
+          : null,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
     );

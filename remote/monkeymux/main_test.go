@@ -1188,6 +1188,86 @@ func TestCodexAgentUsesAltBufferRedraw(t *testing.T) {
 	}
 }
 
+func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	codexWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		history:      []byte("line1\nline2\nline3\nline4\nline5\nline6\n"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 20
+	server.height = 3
+
+	if err := server.scrollActiveWindow(2); err != nil {
+		t.Fatal(err)
+	}
+
+	scrolled := attach.String()
+	for _, want := range []string{
+		attachSessionEnterSequence,
+		"\x1b[1;1Hline2\x1b[K",
+		"\x1b[2;1Hline3\x1b[K",
+		"\x1b[3;1Hline4\x1b[K",
+	} {
+		if !strings.Contains(scrolled, want) {
+			t.Fatalf("scroll viewport = %q, want marker %q", scrolled, want)
+		}
+	}
+	for _, notWant := range []string{"\x1b[1;1Hline5", "\x1b[1;1Hline6"} {
+		if strings.Contains(scrolled, notWant) {
+			t.Fatalf("scroll viewport = %q, should not contain current-bottom marker %q", scrolled, notWant)
+		}
+	}
+	if got := codexWindow.scrollbackLineOffset; got != 2 {
+		t.Fatalf("scrollback offset = %d, want 2", got)
+	}
+
+	beforeLiveOutput := attach.String()
+	server.handleWindowOutput("@1", []byte("live update\n"))
+	if got := attach.String(); got != beforeLiveOutput {
+		t.Fatalf("live output while scrolled = %q, want viewport to stay frozen as %q", got, beforeLiveOutput)
+	}
+
+	if err := server.scrollActiveWindow(-2); err != nil {
+		t.Fatal(err)
+	}
+	resumed := attach.String()[len(beforeLiveOutput):]
+	if !strings.Contains(resumed, activeWindowReplayPrefix) {
+		t.Fatalf("resume replay = %q, want live redraw prefix", resumed)
+	}
+	if got := codexWindow.scrollbackLineOffset; got != 0 {
+		t.Fatalf("scrollback offset after resume = %d, want 0", got)
+	}
+}
+
+func TestCodexScrollbackTextSplitsSynchronizedCursorFrames(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			"turn1\n" +
+				"\x1b[?2026h" +
+				"\x1b[23;1Hstatus" +
+				"\x1b[24;1H> composer" +
+				"\x1b[?2026l" +
+				"turn2\n",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked()
+
+	want := []string{"turn1", "status", "> composer", "turn2"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
 func TestRedrawActiveNudgesCodexWithoutClearingViewport(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}

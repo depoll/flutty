@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.58"
+	monkeyMuxVersion         = "0.1.59"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -137,6 +137,7 @@ var capabilities = []string{
 	"window-close",
 	"active-context",
 	"inject-input",
+	"scroll-active",
 	"run-command",
 	"client-scoped-run-command",
 	"focus-hint",
@@ -299,6 +300,7 @@ type controlMessage struct {
 	Args        []string `json:"args,omitempty"`
 	AgentTool   string   `json:"agentTool,omitempty"`
 	Data        string   `json:"data,omitempty"`
+	Lines       int      `json:"lines,omitempty"`
 	Width       int      `json:"width,omitempty"`
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
@@ -423,6 +425,7 @@ type muxWindow struct {
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
 	attachSurfaceAlt           bool
+	scrollbackLineOffset       int
 	alert                      bool
 	closed                     bool
 }
@@ -1838,7 +1841,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		if attach != nil {
 			chunk = window.attachOutputForClientLocked(chunk)
 			window.appendReplayCandidateLocked(chunk)
-			shouldWrite = len(chunk) > 0
+			shouldWrite = len(chunk) > 0 && window.scrollbackLineOffset == 0
 		} else {
 			window.appendInactiveReplayCandidateLocked(chunk)
 		}
@@ -1897,6 +1900,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			if !candidate.closed {
 				s.activeID = candidate.id
 				candidate.alert = false
+				candidate.scrollbackLineOffset = 0
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
@@ -2123,6 +2127,12 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 	case "redraw_active":
 		s.redrawActive()
 		client.send(controlResponse{ID: request.ID, Type: "active_redraw", Status: "ok"})
+	case "scroll_active":
+		if err := s.scrollActiveWindow(request.Lines); err != nil {
+			client.sendError(request, err)
+			return
+		}
+		client.send(controlResponse{ID: request.ID, Type: "active_scrolled", Status: "ok"})
 	case "query_active_context":
 		s.mu.Lock()
 		window := s.windowByIDLocked(s.activeID)
@@ -2556,6 +2566,7 @@ func (s *muxServer) selectWindow(
 	}
 	s.activeID = windowID
 	window.alert = false
+	window.scrollbackLineOffset = 0
 	if resizeRequest.valid() {
 		s.width = resizeRequest.width
 		s.height = resizeRequest.height
@@ -2600,6 +2611,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		if replacement != nil {
 			s.activeID = replacement.id
 			replacement.alert = false
+			replacement.scrollbackLineOffset = 0
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
@@ -2720,6 +2732,117 @@ func (s *muxServer) redrawActive() {
 	s.writeAttachLocked(attach, clear)
 	s.attachMu.Unlock()
 	runRedrawNudgeIfNeeded(redrawNudge)
+}
+
+func (s *muxServer) scrollActiveWindow(lines int) error {
+	if lines == 0 {
+		return nil
+	}
+
+	var attach net.Conn
+	var output []byte
+	var redrawNudge redrawNudgeRequest
+
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return errors.New("no active window")
+	}
+	attach = s.attachConn
+	if window.supportsServerScrollbackLocked() {
+		output, redrawNudge = s.scrollbackReplayLocked(window, lines)
+	}
+	s.mu.Unlock()
+	s.writeAttachLocked(attach, output)
+	s.attachMu.Unlock()
+	runRedrawNudgeIfNeeded(redrawNudge)
+	return nil
+}
+
+func (s *muxServer) scrollbackReplayLocked(
+	window *muxWindow,
+	lines int,
+) ([]byte, redrawNudgeRequest) {
+	scrollbackLines := window.scrollbackTextLinesLocked()
+	viewportHeight := s.height
+	if viewportHeight <= 0 {
+		viewportHeight = defaultRows
+	}
+	maxOffset := len(scrollbackLines) - viewportHeight
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if maxOffset == 0 {
+		wasScrolled := window.scrollbackLineOffset != 0
+		window.scrollbackLineOffset = 0
+		if wasScrolled {
+			return s.replayBytesLocked(window), s.redrawNudgeForWindowLocked(window)
+		}
+		return nil, redrawNudgeRequest{}
+	}
+	previousOffset := window.scrollbackLineOffset
+	offset := window.scrollbackLineOffset + lines
+	if offset < 0 {
+		offset = 0
+	} else if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset == previousOffset {
+		return nil, redrawNudgeRequest{}
+	}
+	window.scrollbackLineOffset = offset
+	if offset == 0 {
+		return s.replayBytesLocked(window), s.redrawNudgeForWindowLocked(window)
+	}
+	return s.scrollbackViewportReplayBytesLocked(window, scrollbackLines, offset), redrawNudgeRequest{}
+}
+
+func (s *muxServer) scrollbackViewportReplayBytesLocked(
+	window *muxWindow,
+	lines []string,
+	offset int,
+) []byte {
+	height := s.height
+	if height <= 0 {
+		height = defaultRows
+	}
+	width := s.width
+	if width <= 0 {
+		width = defaultColumns
+	}
+	start := len(lines) - height - offset
+	if start < 0 {
+		start = 0
+	}
+	end := start + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	window.attachSurfaceAlt = true
+	var output bytes.Buffer
+	output.WriteString(attachSessionEnterSequence)
+	output.WriteString(activeWindowReplayPrefixBeforeAlt)
+	output.WriteString(activeWindowReplayPrefixAfterAltClear)
+	output.Write(terminalTitleReplaySequence(window))
+	output.WriteString("\x1b[?25l")
+	row := 1
+	for index := start; index < end && row <= height; index++ {
+		_, _ = fmt.Fprintf(
+			&output,
+			"\x1b[%d;1H%s\x1b[K",
+			row,
+			truncateScrollbackLine(lines[index], width),
+		)
+		row++
+	}
+	for ; row <= height; row++ {
+		_, _ = fmt.Fprintf(&output, "\x1b[%d;1H\x1b[K", row)
+	}
+	return output.Bytes()
 }
 
 func (s *muxServer) activeRedrawWindowLocked() *muxWindow {
@@ -2884,6 +3007,116 @@ func (w *muxWindow) replayNeedsRedrawLocked() bool {
 	return false
 }
 
+func (w *muxWindow) supportsServerScrollbackLocked() bool {
+	return w != nil && w.replayNeedsRedrawLocked() && w.agentToolLocked() != ""
+}
+
+func (w *muxWindow) scrollbackTextLinesLocked() []string {
+	if w == nil {
+		return nil
+	}
+	return terminalTextLines(w.historyTailLocked())
+}
+
+func terminalTextLines(data []byte) []string {
+	var lines []string
+	var line strings.Builder
+	for i := 0; i < len(data); {
+		switch data[i] {
+		case '\x1b':
+			var action terminalTextControlAction
+			i, action = skipEscapeSequence(data, i)
+			switch action {
+			case terminalTextControlBreakLine:
+				if line.Len() > 0 {
+					lines = append(lines, line.String())
+					line.Reset()
+				}
+			case terminalTextControlNone:
+			}
+		case '\r':
+			line.Reset()
+			i++
+		case '\n':
+			lines = append(lines, line.String())
+			line.Reset()
+			i++
+		case '\t':
+			line.WriteByte('\t')
+			i++
+		default:
+			if data[i] >= 0x20 && data[i] != 0x7f {
+				line.WriteByte(data[i])
+			}
+			i++
+		}
+	}
+	if line.Len() > 0 {
+		lines = append(lines, line.String())
+	}
+	return lines
+}
+
+type terminalTextControlAction int
+
+const (
+	terminalTextControlNone terminalTextControlAction = iota
+	terminalTextControlBreakLine
+)
+
+func skipEscapeSequence(data []byte, index int) (int, terminalTextControlAction) {
+	if index+1 >= len(data) {
+		return len(data), terminalTextControlNone
+	}
+	switch data[index+1] {
+	case '[':
+		end := csiSequenceEnd(data, index+2)
+		if end < 0 {
+			return len(data), terminalTextControlNone
+		}
+		return end + 1, terminalTextActionForCsiSequence(data[index : end+1])
+	case ']':
+		end, terminatorLength, ok := findOscTerminator(data[index+2:])
+		if !ok {
+			return len(data), terminalTextControlNone
+		}
+		return index + 2 + end + terminatorLength, terminalTextControlNone
+	case '(', ')', '*', '+', '-', '.', '/':
+		if index+2 >= len(data) {
+			return len(data), terminalTextControlNone
+		}
+		return index + 3, terminalTextControlNone
+	default:
+		return index + 2, terminalTextControlNone
+	}
+}
+
+func terminalTextActionForCsiSequence(sequence []byte) terminalTextControlAction {
+	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return terminalTextControlNone
+	}
+	if isSynchronizedOutputCsiSequence(sequence) {
+		return terminalTextControlBreakLine
+	}
+	switch sequence[len(sequence)-1] {
+	case 'H', 'f', 'G', 'd', 'A', 'B', 'C', 'D', 'E', 'F', '`', 'a', 'e':
+		return terminalTextControlBreakLine
+	default:
+		return terminalTextControlNone
+	}
+}
+
+func truncateScrollbackLine(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	runes := []rune(line)
+	if len(runes) <= width {
+		return line
+	}
+	return string(runes[:width])
+}
+
 func terminalTitleReplaySequence(window *muxWindow) []byte {
 	title := ""
 	if window != nil {
@@ -2990,7 +3223,29 @@ func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []b
 }
 
 func (s *muxServer) writeActive(data []byte) {
-	_ = s.writeWindow(s.activeWindowID(), data)
+	var attach net.Conn
+	var replay []byte
+	var redrawNudge redrawNudgeRequest
+	var windowID string
+
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window != nil && !window.closed {
+		windowID = window.id
+		if window.scrollbackLineOffset != 0 {
+			window.scrollbackLineOffset = 0
+			attach = s.attachConn
+			replay = s.replayBytesLocked(window)
+			redrawNudge = s.redrawNudgeForWindowLocked(window)
+		}
+	}
+	s.mu.Unlock()
+	s.writeAttachLocked(attach, replay)
+	s.attachMu.Unlock()
+	runRedrawNudgeIfNeeded(redrawNudge)
+
+	_ = s.writeWindow(windowID, data)
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {

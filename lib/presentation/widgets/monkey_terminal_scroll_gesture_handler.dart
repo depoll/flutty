@@ -14,6 +14,7 @@ class MonkeyTerminalScrollGestureHandler extends StatefulWidget {
     required this.getCellOffset,
     required this.getLineHeight,
     this.simulateScroll = true,
+    this.onTerminalScrollInput,
     required this.child,
   });
 
@@ -29,6 +30,9 @@ class MonkeyTerminalScrollGestureHandler extends StatefulWidget {
   /// doesn't declare it supports mouse wheel events. true by default as it
   /// is the default behavior of most terminals.
   final bool simulateScroll;
+
+  /// Optional handler that can consume terminal scroll before bytes are sent.
+  final TerminalScrollInputHandler? onTerminalScrollInput;
 
   final Widget child;
 
@@ -99,6 +103,13 @@ class _MonkeyTerminalScrollGestureHandlerState
   /// then if the application doesn't recognize mouse wheel events, this method
   /// will simulate scroll events by sending up/down arrow keys.
   void _sendScrollEvent(bool up) {
+    if (widget.onTerminalScrollInput?.call(
+          up ? TerminalScrollDirection.up : TerminalScrollDirection.down,
+        ) ??
+        false) {
+      return;
+    }
+
     final position = widget.getCellOffset(lastPointerPosition);
     final button = up
         ? TerminalMouseButton.wheelUp
@@ -147,7 +158,9 @@ class _MonkeyTerminalScrollGestureHandlerState
     if (!isAltBuffer) {
       return widget.child;
     }
-    if (!reportsMouseWheel && !widget.simulateScroll) {
+    if (!reportsMouseWheel &&
+        !widget.simulateScroll &&
+        widget.onTerminalScrollInput == null) {
       return widget.child;
     }
 
