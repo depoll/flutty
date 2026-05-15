@@ -6636,6 +6636,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (status == null || !status.needsUpdate(installation.version)) {
       return MonkeyMuxServerUpdatePolicy.never;
     }
+    if (installation.installedDuringCall) {
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'upgrade_confirmed_by_install',
+        fields: {
+          'connectionId': session.connectionId,
+          'supportsShutdown': status.supportsShutdown,
+        },
+      );
+      return MonkeyMuxServerUpdatePolicy.always;
+    }
     DiagnosticsLogService.instance.info(
       'monkeymux.install',
       'upgrade_prompt',

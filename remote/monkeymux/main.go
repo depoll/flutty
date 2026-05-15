@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.51"
+	monkeyMuxVersion         = "0.1.52"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1120,12 +1120,17 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		return
 	}
 	panePids := map[int]struct{}{}
+	codexPaneCount := 0
 	for _, window := range restore.Windows {
 		if strings.TrimSpace(window.AgentSessionID) != "" {
 			continue
 		}
-		if agentToolForRestore(window) == "" || window.PanePid <= 0 {
+		tool := agentToolForRestore(window)
+		if tool == "" || window.PanePid <= 0 {
 			continue
+		}
+		if tool == "codex" {
+			codexPaneCount++
 		}
 		panePids[window.PanePid] = struct{}{}
 	}
@@ -1137,6 +1142,10 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		return
 	}
 	copilotSessions := discoverCopilotSessionIDs(processes, panePids)
+	codexSessionID := ""
+	if codexPaneCount == 1 {
+		codexSessionID = latestCodexHistorySessionID()
+	}
 	for i := range restore.Windows {
 		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
 			continue
@@ -1146,14 +1155,18 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		if panePid <= 0 || tool == "" {
 			continue
 		}
+		if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
+			restore.Windows[i].AgentSessionID = sessionID
+			continue
+		}
 		if tool == "copilot" {
 			if sessionID := copilotSessions[panePid]; sessionID != "" {
 				restore.Windows[i].AgentSessionID = sessionID
 				continue
 			}
 		}
-		if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
-			restore.Windows[i].AgentSessionID = sessionID
+		if tool == "codex" && codexSessionID != "" {
+			restore.Windows[i].AgentSessionID = codexSessionID
 		}
 	}
 }
@@ -1349,6 +1362,45 @@ func agentSessionIDFromArgs(tool string, args string) string {
 			if strings.TrimSpace(group) != "" {
 				return strings.TrimSpace(group)
 			}
+		}
+	}
+	return ""
+}
+
+func latestCodexHistorySessionID() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return latestCodexSessionIDFromHistoryFile(filepath.Join(home, ".codex", "history.jsonl"))
+}
+
+func latestCodexSessionIDFromHistoryFile(path string) string {
+	const maxHistoryBytes = 1024 * 1024
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if len(data) > maxHistoryBytes {
+		data = data[len(data)-maxHistoryBytes:]
+		if index := bytes.IndexByte(data, '\n'); index >= 0 {
+			data = data[index+1:]
+		}
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var entry struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if sessionID := strings.TrimSpace(entry.SessionID); sessionID != "" {
+			return sessionID
 		}
 	}
 	return ""
@@ -2602,9 +2654,20 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 }
 
 func (s *muxServer) redrawActive() {
+	var attach net.Conn
+	var clear []byte
+
+	s.attachMu.Lock()
 	s.mu.Lock()
-	redrawNudge := s.activeRedrawNudgeLocked()
+	window := s.windowByIDLocked(s.activeID)
+	if window != nil && s.attachConn != nil && window.needsInlineViewportInvalidationLocked() {
+		attach = s.attachConn
+		clear = []byte(postHistoryVisibleScreenClearSequence)
+	}
+	redrawNudge := s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
+	s.writeAttachLocked(attach, clear)
+	s.attachMu.Unlock()
 	runRedrawNudgeIfNeeded(redrawNudge)
 }
 
@@ -2869,19 +2932,32 @@ func (s *muxServer) writeActive(data []byte) {
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
+	var attach net.Conn
+	var clear []byte
+	var windowID string
+
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
 	if !window.supportsThemeHintLocked() {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return false
 	}
-	windowID := window.id
+	windowID = window.id
+	if s.attachConn != nil && window.needsInlineViewportInvalidationLocked() {
+		attach = s.attachConn
+		clear = []byte(postHistoryVisibleScreenClearSequence)
+	}
 	s.mu.Unlock()
+	s.writeAttachLocked(attach, clear)
+	s.attachMu.Unlock()
 
 	if data != "" {
 		return s.writeWindow(windowID, []byte(data)) == nil

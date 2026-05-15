@@ -1133,6 +1133,73 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	}
 }
 
+func TestRedrawActiveClearsCodexInlineViewportBeforeNudge(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 100
+	server.height = 32
+
+	originalNudgeForegroundSameSize := nudgeForegroundSameSize
+	defer func() {
+		nudgeForegroundSameSize = originalNudgeForegroundSameSize
+	}()
+	var nudged *muxWindow
+	nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+		nudged = window
+	}
+
+	server.redrawActive()
+
+	if got := attach.String(); got != postHistoryVisibleScreenClearSequence {
+		t.Fatalf("attach output = %q, want visible-screen clear before redraw", got)
+	}
+	if nudged != window {
+		t.Fatalf("redraw nudge window = %#v, want Codex window", nudged)
+	}
+}
+
+func TestThemeHintClearsCodexInlineViewportBeforeFocusNudge(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := &muxWindow{
+		id:               "@1",
+		index:            0,
+		name:             "Codex",
+		agentTool:        "codex",
+		focusModeEnabled: true,
+		pty:              slave,
+		lastActivity:     time.Now(),
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = window.closePty()
+	})
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	if !server.sendThemeHint("\x1b[I") {
+		t.Fatal("sendThemeHint returned false, want true")
+	}
+	if got := attach.String(); got != postHistoryVisibleScreenClearSequence {
+		t.Fatalf("attach output = %q, want visible-screen clear before focus nudge", got)
+	}
+}
+
 func TestNewInlineWindowClearsPreviousLocalScrollback(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -2003,6 +2070,23 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		if got := agentSessionIDFromArgs(tt.tool, tt.args); got != tt.want {
 			t.Fatalf("agentSessionIDFromArgs(%q, %q) = %q, want %q", tt.tool, tt.args, got, tt.want)
 		}
+	}
+}
+
+func TestLatestCodexSessionIDFromHistoryFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	history := strings.Join([]string{
+		`{"session_id":"older","ts":1,"text":"one"}`,
+		`not json`,
+		`{"session_id":"newer","ts":2,"text":"two"}`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(path, []byte(history), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := latestCodexSessionIDFromHistoryFile(path); got != "newer" {
+		t.Fatalf("latestCodexSessionIDFromHistoryFile() = %q, want newer", got)
 	}
 }
 

@@ -69,6 +69,20 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   }) async => null;
 }
 
+class _StatusMonkeyMuxService extends _MockMonkeyMuxService {
+  _StatusMonkeyMuxService(this.status);
+
+  final MonkeyMuxServerStatus? status;
+
+  @override
+  Future<MonkeyMuxServerStatus?> runningServerStatus(
+    SshSession session,
+    MonkeyMuxInstallation installation,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async => status;
+}
+
 class _MockMonkeyMuxInstallerService extends Mock
     implements MonkeyMuxInstallerService {}
 
@@ -98,6 +112,7 @@ class _PromptingMonkeyMuxInstallerService implements MonkeyMuxInstallerService {
       executablePath: '/tmp/monkeymux',
       platform: request.platform,
       version: request.version,
+      installedDuringCall: true,
     );
   }
 
@@ -4853,6 +4868,117 @@ void main() {
         expect(session.remoteMuxSessionName, sessionName);
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
+        expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
+        expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'uses install confirmation as MonkeyMux update confirmation',
+      (tester) async {
+        final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
+          request: const MonkeyMuxInstallRequest(
+            platform: 'darwin-arm64',
+            version: '0.1.52',
+            size: 1536,
+          ),
+        );
+        final monkeyMuxService = _StatusMonkeyMuxService(
+          const MonkeyMuxServerStatus(
+            version: '0.1.51',
+            capabilities: {'shutdown'},
+          ),
+        );
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () =>
+              monkeyMuxService.hasForegroundClientOrThrow(session, sessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(session, sessionName),
+        ).thenAnswer(
+          (_) async => const <TmuxWindow>[
+            TmuxWindow(index: 0, name: 'shell', isActive: true),
+          ],
+        );
+        when(
+          () => monkeyMuxService.watchWindowChanges(session, sessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Install'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.text('Update MonkeyMux?'), findsNothing);
+        final startupCommands = executedCommands
+            .where((command) => command.contains("'/tmp/monkeymux' attach"))
+            .toList(growable: false);
+        expect(startupCommands, hasLength(1));
+        expect(startupCommands.single, contains('--update-policy always'));
         expect(monkeyMuxInstallerService.ensureInstalledCalls, 1);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
         await tester.pumpWidget(const SizedBox.shrink());

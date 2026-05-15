@@ -120,6 +120,7 @@ class MonkeyMuxInstallation {
     required this.executablePath,
     required this.platform,
     required this.version,
+    this.installedDuringCall = false,
   });
 
   /// Absolute remote executable path.
@@ -130,6 +131,9 @@ class MonkeyMuxInstallation {
 
   /// Installed MonkeyMux version.
   final String version;
+
+  /// Whether this call uploaded the helper instead of reusing an existing copy.
+  final bool installedDuringCall;
 }
 
 /// Details for a pending MonkeyMux helper install.
@@ -427,6 +431,7 @@ class MonkeyMuxInstallerService {
         executablePath: executablePath,
         platform: platform,
         version: manifest.version,
+        installedDuringCall: true,
       );
     } finally {
       sftp.close();
