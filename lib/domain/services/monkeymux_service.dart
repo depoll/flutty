@@ -1299,6 +1299,7 @@ TmuxWindow? _windowFromJson(Object? value) {
     panePid: value['panePid'] as int?,
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
+    activeAgentSessionId: _nonEmpty(value['agentSessionId'] as String?),
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }

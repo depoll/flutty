@@ -2656,6 +2656,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
     milliseconds: 150,
   );
+  static final _monkeyMuxServerUpdateConfirmations = <String, Future<bool>>{};
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -6655,7 +6656,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'supportsShutdown': status.supportsShutdown,
       },
     );
-    final shouldUpdate = await _confirmMonkeyMuxServerUpdate(
+    final shouldUpdate = await _confirmMonkeyMuxServerUpdateOnce(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
       runningVersion: status.version,
       bundledVersion: installation.version,
       supportsShutdown: status.supportsShutdown,
@@ -12926,6 +12929,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
     return decision ?? _AutoConnectReviewDecision.skip;
+  }
+
+  Future<bool> _confirmMonkeyMuxServerUpdateOnce({
+    required int connectionId,
+    required String sessionName,
+    required String? runningVersion,
+    required String bundledVersion,
+    required bool supportsShutdown,
+  }) {
+    final key = [
+      connectionId,
+      sessionName,
+      runningVersion?.trim() ?? '',
+      bundledVersion.trim(),
+      supportsShutdown,
+    ].join('\x1f');
+    final existing = _monkeyMuxServerUpdateConfirmations[key];
+    if (existing != null) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.install',
+        'upgrade_prompt_joined',
+        fields: {'connectionId': connectionId},
+      );
+      return existing;
+    }
+    final confirmation = _confirmMonkeyMuxServerUpdate(
+      runningVersion: runningVersion,
+      bundledVersion: bundledVersion,
+      supportsShutdown: supportsShutdown,
+    );
+    _monkeyMuxServerUpdateConfirmations[key] = confirmation;
+    unawaited(
+      confirmation.whenComplete(() {
+        if (identical(_monkeyMuxServerUpdateConfirmations[key], confirmation)) {
+          _monkeyMuxServerUpdateConfirmations.remove(key);
+        }
+      }),
+    );
+    return confirmation;
   }
 
   Future<bool> _confirmMonkeyMuxServerUpdate({

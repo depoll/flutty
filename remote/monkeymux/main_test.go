@@ -695,7 +695,7 @@ func TestResizeRedrawsCodexAtNewSize(t *testing.T) {
 	}
 }
 
-func TestResizeClearsCodexInlineViewportBandBeforeRedraw(t *testing.T) {
+func TestResizeNudgesCodexWithoutClearingViewport(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	master, slave, err := pty.Open()
@@ -743,9 +743,8 @@ func TestResizeClearsCodexInlineViewportBandBeforeRedraw(t *testing.T) {
 
 	server.resize(100, 32)
 
-	wantClear := codexVisibleRedrawSequence
-	if got := attach.String(); got != wantClear {
-		t.Fatalf("attach output = %q, want Codex visible redraw invalidation %q", got, wantClear)
+	if got := attach.String(); got != "" {
+		t.Fatalf("attach output = %q, want no Codex pre-clear before redraw", got)
 	}
 	wantSameSizeNudged := []struct {
 		window *muxWindow
@@ -993,15 +992,45 @@ func TestCodexActiveOutputStripsNestedAlternateBufferModes(t *testing.T) {
 	chunk := []byte("before\x1b[?1049;2004hinside")
 	server.handleWindowOutput("@1", chunk)
 
-	want := codexVisibleRedrawSequence + "before\x1b[?2004hinside"
+	want := "before\x1b[?2004hinside"
 	if got := attach.String(); got != want {
 		t.Fatalf("active attach output = %q, want nested Codex alt-buffer stripped to %q", got, want)
 	}
 	if got := string(window.history); got != string(chunk) {
 		t.Fatalf("history = %q, want raw PTY bytes", got)
 	}
-	if got := string(window.replayHistory); got != "" {
-		t.Fatalf("replay history = %q, want redraw-only replay after Codex enters alt buffer", got)
+	if got := string(window.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want attach-visible bytes %q", got, want)
+	}
+	if window.privateModes["1049"] {
+		t.Fatal("Codex nested alt-buffer mode should not mark the outer attach surface as alt-buffer")
+	}
+}
+
+func TestCodexActiveOutputStripsMainBufferUnsafeRedrawControls(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "codex",
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	server.handleWindowOutput(
+		"@1",
+		[]byte("before\x1b[3J\x1b[1;31r\x1bMafter"),
+	)
+
+	want := "beforeafter"
+	if got := attach.String(); got != want {
+		t.Fatalf("active attach output = %q, want main-buffer unsafe controls stripped to %q", got, want)
+	}
+	if got := string(window.replayHistory); got != want {
+		t.Fatalf("replay history = %q, want attach-visible bytes %q", got, want)
 	}
 }
 
@@ -1048,13 +1077,10 @@ func TestInactiveAgentOutputDoesNotReplaceVisibleReplayHistory(t *testing.T) {
 	agentWindow := &muxWindow{
 		id:            "@2",
 		index:         1,
-		agentTool:     "codex",
+		agentTool:     "claude-code",
 		replayHistory: []byte("visible codex screen"),
-		// Treat this window as an alt-buffer agent so the replay still
-		// follows the clear+redraw path; the inline-viewport case is
-		// covered by TestInlineViewportAgentReplaysHistoryForScrollback.
-		privateModes: map[string]bool{"1049": true},
-		lastActivity: time.Now(),
+		privateModes:  map[string]bool{"1049": true},
+		lastActivity:  time.Now(),
 	}
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
@@ -1094,14 +1120,10 @@ func TestInactiveAgentVisibleOutputDoesNotBuildReplayFrame(t *testing.T) {
 	agentWindow := &muxWindow{
 		id:            "@2",
 		index:         1,
-		agentTool:     "codex",
+		agentTool:     "claude-code",
 		replayHistory: []byte("old visible screen"),
-		// Alt-buffer agents (claude-code, opencode, gemini, Codex's
-		// transcript overlay) keep their replay frame frozen so reattach
-		// just nudges the agent to redraw via SIGWINCH instead of replaying
-		// cursor-addressed bytes that would crash xterm.dart.
-		privateModes: map[string]bool{"1049": true},
-		lastActivity: time.Now(),
+		privateModes:  map[string]bool{"1049": true},
+		lastActivity:  time.Now(),
 	}
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, lastActivity: time.Now()},
@@ -1150,11 +1172,11 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 		postHistoryVisibleScreenClearSequence,
 	)
 	if visibleClearIndex < 0 {
-		t.Fatalf("replay = %q, want visible-screen clear before Codex redraw", replay)
+		t.Fatalf("replay = %q, want stale local scrollback clear before Codex history replay", replay)
 	}
-	if visibleClearIndex < promptIndex {
+	if visibleClearIndex > promptIndex {
 		t.Fatalf(
-			"replay = %q, visible-screen clear must happen after history replay",
+			"replay = %q, visible-screen clear must not erase replayed Codex history",
 			replay,
 		)
 	}
@@ -1164,15 +1186,8 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	if !strings.Contains(replay, attachSessionExitSequence) {
 		t.Fatalf("replay = %q, should leave attach-owned alt buffer for Codex main-buffer scrollback", replay)
 	}
-	redrawEnterIndex := strings.LastIndex(replay, attachSessionEnterSequence)
-	if redrawEnterIndex < 0 {
-		t.Fatalf("replay = %q, should enter attach-owned alt buffer before Codex redraw", replay)
-	}
-	if redrawEnterIndex < promptIndex {
-		t.Fatalf(
-			"replay = %q, attach-owned alt buffer should be re-entered after history replay",
-			replay,
-		)
+	if strings.Contains(replay, attachSessionEnterSequence) {
+		t.Fatalf("replay = %q, should not enter attach-owned alt buffer for Codex scrollback", replay)
 	}
 	if server.activeRedrawWindowLocked() != codexWindow {
 		t.Fatal("Codex window should be nudged to redraw after replay")
@@ -1186,7 +1201,7 @@ func TestCodexAgentReplaysMainBufferHistoryAndNudgesRedraw(t *testing.T) {
 	}
 }
 
-func TestRedrawActiveClearsCodexInlineViewportBeforeNudge(t *testing.T) {
+func TestRedrawActiveNudgesCodexWithoutClearingViewport(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	window := &muxWindow{
@@ -1213,15 +1228,15 @@ func TestRedrawActiveClearsCodexInlineViewportBeforeNudge(t *testing.T) {
 
 	server.redrawActive()
 
-	if got := attach.String(); got != codexVisibleRedrawSequence {
-		t.Fatalf("attach output = %q, want Codex visible redraw invalidation", got)
+	if got := attach.String(); got != "" {
+		t.Fatalf("attach output = %q, want no Codex pre-clear before redraw", got)
 	}
 	if nudged != window {
 		t.Fatalf("redraw nudge window = %#v, want Codex window", nudged)
 	}
 }
 
-func TestThemeHintClearsCodexInlineViewportBeforeFocusNudge(t *testing.T) {
+func TestThemeHintNudgesCodexWithoutClearingViewport(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	master, slave, err := pty.Open()
@@ -1248,8 +1263,8 @@ func TestThemeHintClearsCodexInlineViewportBeforeFocusNudge(t *testing.T) {
 	if !server.sendThemeHint("\x1b[I") {
 		t.Fatal("sendThemeHint returned false, want true")
 	}
-	if got := attach.String(); got != codexVisibleRedrawSequence {
-		t.Fatalf("attach output = %q, want Codex visible redraw invalidation before focus nudge", got)
+	if got := attach.String(); got != "" {
+		t.Fatalf("attach output = %q, want no Codex pre-clear before focus nudge", got)
 	}
 }
 
@@ -2126,6 +2141,23 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 	}
 }
 
+func TestAgentSessionIDFromCommandParsesCreateWindowResumeCommand(t *testing.T) {
+	if got := agentSessionIDFromCommand(
+		"copilot",
+		"copilot --yolo --add-dir /tmp/repo --resume session-123",
+		nil,
+	); got != "session-123" {
+		t.Fatalf("agentSessionIDFromCommand() = %q, want session-123", got)
+	}
+	if got := agentSessionIDFromCommand(
+		"codex",
+		"",
+		[]string{"codex", "resume", "run-42"},
+	); got != "run-42" {
+		t.Fatalf("agentSessionIDFromCommand(args) = %q, want run-42", got)
+	}
+}
+
 func TestLatestCodexSessionIDFromHistoryFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 	history := strings.Join([]string{
@@ -2275,6 +2307,7 @@ func TestRestoreSnapshotIncludesShellHistory(t *testing.T) {
 			command:           "codex",
 			foregroundCommand: "codex",
 			agentTool:         "codex",
+			agentSessionID:    "codex-session",
 			history:           []byte("agent history"),
 			lastActivity:      time.Now(),
 		},
@@ -2297,6 +2330,9 @@ func TestRestoreSnapshotIncludesShellHistory(t *testing.T) {
 	}
 	if got := restore.Windows[1].HistoryBase64; got != "" {
 		t.Fatalf("agent history = %q, want no replayed agent history", got)
+	}
+	if got := restore.Windows[1].AgentSessionID; got != "codex-session" {
+		t.Fatalf("agent session id = %q, want codex-session", got)
 	}
 }
 

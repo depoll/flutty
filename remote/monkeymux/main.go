@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.56"
+	monkeyMuxVersion         = "0.1.57"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -80,7 +80,6 @@ const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x
 const activeWindowReplayPrefixAfterAltHistory = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharsetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear
-const codexVisibleRedrawSequence = attachSessionEnterSequence + activeWindowReplayPrefixAfterAltClear
 
 var (
 	preReplayPrivateModes = []string{
@@ -344,6 +343,7 @@ type windowSnapshot struct {
 	Flags                    string `json:"flags,omitempty"`
 	PaneTitle                string `json:"paneTitle,omitempty"`
 	AgentTool                string `json:"agentTool,omitempty"`
+	AgentSessionID           string `json:"agentSessionId,omitempty"`
 	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
 }
 
@@ -392,6 +392,7 @@ type muxWindow struct {
 	cwd                        string
 	command                    string
 	agentTool                  string
+	agentSessionID             string
 	foregroundPid              int
 	foregroundCommand          string
 	paneTitle                  string
@@ -937,6 +938,7 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 			PanePid:        window.PanePid,
 			PaneTitle:      window.PaneTitle,
 			AgentTool:      window.AgentTool,
+			AgentSessionID: window.AgentSessionID,
 			Active:         window.Active,
 		})
 	}
@@ -1205,6 +1207,7 @@ func readProcessTable() map[int]processInfo {
 	output, err := exec.CommandContext(
 		ctx,
 		"ps",
+		"-ww",
 		"-eo",
 		"pid=,ppid=,pgid=,comm=,args=",
 	).Output()
@@ -1366,6 +1369,19 @@ func agentSessionIDFromArgs(tool string, args string) string {
 				return strings.TrimSpace(group)
 			}
 		}
+	}
+	return ""
+}
+
+func agentSessionIDFromCommand(tool string, command string, args []string) string {
+	if strings.TrimSpace(tool) == "" {
+		return ""
+	}
+	if sessionID := agentSessionIDFromArgs(tool, command); sessionID != "" {
+		return sessionID
+	}
+	if len(args) > 0 {
+		return agentSessionIDFromArgs(tool, strings.Join(args, " "))
 	}
 	return ""
 }
@@ -1605,6 +1621,7 @@ func createWindowOptionsForRestore(
 		history:               history,
 		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
 		agentTool:             agentTool,
+		agentSessionID:        state.AgentSessionID,
 		cursorVisible:         state.CursorVisible,
 		cursorVisibilityKnown: state.CursorVisibilityKnown,
 	}
@@ -1646,6 +1663,7 @@ type createWindowOptions struct {
 	history               []byte
 	paneTitle             string
 	agentTool             string
+	agentSessionID        string
 	cursorVisible         bool
 	cursorVisibilityKnown bool
 }
@@ -1685,6 +1703,10 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		agentToolFromTerminalTitle(name),
 		agentToolFromCommandName(name),
 	)
+	agentSessionID := firstNonEmptyString(
+		options.agentSessionID,
+		agentSessionIDFromCommand(agentTool, options.command, options.args),
+	)
 	paneTitle := firstNonEmptyString(options.paneTitle, name)
 	cursorVisible := true
 	if options.cursorVisibilityKnown {
@@ -1713,6 +1735,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		cwd:                   cwd,
 		command:               filepath.Base(cmd.Path),
 		agentTool:             agentTool,
+		agentSessionID:        agentSessionID,
 		foregroundPid:         cmd.Process.Pid,
 		foregroundCommand:     filepath.Base(cmd.Path),
 		paneTitle:             paneTitle,
@@ -1790,14 +1813,12 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
+	window.clearAttachFilteredPrivateModesLocked()
 	if s.activeID == windowID {
 		attach = s.attachConn
 		if attach != nil {
 			chunk = window.attachOutputForClientLocked(chunk)
 			window.appendReplayCandidateLocked(chunk)
-			if prefix := window.liveAttachPreparationLocked(); len(prefix) > 0 {
-				chunk = append(append([]byte(nil), prefix...), chunk...)
-			}
 			shouldWrite = len(chunk) > 0
 		} else {
 			window.appendInactiveReplayCandidateLocked(chunk)
@@ -2316,6 +2337,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			PanePid:               window.metadataProcessIDLocked(),
 			PaneTitle:             window.paneTitle,
 			AgentTool:             window.agentToolLocked(),
+			AgentSessionID:        window.agentSessionIDLocked(),
 			CursorVisible:         window.cursorVisible,
 			CursorVisibilityKnown: window.cursorVisibilityKnown,
 			Active:                s.activeID == window.id,
@@ -2351,6 +2373,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		Flags:                    flags,
 		PaneTitle:                window.paneTitle,
 		AgentTool:                window.agentToolLocked(),
+		AgentSessionID:           window.agentSessionIDLocked(),
 		LastActivityEpochSeconds: window.lastActivity.Unix(),
 	}
 }
@@ -2747,10 +2770,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	} else {
 		prefix = attachSessionExitSequence + prefix + activeWindowReplayPrefixAfterAltHistory
 	}
-	window.attachSurfaceAlt = needsRedraw || bytes.Contains(
-		visibleInvalidation,
-		[]byte(attachSessionEnterSequence),
-	)
+	window.attachSurfaceAlt = needsRedraw
 	replay := make(
 		[]byte,
 		0,
@@ -2792,17 +2812,9 @@ func (w *muxWindow) visibleRedrawInvalidationSequenceLocked() []byte {
 		return nil
 	}
 	if w.agentToolLocked() == "codex" {
-		return []byte(codexVisibleRedrawSequence)
-	}
-	return []byte(postHistoryVisibleScreenClearSequence)
-}
-
-func (w *muxWindow) liveAttachPreparationLocked() []byte {
-	if w == nil || w.attachSurfaceAlt || w.agentToolLocked() != "codex" {
 		return nil
 	}
-	w.attachSurfaceAlt = true
-	return []byte(codexVisibleRedrawSequence)
+	return []byte(postHistoryVisibleScreenClearSequence)
 }
 
 func activeResizeVisibleBandClearSequence(oldHeight int, newHeight int) []byte {
@@ -3310,7 +3322,7 @@ func (w *muxWindow) attachOutputForBufferLocked(
 		data = combined
 		*pendingBuffer = nil
 	}
-	stripNestedAlternateBuffer := w.agentToolLocked() == "codex"
+	sanitizeInlineCodex := w.agentToolLocked() == "codex"
 
 	var output []byte
 	copyStart := 0
@@ -3325,6 +3337,12 @@ func (w *muxWindow) attachOutputForBufferLocked(
 			}
 			return appendAttachOutput(output, data[copyStart:])
 		}
+		if sanitizeInlineCodex && data[i+1] == 'M' {
+			output = appendAttachOutputForRewrite(output, data[copyStart:i])
+			copyStart = i + 2
+			i += 2
+			continue
+		}
 		if data[i+1] != '[' {
 			i += 2
 			continue
@@ -3338,8 +3356,8 @@ func (w *muxWindow) attachOutputForBufferLocked(
 		}
 		sequence := data[i : end+1]
 		replacement, ok := alternateBufferCsiReplacement(sequence)
-		if stripNestedAlternateBuffer {
-			replacement, ok = alternateBufferCsiStripReplacement(sequence)
+		if sanitizeInlineCodex {
+			replacement, ok = inlineCodexCsiReplacement(sequence)
 		}
 		if ok {
 			output = appendAttachOutputForRewrite(output, data[copyStart:i])
@@ -3606,6 +3624,38 @@ func alternateBufferCsiStripReplacement(sequence []byte) ([]byte, bool) {
 	return alternateBufferCsiReplacementWithClear(sequence, false)
 }
 
+func inlineCodexCsiReplacement(sequence []byte) ([]byte, bool) {
+	if replacement, ok := alternateBufferCsiStripReplacement(sequence); ok {
+		return replacement, true
+	}
+	if isScrollRegionCsiSequence(sequence) || isEraseScrollbackCsiSequence(sequence) {
+		return nil, true
+	}
+	return nil, false
+}
+
+func isScrollRegionCsiSequence(sequence []byte) bool {
+	return len(sequence) >= 3 &&
+		sequence[0] == '\x1b' &&
+		sequence[1] == '[' &&
+		sequence[len(sequence)-1] == 'r'
+}
+
+func isEraseScrollbackCsiSequence(sequence []byte) bool {
+	if len(sequence) < 4 || sequence[0] != '\x1b' || sequence[1] != '[' {
+		return false
+	}
+	if sequence[len(sequence)-1] != 'J' {
+		return false
+	}
+	for _, param := range csiModeParams(string(sequence[2 : len(sequence)-1])) {
+		if param == "3" {
+			return true
+		}
+	}
+	return false
+}
+
 func alternateBufferCsiReplacementWithClear(sequence []byte, clear bool) ([]byte, bool) {
 	if len(sequence) < 3 || sequence[0] != '\x1b' || sequence[1] != '[' {
 		return nil, false
@@ -3696,6 +3746,13 @@ func (w *muxWindow) agentToolLocked() string {
 		return tool
 	}
 	return agentToolFromCommandName(w.name)
+}
+
+func (w *muxWindow) agentSessionIDLocked() string {
+	return firstNonEmptyString(
+		w.agentSessionID,
+		agentSessionIDFromArgs(w.agentToolLocked(), w.currentCommandLocked()),
+	)
 }
 
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
@@ -4136,10 +4193,29 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 	if _, ok := trackedPrivateModes[mode]; !ok {
 		return
 	}
+	if w.filtersInlineCodexModesLocked() && isAlternateBufferMode(mode) {
+		if w.privateModes != nil {
+			w.privateModes[mode] = false
+		}
+		return
+	}
 	if w.privateModes == nil {
 		w.privateModes = map[string]bool{}
 	}
 	w.privateModes[mode] = enabled
+}
+
+func (w *muxWindow) clearAttachFilteredPrivateModesLocked() {
+	if !w.filtersInlineCodexModesLocked() || w.privateModes == nil {
+		return
+	}
+	for _, mode := range []string{"47", "1047", "1049"} {
+		w.privateModes[mode] = false
+	}
+}
+
+func (w *muxWindow) filtersInlineCodexModesLocked() bool {
+	return w.agentToolLocked() == "codex"
 }
 
 func csiModeParams(params string) []string {

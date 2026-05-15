@@ -137,10 +137,12 @@ void main() {
         'currentCommand': 'node',
         'panePid': 1234,
         'agentTool': 'gemini',
+        'agentSessionId': 'gemini-session',
       });
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+      expect(window.activeAgentSessionId, 'gemini-session');
     });
   });
 
