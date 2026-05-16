@@ -438,7 +438,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       key: _pasteButtonKey,
       icon: Icons.paste_rounded,
       label: 'Paste',
-      longPressIndicatorIcon: Icons.keyboard_arrow_up_rounded,
+      longPressIndicatorIcon: Icons.more_horiz_rounded,
       onTap: _pasteClipboard,
       onLongPressStartWithDetails: _showPasteOptions,
       onLongPressMoveUpdate: _updatePasteOptionsHighlight,

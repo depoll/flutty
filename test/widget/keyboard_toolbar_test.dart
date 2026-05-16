@@ -307,7 +307,7 @@ void main() {
       expect(keyPressedCount, 1);
     });
 
-    testWidgets('Paste button shows a long-press options indicator', (
+    testWidgets('Paste button shows an ellipsis long-press options indicator', (
       tester,
     ) async {
       await tester.pumpWidget(
@@ -319,7 +319,7 @@ void main() {
       expect(
         find.descendant(
           of: find.byTooltip('Paste'),
-          matching: find.byIcon(Icons.keyboard_arrow_up_rounded),
+          matching: find.byIcon(Icons.more_horiz_rounded),
         ),
         findsOneWidget,
       );
