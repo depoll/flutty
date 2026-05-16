@@ -25,6 +25,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -32,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.23"
+	monkeyMuxVersion         = "0.1.71"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -46,6 +47,8 @@ const (
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
 	csiBufferLimitBytes      = 64
+	terminalParserLimitBytes = 4096
+	agentScrollbackMaxLines  = 4000
 	restoreFileMode          = 0o600
 	restoreSchemaVersion     = 1
 )
@@ -112,6 +115,7 @@ var capabilities = []string{
 	"attach-update-policy",
 	"attach-state",
 	"upgrade-restore-v1",
+	"codex-visual-scrollback-v1",
 }
 
 var (
@@ -269,6 +273,8 @@ type muxWindow struct {
 	pty                        *os.File
 	cmd                        *exec.Cmd
 	history                    []byte
+	screen                     *terminalScreen
+	scrollbackOffset           int
 	oscBuffer                  []byte
 	csiBuffer                  []byte
 	lastActivity               time.Time
@@ -1425,6 +1431,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		pty:                   file,
 		cmd:                   cmd,
 		history:               append([]byte(nil), options.history...),
+		screen:                newTerminalScreen(int(size.Cols), int(size.Rows)),
 		lastActivity:          time.Now(),
 		cursorVisible:         cursorVisible,
 		cursorVisibilityKnown: options.cursorVisibilityKnown,
@@ -1493,11 +1500,12 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.observeTerminalMetadataLocked(chunk)
 	window.observeTerminalModesLocked(chunk)
+	window.observeTerminalScreenLocked(chunk, s.width, s.height)
 	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
 		attach = s.attachConn
-		shouldWrite = attach != nil
+		shouldWrite = attach != nil && window.scrollbackOffset == 0
 	} else if containsTerminalBell(chunk) {
 		window.alert = true
 	}
@@ -2300,17 +2308,34 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	var attach net.Conn
+	var replay []byte
+
+	s.attachMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
 	s.resizeActiveLocked(width, height)
+	if window := s.windowByIDLocked(s.activeID); window != nil &&
+		window.scrollbackOffset > 0 {
+		attach = s.attachConn
+		replay = s.agentScrollbackReplayBytesLocked(window)
+	}
+	s.mu.Unlock()
+	if len(replay) > 0 {
+		s.writeAttachLocked(attach, replay)
+	}
+	s.attachMu.Unlock()
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed || window.pty == nil {
 		return
+	}
+	if window.screen != nil {
+		window.screen.resize(width, height)
+		window.clampScrollbackOffsetLocked()
 	}
 	_ = pty.Setsize(window.pty, &pty.Winsize{
 		Rows: uint16(height),
@@ -2336,6 +2361,12 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	window.scrollbackOffset = 0
+	if window.shouldUseVisualScrollbackLocked() &&
+		window.screen != nil &&
+		window.screen.hasContent() {
+		return s.agentScreenReplayBytesLocked(window, true)
+	}
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	history = trimReplayHistoryForAttach(history)
 	title := terminalTitleReplaySequence(window)
@@ -2355,6 +2386,124 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func (s *muxServer) agentScreenReplayBytesLocked(window *muxWindow, clean bool) []byte {
+	if window == nil || window.screen == nil {
+		return nil
+	}
+	rows := window.screen.visibleLines()
+	cursorRow, cursorCol := window.screen.cursorPosition()
+	return s.agentRowsReplayBytesLocked(
+		window,
+		rows,
+		clean,
+		cursorRow,
+		cursorCol,
+		window.cursorVisibleForReplayLocked(),
+	)
+}
+
+func (s *muxServer) agentScrollbackReplayBytesLocked(window *muxWindow) []byte {
+	if window == nil || window.screen == nil {
+		return nil
+	}
+	lines := window.screen.historyLines()
+	height := window.screen.height
+	if height <= 0 {
+		height = s.height
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	start := len(lines) - height - window.scrollbackOffset
+	if start < 0 {
+		start = 0
+	}
+	end := start + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return s.agentRowsReplayBytesLocked(
+		window,
+		lines[start:end],
+		false,
+		height-1,
+		0,
+		false,
+	)
+}
+
+func (s *muxServer) agentRowsReplayBytesLocked(
+	window *muxWindow,
+	rows []string,
+	clean bool,
+	cursorRow int,
+	cursorCol int,
+	cursorVisible bool,
+) []byte {
+	width, height := s.width, s.height
+	if window != nil && window.screen != nil {
+		width, height = window.screen.size()
+	}
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+
+	title := terminalTitleReplaySequence(window)
+	preModes := terminalModePreReplaySequence(window)
+	postModes := terminalModePostReplaySequence(window)
+	cursor := cursorVisibilityReplaySequence(cursorVisible)
+	var replay []byte
+	if clean {
+		replay = append(replay, activeWindowReplayPrefix...)
+	}
+	replay = append(replay, title...)
+	replay = append(replay, preModes...)
+	replay = append(replay, "\x1b[?7l\x1b[H\x1b[2J"...)
+	for row := 0; row < height; row++ {
+		replay = append(replay, "\x1b["...)
+		replay = strconv.AppendInt(replay, int64(row+1), 10)
+		replay = append(replay, ";1H\x1b[2K"...)
+		if row < len(rows) {
+			replay = append(replay, truncateTerminalRow(rows[row], width)...)
+		}
+	}
+	if cursorRow < 0 {
+		cursorRow = 0
+	} else if cursorRow >= height {
+		cursorRow = height - 1
+	}
+	if cursorCol < 0 {
+		cursorCol = 0
+	} else if cursorCol >= width {
+		cursorCol = width - 1
+	}
+	replay = append(replay, "\x1b["...)
+	replay = strconv.AppendInt(replay, int64(cursorRow+1), 10)
+	replay = append(replay, ';')
+	replay = strconv.AppendInt(replay, int64(cursorCol+1), 10)
+	replay = append(replay, 'H')
+	replay = append(replay, postModes...)
+	replay = append(replay, cursor...)
+	return replay
+}
+
+func truncateTerminalRow(row string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	count := 0
+	for index := range row {
+		if count >= width {
+			return row[:index]
+		}
+		count++
+	}
+	return row
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -2463,7 +2612,81 @@ func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []b
 }
 
 func (s *muxServer) writeActive(data []byte) {
-	_ = s.writeWindow(s.activeWindowID(), data)
+	_ = s.writeActiveInput(data)
+}
+
+func (s *muxServer) writeActiveInput(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var attach net.Conn
+	var replay []byte
+	var ptyFile *os.File
+	var windowID string
+
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return fmt.Errorf("window %q not found", s.activeID)
+	}
+	if rows, ok := agentScrollRowsFromInput(data); ok &&
+		window.shouldUseVisualScrollbackLocked() {
+		windowID = window.id
+		attach = s.attachConn
+		replay = s.applyAgentScrollLocked(window, rows)
+		s.mu.Unlock()
+		if len(replay) > 0 {
+			s.writeAttachLocked(attach, replay)
+		}
+		s.attachMu.Unlock()
+		if windowID == "" {
+			return nil
+		}
+		return nil
+	}
+	if window.scrollbackOffset > 0 {
+		window.scrollbackOffset = 0
+		attach = s.attachConn
+		replay = s.agentScreenReplayBytesLocked(window, false)
+	}
+	ptyFile = window.pty
+	windowID = window.id
+	s.mu.Unlock()
+	if len(replay) > 0 {
+		s.writeAttachLocked(attach, replay)
+	}
+	s.attachMu.Unlock()
+
+	if ptyFile == nil {
+		return fmt.Errorf("window %q has no pty", windowID)
+	}
+	_, err := ptyFile.Write(data)
+	return err
+}
+
+func (s *muxServer) applyAgentScrollLocked(window *muxWindow, rows int) []byte {
+	if window == nil || window.screen == nil || rows == 0 {
+		return nil
+	}
+	maxOffset := window.maxScrollbackOffsetLocked()
+	if maxOffset <= 0 {
+		window.scrollbackOffset = 0
+		return nil
+	}
+	window.scrollbackOffset += rows
+	if window.scrollbackOffset < 0 {
+		window.scrollbackOffset = 0
+	} else if window.scrollbackOffset > maxOffset {
+		window.scrollbackOffset = maxOffset
+	}
+	if window.scrollbackOffset == 0 {
+		return s.agentScreenReplayBytesLocked(window, false)
+	}
+	return s.agentScrollbackReplayBytesLocked(window)
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
@@ -2586,8 +2809,657 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 	return history[start:]
 }
 
+type terminalScreen struct {
+	width  int
+	height int
+
+	rows       [][]rune
+	scrollback []string
+
+	cursorRow int
+	cursorCol int
+	savedRow  int
+	savedCol  int
+
+	scrollTop    int
+	scrollBottom int
+	wrapEnabled  bool
+	pendingWrap  bool
+	parserBuffer []byte
+	contentSeen  bool
+}
+
+func newTerminalScreen(width int, height int) *terminalScreen {
+	screen := &terminalScreen{wrapEnabled: true}
+	screen.resize(width, height)
+	return screen
+}
+
+func (w *muxWindow) observeTerminalScreenLocked(chunk []byte, width int, height int) {
+	if len(chunk) == 0 {
+		return
+	}
+	if w.screen == nil {
+		w.screen = newTerminalScreen(width, height)
+	} else if width > 0 && height > 0 && (w.screen.width != width || w.screen.height != height) {
+		w.screen.resize(width, height)
+	}
+	w.screen.write(chunk)
+}
+
+func (t *terminalScreen) resize(width int, height int) {
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	if t.width == width && t.height == height && len(t.rows) == height {
+		return
+	}
+	oldRows := t.rows
+	oldHeight := t.height
+	oldWidth := t.width
+	t.width = width
+	t.height = height
+	t.rows = make([][]rune, height)
+	for row := range t.rows {
+		t.rows[row] = blankTerminalRow(width)
+		if row < oldHeight && row < len(oldRows) {
+			copy(t.rows[row], oldRows[row][:minInt(oldWidth, width)])
+		}
+	}
+	t.cursorRow = clampInt(t.cursorRow, 0, height-1)
+	t.cursorCol = clampInt(t.cursorCol, 0, width-1)
+	t.savedRow = clampInt(t.savedRow, 0, height-1)
+	t.savedCol = clampInt(t.savedCol, 0, width-1)
+	t.scrollTop = 0
+	t.scrollBottom = height - 1
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) size() (int, int) {
+	if t == nil {
+		return defaultColumns, defaultRows
+	}
+	return t.width, t.height
+}
+
+func (t *terminalScreen) hasContent() bool {
+	return t != nil && t.contentSeen
+}
+
+func (t *terminalScreen) cursorPosition() (int, int) {
+	if t == nil {
+		return 0, 0
+	}
+	col := t.cursorCol
+	if t.pendingWrap && col >= t.width {
+		col = t.width - 1
+	}
+	return t.cursorRow, col
+}
+
+func (t *terminalScreen) visibleLines() []string {
+	if t == nil {
+		return nil
+	}
+	lines := make([]string, len(t.rows))
+	for i, row := range t.rows {
+		lines[i] = terminalRowString(row)
+	}
+	return lines
+}
+
+func (t *terminalScreen) historyLines() []string {
+	if t == nil {
+		return nil
+	}
+	lines := make([]string, 0, len(t.scrollback)+len(t.rows))
+	lines = append(lines, t.scrollback...)
+	lines = append(lines, t.visibleLines()...)
+	return lines
+}
+
+func (t *terminalScreen) write(chunk []byte) {
+	data := chunk
+	if len(t.parserBuffer) > 0 {
+		combined := make([]byte, 0, len(t.parserBuffer)+len(chunk))
+		combined = append(combined, t.parserBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		t.parserBuffer = nil
+	}
+
+	for index := 0; index < len(data); {
+		switch data[index] {
+		case '\x1b':
+			consumed, ok := t.consumeEscape(data[index:])
+			if !ok {
+				t.storeParserRemainder(data[index:])
+				return
+			}
+			index += consumed
+		case '\r':
+			t.cursorCol = 0
+			t.pendingWrap = false
+			index++
+		case '\n':
+			t.index()
+			t.pendingWrap = false
+			index++
+		case '\b':
+			if t.cursorCol > 0 {
+				t.cursorCol--
+			}
+			t.pendingWrap = false
+			index++
+		case '\t':
+			nextTab := ((t.cursorCol / 8) + 1) * 8
+			t.cursorCol = clampInt(nextTab, 0, t.width-1)
+			t.pendingWrap = false
+			index++
+		default:
+			if data[index] < 0x20 || data[index] == 0x7f {
+				index++
+				continue
+			}
+			r, size := utf8.DecodeRune(data[index:])
+			if r == utf8.RuneError && size == 1 && !utf8.FullRune(data[index:]) {
+				t.storeParserRemainder(data[index:])
+				return
+			}
+			t.putRune(r)
+			index += size
+		}
+	}
+}
+
+func (t *terminalScreen) storeParserRemainder(data []byte) {
+	if len(data) > terminalParserLimitBytes {
+		t.parserBuffer = nil
+		return
+	}
+	t.parserBuffer = append(t.parserBuffer[:0], data...)
+}
+
+func (t *terminalScreen) consumeEscape(data []byte) (int, bool) {
+	if len(data) < 2 {
+		return 0, false
+	}
+	switch data[1] {
+	case '[':
+		end := csiSequenceEnd(data, 2)
+		if end < 0 {
+			return 0, false
+		}
+		t.applyCSI(data[2:end], data[end])
+		return end + 1, true
+	case ']':
+		end, terminatorLength, ok := findOscTerminator(data[2:])
+		if !ok {
+			return 0, false
+		}
+		return 2 + end + terminatorLength, true
+	case 'P', '^', '_', 'X':
+		end, terminatorLength, ok := findStringTerminator(data[2:])
+		if !ok {
+			return 0, false
+		}
+		return 2 + end + terminatorLength, true
+	case '7':
+		t.savedRow, t.savedCol = t.cursorRow, t.cursorCol
+		t.pendingWrap = false
+	case '8':
+		t.cursorRow, t.cursorCol = t.savedRow, t.savedCol
+		t.pendingWrap = false
+	case 'D':
+		t.index()
+		t.pendingWrap = false
+	case 'E':
+		t.cursorCol = 0
+		t.index()
+		t.pendingWrap = false
+	case 'M':
+		t.reverseIndex()
+		t.pendingWrap = false
+	case 'c':
+		t.reset()
+	case '(', ')', '*', '+', '-', '.', '/':
+		if len(data) < 3 {
+			return 0, false
+		}
+		return 3, true
+	}
+	return 2, true
+}
+
+func findStringTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\x1b' {
+			if i+1 >= len(data) {
+				return 0, 0, false
+			}
+			if data[i+1] == '\\' {
+				return i, 2, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func (t *terminalScreen) applyCSI(paramsBytes []byte, final byte) {
+	paramsText := string(paramsBytes)
+	private := strings.HasPrefix(paramsText, "?")
+	if private {
+		paramsText = strings.TrimPrefix(paramsText, "?")
+	}
+	params := csiIntParams(paramsText)
+
+	switch final {
+	case 'h', 'l':
+		if private {
+			t.applyPrivateMode(params, final == 'h')
+		} else {
+			t.pendingWrap = false
+		}
+	case 'H', 'f':
+		row := csiParam(params, 0, 1) - 1
+		col := csiParam(params, 1, 1) - 1
+		t.moveCursor(row, col)
+	case 'A':
+		t.moveCursor(t.cursorRow-csiParam(params, 0, 1), t.cursorCol)
+	case 'B':
+		t.moveCursor(t.cursorRow+csiParam(params, 0, 1), t.cursorCol)
+	case 'C':
+		t.moveCursor(t.cursorRow, t.cursorCol+csiParam(params, 0, 1))
+	case 'D':
+		t.moveCursor(t.cursorRow, t.cursorCol-csiParam(params, 0, 1))
+	case 'G':
+		t.moveCursor(t.cursorRow, csiParam(params, 0, 1)-1)
+	case 'd':
+		t.moveCursor(csiParam(params, 0, 1)-1, t.cursorCol)
+	case 'J':
+		t.eraseDisplay(csiParam(params, 0, 0))
+	case 'K':
+		t.eraseLine(csiParam(params, 0, 0))
+	case 'r':
+		top := csiParam(params, 0, 1) - 1
+		bottom := csiParam(params, 1, t.height) - 1
+		if top < 0 || bottom < top || bottom >= t.height {
+			top = 0
+			bottom = t.height - 1
+		}
+		t.scrollTop = top
+		t.scrollBottom = bottom
+		t.moveCursor(0, 0)
+	case 'S':
+		t.scrollUp(csiParam(params, 0, 1))
+	case 'T':
+		t.scrollDown(csiParam(params, 0, 1))
+	case 'L':
+		t.insertLines(csiParam(params, 0, 1))
+	case 'M':
+		t.deleteLines(csiParam(params, 0, 1))
+	case 'P':
+		t.deleteChars(csiParam(params, 0, 1))
+	case '@':
+		t.insertChars(csiParam(params, 0, 1))
+	case 'X':
+		t.eraseChars(csiParam(params, 0, 1))
+	case 's':
+		t.savedRow, t.savedCol = t.cursorRow, t.cursorCol
+		t.pendingWrap = false
+	case 'u':
+		t.moveCursor(t.savedRow, t.savedCol)
+	default:
+		t.pendingWrap = false
+	}
+}
+
+func (t *terminalScreen) applyPrivateMode(params []int, enabled bool) {
+	for _, param := range params {
+		switch param {
+		case 7:
+			t.wrapEnabled = enabled
+		case 1049:
+			t.reset()
+			t.scrollback = nil
+		}
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) reset() {
+	width, height := t.width, t.height
+	t.rows = make([][]rune, height)
+	for row := range t.rows {
+		t.rows[row] = blankTerminalRow(width)
+	}
+	t.cursorRow = 0
+	t.cursorCol = 0
+	t.savedRow = 0
+	t.savedCol = 0
+	t.scrollTop = 0
+	t.scrollBottom = height - 1
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) moveCursor(row int, col int) {
+	t.cursorRow = clampInt(row, 0, t.height-1)
+	t.cursorCol = clampInt(col, 0, t.width-1)
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) putRune(r rune) {
+	if t.pendingWrap {
+		t.cursorCol = 0
+		t.index()
+		t.pendingWrap = false
+	}
+	t.cursorRow = clampInt(t.cursorRow, 0, t.height-1)
+	t.cursorCol = clampInt(t.cursorCol, 0, t.width-1)
+	t.rows[t.cursorRow][t.cursorCol] = r
+	t.contentSeen = true
+	if t.cursorCol == t.width-1 {
+		if t.wrapEnabled {
+			t.pendingWrap = true
+		}
+		return
+	}
+	t.cursorCol++
+}
+
+func (t *terminalScreen) index() {
+	if t.cursorRow == t.scrollBottom {
+		t.scrollUp(1)
+		return
+	}
+	t.cursorRow = clampInt(t.cursorRow+1, 0, t.height-1)
+}
+
+func (t *terminalScreen) reverseIndex() {
+	if t.cursorRow == t.scrollTop {
+		t.scrollDown(1)
+		return
+	}
+	t.cursorRow = clampInt(t.cursorRow-1, 0, t.height-1)
+}
+
+func (t *terminalScreen) scrollUp(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	for ; count > 0; count-- {
+		t.appendScrollbackLine(t.rows[t.scrollTop])
+		for row := t.scrollTop; row < t.scrollBottom; row++ {
+			t.rows[row] = t.rows[row+1]
+		}
+		t.rows[t.scrollBottom] = blankTerminalRow(t.width)
+	}
+}
+
+func (t *terminalScreen) scrollDown(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	for ; count > 0; count-- {
+		for row := t.scrollBottom; row > t.scrollTop; row-- {
+			t.rows[row] = t.rows[row-1]
+		}
+		t.rows[t.scrollTop] = blankTerminalRow(t.width)
+	}
+}
+
+func (t *terminalScreen) appendScrollbackLine(row []rune) {
+	t.scrollback = append(t.scrollback, terminalRowString(row))
+	if len(t.scrollback) > agentScrollbackMaxLines {
+		copy(t.scrollback, t.scrollback[len(t.scrollback)-agentScrollbackMaxLines:])
+		t.scrollback = t.scrollback[:agentScrollbackMaxLines]
+	}
+}
+
+func (t *terminalScreen) insertLines(count int) {
+	if t.cursorRow < t.scrollTop || t.cursorRow > t.scrollBottom {
+		return
+	}
+	if count <= 0 {
+		count = 1
+	}
+	if count > t.scrollBottom-t.cursorRow+1 {
+		count = t.scrollBottom - t.cursorRow + 1
+	}
+	for row := t.scrollBottom; row >= t.cursorRow+count; row-- {
+		t.rows[row] = t.rows[row-count]
+	}
+	for row := t.cursorRow; row < t.cursorRow+count; row++ {
+		t.rows[row] = blankTerminalRow(t.width)
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) deleteLines(count int) {
+	if t.cursorRow < t.scrollTop || t.cursorRow > t.scrollBottom {
+		return
+	}
+	if count <= 0 {
+		count = 1
+	}
+	if count > t.scrollBottom-t.cursorRow+1 {
+		count = t.scrollBottom - t.cursorRow + 1
+	}
+	for row := t.cursorRow; row <= t.scrollBottom-count; row++ {
+		t.rows[row] = t.rows[row+count]
+	}
+	for row := t.scrollBottom - count + 1; row <= t.scrollBottom; row++ {
+		t.rows[row] = blankTerminalRow(t.width)
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) insertChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	row := t.rows[t.cursorRow]
+	if count > t.width-t.cursorCol {
+		count = t.width - t.cursorCol
+	}
+	copy(row[t.cursorCol+count:], row[t.cursorCol:t.width-count])
+	for col := t.cursorCol; col < t.cursorCol+count; col++ {
+		row[col] = ' '
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) deleteChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	row := t.rows[t.cursorRow]
+	if count > t.width-t.cursorCol {
+		count = t.width - t.cursorCol
+	}
+	copy(row[t.cursorCol:], row[t.cursorCol+count:])
+	for col := t.width - count; col < t.width; col++ {
+		row[col] = ' '
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	end := t.cursorCol + count
+	if end > t.width {
+		end = t.width
+	}
+	for col := t.cursorCol; col < end; col++ {
+		t.rows[t.cursorRow][col] = ' '
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseDisplay(mode int) {
+	switch mode {
+	case 0:
+		t.eraseLineFrom(t.cursorRow, t.cursorCol)
+		for row := t.cursorRow + 1; row < t.height; row++ {
+			t.rows[row] = blankTerminalRow(t.width)
+		}
+	case 1:
+		for row := 0; row < t.cursorRow; row++ {
+			t.rows[row] = blankTerminalRow(t.width)
+		}
+		t.eraseLineTo(t.cursorRow, t.cursorCol)
+	case 2:
+		for row := 0; row < t.height; row++ {
+			t.rows[row] = blankTerminalRow(t.width)
+		}
+	case 3:
+		t.scrollback = nil
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseLine(mode int) {
+	switch mode {
+	case 0:
+		t.eraseLineFrom(t.cursorRow, t.cursorCol)
+	case 1:
+		t.eraseLineTo(t.cursorRow, t.cursorCol)
+	case 2:
+		t.rows[t.cursorRow] = blankTerminalRow(t.width)
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseLineFrom(row int, col int) {
+	for i := clampInt(col, 0, t.width-1); i < t.width; i++ {
+		t.rows[row][i] = ' '
+	}
+}
+
+func (t *terminalScreen) eraseLineTo(row int, col int) {
+	for i := 0; i <= clampInt(col, 0, t.width-1); i++ {
+		t.rows[row][i] = ' '
+	}
+}
+
+func blankTerminalRow(width int) []rune {
+	row := make([]rune, width)
+	for i := range row {
+		row[i] = ' '
+	}
+	return row
+}
+
+func terminalRowString(row []rune) string {
+	end := len(row)
+	for end > 0 && (row[end-1] == 0 || row[end-1] == ' ') {
+		end--
+	}
+	return string(row[:end])
+}
+
+func csiIntParams(params string) []int {
+	if params == "" {
+		return nil
+	}
+	parts := strings.Split(params, ";")
+	values := make([]int, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			values = append(values, -1)
+			continue
+		}
+		value, _, _ := strings.Cut(part, ":")
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			values = append(values, -1)
+			continue
+		}
+		values = append(values, parsed)
+	}
+	return values
+}
+
+func csiParam(params []int, index int, fallback int) int {
+	if index >= len(params) || params[index] <= 0 {
+		return fallback
+	}
+	return params[index]
+}
+
+func clampInt(value int, minValue int, maxValue int) int {
+	if maxValue < minValue {
+		return minValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
+}
+
+func agentScrollRowsFromInput(data []byte) (int, bool) {
+	if len(data) == 0 {
+		return 0, false
+	}
+	rows := 0
+	for len(data) > 0 {
+		delta, consumed, ok := parseSGRWheelInput(data)
+		if !ok {
+			return 0, false
+		}
+		rows += delta
+		data = data[consumed:]
+	}
+	return rows, rows != 0
+}
+
+func parseSGRWheelInput(data []byte) (int, int, bool) {
+	if len(data) < 7 || !bytes.HasPrefix(data, []byte("\x1b[<")) {
+		return 0, 0, false
+	}
+	end := bytes.IndexAny(data, "Mm")
+	if end < 0 {
+		return 0, 0, false
+	}
+	sequence := string(data[3:end])
+	parts := strings.Split(sequence, ";")
+	if len(parts) != 3 {
+		return 0, 0, false
+	}
+	button, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	// SGR mouse reports add modifier bits to the base wheel button. Strip the
+	// modifier bits so Shift/Alt/Ctrl scrolling still reaches MonkeyMux.
+	baseButton := button &^ 0x1c
+	switch baseButton {
+	case 64:
+		return 1, end + 1, true
+	case 65:
+		return -1, end + 1, true
+	default:
+		return 0, 0, false
+	}
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {
@@ -2713,13 +3585,45 @@ func (w *muxWindow) agentToolLocked() string {
 	if tool := agentToolFromCommandName(w.currentCommandLocked()); tool != "" {
 		return tool
 	}
-	if tool := strings.TrimSpace(w.agentTool); tool != "" {
-		return tool
-	}
 	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
 		return tool
 	}
+	if tool := strings.TrimSpace(w.agentTool); tool != "" {
+		return tool
+	}
 	return agentToolFromCommandName(w.name)
+}
+
+func (w *muxWindow) shouldUseVisualScrollbackLocked() bool {
+	return w != nil && w.agentToolLocked() == "codex"
+}
+
+func (w *muxWindow) maxScrollbackOffsetLocked() int {
+	if w == nil || w.screen == nil {
+		return 0
+	}
+	lineCount := len(w.screen.historyLines())
+	height := w.screen.height
+	if height <= 0 {
+		height = defaultRows
+	}
+	if lineCount <= height {
+		return 0
+	}
+	return lineCount - height
+}
+
+func (w *muxWindow) clampScrollbackOffsetLocked() {
+	if w == nil {
+		return
+	}
+	maxOffset := w.maxScrollbackOffsetLocked()
+	if w.scrollbackOffset > maxOffset {
+		w.scrollbackOffset = maxOffset
+	}
+	if w.scrollbackOffset < 0 {
+		w.scrollbackOffset = 0
+	}
 }
 
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {

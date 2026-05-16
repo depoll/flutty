@@ -547,6 +547,31 @@ void main() {
       );
     });
 
+    test(
+      'foregroundAgentTool prefers live state over stale agent metadata',
+      () {
+        const commandWindow = TmuxWindow(
+          index: 1,
+          name: 'agent',
+          isActive: true,
+          currentCommand: 'codex',
+          paneTitle: 'flutty',
+          agentTool: AgentLaunchTool.copilotCli,
+        );
+        const titleWindow = TmuxWindow(
+          index: 2,
+          name: 'agent',
+          isActive: true,
+          currentCommand: 'node',
+          paneTitle: 'Codex · flutty',
+          agentTool: AgentLaunchTool.copilotCli,
+        );
+
+        expect(commandWindow.foregroundAgentTool, AgentLaunchTool.codex);
+        expect(titleWindow.foregroundAgentTool, AgentLaunchTool.codex);
+      },
+    );
+
     test('equality works correctly', () {
       const a = TmuxWindow(index: 0, name: 'vim', isActive: true);
       const b = TmuxWindow(index: 0, name: 'vim', isActive: true);
