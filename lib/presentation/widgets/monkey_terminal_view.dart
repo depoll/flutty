@@ -7,7 +7,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -254,19 +254,14 @@ Color resolveMonkeyTerminalReadableBackgroundColor({
   if (toneNeutralBackgrounds &&
       backgroundContrast > maximumNeutralBackgroundContrast &&
       _isNeutralTerminalColor(background)) {
-    for (final alpha in _backgroundAlphaCandidates.reversed) {
-      final candidate = Color.alphaBlend(
-        background.withAlpha(alpha),
-        terminalBackground,
-      );
-      if (_contrastRatio(effectiveForeground, candidate) >=
-              minimumTextContrast &&
-          _contrastRatio(candidate, terminalBackground) >=
-              minimumBackgroundContrast &&
-          _contrastRatio(candidate, terminalBackground) <=
-              maximumNeutralBackgroundContrast) {
-        return candidate;
-      }
+    final neutralBackground = _resolveNeutralTerminalBackgroundColor(
+      background: background,
+      terminalBackground: terminalBackground,
+      minimumBackgroundContrast: minimumBackgroundContrast,
+      maximumBackgroundContrast: maximumNeutralBackgroundContrast,
+    );
+    if (neutralBackground != null) {
+      return neutralBackground;
     }
   }
 
@@ -292,6 +287,26 @@ Color resolveMonkeyTerminalReadableBackgroundColor({
   }
 
   return background;
+}
+
+Color? _resolveNeutralTerminalBackgroundColor({
+  required Color background,
+  required Color terminalBackground,
+  required double minimumBackgroundContrast,
+  required double maximumBackgroundContrast,
+}) {
+  for (final alpha in _backgroundAlphaCandidates.reversed) {
+    final candidate = Color.alphaBlend(
+      background.withAlpha(alpha),
+      terminalBackground,
+    );
+    final contrast = _contrastRatio(candidate, terminalBackground);
+    if (contrast >= minimumBackgroundContrast &&
+        contrast <= maximumBackgroundContrast) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 bool _isNeutralTerminalColor(Color color) {
