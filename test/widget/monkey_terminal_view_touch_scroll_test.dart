@@ -262,6 +262,49 @@ void main() {
     },
   );
 
+  testWidgets(
+    'custom touch scroll handler uses one-line steps for mouse-reporting apps',
+    (tester) async {
+      final terminal = Terminal()
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+      final output = <String>[];
+      terminal.onOutput = output.add;
+      var scrollCalls = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+              onTerminalScrollInput: (_) {
+                scrollCalls += 1;
+                return true;
+              },
+            ),
+          ),
+        ),
+      );
+
+      final lineHeight = tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .renderTerminal
+          .lineHeight;
+      final expectedLineSteps = (240 / lineHeight).floor();
+
+      await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -240));
+      await tester.pump();
+
+      expect(output, isEmpty);
+      expect(scrollCalls, greaterThanOrEqualTo(expectedLineSteps - 1));
+    },
+  );
+
   testWidgets('touch scroll keeps moving with inertia after lift-off', (
     tester,
   ) async {

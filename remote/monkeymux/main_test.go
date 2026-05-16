@@ -1283,6 +1283,54 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 	}
 }
 
+func TestCodexScrollActiveRepaintsExistingViewportWithoutFullClear(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	codexWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		history:      []byte("line1\nline2\nline3\nline4\nline5\nline6\n"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 20
+	server.height = 3
+
+	if err := server.scrollActiveWindow(1); err != nil {
+		t.Fatal(err)
+	}
+	firstPaint := attach.String()
+	if !strings.Contains(firstPaint, "\x1b[2J") {
+		t.Fatalf("first scroll viewport = %q, want initial full clear", firstPaint)
+	}
+	firstPaintLength := len(firstPaint)
+
+	if err := server.scrollActiveWindow(1); err != nil {
+		t.Fatal(err)
+	}
+
+	secondPaint := attach.String()[firstPaintLength:]
+	t.Logf("incremental scrollback repaint bytes: %q", secondPaint)
+	if strings.Contains(secondPaint, "\x1b[2J") ||
+		strings.Contains(secondPaint, "\x1b[3J") ||
+		strings.Contains(secondPaint, attachSessionEnterSequence) {
+		t.Fatalf("second scroll viewport = %q, want repaint without full surface clear", secondPaint)
+	}
+	for _, want := range []string{
+		"\x1b[1;1Hline2\x1b[K",
+		"\x1b[2;1Hline3\x1b[K",
+		"\x1b[3;1Hline4\x1b[K",
+	} {
+		if !strings.Contains(secondPaint, want) {
+			t.Fatalf("second scroll viewport = %q, want marker %q", secondPaint, want)
+		}
+	}
+}
+
 func TestCodexScrollActiveDisablesWrapForLongRows(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -1598,6 +1646,51 @@ func TestCodexScrollbackTextIgnoresIncompleteLiveFrame(t *testing.T) {
 
 	if !reflect.DeepEqual(lines, completedRows) {
 		t.Fatalf("scrollback lines = %#v, want only completed frame %#v", lines, completedRows)
+	}
+}
+
+func TestAgentScrollbackTextPreservesRepeatedTranscriptLines(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			codexSynchronizedFrame(
+				"first block",
+				"repeated but meaningful",
+				"end first block",
+			) +
+				codexSynchronizedFrame(
+					"second block",
+					"repeated but meaningful",
+					"end second block",
+				),
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 6)
+	t.Logf("scrollback lines preserving repeated transcript content: %#v", lines)
+
+	want := []string{
+		"first block",
+		"repeated but meaningful",
+		"end first block",
+		"second block",
+		"repeated but meaningful",
+		"end second block",
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestAgentToolPrefersLiveCodexTitleOverLaunchTool(t *testing.T) {
+	window := &muxWindow{
+		name:      "copilot",
+		agentTool: "copilot",
+		paneTitle: "Codex - editing",
+	}
+
+	if got := window.agentToolLocked(); got != "codex" {
+		t.Fatalf("agent tool = %q, want live Codex title over stale launch tool", got)
 	}
 }
 

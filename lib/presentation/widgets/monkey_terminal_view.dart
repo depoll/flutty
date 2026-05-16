@@ -1222,6 +1222,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (lineHeight <= 0) {
       return 0;
     }
+    if (widget.onTerminalScrollInput != null) {
+      return lineHeight;
+    }
     if (widget.terminal.mouseMode.reportScroll) {
       return lineHeight * _touchScrollReportedWheelLinesPerEvent;
     }

@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.69"
+	monkeyMuxVersion         = "0.1.70"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2808,13 +2808,19 @@ func (s *muxServer) scrollbackReplayLocked(
 	if offset == 0 {
 		return []byte(scrollbackViewportExitSequence), s.resizeRedrawNudgeForWindowLocked(window)
 	}
-	return s.scrollbackViewportReplayBytesLocked(window, scrollbackLines, offset), redrawNudgeRequest{}
+	return s.scrollbackViewportReplayBytesLocked(
+		window,
+		scrollbackLines,
+		offset,
+		previousOffset == 0,
+	), redrawNudgeRequest{}
 }
 
 func (s *muxServer) scrollbackViewportReplayBytesLocked(
 	window *muxWindow,
 	lines []string,
 	offset int,
+	resetSurface bool,
 ) []byte {
 	height := s.height
 	if height <= 0 {
@@ -2835,9 +2841,13 @@ func (s *muxServer) scrollbackViewportReplayBytesLocked(
 
 	window.attachSurfaceAlt = true
 	var output bytes.Buffer
-	output.WriteString(attachSessionEnterSequence)
-	output.WriteString(activeWindowReplayPrefixBeforeAlt)
-	output.WriteString(activeWindowReplayPrefixAfterAltClear)
+	if resetSurface {
+		output.WriteString(attachSessionEnterSequence)
+		output.WriteString(activeWindowReplayPrefixBeforeAlt)
+		output.WriteString(activeWindowReplayPrefixAfterAltClear)
+	} else {
+		output.WriteString("\x1b[0m\x1b[r")
+	}
 	output.WriteString(scrollbackViewportEnterSequence)
 	output.Write(terminalTitleReplaySequence(window))
 	output.WriteString("\x1b[?25l")
@@ -3311,7 +3321,7 @@ func appendTerminalAppFrameLines(
 		if !isUsefulTerminalAppFrameLine(line, width) {
 			continue
 		}
-		cleanSnapshot = appendDeduplicatedLine(cleanSnapshot, line)
+		cleanSnapshot = append(cleanSnapshot, line)
 	}
 	return mergeTerminalAppFrameSnapshot(lines, cleanSnapshot)
 }
@@ -3346,10 +3356,7 @@ func mergeTerminalAppFrameSnapshot(lines []string, snapshot []string) []string {
 
 	merged := append([]string(nil), lines...)
 	for _, line := range snapshot {
-		if containsTerminalLine(merged, line) {
-			continue
-		}
-		merged = appendDeduplicatedLine(merged, line)
+		merged = append(merged, line)
 	}
 	return merged
 }
@@ -3457,10 +3464,7 @@ func cleanTerminalAppFrameLines(lines []string, width int) []string {
 		if isTransientTerminalAppFragment(line, lines[index+1:], width) {
 			continue
 		}
-		if containsTerminalLine(cleaned, line) {
-			continue
-		}
-		cleaned = appendDeduplicatedLine(cleaned, line)
+		cleaned = append(cleaned, line)
 	}
 	return cleaned
 }
@@ -3535,7 +3539,7 @@ func isTransientTerminalAppFragment(line string, later []string, width int) bool
 		if len([]rune(candidate)) <= runeCount+2 {
 			continue
 		}
-		if strings.Contains(candidate, trimmed) {
+		if strings.HasPrefix(candidate, trimmed) {
 			return true
 		}
 	}
@@ -4793,10 +4797,10 @@ func (w *muxWindow) agentToolLocked() string {
 	if tool := agentToolFromCommandName(w.currentCommandLocked()); tool != "" {
 		return tool
 	}
-	if tool := strings.TrimSpace(w.agentTool); tool != "" {
+	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
 		return tool
 	}
-	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
+	if tool := strings.TrimSpace(w.agentTool); tool != "" {
 		return tool
 	}
 	return agentToolFromCommandName(w.name)

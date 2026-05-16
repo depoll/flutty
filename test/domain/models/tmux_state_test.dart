@@ -522,6 +522,18 @@ void main() {
       },
     );
 
+    test('foregroundAgentTool prefers live command over stale metadata', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: true,
+        currentCommand: 'codex',
+        agentTool: AgentLaunchTool.copilotCli,
+      );
+
+      expect(window.foregroundAgentTool, AgentLaunchTool.codex);
+    });
+
     test('foregroundAgentTool detects agent terminal titles', () {
       const copilotTitleWindow = TmuxWindow(
         index: 1,
