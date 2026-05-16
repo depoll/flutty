@@ -290,6 +290,56 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
+func TestSelectAltBufferWindowNudgesResizeAfterReplay(t *testing.T) {
+	server := newMuxServer("test")
+	server.width = 80
+	server.height = 24
+	attach := &recordingConn{}
+	visualWindow := &muxWindow{
+		id:               "@1",
+		index:            0,
+		capabilities:     []string{windowCapabilityVisualScrollback},
+		screen:           newTerminalScreen(80, 24),
+		lastActivity:     time.Now(),
+		cursorVisible:    true,
+		privateModes:     map[string]bool{"1049": true},
+		scrollbackOffset: 0,
+	}
+	copilotWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		name:         "Copilot",
+		history:      []byte("copilot screen"),
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{visualWindow, copilotWindow}
+	server.activeID = visualWindow.id
+	server.attachConn = attach
+
+	wantReplay := string(server.replayBytesLocked(copilotWindow))
+	attach.Reset()
+	originalNudgeForegroundResize := nudgeForegroundResize
+	defer func() {
+		nudgeForegroundResize = originalNudgeForegroundResize
+	}()
+	var nudged []string
+	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+		nudged = append(nudged, fmt.Sprintf("%s:%dx%d", window.id, width, height))
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize nudge ran before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+
+	if err := server.selectWindow(copilotWindow.id); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(nudged, []string{"@2:80x24"}) {
+		t.Fatalf("resize nudges = %#v, want @2 80x24", nudged)
+	}
+}
+
 func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -856,6 +906,26 @@ func TestCodexLiveOutputPreservesTerminalQueries(t *testing.T) {
 	}
 }
 
+func TestCapableLiveOutputPreservesSplitTerminalQueries(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	server.handleWindowOutput(window.id, []byte("r"))
+	attach.Reset()
+
+	server.handleWindowOutput(window.id, []byte("\x1b]11;?"))
+	if strings.Contains(attach.String(), "\x1b]11;?") {
+		t.Fatalf("incomplete OSC query was forwarded: %q", attach.String())
+	}
+	server.handleWindowOutput(window.id, []byte("\x07d"))
+
+	got := attach.String()
+	if !strings.Contains(got, "\x1b]11;?\x07") {
+		t.Fatalf("live output = %q, want split terminal query preserved", got)
+	}
+	if !strings.Contains(got, "rd") {
+		t.Fatalf("live output = %q, want screen replay after split terminal query", got)
+	}
+}
+
 func TestCodexLiveOutputPreservesSgrColors(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	attach.Reset()
@@ -927,6 +997,22 @@ func TestCodexScrollbackSuppressesLiveOutputUntilBottom(t *testing.T) {
 	}
 	if window.scrollbackOffset != 0 {
 		t.Fatalf("scrollback offset = %d, want bottom", window.scrollbackOffset)
+	}
+}
+
+func TestParseSGRWheelInputIgnoresButtonRelease(t *testing.T) {
+	if rows, consumed, ok := parseSGRWheelInput([]byte("\x1b[<64;1;1m")); ok {
+		t.Fatalf("release parsed as wheel input: rows=%d consumed=%d", rows, consumed)
+	}
+
+	rows, consumed, ok := parseSGRWheelInput([]byte("\x1b[<64;1;1Mtail"))
+	if !ok || rows != 1 || consumed != len("\x1b[<64;1;1M") {
+		t.Fatalf(
+			"press parsed as rows=%d consumed=%d ok=%t, want rows=1 consumed=10 ok=true",
+			rows,
+			consumed,
+			ok,
+		)
 	}
 }
 

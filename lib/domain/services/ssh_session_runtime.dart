@@ -21,6 +21,7 @@ class _SshSessionRuntime {
   final _pendingShellOutputs =
       Queue<({String stderrData, String stdoutData, String terminalData})>();
   int _pendingTerminalWriteChars = 0;
+  String _pendingTerminalQueryScan = '';
   int _shellStdoutChunkCount = 0;
   int _shellStdoutCharCount = 0;
   int _shellStderrChunkCount = 0;
@@ -476,6 +477,7 @@ class _SshSessionRuntime {
       stderrData: stderrChunk,
     ));
     _pendingTerminalWriteChars += terminalData.length;
+    _appendPendingTerminalQueryScan(terminalData);
     _pendingShellOutputShell = shell;
     _pendingShellOutputTerminal = terminal;
 
@@ -496,21 +498,33 @@ class _SshSessionRuntime {
     if (_pendingShellOutputs.isEmpty) {
       return false;
     }
-    final bufferedTerminalData = StringBuffer();
-    for (final output in _pendingShellOutputs) {
-      bufferedTerminalData.write(output.terminalData);
-    }
-    final combinedTerminalData = bufferedTerminalData.toString();
-    final start =
-        combinedTerminalData.length > _terminalControlQueryPendingLimit
-        ? combinedTerminalData.length - _terminalControlQueryPendingLimit
-        : 0;
-    final queryScan = combinedTerminalData.substring(start);
+    final queryScan = _pendingTerminalQueryScan;
     return _containsImmediateTerminalResponseQuery(queryScan) ||
         (_terminalThemeOscQueryPendingInput.isNotEmpty &&
             _containsImmediateTerminalResponseQuery(
               _terminalThemeOscQueryPendingInput + queryScan,
             ));
+  }
+
+  void _appendPendingTerminalQueryScan(String terminalData) {
+    if (terminalData.isEmpty) {
+      return;
+    }
+    final combined = _pendingTerminalQueryScan + terminalData;
+    if (combined.length <= _terminalControlQueryPendingLimit) {
+      _pendingTerminalQueryScan = combined;
+      return;
+    }
+    _pendingTerminalQueryScan = combined.substring(
+      combined.length - _terminalControlQueryPendingLimit,
+    );
+  }
+
+  void _rebuildPendingTerminalQueryScan() {
+    _pendingTerminalQueryScan = '';
+    for (final output in _pendingShellOutputs) {
+      _appendPendingTerminalQueryScan(output.terminalData);
+    }
   }
 
   void _flushPendingShellOutput({bool drainAll = false}) {
@@ -802,6 +816,7 @@ class _SshSessionRuntime {
         }
       }
     }
+    _rebuildPendingTerminalQueryScan();
     return (
       terminalData: terminalOutput.toString(),
       stdoutData: stdoutOutput.toString(),
@@ -812,6 +827,7 @@ class _SshSessionRuntime {
   void _clearPendingShellOutput() {
     _pendingShellOutputs.clear();
     _pendingTerminalWriteChars = 0;
+    _pendingTerminalQueryScan = '';
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
     _terminalOutputFlushTimerIsFallback = false;

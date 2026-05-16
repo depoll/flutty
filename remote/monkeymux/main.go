@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.77"
+	monkeyMuxVersion         = "0.1.78"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -43,6 +43,7 @@ const (
 	runCommandOutputMaxBytes = 8 * 1024 * 1024
 	runCommandTimeout        = 20 * time.Second
 	socketTimeout            = 2 * time.Second
+	redrawNudgeRestoreDelay  = 80 * time.Millisecond
 	windowUpdateMinInterval  = 750 * time.Millisecond
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
@@ -59,6 +60,8 @@ const windowCapabilityVisualScrollback = "visual-scrollback-v1"
 
 var (
 	preReplayPrivateModes = []string{
+		"47",
+		"1047",
 		"1049",
 		"6",
 		"7",
@@ -84,6 +87,7 @@ var (
 	}
 	trackedPrivateModes = map[string]struct{}{
 		"1":    {},
+		"47":   {},
 		"6":    {},
 		"7":    {},
 		"1000": {},
@@ -91,6 +95,7 @@ var (
 		"1003": {},
 		"1004": {},
 		"1006": {},
+		"1047": {},
 		"1049": {},
 		"2004": {},
 		"2031": {},
@@ -132,6 +137,94 @@ var signalForegroundResize = func(processGroup int) {
 		return
 	}
 	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+type redrawNudgeMode uint8
+
+const (
+	redrawNudgeNone redrawNudgeMode = iota
+	redrawNudgeSignal
+	redrawNudgeSameSize
+	redrawNudgeResize
+)
+
+type redrawNudgeRequest struct {
+	window *muxWindow
+	width  int
+	height int
+	mode   redrawNudgeMode
+}
+
+func runRedrawNudgeIfNeeded(request redrawNudgeRequest) {
+	if request.window == nil {
+		return
+	}
+	switch request.mode {
+	case redrawNudgeResize:
+		nudgeForegroundResize(request.window, request.width, request.height)
+	case redrawNudgeSameSize:
+		nudgeForegroundSameSize(request.window, request.width, request.height)
+	case redrawNudgeSignal:
+		signalForegroundResize(foregroundProcessGroupForWindow(request.window))
+	}
+}
+
+var nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+	if window == nil || !validPtySize(width, height) {
+		return
+	}
+	nudgeWidth, nudgeHeight, ok := resizeNudgeSize(width, height)
+	if !ok {
+		signalForegroundResize(foregroundProcessGroupForWindow(window))
+		return
+	}
+	generation, err := window.setPtySizeTracked(&pty.Winsize{
+		Rows: uint16(nudgeHeight),
+		Cols: uint16(nudgeWidth),
+	})
+	if err != nil {
+		signalForegroundResize(foregroundProcessGroupForWindow(window))
+		return
+	}
+	go func() {
+		time.Sleep(redrawNudgeRestoreDelay)
+		_ = window.setPtySizeIfGeneration(generation, &pty.Winsize{
+			Rows: uint16(height),
+			Cols: uint16(width),
+		})
+	}()
+}
+
+var nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+	if window == nil {
+		return
+	}
+	if validPtySize(width, height) {
+		_, _ = window.setPtySizeTracked(&pty.Winsize{
+			Rows: uint16(height),
+			Cols: uint16(width),
+		})
+	}
+	signalForegroundResize(foregroundProcessGroupForWindow(window))
+}
+
+func validPtySize(width int, height int) bool {
+	return width > 0 && width <= 65535 && height > 0 && height <= 65535
+}
+
+func resizeNudgeSize(width int, height int) (int, int, bool) {
+	switch {
+	case width > 0 && width < 65535:
+		return width + 1, height, true
+	case width > 1:
+		return width - 1, height, true
+	case height > 0 && height < 65535:
+		return width, height + 1, true
+	case height > 1:
+		return width, height - 1, true
+	default:
+		return width, height, false
+	}
 }
 
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
@@ -277,9 +370,11 @@ type muxWindow struct {
 	capabilities               []string
 	ptyWidth                   int
 	ptyHeight                  int
+	ptyResizeGeneration        uint64
 	scrollbackOffset           int
 	oscBuffer                  []byte
 	csiBuffer                  []byte
+	terminalQueryBuffer        []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -296,6 +391,30 @@ type muxWindow struct {
 }
 
 func (w *muxWindow) setPtySize(size *pty.Winsize) error {
+	_, err := w.setPtySizeTracked(size)
+	return err
+}
+
+func (w *muxWindow) setPtySizeTracked(size *pty.Winsize) (uint64, error) {
+	if w == nil {
+		return 0, os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return 0, os.ErrClosed
+	}
+	if err := pty.Setsize(w.pty, size); err != nil {
+		return 0, err
+	}
+	w.ptyResizeGeneration++
+	return w.ptyResizeGeneration, nil
+}
+
+func (w *muxWindow) setPtySizeIfGeneration(
+	generation uint64,
+	size *pty.Winsize,
+) error {
 	if w == nil {
 		return os.ErrClosed
 	}
@@ -304,7 +423,14 @@ func (w *muxWindow) setPtySize(size *pty.Winsize) error {
 	if w.pty == nil || w.ptyClosed {
 		return os.ErrClosed
 	}
-	return pty.Setsize(w.pty, size)
+	if w.ptyResizeGeneration != generation {
+		return nil
+	}
+	if err := pty.Setsize(w.pty, size); err != nil {
+		return err
+	}
+	w.ptyResizeGeneration++
+	return nil
 }
 
 func (w *muxWindow) closePty() error {
@@ -1627,7 +1753,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
-	var foregroundProcessGroup int
+	var redrawNudge redrawNudgeRequest
 	var shouldShutdown bool
 
 	s.attachMu.Lock()
@@ -1651,7 +1777,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
-				foregroundProcessGroup = candidate.foregroundProcessGroupLocked()
+				redrawNudge = s.redrawNudgeForWindowLocked(candidate)
 				activeChanged = true
 				break
 			}
@@ -1681,7 +1807,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
+		runRedrawNudgeIfNeeded(redrawNudge)
 	}
 	if shouldShutdown {
 		go s.close()
@@ -1712,6 +1838,7 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
+	var redrawNudge redrawNudgeRequest
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -1723,8 +1850,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
+	redrawNudge = s.activeRedrawNudgeLocked()
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
+	runRedrawNudgeIfNeeded(redrawNudge)
 	s.broadcastWindowList("active_window_changed")
 
 	defer func() {
@@ -2284,7 +2413,7 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
-	var foregroundProcessGroup int
+	var redrawNudge redrawNudgeRequest
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -2298,12 +2427,12 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
-	foregroundProcessGroup = window.foregroundProcessGroupLocked()
+	redrawNudge = s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
 	s.writeAttachLocked(attach, replay)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
-	signalForegroundResize(foregroundProcessGroup)
+	runRedrawNudgeIfNeeded(redrawNudge)
 	return nil
 }
 
@@ -2311,7 +2440,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
-	var foregroundProcessGroup int
+	var redrawNudge redrawNudgeRequest
 	var shouldShutdown bool
 	var command *exec.Cmd
 	var snapshots []windowSnapshot
@@ -2338,7 +2467,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
-			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
+			redrawNudge = s.redrawNudgeForWindowLocked(replacement)
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -2372,7 +2501,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
+		runRedrawNudgeIfNeeded(redrawNudge)
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
 	_ = window.closePty()
@@ -2432,6 +2561,36 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
+}
+
+func (s *muxServer) activeRedrawNudgeLocked() redrawNudgeRequest {
+	window := s.windowByIDLocked(s.activeID)
+	return s.redrawNudgeForWindowLocked(window)
+}
+
+func (s *muxServer) redrawNudgeForWindowLocked(window *muxWindow) redrawNudgeRequest {
+	if window == nil || window.closed {
+		return redrawNudgeRequest{}
+	}
+	return redrawNudgeRequest{
+		window: window,
+		width:  s.width,
+		height: s.height,
+		mode:   window.redrawNudgeModeLocked(),
+	}
+}
+
+func (w *muxWindow) redrawNudgeModeLocked() redrawNudgeMode {
+	if w == nil {
+		return redrawNudgeNone
+	}
+	if w.shouldUseVisualScrollbackLocked() {
+		return redrawNudgeSameSize
+	}
+	if w.privateModes["47"] || w.privateModes["1047"] || w.privateModes["1049"] {
+		return redrawNudgeResize
+	}
+	return redrawNudgeSignal
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -2602,7 +2761,7 @@ func appendTerminalRowReplay(replay []byte, row terminalRow, width int) []byte {
 			replay = cell.style.appendSGR(replay)
 			style = cell.style
 		}
-		replay = append(replay, string(cell.ch)...)
+		replay = utf8.AppendRune(replay, cell.ch)
 	}
 	if style != (terminalStyle{}) {
 		replay = append(replay, "\x1b[0m"...)
@@ -2994,10 +3153,11 @@ func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
 		!w.shouldUseVisualScrollbackLocked() ||
 		w.screen == nil ||
 		!w.screen.hasContent() {
+		w.terminalQueryBuffer = nil
 		return chunk
 	}
 	replay := s.agentScreenReplayBytesLocked(w, false)
-	queries := terminalQueriesFromOutput(chunk)
+	queries := w.terminalQueriesFromOutputLocked(chunk)
 	if len(queries) == 0 {
 		return replay
 	}
@@ -3911,7 +4071,7 @@ func parseSGRWheelInput(data []byte) (int, int, bool) {
 	if len(data) < 7 || !bytes.HasPrefix(data, []byte("\x1b[<")) {
 		return 0, 0, false
 	}
-	end := bytes.IndexAny(data, "Mm")
+	end := bytes.IndexByte(data, 'M')
 	if end < 0 {
 		return 0, 0, false
 	}
@@ -3988,14 +4148,37 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	return output
 }
 
+func (w *muxWindow) terminalQueriesFromOutputLocked(data []byte) []byte {
+	if len(w.terminalQueryBuffer) > 0 {
+		combined := make([]byte, 0, len(w.terminalQueryBuffer)+len(data))
+		combined = append(combined, w.terminalQueryBuffer...)
+		combined = append(combined, data...)
+		data = combined
+		w.terminalQueryBuffer = nil
+	}
+	queries, pending := terminalQueriesAndPendingFromOutput(data)
+	if len(pending) > 0 && len(pending) <= terminalParserLimitBytes {
+		w.terminalQueryBuffer = append(w.terminalQueryBuffer[:0], pending...)
+	}
+	return queries
+}
+
 func terminalQueriesFromOutput(data []byte) []byte {
+	queries, _ := terminalQueriesAndPendingFromOutput(data)
+	return queries
+}
+
+func terminalQueriesAndPendingFromOutput(data []byte) ([]byte, []byte) {
 	if len(data) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var output []byte
 	for i := 0; i < len(data); {
 		if data[i] != '\x1b' || i+1 >= len(data) {
+			if data[i] == '\x1b' {
+				return output, data[i:]
+			}
 			i++
 			continue
 		}
@@ -4004,7 +4187,7 @@ func terminalQueriesFromOutput(data []byte) []byte {
 		if next == '[' {
 			end := csiSequenceEnd(data, i+2)
 			if end < 0 {
-				break
+				return output, data[i:]
 			}
 			sequence := data[i : end+1]
 			if isReplayUnsafeCsiQuery(sequence) {
@@ -4013,7 +4196,7 @@ func terminalQueriesFromOutput(data []byte) []byte {
 		} else if next == ']' {
 			end, terminatorLength, ok := findOscTerminator(data[i+2:])
 			if !ok {
-				break
+				return output, data[i:]
 			}
 			payload := data[i+2 : i+2+end]
 			if isReplayUnsafeOscQuery(payload) {
@@ -4027,7 +4210,7 @@ func terminalQueriesFromOutput(data []byte) []byte {
 		output = append(output, data[i:queryEnd]...)
 		i = queryEnd
 	}
-	return output
+	return output, nil
 }
 
 func csiSequenceEnd(data []byte, start int) int {
