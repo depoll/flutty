@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -755,14 +756,54 @@ func TestCodexWheelScrollRendersOrderedVisualScrollback(t *testing.T) {
 	}
 }
 
-func TestCodexLiveOutputPassesThroughAtBottom(t *testing.T) {
+func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	attach.Reset()
 
 	server.handleWindowOutput(window.id, []byte("\x1b[?1049hhello"))
 
-	if got := attach.String(); got != "\x1b[?1049hhello" {
-		t.Fatalf("live output = %q, want raw passthrough", got)
+	got := attach.String()
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("live repaint = %q, want rendered text", got)
+	}
+	if !strings.Contains(got, "\x1b[?7l\x1b[H\x1b[2J") {
+		t.Fatalf("live repaint = %q, want screen repaint", got)
+	}
+	if got == "\x1b[?1049hhello" {
+		t.Fatalf("live output used raw passthrough instead of screen repaint")
+	}
+}
+
+func TestCodexLiveOutputScrollsViewportAtBottom(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	server.handleWindowOutput(window.id, []byte("\x1b[?1049h"))
+	attach.Reset()
+
+	for i := 1; i < 50; i++ {
+		server.handleWindowOutput(window.id, []byte(fmt.Sprintf("%02d\r\n", i)))
+	}
+	server.handleWindowOutput(window.id, []byte("50"))
+
+	frame := lastScreenReplayFrame(attach.String())
+	assertOrderedSubstrings(t, frame, "47", "48", "49", "50")
+	if strings.Contains(frame, "46") {
+		t.Fatalf("bottom frame = %q, should have scrolled past 46", frame)
+	}
+}
+
+func TestCodexLiveOutputPreservesTerminalQueries(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	server.handleWindowOutput(window.id, []byte("r"))
+	attach.Reset()
+
+	server.handleWindowOutput(window.id, []byte("\x1b[6n\x1b]11;?\x07d"))
+
+	got := attach.String()
+	if !strings.Contains(got, "\x1b[6n\x1b]11;?\x07") {
+		t.Fatalf("live output = %q, want terminal queries preserved", got)
+	}
+	if !strings.Contains(got, "rd") {
+		t.Fatalf("live output = %q, want screen replay after terminal queries", got)
 	}
 }
 
@@ -1795,6 +1836,15 @@ func writeCodexNumberedLines(server *muxServer, windowID string) {
 	for _, line := range []string{"01", "02", "03", "04", "05", "06", "07", "08"} {
 		server.handleWindowOutput(windowID, []byte(line+"\r\n"))
 	}
+}
+
+func lastScreenReplayFrame(output string) string {
+	const repaintPrefix = "\x1b[?7l\x1b[H\x1b[2J"
+	index := strings.LastIndex(output, repaintPrefix)
+	if index < 0 {
+		return output
+	}
+	return output[index:]
 }
 
 func assertOrderedSubstrings(t *testing.T, value string, substrings ...string) {

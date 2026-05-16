@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.73"
+	monkeyMuxVersion         = "0.1.74"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1497,6 +1497,7 @@ func (s *muxServer) readWindow(window *muxWindow) {
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
 	var shouldWrite bool
+	var attachOutput []byte
 	var snapshot *windowSnapshot
 	now := time.Now()
 
@@ -1518,7 +1519,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
 		attach = s.attachConn
-		shouldWrite = attach != nil && window.scrollbackOffset == 0
+		if attach != nil && window.scrollbackOffset == 0 {
+			shouldWrite = true
+			attachOutput = window.liveAttachOutputLocked(s, chunk)
+		}
 	} else if containsTerminalBell(chunk) {
 		window.alert = true
 	}
@@ -1534,7 +1538,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	s.mu.Unlock()
 
 	if shouldWrite {
-		s.writeAttachIfActive(windowID, attach, chunk)
+		s.writeAttachIfActive(windowID, attach, attachOutput)
 	}
 
 	if snapshot != nil {
@@ -2858,6 +2862,24 @@ func (w *muxWindow) observeTerminalScreenLocked(chunk []byte) {
 	w.screen.write(chunk)
 }
 
+func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
+	if w == nil ||
+		!w.shouldUseVisualScrollbackLocked() ||
+		w.screen == nil ||
+		!w.screen.hasContent() {
+		return chunk
+	}
+	replay := s.agentScreenReplayBytesLocked(w, false)
+	queries := terminalQueriesFromOutput(chunk)
+	if len(queries) == 0 {
+		return replay
+	}
+	output := make([]byte, 0, len(queries)+len(replay))
+	output = append(output, queries...)
+	output = append(output, replay...)
+	return output
+}
+
 func (w *muxWindow) terminalScreenSizeLocked() (int, int) {
 	if w == nil {
 		return defaultColumns, defaultRows
@@ -3543,6 +3565,48 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 		return data
 	}
 	output = append(output, data[copyStart:]...)
+	return output
+}
+
+func terminalQueriesFromOutput(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var output []byte
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' || i+1 >= len(data) {
+			i++
+			continue
+		}
+		next := data[i+1]
+		queryEnd := -1
+		if next == '[' {
+			end := csiSequenceEnd(data, i+2)
+			if end < 0 {
+				break
+			}
+			sequence := data[i : end+1]
+			if isReplayUnsafeCsiQuery(sequence) {
+				queryEnd = end + 1
+			}
+		} else if next == ']' {
+			end, terminatorLength, ok := findOscTerminator(data[i+2:])
+			if !ok {
+				break
+			}
+			payload := data[i+2 : i+2+end]
+			if isReplayUnsafeOscQuery(payload) {
+				queryEnd = i + 2 + end + terminatorLength
+			}
+		}
+		if queryEnd < 0 {
+			i++
+			continue
+		}
+		output = append(output, data[i:queryEnd]...)
+		i = queryEnd
+	}
 	return output
 }
 
