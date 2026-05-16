@@ -1,7 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
@@ -106,17 +105,20 @@ void main() {
       );
     });
 
-    test('routes forced MonkeyMux Codex drags without alt or mouse mode', () {
-      expect(
-        shouldRouteTouchScrollToTerminal(
-          isMobile: true,
-          isUsingAltBuffer: false,
-          terminalReportsMouseWheel: false,
-          forceTerminalScroll: true,
-        ),
-        isTrue,
-      );
-    });
+    test(
+      'routes forced MonkeyMux capability drags without alt or mouse mode',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: false,
+            terminalReportsMouseWheel: false,
+            forceTerminalScroll: true,
+          ),
+          isTrue,
+        );
+      },
+    );
 
     test('does not force terminal scrolling on desktop', () {
       expect(
@@ -131,28 +133,32 @@ void main() {
     });
   });
 
-  group('MonkeyMux Codex scroll input helper', () {
-    test('forces SGR scroll only for active MonkeyMux Codex windows', () {
+  group('MonkeyMux capability scroll input helper', () {
+    test('forces SGR scroll only for capable MonkeyMux windows', () {
       expect(
-        shouldForceMonkeyMuxCodexScrollInput(
+        shouldForceMonkeyMuxWindowScrollInput(
           activeMuxBackend: RemoteMuxBackend.monkeyMux,
-          activeWindowTool: AgentLaunchTool.codex,
+          activeWindowCapabilities: const {
+            remoteWindowCapabilityVisualScrollback,
+          },
         ),
         isTrue,
       );
 
       expect(
-        shouldForceMonkeyMuxCodexScrollInput(
+        shouldForceMonkeyMuxWindowScrollInput(
           activeMuxBackend: RemoteMuxBackend.tmux,
-          activeWindowTool: AgentLaunchTool.codex,
+          activeWindowCapabilities: const {
+            remoteWindowCapabilityVisualScrollback,
+          },
         ),
         isFalse,
       );
 
       expect(
-        shouldForceMonkeyMuxCodexScrollInput(
+        shouldForceMonkeyMuxWindowScrollInput(
           activeMuxBackend: RemoteMuxBackend.monkeyMux,
-          activeWindowTool: AgentLaunchTool.copilotCli,
+          activeWindowCapabilities: const <String>{},
         ),
         isFalse,
       );

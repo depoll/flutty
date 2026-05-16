@@ -774,6 +774,55 @@ func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	}
 }
 
+func TestCapableLiveOutputRepaintsScreenAtBottom(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	window.command = "zsh"
+	window.foregroundCommand = "zsh"
+	window.paneTitle = "shell"
+	attach.Reset()
+
+	server.handleWindowOutput(window.id, []byte("\x1b[?1049hhello"))
+
+	got := attach.String()
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("live repaint = %q, want rendered text", got)
+	}
+	if !strings.Contains(got, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J") {
+		t.Fatalf("live repaint = %q, want screen repaint", got)
+	}
+	if got == "\x1b[?1049hhello" {
+		t.Fatalf("capable live output used raw passthrough instead of screen repaint")
+	}
+}
+
+func TestVisualScreenCapabilityDoesNotDependOnAgentTool(t *testing.T) {
+	server := newMuxServer("test")
+	server.width = 8
+	server.height = 4
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		name:              "codex",
+		command:           "codex",
+		foregroundCommand: "codex",
+		paneTitle:         "Codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+	server.attachConn = attach
+
+	server.handleWindowOutput(window.id, []byte("\x1b[?1049hhello"))
+
+	if window.screen != nil {
+		t.Fatal("window without visual capability unexpectedly created a screen model")
+	}
+	if got := attach.String(); got != "\x1b[?1049hhello" {
+		t.Fatalf("window without visual capability output = %q, want raw passthrough", got)
+	}
+}
+
 func TestCodexLiveOutputScrollsViewportAtBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	server.handleWindowOutput(window.id, []byte("\x1b[?1049h"))
@@ -997,11 +1046,11 @@ func TestAgentToolPrefersLiveCodexTitleOverStoredMetadata(t *testing.T) {
 	}
 }
 
-func TestVisualScreenModelOnlyTracksCodexWindows(t *testing.T) {
+func TestVisualScreenModelOnlyTracksCapableWindows(t *testing.T) {
 	server := newMuxServer("test")
 	server.width = 12
 	server.height = 4
-	window := &muxWindow{
+	shellWindow := &muxWindow{
 		id:        "@1",
 		name:      "zsh",
 		command:   "zsh",
@@ -1009,17 +1058,31 @@ func TestVisualScreenModelOnlyTracksCodexWindows(t *testing.T) {
 		ptyWidth:  server.width,
 		ptyHeight: server.height,
 	}
-	server.windows = []*muxWindow{window}
-	server.activeID = window.id
+	capableWindow := &muxWindow{
+		id:                "@2",
+		name:              "shell",
+		command:           "zsh",
+		foregroundCommand: "zsh",
+		paneTitle:         "shell",
+		capabilities:      []string{windowCapabilityVisualScrollback},
+		ptyWidth:          server.width,
+		ptyHeight:         server.height,
+	}
+	server.windows = []*muxWindow{shellWindow, capableWindow}
+	server.activeID = shellWindow.id
 
-	server.handleWindowOutput(window.id, []byte("plain shell output\r\n"))
+	server.handleWindowOutput(shellWindow.id, []byte("plain shell output\r\n"))
+	server.handleWindowOutput(capableWindow.id, []byte("capable output\r\n"))
 
-	if window.screen != nil {
-		t.Fatal("non-Codex window unexpectedly created a visual screen model")
+	if shellWindow.screen != nil {
+		t.Fatal("plain shell window unexpectedly created a visual screen model")
+	}
+	if capableWindow.screen == nil {
+		t.Fatal("capable window did not create a visual screen model")
 	}
 }
 
-func TestCodexVisualScreenUsesWindowPtySize(t *testing.T) {
+func TestVisualScreenCapabilityUsesWindowPtySize(t *testing.T) {
 	server := newMuxServer("test")
 	server.width = 20
 	server.height = 6
@@ -1030,6 +1093,7 @@ func TestCodexVisualScreenUsesWindowPtySize(t *testing.T) {
 		foregroundCommand: "node",
 		paneTitle:         "shell",
 		agentTool:         "copilot",
+		capabilities:      []string{windowCapabilityVisualScrollback},
 		ptyWidth:          8,
 		ptyHeight:         3,
 	}
@@ -1038,11 +1102,11 @@ func TestCodexVisualScreenUsesWindowPtySize(t *testing.T) {
 
 	server.handleWindowOutput(
 		window.id,
-		[]byte("\x1b]0;OpenAI Codex (v0.130.0)\x07hello\r\n"),
+		[]byte("hello\r\n"),
 	)
 
 	if window.screen == nil {
-		t.Fatal("Codex window did not create a visual screen model")
+		t.Fatal("capable window did not create a visual screen model")
 	}
 	if window.screen.width != 8 || window.screen.height != 3 {
 		t.Fatalf("screen size = %dx%d, want 8x3", window.screen.width, window.screen.height)
@@ -1869,6 +1933,7 @@ func newCodexScrollbackTestServer(t *testing.T) (*muxServer, *muxWindow, *record
 		foregroundCommand:     "codex",
 		paneTitle:             "Codex",
 		screen:                newTerminalScreen(server.width, server.height),
+		capabilities:          []string{windowCapabilityVisualScrollback},
 		cursorVisible:         true,
 		cursorVisibilityKnown: true,
 		lastActivity:          time.Now(),

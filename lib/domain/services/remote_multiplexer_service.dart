@@ -52,6 +52,7 @@ abstract interface class RemoteMultiplexerService {
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
     String? extraFlags,
   });
 
@@ -155,6 +156,7 @@ class TmuxRemoteMultiplexerService implements RemoteMultiplexerService {
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
     String? extraFlags,
   }) => _tmuxService.createWindow(
     session,

@@ -696,6 +696,14 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     .firstOrNull
     ?.foregroundAgentTool;
 
+/// Resolves backend-reported capabilities for the active tmux window.
+@visibleForTesting
+Set<String> resolveTmuxBarActiveWindowCapabilities(
+  Iterable<TmuxWindow>? windows,
+) =>
+    windows?.where((window) => window.isActive).firstOrNull?.capabilities ??
+    const <String>{};
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting
@@ -2100,14 +2108,14 @@ bool shouldRouteTouchScrollToTerminal({
     (forceTerminalScroll || isUsingAltBuffer || terminalReportsMouseWheel);
 
 /// Whether MonkeyMux should receive direct SGR scroll input for the active
-/// window's server-managed scrollback.
+/// window's server-managed scrollback capability.
 @visibleForTesting
-bool shouldForceMonkeyMuxCodexScrollInput({
+bool shouldForceMonkeyMuxWindowScrollInput({
   required RemoteMuxBackend activeMuxBackend,
-  required AgentLaunchTool? activeWindowTool,
+  required Set<String> activeWindowCapabilities,
 }) =>
     activeMuxBackend == RemoteMuxBackend.monkeyMux &&
-    activeWindowTool == AgentLaunchTool.codex;
+    activeWindowCapabilities.contains(remoteWindowCapabilityVisualScrollback);
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2890,14 +2898,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
-  AgentLaunchTool? get _activeTmuxWindowTool => resolveTmuxBarActiveWindowTool(
-    _tmuxBarKey.currentState?.currentWindowsSnapshot,
-  );
+  Set<String> get _activeTmuxWindowCapabilities =>
+      resolveTmuxBarActiveWindowCapabilities(
+        _tmuxBarKey.currentState?.currentWindowsSnapshot,
+      );
 
   bool get _forceSgrScrollMouseInputForMuxWindow =>
-      shouldForceMonkeyMuxCodexScrollInput(
+      shouldForceMonkeyMuxWindowScrollInput(
         activeMuxBackend: _activeMuxBackend,
-        activeWindowTool: _activeTmuxWindowTool,
+        activeWindowCapabilities: _activeTmuxWindowCapabilities,
       );
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
@@ -6650,6 +6659,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
+        windowCapabilities: const [remoteWindowCapabilityVisualScrollback],
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
       );
@@ -7541,16 +7551,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       switch (action) {
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
-        case TmuxNewWindowAction(:final command, :final windowName):
-          await _createTmuxWindow(session, command: command, name: windowName);
+        case TmuxNewWindowAction(
+          :final command,
+          :final windowName,
+          :final windowCapabilities,
+        ):
+          await _createTmuxWindow(
+            session,
+            command: command,
+            name: windowName,
+            windowCapabilities: windowCapabilities,
+          );
         case TmuxResumeSessionAction(
           :final resumeCommand,
           :final workingDirectory,
+          :final windowCapabilities,
         ):
           await _createTmuxWindow(
             session,
             command: resumeCommand,
             workingDirectory: workingDirectory,
+            windowCapabilities: windowCapabilities,
           );
         case TmuxCloseWindowAction(:final windowIndex):
           await _closeTmuxWindow(session, windowIndex);
@@ -7698,6 +7719,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
@@ -7719,6 +7741,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
+      windowCapabilities: windowCapabilities,
     );
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,

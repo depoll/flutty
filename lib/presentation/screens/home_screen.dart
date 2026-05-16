@@ -3798,6 +3798,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       command: command,
       name: info.toolName,
       workingDirectory: info.workingDirectory,
+      windowCapabilities: _muxBackend == RemoteMuxBackend.monkeyMux
+          ? const [remoteWindowCapabilityVisualScrollback]
+          : const <String>[],
       extraFlags: _muxBackend == RemoteMuxBackend.tmux
           ? widget.tmuxExtraFlags
           : null,

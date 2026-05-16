@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.75"
+	monkeyMuxVersion         = "0.1.76"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -54,6 +54,8 @@ const (
 )
 
 const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+
+const windowCapabilityVisualScrollback = "visual-scrollback-v1"
 
 var (
 	preReplayPrivateModes = []string{
@@ -115,7 +117,7 @@ var capabilities = []string{
 	"attach-update-policy",
 	"attach-state",
 	"upgrade-restore-v1",
-	"codex-visual-scrollback-v1",
+	"window-capabilities-v1",
 }
 
 var (
@@ -173,21 +175,22 @@ var (
 )
 
 type controlMessage struct {
-	Role        string   `json:"role,omitempty"`
-	ID          string   `json:"id,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Session     string   `json:"session,omitempty"`
-	WindowID    string   `json:"windowId,omitempty"`
-	WindowIndex *int     `json:"windowIndex,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	Command     string   `json:"command,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Data        string   `json:"data,omitempty"`
-	Width       int      `json:"width,omitempty"`
-	Height      int      `json:"height,omitempty"`
-	PixelWidth  int      `json:"pixelWidth,omitempty"`
-	PixelHeight int      `json:"pixelHeight,omitempty"`
+	Role         string   `json:"role,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	Type         string   `json:"type,omitempty"`
+	Session      string   `json:"session,omitempty"`
+	WindowID     string   `json:"windowId,omitempty"`
+	WindowIndex  *int     `json:"windowIndex,omitempty"`
+	Name         string   `json:"name,omitempty"`
+	Cwd          string   `json:"cwd,omitempty"`
+	Command      string   `json:"command,omitempty"`
+	Args         []string `json:"args,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Data         string   `json:"data,omitempty"`
+	Width        int      `json:"width,omitempty"`
+	Height       int      `json:"height,omitempty"`
+	PixelWidth   int      `json:"pixelWidth,omitempty"`
+	PixelHeight  int      `json:"pixelHeight,omitempty"`
 }
 
 type controlResponse struct {
@@ -209,17 +212,18 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                       string `json:"id"`
-	Index                    int    `json:"index"`
-	Name                     string `json:"name"`
-	Active                   bool   `json:"active"`
-	CurrentCommand           string `json:"currentCommand,omitempty"`
-	CurrentPath              string `json:"currentPath,omitempty"`
-	PanePid                  int    `json:"panePid,omitempty"`
-	Flags                    string `json:"flags,omitempty"`
-	PaneTitle                string `json:"paneTitle,omitempty"`
-	AgentTool                string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
+	ID                       string   `json:"id"`
+	Index                    int      `json:"index"`
+	Name                     string   `json:"name"`
+	Active                   bool     `json:"active"`
+	CurrentCommand           string   `json:"currentCommand,omitempty"`
+	CurrentPath              string   `json:"currentPath,omitempty"`
+	PanePid                  int      `json:"panePid,omitempty"`
+	Flags                    string   `json:"flags,omitempty"`
+	PaneTitle                string   `json:"paneTitle,omitempty"`
+	AgentTool                string   `json:"agentTool,omitempty"`
+	Capabilities             []string `json:"capabilities,omitempty"`
+	LastActivityEpochSeconds int64    `json:"lastActivityEpochSeconds,omitempty"`
 }
 
 type serverRestore struct {
@@ -229,19 +233,20 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                    string `json:"id,omitempty"`
-	Index                 int    `json:"index,omitempty"`
-	Name                  string `json:"name,omitempty"`
-	Cwd                   string `json:"cwd,omitempty"`
-	CurrentCommand        string `json:"currentCommand,omitempty"`
-	PanePid               int    `json:"panePid,omitempty"`
-	PaneTitle             string `json:"paneTitle,omitempty"`
-	AgentTool             string `json:"agentTool,omitempty"`
-	AgentSessionID        string `json:"agentSessionId,omitempty"`
-	HistoryBase64         string `json:"historyBase64,omitempty"`
-	CursorVisible         bool   `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown bool   `json:"cursorVisibilityKnown,omitempty"`
-	Active                bool   `json:"active,omitempty"`
+	ID                    string   `json:"id,omitempty"`
+	Index                 int      `json:"index,omitempty"`
+	Name                  string   `json:"name,omitempty"`
+	Cwd                   string   `json:"cwd,omitempty"`
+	CurrentCommand        string   `json:"currentCommand,omitempty"`
+	PanePid               int      `json:"panePid,omitempty"`
+	PaneTitle             string   `json:"paneTitle,omitempty"`
+	AgentTool             string   `json:"agentTool,omitempty"`
+	Capabilities          []string `json:"capabilities,omitempty"`
+	AgentSessionID        string   `json:"agentSessionId,omitempty"`
+	HistoryBase64         string   `json:"historyBase64,omitempty"`
+	CursorVisible         bool     `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown bool     `json:"cursorVisibilityKnown,omitempty"`
+	Active                bool     `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -274,6 +279,7 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	screen                     *terminalScreen
+	capabilities               []string
 	ptyWidth                   int
 	ptyHeight                  int
 	scrollbackOffset           int
@@ -295,13 +301,14 @@ type muxWindow struct {
 }
 
 type windowBroadcastIdentity struct {
-	name      string
-	cwd       string
-	command   string
-	paneTitle string
-	agentTool string
-	panePid   int
-	alert     bool
+	name         string
+	cwd          string
+	command      string
+	paneTitle    string
+	agentTool    string
+	capabilities string
+	panePid      int
+	alert        bool
 }
 
 type controlClient struct {
@@ -337,8 +344,27 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--window-capability CAP] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
 	os.Exit(2)
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			*f = append(*f, part)
+		}
+	}
+	return nil
 }
 
 func attachCommand(args []string) {
@@ -348,6 +374,8 @@ func attachCommand(args []string) {
 	command := fs.String("command", "", "initial command")
 	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
+	var windowCapabilities stringListFlag
+	fs.Var(&windowCapabilities, "window-capability", "initial window capability")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		usageAndExit()
@@ -360,9 +388,10 @@ func attachCommand(args []string) {
 	if err := ensureServer(
 		session,
 		createWindowOptions{
-			cwd:     *cwd,
-			name:    *name,
-			command: *command,
+			cwd:          *cwd,
+			name:         *name,
+			command:      *command,
+			capabilities: windowCapabilities,
 		},
 		policy,
 		*restoreYolo,
@@ -1321,9 +1350,14 @@ func createWindowOptionsForRestore(
 		history:               history,
 		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
 		agentTool:             agentTool,
+		capabilities:          restoreWindowCapabilities(state),
 		cursorVisible:         state.CursorVisible,
 		cursorVisibilityKnown: state.CursorVisibilityKnown,
 	}
+}
+
+func restoreWindowCapabilities(state restoreWindowState) []string {
+	return normalizeWindowCapabilities(state.Capabilities)
 }
 
 func decodeRestoreHistory(encoded string) []byte {
@@ -1362,6 +1396,7 @@ type createWindowOptions struct {
 	history               []byte
 	paneTitle             string
 	agentTool             string
+	capabilities          []string
 	cursorVisible         bool
 	cursorVisibilityKnown bool
 }
@@ -1420,8 +1455,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 
 	ptyWidth := int(size.Cols)
 	ptyHeight := int(size.Rows)
+	windowCapabilities := normalizeWindowCapabilities(options.capabilities)
 	var screen *terminalScreen
-	if agentTool == "codex" || agentToolFromTerminalTitle(paneTitle) == "codex" {
+	if windowSupportsCapability(windowCapabilities, windowCapabilityVisualScrollback) {
 		screen = newTerminalScreen(ptyWidth, ptyHeight)
 	}
 
@@ -1441,6 +1477,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		cmd:                   cmd,
 		history:               append([]byte(nil), options.history...),
 		screen:                screen,
+		capabilities:          windowCapabilities,
 		ptyWidth:              ptyWidth,
 		ptyHeight:             ptyHeight,
 		lastActivity:          time.Now(),
@@ -1736,10 +1773,11 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		})
 	case "create_window":
 		window, err := s.createWindow(createWindowOptions{
-			name:    request.Name,
-			cwd:     request.Cwd,
-			command: request.Command,
-			args:    request.Args,
+			name:         request.Name,
+			cwd:          request.Cwd,
+			command:      request.Command,
+			args:         request.Args,
+			capabilities: request.Capabilities,
 		})
 		if err != nil {
 			client.sendError(request, err)
@@ -2024,6 +2062,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			PanePid:               window.metadataProcessIDLocked(),
 			PaneTitle:             window.paneTitle,
 			AgentTool:             window.agentToolLocked(),
+			Capabilities:          append([]string(nil), window.capabilities...),
 			CursorVisible:         window.cursorVisible,
 			CursorVisibilityKnown: window.cursorVisibilityKnown,
 			Active:                s.activeID == window.id,
@@ -2059,6 +2098,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		Flags:                    flags,
 		PaneTitle:                window.paneTitle,
 		AgentTool:                window.agentToolLocked(),
+		Capabilities:             append([]string(nil), window.capabilities...),
 		LastActivityEpochSeconds: window.lastActivity.Unix(),
 	}
 }
@@ -4040,7 +4080,34 @@ func (w *muxWindow) agentToolLocked() string {
 }
 
 func (w *muxWindow) shouldUseVisualScrollbackLocked() bool {
-	return w != nil && w.agentToolLocked() == "codex"
+	return w != nil && windowSupportsCapability(w.capabilities, windowCapabilityVisualScrollback)
+}
+
+func normalizeWindowCapabilities(capabilities []string) []string {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		capability = strings.TrimSpace(capability)
+		if capability == "" || windowSupportsCapability(normalized, capability) {
+			continue
+		}
+		switch capability {
+		case windowCapabilityVisualScrollback:
+			normalized = append(normalized, capability)
+		}
+	}
+	return normalized
+}
+
+func windowSupportsCapability(capabilities []string, capability string) bool {
+	for _, value := range capabilities {
+		if value == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *muxWindow) maxScrollbackOffsetLocked() int {
@@ -4073,13 +4140,14 @@ func (w *muxWindow) clampScrollbackOffsetLocked() {
 
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 	return windowBroadcastIdentity{
-		name:      w.name,
-		cwd:       w.cwd,
-		command:   w.currentCommandLocked(),
-		paneTitle: w.paneTitle,
-		agentTool: w.agentToolLocked(),
-		panePid:   w.metadataProcessIDLocked(),
-		alert:     w.alert,
+		name:         w.name,
+		cwd:          w.cwd,
+		command:      w.currentCommandLocked(),
+		paneTitle:    w.paneTitle,
+		agentTool:    w.agentToolLocked(),
+		capabilities: strings.Join(w.capabilities, "\x1f"),
+		panePid:      w.metadataProcessIDLocked(),
+		alert:        w.alert,
 	}
 }
 

@@ -66,6 +66,7 @@ abstract interface class TerminalConnectionBackend {
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
   });
 
   /// Selects a backend window.
@@ -211,6 +212,7 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
   }) => Future<void>.error(
     UnsupportedError('Direct terminal sessions do not support windows.'),
   );
@@ -348,12 +350,14 @@ class _MultiplexedTerminalConnectionBackend
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
   }) => _remoteMultiplexer.createWindow(
     _session,
     _sessionName,
     command: command,
     name: name,
     workingDirectory: workingDirectory,
+    windowCapabilities: windowCapabilities,
     extraFlags: _extraFlags,
   );
 

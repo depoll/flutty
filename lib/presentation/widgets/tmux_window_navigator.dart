@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
@@ -100,6 +101,7 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowPicker({
             startInYoloMode: startClisInYoloMode,
           ),
           windowName: tool.commandName,
+          windowCapabilities: const [remoteWindowCapabilityVisualScrollback],
         ),
       );
     },
@@ -127,25 +129,39 @@ class TmuxSwitchWindowAction extends TmuxNavigatorAction {
 /// Create a new tmux window, optionally running a command.
 class TmuxNewWindowAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxNewWindowAction].
-  const TmuxNewWindowAction({this.command, this.windowName});
+  const TmuxNewWindowAction({
+    this.command,
+    this.windowName,
+    this.windowCapabilities = const <String>[],
+  });
 
   /// Optional command to run in the new window.
   final String? command;
 
   /// Optional name for the new window.
   final String? windowName;
+
+  /// Requested backend capabilities for the new window.
+  final List<String> windowCapabilities;
 }
 
 /// Resume an AI tool session in a new tmux window.
 class TmuxResumeSessionAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxResumeSessionAction].
-  const TmuxResumeSessionAction(this.resumeCommand, {this.workingDirectory});
+  const TmuxResumeSessionAction(
+    this.resumeCommand, {
+    this.workingDirectory,
+    this.windowCapabilities = const [remoteWindowCapabilityVisualScrollback],
+  });
 
   /// The full resume command to run.
   final String resumeCommand;
 
   /// The working directory to start in.
   final String? workingDirectory;
+
+  /// Requested backend capabilities for the resumed window.
+  final List<String> windowCapabilities;
 }
 
 /// Close a tmux window.
@@ -491,7 +507,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   void _createNewWindow({String? command, String? name}) {
     Navigator.pop(
       context,
-      TmuxNewWindowAction(command: command, windowName: name),
+      TmuxNewWindowAction(
+        command: command,
+        windowName: name,
+        windowCapabilities: command == null
+            ? const <String>[]
+            : const [remoteWindowCapabilityVisualScrollback],
+      ),
     );
   }
 
