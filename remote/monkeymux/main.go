@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.68"
+	monkeyMuxVersion         = "0.1.69"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3044,26 +3044,38 @@ func (w *muxWindow) scrollbackTextLinesLocked(width int, height int) []string {
 func terminalTextLines(data []byte, width int, height int) []string {
 	frame := newTerminalTextFrame(width, height)
 	var appFrameLines []string
+	seenSynchronizedFrame := false
 
 	for i := 0; i < len(data); {
 		switch data[i] {
 		case '\x1b':
 			if i+1 >= len(data) {
-				return frame.lines()
+				return finishTerminalTextLines(
+					appFrameLines,
+					frame,
+					seenSynchronizedFrame,
+				)
 			}
 			switch data[i+1] {
 			case '[':
 				end := csiSequenceEnd(data, i+2)
 				if end < 0 {
-					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
+					return finishTerminalTextLines(
+						appFrameLines,
+						frame,
+						seenSynchronizedFrame,
+					)
 				}
 				sequence := data[i : end+1]
 				if isSynchronizedOutputModeCsiSequence(sequence, true) {
-					appFrameLines = appendUsefulTerminalLines(
-						appFrameLines,
-						frame.lines(),
-						frame.width,
-					)
+					if !seenSynchronizedFrame {
+						appFrameLines = appendUsefulTerminalLines(
+							appFrameLines,
+							frame.lines(),
+							frame.width,
+						)
+					}
+					seenSynchronizedFrame = true
 					frame.beginSynchronizedAppFrame()
 				}
 				if isSynchronizedOutputModeCsiSequence(sequence, false) {
@@ -3078,7 +3090,11 @@ func terminalTextLines(data []byte, width int, height int) []string {
 			case ']':
 				end, terminatorLength, ok := findOscTerminator(data[i+2:])
 				if !ok {
-					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
+					return finishTerminalTextLines(
+						appFrameLines,
+						frame,
+						seenSynchronizedFrame,
+					)
 				}
 				i += 2 + end + terminatorLength
 			case 'D':
@@ -3099,7 +3115,11 @@ func terminalTextLines(data []byte, width int, height int) []string {
 				i += 2
 			case '(', ')', '*', '+', '-', '.', '/':
 				if i+2 >= len(data) {
-					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
+					return finishTerminalTextLines(
+						appFrameLines,
+						frame,
+						seenSynchronizedFrame,
+					)
 				}
 				i += 3
 			default:
@@ -3128,6 +3148,17 @@ func terminalTextLines(data []byte, width int, height int) []string {
 			}
 			i += size
 		}
+	}
+	return finishTerminalTextLines(appFrameLines, frame, seenSynchronizedFrame)
+}
+
+func finishTerminalTextLines(
+	appFrameLines []string,
+	frame *terminalTextFrame,
+	seenSynchronizedFrame bool,
+) []string {
+	if seenSynchronizedFrame {
+		return cleanTerminalAppFrameLines(appFrameLines, frame.width)
 	}
 	return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
 }

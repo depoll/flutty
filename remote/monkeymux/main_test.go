@@ -1574,6 +1574,33 @@ func TestCodexScrollbackTextSkipsWrappedExistingFrames(t *testing.T) {
 	}
 }
 
+func TestCodexScrollbackTextIgnoresIncompleteLiveFrame(t *testing.T) {
+	completedRows := []string{
+		"› Print exactly the numbers 1 through 30, one per line, with no markdown and no prose.",
+	}
+	for number := 1; number <= 29; number++ {
+		completedRows = append(completedRows, strconv.Itoa(number))
+	}
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			codexSynchronizedFrame(completedRows...) +
+				"\x1b[?2026h" +
+				"\x1b[1;1H30\x1b[K" +
+				"\x1b[2;1H3\x1b[K" +
+				"\x1b[3;1H4\x1b[K" +
+				"\x1b[4;1H5\x1b[K",
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(120, 40)
+	t.Logf("completed scrollback lines after incomplete live frame: %#v", lines)
+
+	if !reflect.DeepEqual(lines, completedRows) {
+		t.Fatalf("scrollback lines = %#v, want only completed frame %#v", lines, completedRows)
+	}
+}
+
 func codexSynchronizedFrame(rows ...string) string {
 	var frame strings.Builder
 	frame.WriteString("\x1b[?2026h")
