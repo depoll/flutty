@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.63"
+	monkeyMuxVersion         = "0.1.64"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2783,7 +2783,7 @@ func (s *muxServer) scrollbackReplayLocked(
 		wasScrolled := window.scrollbackLineOffset != 0
 		window.scrollbackLineOffset = 0
 		if wasScrolled {
-			return s.replayBytesLocked(window), s.redrawNudgeForWindowLocked(window)
+			return nil, s.resizeRedrawNudgeForWindowLocked(window)
 		}
 		return nil, redrawNudgeRequest{}
 	}
@@ -2799,7 +2799,7 @@ func (s *muxServer) scrollbackReplayLocked(
 	}
 	window.scrollbackLineOffset = offset
 	if offset == 0 {
-		return s.replayBytesLocked(window), s.redrawNudgeForWindowLocked(window)
+		return nil, s.resizeRedrawNudgeForWindowLocked(window)
 	}
 	return s.scrollbackViewportReplayBytesLocked(window, scrollbackLines, offset), redrawNudgeRequest{}
 }
@@ -2874,6 +2874,17 @@ func (s *muxServer) redrawNudgeForWindowLocked(window *muxWindow) redrawNudgeReq
 		width:    s.width,
 		height:   s.height,
 		sameSize: window.redrawNudgeShouldUseSameSizeLocked(),
+	}
+}
+
+func (s *muxServer) resizeRedrawNudgeForWindowLocked(window *muxWindow) redrawNudgeRequest {
+	if window == nil || window.closed || !window.replayNeedsProcessRedrawLocked() {
+		return redrawNudgeRequest{}
+	}
+	return redrawNudgeRequest{
+		window: window,
+		width:  s.width,
+		height: s.height,
 	}
 }
 
@@ -3815,8 +3826,7 @@ func (s *muxServer) writeActive(data []byte) {
 		if window.scrollbackLineOffset != 0 {
 			window.scrollbackLineOffset = 0
 			attach = s.attachConn
-			replay = s.replayBytesLocked(window)
-			redrawNudge = s.redrawNudgeForWindowLocked(window)
+			redrawNudge = s.resizeRedrawNudgeForWindowLocked(window)
 		}
 	}
 	s.mu.Unlock()

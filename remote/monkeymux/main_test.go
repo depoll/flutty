@@ -1214,6 +1214,23 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 	server.width = 20
 	server.height = 3
 
+	originalNudgeForegroundResize := nudgeForegroundResize
+	defer func() {
+		nudgeForegroundResize = originalNudgeForegroundResize
+	}()
+	var resizeNudged []struct {
+		window *muxWindow
+		width  int
+		height int
+	}
+	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+		resizeNudged = append(resizeNudged, struct {
+			window *muxWindow
+			width  int
+			height int
+		}{window, width, height})
+	}
+
 	if err := server.scrollActiveWindow(2); err != nil {
 		t.Fatal(err)
 	}
@@ -1248,8 +1265,16 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumed := attach.String()[len(beforeLiveOutput):]
-	if !strings.Contains(resumed, activeWindowReplayPrefix) {
-		t.Fatalf("resume replay = %q, want live redraw prefix", resumed)
+	if resumed != "" {
+		t.Fatalf("resume replay = %q, want no clear/replay while waiting for Codex repaint", resumed)
+	}
+	wantResizeNudged := []struct {
+		window *muxWindow
+		width  int
+		height int
+	}{{codexWindow, 20, 3}}
+	if !reflect.DeepEqual(resizeNudged, wantResizeNudged) {
+		t.Fatalf("resize nudges = %#v, want %#v", resizeNudged, wantResizeNudged)
 	}
 	if got := codexWindow.scrollbackLineOffset; got != 0 {
 		t.Fatalf("scrollback offset after resume = %d, want 0", got)
