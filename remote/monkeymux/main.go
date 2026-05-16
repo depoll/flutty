@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.76"
+	monkeyMuxVersion         = "0.1.77"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -135,14 +135,7 @@ var signalForegroundResize = func(processGroup int) {
 }
 
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
-	if window == nil || window.pty == nil {
-		return 0
-	}
-	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
-		return 0
-	}
-	return pgrp
+	return window.foregroundProcessGroup()
 }
 
 const (
@@ -275,7 +268,9 @@ type muxWindow struct {
 	foregroundPid              int
 	foregroundCommand          string
 	paneTitle                  string
+	ptyMu                      sync.Mutex
 	pty                        *os.File
+	ptyClosed                  bool
 	cmd                        *exec.Cmd
 	history                    []byte
 	screen                     *terminalScreen
@@ -298,6 +293,47 @@ type muxWindow struct {
 	focusModeEnabled           bool
 	alert                      bool
 	closed                     bool
+}
+
+func (w *muxWindow) setPtySize(size *pty.Winsize) error {
+	if w == nil {
+		return os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return os.ErrClosed
+	}
+	return pty.Setsize(w.pty, size)
+}
+
+func (w *muxWindow) closePty() error {
+	if w == nil {
+		return nil
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return nil
+	}
+	w.ptyClosed = true
+	return w.pty.Close()
+}
+
+func (w *muxWindow) foregroundProcessGroup() int {
+	if w == nil {
+		return 0
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
 }
 
 type windowBroadcastIdentity struct {
@@ -1334,9 +1370,9 @@ func createWindowOptionsForRestore(
 	)
 	command := ""
 	if agentTool != "" {
-		command = agentLaunchCommand(agentTool, startInYoloMode)
+		command = agentLaunchCommand(agentTool, startInYoloMode, state.Cwd)
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
-			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			command = agentResumeCommand(agentTool, sessionID, startInYoloMode, state.Cwd)
 		}
 	}
 	history := []byte(nil)
@@ -1604,7 +1640,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
-	_ = window.pty.Close()
+	_ = window.closePty()
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		s.activeID = ""
@@ -2278,7 +2314,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var foregroundProcessGroup int
 	var shouldShutdown bool
 	var command *exec.Cmd
-	var windowPty *os.File
 	var snapshots []windowSnapshot
 
 	s.attachMu.Lock()
@@ -2312,7 +2347,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	window.closed = true
 	window.alert = false
 	command = window.cmd
-	windowPty = window.pty
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
@@ -2341,9 +2375,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 		signalForegroundResize(foregroundProcessGroup)
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
-	if windowPty != nil {
-		_ = windowPty.Close()
-	}
+	_ = window.closePty()
 	return shouldShutdown, nil
 }
 
@@ -2387,7 +2419,7 @@ func (s *muxServer) resize(width int, height int) {
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
-	if window == nil || window.closed || window.pty == nil {
+	if window == nil || window.closed {
 		return
 	}
 	window.ptyWidth = width
@@ -2396,7 +2428,7 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 		window.screen.resize(width, height)
 		window.clampScrollbackOffsetLocked()
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
+	_ = window.setPtySize(&pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
@@ -4320,7 +4352,7 @@ func agentToolFromCommandName(command string) string {
 	}
 }
 
-func agentLaunchCommand(tool string, startInYoloMode bool) string {
+func agentLaunchCommand(tool string, startInYoloMode bool, cwd string) string {
 	switch tool {
 	case "claude":
 		if startInYoloMode {
@@ -4329,7 +4361,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 		return "claude"
 	case "copilot":
 		if startInYoloMode {
-			return "copilot --yolo"
+			return "copilot --yolo" + copilotAllowedDirectoryFlag(cwd)
 		}
 		return "copilot"
 	case "codex":
@@ -4352,7 +4384,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 	}
 }
 
-func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
+func agentResumeCommand(tool string, sessionID string, startInYoloMode bool, cwd string) string {
 	quotedSessionID := shellQuote(sessionID)
 	switch tool {
 	case "claude":
@@ -4362,7 +4394,7 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 		return "claude --resume " + quotedSessionID
 	case "copilot":
 		if startInYoloMode {
-			return "copilot --yolo --resume " + quotedSessionID
+			return "copilot --yolo" + copilotAllowedDirectoryFlag(cwd) + " --resume " + quotedSessionID
 		}
 		return "copilot --resume " + quotedSessionID
 	case "codex":
@@ -4387,6 +4419,17 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 	default:
 		return ""
 	}
+}
+
+func copilotAllowedDirectoryFlag(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	if expanded, err := expandHomePath(cwd); err == nil {
+		cwd = expanded
+	}
+	return " --add-dir " + shellQuote(cwd)
 }
 
 func canonicalAgentCommandName(command string) string {
@@ -4754,9 +4797,7 @@ func (s *muxServer) close() {
 	}
 	for _, window := range windows {
 		signalCommandProcessGroup(window.cmd, syscall.SIGHUP)
-		if window.pty != nil {
-			_ = window.pty.Close()
-		}
+		_ = window.closePty()
 	}
 }
 
@@ -5012,23 +5053,45 @@ func forwardResizeSignals(session string) func() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGWINCH)
 	done := make(chan struct{})
+	var state resizeForwarderState
+	sendCurrentSize := func() {
+		width, height := terminalSize()
+		if !state.shouldSend(width, height) {
+			return
+		}
+		sendResize(session, width, height)
+	}
 	go func() {
 		for {
 			select {
 			case <-signals:
-				width, height := terminalSize()
-				sendResize(session, width, height)
+				sendCurrentSize()
 			case <-done:
 				return
 			}
 		}
 	}()
-	width, height := terminalSize()
-	sendResize(session, width, height)
+	sendCurrentSize()
 	return func() {
 		close(done)
 		signal.Stop(signals)
 	}
+}
+
+type resizeForwarderState struct {
+	width   int
+	height  int
+	hasSize bool
+}
+
+func (s *resizeForwarderState) shouldSend(width int, height int) bool {
+	if s.hasSize && s.width == width && s.height == height {
+		return false
+	}
+	s.width = width
+	s.height = height
+	s.hasSize = true
+	return true
 }
 
 func sendResize(session string, width int, height int) {

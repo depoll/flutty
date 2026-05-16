@@ -1576,11 +1576,12 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			name: "copilot resume",
 			state: restoreWindowState{
 				Name:           "Copilot CLI",
+				Cwd:            "/tmp/project with space",
 				CurrentCommand: "copilot",
 				AgentTool:      "copilot",
 				AgentSessionID: "session-123",
 			},
-			want:      "copilot --yolo --resume 'session-123'",
+			want:      "copilot --yolo --add-dir '/tmp/project with space' --resume 'session-123'",
 			agentTool: "copilot",
 		},
 		{
@@ -1799,6 +1800,20 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("control handler did not stop")
+	}
+}
+
+func TestResizeForwarderStateSkipsDuplicateSizes(t *testing.T) {
+	var state resizeForwarderState
+
+	if !state.shouldSend(80, 24) {
+		t.Fatal("initial resize was not sent")
+	}
+	if state.shouldSend(80, 24) {
+		t.Fatal("duplicate resize was sent")
+	}
+	if !state.shouldSend(100, 30) {
+		t.Fatal("changed resize was not sent")
 	}
 }
 
