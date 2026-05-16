@@ -52,6 +52,7 @@ const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
 const _minimumCellTextContrast = 4.5;
 const _minimumCellBackgroundContrast = 1.04;
+const _maximumNeutralCellBackgroundContrast = 1.75;
 const _backgroundAlphaCandidates = <int>[
   0x26,
   0x33,
@@ -239,11 +240,37 @@ Color resolveMonkeyTerminalReadableBackgroundColor({
   required Color terminalBackground,
   double minimumTextContrast = _minimumCellTextContrast,
   double minimumBackgroundContrast = _minimumCellBackgroundContrast,
+  double maximumNeutralBackgroundContrast =
+      _maximumNeutralCellBackgroundContrast,
+  bool toneNeutralBackgrounds = true,
 }) {
   final effectiveForeground = Color.alphaBlend(foreground, terminalBackground);
   final effectiveBackground = Color.alphaBlend(background, terminalBackground);
-  if (_contrastRatio(effectiveForeground, effectiveBackground) >=
-      minimumTextContrast) {
+  final textContrast = _contrastRatio(effectiveForeground, effectiveBackground);
+  final backgroundContrast = _contrastRatio(
+    effectiveBackground,
+    terminalBackground,
+  );
+  if (toneNeutralBackgrounds &&
+      backgroundContrast > maximumNeutralBackgroundContrast &&
+      _isNeutralTerminalColor(background)) {
+    for (final alpha in _backgroundAlphaCandidates.reversed) {
+      final candidate = Color.alphaBlend(
+        background.withAlpha(alpha),
+        terminalBackground,
+      );
+      if (_contrastRatio(effectiveForeground, candidate) >=
+              minimumTextContrast &&
+          _contrastRatio(candidate, terminalBackground) >=
+              minimumBackgroundContrast &&
+          _contrastRatio(candidate, terminalBackground) <=
+              maximumNeutralBackgroundContrast) {
+        return candidate;
+      }
+    }
+  }
+
+  if (textContrast >= minimumTextContrast) {
     return background;
   }
 
@@ -265,6 +292,16 @@ Color resolveMonkeyTerminalReadableBackgroundColor({
   }
 
   return background;
+}
+
+bool _isNeutralTerminalColor(Color color) {
+  final value = color.toARGB32();
+  final red = (value >> 16) & 0xFF;
+  final green = (value >> 8) & 0xFF;
+  final blue = value & 0xFF;
+  final maxChannel = math.max(red, math.max(green, blue));
+  final minChannel = math.min(red, math.min(green, blue));
+  return maxChannel - minChannel <= 24;
 }
 
 /// Resolves a readable paint color for text cells.
@@ -1811,6 +1848,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       foreground: foreground,
       background: background,
       terminalBackground: theme.background,
+      toneNeutralBackgrounds: !inverse,
     );
   }
 
