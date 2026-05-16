@@ -272,6 +272,71 @@ void main() {
       }
     });
 
+    test('tones neutral truecolor backgrounds on dark themes', () {
+      const theme = TerminalThemes.defaultDarkTheme;
+      const geminiBackground = Color(0xFF5F5F5F);
+      const typedForeground = Color(0xFFFFFFFF);
+      final background = resolveMonkeyTerminalReadableBackgroundColor(
+        foreground: typedForeground,
+        background: geminiBackground,
+        terminalBackground: theme.background,
+      );
+
+      expect(background, isNot(geminiBackground));
+      expect(
+        _contrastRatio(typedForeground, background),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(
+        _contrastRatio(background, theme.background),
+        lessThanOrEqualTo(1.75),
+      );
+    });
+
+    test('keeps Gemini neutral rows consistent across composer text', () {
+      const theme = TerminalThemes.defaultDarkTheme;
+      const geminiBackground = Color(0xFF5F5F5F);
+      const promptAccent = Color(0xFFFF87AF);
+      const placeholderForeground = Color(0xFFAFAFAF);
+      const typedForeground = Color(0xFFFFFFFF);
+
+      final accentBackground = resolveMonkeyTerminalReadableBackgroundColor(
+        foreground: promptAccent,
+        background: geminiBackground,
+        terminalBackground: theme.background,
+      );
+      final typedBackground = resolveMonkeyTerminalReadableBackgroundColor(
+        foreground: typedForeground,
+        background: geminiBackground,
+        terminalBackground: theme.background,
+      );
+      final placeholderBackground =
+          resolveMonkeyTerminalReadableBackgroundColor(
+            foreground: placeholderForeground,
+            background: geminiBackground,
+            terminalBackground: theme.background,
+          );
+
+      expect(accentBackground, typedBackground);
+      expect(accentBackground, placeholderBackground);
+      expect(
+        _contrastRatio(placeholderForeground, placeholderBackground),
+        greaterThanOrEqualTo(4.5),
+      );
+    });
+
+    test('keeps readable semantic truecolor backgrounds unchanged', () {
+      const semanticBackground = Color(0xFFA82F45);
+      const foreground = Color(0xFFFFFFFF);
+      final background = resolveMonkeyTerminalReadableBackgroundColor(
+        foreground: foreground,
+        background: semanticBackground,
+        terminalBackground: TerminalThemes.defaultDarkTheme.background,
+      );
+
+      expect(background, semanticBackground);
+    });
+
     test('extends left-edge highlighted rows to line end', () {
       final terminal = Terminal()
         ..resize(24, 2)
