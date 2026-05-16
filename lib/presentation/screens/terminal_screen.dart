@@ -4892,6 +4892,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       requirePromptContext: false,
     );
     if (cachedInvocation == null) {
+      if (_filterVisibleShellCompletionsForCurrentInput()) {
+        return;
+      }
       _hideShellCompletionPopup(resetPromptPrefix: false);
       return;
     }
@@ -4906,6 +4909,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     if (!shellCompletionContext.canComplete) {
+      if (_filterVisibleShellCompletionsForCurrentInput()) {
+        return;
+      }
       _hideShellCompletionPopup(resetPromptPrefix: false);
       return;
     }
@@ -4916,6 +4922,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final anchor = _resolveTerminalCursorGlobalRect();
     if (invocation == null) {
+      if (_filterVisibleShellCompletionsForCurrentInput()) {
+        return;
+      }
       _hideShellCompletionPopup(resetPromptPrefix: false);
       return;
     }

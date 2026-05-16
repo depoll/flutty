@@ -29,6 +29,7 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
@@ -166,6 +167,37 @@ class _RecordingLocalNotificationService extends LocalNotificationService {
   @override
   Future<void> clearTmuxAlert(int notificationId) async {
     clearedNotificationIds.add(notificationId);
+  }
+}
+
+class _TestShellCompletionService extends ShellCompletionService {
+  _TestShellCompletionService({required this.cachedSuggestions});
+
+  final List<ShellCompletionSuggestion> cachedSuggestions;
+  final cachedInvocations = <ShellCompletionInvocation>[];
+  final completeInvocations = <ShellCompletionInvocation>[];
+
+  @override
+  void primeHistory(SshSession session, ShellCompletionInvocation invocation) {}
+
+  @override
+  List<ShellCompletionSuggestion> cachedHistorySuggestions(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) {
+    cachedInvocations.add(invocation);
+    return invocation.token == 'ch'
+        ? cachedSuggestions
+        : const <ShellCompletionSuggestion>[];
+  }
+
+  @override
+  Future<List<ShellCompletionSuggestion>> complete(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) async {
+    completeInvocations.add(invocation);
+    return const <ShellCompletionSuggestion>[];
   }
 }
 
@@ -1039,6 +1071,8 @@ void main() {
       WidgetTester tester, {
       ThemeMode themeMode = ThemeMode.light,
       ActiveSessionsNotifier? activeSessions,
+      TmuxService? tmuxService,
+      ShellCompletionService? shellCompletionService,
     }) async {
       await tester.pumpWidget(
         ProviderScope(
@@ -1056,6 +1090,12 @@ void main() {
             activeSessionsProvider.overrideWith(
               () => activeSessions ?? _TestActiveSessionsNotifier(session),
             ),
+            if (tmuxService != null)
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            if (shellCompletionService != null)
+              shellCompletionServiceProvider.overrideWithValue(
+                shellCompletionService,
+              ),
           ],
           child: MaterialApp(
             theme: ThemeData.light(),
@@ -3010,6 +3050,106 @@ void main() {
         isFalse,
       );
     });
+
+    testWidgets(
+      'keeps cached tmux completions when pane context refresh fails',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            id: '@8',
+            name: 'shell',
+            isActive: true,
+            currentCommand: 'zsh',
+          ),
+        ];
+        final completionService = _TestShellCompletionService(
+          cachedSuggestions: const <ShellCompletionSuggestion>[
+            ShellCompletionSuggestion(
+              label: 'checkout',
+              replacement: 'checkout',
+              replacementStart: 4,
+              replacementEnd: 6,
+              kind: ShellCompletionSuggestionKind.history,
+              commitSuffix: ' ',
+            ),
+          ],
+        );
+
+        addTearDown(windowEvents.close);
+        session.terminal!
+          ..write('\x1b[?1004h')
+          ..write('root@host ~ % git c');
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
+        when(
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            tmuxSessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenThrow(Exception('tmux context unavailable'));
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          shellCompletionService: completionService,
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        session.terminal!.textInput('h');
+        await tester.pump();
+        await tester.pump();
+
+        expect(completionService.cachedInvocations, isNotEmpty);
+        expect(
+          completionService.cachedInvocations.map(
+            (invocation) => invocation.token,
+          ),
+          contains('ch'),
+        );
+        expect(find.text('checkout'), findsOneWidget);
+
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+
+        expect(find.text('checkout'), findsOneWidget);
+        expect(completionService.completeInvocations, isEmpty);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     testWidgets(
       'tmux alert notifications clear legacy index IDs when stable IDs exist',
