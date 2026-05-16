@@ -30,7 +30,9 @@ class _SshSessionRuntime {
   String _terminalWindowQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
+  String _terminalInsertModePendingInput = '';
   bool _terminalColorSchemeUpdatesMode = false;
+  bool _terminalInsertMode = false;
 
   Terminal? _terminal;
 
@@ -199,7 +201,9 @@ class _SshSessionRuntime {
     _terminalWindowQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
+    _terminalInsertModePendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
+    _terminalInsertMode = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -450,9 +454,20 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      terminal.write(output.terminalData);
+      final terminalOutput = adaptTerminalInsertModeOutputForXterm(
+        input: output.terminalData,
+        pendingInput: _terminalInsertModePendingInput,
+        insertMode: _terminalInsertMode,
+      );
+      _terminalInsertModePendingInput = terminalOutput.pendingInput;
+      _terminalInsertMode = terminalOutput.insertMode;
+      if (terminalOutput.output.isNotEmpty) {
+        terminal.write(terminalOutput.output);
+      }
       _respondToTerminalWindowControlQueries(output.terminalData, terminal);
-      _scheduleTerminalPreviewRefresh();
+      if (terminalOutput.output.isNotEmpty) {
+        _scheduleTerminalPreviewRefresh();
+      }
     }
 
     if (output.stdoutData.isNotEmpty) {
