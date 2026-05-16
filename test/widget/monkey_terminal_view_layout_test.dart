@@ -311,5 +311,42 @@ void main() {
         isNull,
       );
     });
+
+    test('does not extend semantic color labels', () {
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[41mERROR\x1b[49m');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      expect(
+        painter.resolveMonkeyTerminalTrailingBackgroundFill(
+          terminal.buffer.lines[0],
+        ),
+        isNull,
+      );
+    });
+
+    test('keeps foreground-only ANSI colors unchanged', () {
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[90mforeground only');
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final cellData = CellData.empty();
+      terminal.buffer.lines[0].getCellData(0, cellData);
+
+      expect(
+        painter.resolveMonkeyTerminalCellForegroundColor(cellData),
+        theme.brightBlack,
+      );
+    });
   });
 }
