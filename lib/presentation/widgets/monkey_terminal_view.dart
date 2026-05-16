@@ -50,6 +50,21 @@ import 'terminal_selection_text.dart';
 
 const _minimumFaintTextContrast = 4.5;
 const _minimumCursorTextContrast = 4.5;
+const _minimumCellTextContrast = 4.5;
+const _minimumCellBackgroundContrast = 1.04;
+const _backgroundAlphaCandidates = <int>[
+  0x26,
+  0x33,
+  0x40,
+  0x52,
+  0x66,
+  0x72,
+  0x80,
+  0x8F,
+  0xA3,
+  0xB8,
+  0xCC,
+];
 
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
@@ -212,6 +227,69 @@ Color resolveMonkeyTerminalCursorForegroundColor({
   return fallbackCandidates.reduce((best, candidate) {
     final bestContrast = _contrastRatio(best, cursorBackground);
     final candidateContrast = _contrastRatio(candidate, cursorBackground);
+    return candidateContrast > bestContrast ? candidate : best;
+  });
+}
+
+/// Resolves a readable paint color for explicit cell backgrounds.
+@visibleForTesting
+Color resolveMonkeyTerminalReadableBackgroundColor({
+  required Color foreground,
+  required Color background,
+  required Color terminalBackground,
+  double minimumTextContrast = _minimumCellTextContrast,
+  double minimumBackgroundContrast = _minimumCellBackgroundContrast,
+}) {
+  final effectiveForeground = Color.alphaBlend(foreground, terminalBackground);
+  final effectiveBackground = Color.alphaBlend(background, terminalBackground);
+  if (_contrastRatio(effectiveForeground, effectiveBackground) >=
+      minimumTextContrast) {
+    return background;
+  }
+
+  if (_contrastRatio(effectiveForeground, terminalBackground) <
+      minimumTextContrast) {
+    return background;
+  }
+
+  for (final alpha in _backgroundAlphaCandidates) {
+    final candidate = Color.alphaBlend(
+      background.withAlpha(alpha),
+      terminalBackground,
+    );
+    if (_contrastRatio(effectiveForeground, candidate) >= minimumTextContrast &&
+        _contrastRatio(candidate, terminalBackground) >=
+            minimumBackgroundContrast) {
+      return candidate;
+    }
+  }
+
+  return background;
+}
+
+/// Resolves a readable paint color for text cells.
+@visibleForTesting
+Color resolveMonkeyTerminalReadableForegroundColor({
+  required Color foreground,
+  required Color background,
+  required Color terminalForeground,
+  required Color terminalBackground,
+  double minimumContrast = _minimumCellTextContrast,
+}) {
+  if (_contrastRatio(foreground, background) >= minimumContrast) {
+    return foreground;
+  }
+
+  final candidates = <Color>[
+    terminalForeground,
+    terminalBackground,
+    const Color(0xFF000000),
+    const Color(0xFFFFFFFF),
+  ];
+
+  return candidates.reduce((best, candidate) {
+    final bestContrast = _contrastRatio(best, background);
+    final candidateContrast = _contrastRatio(candidate, background);
     return candidateContrast > bestContrast ? candidate : best;
   });
 }
@@ -1498,6 +1576,91 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
   }
 
+  @override
+  void paintLine(Canvas canvas, Offset offset, BufferLine line) {
+    paintLineTrailingBackgroundFill(canvas, offset, line);
+    super.paintLine(canvas, offset, line);
+  }
+
+  void paintLineTrailingBackgroundFill(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+  ) {
+    final fill = resolveMonkeyTerminalTrailingBackgroundFill(line);
+    if (fill == null) {
+      return;
+    }
+
+    canvas.drawRect(
+      Rect.fromLTWH(
+        offset.dx + (fill.startColumn * cellSize.width),
+        offset.dy,
+        (line.length - fill.startColumn) * cellSize.width,
+        cellSize.height,
+      ),
+      Paint()..color = fill.color,
+    );
+  }
+
+  ({int startColumn, Color color})? resolveMonkeyTerminalTrailingBackgroundFill(
+    BufferLine line,
+  ) {
+    if (line.length == 0) {
+      return null;
+    }
+
+    final firstCell = CellData.empty();
+    line.getCellData(0, firstCell);
+    if (_cellBackgroundColorType(firstCell) == CellColor.normal) {
+      return null;
+    }
+    if (!_shouldExtendTrailingBackgroundFill(firstCell)) {
+      return null;
+    }
+
+    final background = firstCell.background;
+    var fillStartColumn = 0;
+    var hasHighlightedContent = false;
+    for (; fillStartColumn < line.length; fillStartColumn += 1) {
+      if (line.getBackground(fillStartColumn) != background) {
+        break;
+      }
+      hasHighlightedContent |= line.getCodePoint(fillStartColumn) != 0;
+    }
+
+    if (!hasHighlightedContent || fillStartColumn >= line.length) {
+      return null;
+    }
+
+    for (var column = fillStartColumn; column < line.length; column += 1) {
+      if (line.getCodePoint(column) != 0 ||
+          _cellColorType(line.getBackground(column)) != CellColor.normal) {
+        return null;
+      }
+    }
+
+    return (
+      startColumn: fillStartColumn,
+      color: _resolveCellBackgroundPaintColor(firstCell),
+    );
+  }
+
+  @override
+  void paintCellBackground(Canvas canvas, Offset offset, CellData cellData) {
+    final colorType = _cellBackgroundColorType(cellData);
+    if (cellData.flags & CellFlags.inverse == 0 &&
+        colorType == CellColor.normal) {
+      return;
+    }
+
+    final paint = Paint()..color = _resolveCellBackgroundPaintColor(cellData);
+    final doubleWidth = cellData.content >> CellContent.widthShift == 2;
+    final widthScale = doubleWidth ? 2 : 1;
+    final size = Size(cellSize.width * widthScale + 1, cellSize.height);
+    canvas.drawRect(offset & size, paint);
+  }
+
   bool _shouldUnderlineCell(
     int column,
     List<TerminalTextUnderline> inlineUnderlines,
@@ -1532,7 +1695,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
             italic: cellFlags & CellFlags.italic != 0,
             underline: true,
           )
-          .copyWith(decorationColor: _resolveCellForegroundColor(cellData));
+          .copyWith(
+            decorationColor: resolveMonkeyTerminalCellForegroundColor(cellData),
+          );
 
       var char = String.fromCharCode(charCode);
       if (charCode == 0x20) {
@@ -1562,7 +1727,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
     if (paragraph == null) {
       final cellFlags = cellData.flags;
-      final color = _resolveCellForegroundColor(cellData);
+      final color = resolveMonkeyTerminalCellForegroundColor(cellData);
 
       final style = textStyle.toTextStyle(
         color: color,
@@ -1587,7 +1752,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
     canvas.drawParagraph(paragraph, offset);
   }
 
-  Color _resolveCellForegroundColor(CellData cellData) {
+  @visibleForTesting
+  Color resolveMonkeyTerminalCellForegroundColor(CellData cellData) {
     final cellFlags = cellData.flags;
     final inverse = cellFlags & CellFlags.inverse != 0;
     var color = inverse
@@ -1603,7 +1769,49 @@ class MonkeyTerminalPainter extends TerminalPainter {
         background: background,
       );
     }
-    return color;
+    if (!_cellPaintsBackground(cellData)) {
+      return color;
+    }
+    return resolveMonkeyTerminalReadableForegroundColor(
+      foreground: color,
+      background: _resolveCellBackgroundPaintColor(cellData),
+      terminalForeground: theme.foreground,
+      terminalBackground: theme.background,
+    );
+  }
+
+  bool _cellPaintsBackground(CellData cellData) =>
+      cellData.flags & CellFlags.inverse != 0 ||
+      _cellBackgroundColorType(cellData) != CellColor.normal;
+
+  bool _shouldExtendTrailingBackgroundFill(CellData firstCell) {
+    if (firstCell.flags & CellFlags.inverse != 0) {
+      return false;
+    }
+    final backgroundType = _cellBackgroundColorType(firstCell);
+    if (backgroundType != CellColor.named &&
+        backgroundType != CellColor.palette) {
+      return false;
+    }
+    // ANSI bright black is commonly used as a neutral prompt/message row
+    // background; semantic color labels should stay text-width.
+    return _cellColorValue(firstCell.background) == 8;
+  }
+
+  Color _resolveCellBackgroundPaintColor(CellData cellData) {
+    final cellFlags = cellData.flags;
+    final inverse = cellFlags & CellFlags.inverse != 0;
+    final background = inverse
+        ? resolveForegroundColor(cellData.foreground)
+        : resolveBackgroundColor(cellData.background);
+    final foreground = inverse
+        ? resolveBackgroundColor(cellData.background)
+        : resolveForegroundColor(cellData.foreground);
+    return resolveMonkeyTerminalReadableBackgroundColor(
+      foreground: foreground,
+      background: background,
+      terminalBackground: theme.background,
+    );
   }
 
   @override
@@ -1640,6 +1848,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
   }
 }
+
+int _cellColorType(int cellColor) => cellColor & CellColor.typeMask;
+
+int _cellColorValue(int cellColor) => cellColor & CellColor.valueMask;
+
+int _cellBackgroundColorType(CellData cellData) =>
+    _cellColorType(cellData.background);
 
 class MonkeyRenderTerminal extends RenderBox
     with RelayoutWhenSystemFontsChangeMixin, Selectable, SelectionRegistrant {
