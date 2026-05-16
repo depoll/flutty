@@ -905,6 +905,58 @@ func TestAgentToolPrefersLiveCodexTitleOverStoredMetadata(t *testing.T) {
 	}
 }
 
+func TestVisualScreenModelOnlyTracksCodexWindows(t *testing.T) {
+	server := newMuxServer("test")
+	server.width = 12
+	server.height = 4
+	window := &muxWindow{
+		id:        "@1",
+		name:      "zsh",
+		command:   "zsh",
+		paneTitle: "zsh",
+		ptyWidth:  server.width,
+		ptyHeight: server.height,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+
+	server.handleWindowOutput(window.id, []byte("plain shell output\r\n"))
+
+	if window.screen != nil {
+		t.Fatal("non-Codex window unexpectedly created a visual screen model")
+	}
+}
+
+func TestCodexVisualScreenUsesWindowPtySize(t *testing.T) {
+	server := newMuxServer("test")
+	server.width = 20
+	server.height = 6
+	window := &muxWindow{
+		id:                "@1",
+		name:              "agent",
+		command:           "node",
+		foregroundCommand: "node",
+		paneTitle:         "shell",
+		agentTool:         "copilot",
+		ptyWidth:          8,
+		ptyHeight:         3,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@2"
+
+	server.handleWindowOutput(
+		window.id,
+		[]byte("\x1b]0;OpenAI Codex (v0.130.0)\x07hello\r\n"),
+	)
+
+	if window.screen == nil {
+		t.Fatal("Codex window did not create a visual screen model")
+	}
+	if window.screen.width != 8 || window.screen.height != 3 {
+		t.Fatalf("screen size = %dx%d, want 8x3", window.screen.width, window.screen.height)
+	}
+}
+
 func TestTerminalModeTrackingHandlesSplitSequences(t *testing.T) {
 	window := &muxWindow{}
 

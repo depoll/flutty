@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.72"
+	monkeyMuxVersion         = "0.1.73"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -274,6 +274,8 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	screen                     *terminalScreen
+	ptyWidth                   int
+	ptyHeight                  int
 	scrollbackOffset           int
 	oscBuffer                  []byte
 	csiBuffer                  []byte
@@ -1416,6 +1418,13 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		return nil, err
 	}
 
+	ptyWidth := int(size.Cols)
+	ptyHeight := int(size.Rows)
+	var screen *terminalScreen
+	if agentTool == "codex" || agentToolFromTerminalTitle(paneTitle) == "codex" {
+		screen = newTerminalScreen(ptyWidth, ptyHeight)
+	}
+
 	s.mu.Lock()
 	s.nextID++
 	window := &muxWindow{
@@ -1431,7 +1440,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		pty:                   file,
 		cmd:                   cmd,
 		history:               append([]byte(nil), options.history...),
-		screen:                newTerminalScreen(int(size.Cols), int(size.Rows)),
+		screen:                screen,
+		ptyWidth:              ptyWidth,
+		ptyHeight:             ptyHeight,
 		lastActivity:          time.Now(),
 		cursorVisible:         cursorVisible,
 		cursorVisibilityKnown: options.cursorVisibilityKnown,
@@ -1500,7 +1511,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.observeTerminalMetadataLocked(chunk)
 	window.observeTerminalModesLocked(chunk)
-	window.observeTerminalScreenLocked(chunk, s.width, s.height)
+	if window.shouldUseVisualScrollbackLocked() {
+		window.observeTerminalScreenLocked(chunk)
+	}
 	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
@@ -2333,6 +2346,8 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
+	window.ptyWidth = width
+	window.ptyHeight = height
 	if window.screen != nil {
 		window.screen.resize(width, height)
 		window.clampScrollbackOffsetLocked()
@@ -2643,9 +2658,6 @@ func (s *muxServer) writeActiveInput(data []byte) error {
 			s.writeAttachLocked(attach, replay)
 		}
 		s.attachMu.Unlock()
-		if windowID == "" {
-			return nil
-		}
 		return nil
 	}
 	if window.scrollbackOffset > 0 {
@@ -2835,16 +2847,30 @@ func newTerminalScreen(width int, height int) *terminalScreen {
 	return screen
 }
 
-func (w *muxWindow) observeTerminalScreenLocked(chunk []byte, width int, height int) {
+func (w *muxWindow) observeTerminalScreenLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
 	if w.screen == nil {
+		width, height := w.terminalScreenSizeLocked()
 		w.screen = newTerminalScreen(width, height)
-	} else if width > 0 && height > 0 && (w.screen.width != width || w.screen.height != height) {
-		w.screen.resize(width, height)
 	}
 	w.screen.write(chunk)
+}
+
+func (w *muxWindow) terminalScreenSizeLocked() (int, int) {
+	if w == nil {
+		return defaultColumns, defaultRows
+	}
+	width := w.ptyWidth
+	height := w.ptyHeight
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	return width, height
 }
 
 func (t *terminalScreen) resize(width int, height int) {
@@ -2919,6 +2945,13 @@ func (t *terminalScreen) historyLines() []string {
 	lines = append(lines, t.scrollback...)
 	lines = append(lines, t.visibleLines()...)
 	return lines
+}
+
+func (t *terminalScreen) historyLineCount() int {
+	if t == nil {
+		return 0
+	}
+	return len(t.scrollback) + len(t.rows)
 }
 
 func (t *terminalScreen) write(chunk []byte) {
@@ -3602,7 +3635,7 @@ func (w *muxWindow) maxScrollbackOffsetLocked() int {
 	if w == nil || w.screen == nil {
 		return 0
 	}
-	lineCount := len(w.screen.historyLines())
+	lineCount := w.screen.historyLineCount()
 	height := w.screen.height
 	if height <= 0 {
 		height = defaultRows
