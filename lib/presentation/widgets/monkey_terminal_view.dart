@@ -1615,6 +1615,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
     if (_cellBackgroundColorType(firstCell) == CellColor.normal) {
       return null;
     }
+    if (!_shouldExtendTrailingBackgroundFill(firstCell)) {
+      return null;
+    }
 
     final background = firstCell.background;
     var fillStartColumn = 0;
@@ -1692,7 +1695,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
             italic: cellFlags & CellFlags.italic != 0,
             underline: true,
           )
-          .copyWith(decorationColor: _resolveCellForegroundColor(cellData));
+          .copyWith(
+            decorationColor: resolveMonkeyTerminalCellForegroundColor(cellData),
+          );
 
       var char = String.fromCharCode(charCode);
       if (charCode == 0x20) {
@@ -1722,7 +1727,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
     if (paragraph == null) {
       final cellFlags = cellData.flags;
-      final color = _resolveCellForegroundColor(cellData);
+      final color = resolveMonkeyTerminalCellForegroundColor(cellData);
 
       final style = textStyle.toTextStyle(
         color: color,
@@ -1747,7 +1752,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
     canvas.drawParagraph(paragraph, offset);
   }
 
-  Color _resolveCellForegroundColor(CellData cellData) {
+  @visibleForTesting
+  Color resolveMonkeyTerminalCellForegroundColor(CellData cellData) {
     final cellFlags = cellData.flags;
     final inverse = cellFlags & CellFlags.inverse != 0;
     var color = inverse
@@ -1763,12 +1769,33 @@ class MonkeyTerminalPainter extends TerminalPainter {
         background: background,
       );
     }
+    if (!_cellPaintsBackground(cellData)) {
+      return color;
+    }
     return resolveMonkeyTerminalReadableForegroundColor(
       foreground: color,
       background: _resolveCellBackgroundPaintColor(cellData),
       terminalForeground: theme.foreground,
       terminalBackground: theme.background,
     );
+  }
+
+  bool _cellPaintsBackground(CellData cellData) =>
+      cellData.flags & CellFlags.inverse != 0 ||
+      _cellBackgroundColorType(cellData) != CellColor.normal;
+
+  bool _shouldExtendTrailingBackgroundFill(CellData firstCell) {
+    if (firstCell.flags & CellFlags.inverse != 0) {
+      return false;
+    }
+    final backgroundType = _cellBackgroundColorType(firstCell);
+    if (backgroundType != CellColor.named &&
+        backgroundType != CellColor.palette) {
+      return false;
+    }
+    // ANSI bright black is commonly used as a neutral prompt/message row
+    // background; semantic color labels should stay text-width.
+    return _cellColorValue(firstCell.background) == 8;
   }
 
   Color _resolveCellBackgroundPaintColor(CellData cellData) {
@@ -1823,6 +1850,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
 }
 
 int _cellColorType(int cellColor) => cellColor & CellColor.typeMask;
+
+int _cellColorValue(int cellColor) => cellColor & CellColor.valueMask;
 
 int _cellBackgroundColorType(CellData cellData) =>
     _cellColorType(cellData.background);
