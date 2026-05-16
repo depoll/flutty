@@ -1239,6 +1239,7 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 	scrolled := attach.String()
 	for _, want := range []string{
 		attachSessionEnterSequence,
+		scrollbackViewportEnterSequence,
 		"\x1b[1;1Hline2\x1b[K",
 		"\x1b[2;1Hline3\x1b[K",
 		"\x1b[3;1Hline4\x1b[K",
@@ -1266,8 +1267,8 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumed := attach.String()[len(beforeLiveOutput):]
-	if resumed != "" {
-		t.Fatalf("resume replay = %q, want no clear/replay while waiting for Codex repaint", resumed)
+	if resumed != scrollbackViewportExitSequence {
+		t.Fatalf("resume replay = %q, want wrap restore only while waiting for Codex repaint", resumed)
 	}
 	wantResizeNudged := []struct {
 		window *muxWindow
@@ -1279,6 +1280,38 @@ func TestCodexScrollActiveRendersServerScrollbackViewport(t *testing.T) {
 	}
 	if got := codexWindow.scrollbackLineOffset; got != 0 {
 		t.Fatalf("scrollback offset after resume = %d, want 0", got)
+	}
+}
+
+func TestCodexScrollActiveDisablesWrapForLongRows(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	codexWindow := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Codex",
+		agentTool:    "codex",
+		history:      []byte("short\nthis line is intentionally wider than the viewport\nbottom\n"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{codexWindow}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.width = 12
+	server.height = 2
+
+	if err := server.scrollActiveWindow(1); err != nil {
+		t.Fatal(err)
+	}
+
+	scrolled := attach.String()
+	wrapDisable := strings.Index(scrolled, scrollbackViewportEnterSequence)
+	firstRow := strings.Index(scrolled, "\x1b[1;1H")
+	if wrapDisable < 0 || firstRow < 0 || wrapDisable > firstRow {
+		t.Fatalf("scroll viewport = %q, want wrap disabled before painting rows", scrolled)
+	}
+	if strings.Contains(scrolled, "than the viewport") {
+		t.Fatalf("scroll viewport = %q, want long row truncated before replay", scrolled)
 	}
 }
 

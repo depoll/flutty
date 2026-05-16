@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.67"
+	monkeyMuxVersion         = "0.1.68"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -81,6 +81,8 @@ const activeWindowReplayPrefixAfterAltClear = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x
 const activeWindowReplayPrefixAfterAltHistory = "\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharsetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 const activeWindowReplayPrefix = activeWindowReplayPrefixBeforeAlt + activeWindowReplayPrefixAfterAltClear
+const scrollbackViewportEnterSequence = "\x1b[?7l"
+const scrollbackViewportExitSequence = "\x1b[?7h"
 
 var (
 	preReplayPrivateModes = []string{
@@ -2788,7 +2790,7 @@ func (s *muxServer) scrollbackReplayLocked(
 		wasScrolled := window.scrollbackLineOffset != 0
 		window.scrollbackLineOffset = 0
 		if wasScrolled {
-			return nil, s.resizeRedrawNudgeForWindowLocked(window)
+			return []byte(scrollbackViewportExitSequence), s.resizeRedrawNudgeForWindowLocked(window)
 		}
 		return nil, redrawNudgeRequest{}
 	}
@@ -2804,7 +2806,7 @@ func (s *muxServer) scrollbackReplayLocked(
 	}
 	window.scrollbackLineOffset = offset
 	if offset == 0 {
-		return nil, s.resizeRedrawNudgeForWindowLocked(window)
+		return []byte(scrollbackViewportExitSequence), s.resizeRedrawNudgeForWindowLocked(window)
 	}
 	return s.scrollbackViewportReplayBytesLocked(window, scrollbackLines, offset), redrawNudgeRequest{}
 }
@@ -2836,6 +2838,7 @@ func (s *muxServer) scrollbackViewportReplayBytesLocked(
 	output.WriteString(attachSessionEnterSequence)
 	output.WriteString(activeWindowReplayPrefixBeforeAlt)
 	output.WriteString(activeWindowReplayPrefixAfterAltClear)
+	output.WriteString(scrollbackViewportEnterSequence)
 	output.Write(terminalTitleReplaySequence(window))
 	output.WriteString("\x1b[?25l")
 	row := 1
@@ -4023,6 +4026,7 @@ func (s *muxServer) writeActive(data []byte) {
 		if window.scrollbackLineOffset != 0 {
 			window.scrollbackLineOffset = 0
 			attach = s.attachConn
+			replay = []byte(scrollbackViewportExitSequence)
 			redrawNudge = s.resizeRedrawNudgeForWindowLocked(window)
 		}
 	}
