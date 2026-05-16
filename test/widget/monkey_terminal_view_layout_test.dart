@@ -293,10 +293,11 @@ void main() {
       );
     });
 
-    test('keeps Gemini neutral rows consistent across prompt accents', () {
+    test('keeps Gemini neutral rows consistent across composer text', () {
       const theme = TerminalThemes.defaultDarkTheme;
       const geminiBackground = Color(0xFF5F5F5F);
       const promptAccent = Color(0xFFFF87AF);
+      const placeholderForeground = Color(0xFFAFAFAF);
       const typedForeground = Color(0xFFFFFFFF);
 
       final accentBackground = resolveMonkeyTerminalReadableBackgroundColor(
@@ -309,8 +310,19 @@ void main() {
         background: geminiBackground,
         terminalBackground: theme.background,
       );
+      final placeholderBackground =
+          resolveMonkeyTerminalReadableBackgroundColor(
+            foreground: placeholderForeground,
+            background: geminiBackground,
+            terminalBackground: theme.background,
+          );
 
       expect(accentBackground, typedBackground);
+      expect(accentBackground, placeholderBackground);
+      expect(
+        _contrastRatio(placeholderForeground, placeholderBackground),
+        greaterThanOrEqualTo(4.5),
+      );
     });
 
     test('keeps readable semantic truecolor backgrounds unchanged', () {
