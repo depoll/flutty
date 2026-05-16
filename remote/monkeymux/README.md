@@ -4,7 +4,7 @@ MonkeyMux is MonkeySSH's purpose-built remote terminal multiplexer. It is a
 per-user helper that runs on the SSH target and exposes:
 
 - `monkeymux attach <session>` for the foreground terminal path.
-- `monkeymux control <session> --json` for newline-delimited JSON control.
+- `monkeymux control --json <session>` for newline-delimited JSON control.
 
 The foreground path is intentionally close to a direct byte relay. MonkeyMux
 does not emulate a full terminal grid like tmux; it only owns the attached

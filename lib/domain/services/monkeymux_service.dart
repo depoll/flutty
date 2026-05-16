@@ -483,7 +483,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         r'[ -x "$helper" ] || continue; '
         r'"$helper" control --json '
         '${_shellQuote(sessionName)}'
-        ' 2>/dev/null; done; exit 1';
+        ' 2>/dev/null && exit 0; done; exit 1';
     try {
       return await session.runQueuedExec(
         () => _readRunningServerStatus(session, command),

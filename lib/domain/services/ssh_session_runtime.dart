@@ -15,6 +15,7 @@ class _SshSessionRuntime {
   Timer? _previewRefreshTimer;
   Timer? _shellIoDiagnosticsTimer;
   Timer? _terminalOutputFlushTimer;
+  bool _terminalOutputFlushTimerIsFallback = false;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
   final _pendingShellOutputs =
@@ -44,7 +45,11 @@ class _SshSessionRuntime {
   Terminal? _terminal;
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
+  static const _terminalSynchronizedOutputFallbackInterval = Duration(
+    milliseconds: 250,
+  );
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  static const _maxTerminalSynchronizedOutputChars = 64 * 1024;
   static const _terminalSynchronizedOutputBegin = '\x1b[?2026h';
   static const _terminalSynchronizedOutputEnd = '\x1b[?2026l';
 
@@ -306,7 +311,7 @@ class _SshSessionRuntime {
                 terminalData: terminalData,
                 stdoutData: data,
               );
-              if (_shouldFlushShellOutputImmediately(terminalData)) {
+              if (_shouldFlushShellOutputImmediately()) {
                 _flushPendingShellOutput(drainAll: true);
               }
             }
@@ -498,6 +503,11 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = shell;
     _pendingShellOutputTerminal = terminal;
 
+    if (_terminalOutputFlushTimerIsFallback &&
+        (_terminalOutputFlushTimer?.isActive ?? false)) {
+      _terminalOutputFlushTimer?.cancel();
+      _terminalOutputFlushTimerIsFallback = false;
+    }
     if (!(_terminalOutputFlushTimer?.isActive ?? false)) {
       _terminalOutputFlushTimer = Timer(
         _terminalOutputFlushInterval,
@@ -506,16 +516,31 @@ class _SshSessionRuntime {
     }
   }
 
-  bool _shouldFlushShellOutputImmediately(String terminalData) =>
-      _containsImmediateTerminalResponseQuery(terminalData) ||
-      (_terminalThemeOscQueryPendingInput.isNotEmpty &&
-          _containsImmediateTerminalResponseQuery(
-            _terminalThemeOscQueryPendingInput + terminalData,
-          ));
+  bool _shouldFlushShellOutputImmediately() {
+    if (_pendingShellOutputs.isEmpty) {
+      return false;
+    }
+    final bufferedTerminalData = StringBuffer();
+    for (final output in _pendingShellOutputs) {
+      bufferedTerminalData.write(output.terminalData);
+    }
+    final combinedTerminalData = bufferedTerminalData.toString();
+    final start =
+        combinedTerminalData.length > _terminalControlQueryPendingLimit
+        ? combinedTerminalData.length - _terminalControlQueryPendingLimit
+        : 0;
+    final queryScan = combinedTerminalData.substring(start);
+    return _containsImmediateTerminalResponseQuery(queryScan) ||
+        (_terminalThemeOscQueryPendingInput.isNotEmpty &&
+            _containsImmediateTerminalResponseQuery(
+              _terminalThemeOscQueryPendingInput + queryScan,
+            ));
+  }
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();
     _terminalOutputFlushTimer = null;
+    _terminalOutputFlushTimerIsFallback = false;
 
     final shell = _pendingShellOutputShell;
     final terminal = _pendingShellOutputTerminal;
@@ -614,12 +639,21 @@ class _SshSessionRuntime {
 
   void _scheduleNextShellOutputFlushIfNeeded() {
     if (_pendingShellOutputs.isEmpty) {
+      if (_hasPendingSynchronizedTerminalOutput) {
+        _terminalOutputFlushTimer = Timer(
+          _terminalSynchronizedOutputFallbackInterval,
+          () => _flushPendingShellOutput(drainAll: true),
+        );
+        _terminalOutputFlushTimerIsFallback = true;
+        return;
+      }
       _clearPendingShellOutput();
     } else {
       _terminalOutputFlushTimer = Timer(
         _terminalOutputFlushInterval,
         _flushPendingShellOutput,
       );
+      _terminalOutputFlushTimerIsFallback = false;
     }
   }
 
@@ -684,6 +718,12 @@ class _SshSessionRuntime {
         final bufferEnd = scanInput.length - pendingSuffix.length;
         if (bufferEnd > cursor) {
           activeBuffer.write(scanInput.substring(cursor, bufferEnd));
+          if (_pendingSynchronizedOutputChars >
+              _maxTerminalSynchronizedOutputChars) {
+            _terminalSynchronizedOutputPendingInput = pendingSuffix;
+            _drainPendingSynchronizedTerminalFrame(terminalOutput);
+            break;
+          }
         }
         _terminalSynchronizedOutputPendingInput = pendingSuffix;
         break;
@@ -700,20 +740,7 @@ class _SshSessionRuntime {
     }
 
     if (drainAll && _hasPendingSynchronizedTerminalFrame) {
-      if (_terminalSynchronizedOutputPendingInput.isNotEmpty) {
-        final pendingInput = _terminalSynchronizedOutputPendingInput;
-        _terminalSynchronizedOutputPendingInput = '';
-        if (_terminalSynchronizedOutputBuffer == null) {
-          terminalOutput.write(pendingInput);
-        } else {
-          _terminalSynchronizedOutputBuffer!.write(pendingInput);
-        }
-      }
-      final activeBuffer = _terminalSynchronizedOutputBuffer;
-      if (activeBuffer != null) {
-        terminalOutput.write(activeBuffer.toString());
-        _terminalSynchronizedOutputBuffer = null;
-      }
+      _drainPendingSynchronizedTerminalFrame(terminalOutput);
     }
 
     final shouldBufferStreamData =
@@ -735,6 +762,11 @@ class _SshSessionRuntime {
       (_terminalSynchronizedStderrBuffer ??= StringBuffer()).write(stderrData);
     }
 
+    if (_hasPendingSynchronizedTerminalFrame &&
+        _pendingSynchronizedOutputChars > _maxTerminalSynchronizedOutputChars) {
+      _drainPendingSynchronizedTerminalFrame(terminalOutput);
+    }
+
     if (_hasPendingSynchronizedTerminalFrame) {
       return (
         terminalData: terminalOutput.toString(),
@@ -754,6 +786,29 @@ class _SshSessionRuntime {
       stdoutData: synchronizedStdout,
       stderrData: synchronizedStderr,
     );
+  }
+
+  int get _pendingSynchronizedOutputChars =>
+      (_terminalSynchronizedOutputBuffer?.length ?? 0) +
+      _terminalSynchronizedOutputPendingInput.length +
+      (_terminalSynchronizedStdoutBuffer?.length ?? 0) +
+      (_terminalSynchronizedStderrBuffer?.length ?? 0);
+
+  void _drainPendingSynchronizedTerminalFrame(StringBuffer terminalOutput) {
+    if (_terminalSynchronizedOutputPendingInput.isNotEmpty) {
+      final pendingInput = _terminalSynchronizedOutputPendingInput;
+      _terminalSynchronizedOutputPendingInput = '';
+      if (_terminalSynchronizedOutputBuffer == null) {
+        terminalOutput.write(pendingInput);
+      } else {
+        _terminalSynchronizedOutputBuffer!.write(pendingInput);
+      }
+    }
+    final activeBuffer = _terminalSynchronizedOutputBuffer;
+    if (activeBuffer != null) {
+      terminalOutput.write(activeBuffer.toString());
+      _terminalSynchronizedOutputBuffer = null;
+    }
   }
 
   static String _synchronizedOutputPendingBeginSuffix(String input) =>

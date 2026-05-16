@@ -1335,6 +1335,53 @@ void main() {
       },
     );
 
+    test('flushes split terminal response queries immediately', () async {
+      final shell = await openShell();
+      shell.session.updateTerminalWindowMetrics(
+        columns: 80,
+        rows: 24,
+        pixelWidth: 960,
+        pixelHeight: 480,
+      );
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[1')));
+      await pumpEventQueue();
+
+      expect(shell.shellWrites, isEmpty);
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('4t')));
+      await pumpEventQueue();
+
+      expect(
+        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+        '\x1b[4;480;960t',
+      );
+    });
+
+    test(
+      'coalesces non-response xterm window controls instead of forcing flush',
+      () async {
+        final shell = await openShell();
+        final terminal = shell.session.terminal!;
+        final stdoutEvents = <String>[];
+        final stdoutSubscription = shell.session.shellStdoutStream.listen(
+          stdoutEvents.add,
+        );
+        addTearDown(stdoutSubscription.cancel);
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('before\x1b[22t')));
+        await pumpEventQueue();
+
+        expect(firstLineText(terminal), isNot(contains('before')));
+        expect(stdoutEvents, isEmpty);
+
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(firstLineText(terminal), 'before');
+        expect(stdoutEvents, ['before\x1b[22t']);
+      },
+    );
+
     test(
       'buffers synchronized output until the terminal frame completes',
       () async {
@@ -1365,6 +1412,44 @@ void main() {
         expect(events, ['before', 'terminal', 'stdout']);
       },
     );
+
+    test('flushes unterminated synchronized output after fallback', () async {
+      final shell = await openShell();
+      final terminal = shell.session.terminal!;
+      final stdoutEvents = <String>[];
+      final stdoutSubscription = shell.session.shellStdoutStream.listen(
+        stdoutEvents.add,
+      );
+      addTearDown(stdoutSubscription.cancel);
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026hhello')));
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(firstLineText(terminal), isNot(contains('hello')));
+      expect(stdoutEvents, isEmpty);
+
+      await Future<void>.delayed(const Duration(milliseconds: 275));
+
+      expect(firstLineText(terminal), 'hello');
+      expect(stdoutEvents, ['\x1b[?2026hhello']);
+    });
+
+    test('bounds unterminated synchronized output buffering', () async {
+      final shell = await openShell();
+      final terminal = shell.session.terminal!;
+      final stdoutEvents = <String>[];
+      final stdoutSubscription = shell.session.shellStdoutStream.listen(
+        stdoutEvents.add,
+      );
+      addTearDown(stdoutSubscription.cancel);
+      final payload = List.filled(70 * 1024, 'x').join();
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026h$payload')));
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(firstLineText(terminal), startsWith('x'));
+      expect(stdoutEvents, ['\x1b[?2026h$payload']);
+    });
 
     test(
       'keeps MonkeyMux attach-owned alt buffer in the local terminal',

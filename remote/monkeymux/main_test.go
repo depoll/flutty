@@ -932,7 +932,7 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 func TestReplayStripDoesNotCopyCleanHistory(t *testing.T) {
 	history := []byte("prompt\x1b]2;Gemini\x07safe")
 
-	replay := stripTerminalQueriesFromReplay(history)
+	replay := stripReplayUnsafeTerminalControls(history)
 
 	if len(replay) == 0 {
 		t.Fatal("replay is empty")
@@ -2874,7 +2874,7 @@ func BenchmarkStripTerminalQueriesFromReplayClean(b *testing.B) {
 	b.SetBytes(int64(len(history)))
 
 	for i := 0; i < b.N; i++ {
-		replay := stripTerminalQueriesFromReplay(history)
+		replay := stripReplayUnsafeTerminalControls(history)
 		if len(replay) != len(history) {
 			b.Fatalf("replay length = %d, want %d", len(replay), len(history))
 		}
@@ -2890,7 +2890,7 @@ func BenchmarkStripTerminalQueriesFromReplayWithQueries(b *testing.B) {
 	b.SetBytes(int64(len(history)))
 
 	for i := 0; i < b.N; i++ {
-		replay := stripTerminalQueriesFromReplay(history)
+		replay := stripReplayUnsafeTerminalControls(history)
 		if bytes.Contains(replay, []byte("\x1b[c")) {
 			b.Fatal("unsafe device attribute query was not stripped")
 		}

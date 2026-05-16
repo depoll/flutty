@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.64"
+	monkeyMuxVersion         = "0.1.65"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -555,7 +555,7 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--update-policy prompt|never|always] <session> | control --json <session> | gc | version")
 	os.Exit(2)
 }
 
@@ -602,15 +602,20 @@ func attachCommand(args []string) {
 		Height:  height,
 	}
 
+	stdoutIsTerminal := term.IsTerminal(int(os.Stdout.Fd()))
 	restoreTerminal := makeTerminalRaw()
 	restoreAttachTerminal := func() {
-		_, _ = os.Stdout.Write([]byte(attachSessionExitSequence))
+		if stdoutIsTerminal {
+			_, _ = os.Stdout.Write([]byte(attachSessionExitSequence))
+		}
 		restoreTerminal()
 	}
 	defer restoreAttachTerminal()
-	if _, err := os.Stdout.Write([]byte(attachSessionEnterSequence)); err != nil {
-		restoreTerminal()
-		fatal(err)
+	if stdoutIsTerminal {
+		if _, err := os.Stdout.Write([]byte(attachSessionEnterSequence)); err != nil {
+			restoreTerminal()
+			fatal(err)
+		}
 	}
 
 	if err := json.NewEncoder(conn).Encode(hello); err != nil {
@@ -2914,7 +2919,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 		if len(historySource) == 0 {
 			historySource = window.historyTailLocked()
 		}
-		history = stripTerminalQueriesFromReplay(historySource)
+		history = stripReplayUnsafeTerminalControls(historySource)
 		history = trimReplayHistoryForAttach(history)
 	}
 	title := terminalTitleReplaySequence(window)
@@ -4137,7 +4142,7 @@ func replaySynchronizedOutputFrameForHistory(frame []byte) []byte {
 	if len(frame) == 0 {
 		return nil
 	}
-	stripped := stripTerminalQueriesFromReplay(frame)
+	stripped := stripReplayUnsafeTerminalControls(frame)
 	if containsReplayStatefulControl(stripped) {
 		return nil
 	}
@@ -4274,7 +4279,7 @@ func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
 }
 
-func stripTerminalQueriesFromReplay(data []byte) []byte {
+func stripReplayUnsafeTerminalControls(data []byte) []byte {
 	if len(data) == 0 {
 		return data
 	}

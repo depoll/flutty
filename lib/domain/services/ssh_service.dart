@@ -389,7 +389,7 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
     });
 
 bool _containsImmediateTerminalResponseQuery(String data) =>
-    _terminalWindowQueryPattern.hasMatch(data) ||
+    _terminalWindowReportQueryPattern.hasMatch(data) ||
     _terminalDeviceAttributeQueryPattern.hasMatch(data) ||
     _terminalDeviceStatusQueryPattern.hasMatch(data) ||
     _terminalModeReportQueryPattern.hasMatch(data) ||
@@ -398,6 +398,7 @@ bool _containsImmediateTerminalResponseQuery(String data) =>
     _terminalClipboardOscQueryPattern.hasMatch(data);
 
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalWindowReportQueryPattern = RegExp(r'\x1b\[(?:14|16)t');
 final _terminalDeviceAttributeQueryPattern = RegExp(r'\x1b\[(?:[=>]?[0-9;]*)c');
 final _terminalDeviceStatusQueryPattern = RegExp(r'\x1b\[(?:[?]?[0-9;]*)n');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
@@ -598,7 +599,6 @@ _monkeyMuxAttachOwnedAltBufferReplacement(String sequence) {
     return null;
   }
 
-  final preserved = <String>[];
   var foundAttachOwnedAltBufferMode = false;
   var updatesActiveState = false;
   for (final part in params.substring(1).split(';')) {
@@ -610,8 +610,6 @@ _monkeyMuxAttachOwnedAltBufferReplacement(String sequence) {
       foundAttachOwnedAltBufferMode = true;
       updatesActiveState =
           updatesActiveState || _isMonkeyMuxAttachOwnedScreenBufferMode(mode);
-    } else {
-      preserved.add(part);
     }
   }
 
