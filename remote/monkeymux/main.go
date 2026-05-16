@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.66"
+	monkeyMuxVersion         = "0.1.67"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3055,10 +3055,18 @@ func terminalTextLines(data []byte, width int, height int) []string {
 					return codexScrollbackLines(appFrameLines, frame.lines(), frame.width)
 				}
 				sequence := data[i : end+1]
+				if isSynchronizedOutputModeCsiSequence(sequence, true) {
+					appFrameLines = appendUsefulTerminalLines(
+						appFrameLines,
+						frame.lines(),
+						frame.width,
+					)
+					frame.beginSynchronizedAppFrame()
+				}
 				if isSynchronizedOutputModeCsiSequence(sequence, false) {
 					appFrameLines = appendTerminalAppFrameLines(
 						appFrameLines,
-						frame.visibleLines(),
+						frame.synchronizedAppFrameLines(),
 						frame.width,
 					)
 				}
@@ -3133,6 +3141,8 @@ type terminalTextFrame struct {
 	savedCol int
 
 	scrollback []string
+	dirtyRows  []bool
+	trackDirty bool
 }
 
 func newTerminalTextFrame(width int, height int) *terminalTextFrame {
@@ -3164,6 +3174,7 @@ func (f *terminalTextFrame) clearScreen() {
 			f.rows[row][col] = ' '
 		}
 	}
+	f.markRowsDirty(0, f.height-1)
 	f.row = 0
 	f.col = 0
 }
@@ -3174,6 +3185,59 @@ func (f *terminalTextFrame) lines() []string {
 		lines = appendDeduplicatedLine(lines, line)
 	}
 	return lines
+}
+
+func (f *terminalTextFrame) beginSynchronizedAppFrame() {
+	f.trackDirty = true
+	if len(f.dirtyRows) != f.height {
+		f.dirtyRows = make([]bool, f.height)
+		return
+	}
+	for index := range f.dirtyRows {
+		f.dirtyRows[index] = false
+	}
+}
+
+func (f *terminalTextFrame) synchronizedAppFrameLines() []string {
+	if !f.trackDirty {
+		return f.visibleLines()
+	}
+	defer func() {
+		f.trackDirty = false
+	}()
+	lines := []string{}
+	for rowIndex, row := range f.rows {
+		if rowIndex >= len(f.dirtyRows) || !f.dirtyRows[rowIndex] {
+			continue
+		}
+		line := strings.TrimRight(string(row), " ")
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func (f *terminalTextFrame) markRowDirty(row int) {
+	if !f.trackDirty || row < 0 || row >= len(f.dirtyRows) {
+		return
+	}
+	f.dirtyRows[row] = true
+}
+
+func (f *terminalTextFrame) markRowsDirty(start int, end int) {
+	if !f.trackDirty {
+		return
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end >= f.height {
+		end = f.height - 1
+	}
+	for row := start; row <= end; row++ {
+		f.markRowDirty(row)
+	}
 }
 
 func (f *terminalTextFrame) visibleLines() []string {
@@ -3228,6 +3292,9 @@ func mergeTerminalAppFrameSnapshot(lines []string, snapshot []string) []string {
 	if containsTerminalLineSequence(lines, snapshot) {
 		return lines
 	}
+	if isCyclicTerminalLineSequence(lines, snapshot) {
+		return lines
+	}
 
 	prependOverlap := terminalLinePrefixSuffixOverlap(lines, snapshot)
 	appendOverlap := terminalLineSuffixPrefixOverlap(lines, snapshot)
@@ -3262,6 +3329,28 @@ func containsTerminalLineSequence(lines []string, sequence []string) bool {
 	}
 	for start := 0; start <= len(lines)-len(sequence); start++ {
 		if terminalLineSlicesEqual(lines[start:start+len(sequence)], sequence) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCyclicTerminalLineSequence(lines []string, sequence []string) bool {
+	if len(sequence) == 0 {
+		return true
+	}
+	if len(sequence) > len(lines) || len(lines) == 0 {
+		return false
+	}
+	for start := range lines {
+		matches := true
+		for offset, line := range sequence {
+			if lines[(start+offset)%len(lines)] != line {
+				matches = false
+				break
+			}
+		}
+		if matches {
 			return true
 		}
 	}
@@ -3431,6 +3520,7 @@ func (f *terminalTextFrame) writeRune(r rune) {
 		return
 	}
 	f.rows[f.row][f.col] = r
+	f.markRowDirty(f.row)
 	f.col++
 	if f.col >= f.width {
 		f.col = 0
@@ -3483,6 +3573,7 @@ func (f *terminalTextFrame) scrollUp(count int) {
 			copy(f.rows[row], f.rows[row+1])
 		}
 		f.clearRow(f.bottom)
+		f.markRowsDirty(f.top, f.bottom)
 	}
 }
 
@@ -3495,6 +3586,7 @@ func (f *terminalTextFrame) scrollDown(count int) {
 			copy(f.rows[row], f.rows[row-1])
 		}
 		f.clearRow(f.top)
+		f.markRowsDirty(f.top, f.bottom)
 	}
 }
 
@@ -3586,6 +3678,7 @@ func (f *terminalTextFrame) eraseLine(mode int) {
 			f.rows[f.row][col] = ' '
 		}
 	}
+	f.markRowDirty(f.row)
 }
 
 func (f *terminalTextFrame) eraseScreen(mode int) {
@@ -3597,6 +3690,7 @@ func (f *terminalTextFrame) eraseScreen(mode int) {
 		for col := 0; col <= f.col && col < f.width; col++ {
 			f.rows[f.row][col] = ' '
 		}
+		f.markRowsDirty(0, f.row)
 	case 2, 3:
 		f.clearScreen()
 		if mode == 3 {
@@ -3609,6 +3703,7 @@ func (f *terminalTextFrame) eraseScreen(mode int) {
 		for row := f.row + 1; row < f.height; row++ {
 			f.clearRow(row)
 		}
+		f.markRowsDirty(f.row, f.height-1)
 	}
 }
 
@@ -3624,6 +3719,7 @@ func (f *terminalTextFrame) insertChars(count int) {
 	for col := f.col; col < f.col+count; col++ {
 		row[col] = ' '
 	}
+	f.markRowDirty(f.row)
 }
 
 func (f *terminalTextFrame) deleteChars(count int) {
@@ -3638,6 +3734,7 @@ func (f *terminalTextFrame) deleteChars(count int) {
 	for col := f.width - count; col < f.width; col++ {
 		row[col] = ' '
 	}
+	f.markRowDirty(f.row)
 }
 
 func (f *terminalTextFrame) eraseChars(count int) {
@@ -3651,6 +3748,7 @@ func (f *terminalTextFrame) eraseChars(count int) {
 	for col := f.col; col < end; col++ {
 		f.rows[f.row][col] = ' '
 	}
+	f.markRowDirty(f.row)
 }
 
 func (f *terminalTextFrame) insertLines(count int) {
@@ -3665,6 +3763,7 @@ func (f *terminalTextFrame) insertLines(count int) {
 			copy(f.rows[row], f.rows[row-1])
 		}
 		f.clearRow(f.row)
+		f.markRowsDirty(f.row, f.bottom)
 	}
 }
 
@@ -3680,6 +3779,7 @@ func (f *terminalTextFrame) deleteLines(count int) {
 			copy(f.rows[row], f.rows[row+1])
 		}
 		f.clearRow(f.bottom)
+		f.markRowsDirty(f.row, f.bottom)
 	}
 }
 
@@ -3687,6 +3787,7 @@ func (f *terminalTextFrame) clearRow(row int) {
 	for col := range f.rows[row] {
 		f.rows[row][col] = ' '
 	}
+	f.markRowDirty(row)
 }
 
 func (f *terminalTextFrame) setScrollRegion(top int, bottom int) {

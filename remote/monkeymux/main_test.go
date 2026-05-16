@@ -1507,6 +1507,40 @@ func TestCodexScrollbackTextMergesOverlappingNearBottomFrames(t *testing.T) {
 	}
 }
 
+func TestCodexScrollbackTextIgnoresStaleRowsInPartialFrames(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			codexSynchronizedFrame("› Prompt", "1", "2", "3", "4", "5") +
+				codexSynchronizedFrame("4", "5", "6"),
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 6)
+
+	want := []string{"› Prompt", "1", "2", "3", "4", "5", "6"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestCodexScrollbackTextSkipsWrappedExistingFrames(t *testing.T) {
+	window := &muxWindow{
+		agentTool: "codex",
+		history: []byte(
+			codexSynchronizedFrame("› Prompt", "1", "2", "3", "4", "5", "6", "7", "8") +
+				codexSynchronizedFrame("6", "7", "8", "› Prompt", "1", "2"),
+		),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 9)
+
+	want := []string{"› Prompt", "1", "2", "3", "4", "5", "6", "7", "8"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
 func codexSynchronizedFrame(rows ...string) string {
 	var frame strings.Builder
 	frame.WriteString("\x1b[?2026h")
