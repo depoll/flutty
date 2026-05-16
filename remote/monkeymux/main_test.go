@@ -807,6 +807,51 @@ func TestCodexLiveOutputPreservesTerminalQueries(t *testing.T) {
 	}
 }
 
+func TestCodexLiveOutputPreservesSgrColors(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	attach.Reset()
+
+	server.handleWindowOutput(
+		window.id,
+		[]byte("\x1b[?1049h\x1b[31mred\x1b[0m ok"),
+	)
+
+	frame := lastScreenReplayFrame(attach.String())
+	if !strings.Contains(frame, "\x1b[31mred\x1b[0m ok") {
+		t.Fatalf("live repaint = %q, want red text style preserved", frame)
+	}
+}
+
+func TestCodexLiveOutputPreservesBackgroundSpaces(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	attach.Reset()
+
+	server.handleWindowOutput(
+		window.id,
+		[]byte("\x1b[?1049h\x1b[48;2;10;20;30m  \x1b[0mX"),
+	)
+
+	frame := lastScreenReplayFrame(attach.String())
+	if !strings.Contains(frame, "\x1b[48;2;10;20;30m  \x1b[0mX") {
+		t.Fatalf("live repaint = %q, want styled spaces preserved", frame)
+	}
+}
+
+func TestCodexLiveOutputPreservesBackgroundErases(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	attach.Reset()
+
+	server.handleWindowOutput(
+		window.id,
+		[]byte("\x1b[?1049h\x1b[48;5;24m\x1b[2K"),
+	)
+
+	frame := lastScreenReplayFrame(attach.String())
+	if !strings.Contains(frame, "\x1b[48;5;24m        \x1b[0m") {
+		t.Fatalf("live repaint = %q, want background erase preserved", frame)
+	}
+}
+
 func TestCodexScrollbackSuppressesLiveOutputUntilBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	writeCodexNumberedLines(server, window.id)
@@ -891,8 +936,11 @@ func TestCodexWindowReplayUsesScreenSnapshot(t *testing.T) {
 	if !strings.Contains(replay, "red") {
 		t.Fatalf("snapshot replay missing visible text: %q", replay)
 	}
-	if strings.Contains(replay, "\x1b[31mred") {
-		t.Fatalf("snapshot replay reused raw SGR history instead of screen rows: %q", replay)
+	if !strings.Contains(replay, "\x1b[31mred\x1b[0m") {
+		t.Fatalf("snapshot replay did not preserve SGR color: %q", replay)
+	}
+	if !strings.Contains(replay, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J") {
+		t.Fatalf("snapshot replay did not use screen repaint: %q", replay)
 	}
 	if !strings.Contains(replay, "\x1b[?1049h") {
 		t.Fatalf("snapshot replay should restore alt buffer mode: %q", replay)
@@ -924,8 +972,11 @@ func TestSelectingCodexWindowRepaintsScreenSnapshot(t *testing.T) {
 	if !strings.Contains(replay, "ready") {
 		t.Fatalf("selected Codex replay missing screen text: %q", replay)
 	}
-	if strings.Contains(replay, "\x1b[31mready") {
-		t.Fatalf("selected Codex replay used raw SGR history: %q", replay)
+	if !strings.Contains(replay, "\x1b[31mready\x1b[0m") {
+		t.Fatalf("selected Codex replay did not preserve SGR color: %q", replay)
+	}
+	if !strings.Contains(replay, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J") {
+		t.Fatalf("selected Codex replay did not use screen repaint: %q", replay)
 	}
 	if !strings.Contains(replay, "\x1b[?1049h") {
 		t.Fatalf("selected Codex replay did not restore alt buffer: %q", replay)
@@ -1839,7 +1890,7 @@ func writeCodexNumberedLines(server *muxServer, windowID string) {
 }
 
 func lastScreenReplayFrame(output string) string {
-	const repaintPrefix = "\x1b[?7l\x1b[H\x1b[2J"
+	const repaintPrefix = "\x1b[0m\x1b[?7l\x1b[H\x1b[2J"
 	index := strings.LastIndex(output, repaintPrefix)
 	if index < 0 {
 		return output
