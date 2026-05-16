@@ -34,12 +34,14 @@ class _SshSessionRuntime {
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalSynchronizedOutputPendingInput = '';
+  String _terminalInsertModePendingInput = '';
   StringBuffer? _terminalSynchronizedOutputBuffer;
   StringBuffer? _terminalSynchronizedStdoutBuffer;
   StringBuffer? _terminalSynchronizedStderrBuffer;
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalSynchronizedOutputMode = false;
   bool _terminalGraphemeClusterMode = false;
+  bool _terminalInsertMode = false;
 
   Terminal? _terminal;
 
@@ -248,12 +250,14 @@ class _SshSessionRuntime {
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalSynchronizedOutputPendingInput = '';
+    _terminalInsertModePendingInput = '';
     _terminalSynchronizedOutputBuffer = null;
     _terminalSynchronizedStdoutBuffer = null;
     _terminalSynchronizedStderrBuffer = null;
     _terminalColorSchemeUpdatesMode = false;
     _terminalSynchronizedOutputMode = false;
     _terminalGraphemeClusterMode = false;
+    _terminalInsertMode = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -538,7 +542,6 @@ class _SshSessionRuntime {
       _clearPendingShellOutput();
       return;
     }
-
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     var terminalData = output.terminalData;
     var stdoutData = output.stdoutData;
@@ -567,9 +570,20 @@ class _SshSessionRuntime {
     }
 
     if (terminalData.isNotEmpty) {
-      terminal.write(terminalData);
+      final terminalOutput = adaptTerminalInsertModeOutputForXterm(
+        input: terminalData,
+        pendingInput: _terminalInsertModePendingInput,
+        insertMode: _terminalInsertMode,
+      );
+      _terminalInsertModePendingInput = terminalOutput.pendingInput;
+      _terminalInsertMode = terminalOutput.insertMode;
+      if (terminalOutput.output.isNotEmpty) {
+        terminal.write(terminalOutput.output);
+      }
       _respondToTerminalWindowControlQueries(terminalData, terminal);
-      _scheduleTerminalPreviewRefresh();
+      if (terminalOutput.output.isNotEmpty) {
+        _scheduleTerminalPreviewRefresh();
+      }
     }
 
     if (stdoutData.isNotEmpty) {
@@ -832,9 +846,11 @@ class _SshSessionRuntime {
     _pendingShellOutputTerminal = null;
     _terminalOutputFlushTimerIsFallback = false;
     _terminalSynchronizedOutputPendingInput = '';
+    _terminalInsertModePendingInput = '';
     _terminalSynchronizedOutputBuffer = null;
     _terminalSynchronizedStdoutBuffer = null;
     _terminalSynchronizedStderrBuffer = null;
+    _terminalInsertMode = false;
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
