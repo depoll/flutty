@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.74"
+	monkeyMuxVersion         = "0.1.75"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2411,7 +2411,7 @@ func (s *muxServer) agentScreenReplayBytesLocked(window *muxWindow, clean bool) 
 	if window == nil || window.screen == nil {
 		return nil
 	}
-	rows := window.screen.visibleLines()
+	rows := window.screen.visibleRows()
 	cursorRow, cursorCol := window.screen.cursorPosition()
 	return s.agentRowsReplayBytesLocked(
 		window,
@@ -2427,7 +2427,7 @@ func (s *muxServer) agentScrollbackReplayBytesLocked(window *muxWindow) []byte {
 	if window == nil || window.screen == nil {
 		return nil
 	}
-	lines := window.screen.historyLines()
+	lines := window.screen.historyRows()
 	height := window.screen.height
 	if height <= 0 {
 		height = s.height
@@ -2455,7 +2455,7 @@ func (s *muxServer) agentScrollbackReplayBytesLocked(window *muxWindow) []byte {
 
 func (s *muxServer) agentRowsReplayBytesLocked(
 	window *muxWindow,
-	rows []string,
+	rows []terminalRow,
 	clean bool,
 	cursorRow int,
 	cursorCol int,
@@ -2482,13 +2482,13 @@ func (s *muxServer) agentRowsReplayBytesLocked(
 	}
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
-	replay = append(replay, "\x1b[?7l\x1b[H\x1b[2J"...)
+	replay = append(replay, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J"...)
 	for row := 0; row < height; row++ {
-		replay = append(replay, "\x1b["...)
+		replay = append(replay, "\x1b[0m\x1b["...)
 		replay = strconv.AppendInt(replay, int64(row+1), 10)
 		replay = append(replay, ";1H\x1b[2K"...)
 		if row < len(rows) {
-			replay = append(replay, truncateTerminalRow(rows[row], width)...)
+			replay = appendTerminalRowReplay(replay, rows[row], width)
 		}
 	}
 	if cursorRow < 0 {
@@ -2506,23 +2506,36 @@ func (s *muxServer) agentRowsReplayBytesLocked(
 	replay = append(replay, ';')
 	replay = strconv.AppendInt(replay, int64(cursorCol+1), 10)
 	replay = append(replay, 'H')
+	replay = append(replay, "\x1b[0m"...)
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
 	return replay
 }
 
-func truncateTerminalRow(row string, width int) string {
+func appendTerminalRowReplay(replay []byte, row terminalRow, width int) []byte {
 	if width <= 0 {
-		return ""
+		return replay
 	}
-	count := 0
-	for index := range row {
-		if count >= width {
-			return row[:index]
+	end := minInt(len(row), width)
+	for end > 0 && row[end-1].isDefaultBlank() {
+		end--
+	}
+	style := terminalStyle{}
+	for col := 0; col < end; col++ {
+		cell := row[col]
+		if cell.ch == 0 {
+			cell.ch = ' '
 		}
-		count++
+		if cell.style != style {
+			replay = cell.style.appendSGR(replay)
+			style = cell.style
+		}
+		replay = append(replay, string(cell.ch)...)
 	}
-	return row
+	if style != (terminalStyle{}) {
+		replay = append(replay, "\x1b[0m"...)
+	}
+	return replay
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -2829,8 +2842,8 @@ type terminalScreen struct {
 	width  int
 	height int
 
-	rows       [][]rune
-	scrollback []string
+	rows       []terminalRow
+	scrollback []terminalRow
 
 	cursorRow int
 	cursorCol int
@@ -2841,9 +2854,51 @@ type terminalScreen struct {
 	scrollBottom int
 	wrapEnabled  bool
 	pendingWrap  bool
+	currentStyle terminalStyle
 	parserBuffer []byte
 	contentSeen  bool
 }
+
+type terminalRow []terminalCell
+
+type terminalCell struct {
+	ch    rune
+	style terminalStyle
+}
+
+type terminalStyle struct {
+	foreground terminalColor
+	background terminalColor
+	flags      uint16
+}
+
+type terminalColor struct {
+	mode  terminalColorMode
+	value int
+	red   int
+	green int
+	blue  int
+}
+
+type terminalColorMode uint8
+
+const (
+	terminalColorDefault terminalColorMode = iota
+	terminalColorANSI
+	terminalColorIndexed
+	terminalColorRGB
+)
+
+const (
+	terminalStyleBold uint16 = 1 << iota
+	terminalStyleDim
+	terminalStyleItalic
+	terminalStyleUnderline
+	terminalStyleBlink
+	terminalStyleInverse
+	terminalStyleHidden
+	terminalStyleStrikethrough
+)
 
 func newTerminalScreen(width int, height int) *terminalScreen {
 	screen := &terminalScreen{wrapEnabled: true}
@@ -2910,9 +2965,9 @@ func (t *terminalScreen) resize(width int, height int) {
 	oldWidth := t.width
 	t.width = width
 	t.height = height
-	t.rows = make([][]rune, height)
+	t.rows = make([]terminalRow, height)
 	for row := range t.rows {
-		t.rows[row] = blankTerminalRow(width)
+		t.rows[row] = blankTerminalRow(width, terminalStyle{})
 		if row < oldHeight && row < len(oldRows) {
 			copy(t.rows[row], oldRows[row][:minInt(oldWidth, width)])
 		}
@@ -2948,6 +3003,17 @@ func (t *terminalScreen) cursorPosition() (int, int) {
 	return t.cursorRow, col
 }
 
+func (t *terminalScreen) visibleRows() []terminalRow {
+	if t == nil {
+		return nil
+	}
+	rows := make([]terminalRow, len(t.rows))
+	for i, row := range t.rows {
+		rows[i] = row
+	}
+	return rows
+}
+
 func (t *terminalScreen) visibleLines() []string {
 	if t == nil {
 		return nil
@@ -2959,14 +3025,14 @@ func (t *terminalScreen) visibleLines() []string {
 	return lines
 }
 
-func (t *terminalScreen) historyLines() []string {
+func (t *terminalScreen) historyRows() []terminalRow {
 	if t == nil {
 		return nil
 	}
-	lines := make([]string, 0, len(t.scrollback)+len(t.rows))
-	lines = append(lines, t.scrollback...)
-	lines = append(lines, t.visibleLines()...)
-	return lines
+	rows := make([]terminalRow, 0, len(t.scrollback)+len(t.rows))
+	rows = append(rows, t.scrollback...)
+	rows = append(rows, t.visibleRows()...)
+	return rows
 }
 
 func (t *terminalScreen) historyLineCount() int {
@@ -3109,36 +3175,50 @@ func (t *terminalScreen) applyCSI(paramsBytes []byte, final byte) {
 	if private {
 		paramsText = strings.TrimPrefix(paramsText, "?")
 	}
-	params := csiIntParams(paramsText)
 
 	switch final {
+	case 'm':
+		if !private {
+			t.applySGR(paramsText)
+		}
 	case 'h', 'l':
+		params := csiIntParams(paramsText)
 		if private {
 			t.applyPrivateMode(params, final == 'h')
 		} else {
 			t.pendingWrap = false
 		}
 	case 'H', 'f':
+		params := csiIntParams(paramsText)
 		row := csiParam(params, 0, 1) - 1
 		col := csiParam(params, 1, 1) - 1
 		t.moveCursor(row, col)
 	case 'A':
+		params := csiIntParams(paramsText)
 		t.moveCursor(t.cursorRow-csiParam(params, 0, 1), t.cursorCol)
 	case 'B':
+		params := csiIntParams(paramsText)
 		t.moveCursor(t.cursorRow+csiParam(params, 0, 1), t.cursorCol)
 	case 'C':
+		params := csiIntParams(paramsText)
 		t.moveCursor(t.cursorRow, t.cursorCol+csiParam(params, 0, 1))
 	case 'D':
+		params := csiIntParams(paramsText)
 		t.moveCursor(t.cursorRow, t.cursorCol-csiParam(params, 0, 1))
 	case 'G':
+		params := csiIntParams(paramsText)
 		t.moveCursor(t.cursorRow, csiParam(params, 0, 1)-1)
 	case 'd':
+		params := csiIntParams(paramsText)
 		t.moveCursor(csiParam(params, 0, 1)-1, t.cursorCol)
 	case 'J':
+		params := csiIntParams(paramsText)
 		t.eraseDisplay(csiParam(params, 0, 0))
 	case 'K':
+		params := csiIntParams(paramsText)
 		t.eraseLine(csiParam(params, 0, 0))
 	case 'r':
+		params := csiIntParams(paramsText)
 		top := csiParam(params, 0, 1) - 1
 		bottom := csiParam(params, 1, t.height) - 1
 		if top < 0 || bottom < top || bottom >= t.height {
@@ -3149,18 +3229,25 @@ func (t *terminalScreen) applyCSI(paramsBytes []byte, final byte) {
 		t.scrollBottom = bottom
 		t.moveCursor(0, 0)
 	case 'S':
+		params := csiIntParams(paramsText)
 		t.scrollUp(csiParam(params, 0, 1))
 	case 'T':
+		params := csiIntParams(paramsText)
 		t.scrollDown(csiParam(params, 0, 1))
 	case 'L':
+		params := csiIntParams(paramsText)
 		t.insertLines(csiParam(params, 0, 1))
 	case 'M':
+		params := csiIntParams(paramsText)
 		t.deleteLines(csiParam(params, 0, 1))
 	case 'P':
+		params := csiIntParams(paramsText)
 		t.deleteChars(csiParam(params, 0, 1))
 	case '@':
+		params := csiIntParams(paramsText)
 		t.insertChars(csiParam(params, 0, 1))
 	case 'X':
+		params := csiIntParams(paramsText)
 		t.eraseChars(csiParam(params, 0, 1))
 	case 's':
 		t.savedRow, t.savedCol = t.cursorRow, t.cursorCol
@@ -3187,9 +3274,9 @@ func (t *terminalScreen) applyPrivateMode(params []int, enabled bool) {
 
 func (t *terminalScreen) reset() {
 	width, height := t.width, t.height
-	t.rows = make([][]rune, height)
+	t.rows = make([]terminalRow, height)
 	for row := range t.rows {
-		t.rows[row] = blankTerminalRow(width)
+		t.rows[row] = blankTerminalRow(width, terminalStyle{})
 	}
 	t.cursorRow = 0
 	t.cursorCol = 0
@@ -3198,6 +3285,7 @@ func (t *terminalScreen) reset() {
 	t.scrollTop = 0
 	t.scrollBottom = height - 1
 	t.pendingWrap = false
+	t.currentStyle = terminalStyle{}
 }
 
 func (t *terminalScreen) moveCursor(row int, col int) {
@@ -3214,7 +3302,10 @@ func (t *terminalScreen) putRune(r rune) {
 	}
 	t.cursorRow = clampInt(t.cursorRow, 0, t.height-1)
 	t.cursorCol = clampInt(t.cursorCol, 0, t.width-1)
-	t.rows[t.cursorRow][t.cursorCol] = r
+	t.rows[t.cursorRow][t.cursorCol] = terminalCell{
+		ch:    r,
+		style: t.currentStyle,
+	}
 	t.contentSeen = true
 	if t.cursorCol == t.width-1 {
 		if t.wrapEnabled {
@@ -3250,7 +3341,7 @@ func (t *terminalScreen) scrollUp(count int) {
 		for row := t.scrollTop; row < t.scrollBottom; row++ {
 			t.rows[row] = t.rows[row+1]
 		}
-		t.rows[t.scrollBottom] = blankTerminalRow(t.width)
+		t.rows[t.scrollBottom] = blankTerminalRow(t.width, t.currentStyle)
 	}
 }
 
@@ -3262,12 +3353,12 @@ func (t *terminalScreen) scrollDown(count int) {
 		for row := t.scrollBottom; row > t.scrollTop; row-- {
 			t.rows[row] = t.rows[row-1]
 		}
-		t.rows[t.scrollTop] = blankTerminalRow(t.width)
+		t.rows[t.scrollTop] = blankTerminalRow(t.width, t.currentStyle)
 	}
 }
 
-func (t *terminalScreen) appendScrollbackLine(row []rune) {
-	t.scrollback = append(t.scrollback, terminalRowString(row))
+func (t *terminalScreen) appendScrollbackLine(row terminalRow) {
+	t.scrollback = append(t.scrollback, cloneTerminalRow(row))
 	if len(t.scrollback) > agentScrollbackMaxLines {
 		copy(t.scrollback, t.scrollback[len(t.scrollback)-agentScrollbackMaxLines:])
 		t.scrollback = t.scrollback[:agentScrollbackMaxLines]
@@ -3288,7 +3379,7 @@ func (t *terminalScreen) insertLines(count int) {
 		t.rows[row] = t.rows[row-count]
 	}
 	for row := t.cursorRow; row < t.cursorRow+count; row++ {
-		t.rows[row] = blankTerminalRow(t.width)
+		t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
 	}
 	t.pendingWrap = false
 }
@@ -3307,7 +3398,7 @@ func (t *terminalScreen) deleteLines(count int) {
 		t.rows[row] = t.rows[row+count]
 	}
 	for row := t.scrollBottom - count + 1; row <= t.scrollBottom; row++ {
-		t.rows[row] = blankTerminalRow(t.width)
+		t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
 	}
 	t.pendingWrap = false
 }
@@ -3322,7 +3413,10 @@ func (t *terminalScreen) insertChars(count int) {
 	}
 	copy(row[t.cursorCol+count:], row[t.cursorCol:t.width-count])
 	for col := t.cursorCol; col < t.cursorCol+count; col++ {
-		row[col] = ' '
+		row[col] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
 	}
 	t.pendingWrap = false
 }
@@ -3337,7 +3431,10 @@ func (t *terminalScreen) deleteChars(count int) {
 	}
 	copy(row[t.cursorCol:], row[t.cursorCol+count:])
 	for col := t.width - count; col < t.width; col++ {
-		row[col] = ' '
+		row[col] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
 	}
 	t.pendingWrap = false
 }
@@ -3351,7 +3448,13 @@ func (t *terminalScreen) eraseChars(count int) {
 		end = t.width
 	}
 	for col := t.cursorCol; col < end; col++ {
-		t.rows[t.cursorRow][col] = ' '
+		t.rows[t.cursorRow][col] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	if t.currentStyle != (terminalStyle{}) && end > t.cursorCol {
+		t.contentSeen = true
 	}
 	t.pendingWrap = false
 }
@@ -3361,16 +3464,19 @@ func (t *terminalScreen) eraseDisplay(mode int) {
 	case 0:
 		t.eraseLineFrom(t.cursorRow, t.cursorCol)
 		for row := t.cursorRow + 1; row < t.height; row++ {
-			t.rows[row] = blankTerminalRow(t.width)
+			t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
 		}
 	case 1:
 		for row := 0; row < t.cursorRow; row++ {
-			t.rows[row] = blankTerminalRow(t.width)
+			t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
 		}
 		t.eraseLineTo(t.cursorRow, t.cursorCol)
 	case 2:
 		for row := 0; row < t.height; row++ {
-			t.rows[row] = blankTerminalRow(t.width)
+			t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
+		}
+		if t.currentStyle != (terminalStyle{}) {
+			t.contentSeen = true
 		}
 	case 3:
 		t.scrollback = nil
@@ -3385,37 +3491,279 @@ func (t *terminalScreen) eraseLine(mode int) {
 	case 1:
 		t.eraseLineTo(t.cursorRow, t.cursorCol)
 	case 2:
-		t.rows[t.cursorRow] = blankTerminalRow(t.width)
+		t.rows[t.cursorRow] = blankTerminalRow(t.width, t.currentStyle)
+		if t.currentStyle != (terminalStyle{}) {
+			t.contentSeen = true
+		}
 	}
 	t.pendingWrap = false
 }
 
 func (t *terminalScreen) eraseLineFrom(row int, col int) {
 	for i := clampInt(col, 0, t.width-1); i < t.width; i++ {
-		t.rows[row][i] = ' '
+		t.rows[row][i] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	if t.currentStyle != (terminalStyle{}) && col < t.width {
+		t.contentSeen = true
 	}
 }
 
 func (t *terminalScreen) eraseLineTo(row int, col int) {
 	for i := 0; i <= clampInt(col, 0, t.width-1); i++ {
-		t.rows[row][i] = ' '
+		t.rows[row][i] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	if t.currentStyle != (terminalStyle{}) && t.width > 0 {
+		t.contentSeen = true
 	}
 }
 
-func blankTerminalRow(width int) []rune {
-	row := make([]rune, width)
+func blankTerminalRow(width int, style terminalStyle) terminalRow {
+	row := make(terminalRow, width)
 	for i := range row {
-		row[i] = ' '
+		row[i] = terminalCell{
+			ch:    ' ',
+			style: style,
+		}
 	}
 	return row
 }
 
-func terminalRowString(row []rune) string {
+func cloneTerminalRow(row terminalRow) terminalRow {
+	if row == nil {
+		return nil
+	}
+	cloned := make(terminalRow, len(row))
+	copy(cloned, row)
+	return cloned
+}
+
+func terminalRowString(row terminalRow) string {
 	end := len(row)
-	for end > 0 && (row[end-1] == 0 || row[end-1] == ' ') {
+	for end > 0 && (row[end-1].ch == 0 || row[end-1].ch == ' ') {
 		end--
 	}
-	return string(row[:end])
+	var builder strings.Builder
+	for _, cell := range row[:end] {
+		if cell.ch == 0 {
+			builder.WriteRune(' ')
+			continue
+		}
+		builder.WriteRune(cell.ch)
+	}
+	return builder.String()
+}
+
+func (c terminalCell) isDefaultBlank() bool {
+	return (c.ch == 0 || c.ch == ' ') && c.style == (terminalStyle{})
+}
+
+func (s terminalStyle) appendSGR(output []byte) []byte {
+	if s == (terminalStyle{}) {
+		return append(output, "\x1b[0m"...)
+	}
+	params := make([]int, 0, 16)
+	if s.flags&terminalStyleBold != 0 {
+		params = append(params, 1)
+	}
+	if s.flags&terminalStyleDim != 0 {
+		params = append(params, 2)
+	}
+	if s.flags&terminalStyleItalic != 0 {
+		params = append(params, 3)
+	}
+	if s.flags&terminalStyleUnderline != 0 {
+		params = append(params, 4)
+	}
+	if s.flags&terminalStyleBlink != 0 {
+		params = append(params, 5)
+	}
+	if s.flags&terminalStyleInverse != 0 {
+		params = append(params, 7)
+	}
+	if s.flags&terminalStyleHidden != 0 {
+		params = append(params, 8)
+	}
+	if s.flags&terminalStyleStrikethrough != 0 {
+		params = append(params, 9)
+	}
+	params = appendTerminalColorSGR(params, s.foreground, true)
+	params = appendTerminalColorSGR(params, s.background, false)
+	return appendSGRParams(output, params)
+}
+
+func appendTerminalColorSGR(params []int, color terminalColor, foreground bool) []int {
+	switch color.mode {
+	case terminalColorANSI:
+		return append(params, color.value)
+	case terminalColorIndexed:
+		prefix := 38
+		if !foreground {
+			prefix = 48
+		}
+		return append(params, prefix, 5, color.value)
+	case terminalColorRGB:
+		prefix := 38
+		if !foreground {
+			prefix = 48
+		}
+		return append(params, prefix, 2, color.red, color.green, color.blue)
+	default:
+		return params
+	}
+}
+
+func appendSGRParams(output []byte, params []int) []byte {
+	if len(params) == 0 {
+		return append(output, "\x1b[0m"...)
+	}
+	output = append(output, "\x1b["...)
+	for i, param := range params {
+		if i > 0 {
+			output = append(output, ';')
+		}
+		output = strconv.AppendInt(output, int64(param), 10)
+	}
+	output = append(output, 'm')
+	return output
+}
+
+func (t *terminalScreen) applySGR(paramsText string) {
+	params := sgrIntParams(paramsText)
+	for i := 0; i < len(params); i++ {
+		param := params[i]
+		if param < 0 {
+			param = 0
+		}
+		switch {
+		case param == 0:
+			t.currentStyle = terminalStyle{}
+		case param == 1:
+			t.currentStyle.flags |= terminalStyleBold
+		case param == 2:
+			t.currentStyle.flags |= terminalStyleDim
+		case param == 3:
+			t.currentStyle.flags |= terminalStyleItalic
+		case param == 4:
+			t.currentStyle.flags |= terminalStyleUnderline
+		case param == 5:
+			t.currentStyle.flags |= terminalStyleBlink
+		case param == 7:
+			t.currentStyle.flags |= terminalStyleInverse
+		case param == 8:
+			t.currentStyle.flags |= terminalStyleHidden
+		case param == 9:
+			t.currentStyle.flags |= terminalStyleStrikethrough
+		case param == 22:
+			t.currentStyle.flags &^= terminalStyleBold | terminalStyleDim
+		case param == 23:
+			t.currentStyle.flags &^= terminalStyleItalic
+		case param == 24:
+			t.currentStyle.flags &^= terminalStyleUnderline
+		case param == 25:
+			t.currentStyle.flags &^= terminalStyleBlink
+		case param == 27:
+			t.currentStyle.flags &^= terminalStyleInverse
+		case param == 28:
+			t.currentStyle.flags &^= terminalStyleHidden
+		case param == 29:
+			t.currentStyle.flags &^= terminalStyleStrikethrough
+		case (param >= 30 && param <= 37) || (param >= 90 && param <= 97):
+			t.currentStyle.foreground = terminalColor{
+				mode:  terminalColorANSI,
+				value: param,
+			}
+		case param == 39:
+			t.currentStyle.foreground = terminalColor{}
+		case (param >= 40 && param <= 47) || (param >= 100 && param <= 107):
+			t.currentStyle.background = terminalColor{
+				mode:  terminalColorANSI,
+				value: param,
+			}
+		case param == 49:
+			t.currentStyle.background = terminalColor{}
+		case param == 38 || param == 48:
+			color, end, ok := parseExtendedTerminalColor(params, i+1)
+			if ok {
+				if param == 38 {
+					t.currentStyle.foreground = color
+				} else {
+					t.currentStyle.background = color
+				}
+				i = end
+			}
+		}
+	}
+}
+
+func sgrIntParams(paramsText string) []int {
+	if paramsText == "" {
+		return []int{0}
+	}
+	fields := strings.FieldsFunc(paramsText, func(r rune) bool {
+		return r == ';' || r == ':'
+	})
+	params := make([]int, 0, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			params = append(params, -1)
+			continue
+		}
+		value, err := strconv.Atoi(field)
+		if err != nil {
+			params = append(params, -1)
+			continue
+		}
+		params = append(params, value)
+	}
+	if len(params) == 0 {
+		return []int{0}
+	}
+	return params
+}
+
+func parseExtendedTerminalColor(params []int, start int) (terminalColor, int, bool) {
+	if start >= len(params) {
+		return terminalColor{}, start, false
+	}
+	switch params[start] {
+	case 5:
+		if start+1 >= len(params) || !isByteValue(params[start+1]) {
+			return terminalColor{}, start, false
+		}
+		return terminalColor{
+			mode:  terminalColorIndexed,
+			value: params[start+1],
+		}, start + 1, true
+	case 2:
+		redIndex := start + 1
+		if redIndex < len(params) && params[redIndex] < 0 {
+			redIndex++
+		}
+		if redIndex+2 >= len(params) ||
+			!isByteValue(params[redIndex]) ||
+			!isByteValue(params[redIndex+1]) ||
+			!isByteValue(params[redIndex+2]) {
+			return terminalColor{}, start, false
+		}
+		return terminalColor{
+			mode:  terminalColorRGB,
+			red:   params[redIndex],
+			green: params[redIndex+1],
+			blue:  params[redIndex+2],
+		}, redIndex + 2, true
+	default:
+		return terminalColor{}, start, false
+	}
+}
+
+func isByteValue(value int) bool {
+	return value >= 0 && value <= 255
 }
 
 func csiIntParams(params string) []int {
