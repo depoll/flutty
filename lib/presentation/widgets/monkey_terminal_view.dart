@@ -501,6 +501,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
+    this.forceSgrScrollMouseInput = false,
     this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
@@ -634,6 +635,10 @@ class MonkeyTerminalView extends StatefulWidget {
   /// If true, vertical touch drags are converted into terminal scroll input
   /// instead of scrolling the Flutter viewport.
   final bool touchScrollToTerminal;
+
+  /// If true, scroll gestures emit SGR wheel reports even when xterm has not
+  /// entered mouse mode.
+  final bool forceSgrScrollMouseInput;
 
   /// If true, the terminal keeps the viewport pinned to the newest output while
   /// it is already scrolled to the bottom.
@@ -930,6 +935,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       child = MonkeyTerminalScrollGestureHandler(
         terminal: widget.terminal,
         simulateScroll: widget.simulateScroll,
+        forceSgrScrollMouseInput: widget.forceSgrScrollMouseInput,
         getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
         getLineHeight: () => renderTerminal.lineHeight,
         child: child,
@@ -1151,6 +1157,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (lineHeight <= 0) {
       return 0;
     }
+    if (widget.forceSgrScrollMouseInput) {
+      return lineHeight;
+    }
     if (widget.terminal.mouseMode.reportScroll) {
       return lineHeight * _touchScrollReportedWheelLinesPerEvent;
     }
@@ -1231,6 +1240,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     terminal: widget.terminal,
     button: button,
     position: position,
+    forceSgr: widget.forceSgrScrollMouseInput,
   );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {

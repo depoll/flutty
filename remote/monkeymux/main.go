@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.71"
+	monkeyMuxVersion         = "0.1.72"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3890,7 +3890,8 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "copilot" || normalized == "copilot cli" ||
 		strings.HasPrefix(normalized, "copilot cli "):
 		return "copilot"
-	case normalized == "codex" || strings.HasPrefix(normalized, "codex "):
+	case normalized == "codex" || strings.HasPrefix(normalized, "codex ") ||
+		normalized == "openai codex" || strings.HasPrefix(normalized, "openai codex "):
 		return "codex"
 	case normalized == "opencode" || normalized == "open code" ||
 		strings.HasPrefix(normalized, "opencode "):

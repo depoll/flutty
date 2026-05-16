@@ -536,6 +536,13 @@ void main() {
         currentCommand: 'node',
         paneTitle: 'Claude Code - fixing tests',
       );
+      const openAiCodexPaneTitleWindow = TmuxWindow(
+        index: 3,
+        name: 'zsh',
+        isActive: false,
+        currentCommand: 'node',
+        paneTitle: 'OpenAI Codex (v0.130.0)',
+      );
 
       expect(
         copilotTitleWindow.foregroundAgentTool,
@@ -544,6 +551,10 @@ void main() {
       expect(
         claudePaneTitleWindow.foregroundAgentTool,
         AgentLaunchTool.claudeCode,
+      );
+      expect(
+        openAiCodexPaneTitleWindow.foregroundAgentTool,
+        AgentLaunchTool.codex,
       );
     });
 

@@ -1,6 +1,8 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
@@ -99,6 +101,58 @@ void main() {
           isMobile: true,
           isUsingAltBuffer: false,
           terminalReportsMouseWheel: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('routes forced MonkeyMux Codex drags without alt or mouse mode', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: false,
+          terminalReportsMouseWheel: false,
+          forceTerminalScroll: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not force terminal scrolling on desktop', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: false,
+          isUsingAltBuffer: false,
+          terminalReportsMouseWheel: false,
+          forceTerminalScroll: true,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('MonkeyMux Codex scroll input helper', () {
+    test('forces SGR scroll only for active MonkeyMux Codex windows', () {
+      expect(
+        shouldForceMonkeyMuxCodexScrollInput(
+          activeMuxBackend: RemoteMuxBackend.monkeyMux,
+          activeWindowTool: AgentLaunchTool.codex,
+        ),
+        isTrue,
+      );
+
+      expect(
+        shouldForceMonkeyMuxCodexScrollInput(
+          activeMuxBackend: RemoteMuxBackend.tmux,
+          activeWindowTool: AgentLaunchTool.codex,
+        ),
+        isFalse,
+      );
+
+      expect(
+        shouldForceMonkeyMuxCodexScrollInput(
+          activeMuxBackend: RemoteMuxBackend.monkeyMux,
+          activeWindowTool: AgentLaunchTool.copilotCli,
         ),
         isFalse,
       );

@@ -2094,7 +2094,20 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+  bool forceTerminalScroll = false,
+}) =>
+    isMobile &&
+    (forceTerminalScroll || isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether MonkeyMux should receive direct SGR scroll input for the active
+/// window's server-managed scrollback.
+@visibleForTesting
+bool shouldForceMonkeyMuxCodexScrollInput({
+  required RemoteMuxBackend activeMuxBackend,
+  required AgentLaunchTool? activeWindowTool,
+}) =>
+    activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+    activeWindowTool == AgentLaunchTool.codex;
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2877,10 +2890,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
+  AgentLaunchTool? get _activeTmuxWindowTool => resolveTmuxBarActiveWindowTool(
+    _tmuxBarKey.currentState?.currentWindowsSnapshot,
+  );
+
+  bool get _forceSgrScrollMouseInputForMuxWindow =>
+      shouldForceMonkeyMuxCodexScrollInput(
+        activeMuxBackend: _activeMuxBackend,
+        activeWindowTool: _activeTmuxWindowTool,
+      );
+
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
+    forceTerminalScroll: _forceSgrScrollMouseInputForMuxWindow,
   );
 
   MenuStyle _terminalOverflowMenuStyle({
@@ -3839,6 +3863,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      if (mounted) {
+        setState(() {});
+      }
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
         _refreshTerminalAfterMonkeyMuxWindowChange();
@@ -9308,6 +9335,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               : <TerminalTextUnderline>[?_hoveredTerminalPathUnderline]
         : const <TerminalTextUnderline>[];
     final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
+    final forceSgrScrollMouseInput = _forceSgrScrollMouseInputForMuxWindow;
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -9340,6 +9368,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      forceSgrScrollMouseInput: forceSgrScrollMouseInput,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
     );

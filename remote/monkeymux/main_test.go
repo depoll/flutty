@@ -896,7 +896,7 @@ func TestAgentToolPrefersLiveCodexTitleOverStoredMetadata(t *testing.T) {
 		name:              "agent",
 		command:           "node",
 		foregroundCommand: "node",
-		paneTitle:         "Codex · flutty",
+		paneTitle:         "OpenAI Codex (v0.130.0)",
 		agentTool:         "copilot",
 	}
 

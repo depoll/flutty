@@ -973,7 +973,7 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
     'copilot cli',
     'github copilot',
   },
-  AgentLaunchTool.codex => const {'codex'},
+  AgentLaunchTool.codex => const {'codex', 'openai codex'},
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
 };

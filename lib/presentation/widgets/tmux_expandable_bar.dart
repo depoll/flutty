@@ -696,6 +696,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         _resetWindowReloadRecovery();
       }
       _applyWindows(windows);
+      if (widget.activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        _notifyWindowStateChanged(activeWindowChanged: false);
+      }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
