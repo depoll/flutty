@@ -200,6 +200,66 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       return '\x1b[${row + 1};${column + 1}R';
     });
 
+/// Adapts remote terminal output so xterm.dart renders insert mode correctly.
+///
+/// xterm.dart 4.0.0 tracks IRM (`CSI 4 h/l`) but does not shift existing cells
+/// when printable characters arrive while the mode is active. Injecting ICH
+/// before each printable cell preserves behavior from editors such as nano,
+/// while [pendingInput] keeps split escape sequences from leaking printable
+/// bytes into the renderer.
+@visibleForTesting
+({String output, String pendingInput, bool insertMode})
+adaptTerminalInsertModeOutputForXterm({
+  required String input,
+  required String pendingInput,
+  required bool insertMode,
+}) {
+  final combinedInput = pendingInput + input;
+  final output = StringBuffer();
+  var cursor = 0;
+  var nextInsertMode = insertMode;
+
+  while (cursor < combinedInput.length) {
+    final codeUnit = combinedInput.codeUnitAt(cursor);
+    if (codeUnit == _terminalEscapeCodeUnit) {
+      final endIndex = _terminalEscapeSequenceEndIndex(combinedInput, cursor);
+      if (endIndex == null) {
+        return (
+          output: output.toString(),
+          pendingInput: combinedInput.substring(cursor),
+          insertMode: nextInsertMode,
+        );
+      }
+
+      final sequence = combinedInput.substring(cursor, endIndex);
+      output.write(sequence);
+      final insertModeUpdate = _terminalInsertModeUpdate(sequence);
+      if (insertModeUpdate != null) {
+        nextInsertMode = insertModeUpdate;
+      }
+      cursor = endIndex;
+      continue;
+    }
+
+    final rune = _terminalRuneAt(combinedInput, cursor);
+    final runeLength = _terminalRuneLength(rune);
+    if (nextInsertMode && _isTerminalGraphicRune(rune)) {
+      final width = _terminalCellWidth(rune);
+      for (var cell = 0; cell < width; cell += 1) {
+        output.write(_terminalInsertBlankCharacterSequence);
+      }
+    }
+    output.write(combinedInput.substring(cursor, cursor + runeLength));
+    cursor += runeLength;
+  }
+
+  return (
+    output: output.toString(),
+    pendingInput: '',
+    insertMode: nextInsertMode,
+  );
+}
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
@@ -293,6 +353,22 @@ const _terminalModeSet = 1;
 const _terminalModeReset = 2;
 
 const _terminalEscape = '\x1b';
+const _terminalEscapeCodeUnit = 0x1B;
+const _terminalBellCodeUnit = 0x07;
+const _terminalCsiIntroducerCodeUnit = 0x5B;
+const _terminalDcsIntroducerCodeUnit = 0x50;
+const _terminalOscIntroducerCodeUnit = 0x5D;
+const _terminalSosIntroducerCodeUnit = 0x58;
+const _terminalPmIntroducerCodeUnit = 0x5E;
+const _terminalApcIntroducerCodeUnit = 0x5F;
+const _terminalStringTerminatorCodeUnit = 0x5C;
+const _terminalDeleteCodeUnit = 0x7F;
+const _terminalInsertMode = 4;
+const _terminalSetModeFinalCodeUnit = 0x68;
+const _terminalResetModeFinalCodeUnit = 0x6C;
+const _terminalSoftResetFinalCodeUnit = 0x70;
+const _terminalFullResetFinalCodeUnit = 0x63;
+const _terminalInsertBlankCharacterSequence = '\x1b[@';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
@@ -334,6 +410,167 @@ String _terminalTmuxPassthroughPendingSuffix(String input) {
   }
   return '';
 }
+
+int? _terminalEscapeSequenceEndIndex(String input, int start) {
+  if (start + 1 >= input.length) {
+    return null;
+  }
+
+  final introducer = input.codeUnitAt(start + 1);
+  switch (introducer) {
+    case _terminalCsiIntroducerCodeUnit:
+      return _terminalCsiEndIndex(input, start + 2);
+    case _terminalDcsIntroducerCodeUnit:
+    case _terminalOscIntroducerCodeUnit:
+    case _terminalSosIntroducerCodeUnit:
+    case _terminalPmIntroducerCodeUnit:
+    case _terminalApcIntroducerCodeUnit:
+      return _terminalStringEndIndex(input, start + 2);
+  }
+
+  var cursor = start + 1;
+  while (cursor < input.length &&
+      _isTerminalEscapeIntermediate(input.codeUnitAt(cursor))) {
+    cursor += 1;
+  }
+  if (cursor >= input.length) {
+    return null;
+  }
+  return cursor + 1;
+}
+
+int? _terminalCsiEndIndex(String input, int start) {
+  var cursor = start;
+  while (cursor < input.length) {
+    final codeUnit = input.codeUnitAt(cursor);
+    if (codeUnit >= 0x40 && codeUnit <= 0x7E) {
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
+int? _terminalStringEndIndex(String input, int start) {
+  var cursor = start;
+  while (cursor < input.length) {
+    final codeUnit = input.codeUnitAt(cursor);
+    if (codeUnit == _terminalBellCodeUnit) {
+      return cursor + 1;
+    }
+    if (codeUnit == _terminalEscapeCodeUnit) {
+      if (cursor + 1 >= input.length) {
+        return null;
+      }
+      if (input.codeUnitAt(cursor + 1) == _terminalStringTerminatorCodeUnit) {
+        return cursor + 2;
+      }
+      cursor += 1;
+      continue;
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
+bool _isTerminalEscapeIntermediate(int codeUnit) =>
+    codeUnit >= 0x20 && codeUnit <= 0x2F;
+
+bool? _terminalInsertModeUpdate(String sequence) {
+  if (sequence.length < 2 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit) {
+    return null;
+  }
+  if (sequence.length == 2 &&
+      sequence.codeUnitAt(1) == _terminalFullResetFinalCodeUnit) {
+    return false;
+  }
+  if (sequence.length < 4 ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
+    return null;
+  }
+
+  final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
+  final params = sequence.substring(2, sequence.length - 1);
+  if (finalCodeUnit == _terminalSoftResetFinalCodeUnit &&
+      (params == '!' || params.endsWith('"'))) {
+    return false;
+  }
+  if (finalCodeUnit != _terminalSetModeFinalCodeUnit &&
+      finalCodeUnit != _terminalResetModeFinalCodeUnit) {
+    return null;
+  }
+
+  if (params.startsWith('?')) {
+    return null;
+  }
+  for (final param in params.split(';')) {
+    if (int.tryParse(param) == _terminalInsertMode) {
+      return finalCodeUnit == _terminalSetModeFinalCodeUnit;
+    }
+  }
+  return null;
+}
+
+int _terminalRuneAt(String input, int index) {
+  final first = input.codeUnitAt(index);
+  if (_isTerminalHighSurrogate(first) && index + 1 < input.length) {
+    final second = input.codeUnitAt(index + 1);
+    if (_isTerminalLowSurrogate(second)) {
+      return 0x10000 + ((first - 0xD800) << 10) + second - 0xDC00;
+    }
+  }
+  return first;
+}
+
+int _terminalRuneLength(int rune) => rune > 0xFFFF ? 2 : 1;
+
+bool _isTerminalHighSurrogate(int codeUnit) =>
+    codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+
+bool _isTerminalLowSurrogate(int codeUnit) =>
+    codeUnit >= 0xDC00 && codeUnit <= 0xDFFF;
+
+bool _isTerminalGraphicRune(int rune) =>
+    rune >= 0x20 &&
+    rune != _terminalDeleteCodeUnit &&
+    !(rune >= 0x80 && rune <= 0x9F);
+
+int _terminalCellWidth(int rune) {
+  if (!_isTerminalGraphicRune(rune) || _isTerminalZeroWidthRune(rune)) {
+    return 0;
+  }
+  if (_isTerminalWideRune(rune)) {
+    return 2;
+  }
+  return 1;
+}
+
+bool _isTerminalZeroWidthRune(int rune) =>
+    rune == 0x200D ||
+    (rune >= 0x0300 && rune <= 0x036F) ||
+    (rune >= 0x1AB0 && rune <= 0x1AFF) ||
+    (rune >= 0x1DC0 && rune <= 0x1DFF) ||
+    (rune >= 0x20D0 && rune <= 0x20FF) ||
+    (rune >= 0xFE00 && rune <= 0xFE0F) ||
+    (rune >= 0xFE20 && rune <= 0xFE2F) ||
+    (rune >= 0x1F3FB && rune <= 0x1F3FF) ||
+    (rune >= 0xE0100 && rune <= 0xE01EF);
+
+bool _isTerminalWideRune(int rune) =>
+    rune >= 0x1100 &&
+    (rune <= 0x115F ||
+        rune == 0x2329 ||
+        rune == 0x232A ||
+        (rune >= 0x2E80 && rune <= 0xA4CF && rune != 0x303F) ||
+        (rune >= 0xAC00 && rune <= 0xD7A3) ||
+        (rune >= 0xF900 && rune <= 0xFAFF) ||
+        (rune >= 0xFE10 && rune <= 0xFE19) ||
+        (rune >= 0xFE30 && rune <= 0xFE6F) ||
+        (rune >= 0xFF00 && rune <= 0xFF60) ||
+        (rune >= 0xFFE0 && rune <= 0xFFE6) ||
+        (rune >= 0x1F300 && rune <= 0x1FAFF) ||
+        (rune >= 0x20000 && rune <= 0x3FFFD));
 
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics != null &&
