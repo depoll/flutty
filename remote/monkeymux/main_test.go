@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1467,6 +1468,57 @@ func TestCodexScrollbackTextFiltersRepeatedCodexChrome(t *testing.T) {
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
 	}
+}
+
+func TestCodexScrollbackTextMergesOverlappingNearBottomFrames(t *testing.T) {
+	lateRows := make([]string, 0, 23)
+	for number := 9; number <= 30; number++ {
+		lateRows = append(lateRows, strconv.Itoa(number))
+	}
+	lateRows = append(lateRows, "gpt-5.5 medium - /tmp/monkeymux-codex")
+
+	fullRows := []string{
+		"› Print exactly the numbers 1 through 30, one per line, with no",
+	}
+	for number := 1; number <= 23; number++ {
+		fullRows = append(fullRows, strconv.Itoa(number))
+	}
+	fullRows = append(
+		fullRows,
+		"› Improve documentation in @filename",
+		"gpt-5.5 medium - /tmp/monkeymux-codex",
+	)
+
+	window := &muxWindow{
+		agentTool: "codex",
+		history:   []byte(codexSynchronizedFrame(lateRows...) + codexSynchronizedFrame(fullRows...)),
+	}
+
+	lines := window.scrollbackTextLinesLocked(80, 24)
+
+	want := []string{
+		"› Print exactly the numbers 1 through 30, one per line, with no",
+	}
+	for number := 1; number <= 30; number++ {
+		want = append(want, strconv.Itoa(number))
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("scrollback lines = %#v, want %#v", lines, want)
+	}
+}
+
+func codexSynchronizedFrame(rows ...string) string {
+	var frame strings.Builder
+	frame.WriteString("\x1b[?2026h")
+	for index, row := range rows {
+		frame.WriteString("\x1b[")
+		frame.WriteString(strconv.Itoa(index + 1))
+		frame.WriteString(";1H")
+		frame.WriteString(row)
+		frame.WriteString("\x1b[K")
+	}
+	frame.WriteString("\x1b[?2026l")
+	return frame.String()
 }
 
 func TestRedrawActiveNudgesCodexWithoutClearingViewport(t *testing.T) {

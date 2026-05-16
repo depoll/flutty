@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.65"
+	monkeyMuxVersion         = "0.1.66"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3208,16 +3208,102 @@ func appendTerminalAppFrameLines(
 	snapshot []string,
 	width int,
 ) []string {
+	cleanSnapshot := make([]string, 0, len(snapshot))
 	for _, line := range snapshot {
 		if !isUsefulTerminalAppFrameLine(line, width) {
 			continue
 		}
-		if containsTerminalLine(lines, line) {
+		cleanSnapshot = appendDeduplicatedLine(cleanSnapshot, line)
+	}
+	return mergeTerminalAppFrameSnapshot(lines, cleanSnapshot)
+}
+
+func mergeTerminalAppFrameSnapshot(lines []string, snapshot []string) []string {
+	if len(snapshot) == 0 {
+		return lines
+	}
+	if len(lines) == 0 {
+		return append([]string(nil), snapshot...)
+	}
+	if containsTerminalLineSequence(lines, snapshot) {
+		return lines
+	}
+
+	prependOverlap := terminalLinePrefixSuffixOverlap(lines, snapshot)
+	appendOverlap := terminalLineSuffixPrefixOverlap(lines, snapshot)
+	if prependOverlap > 0 && prependOverlap >= appendOverlap {
+		merged := make([]string, 0, len(lines)+len(snapshot)-prependOverlap)
+		merged = append(merged, snapshot[:len(snapshot)-prependOverlap]...)
+		merged = append(merged, lines...)
+		return merged
+	}
+	if appendOverlap > 0 {
+		merged := append([]string(nil), lines...)
+		merged = append(merged, snapshot[appendOverlap:]...)
+		return merged
+	}
+
+	merged := append([]string(nil), lines...)
+	for _, line := range snapshot {
+		if containsTerminalLine(merged, line) {
 			continue
 		}
-		lines = appendDeduplicatedLine(lines, line)
+		merged = appendDeduplicatedLine(merged, line)
 	}
-	return lines
+	return merged
+}
+
+func containsTerminalLineSequence(lines []string, sequence []string) bool {
+	if len(sequence) == 0 {
+		return true
+	}
+	if len(sequence) > len(lines) {
+		return false
+	}
+	for start := 0; start <= len(lines)-len(sequence); start++ {
+		if terminalLineSlicesEqual(lines[start:start+len(sequence)], sequence) {
+			return true
+		}
+	}
+	return false
+}
+
+func terminalLinePrefixSuffixOverlap(lines []string, snapshot []string) int {
+	maxOverlap := len(lines)
+	if len(snapshot) < maxOverlap {
+		maxOverlap = len(snapshot)
+	}
+	for overlap := maxOverlap; overlap > 0; overlap-- {
+		if terminalLineSlicesEqual(lines[:overlap], snapshot[len(snapshot)-overlap:]) {
+			return overlap
+		}
+	}
+	return 0
+}
+
+func terminalLineSuffixPrefixOverlap(lines []string, snapshot []string) int {
+	maxOverlap := len(lines)
+	if len(snapshot) < maxOverlap {
+		maxOverlap = len(snapshot)
+	}
+	for overlap := maxOverlap; overlap > 0; overlap-- {
+		if terminalLineSlicesEqual(lines[len(lines)-overlap:], snapshot[:overlap]) {
+			return overlap
+		}
+	}
+	return 0
+}
+
+func terminalLineSlicesEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index := range a {
+		if a[index] != b[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func codexScrollbackLines(appFrameLines []string, terminalLines []string, width int) []string {
@@ -3287,7 +3373,12 @@ func isCodexAppChromeLine(trimmed string) bool {
 		return true
 	case strings.HasPrefix(chrome, "Tip: Run codex app"):
 		return true
-	case strings.HasPrefix(chrome, "gpt-") && strings.Contains(chrome, " · "):
+	case strings.HasPrefix(chrome, "gpt-") &&
+		(strings.Contains(chrome, " · ") ||
+			strings.Contains(chrome, " - /") ||
+			strings.Contains(chrome, " - ~")):
+		return true
+	case strings.TrimSpace(strings.TrimLeft(chrome, "›> ")) == "Improve documentation in @filename":
 		return true
 	case strings.HasPrefix(chrome, "Working (") ||
 		strings.Contains(chrome, " esc to interrupt") ||
