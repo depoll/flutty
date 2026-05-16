@@ -356,11 +356,18 @@ const _terminalEscape = '\x1b';
 const _terminalEscapeCodeUnit = 0x1B;
 const _terminalBellCodeUnit = 0x07;
 const _terminalCsiIntroducerCodeUnit = 0x5B;
+const _terminalDcsIntroducerCodeUnit = 0x50;
 const _terminalOscIntroducerCodeUnit = 0x5D;
+const _terminalSosIntroducerCodeUnit = 0x58;
+const _terminalPmIntroducerCodeUnit = 0x5E;
+const _terminalApcIntroducerCodeUnit = 0x5F;
+const _terminalStringTerminatorCodeUnit = 0x5C;
 const _terminalDeleteCodeUnit = 0x7F;
 const _terminalInsertMode = 4;
 const _terminalSetModeFinalCodeUnit = 0x68;
 const _terminalResetModeFinalCodeUnit = 0x6C;
+const _terminalSoftResetFinalCodeUnit = 0x70;
+const _terminalFullResetFinalCodeUnit = 0x63;
 const _terminalInsertBlankCharacterSequence = '\x1b[@';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
@@ -413,8 +420,12 @@ int? _terminalEscapeSequenceEndIndex(String input, int start) {
   switch (introducer) {
     case _terminalCsiIntroducerCodeUnit:
       return _terminalCsiEndIndex(input, start + 2);
+    case _terminalDcsIntroducerCodeUnit:
     case _terminalOscIntroducerCodeUnit:
-      return _terminalOscEndIndex(input, start + 2);
+    case _terminalSosIntroducerCodeUnit:
+    case _terminalPmIntroducerCodeUnit:
+    case _terminalApcIntroducerCodeUnit:
+      return _terminalStringEndIndex(input, start + 2);
   }
 
   var cursor = start + 1;
@@ -440,7 +451,7 @@ int? _terminalCsiEndIndex(String input, int start) {
   return null;
 }
 
-int? _terminalOscEndIndex(String input, int start) {
+int? _terminalStringEndIndex(String input, int start) {
   var cursor = start;
   while (cursor < input.length) {
     final codeUnit = input.codeUnitAt(cursor);
@@ -451,7 +462,11 @@ int? _terminalOscEndIndex(String input, int start) {
       if (cursor + 1 >= input.length) {
         return null;
       }
-      return cursor + 2;
+      if (input.codeUnitAt(cursor + 1) == _terminalStringTerminatorCodeUnit) {
+        return cursor + 2;
+      }
+      cursor += 1;
+      continue;
     }
     cursor += 1;
   }
@@ -462,19 +477,30 @@ bool _isTerminalEscapeIntermediate(int codeUnit) =>
     codeUnit >= 0x20 && codeUnit <= 0x2F;
 
 bool? _terminalInsertModeUpdate(String sequence) {
+  if (sequence.length < 2 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit) {
+    return null;
+  }
+  if (sequence.length == 2 &&
+      sequence.codeUnitAt(1) == _terminalFullResetFinalCodeUnit) {
+    return false;
+  }
   if (sequence.length < 4 ||
-      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
       sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
     return null;
   }
 
   final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
+  final params = sequence.substring(2, sequence.length - 1);
+  if (finalCodeUnit == _terminalSoftResetFinalCodeUnit &&
+      (params == '!' || params.endsWith('"'))) {
+    return false;
+  }
   if (finalCodeUnit != _terminalSetModeFinalCodeUnit &&
       finalCodeUnit != _terminalResetModeFinalCodeUnit) {
     return null;
   }
 
-  final params = sequence.substring(2, sequence.length - 1);
   if (params.startsWith('?')) {
     return null;
   }
@@ -528,6 +554,7 @@ bool _isTerminalZeroWidthRune(int rune) =>
     (rune >= 0x20D0 && rune <= 0x20FF) ||
     (rune >= 0xFE00 && rune <= 0xFE0F) ||
     (rune >= 0xFE20 && rune <= 0xFE2F) ||
+    (rune >= 0x1F3FB && rune <= 0x1F3FF) ||
     (rune >= 0xE0100 && rune <= 0xE01EF);
 
 bool _isTerminalWideRune(int rune) =>

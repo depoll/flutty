@@ -382,6 +382,61 @@ void main() {
       expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
     });
 
+    test('clears tracked insert mode on terminal reset sequences', () {
+      final fullReset = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[4hA\x1bcB',
+        pendingInput: '',
+        insertMode: false,
+      );
+
+      expect(fullReset.pendingInput, isEmpty);
+      expect(fullReset.insertMode, isFalse);
+      expect(fullReset.output, '\x1b[4h\x1b[@A\x1bcB');
+
+      final softReset = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[4hA\x1b[!pB',
+        pendingInput: '',
+        insertMode: false,
+      );
+
+      expect(softReset.pendingInput, isEmpty);
+      expect(softReset.insertMode, isFalse);
+      expect(softReset.output, '\x1b[4h\x1b[@A\x1b[!pB');
+    });
+
+    test('does not inject insert blanks into DCS payloads', () {
+      final first = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[4h\x1bP1+r',
+        pendingInput: '',
+        insertMode: false,
+      );
+
+      final second = adaptTerminalInsertModeOutputForXterm(
+        input: 'abc\x1b\\Z',
+        pendingInput: first.pendingInput,
+        insertMode: first.insertMode,
+      );
+
+      expect(first.output, '\x1b[4h');
+      expect(first.pendingInput, '\x1bP1+r');
+      expect(first.insertMode, isTrue);
+      expect(second.pendingInput, isEmpty);
+      expect(second.insertMode, isTrue);
+      expect(second.output, '\x1bP1+rabc\x1b\\\x1b[@Z');
+    });
+
+    test('treats emoji modifiers as zero-width insert-mode cells', () {
+      final result = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[4h\u{1F44D}\u{1F3FD}Z',
+        pendingInput: '',
+        insertMode: false,
+      );
+
+      expect(result.pendingInput, isEmpty);
+      expect(result.insertMode, isTrue);
+      expect(result.output, '\x1b[4h\x1b[@\x1b[@\u{1F44D}\u{1F3FD}\x1b[@Z');
+    });
+
     test('unwraps complete tmux passthrough sequences', () {
       final result = unwrapTerminalTmuxPassthroughSequences(
         input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
