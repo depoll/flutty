@@ -3412,16 +3412,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final previousTheme = targetSession.terminalTheme;
     targetSession.terminalTheme = theme;
-    final shouldPushThemeModeReport =
-        targetSession.terminalColorSchemeUpdatesMode &&
-        (previousTheme == null ||
-            forceRemoteRefresh ||
-            !_terminalThemesMatchForRemoteRefresh(previousTheme, theme));
-    if (shouldPushThemeModeReport) {
-      targetSession.refreshTerminalThemeModeReport(
-        reason: '${reason}_color_scheme_update',
-      );
-    }
     if (targetSession.terminal != _terminal) {
       if (reason != 'build') {
         DiagnosticsLogService.instance.info(
