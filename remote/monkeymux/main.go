@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.75"
+	monkeyMuxVersion         = "0.1.84"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2920,6 +2920,7 @@ func (w *muxWindow) observeTerminalScreenLocked(chunk []byte) {
 func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
 	if w == nil ||
 		!w.shouldUseVisualScrollbackLocked() ||
+		w.usesAlternateScreenLocked() ||
 		w.screen == nil ||
 		!w.screen.hasContent() {
 		return chunk
@@ -4041,6 +4042,10 @@ func (w *muxWindow) agentToolLocked() string {
 
 func (w *muxWindow) shouldUseVisualScrollbackLocked() bool {
 	return w != nil && w.agentToolLocked() == "codex"
+}
+
+func (w *muxWindow) usesAlternateScreenLocked() bool {
+	return w != nil && (w.privateModes["47"] || w.privateModes["1047"] || w.privateModes["1049"])
 }
 
 func (w *muxWindow) maxScrollbackOffsetLocked() int {

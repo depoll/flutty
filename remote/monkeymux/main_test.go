@@ -760,7 +760,7 @@ func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	attach.Reset()
 
-	server.handleWindowOutput(window.id, []byte("\x1b[?1049hhello"))
+	server.handleWindowOutput(window.id, []byte("hello"))
 
 	got := attach.String()
 	if !strings.Contains(got, "hello") {
@@ -769,14 +769,24 @@ func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	if !strings.Contains(got, "\x1b[?7l\x1b[H\x1b[2J") {
 		t.Fatalf("live repaint = %q, want screen repaint", got)
 	}
-	if got == "\x1b[?1049hhello" {
+	if got == "hello" {
 		t.Fatalf("live output used raw passthrough instead of screen repaint")
+	}
+}
+
+func TestCodexAltBufferLiveOutputPassesThroughRaw(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	attach.Reset()
+
+	server.handleWindowOutput(window.id, []byte("\x1b[?1049h\x1b[31mred\x1b[0m"))
+
+	if got := attach.String(); got != "\x1b[?1049h\x1b[31mred\x1b[0m" {
+		t.Fatalf("alt-buffer live output = %q, want raw passthrough", got)
 	}
 }
 
 func TestCodexLiveOutputScrollsViewportAtBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
-	server.handleWindowOutput(window.id, []byte("\x1b[?1049h"))
 	attach.Reset()
 
 	for i := 1; i < 50; i++ {
@@ -813,7 +823,7 @@ func TestCodexLiveOutputPreservesSgrColors(t *testing.T) {
 
 	server.handleWindowOutput(
 		window.id,
-		[]byte("\x1b[?1049h\x1b[31mred\x1b[0m ok"),
+		[]byte("\x1b[31mred\x1b[0m ok"),
 	)
 
 	frame := lastScreenReplayFrame(attach.String())
@@ -828,7 +838,7 @@ func TestCodexLiveOutputPreservesBackgroundSpaces(t *testing.T) {
 
 	server.handleWindowOutput(
 		window.id,
-		[]byte("\x1b[?1049h\x1b[48;2;10;20;30m  \x1b[0mX"),
+		[]byte("\x1b[48;2;10;20;30m  \x1b[0mX"),
 	)
 
 	frame := lastScreenReplayFrame(attach.String())
@@ -843,7 +853,7 @@ func TestCodexLiveOutputPreservesBackgroundErases(t *testing.T) {
 
 	server.handleWindowOutput(
 		window.id,
-		[]byte("\x1b[?1049h\x1b[48;5;24m\x1b[2K"),
+		[]byte("\x1b[48;5;24m\x1b[2K"),
 	)
 
 	frame := lastScreenReplayFrame(attach.String())
