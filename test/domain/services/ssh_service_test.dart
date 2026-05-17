@@ -332,111 +332,6 @@ void main() {
       },
     );
 
-    test('adapts insert mode output so xterm shifts existing cells', () {
-      final terminal = Terminal(maxLines: 100);
-      final result = adaptTerminalInsertModeOutputForXterm(
-        input: 'abcdef\r\x1b[3C\x1b[4hXY',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      terminal.write(result.output);
-
-      expect(result.pendingInput, isEmpty);
-      expect(result.insertMode, isTrue);
-      expect(terminal.lines[0].getText(0, 8), 'abcXYdef');
-    });
-
-    test('adapts split insert mode sequences across chunks', () {
-      final terminal = Terminal(maxLines: 100);
-      final first = adaptTerminalInsertModeOutputForXterm(
-        input: 'abcdef\r\x1b[3C\x1b[',
-        pendingInput: '',
-        insertMode: false,
-      );
-      terminal.write(first.output);
-
-      final second = adaptTerminalInsertModeOutputForXterm(
-        input: '4hZ\x1b[4lQ',
-        pendingInput: first.pendingInput,
-        insertMode: first.insertMode,
-      );
-      terminal.write(second.output);
-
-      expect(first.pendingInput, '\x1b[');
-      expect(second.pendingInput, isEmpty);
-      expect(second.insertMode, isFalse);
-      expect(second.output, '\x1b[4h\x1b[@Z\x1b[4lQ');
-      expect(terminal.lines[0].getText(0, 7), 'abcZQef');
-    });
-
-    test('does not inject insert blanks into OSC payloads', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4h\x1b]0;nano title\x07Z',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(result.pendingInput, isEmpty);
-      expect(result.insertMode, isTrue);
-      expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
-    });
-
-    test('clears tracked insert mode on terminal reset sequences', () {
-      final fullReset = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4hA\x1bcB',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(fullReset.pendingInput, isEmpty);
-      expect(fullReset.insertMode, isFalse);
-      expect(fullReset.output, '\x1b[4h\x1b[@A\x1bcB');
-
-      final softReset = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4hA\x1b[!pB',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(softReset.pendingInput, isEmpty);
-      expect(softReset.insertMode, isFalse);
-      expect(softReset.output, '\x1b[4h\x1b[@A\x1b[!pB');
-    });
-
-    test('does not inject insert blanks into DCS payloads', () {
-      final first = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4h\x1bP1+r',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      final second = adaptTerminalInsertModeOutputForXterm(
-        input: 'abc\x1b\\Z',
-        pendingInput: first.pendingInput,
-        insertMode: first.insertMode,
-      );
-
-      expect(first.output, '\x1b[4h');
-      expect(first.pendingInput, '\x1bP1+r');
-      expect(first.insertMode, isTrue);
-      expect(second.pendingInput, isEmpty);
-      expect(second.insertMode, isTrue);
-      expect(second.output, '\x1bP1+rabc\x1b\\\x1b[@Z');
-    });
-
-    test('treats emoji modifiers as zero-width insert-mode cells', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4h\u{1F44D}\u{1F3FD}Z',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(result.pendingInput, isEmpty);
-      expect(result.insertMode, isTrue);
-      expect(result.output, '\x1b[4h\x1b[@\x1b[@\u{1F44D}\u{1F3FD}\x1b[@Z');
-    });
-
     test('unwraps complete tmux passthrough sequences', () {
       final result = unwrapTerminalTmuxPassthroughSequences(
         input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
@@ -561,66 +456,17 @@ void main() {
       expect(light.pendingInput, isEmpty);
     });
 
-    test('answers terminal ANSI palette OSC queries', () {
-      const theme = monkey_themes.TerminalThemes.defaultLightTheme;
-      final result = buildTerminalWindowControlQueryResponses(
-        input: 'before\x1b]4;0;?\x07\x1b]4;7;?\x1b\\after',
-        pendingInput: '',
-        metrics: null,
-        theme: theme,
-      );
-
-      expect(
-        result.response,
-        '${buildTerminalThemeOscResponse(theme: theme, code: '4', args: const ['0', '?'])}'
-        '${buildTerminalThemeOscResponse(theme: theme, code: '4', args: const ['7', '?'])}',
-      );
-      expect(result.pendingInput, isEmpty);
-    });
-
-    test('preserves split terminal ANSI palette OSC queries across chunks', () {
-      const theme = monkey_themes.TerminalThemes.defaultLightTheme;
-      final first = buildTerminalWindowControlQueryResponses(
-        input: 'before\x1b]4;1',
-        pendingInput: '',
-        metrics: null,
-        theme: theme,
-      );
-
-      expect(first.response, isNull);
-      expect(first.pendingInput, '\x1b]4;1');
-
-      final second = buildTerminalWindowControlQueryResponses(
-        input: ';?\x07after',
-        pendingInput: first.pendingInput,
-        metrics: null,
-        theme: theme,
-      );
-
-      expect(
-        second.response,
-        buildTerminalThemeOscResponse(
-          theme: theme,
-          code: '4',
-          args: const ['1', '?'],
-        ),
-      );
-      expect(second.pendingInput, isEmpty);
-    });
-
     test('answers DEC private mode report queries', () {
       final result = buildTerminalWindowControlQueryResponses(
         input:
             'before\x1b[?1004\$p\x1b[?2004\$p\x1b[?1006\$p'
-            '\x1b[?2026\$p\x1b[?2027\$p\x1b[?1016\$pafter',
+            '\x1b[?2026\$pafter',
         pendingInput: '',
         metrics: null,
         modeState: const (
           reportFocusMode: true,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: true,
-          synchronizedOutputMode: true,
-          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -634,9 +480,7 @@ void main() {
         '\x1b[?1004;1\$y'
         '\x1b[?2004;2\$y'
         '\x1b[?1006;1\$y'
-        '\x1b[?2026;1\$y'
-        '\x1b[?2027;2\$y'
-        '\x1b[?1016;0\$y',
+        '\x1b[?2026;0\$y',
       );
       expect(result.pendingInput, isEmpty);
 
@@ -648,8 +492,6 @@ void main() {
           reportFocusMode: false,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: false,
-          synchronizedOutputMode: false,
-          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -670,8 +512,6 @@ void main() {
           reportFocusMode: true,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: false,
-          synchronizedOutputMode: false,
-          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -691,8 +531,6 @@ void main() {
           reportFocusMode: true,
           bracketedPasteMode: false,
           colorSchemeUpdatesMode: false,
-          synchronizedOutputMode: false,
-          graphemeClusterMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -729,28 +567,6 @@ void main() {
 
       expect(disabled.colorSchemeUpdatesMode, isFalse);
       expect(disabled.pendingInput, isEmpty);
-    });
-
-    test('preserves long split terminal control mode updates', () {
-      final first = extractTerminalControlModeUpdates(
-        input: '\x1b[?2026;2027;2031',
-        pendingInput: '',
-      );
-
-      expect(first.synchronizedOutputMode, isNull);
-      expect(first.graphemeClusterMode, isNull);
-      expect(first.colorSchemeUpdatesMode, isNull);
-      expect(first.pendingInput, '\x1b[?2026;2027;2031');
-
-      final second = extractTerminalControlModeUpdates(
-        input: 'h',
-        pendingInput: first.pendingInput,
-      );
-
-      expect(second.synchronizedOutputMode, isTrue);
-      expect(second.graphemeClusterMode, isTrue);
-      expect(second.colorSchemeUpdatesMode, isTrue);
-      expect(second.pendingInput, isEmpty);
     });
 
     test(
@@ -1283,222 +1099,6 @@ void main() {
       expect(terminalNotifications, 1);
     });
 
-    test(
-      'coalesces DEC private mode changes instead of forcing flush',
-      () async {
-        final shell = await openShell();
-        final session = shell.session;
-        final terminal = session.terminal!;
-        final stdoutEvents = <String>[];
-        final stdoutSubscription = session.shellStdoutStream.listen(
-          stdoutEvents.add,
-        );
-        addTearDown(stdoutSubscription.cancel);
-
-        shell.stdout
-          ..add(Uint8List.fromList(utf8.encode('\x1b[?2026hhello ')))
-          ..add(Uint8List.fromList(utf8.encode('\x1b[?2026lworld')));
-        await pumpEventQueue();
-
-        expect(firstLineText(terminal), isNot(contains('hello')));
-        expect(stdoutEvents, isEmpty);
-
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-
-        expect(firstLineText(terminal), 'hello world');
-        expect(stdoutEvents, ['\x1b[?2026hhello \x1b[?2026lworld']);
-      },
-    );
-
-    test('flushes split terminal response queries immediately', () async {
-      final shell = await openShell();
-      shell.session.updateTerminalWindowMetrics(
-        columns: 80,
-        rows: 24,
-        pixelWidth: 960,
-        pixelHeight: 480,
-      );
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[1')));
-      await pumpEventQueue();
-
-      expect(shell.shellWrites, isEmpty);
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('4t')));
-      await pumpEventQueue();
-
-      expect(
-        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-        '\x1b[4;480;960t',
-      );
-    });
-
-    test(
-      'coalesces non-response xterm window controls instead of forcing flush',
-      () async {
-        final shell = await openShell();
-        final terminal = shell.session.terminal!;
-        final stdoutEvents = <String>[];
-        final stdoutSubscription = shell.session.shellStdoutStream.listen(
-          stdoutEvents.add,
-        );
-        addTearDown(stdoutSubscription.cancel);
-
-        shell.stdout.add(Uint8List.fromList(utf8.encode('before\x1b[22t')));
-        await pumpEventQueue();
-
-        expect(firstLineText(terminal), isNot(contains('before')));
-        expect(stdoutEvents, isEmpty);
-
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-
-        expect(firstLineText(terminal), 'before');
-        expect(stdoutEvents, ['before\x1b[22t']);
-      },
-    );
-
-    test(
-      'buffers synchronized output until the terminal frame completes',
-      () async {
-        final shell = await openShell();
-        final session = shell.session;
-        final terminal = session.terminal!;
-        final events = <String>[];
-        terminal.addListener(() => events.add('terminal'));
-        final stdoutSubscription = session.shellStdoutStream.listen(
-          (_) => events.add('stdout'),
-        );
-        addTearDown(stdoutSubscription.cancel);
-
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026hhello ')));
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-
-        expect(firstLineText(terminal), isNot(contains('hello')));
-        expect(events, isEmpty);
-
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026lworld')));
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-
-        expect(firstLineText(terminal), 'hello world');
-        expect(events, ['terminal', 'stdout']);
-      },
-    );
-
-    test('flushes unterminated synchronized output after fallback', () async {
-      final shell = await openShell();
-      final terminal = shell.session.terminal!;
-      final stdoutEvents = <String>[];
-      final stdoutSubscription = shell.session.shellStdoutStream.listen(
-        stdoutEvents.add,
-      );
-      addTearDown(stdoutSubscription.cancel);
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026hhello')));
-      await Future<void>.delayed(const Duration(milliseconds: 25));
-
-      expect(firstLineText(terminal), isNot(contains('hello')));
-      expect(stdoutEvents, isEmpty);
-
-      await Future<void>.delayed(const Duration(milliseconds: 275));
-
-      expect(firstLineText(terminal), 'hello');
-      expect(stdoutEvents, ['\x1b[?2026hhello']);
-    });
-
-    test('bounds unterminated synchronized output buffering', () async {
-      final shell = await openShell();
-      final terminal = shell.session.terminal!;
-      final stdoutEvents = <String>[];
-      final stdoutSubscription = shell.session.shellStdoutStream.listen(
-        stdoutEvents.add,
-      );
-      addTearDown(stdoutSubscription.cancel);
-      final payload = List.filled(70 * 1024, 'x').join();
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026h$payload')));
-      await Future<void>.delayed(const Duration(milliseconds: 25));
-
-      expect(firstLineText(terminal), startsWith('x'));
-      expect(stdoutEvents, ['\x1b[?2026h$payload']);
-    });
-
-    test(
-      'sends theme mode report when color-scheme updates are enabled',
-      () async {
-        final shell = await openShell();
-        shell.session.terminalTheme = monkey_themes.TerminalThemes.monkeyDark;
-
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2031h')));
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-
-        expect(
-          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-          '\x1b[?997;1n',
-        );
-        expect(shell.session.terminalColorSchemeUpdatesMode, isTrue);
-      },
-    );
-
-    test(
-      'pushes updated theme mode while color-scheme updates are enabled',
-      () async {
-        final shell = await openShell();
-        shell.session.terminalTheme = monkey_themes.TerminalThemes.monkeyDark;
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2031h')));
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-        shell.shellWrites.clear();
-
-        shell.session.terminalTheme = monkey_themes.TerminalThemes.monkeyLight;
-        shell.session.refreshTerminalThemeModeReport(
-          reason: 'test_theme_change',
-        );
-
-        expect(
-          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-          '\x1b[?997;2n',
-        );
-      },
-    );
-
-    test(
-      'flushes DEC private mode report queries without frame delay',
-      () async {
-        final shell = await openShell();
-
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?2026\$p')));
-        await pumpEventQueue();
-
-        expect(
-          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-          '\x1b[?2026;2\$y',
-        );
-      },
-    );
-
-    test('flushes device attributes queries without frame delay', () async {
-      final shell = await openShell();
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[c')));
-      await pumpEventQueue();
-
-      expect(
-        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-        '\x1b[?1;2c',
-      );
-    });
-
-    test('flushes cursor position queries without frame delay', () async {
-      final shell = await openShell();
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[6n')));
-      await pumpEventQueue();
-
-      expect(
-        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-        '\x1b[1;1R',
-      );
-    });
-
     test('flushes terminal theme OSC queries without frame delay', () async {
       final shell = await openShell();
       final session = shell.session;
@@ -1515,54 +1115,6 @@ void main() {
           theme: monkey_themes.TerminalThemes.defaultLightTheme,
           code: '11',
           args: const ['?'],
-        ),
-      );
-    });
-
-    test(
-      'flushes terminal ANSI palette OSC queries without frame delay',
-      () async {
-        final shell = await openShell();
-        final session = shell.session;
-        final terminal = session.terminal!;
-        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
-
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]4;0;?\x07')));
-        await pumpEventQueue();
-
-        expect(firstLineText(terminal), isEmpty);
-        expect(
-          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-          buildTerminalThemeOscResponse(
-            theme: monkey_themes.TerminalThemes.defaultLightTheme,
-            code: '4',
-            args: const ['0', '?'],
-          ),
-        );
-      },
-    );
-
-    test('answers split terminal ANSI palette OSC queries once', () async {
-      final shell = await openShell();
-      final session = shell.session;
-      final terminal = session.terminal!;
-      session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]4;0')));
-      await Future<void>.delayed(const Duration(milliseconds: 25));
-
-      expect(firstLineText(terminal), isEmpty);
-      expect(shell.shellWrites, isEmpty);
-
-      shell.stdout.add(Uint8List.fromList(utf8.encode(';?\x07')));
-      await pumpEventQueue();
-
-      expect(
-        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-        buildTerminalThemeOscResponse(
-          theme: monkey_themes.TerminalThemes.defaultLightTheme,
-          code: '4',
-          args: const ['0', '?'],
         ),
       );
     });

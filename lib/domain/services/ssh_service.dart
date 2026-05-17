@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -40,8 +39,6 @@ typedef TerminalControlModeState = ({
   bool reportFocusMode,
   bool bracketedPasteMode,
   bool colorSchemeUpdatesMode,
-  bool synchronizedOutputMode,
-  bool graphemeClusterMode,
   bool isUsingAltBuffer,
   bool mouseTrackingMode,
   bool mouseDragTrackingMode,
@@ -153,24 +150,6 @@ buildTerminalWindowControlQueryResponses({
     responses.write(buildTerminalThemeModeReport(isDark: theme.isDark));
   }
 
-  if (theme != null) {
-    for (final match in _terminalThemeOscQueryPattern.allMatches(
-      combinedInput,
-    )) {
-      final sequence = match.group(0);
-      if (sequence == null) {
-        continue;
-      }
-      final response = _buildDirectTerminalThemeOscQueryResponse(
-        sequence,
-        theme,
-      );
-      if (response != null) {
-        responses.write(response);
-      }
-    }
-  }
-
   final response = responses.isEmpty ? null : responses.toString();
   return (
     response: response,
@@ -178,88 +157,33 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
-/// Extracts terminal control mode changes from shell output.
+/// Extracts terminal color-scheme update mode changes from shell output.
 ///
-/// xterm.dart does not currently model every modern DEC private mode that TUIs
-/// query, so MonkeySSH tracks the missing modes while scanning the same shell
-/// output used for other terminal control queries.
-({
-  bool? colorSchemeUpdatesMode,
-  bool? synchronizedOutputMode,
-  bool? graphemeClusterMode,
-  String pendingInput,
-})
+/// Some TUIs enable DEC private mode 2031 to request a report when the
+/// terminal switches between light and dark color schemes. xterm.dart does not
+/// currently model that mode, so MonkeySSH tracks it while scanning the same
+/// shell output used for other terminal control queries.
+({bool? colorSchemeUpdatesMode, String pendingInput})
 extractTerminalControlModeUpdates({
   required String input,
   required String pendingInput,
 }) {
   final combinedInput = pendingInput + input;
   bool? colorSchemeUpdatesMode;
-  bool? synchronizedOutputMode;
-  bool? graphemeClusterMode;
 
   for (final match in _terminalPrivateModeSetResetPattern.allMatches(
     combinedInput,
   )) {
     final params = match.group(1)?.split(';') ?? const <String>[];
-    final enabled = match.group(2) == 'h';
-    if (params.contains('2026')) {
-      synchronizedOutputMode = enabled;
+    if (!params.contains('2031')) {
+      continue;
     }
-    if (params.contains('2027')) {
-      graphemeClusterMode = enabled;
-    }
-    if (params.contains('2031')) {
-      colorSchemeUpdatesMode = enabled;
-    }
+    colorSchemeUpdatesMode = match.group(2) == 'h';
   }
 
   return (
     colorSchemeUpdatesMode: colorSchemeUpdatesMode,
-    synchronizedOutputMode: synchronizedOutputMode,
-    graphemeClusterMode: graphemeClusterMode,
     pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
-  );
-}
-
-({String pendingInput, String? response, String terminalInput})
-_consumeTerminalThemeOscQueries({
-  required String input,
-  required String pendingInput,
-  required TerminalThemeData? theme,
-}) {
-  final combinedInput = pendingInput + input;
-  if (theme == null) {
-    return (pendingInput: '', response: null, terminalInput: combinedInput);
-  }
-
-  final pendingSuffix = _terminalThemeOscQueryPendingSuffix(combinedInput);
-  final scanInput = pendingSuffix.isEmpty
-      ? combinedInput
-      : combinedInput.substring(0, combinedInput.length - pendingSuffix.length);
-  final terminalInput = StringBuffer();
-  final responses = StringBuffer();
-  var cursor = 0;
-
-  for (final match in _terminalThemeOscQueryPattern.allMatches(scanInput)) {
-    terminalInput.write(scanInput.substring(cursor, match.start));
-    final sequence = match.group(0);
-    final response = sequence == null
-        ? null
-        : _buildDirectTerminalThemeOscQueryResponse(sequence, theme);
-    if (response == null) {
-      terminalInput.write(scanInput.substring(match.start, match.end));
-    } else {
-      responses.write(response);
-    }
-    cursor = match.end;
-  }
-
-  terminalInput.write(scanInput.substring(cursor));
-  return (
-    pendingInput: pendingSuffix,
-    response: responses.isEmpty ? null : responses.toString(),
-    terminalInput: terminalInput.toString(),
   );
 }
 
@@ -276,87 +200,9 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       return '\x1b[${row + 1};${column + 1}R';
     });
 
-bool _containsImmediateTerminalResponseQuery(String data) =>
-    _terminalWindowReportQueryPattern.hasMatch(data) ||
-    _terminalDeviceAttributeQueryPattern.hasMatch(data) ||
-    _terminalDeviceStatusQueryPattern.hasMatch(data) ||
-    _terminalModeReportQueryPattern.hasMatch(data) ||
-    _terminalThemeModeQueryPattern.hasMatch(data) ||
-    _terminalThemeOscQueryPattern.hasMatch(data) ||
-    _terminalClipboardOscQueryPattern.hasMatch(data);
-
-/// Adapts remote terminal output so xterm.dart renders insert mode correctly.
-///
-/// xterm.dart 4.0.0 tracks IRM (`CSI 4 h/l`) but does not shift existing cells
-/// when printable characters arrive while the mode is active. Injecting ICH
-/// before each printable cell preserves behavior from editors such as nano,
-/// while [pendingInput] keeps split escape sequences from leaking printable
-/// bytes into the renderer.
-@visibleForTesting
-({String output, String pendingInput, bool insertMode})
-adaptTerminalInsertModeOutputForXterm({
-  required String input,
-  required String pendingInput,
-  required bool insertMode,
-}) {
-  final combinedInput = pendingInput + input;
-  final output = StringBuffer();
-  var cursor = 0;
-  var nextInsertMode = insertMode;
-
-  while (cursor < combinedInput.length) {
-    final codeUnit = combinedInput.codeUnitAt(cursor);
-    if (codeUnit == _terminalEscapeCodeUnit) {
-      final endIndex = _terminalEscapeSequenceEndIndex(combinedInput, cursor);
-      if (endIndex == null) {
-        return (
-          output: output.toString(),
-          pendingInput: combinedInput.substring(cursor),
-          insertMode: nextInsertMode,
-        );
-      }
-
-      final sequence = combinedInput.substring(cursor, endIndex);
-      output.write(sequence);
-      final insertModeUpdate = _terminalInsertModeUpdate(sequence);
-      if (insertModeUpdate != null) {
-        nextInsertMode = insertModeUpdate;
-      }
-      cursor = endIndex;
-      continue;
-    }
-
-    final rune = _terminalRuneAt(combinedInput, cursor);
-    final runeLength = _terminalRuneLength(rune);
-    if (nextInsertMode && _isTerminalGraphicRune(rune)) {
-      final width = _terminalCellWidth(rune);
-      for (var cell = 0; cell < width; cell += 1) {
-        output.write(_terminalInsertBlankCharacterSequence);
-      }
-    }
-    output.write(combinedInput.substring(cursor, cursor + runeLength));
-    cursor += runeLength;
-  }
-
-  return (
-    output: output.toString(),
-    pendingInput: '',
-    insertMode: nextInsertMode,
-  );
-}
-
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
-final _terminalWindowReportQueryPattern = RegExp(r'\x1b\[(?:14|16)t');
-final _terminalDeviceAttributeQueryPattern = RegExp(r'\x1b\[(?:[=>]?[0-9;]*)c');
-final _terminalDeviceStatusQueryPattern = RegExp(r'\x1b\[(?:[?]?[0-9;]*)n');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
-final _terminalThemeOscQueryPattern = RegExp(
-  r'\x1b\](?:4(?:;[0-9]+;\?)+|(?:10|11|12|17|19);\?)(?:\x07|\x1b\\)',
-);
-final _terminalClipboardOscQueryPattern = RegExp(
-  r'\x1b\]52;[^\x07\x1b]*;\?(?:\x07|\x1b\\)',
-);
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(
@@ -431,45 +277,15 @@ String? _buildTerminalModeReportResponse(
       mode,
       modeState.bracketedPasteMode ? _terminalModeSet : _terminalModeReset,
     ),
-    2026 => _formatTerminalModeReport(
-      mode,
-      modeState.synchronizedOutputMode ? _terminalModeSet : _terminalModeReset,
-    ),
-    2027 => _formatTerminalModeReport(
-      mode,
-      modeState.graphemeClusterMode ? _terminalModeSet : _terminalModeReset,
-    ),
     2031 => _formatTerminalModeReport(
       mode,
       modeState.colorSchemeUpdatesMode ? _terminalModeSet : _terminalModeReset,
     ),
-    1016 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+    1016 ||
+    2026 ||
+    2027 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
     _ => null,
   };
-}
-
-String? _buildDirectTerminalThemeOscQueryResponse(
-  String sequence,
-  TerminalThemeData theme,
-) {
-  if (!sequence.startsWith('$_terminalEscape]') ||
-      !(sequence.endsWith('\x07') ||
-          sequence.endsWith(_terminalStringTerminator))) {
-    return null;
-  }
-  final terminatorLength = sequence.endsWith('\x07')
-      ? 1
-      : _terminalStringTerminator.length;
-  final payload = sequence.substring(2, sequence.length - terminatorLength);
-  final parts = payload.split(';');
-  if (parts.isEmpty) {
-    return null;
-  }
-  return buildTerminalThemeOscResponse(
-    theme: theme,
-    code: parts.first,
-    args: parts.sublist(1),
-  );
 }
 
 const _terminalModeNotRecognized = 0;
@@ -477,26 +293,9 @@ const _terminalModeSet = 1;
 const _terminalModeReset = 2;
 
 const _terminalEscape = '\x1b';
-const _terminalEscapeCodeUnit = 0x1B;
-const _terminalBellCodeUnit = 0x07;
-const _terminalCsiIntroducerCodeUnit = 0x5B;
-const _terminalDcsIntroducerCodeUnit = 0x50;
-const _terminalOscIntroducerCodeUnit = 0x5D;
-const _terminalSosIntroducerCodeUnit = 0x58;
-const _terminalPmIntroducerCodeUnit = 0x5E;
-const _terminalApcIntroducerCodeUnit = 0x5F;
-const _terminalStringTerminatorCodeUnit = 0x5C;
-const _terminalDeleteCodeUnit = 0x7F;
-const _terminalInsertMode = 4;
-const _terminalSetModeFinalCodeUnit = 0x68;
-const _terminalResetModeFinalCodeUnit = 0x6C;
-const _terminalSoftResetFinalCodeUnit = 0x70;
-const _terminalFullResetFinalCodeUnit = 0x63;
-const _terminalInsertBlankCharacterSequence = '\x1b[@';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
-const _terminalControlQueryPendingLimit = 128;
 
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
@@ -536,167 +335,6 @@ String _terminalTmuxPassthroughPendingSuffix(String input) {
   return '';
 }
 
-int? _terminalEscapeSequenceEndIndex(String input, int start) {
-  if (start + 1 >= input.length) {
-    return null;
-  }
-
-  final introducer = input.codeUnitAt(start + 1);
-  switch (introducer) {
-    case _terminalCsiIntroducerCodeUnit:
-      return _terminalCsiEndIndex(input, start + 2);
-    case _terminalDcsIntroducerCodeUnit:
-    case _terminalOscIntroducerCodeUnit:
-    case _terminalSosIntroducerCodeUnit:
-    case _terminalPmIntroducerCodeUnit:
-    case _terminalApcIntroducerCodeUnit:
-      return _terminalStringEndIndex(input, start + 2);
-  }
-
-  var cursor = start + 1;
-  while (cursor < input.length &&
-      _isTerminalEscapeIntermediate(input.codeUnitAt(cursor))) {
-    cursor += 1;
-  }
-  if (cursor >= input.length) {
-    return null;
-  }
-  return cursor + 1;
-}
-
-int? _terminalCsiEndIndex(String input, int start) {
-  var cursor = start;
-  while (cursor < input.length) {
-    final codeUnit = input.codeUnitAt(cursor);
-    if (codeUnit >= 0x40 && codeUnit <= 0x7E) {
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return null;
-}
-
-int? _terminalStringEndIndex(String input, int start) {
-  var cursor = start;
-  while (cursor < input.length) {
-    final codeUnit = input.codeUnitAt(cursor);
-    if (codeUnit == _terminalBellCodeUnit) {
-      return cursor + 1;
-    }
-    if (codeUnit == _terminalEscapeCodeUnit) {
-      if (cursor + 1 >= input.length) {
-        return null;
-      }
-      if (input.codeUnitAt(cursor + 1) == _terminalStringTerminatorCodeUnit) {
-        return cursor + 2;
-      }
-      cursor += 1;
-      continue;
-    }
-    cursor += 1;
-  }
-  return null;
-}
-
-bool _isTerminalEscapeIntermediate(int codeUnit) =>
-    codeUnit >= 0x20 && codeUnit <= 0x2F;
-
-bool? _terminalInsertModeUpdate(String sequence) {
-  if (sequence.length < 2 ||
-      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit) {
-    return null;
-  }
-  if (sequence.length == 2 &&
-      sequence.codeUnitAt(1) == _terminalFullResetFinalCodeUnit) {
-    return false;
-  }
-  if (sequence.length < 4 ||
-      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
-    return null;
-  }
-
-  final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
-  final params = sequence.substring(2, sequence.length - 1);
-  if (finalCodeUnit == _terminalSoftResetFinalCodeUnit &&
-      (params == '!' || params.endsWith('"'))) {
-    return false;
-  }
-  if (finalCodeUnit != _terminalSetModeFinalCodeUnit &&
-      finalCodeUnit != _terminalResetModeFinalCodeUnit) {
-    return null;
-  }
-
-  if (params.startsWith('?')) {
-    return null;
-  }
-  for (final param in params.split(';')) {
-    if (int.tryParse(param) == _terminalInsertMode) {
-      return finalCodeUnit == _terminalSetModeFinalCodeUnit;
-    }
-  }
-  return null;
-}
-
-int _terminalRuneAt(String input, int index) {
-  final first = input.codeUnitAt(index);
-  if (_isTerminalHighSurrogate(first) && index + 1 < input.length) {
-    final second = input.codeUnitAt(index + 1);
-    if (_isTerminalLowSurrogate(second)) {
-      return 0x10000 + ((first - 0xD800) << 10) + second - 0xDC00;
-    }
-  }
-  return first;
-}
-
-int _terminalRuneLength(int rune) => rune > 0xFFFF ? 2 : 1;
-
-bool _isTerminalHighSurrogate(int codeUnit) =>
-    codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
-
-bool _isTerminalLowSurrogate(int codeUnit) =>
-    codeUnit >= 0xDC00 && codeUnit <= 0xDFFF;
-
-bool _isTerminalGraphicRune(int rune) =>
-    rune >= 0x20 &&
-    rune != _terminalDeleteCodeUnit &&
-    !(rune >= 0x80 && rune <= 0x9F);
-
-int _terminalCellWidth(int rune) {
-  if (!_isTerminalGraphicRune(rune) || _isTerminalZeroWidthRune(rune)) {
-    return 0;
-  }
-  if (_isTerminalWideRune(rune)) {
-    return 2;
-  }
-  return 1;
-}
-
-bool _isTerminalZeroWidthRune(int rune) =>
-    rune == 0x200D ||
-    (rune >= 0x0300 && rune <= 0x036F) ||
-    (rune >= 0x1AB0 && rune <= 0x1AFF) ||
-    (rune >= 0x1DC0 && rune <= 0x1DFF) ||
-    (rune >= 0x20D0 && rune <= 0x20FF) ||
-    (rune >= 0xFE00 && rune <= 0xFE0F) ||
-    (rune >= 0xFE20 && rune <= 0xFE2F) ||
-    (rune >= 0x1F3FB && rune <= 0x1F3FF) ||
-    (rune >= 0xE0100 && rune <= 0xE01EF);
-
-bool _isTerminalWideRune(int rune) =>
-    rune >= 0x1100 &&
-    (rune <= 0x115F ||
-        rune == 0x2329 ||
-        rune == 0x232A ||
-        (rune >= 0x2E80 && rune <= 0xA4CF && rune != 0x303F) ||
-        (rune >= 0xAC00 && rune <= 0xD7A3) ||
-        (rune >= 0xF900 && rune <= 0xFAFF) ||
-        (rune >= 0xFE10 && rune <= 0xFE19) ||
-        (rune >= 0xFE30 && rune <= 0xFE6F) ||
-        (rune >= 0xFF00 && rune <= 0xFF60) ||
-        (rune >= 0xFFE0 && rune <= 0xFFE6) ||
-        (rune >= 0x1F300 && rune <= 0x1FAFF) ||
-        (rune >= 0x20000 && rune <= 0x3FFFD));
-
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics != null &&
     metrics.columns > 0 &&
@@ -705,43 +343,14 @@ bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics.pixelHeight > 0;
 
 String _terminalControlQueryPendingSuffix(String input) {
-  final start = input.length > _terminalControlQueryPendingLimit
-      ? input.length - _terminalControlQueryPendingLimit
-      : 0;
-  for (var index = input.length - 1; index >= start; index -= 1) {
-    if (input.codeUnitAt(index) != _terminalEscape.codeUnitAt(0)) {
-      continue;
-    }
+  final start = input.length > 16 ? input.length - 16 : 0;
+  for (var index = start; index < input.length; index += 1) {
     final suffix = input.substring(index);
-    if (_terminalControlQueryPrefixPattern.hasMatch(suffix) ||
-        _isTerminalOscQueryPendingSuffix(suffix)) {
+    if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
       return suffix;
     }
   }
   return '';
-}
-
-String _terminalThemeOscQueryPendingSuffix(String input) {
-  final index = input.lastIndexOf('$_terminalEscape]');
-  if (index < 0) {
-    return '';
-  }
-  final suffix = input.substring(index);
-  if (suffix.length > _terminalControlQueryPendingLimit ||
-      !_isTerminalOscQueryPendingSuffix(suffix)) {
-    return '';
-  }
-  return suffix;
-}
-
-bool _isTerminalOscQueryPendingSuffix(String suffix) {
-  if (!suffix.startsWith('$_terminalEscape]')) {
-    return false;
-  }
-  if (suffix.contains('\x07') || suffix.contains(_terminalStringTerminator)) {
-    return false;
-  }
-  return true;
 }
 
 /// Connection state for an SSH session.
@@ -2357,11 +1966,6 @@ class SshSession {
   /// Whether the foreground app requested xterm color-scheme update reports.
   bool get terminalColorSchemeUpdatesMode =>
       _runtime.terminalColorSchemeUpdatesMode;
-
-  /// Sends the current terminal theme mode to foreground apps that subscribed
-  /// to xterm color-scheme updates.
-  void refreshTerminalThemeModeReport({String reason = 'unspecified'}) =>
-      _runtime.sendTerminalThemeModeReport(reason: reason);
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();

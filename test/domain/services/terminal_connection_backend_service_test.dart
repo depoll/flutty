@@ -219,7 +219,6 @@ class _FakeRemoteMultiplexerService implements RemoteMultiplexerService {
     String? command,
     String? name,
     String? workingDirectory,
-    Iterable<String> windowCapabilities = const <String>[],
     String? extraFlags,
   }) async {
     calls.add('create:$sessionName:$command:$workingDirectory:$extraFlags');

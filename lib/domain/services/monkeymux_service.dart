@@ -85,7 +85,6 @@ String buildMonkeyMuxAttachCommand({
   String? workingDirectory,
   String? launchCommand,
   String? windowName,
-  Iterable<String> windowCapabilities = const <String>[],
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
 }) {
@@ -105,11 +104,6 @@ String buildMonkeyMuxAttachCommand({
       '--name',
       _shellQuote(windowName.trim()),
     ],
-    for (final capability in windowCapabilities)
-      if (capability.trim().isNotEmpty) ...[
-        '--window-capability',
-        _shellQuote(capability.trim()),
-      ],
     if (launchCommand != null && launchCommand.trim().isNotEmpty) ...[
       '--command',
       _shellQuote(launchCommand.trim()),
@@ -335,7 +329,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? command,
     String? name,
     String? workingDirectory,
-    Iterable<String> windowCapabilities = const <String>[],
     String? extraFlags,
   }) async {
     await _runControlCommand(session, sessionName, {
@@ -345,11 +338,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
       if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
         'cwd': workingDirectory.trim(),
-      if (windowCapabilities.any((capability) => capability.trim().isNotEmpty))
-        'capabilities': windowCapabilities
-            .map((capability) => capability.trim())
-            .where((capability) => capability.isNotEmpty)
-            .toList(growable: false),
     });
   }
 
@@ -411,13 +399,8 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     TerminalThemeData theme, {
     String? extraFlags,
   }) async {
-    final reports = [
-      buildTerminalThemeModeReport(isDark: theme.isDark),
-      buildTerminalThemeRefreshReports(theme),
-    ].where((report) => report.isNotEmpty).join();
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
-      if (reports.isNotEmpty) 'data': reports,
     }, priority: SshExecPriority.low);
   }
 
@@ -1276,22 +1259,9 @@ TmuxWindow? _windowFromJson(Object? value) {
     panePid: value['panePid'] as int?,
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
-    capabilities: _windowCapabilitiesFromJson(value['capabilities']),
-    visualScrollbackAvailable:
-        value['visualScrollbackAvailable'] as bool? ?? false,
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }
-
-Set<String> _windowCapabilitiesFromJson(Object? value) => switch (value) {
-  final List<Object?> capabilities =>
-    capabilities
-        .whereType<String>()
-        .map((capability) => capability.trim())
-        .where((capability) => capability.isNotEmpty)
-        .toSet(),
-  _ => const <String>{},
-};
 
 Set<int> _monkeyMuxAgentPanePids(Iterable<TmuxWindow> windows) => windows
     .where(

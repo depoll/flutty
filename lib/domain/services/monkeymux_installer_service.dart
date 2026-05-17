@@ -197,7 +197,7 @@ class MonkeyMuxInstallerService {
   final RemoteFileService _remoteFileService;
   final AssetBundle? _assetBundle;
   static final _installCache = <int, MonkeyMuxInstallation>{};
-  static final _installRequests = <int, _MonkeyMuxInstallInFlight>{};
+  static final _installRequests = <int, Future<MonkeyMuxInstallation>>{};
 
   /// Installs the helper if needed and returns its executable path.
   Future<MonkeyMuxInstallation> ensureInstalled(
@@ -220,46 +220,32 @@ class MonkeyMuxInstallerService {
     }
 
     final existingRequest = _installRequests[connectionId];
-    if (existingRequest != null &&
-        (existingRequest.canPrompt || confirmInstall == null)) {
-      DiagnosticsLogService.instance.debug(
-        'monkeymux.install',
-        'join_inflight',
-        fields: {
-          'connectionId': connectionId,
-          'canPrompt': existingRequest.canPrompt,
-        },
-      );
-      return existingRequest.future;
-    }
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.install',
-        'replace_probe_with_confirmable',
+        'join_inflight',
         fields: {'connectionId': connectionId},
       );
+      return existingRequest;
     }
 
-    final request = _MonkeyMuxInstallInFlight(
-      canPrompt: confirmInstall != null,
-      future: _ensureInstalled(
-        session,
-        priority: priority,
-        confirmInstall: confirmInstall,
-      ),
+    final request = _ensureInstalled(
+      session,
+      priority: priority,
+      confirmInstall: confirmInstall,
     );
     _installRequests[connectionId] = request;
-    request.future.then((installation) {
+    request.then((installation) {
       if (identical(_installRequests[connectionId], request)) {
         _installCache[connectionId] = installation;
       }
     }, onError: (_) {}).ignore();
-    request.future.whenComplete(() {
+    request.whenComplete(() {
       if (identical(_installRequests[connectionId], request)) {
         _installRequests.remove(connectionId);
       }
     }).ignore();
-    return request.future;
+    return request;
   }
 
   /// Clears cached install state for a disconnected SSH connection.
@@ -535,16 +521,6 @@ class MonkeyMuxInstallerService {
       );
     }
   }
-}
-
-class _MonkeyMuxInstallInFlight {
-  const _MonkeyMuxInstallInFlight({
-    required this.canPrompt,
-    required this.future,
-  });
-
-  final bool canPrompt;
-  final Future<MonkeyMuxInstallation> future;
 }
 
 Future<String> _runRemoteCommand(

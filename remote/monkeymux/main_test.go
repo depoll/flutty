@@ -52,47 +52,6 @@ func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
 	}
 }
 
-func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
-	base := []string{"USER=test"}
-
-	env := terminalEnvironment(base)
-
-	if !containsEnv(env, "TERM=xterm-256color") {
-		t.Fatalf("terminal environment = %#v, want TERM=xterm-256color", env)
-	}
-	if !containsEnv(env, "COLORTERM=truecolor") {
-		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
-	}
-	if !reflect.DeepEqual(base, []string{"USER=test"}) {
-		t.Fatalf("terminal environment mutated base = %#v", base)
-	}
-}
-
-func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
-	base := []string{
-		"TERM=screen-256color",
-		"COLORTERM=24bit",
-		"USER=test",
-	}
-
-	env := terminalEnvironment(base)
-
-	if !reflect.DeepEqual(env, base) {
-		t.Fatalf("terminal environment = %#v, want existing hints preserved", env)
-	}
-}
-
-func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
-	env := terminalEnvironment([]string{"TERM=dumb", "COLORTERM=color", "USER=test"})
-
-	if got := lastEnvValue(env, "TERM"); got != "xterm-256color" {
-		t.Fatalf("TERM = %q in %#v, want xterm-256color", got, env)
-	}
-	if got := lastEnvValue(env, "COLORTERM"); got != "truecolor" {
-		t.Fatalf("COLORTERM = %q in %#v, want truecolor", got, env)
-	}
-}
-
 func TestExpandHomePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -145,26 +104,6 @@ func TestShellCommandForScriptUsesInteractiveLoginShellWithoutTypingCommand(t *t
 	if got := cmd.Args[3]; got != "codex --yolo" {
 		t.Fatalf("script = %q, want launch command", got)
 	}
-}
-
-func containsEnv(env []string, entry string) bool {
-	for _, candidate := range env {
-		if candidate == entry {
-			return true
-		}
-	}
-	return false
-}
-
-func lastEnvValue(env []string, key string) string {
-	prefix := key + "="
-	value := ""
-	for _, candidate := range env {
-		if strings.HasPrefix(candidate, prefix) {
-			value = strings.TrimPrefix(candidate, prefix)
-		}
-	}
-	return value
 }
 
 func TestDefaultShellPathFallsBackToSh(t *testing.T) {
@@ -348,56 +287,6 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 
 	if !reflect.DeepEqual(signaled, []int{4242}) {
 		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
-	}
-}
-
-func TestSelectAltBufferWindowNudgesResizeAfterReplay(t *testing.T) {
-	server := newMuxServer("test")
-	server.width = 80
-	server.height = 24
-	attach := &recordingConn{}
-	visualWindow := &muxWindow{
-		id:               "@1",
-		index:            0,
-		capabilities:     []string{windowCapabilityVisualScrollback},
-		screen:           newTerminalScreen(80, 24),
-		lastActivity:     time.Now(),
-		cursorVisible:    true,
-		privateModes:     map[string]bool{"1049": true},
-		scrollbackOffset: 0,
-	}
-	copilotWindow := &muxWindow{
-		id:           "@2",
-		index:        1,
-		name:         "Copilot",
-		history:      []byte("copilot screen"),
-		privateModes: map[string]bool{"1049": true},
-		lastActivity: time.Now(),
-	}
-	server.windows = []*muxWindow{visualWindow, copilotWindow}
-	server.activeID = visualWindow.id
-	server.attachConn = attach
-
-	wantReplay := string(server.replayBytesLocked(copilotWindow))
-	attach.Reset()
-	originalNudgeForegroundResize := nudgeForegroundResize
-	defer func() {
-		nudgeForegroundResize = originalNudgeForegroundResize
-	}()
-	var nudged []string
-	nudgeForegroundResize = func(window *muxWindow, width int, height int) {
-		nudged = append(nudged, fmt.Sprintf("%s:%dx%d", window.id, width, height))
-		if got := attach.String(); got != wantReplay {
-			t.Fatalf("resize nudge ran before replay was written: got %q, want %q", got, wantReplay)
-		}
-	}
-
-	if err := server.selectWindow(copilotWindow.id); err != nil {
-		t.Fatal(err)
-	}
-
-	if !reflect.DeepEqual(nudged, []string{"@2:80x24"}) {
-		t.Fatalf("resize nudges = %#v, want @2 80x24", nudged)
 	}
 }
 
@@ -853,15 +742,7 @@ func TestCodexWheelScrollRendersOrderedVisualScrollback(t *testing.T) {
 	server, window, _ := newCodexScrollbackTestServer(t)
 	writeCodexNumberedLines(server, window.id)
 
-	if snapshot := server.snapshotLocked(window); !snapshot.VisualScrollbackAvailable {
-		t.Fatalf("snapshot did not report available visual scrollback: %#v", snapshot)
-	}
-
-	replayBytes, handled := server.applyAgentScrollLocked(window, 2)
-	if !handled {
-		t.Fatal("agent scroll was not handled")
-	}
-	replay := string(replayBytes)
+	replay := string(server.applyAgentScrollLocked(window, 2))
 
 	if strings.Contains(replay, "\x1b[?1049l") {
 		t.Fatalf("scrollback replay should not leave alt buffer: %q", replay)
@@ -879,7 +760,7 @@ func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	attach.Reset()
 
-	server.handleWindowOutput(window.id, []byte("hello"))
+	server.handleWindowOutput(window.id, []byte("\x1b[?1049hhello"))
 
 	got := attach.String()
 	if !strings.Contains(got, "hello") {
@@ -888,121 +769,14 @@ func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	if !strings.Contains(got, "\x1b[?7l\x1b[H\x1b[2J") {
 		t.Fatalf("live repaint = %q, want screen repaint", got)
 	}
-	if got == "hello" {
+	if got == "\x1b[?1049hhello" {
 		t.Fatalf("live output used raw passthrough instead of screen repaint")
-	}
-}
-
-func TestCapableLiveOutputRepaintsScreenAtBottom(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	window.command = "zsh"
-	window.foregroundCommand = "zsh"
-	window.paneTitle = "shell"
-	attach.Reset()
-
-	server.handleWindowOutput(window.id, []byte("hello"))
-
-	got := attach.String()
-	if !strings.Contains(got, "hello") {
-		t.Fatalf("live repaint = %q, want rendered text", got)
-	}
-	if !strings.Contains(got, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J") {
-		t.Fatalf("live repaint = %q, want screen repaint", got)
-	}
-	if got == "hello" {
-		t.Fatalf("capable live output used raw passthrough instead of screen repaint")
-	}
-}
-
-func TestCapableAltBufferLiveOutputPassesThroughRaw(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	attach.Reset()
-
-	server.handleWindowOutput(window.id, []byte("\x1b[?1049h\x1b[31mred\x1b[0m"))
-
-	if got := attach.String(); got != "\x1b[?1049h\x1b[31mred\x1b[0m" {
-		t.Fatalf("alt-buffer live output = %q, want raw passthrough", got)
-	}
-}
-
-func TestCapableAltBufferReplayPreservesClaudeTrueColor(t *testing.T) {
-	server, window, _ := newCodexScrollbackTestServer(t)
-	server.width = 80
-	server.height = 24
-	window.ptyWidth = 80
-	window.ptyHeight = 24
-	window.screen.resize(80, 24)
-	server.handleWindowOutput(
-		window.id,
-		[]byte("\x1b[?1049h\x1b[H\r\x1b[1B\x1b[38;2;215;119;87m ▐\x1b[48;2;0;0;0m▛███▜\x1b[49m▌\x1b[3C\x1b[39m\x1b[1mClaude Code\x1b[22m"),
-	)
-
-	replay := string(server.replayBytesLocked(window))
-	if !strings.Contains(replay, "\x1b[38;2;215;119;87m ▐") {
-		t.Fatalf("replay did not preserve Claude orange foreground: %q", replay)
-	}
-	if strings.Contains(replay, "\x1b[38;2;215;119;87;48;2;0;0;0m") {
-		t.Fatalf("replay combined foreground and background truecolor SGR: %q", replay)
-	}
-	if !strings.Contains(replay, "\x1b[48;2;0;0;0m▛███▜") {
-		t.Fatalf("replay did not preserve Claude logo background: %q", replay)
-	}
-	if !strings.Contains(replay, "\x1b[0m\x1b[38;2;215;119;87m▌") {
-		t.Fatalf("replay did not restore orange foreground after logo background reset: %q", replay)
-	}
-}
-
-func TestAttachOutputSplitsCombinedExtendedColorsForXterm(t *testing.T) {
-	input := []byte("\x1b[38;2;215;119;87;48;2;0;0;0m█")
-
-	got := string(normalizeAttachOutputForXterm(input))
-
-	want := "\x1b[38;2;215;119;87m\x1b[48;2;0;0;0m█"
-	if got != want {
-		t.Fatalf("normalized attach output = %q, want %q", got, want)
-	}
-}
-
-func TestAttachOutputPreservesPlainSgr(t *testing.T) {
-	input := []byte("\x1b[31mred\x1b[0m")
-
-	got := string(normalizeAttachOutputForXterm(input))
-
-	if got != string(input) {
-		t.Fatalf("normalized attach output = %q, want original %q", got, string(input))
-	}
-}
-
-func TestVisualScreenCapabilityDoesNotDependOnAgentTool(t *testing.T) {
-	server := newMuxServer("test")
-	server.width = 8
-	server.height = 4
-	attach := &recordingConn{}
-	window := &muxWindow{
-		id:                "@1",
-		index:             0,
-		name:              "codex",
-		command:           "codex",
-		foregroundCommand: "codex",
-		paneTitle:         "Codex",
-		lastActivity:      time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = window.id
-	server.attachConn = attach
-
-	server.handleWindowOutput(window.id, []byte("\x1b[?1049hhello"))
-
-	if window.screen != nil {
-		t.Fatal("window without visual capability unexpectedly created a screen model")
-	}
-	if got := attach.String(); got != "\x1b[?1049hhello" {
-		t.Fatalf("window without visual capability output = %q, want raw passthrough", got)
 	}
 }
 
 func TestCodexLiveOutputScrollsViewportAtBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
+	server.handleWindowOutput(window.id, []byte("\x1b[?1049h"))
 	attach.Reset()
 
 	for i := 1; i < 50; i++ {
@@ -1033,71 +807,6 @@ func TestCodexLiveOutputPreservesTerminalQueries(t *testing.T) {
 	}
 }
 
-func TestCapableLiveOutputPreservesSplitTerminalQueries(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	server.handleWindowOutput(window.id, []byte("r"))
-	attach.Reset()
-
-	server.handleWindowOutput(window.id, []byte("\x1b]11;?"))
-	if strings.Contains(attach.String(), "\x1b]11;?") {
-		t.Fatalf("incomplete OSC query was forwarded: %q", attach.String())
-	}
-	server.handleWindowOutput(window.id, []byte("\x07d"))
-
-	got := attach.String()
-	if !strings.Contains(got, "\x1b]11;?\x07") {
-		t.Fatalf("live output = %q, want split terminal query preserved", got)
-	}
-	if !strings.Contains(got, "rd") {
-		t.Fatalf("live output = %q, want screen replay after split terminal query", got)
-	}
-}
-
-func TestCodexLiveOutputPreservesSgrColors(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	attach.Reset()
-
-	server.handleWindowOutput(
-		window.id,
-		[]byte("\x1b[31mred\x1b[0m ok"),
-	)
-
-	frame := lastScreenReplayFrame(attach.String())
-	if !strings.Contains(frame, "\x1b[31mred\x1b[0m ok") {
-		t.Fatalf("live repaint = %q, want red text style preserved", frame)
-	}
-}
-
-func TestCodexLiveOutputPreservesBackgroundSpaces(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	attach.Reset()
-
-	server.handleWindowOutput(
-		window.id,
-		[]byte("\x1b[48;2;10;20;30m  \x1b[0mX"),
-	)
-
-	frame := lastScreenReplayFrame(attach.String())
-	if !strings.Contains(frame, "\x1b[48;2;10;20;30m  \x1b[0mX") {
-		t.Fatalf("live repaint = %q, want styled spaces preserved", frame)
-	}
-}
-
-func TestCodexLiveOutputPreservesBackgroundErases(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	attach.Reset()
-
-	server.handleWindowOutput(
-		window.id,
-		[]byte("\x1b[48;5;24m\x1b[2K"),
-	)
-
-	frame := lastScreenReplayFrame(attach.String())
-	if !strings.Contains(frame, "\x1b[48;5;24m        \x1b[0m") {
-		t.Fatalf("live repaint = %q, want background erase preserved", frame)
-	}
-}
-
 func TestCodexScrollbackSuppressesLiveOutputUntilBottom(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	writeCodexNumberedLines(server, window.id)
@@ -1124,56 +833,6 @@ func TestCodexScrollbackSuppressesLiveOutputUntilBottom(t *testing.T) {
 	}
 	if window.scrollbackOffset != 0 {
 		t.Fatalf("scrollback offset = %d, want bottom", window.scrollbackOffset)
-	}
-}
-
-func TestAgentScrollInputForwardsWhenNoServerScrollback(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	readFile, writeFile, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer readFile.Close()
-	defer writeFile.Close()
-	window.pty = writeFile
-	attach.Reset()
-
-	read := make(chan string, 1)
-	go func() {
-		buf := make([]byte, len("\x1b[<64;1;1M"))
-		n, _ := readFile.Read(buf)
-		read <- string(buf[:n])
-	}()
-	if err := server.writeActiveInput([]byte("\x1b[<64;1;1M")); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case got := <-read:
-		if got != "\x1b[<64;1;1M" {
-			t.Fatalf("forwarded input = %q, want SGR wheel input", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for forwarded SGR wheel input")
-	}
-	if got := attach.String(); got != "" {
-		t.Fatalf("attach output = %q, want no server scroll replay", got)
-	}
-}
-
-func TestParseSGRWheelInputIgnoresButtonRelease(t *testing.T) {
-	if rows, consumed, ok := parseSGRWheelInput([]byte("\x1b[<64;1;1m")); ok {
-		t.Fatalf("release parsed as wheel input: rows=%d consumed=%d", rows, consumed)
-	}
-
-	rows, consumed, ok := parseSGRWheelInput([]byte("\x1b[<64;1;1Mtail"))
-	if !ok || rows != 1 || consumed != len("\x1b[<64;1;1M") {
-		t.Fatalf(
-			"press parsed as rows=%d consumed=%d ok=%t, want rows=1 consumed=10 ok=true",
-			rows,
-			consumed,
-			ok,
-		)
 	}
 }
 
@@ -1232,11 +891,8 @@ func TestCodexWindowReplayUsesScreenSnapshot(t *testing.T) {
 	if !strings.Contains(replay, "red") {
 		t.Fatalf("snapshot replay missing visible text: %q", replay)
 	}
-	if !strings.Contains(replay, "\x1b[31mred\x1b[0m") {
-		t.Fatalf("snapshot replay did not preserve SGR color: %q", replay)
-	}
-	if !strings.Contains(replay, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J") {
-		t.Fatalf("snapshot replay did not use screen repaint: %q", replay)
+	if strings.Contains(replay, "\x1b[31mred") {
+		t.Fatalf("snapshot replay reused raw SGR history instead of screen rows: %q", replay)
 	}
 	if !strings.Contains(replay, "\x1b[?1049h") {
 		t.Fatalf("snapshot replay should restore alt buffer mode: %q", replay)
@@ -1268,11 +924,8 @@ func TestSelectingCodexWindowRepaintsScreenSnapshot(t *testing.T) {
 	if !strings.Contains(replay, "ready") {
 		t.Fatalf("selected Codex replay missing screen text: %q", replay)
 	}
-	if !strings.Contains(replay, "\x1b[31mready\x1b[0m") {
-		t.Fatalf("selected Codex replay did not preserve SGR color: %q", replay)
-	}
-	if !strings.Contains(replay, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J") {
-		t.Fatalf("selected Codex replay did not use screen repaint: %q", replay)
+	if strings.Contains(replay, "\x1b[31mready") {
+		t.Fatalf("selected Codex replay used raw SGR history: %q", replay)
 	}
 	if !strings.Contains(replay, "\x1b[?1049h") {
 		t.Fatalf("selected Codex replay did not restore alt buffer: %q", replay)
@@ -1293,11 +946,11 @@ func TestAgentToolPrefersLiveCodexTitleOverStoredMetadata(t *testing.T) {
 	}
 }
 
-func TestVisualScreenModelOnlyTracksCapableWindows(t *testing.T) {
+func TestVisualScreenModelOnlyTracksCodexWindows(t *testing.T) {
 	server := newMuxServer("test")
 	server.width = 12
 	server.height = 4
-	shellWindow := &muxWindow{
+	window := &muxWindow{
 		id:        "@1",
 		name:      "zsh",
 		command:   "zsh",
@@ -1305,31 +958,17 @@ func TestVisualScreenModelOnlyTracksCapableWindows(t *testing.T) {
 		ptyWidth:  server.width,
 		ptyHeight: server.height,
 	}
-	capableWindow := &muxWindow{
-		id:                "@2",
-		name:              "shell",
-		command:           "zsh",
-		foregroundCommand: "zsh",
-		paneTitle:         "shell",
-		capabilities:      []string{windowCapabilityVisualScrollback},
-		ptyWidth:          server.width,
-		ptyHeight:         server.height,
-	}
-	server.windows = []*muxWindow{shellWindow, capableWindow}
-	server.activeID = shellWindow.id
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
 
-	server.handleWindowOutput(shellWindow.id, []byte("plain shell output\r\n"))
-	server.handleWindowOutput(capableWindow.id, []byte("capable output\r\n"))
+	server.handleWindowOutput(window.id, []byte("plain shell output\r\n"))
 
-	if shellWindow.screen != nil {
-		t.Fatal("plain shell window unexpectedly created a visual screen model")
-	}
-	if capableWindow.screen == nil {
-		t.Fatal("capable window did not create a visual screen model")
+	if window.screen != nil {
+		t.Fatal("non-Codex window unexpectedly created a visual screen model")
 	}
 }
 
-func TestVisualScreenCapabilityUsesWindowPtySize(t *testing.T) {
+func TestCodexVisualScreenUsesWindowPtySize(t *testing.T) {
 	server := newMuxServer("test")
 	server.width = 20
 	server.height = 6
@@ -1340,7 +979,6 @@ func TestVisualScreenCapabilityUsesWindowPtySize(t *testing.T) {
 		foregroundCommand: "node",
 		paneTitle:         "shell",
 		agentTool:         "copilot",
-		capabilities:      []string{windowCapabilityVisualScrollback},
 		ptyWidth:          8,
 		ptyHeight:         3,
 	}
@@ -1349,11 +987,11 @@ func TestVisualScreenCapabilityUsesWindowPtySize(t *testing.T) {
 
 	server.handleWindowOutput(
 		window.id,
-		[]byte("hello\r\n"),
+		[]byte("\x1b]0;OpenAI Codex (v0.130.0)\x07hello\r\n"),
 	)
 
 	if window.screen == nil {
-		t.Fatal("capable window did not create a visual screen model")
+		t.Fatal("Codex window did not create a visual screen model")
 	}
 	if window.screen.width != 8 || window.screen.height != 3 {
 		t.Fatalf("screen size = %dx%d, want 8x3", window.screen.width, window.screen.height)
@@ -1823,12 +1461,11 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			name: "copilot resume",
 			state: restoreWindowState{
 				Name:           "Copilot CLI",
-				Cwd:            "/tmp/project with space",
 				CurrentCommand: "copilot",
 				AgentTool:      "copilot",
 				AgentSessionID: "session-123",
 			},
-			want:      "copilot --yolo --add-dir '/tmp/project with space' --resume 'session-123'",
+			want:      "copilot --yolo --resume 'session-123'",
 			agentTool: "copilot",
 		},
 		{
@@ -1867,42 +1504,26 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 	}
 }
 
-func TestThemeHintRequiresWindowCapabilityAndTuiSignal(t *testing.T) {
-	capableWindow := &muxWindow{capabilities: []string{windowCapabilityThemeHints}}
-	capableWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	capableColorSchemeWindow := &muxWindow{
-		capabilities: []string{windowCapabilityThemeHints},
-	}
-	capableColorSchemeWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
-	capableWithoutSignal := &muxWindow{
-		capabilities: []string{windowCapabilityThemeHints},
-	}
-	visualBackCompatWindow := &muxWindow{
-		capabilities: []string{windowCapabilityVisualScrollback},
-	}
-	visualBackCompatWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
+	agentWindow := &muxWindow{foregroundCommand: "codex"}
+	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	agentWithoutFocus := &muxWindow{foregroundCommand: "gemini"}
 	shellWindow := &muxWindow{foregroundCommand: "zsh"}
 	shellWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 
-	if !capableWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware capable window did not support theme hints")
+	if !agentWindow.supportsThemeHintLocked() {
+		t.Fatal("focus-aware agent foreground window did not support theme hints")
 	}
-	if !capableColorSchemeWindow.supportsThemeHintLocked() {
-		t.Fatal("color-scheme-aware capable window did not support theme hints")
-	}
-	if !visualBackCompatWindow.supportsThemeHintLocked() {
-		t.Fatal("visual-scrollback capable window did not support legacy theme hints")
-	}
-	if capableWithoutSignal.supportsThemeHintLocked() {
-		t.Fatal("capable window without TUI signal supported theme hints")
+	if agentWithoutFocus.supportsThemeHintLocked() {
+		t.Fatal("agent foreground window without focus mode supported theme hints")
 	}
 	if shellWindow.supportsThemeHintLocked() {
 		t.Fatal("focus-aware shell foreground window unexpectedly supported theme hints")
 	}
 
-	capableWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
-	if capableWindow.supportsThemeHintLocked() {
-		t.Fatal("capable window supported theme hints after focus mode disabled")
+	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
+	if agentWindow.supportsThemeHintLocked() {
+		t.Fatal("agent foreground window supported theme hints after focus mode disabled")
 	}
 }
 
@@ -2066,20 +1687,6 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	}
 }
 
-func TestResizeForwarderStateSkipsDuplicateSizes(t *testing.T) {
-	var state resizeForwarderState
-
-	if !state.shouldSend(80, 24) {
-		t.Fatal("initial resize was not sent")
-	}
-	if state.shouldSend(80, 24) {
-		t.Fatal("duplicate resize was sent")
-	}
-	if !state.shouldSend(100, 30) {
-		t.Fatal("changed resize was not sent")
-	}
-}
-
 func TestControlClientCloseCancelsRunCommand(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	server := newMuxServer("test")
@@ -2211,7 +1818,6 @@ func newCodexScrollbackTestServer(t *testing.T) (*muxServer, *muxWindow, *record
 		foregroundCommand:     "codex",
 		paneTitle:             "Codex",
 		screen:                newTerminalScreen(server.width, server.height),
-		capabilities:          []string{windowCapabilityVisualScrollback},
 		cursorVisible:         true,
 		cursorVisibilityKnown: true,
 		lastActivity:          time.Now(),
@@ -2233,7 +1839,7 @@ func writeCodexNumberedLines(server *muxServer, windowID string) {
 }
 
 func lastScreenReplayFrame(output string) string {
-	const repaintPrefix = "\x1b[0m\x1b[?7l\x1b[H\x1b[2J"
+	const repaintPrefix = "\x1b[?7l\x1b[H\x1b[2J"
 	index := strings.LastIndex(output, repaintPrefix)
 	if index < 0 {
 		return output

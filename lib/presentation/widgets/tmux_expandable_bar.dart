@@ -71,7 +71,6 @@ class _TmuxExpandableBar extends StatefulWidget {
     SshSession session,
     String sessionName, {
     required bool activeWindowChanged,
-    required List<TmuxWindow> windows,
   })?
   onWindowStateChanged;
 
@@ -348,7 +347,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       widget.session,
       widget.tmuxSessionName,
       activeWindowChanged: activeWindowChanged,
-      windows: _windows ?? const <TmuxWindow>[],
     );
   }
 
@@ -375,7 +373,54 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _shouldRefreshTmuxThemeAfterWindowChange(
     List<TmuxWindow> previousWindows,
     List<TmuxWindow> nextWindows,
-  ) => shouldNotifyTmuxBarWindowStateChanged(previousWindows, nextWindows);
+  ) {
+    if (previousWindows.length != nextWindows.length) {
+      return true;
+    }
+    for (final nextWindow in nextWindows) {
+      final previousWindow = previousWindows
+          .where(
+            (window) => _isSameTmuxWindowForThemeRefresh(window, nextWindow),
+          )
+          .firstOrNull;
+      if (previousWindow == null ||
+          _tmuxWindowRefreshIdentity(previousWindow) !=
+              _tmuxWindowRefreshIdentity(nextWindow)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isSameTmuxWindowForThemeRefresh(
+    TmuxWindow previousWindow,
+    TmuxWindow nextWindow,
+  ) {
+    final nextId = nextWindow.id;
+    if (nextId != null) {
+      return previousWindow.id == nextId;
+    }
+    return previousWindow.index == nextWindow.index;
+  }
+
+  ({
+    String? currentCommand,
+    AgentLaunchTool? foregroundAgentTool,
+    String? id,
+    int index,
+    bool isActive,
+    int? panePid,
+    String? paneStartCommand,
+  })
+  _tmuxWindowRefreshIdentity(TmuxWindow window) => (
+    currentCommand: window.currentCommand,
+    foregroundAgentTool: window.foregroundAgentTool,
+    id: window.id,
+    index: window.index,
+    isActive: window.isActive,
+    panePid: window.panePid,
+    paneStartCommand: window.paneStartCommand,
+  );
 
   void _applyWindows(List<TmuxWindow> windows) {
     // Detect new alerts that weren't in the previous window list.

@@ -1,15 +1,3 @@
-/// Remote window capability for server-managed visual scrollback and repaint.
-const remoteWindowCapabilityVisualScrollback = 'visual-scrollback-v1';
-
-/// Remote window capability for safe foreground TUI theme refresh hints.
-const remoteWindowCapabilityThemeHints = 'theme-hints-v1';
-
-/// Default MonkeyMux capabilities for foreground interactive TUIs.
-const remoteWindowCapabilitiesInteractiveTui = [
-  remoteWindowCapabilityVisualScrollback,
-  remoteWindowCapabilityThemeHints,
-];
-
 /// Remote terminal multiplexer backend configured for a host.
 enum RemoteMuxBackend {
   /// Let MonkeySSH choose the best available backend.

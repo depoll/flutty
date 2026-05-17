@@ -114,36 +114,6 @@ void main() {
     expect(output.join(), isNot(contains('\u001b[B')));
   });
 
-  testWidgets('touch scroll still works with system selection enabled', (
-    tester,
-  ) async {
-    final terminal = Terminal();
-    final output = <String>[];
-    terminal.onOutput = output.add;
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SizedBox(
-          width: 300,
-          height: 200,
-          child: MonkeyTerminalView(
-            terminal,
-            hardwareKeyboardOnly: true,
-            touchScrollToTerminal: true,
-            forceSgrScrollMouseInput: true,
-            useSystemSelection: true,
-          ),
-        ),
-      ),
-    );
-
-    await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
-    await tester.pump();
-
-    expect(output.join(), contains('\u001b[<65;'));
-    expect(output.join(), isNot(contains('\u001b[B')));
-  });
-
   testWidgets(
     'mouse-reporting apps require more drag distance per touch scroll step',
     (tester) async {

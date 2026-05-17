@@ -49,7 +49,6 @@ void main() {
         sessionName: "work'space",
         workingDirectory: "~/src/it's app",
         windowName: 'Codex agent',
-        windowCapabilities: const [remoteWindowCapabilityVisualScrollback],
         launchCommand: "codex --model 'gpt-5.4'",
         serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
         startInYoloMode: true,
@@ -58,8 +57,7 @@ void main() {
       expect(
         command,
         "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never "
-        "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' "
-        "--window-capability 'visual-scrollback-v1' --command "
+        "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
     });
@@ -113,14 +111,10 @@ void main() {
         'currentCommand': 'node',
         'panePid': 1234,
         'agentTool': 'gemini',
-        'capabilities': [remoteWindowCapabilityVisualScrollback],
-        'visualScrollbackAvailable': true,
       });
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
-      expect(window.supportsVisualScrollback, isTrue);
-      expect(window.visualScrollbackAvailable, isTrue);
     });
   });
 

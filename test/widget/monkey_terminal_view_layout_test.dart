@@ -413,23 +413,5 @@ void main() {
         theme.brightBlack,
       );
     });
-
-    test('keeps truecolor foreground when background is set separately', () {
-      final terminal = Terminal()
-        ..resize(24, 2)
-        ..write('\x1b[38;2;215;119;87m\x1b[48;2;0;0;0m█');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-      final cellData = CellData.empty();
-      terminal.buffer.lines[0].getCellData(0, cellData);
-
-      expect(
-        painter.resolveMonkeyTerminalCellForegroundColor(cellData),
-        const Color(0xFFD77757),
-      );
-    });
   });
 }
