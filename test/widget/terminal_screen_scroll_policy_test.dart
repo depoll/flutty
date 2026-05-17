@@ -142,7 +142,6 @@ void main() {
           activeWindowCapabilities: const {
             remoteWindowCapabilityVisualScrollback,
           },
-          visualScrollbackAvailable: true,
         ),
         isTrue,
       );
@@ -153,7 +152,6 @@ void main() {
           activeWindowCapabilities: const {
             remoteWindowCapabilityVisualScrollback,
           },
-          visualScrollbackAvailable: true,
         ),
         isFalse,
       );
@@ -162,7 +160,6 @@ void main() {
         shouldForceMonkeyMuxWindowScrollInput(
           activeMuxBackend: RemoteMuxBackend.monkeyMux,
           activeWindowCapabilities: const <String>{},
-          visualScrollbackAvailable: true,
         ),
         isFalse,
       );
@@ -173,9 +170,8 @@ void main() {
           activeWindowCapabilities: const {
             remoteWindowCapabilityVisualScrollback,
           },
-          visualScrollbackAvailable: false,
         ),
-        isFalse,
+        isTrue,
       );
     });
 

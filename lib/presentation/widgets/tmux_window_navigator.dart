@@ -101,7 +101,7 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowPicker({
             startInYoloMode: startClisInYoloMode,
           ),
           windowName: tool.commandName,
-          windowCapabilities: const [remoteWindowCapabilityVisualScrollback],
+          windowCapabilities: remoteWindowCapabilitiesInteractiveTui,
         ),
       );
     },
@@ -151,7 +151,7 @@ class TmuxResumeSessionAction extends TmuxNavigatorAction {
   const TmuxResumeSessionAction(
     this.resumeCommand, {
     this.workingDirectory,
-    this.windowCapabilities = const [remoteWindowCapabilityVisualScrollback],
+    this.windowCapabilities = remoteWindowCapabilitiesInteractiveTui,
   });
 
   /// The full resume command to run.
@@ -512,7 +512,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         windowName: name,
         windowCapabilities: command == null
             ? const <String>[]
-            : const [remoteWindowCapabilityVisualScrollback],
+            : remoteWindowCapabilitiesInteractiveTui,
       ),
     );
   }

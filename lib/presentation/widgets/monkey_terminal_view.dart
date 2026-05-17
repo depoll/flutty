@@ -920,7 +920,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       },
     );
 
-    if (widget.useSystemSelection) {
+    final deferSystemSelectionForTouchScroll =
+        widget.useSystemSelection && widget.touchScrollToTerminal;
+    if (widget.useSystemSelection && !deferSystemSelectionForTouchScroll) {
       child = SelectionArea(
         focusNode: widget.hardwareKeyboardOnly ? _focusNode : null,
         contextMenuBuilder:
@@ -1004,6 +1006,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       enableTerminalSelectionGestures: !widget.useSystemSelection,
       child: child,
     );
+
+    if (deferSystemSelectionForTouchScroll) {
+      child = SelectionArea(
+        focusNode: widget.hardwareKeyboardOnly ? _focusNode : null,
+        contextMenuBuilder:
+            widget.systemSelectionContextMenuBuilder ??
+            _defaultSystemSelectionContextMenu,
+        onSelectionChanged: widget.onSystemSelectionChanged,
+        child: child,
+      );
+    }
 
     child = MouseRegion(cursor: widget.mouseCursor, child: child);
 

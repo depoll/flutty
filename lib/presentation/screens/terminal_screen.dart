@@ -2188,10 +2188,8 @@ bool shouldRouteTouchScrollToTerminal({
 bool shouldForceMonkeyMuxWindowScrollInput({
   required RemoteMuxBackend activeMuxBackend,
   required Set<String> activeWindowCapabilities,
-  required bool visualScrollbackAvailable,
 }) =>
     activeMuxBackend == RemoteMuxBackend.monkeyMux &&
-    visualScrollbackAvailable &&
     activeWindowCapabilities.contains(remoteWindowCapabilityVisualScrollback);
 
 /// Whether the native selection overlay should be visible for terminal content.
@@ -2940,6 +2938,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final MonkeyMuxInstallerService _monkeyMuxInstallerService;
   late final TerminalConnectionBackendService _terminalBackendService;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
+  List<TmuxWindow>? _activeMuxWindowsSnapshot;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -2975,21 +2974,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
-  Set<String> get _activeTmuxWindowCapabilities =>
-      resolveTmuxBarActiveWindowCapabilities(
-        _tmuxBarKey.currentState?.currentWindowsSnapshot,
-      );
+  List<TmuxWindow>? get _activeTmuxWindowsSnapshot =>
+      _activeMuxWindowsSnapshot ??
+      _tmuxBarKey.currentState?.currentWindowsSnapshot;
 
-  bool get _activeTmuxWindowVisualScrollbackAvailable =>
-      resolveTmuxBarActiveWindowVisualScrollbackAvailable(
-        _tmuxBarKey.currentState?.currentWindowsSnapshot,
-      );
+  Set<String> get _activeTmuxWindowCapabilities =>
+      resolveTmuxBarActiveWindowCapabilities(_activeTmuxWindowsSnapshot);
 
   bool get _forceSgrScrollMouseInputForMuxWindow =>
       shouldForceMonkeyMuxWindowScrollInput(
         activeMuxBackend: _activeMuxBackend,
         activeWindowCapabilities: _activeTmuxWindowCapabilities,
-        visualScrollbackAvailable: _activeTmuxWindowVisualScrollbackAvailable,
       );
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
@@ -3953,10 +3948,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session,
     String sessionName, {
     required bool activeWindowChanged,
+    required List<TmuxWindow> windows,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       if (mounted) {
-        setState(() {});
+        setState(() {
+          _activeMuxWindowsSnapshot = List<TmuxWindow>.unmodifiable(windows);
+        });
+      } else {
+        _activeMuxWindowsSnapshot = List<TmuxWindow>.unmodifiable(windows);
       }
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
@@ -4551,6 +4551,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _scheduleTerminalThemeDependencyReload();
   }
 
+  void _scheduleTerminalThemeDependencyReloadIfBrightnessChanged({
+    required String reason,
+  }) {
+    if (_currentTheme == null) {
+      return;
+    }
+    final brightness = _resolveTerminalThemeBrightness();
+    if (_lastThemeDependencyBrightness == brightness) {
+      return;
+    }
+    _lastThemeDependencyBrightness = brightness;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _handleTerminalThemeDependenciesChanged(
+        forceRemoteRefresh: true,
+        reason: reason,
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _scheduleTerminalThemeDependencyReload() {
     if (_terminalThemeDependencyReloadQueued) {
       return;
@@ -4834,6 +4857,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _followLiveOutput() {
     _shouldFollowLiveOutput = true;
+    if (_terminalScrollController.hasClients) {
+      final position = _terminalScrollController.position;
+      if (_terminalScrollController.offset != position.maxScrollExtent) {
+        _terminalScrollController.jumpTo(position.maxScrollExtent);
+      }
+    }
     _queueTerminalScrollToBottom();
   }
 
@@ -5795,13 +5824,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _scheduleTerminalSizeRefresh();
         _restoreTerminalFocus();
 
-        // Detect tmux on existing sessions too (may not have been detected
-        // yet if the terminal was opened before tmux started).
-        if (!_isTmuxActive) {
+        // Detect tmux on existing sessions too (may not have been detected yet
+        // if the terminal was opened before tmux started). MonkeyMux sessions
+        // also refresh their window snapshot here because touch-scroll routing
+        // depends on per-window capabilities, and an already-active restored
+        // session may not have a populated tmux bar state yet.
+        if (!_isTmuxActive || _activeMuxBackend == RemoteMuxBackend.monkeyMux) {
           unawaited(
             _detectTmux(
               session,
               skipDelay: true,
+              preserveExistingTmuxState: _isTmuxActive,
               isReopeningExistingTerminal: true,
             ),
           );
@@ -6742,7 +6775,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
-        windowCapabilities: const [remoteWindowCapabilityVisualScrollback],
+        windowCapabilities: remoteWindowCapabilitiesInteractiveTui,
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
       );
@@ -6874,6 +6907,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isTmuxActive = false;
     _tmuxSessionName = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
+    _activeMuxWindowsSnapshot = null;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
@@ -7057,6 +7091,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isTmuxActive = true;
           _tmuxSessionName = candidateSessionName;
           _activeMuxBackend = muxBackend;
+          _activeMuxWindowsSnapshot = null;
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
           _tmuxWorkingDirectory = preferredWorkingDirectory;
@@ -7066,6 +7101,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _stopTmuxForegroundVerification();
           _isTmuxActive = false;
           _tmuxSessionName = null;
+          _activeMuxWindowsSnapshot = null;
           _tmuxStateConnectionId = null;
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
@@ -7222,6 +7258,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isTmuxActive = true;
           _tmuxSessionName = sessionName;
           _activeMuxBackend = muxBackend;
+          _activeMuxWindowsSnapshot = List<TmuxWindow>.unmodifiable(windows);
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
@@ -7711,7 +7748,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       return false;
     }
-    final knownWindows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
+    final knownWindows = _activeTmuxWindowsSnapshot;
     if (knownWindows != null && knownWindows.isNotEmpty) {
       return knownWindows.length == 1 &&
           knownWindows.any((window) => window.index == windowIndex);
@@ -8440,17 +8477,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
-    final brightness = _resolveTerminalThemeBrightness();
-    final didBrightnessChange = _lastThemeDependencyBrightness != brightness;
-    _lastThemeDependencyBrightness = brightness;
-    if (_currentTheme == null) {
-      return;
-    }
-    if (!didBrightnessChange) {
-      return;
-    }
-    _handleTerminalThemeDependenciesChanged(
-      forceRemoteRefresh: true,
+    _scheduleTerminalThemeDependencyReloadIfBrightnessChanged(
       reason: 'dependencies_brightness_changed',
     );
   }
@@ -8535,6 +8562,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         connectionState == SshConnectionState.disconnected;
 
     // Use session override, or loaded theme, or fallback.
+    _scheduleTerminalThemeDependencyReloadIfBrightnessChanged(
+      reason: 'build_brightness_changed',
+    );
     final terminalTheme = _resolveEffectiveTerminalTheme();
     // Only push the theme to the session when it differs from what was last
     // applied via this path.  Explicit callers (_openShell, _loadTheme, etc.)
@@ -9452,7 +9482,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTap: _handleTerminalLinkTap,
       suppressLongPressDragSelection: isMobile,
       liveOutputAutoScroll: _terminalLiveOutputAutoScrollEnabled,
-      useSystemSelection: isMobile,
+      useSystemSelection: isMobile && !routeTouchScrollToTerminal,
       systemSelectionContextMenuBuilder: isMobile
           ? _buildTerminalSelectionContextMenu
           : null,
@@ -10580,7 +10610,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalPointerDown(PointerDownEvent event) {
-    _pauseTerminalOutputFollowForTouch(event);
+    if (_routesTouchScrollToTerminal) {
+      _followLiveOutput();
+    } else {
+      _pauseTerminalOutputFollowForTouch(event);
+    }
     _handleTerminalLinkPointerDown(event);
     if (_pendingTerminalLinkTap == null) {
       _handleTerminalPathPointerDown(event);

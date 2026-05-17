@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.82"
+	monkeyMuxVersion         = "0.1.83"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -56,7 +56,10 @@ const (
 
 const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
-const windowCapabilityVisualScrollback = "visual-scrollback-v1"
+const (
+	windowCapabilityVisualScrollback = "visual-scrollback-v1"
+	windowCapabilityThemeHints       = "theme-hints-v1"
+)
 
 var (
 	preReplayPrivateModes = []string{
@@ -2999,15 +3002,18 @@ func (s *muxServer) writeActiveInput(data []byte) error {
 	}
 	if rows, ok := agentScrollRowsFromInput(data); ok &&
 		window.shouldUseVisualScrollbackLocked() {
+		var handled bool
 		windowID = window.id
 		attach = s.attachConn
-		replay = s.applyAgentScrollLocked(window, rows)
-		s.mu.Unlock()
-		if len(replay) > 0 {
-			s.writeAttachLocked(attach, replay)
+		replay, handled = s.applyAgentScrollLocked(window, rows)
+		if handled {
+			s.mu.Unlock()
+			if len(replay) > 0 {
+				s.writeAttachLocked(attach, replay)
+			}
+			s.attachMu.Unlock()
+			return nil
 		}
-		s.attachMu.Unlock()
-		return nil
 	}
 	if window.scrollbackOffset > 0 {
 		window.scrollbackOffset = 0
@@ -3029,14 +3035,14 @@ func (s *muxServer) writeActiveInput(data []byte) error {
 	return err
 }
 
-func (s *muxServer) applyAgentScrollLocked(window *muxWindow, rows int) []byte {
+func (s *muxServer) applyAgentScrollLocked(window *muxWindow, rows int) ([]byte, bool) {
 	if window == nil || window.screen == nil || rows == 0 {
-		return nil
+		return nil, false
 	}
 	maxOffset := window.maxScrollbackOffsetLocked()
 	if maxOffset <= 0 {
 		window.scrollbackOffset = 0
-		return nil
+		return nil, false
 	}
 	window.scrollbackOffset += rows
 	if window.scrollbackOffset < 0 {
@@ -3045,9 +3051,9 @@ func (s *muxServer) applyAgentScrollLocked(window *muxWindow, rows int) []byte {
 		window.scrollbackOffset = maxOffset
 	}
 	if window.scrollbackOffset == 0 {
-		return s.agentScreenReplayBytesLocked(window, false)
+		return s.agentScreenReplayBytesLocked(window, false), true
 	}
-	return s.agentScrollbackReplayBytesLocked(window)
+	return s.agentScrollbackReplayBytesLocked(window), true
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
@@ -4493,7 +4499,7 @@ func normalizeWindowCapabilities(capabilities []string) []string {
 			continue
 		}
 		switch capability {
-		case windowCapabilityVisualScrollback:
+		case windowCapabilityVisualScrollback, windowCapabilityThemeHints:
 			normalized = append(normalized, capability)
 		}
 	}
@@ -4568,7 +4574,17 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeEnabled && w.agentToolLocked() != ""
+	if w == nil ||
+		(!windowSupportsCapability(w.capabilities, windowCapabilityThemeHints) &&
+			!windowSupportsCapability(w.capabilities, windowCapabilityVisualScrollback)) {
+		return false
+	}
+	return w.focusModeEnabled ||
+		w.privateModes["2031"] ||
+		w.privateModes["1049"] ||
+		w.privateModes["1000"] ||
+		w.privateModes["1002"] ||
+		w.privateModes["1003"]
 }
 
 func commandNameForProcessGroup(pgrp int) string {

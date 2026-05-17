@@ -857,7 +857,11 @@ func TestCodexWheelScrollRendersOrderedVisualScrollback(t *testing.T) {
 		t.Fatalf("snapshot did not report available visual scrollback: %#v", snapshot)
 	}
 
-	replay := string(server.applyAgentScrollLocked(window, 2))
+	replayBytes, handled := server.applyAgentScrollLocked(window, 2)
+	if !handled {
+		t.Fatal("agent scroll was not handled")
+	}
+	replay := string(replayBytes)
 
 	if strings.Contains(replay, "\x1b[?1049l") {
 		t.Fatalf("scrollback replay should not leave alt buffer: %q", replay)
@@ -1120,6 +1124,40 @@ func TestCodexScrollbackSuppressesLiveOutputUntilBottom(t *testing.T) {
 	}
 	if window.scrollbackOffset != 0 {
 		t.Fatalf("scrollback offset = %d, want bottom", window.scrollbackOffset)
+	}
+}
+
+func TestAgentScrollInputForwardsWhenNoServerScrollback(t *testing.T) {
+	server, window, attach := newCodexScrollbackTestServer(t)
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+	window.pty = writeFile
+	attach.Reset()
+
+	read := make(chan string, 1)
+	go func() {
+		buf := make([]byte, len("\x1b[<64;1;1M"))
+		n, _ := readFile.Read(buf)
+		read <- string(buf[:n])
+	}()
+	if err := server.writeActiveInput([]byte("\x1b[<64;1;1M")); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-read:
+		if got != "\x1b[<64;1;1M" {
+			t.Fatalf("forwarded input = %q, want SGR wheel input", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarded SGR wheel input")
+	}
+	if got := attach.String(); got != "" {
+		t.Fatalf("attach output = %q, want no server scroll replay", got)
 	}
 }
 
@@ -1829,26 +1867,42 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 	}
 }
 
-func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
-	agentWindow := &muxWindow{foregroundCommand: "codex"}
-	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	agentWithoutFocus := &muxWindow{foregroundCommand: "gemini"}
+func TestThemeHintRequiresWindowCapabilityAndTuiSignal(t *testing.T) {
+	capableWindow := &muxWindow{capabilities: []string{windowCapabilityThemeHints}}
+	capableWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	capableColorSchemeWindow := &muxWindow{
+		capabilities: []string{windowCapabilityThemeHints},
+	}
+	capableColorSchemeWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
+	capableWithoutSignal := &muxWindow{
+		capabilities: []string{windowCapabilityThemeHints},
+	}
+	visualBackCompatWindow := &muxWindow{
+		capabilities: []string{windowCapabilityVisualScrollback},
+	}
+	visualBackCompatWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	shellWindow := &muxWindow{foregroundCommand: "zsh"}
 	shellWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 
-	if !agentWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware agent foreground window did not support theme hints")
+	if !capableWindow.supportsThemeHintLocked() {
+		t.Fatal("focus-aware capable window did not support theme hints")
 	}
-	if agentWithoutFocus.supportsThemeHintLocked() {
-		t.Fatal("agent foreground window without focus mode supported theme hints")
+	if !capableColorSchemeWindow.supportsThemeHintLocked() {
+		t.Fatal("color-scheme-aware capable window did not support theme hints")
+	}
+	if !visualBackCompatWindow.supportsThemeHintLocked() {
+		t.Fatal("visual-scrollback capable window did not support legacy theme hints")
+	}
+	if capableWithoutSignal.supportsThemeHintLocked() {
+		t.Fatal("capable window without TUI signal supported theme hints")
 	}
 	if shellWindow.supportsThemeHintLocked() {
 		t.Fatal("focus-aware shell foreground window unexpectedly supported theme hints")
 	}
 
-	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
-	if agentWindow.supportsThemeHintLocked() {
-		t.Fatal("agent foreground window supported theme hints after focus mode disabled")
+	capableWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
+	if capableWindow.supportsThemeHintLocked() {
+		t.Fatal("capable window supported theme hints after focus mode disabled")
 	}
 }
 

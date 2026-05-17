@@ -71,6 +71,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     SshSession session,
     String sessionName, {
     required bool activeWindowChanged,
+    required List<TmuxWindow> windows,
   })?
   onWindowStateChanged;
 
@@ -347,6 +348,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       widget.session,
       widget.tmuxSessionName,
       activeWindowChanged: activeWindowChanged,
+      windows: _windows ?? const <TmuxWindow>[],
     );
   }
 

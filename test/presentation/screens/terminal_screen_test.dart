@@ -1072,6 +1072,7 @@ void main() {
       ThemeMode themeMode = ThemeMode.light,
       ActiveSessionsNotifier? activeSessions,
       TmuxService? tmuxService,
+      MonkeyMuxService? monkeyMuxService,
       ShellCompletionService? shellCompletionService,
     }) async {
       await tester.pumpWidget(
@@ -1092,6 +1093,8 @@ void main() {
             ),
             if (tmuxService != null)
               tmuxServiceProvider.overrideWithValue(tmuxService),
+            if (monkeyMuxService != null)
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             if (shellCompletionService != null)
               shellCompletionServiceProvider.overrideWithValue(
                 shellCompletionService,
@@ -1637,6 +1640,72 @@ void main() {
         expect(
           session.terminalTheme?.id,
           monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'refreshes the active TUI when platform brightness changes before '
+      'a rebuild',
+      (tester) async {
+        tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+        addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+        final rebuildSignal = ValueNotifier<int>(0);
+        addTearDown(rebuildSignal.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              themeModeNotifierProvider.overrideWith(
+                () => _TestThemeModeNotifier(ThemeMode.system),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: ValueListenableBuilder<int>(
+              valueListenable: rebuildSignal,
+              builder: (context, value, child) => MaterialApp(
+                theme: ThemeData.light(),
+                darkTheme: ThemeData.dark(),
+                home: child,
+              ),
+              child: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        tester.platformDispatcher.platformBrightnessTestValue =
+            Brightness.light;
+        rebuildSignal.value += 1;
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultLightThemeId,
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
@@ -5753,9 +5822,6 @@ void main() {
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(430, 932));
         addTearDown(() => tester.binding.setSurfaceSize(null));
-        session.terminal!
-          ..setMouseMode(MouseMode.upDownScroll)
-          ..setMouseReportMode(MouseReportMode.sgr);
         await pumpScreen(tester);
 
         session.terminal!.write(
@@ -5798,6 +5864,166 @@ void main() {
           scrollableState.position.pixels,
           scrollableState.position.maxScrollExtent,
         );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'direct terminal scroll keeps the local viewport pinned to live output',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(430, 932));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        session.terminal!
+          ..setMouseMode(MouseMode.upDownScroll)
+          ..setMouseReportMode(MouseReportMode.sgr);
+        await pumpScreen(tester);
+
+        session.terminal!.write(
+          List<String>.generate(80, (index) => 'line $index').join('\r\n'),
+        );
+        await tester.pumpAndSettle();
+
+        final scrollableFinder = find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        );
+        final scrollableState = tester.state<ScrollableState>(scrollableFinder);
+        scrollableState.position.jumpTo(0);
+        await tester.pump();
+        expect(scrollableState.position.pixels, 0);
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(find.byType(MonkeyTerminalView)),
+        );
+        await tester.pump();
+
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .liveOutputAutoScroll,
+          isTrue,
+        );
+        expect(
+          scrollableState.position.pixels,
+          scrollableState.position.maxScrollExtent,
+        );
+
+        await gesture.up();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'mobile direct terminal scroll disables system selection wrapper',
+      (tester) async {
+        session.terminal!
+          ..setMouseMode(MouseMode.upDownScroll)
+          ..setMouseReportMode(MouseReportMode.sgr);
+
+        await pumpScreen(tester);
+
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.touchScrollToTerminal, isTrue);
+        expect(terminalView.useSystemSelection, isFalse);
+        expect(find.byType(SelectionArea), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'MonkeyMux visual scrollback capability enables forced SGR touch scroll',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            id: '@1',
+            name: 'agent',
+            isActive: true,
+            capabilities: {remoteWindowCapabilityVisualScrollback},
+            visualScrollbackAvailable: true,
+          ),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          monkeyMuxService: monkeyMuxService,
+          activeSessions: _TestActiveSessionsNotifier(session),
+        );
+        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump();
+
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.touchScrollToTerminal, isTrue);
+        expect(terminalView.forceSgrScrollMouseInput, isTrue);
+        expect(terminalView.useSystemSelection, isFalse);
+
+        shellWrites.clear();
+        await tester.drag(
+          find.byType(MonkeyTerminalView),
+          const Offset(0, -120),
+        );
+        await tester.pump();
+
+        final writtenOutput = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenOutput, contains('\u001b[<65;'));
+        expect(writtenOutput, isNot(contains('\u001b[B')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
