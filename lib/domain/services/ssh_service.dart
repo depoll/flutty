@@ -39,6 +39,8 @@ typedef TerminalControlModeState = ({
   bool reportFocusMode,
   bool bracketedPasteMode,
   bool colorSchemeUpdatesMode,
+  bool synchronizedOutputMode,
+  bool graphemeClusterMode,
   bool isUsingAltBuffer,
   bool mouseTrackingMode,
   bool mouseDragTrackingMode,
@@ -150,6 +152,24 @@ buildTerminalWindowControlQueryResponses({
     responses.write(buildTerminalThemeModeReport(isDark: theme.isDark));
   }
 
+  if (theme != null) {
+    for (final match in _terminalThemeOscQueryPattern.allMatches(
+      combinedInput,
+    )) {
+      final sequence = match.group(0);
+      if (sequence == null) {
+        continue;
+      }
+      final response = _buildDirectTerminalThemeOscQueryResponse(
+        sequence,
+        theme,
+      );
+      if (response != null) {
+        responses.write(response);
+      }
+    }
+  }
+
   final response = responses.isEmpty ? null : responses.toString();
   return (
     response: response,
@@ -157,33 +177,88 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
-/// Extracts terminal color-scheme update mode changes from shell output.
+/// Extracts terminal control mode changes from shell output.
 ///
-/// Some TUIs enable DEC private mode 2031 to request a report when the
-/// terminal switches between light and dark color schemes. xterm.dart does not
-/// currently model that mode, so MonkeySSH tracks it while scanning the same
-/// shell output used for other terminal control queries.
-({bool? colorSchemeUpdatesMode, String pendingInput})
+/// xterm.dart does not currently model every modern DEC private mode that TUIs
+/// query, so MonkeySSH tracks the missing modes while scanning the same shell
+/// output used for other terminal control queries.
+({
+  bool? colorSchemeUpdatesMode,
+  bool? synchronizedOutputMode,
+  bool? graphemeClusterMode,
+  String pendingInput,
+})
 extractTerminalControlModeUpdates({
   required String input,
   required String pendingInput,
 }) {
   final combinedInput = pendingInput + input;
   bool? colorSchemeUpdatesMode;
+  bool? synchronizedOutputMode;
+  bool? graphemeClusterMode;
 
   for (final match in _terminalPrivateModeSetResetPattern.allMatches(
     combinedInput,
   )) {
     final params = match.group(1)?.split(';') ?? const <String>[];
-    if (!params.contains('2031')) {
-      continue;
+    final enabled = match.group(2) == 'h';
+    if (params.contains('2026')) {
+      synchronizedOutputMode = enabled;
     }
-    colorSchemeUpdatesMode = match.group(2) == 'h';
+    if (params.contains('2027')) {
+      graphemeClusterMode = enabled;
+    }
+    if (params.contains('2031')) {
+      colorSchemeUpdatesMode = enabled;
+    }
   }
 
   return (
     colorSchemeUpdatesMode: colorSchemeUpdatesMode,
+    synchronizedOutputMode: synchronizedOutputMode,
+    graphemeClusterMode: graphemeClusterMode,
     pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
+  );
+}
+
+({String pendingInput, String? response, String terminalInput})
+_consumeTerminalThemeOscQueries({
+  required String input,
+  required String pendingInput,
+  required TerminalThemeData? theme,
+}) {
+  final combinedInput = pendingInput + input;
+  if (theme == null) {
+    return (pendingInput: '', response: null, terminalInput: combinedInput);
+  }
+
+  final pendingSuffix = _terminalThemeOscQueryPendingSuffix(combinedInput);
+  final scanInput = pendingSuffix.isEmpty
+      ? combinedInput
+      : combinedInput.substring(0, combinedInput.length - pendingSuffix.length);
+  final terminalInput = StringBuffer();
+  final responses = StringBuffer();
+  var cursor = 0;
+
+  for (final match in _terminalThemeOscQueryPattern.allMatches(scanInput)) {
+    terminalInput.write(scanInput.substring(cursor, match.start));
+    final sequence = match.group(0);
+    final response = sequence == null
+        ? null
+        : _buildDirectTerminalThemeOscQueryResponse(sequence, theme);
+    if (response == null) {
+      terminalInput.write(scanInput.substring(match.start, match.end));
+    } else {
+      responses.write(response);
+    }
+    cursor = match.end;
+  }
+
+  terminalInput.write(scanInput.substring(cursor));
+  return (
+    pendingInput: pendingSuffix,
+    response: responses.isEmpty ? null : responses.toString(),
+    terminalInput: terminalInput.toString(),
   );
 }
 
@@ -199,6 +274,15 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       final column = int.parse(match.group(2)!);
       return '\x1b[${row + 1};${column + 1}R';
     });
+
+bool _containsImmediateTerminalResponseQuery(String data) =>
+    _terminalWindowReportQueryPattern.hasMatch(data) ||
+    _terminalDeviceAttributeQueryPattern.hasMatch(data) ||
+    _terminalDeviceStatusQueryPattern.hasMatch(data) ||
+    _terminalModeReportQueryPattern.hasMatch(data) ||
+    _terminalThemeModeQueryPattern.hasMatch(data) ||
+    _terminalThemeOscQueryPattern.hasMatch(data) ||
+    _terminalClipboardOscQueryPattern.hasMatch(data);
 
 /// Adapts remote terminal output so xterm.dart renders insert mode correctly.
 ///
@@ -261,8 +345,17 @@ adaptTerminalInsertModeOutputForXterm({
 }
 
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalWindowReportQueryPattern = RegExp(r'\x1b\[(?:14|16)t');
+final _terminalDeviceAttributeQueryPattern = RegExp(r'\x1b\[(?:[=>]?[0-9;]*)c');
+final _terminalDeviceStatusQueryPattern = RegExp(r'\x1b\[(?:[?]?[0-9;]*)n');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
+final _terminalThemeOscQueryPattern = RegExp(
+  r'\x1b\](?:4(?:;[0-9]+;\?)+|(?:10|11|12|17|19);\?)(?:\x07|\x1b\\)',
+);
+final _terminalClipboardOscQueryPattern = RegExp(
+  r'\x1b\]52;[^\x07\x1b]*;\?(?:\x07|\x1b\\)',
+);
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(
@@ -337,15 +430,45 @@ String? _buildTerminalModeReportResponse(
       mode,
       modeState.bracketedPasteMode ? _terminalModeSet : _terminalModeReset,
     ),
+    2026 => _formatTerminalModeReport(
+      mode,
+      modeState.synchronizedOutputMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    2027 => _formatTerminalModeReport(
+      mode,
+      modeState.graphemeClusterMode ? _terminalModeSet : _terminalModeReset,
+    ),
     2031 => _formatTerminalModeReport(
       mode,
       modeState.colorSchemeUpdatesMode ? _terminalModeSet : _terminalModeReset,
     ),
-    1016 ||
-    2026 ||
-    2027 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+    1016 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
     _ => null,
   };
+}
+
+String? _buildDirectTerminalThemeOscQueryResponse(
+  String sequence,
+  TerminalThemeData theme,
+) {
+  if (!sequence.startsWith('$_terminalEscape]') ||
+      !(sequence.endsWith('\x07') ||
+          sequence.endsWith(_terminalStringTerminator))) {
+    return null;
+  }
+  final terminatorLength = sequence.endsWith('\x07')
+      ? 1
+      : _terminalStringTerminator.length;
+  final payload = sequence.substring(2, sequence.length - terminatorLength);
+  final parts = payload.split(';');
+  if (parts.isEmpty) {
+    return null;
+  }
+  return buildTerminalThemeOscResponse(
+    theme: theme,
+    code: parts.first,
+    args: parts.sublist(1),
+  );
 }
 
 const _terminalModeNotRecognized = 0;
@@ -369,6 +492,7 @@ const _terminalResetModeFinalCodeUnit = 0x6C;
 const _terminalSoftResetFinalCodeUnit = 0x70;
 const _terminalFullResetFinalCodeUnit = 0x63;
 const _terminalInsertBlankCharacterSequence = '\x1b[@';
+const _terminalControlQueryPendingLimit = 128;
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
@@ -580,14 +704,43 @@ bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics.pixelHeight > 0;
 
 String _terminalControlQueryPendingSuffix(String input) {
-  final start = input.length > 16 ? input.length - 16 : 0;
-  for (var index = start; index < input.length; index += 1) {
+  final start = input.length > _terminalControlQueryPendingLimit
+      ? input.length - _terminalControlQueryPendingLimit
+      : 0;
+  for (var index = input.length - 1; index >= start; index -= 1) {
+    if (input.codeUnitAt(index) != _terminalEscapeCodeUnit) {
+      continue;
+    }
     final suffix = input.substring(index);
-    if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
+    if (_terminalControlQueryPrefixPattern.hasMatch(suffix) ||
+        _isTerminalOscQueryPendingSuffix(suffix)) {
       return suffix;
     }
   }
   return '';
+}
+
+String _terminalThemeOscQueryPendingSuffix(String input) {
+  final index = input.lastIndexOf('$_terminalEscape]');
+  if (index < 0) {
+    return '';
+  }
+  final suffix = input.substring(index);
+  if (suffix.length > _terminalControlQueryPendingLimit ||
+      !_isTerminalOscQueryPendingSuffix(suffix)) {
+    return '';
+  }
+  return suffix;
+}
+
+bool _isTerminalOscQueryPendingSuffix(String suffix) {
+  if (!suffix.startsWith('$_terminalEscape]')) {
+    return false;
+  }
+  if (suffix.contains('\x07') || suffix.contains(_terminalStringTerminator)) {
+    return false;
+  }
+  return true;
 }
 
 /// Connection state for an SSH session.
@@ -2204,6 +2357,10 @@ class SshSession {
   bool get terminalColorSchemeUpdatesMode =>
       _runtime.terminalColorSchemeUpdatesMode;
 
+  /// Sends the current terminal theme mode to subscribed foreground apps.
+  void refreshTerminalThemeModeReport({String reason = 'unspecified'}) =>
+      _runtime.sendTerminalThemeModeReport(reason: reason);
+
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
@@ -2211,6 +2368,7 @@ class SshSession {
   final _metadataListeners = <VoidCallback>{};
   final _connectionHealthFailures =
       StreamController<_SshConnectionHealthFailure>.broadcast();
+  final _terminalWriteWillBegin = StreamController<void>.broadcast(sync: true);
   bool _connectionHealthFailureReported = false;
   String? _terminalPreview;
   String? _windowTitle;
@@ -2255,6 +2413,10 @@ class SshSession {
     pixelWidth: pixelWidth,
     pixelHeight: pixelHeight,
   );
+
+  /// The latest visible terminal dimensions, if the terminal has reported them.
+  TerminalWindowMetrics? get terminalWindowMetrics =>
+      _runtime.terminalWindowMetrics;
 
   /// Adds a listener for terminal preview and preview-adjacent metadata changes.
   void addPreviewListener(VoidCallback listener) {
@@ -2327,6 +2489,10 @@ class SshSession {
   /// Shell stdout as a broadcast stream for screen re-attachment.
   Stream<String> get shellStdoutStream => _runtime.shellStdoutStream;
 
+  /// Fires synchronously before shell output is written to the terminal.
+  Stream<void> get terminalWriteWillBeginStream =>
+      _terminalWriteWillBegin.stream;
+
   /// Shell stderr as a broadcast stream for screen re-attachment.
   Stream<String> get shellStderrStream => _runtime.shellStderrStream;
 
@@ -2336,6 +2502,13 @@ class SshSession {
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) =>
       _runtime.closeShell(waitForStreams: waitForStreams);
+
+  void _notifyBeforeTerminalWrite() {
+    if (_terminalWriteWillBegin.isClosed) {
+      return;
+    }
+    _terminalWriteWillBegin.add(null);
+  }
 
   void _resetShellRuntimeMetadata() {
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
@@ -2926,6 +3099,7 @@ class SshSession {
   Future<void> close() async {
     await stopAllForwards();
     await closeShell();
+    await _terminalWriteWillBegin.close();
     await _connectionHealthFailures.close();
     client.close();
     for (final dependentClient in dependentClients) {
