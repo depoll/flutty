@@ -349,14 +349,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? windowId,
     String? extraFlags,
   }) async {
-    final terminalMetrics = session.terminalWindowMetrics;
     await _runControlCommand(session, sessionName, {
       'type': 'select_window',
       if (windowId != null && windowId.trim().isNotEmpty)
         'windowId': windowId.trim()
       else
         'windowIndex': windowIndex,
-      ..._terminalWindowMetricFields(terminalMetrics),
     });
   }
 
@@ -845,23 +843,6 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
   throw const MonkeyMuxInstallException(
     'MonkeyMux control command closed without a response.',
   );
-}
-
-Map<String, Object?> _terminalWindowMetricFields(
-  TerminalWindowMetrics? metrics,
-) {
-  if (metrics == null || metrics.columns <= 0 || metrics.rows <= 0) {
-    return const <String, Object?>{};
-  }
-  final fields = <String, Object?>{
-    'width': metrics.columns,
-    'height': metrics.rows,
-  };
-  if (metrics.pixelWidth > 0 && metrics.pixelHeight > 0) {
-    fields['pixelWidth'] = metrics.pixelWidth;
-    fields['pixelHeight'] = metrics.pixelHeight;
-  }
-  return fields;
 }
 
 Duration _oneShotResponseTimeout(Map<String, Object?> request) =>

@@ -28,13 +28,10 @@ class _SshSessionRuntime {
   int _shellStdinCharCount = 0;
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
-  String _terminalThemeOscQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
   bool _terminalColorSchemeUpdatesMode = false;
-  bool _terminalSynchronizedOutputMode = false;
-  bool _terminalGraphemeClusterMode = false;
   bool _terminalInsertMode = false;
 
   Terminal? _terminal;
@@ -47,8 +44,6 @@ class _SshSessionRuntime {
   bool get hasShell => _shell != null;
 
   Terminal? get terminal => _terminal;
-
-  TerminalWindowMetrics? get terminalWindowMetrics => _terminalWindowMetrics;
 
   bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
 
@@ -73,7 +68,6 @@ class _SshSessionRuntime {
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
     );
-    _resizeShellToTerminalWindowMetrics();
   }
 
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
@@ -89,38 +83,6 @@ class _SshSessionRuntime {
 
   void writeToShell(String data) {
     _shell?.write(utf8.encode(data));
-  }
-
-  void sendTerminalThemeModeReport({String reason = 'unspecified'}) {
-    final shell = _shell;
-    final theme = _session.terminalTheme;
-    if (shell == null || theme == null) {
-      DiagnosticsLogService.instance.debug(
-        'terminal.theme',
-        'mode_report_skipped',
-        fields: {
-          'reason': reason,
-          'connectionId': _session.connectionId,
-          'hasShell': shell != null,
-          'hasTheme': theme != null,
-        },
-      );
-      return;
-    }
-
-    final report = buildTerminalThemeModeReport(isDark: theme.isDark);
-    shell.write(utf8.encode(report));
-    DiagnosticsLogService.instance.debug(
-      'terminal.theme',
-      'mode_report_sent',
-      fields: {
-        'reason': reason,
-        'connectionId': _session.connectionId,
-        'themeId': theme.id,
-        'isDark': theme.isDark,
-        'bytes': report.length,
-      },
-    );
   }
 
   Future<SSHSession> getShell({
@@ -153,7 +115,6 @@ class _SshSessionRuntime {
                 command,
                 pty: pty ?? const SSHPtyConfig(),
               );
-        _resizeShellToTerminalWindowMetrics();
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'open_success',
@@ -189,20 +150,6 @@ class _SshSessionRuntime {
     }
     _ensureShellStreamPipes();
     return _shell!;
-  }
-
-  void _resizeShellToTerminalWindowMetrics() {
-    final shell = _shell;
-    final metrics = _terminalWindowMetrics;
-    if (shell == null || metrics == null) {
-      return;
-    }
-    shell.resizeTerminal(
-      metrics.columns,
-      metrics.rows,
-      metrics.pixelWidth,
-      metrics.pixelHeight,
-    );
   }
 
   /// Close only the interactive shell channel while keeping the SSH client.
@@ -252,13 +199,10 @@ class _SshSessionRuntime {
     _session._resetShellRuntimeMetadata();
     _terminalWindowMetrics = null;
     _terminalWindowQueryPendingInput = '';
-    _terminalThemeOscQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalInsertModePendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
-    _terminalSynchronizedOutputMode = false;
-    _terminalGraphemeClusterMode = false;
     _terminalInsertMode = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
@@ -495,7 +439,7 @@ class _SshSessionRuntime {
   }
 
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
-      _containsImmediateTerminalResponseQuery(terminalData);
+      terminalData.contains('\x1b]') || terminalData.contains('\x1b[?');
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();
@@ -510,27 +454,17 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      final themeOscResult = _preserveSplitTerminalOscQueries(
-        input: output.terminalData,
-        pendingInput: _terminalThemeOscQueryPendingInput,
-      );
-      _terminalThemeOscQueryPendingInput = themeOscResult.pendingInput;
-
       final terminalOutput = adaptTerminalInsertModeOutputForXterm(
-        input: themeOscResult.terminalInput,
+        input: output.terminalData,
         pendingInput: _terminalInsertModePendingInput,
         insertMode: _terminalInsertMode,
       );
       _terminalInsertModePendingInput = terminalOutput.pendingInput;
       _terminalInsertMode = terminalOutput.insertMode;
       if (terminalOutput.output.isNotEmpty) {
-        _session._notifyBeforeTerminalWrite();
         terminal.write(terminalOutput.output);
       }
-      _respondToTerminalWindowControlQueries(
-        themeOscResult.terminalInput,
-        terminal,
-      );
+      _respondToTerminalWindowControlQueries(output.terminalData, terminal);
       if (terminalOutput.output.isNotEmpty) {
         _scheduleTerminalPreviewRefresh();
       }
@@ -615,24 +549,10 @@ class _SshSessionRuntime {
       pendingInput: _terminalControlModeUpdatePendingInput,
     );
     _terminalControlModeUpdatePendingInput = modeUpdateResult.pendingInput;
-    final previousColorSchemeUpdatesMode = _terminalColorSchemeUpdatesMode;
     final nextColorSchemeUpdatesMode = modeUpdateResult.colorSchemeUpdatesMode;
     if (nextColorSchemeUpdatesMode != null &&
         nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
       _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
-      if (nextColorSchemeUpdatesMode && !previousColorSchemeUpdatesMode) {
-        sendTerminalThemeModeReport(reason: 'color_scheme_updates_enabled');
-      }
-    }
-    final nextSynchronizedOutputMode = modeUpdateResult.synchronizedOutputMode;
-    if (nextSynchronizedOutputMode != null &&
-        nextSynchronizedOutputMode != _terminalSynchronizedOutputMode) {
-      _terminalSynchronizedOutputMode = nextSynchronizedOutputMode;
-    }
-    final nextGraphemeClusterMode = modeUpdateResult.graphemeClusterMode;
-    if (nextGraphemeClusterMode != null &&
-        nextGraphemeClusterMode != _terminalGraphemeClusterMode) {
-      _terminalGraphemeClusterMode = nextGraphemeClusterMode;
     }
 
     final result = buildTerminalWindowControlQueryResponses(
@@ -665,8 +585,6 @@ class _SshSessionRuntime {
     reportFocusMode: terminal.reportFocusMode,
     bracketedPasteMode: terminal.bracketedPasteMode,
     colorSchemeUpdatesMode: _terminalColorSchemeUpdatesMode,
-    synchronizedOutputMode: _terminalSynchronizedOutputMode,
-    graphemeClusterMode: _terminalGraphemeClusterMode,
     isUsingAltBuffer: terminal.isUsingAltBuffer,
     mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
     mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,

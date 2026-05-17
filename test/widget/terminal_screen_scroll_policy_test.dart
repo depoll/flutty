@@ -1,8 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
-import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
@@ -73,25 +71,6 @@ void main() {
   });
 
   group('terminal touch scroll routing helper', () {
-    test(
-      'resolves active foreground agent tool from window snapshot metadata',
-      () {
-        expect(
-          resolveTmuxBarActiveWindowTool(const [
-            TmuxWindow(index: 0, name: 'shell', isActive: false),
-            TmuxWindow(
-              index: 1,
-              name: 'flutty',
-              isActive: true,
-              paneTitle: 'flutty',
-              agentTool: AgentLaunchTool.codex,
-            ),
-          ]),
-          AgentLaunchTool.codex,
-        );
-      },
-    );
-
     test('routes mobile alt-buffer drags into terminal scroll input', () {
       expect(
         shouldRouteTouchScrollToTerminal(

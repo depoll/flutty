@@ -1,7 +1,9 @@
 // ignore_for_file: implementation_imports, public_member_api_docs
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart';
 
@@ -84,109 +86,6 @@ void main() {
   });
 
   testWidgets(
-    'touch scroll reaches terminal when system selection is enabled',
-    (tester) async {
-      final terminal = Terminal()
-        ..useAltBuffer()
-        ..setMouseMode(MouseMode.upDownScroll)
-        ..setMouseReportMode(MouseReportMode.sgr);
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SizedBox(
-            width: 300,
-            height: 200,
-            child: MonkeyTerminalView(
-              terminal,
-              hardwareKeyboardOnly: true,
-              touchScrollToTerminal: true,
-              useSystemSelection: true,
-            ),
-          ),
-        ),
-      );
-
-      await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
-      await tester.pump();
-
-      expect(output.join(), contains('\u001b[<65;'));
-    },
-  );
-
-  testWidgets('touch scroll can force wheel reports without local mouse mode', (
-    tester,
-  ) async {
-    final terminal = Terminal()..useAltBuffer();
-    final output = <String>[];
-    terminal.onOutput = output.add;
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SizedBox(
-          width: 300,
-          height: 200,
-          child: MonkeyTerminalView(
-            terminal,
-            hardwareKeyboardOnly: true,
-            touchScrollToTerminal: true,
-            simulateScroll: false,
-            forceTouchScrollMouseInput: true,
-          ),
-        ),
-      ),
-    );
-
-    await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
-    await tester.pump();
-
-    final text = output.join();
-    expect(text, contains('\u001b[<65;'));
-    expect(text, isNot(contains('\u001b[B')));
-  });
-
-  testWidgets(
-    'touch scroll honors DEC 1007 alternate-scroll by sending arrow keys',
-    (tester) async {
-      final expectedOutput = <String>[];
-      Terminal()
-        ..onOutput = expectedOutput.add
-        ..keyInput(TerminalKey.arrowDown);
-      final expectedArrowDown = expectedOutput.join();
-
-      final terminal = Terminal()
-        ..useAltBuffer()
-        ..setAltBufferMouseScrollMode(true);
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SizedBox(
-            width: 300,
-            height: 200,
-            child: MonkeyTerminalView(
-              terminal,
-              hardwareKeyboardOnly: true,
-              touchScrollToTerminal: true,
-              simulateScroll: false,
-              forceTouchScrollMouseInput: true,
-            ),
-          ),
-        ),
-      );
-
-      await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
-      await tester.pump();
-
-      final text = output.join();
-      expect(text, contains(expectedArrowDown));
-      expect(text, isNot(contains('\u001b[<')));
-    },
-  );
-
-  testWidgets(
     'mouse-reporting apps require more drag distance per touch scroll step',
     (tester) async {
       final expectedOutput = <String>[];
@@ -213,12 +112,23 @@ void main() {
         ),
       );
 
-      final arrowGesture = await tester.createGesture(pointer: 1);
-      await arrowGesture.down(
-        tester.getCenter(find.byType(MonkeyTerminalView)),
+      var detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
       );
-      await arrowGesture.moveBy(const Offset(0, -240));
-      await arrowGesture.up();
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: const Offset(150, 10),
+          localPosition: const Offset(150, 10),
+          delta: const Offset(0, -240),
+        ),
+      );
       await tester.pump();
 
       final arrowCount = _countOccurrences(
@@ -248,12 +158,23 @@ void main() {
         ),
       );
 
-      final wheelGesture = await tester.createGesture(pointer: 2);
-      await wheelGesture.down(
-        tester.getCenter(find.byType(MonkeyTerminalView)),
+      detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
       );
-      await wheelGesture.moveBy(const Offset(0, -240));
-      await wheelGesture.up();
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: const Offset(150, 10),
+          localPosition: const Offset(150, 10),
+          delta: const Offset(0, -240),
+        ),
+      );
       await tester.pump();
 
       final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
@@ -283,18 +204,41 @@ void main() {
       ),
     );
 
-    final gesture = await tester.createGesture(pointer: 3);
-    await gesture.down(tester.getCenter(find.byType(MonkeyTerminalView)));
-    await tester.pump(const Duration(milliseconds: 16));
-    await gesture.moveBy(const Offset(0, -60));
-    await tester.pump(const Duration(milliseconds: 16));
-    await gesture.moveBy(const Offset(0, -60));
-    await tester.pump(const Duration(milliseconds: 16));
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: const Offset(150, 40),
+        localPosition: const Offset(150, 40),
+        delta: const Offset(0, -60),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: const Offset(150, 10),
+        localPosition: const Offset(150, 10),
+        delta: const Offset(0, -60),
+      ),
+    );
 
     final beforeLiftOutputCount = output.length;
     expect(beforeLiftOutputCount, greaterThan(0));
 
-    await gesture.up();
+    detector.onTouchScrollEnd!(
+      DragEndDetails(
+        primaryVelocity: -2000,
+        velocity: const Velocity(pixelsPerSecond: Offset(0, -2000)),
+      ),
+    );
     await tester.pump();
 
     final afterLiftOutputCount = output.length;

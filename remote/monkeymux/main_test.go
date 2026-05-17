@@ -231,7 +231,7 @@ func TestInactiveWindowOutputIsBufferedForSwitch(t *testing.T) {
 		t.Fatal("ordinary inactive output marked the window alert")
 	}
 
-	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
+	if err := server.selectWindow("@2"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,39 +280,12 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 		}
 	}
 
-	if err := server.selectWindow("@2", terminalResizeRequest{}); err != nil {
+	if err := server.selectWindow("@2"); err != nil {
 		t.Fatal(err)
 	}
 
 	if !reflect.DeepEqual(signaled, []int{4242}) {
 		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
-	}
-}
-
-func TestSelectWindowAppliesResizeRequestBeforeReplay(t *testing.T) {
-	server := newMuxServer("test")
-	attach := &recordingConn{}
-	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
-	server.windows = []*muxWindow{
-		{id: "@1", index: 0, lastActivity: time.Now()},
-		inactiveWindow,
-	}
-	server.activeID = "@1"
-	server.attachConn = attach
-	inactiveWindow.history = []byte("background output")
-
-	if err := server.selectWindow("@2", terminalResizeRequest{
-		width:  100,
-		height: 40,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := server.width; got != 100 {
-		t.Fatalf("server width = %d, want 100", got)
-	}
-	if got := server.height; got != 40 {
-		t.Fatalf("server height = %d, want 40", got)
 	}
 }
 
@@ -691,7 +664,6 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 		"\x1b[?1002l",
 		"\x1b[?1003l",
 		"\x1b[?1006l",
-		"\x1b[?1007l",
 		"\x1b[?1004l",
 		"\x1b[?2004l",
 		"\x1b[?1l",
@@ -728,7 +700,7 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	server.activeID = "@1"
 
 	window.observeTerminalModesLocked(
-		[]byte("\x1b[?1049h\x1b[?1h\x1b=\x1b[?1007h\x1b[?2004h\x1b[4h"),
+		[]byte("\x1b[?1049h\x1b[?1h\x1b=\x1b[?2004h\x1b[4h"),
 	)
 
 	replay := string(server.activeReplayLocked())
@@ -742,7 +714,6 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	for _, sequence := range []string{
 		"\x1b[?1049h",
 		"\x1b[?1h",
-		"\x1b[?1007h",
 		"\x1b[?2004h",
 		"\x1b[4h",
 		"\x1b=",
@@ -753,7 +724,6 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	}
 	for _, sequence := range []string{
 		"\x1b[?1h",
-		"\x1b[?1007h",
 		"\x1b[?2004h",
 		"\x1b[4h",
 		"\x1b=",
