@@ -18,7 +18,6 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
-import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
@@ -574,7 +573,7 @@ void main() {
       expect(result.pendingInput, isEmpty);
     });
 
-    test('preserves split background OSC queries across chunks', () {
+    test('preserves split OSC query fragments without direct replies', () {
       const theme = monkey_themes.TerminalThemes.defaultLightTheme;
       final first = buildTerminalWindowControlQueryResponses(
         input: 'before\x1b]11',
@@ -593,14 +592,7 @@ void main() {
         theme: theme,
       );
 
-      expect(
-        second.response,
-        buildTerminalThemeOscResponse(
-          theme: theme,
-          code: '11',
-          args: const ['?'],
-        ),
-      );
+      expect(second.response, isNull);
       expect(second.pendingInput, isEmpty);
     });
 
@@ -1280,7 +1272,7 @@ void main() {
       expect(firstLineText(terminal), 'live output');
     });
 
-    test('flushes terminal theme OSC queries without frame delay', () async {
+    test('does not directly answer terminal background OSC queries', () async {
       final shell = await openShell();
       final session = shell.session;
       final terminal = session.terminal!;
@@ -1290,14 +1282,7 @@ void main() {
       await pumpEventQueue();
 
       expect(firstLineText(terminal), isEmpty);
-      expect(
-        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-        buildTerminalThemeOscResponse(
-          theme: monkey_themes.TerminalThemes.defaultLightTheme,
-          code: '11',
-          args: const ['?'],
-        ),
-      );
+      expect(shell.shellWrites, isEmpty);
     });
 
     test(
@@ -1318,33 +1303,29 @@ void main() {
       },
     );
 
-    test('answers split terminal background OSC queries once', () async {
-      final shell = await openShell();
-      final session = shell.session;
-      final terminal = session.terminal!;
-      session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+    test(
+      'does not directly answer split terminal background OSC queries',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        final terminal = session.terminal!;
+        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
 
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]11')));
-      await Future<void>.delayed(const Duration(milliseconds: 25));
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]11')));
+        await Future<void>.delayed(const Duration(milliseconds: 25));
 
-      expect(firstLineText(terminal), isEmpty);
-      expect(shell.shellWrites, isEmpty);
+        expect(firstLineText(terminal), isEmpty);
+        expect(shell.shellWrites, isEmpty);
 
-      shell.stdout.add(Uint8List.fromList(utf8.encode(';?\x07')));
-      await pumpEventQueue();
+        shell.stdout.add(Uint8List.fromList(utf8.encode(';?\x07')));
+        await pumpEventQueue();
 
-      expect(
-        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-        buildTerminalThemeOscResponse(
-          theme: monkey_themes.TerminalThemes.defaultLightTheme,
-          code: '11',
-          args: const ['?'],
-        ),
-      );
-    });
+        expect(shell.shellWrites, isEmpty);
+      },
+    );
 
     test(
-      'flushes tmux-wrapped terminal theme OSC queries without frame delay',
+      'does not directly answer tmux-wrapped terminal theme OSC queries',
       () async {
         final shell = await openShell();
         final session = shell.session;
@@ -1359,14 +1340,7 @@ void main() {
         await pumpEventQueue();
 
         expect(firstLineText(terminal), isEmpty);
-        expect(
-          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-          buildTerminalThemeOscResponse(
-            theme: monkey_themes.TerminalThemes.defaultLightTheme,
-            code: '11',
-            args: const ['?'],
-          ),
-        );
+        expect(shell.shellWrites, isEmpty);
       },
     );
 
