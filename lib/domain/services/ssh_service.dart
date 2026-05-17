@@ -160,7 +160,7 @@ buildTerminalWindowControlQueryResponses({
       if (sequence == null) {
         continue;
       }
-      final response = _buildDirectTerminalThemeOscQueryResponse(
+      final response = _buildDirectTerminalBackgroundOscQueryResponse(
         sequence,
         theme,
       );
@@ -245,7 +245,7 @@ _consumeTerminalThemeOscQueries({
     final sequence = match.group(0);
     final response = sequence == null
         ? null
-        : _buildDirectTerminalThemeOscQueryResponse(sequence, theme);
+        : _buildDirectTerminalBackgroundOscQueryResponse(sequence, theme);
     if (response == null) {
       terminalInput.write(scanInput.substring(match.start, match.end));
     } else {
@@ -350,9 +350,7 @@ final _terminalDeviceAttributeQueryPattern = RegExp(r'\x1b\[(?:[=>]?[0-9;]*)c');
 final _terminalDeviceStatusQueryPattern = RegExp(r'\x1b\[(?:[?]?[0-9;]*)n');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
-final _terminalThemeOscQueryPattern = RegExp(
-  r'\x1b\](?:4(?:;[0-9]+;\?)+|(?:10|11|12|17|19);\?)(?:\x07|\x1b\\)',
-);
+final _terminalThemeOscQueryPattern = RegExp(r'\x1b\]11;\?(?:\x07|\x1b\\)');
 final _terminalClipboardOscQueryPattern = RegExp(
   r'\x1b\]52;[^\x07\x1b]*;\?(?:\x07|\x1b\\)',
 );
@@ -447,7 +445,7 @@ String? _buildTerminalModeReportResponse(
   };
 }
 
-String? _buildDirectTerminalThemeOscQueryResponse(
+String? _buildDirectTerminalBackgroundOscQueryResponse(
   String sequence,
   TerminalThemeData theme,
 ) {
@@ -462,6 +460,9 @@ String? _buildDirectTerminalThemeOscQueryResponse(
   final payload = sequence.substring(2, sequence.length - terminatorLength);
   final parts = payload.split(';');
   if (parts.isEmpty) {
+    return null;
+  }
+  if (parts.first != '11') {
     return null;
   }
   return buildTerminalThemeOscResponse(
