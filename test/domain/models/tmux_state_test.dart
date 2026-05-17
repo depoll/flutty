@@ -536,6 +536,13 @@ void main() {
         currentCommand: 'node',
         paneTitle: 'Claude Code - fixing tests',
       );
+      const openAiCodexPaneTitleWindow = TmuxWindow(
+        index: 3,
+        name: 'zsh',
+        isActive: false,
+        currentCommand: 'node',
+        paneTitle: 'OpenAI Codex (v0.130.0)',
+      );
 
       expect(
         copilotTitleWindow.foregroundAgentTool,
@@ -545,7 +552,36 @@ void main() {
         claudePaneTitleWindow.foregroundAgentTool,
         AgentLaunchTool.claudeCode,
       );
+      expect(
+        openAiCodexPaneTitleWindow.foregroundAgentTool,
+        AgentLaunchTool.codex,
+      );
     });
+
+    test(
+      'foregroundAgentTool prefers live state over stale agent metadata',
+      () {
+        const commandWindow = TmuxWindow(
+          index: 1,
+          name: 'agent',
+          isActive: true,
+          currentCommand: 'codex',
+          paneTitle: 'flutty',
+          agentTool: AgentLaunchTool.copilotCli,
+        );
+        const titleWindow = TmuxWindow(
+          index: 2,
+          name: 'agent',
+          isActive: true,
+          currentCommand: 'node',
+          paneTitle: 'Codex · flutty',
+          agentTool: AgentLaunchTool.copilotCli,
+        );
+
+        expect(commandWindow.foregroundAgentTool, AgentLaunchTool.codex);
+        expect(titleWindow.foregroundAgentTool, AgentLaunchTool.codex);
+      },
+    );
 
     test('equality works correctly', () {
       const a = TmuxWindow(index: 0, name: 'vim', isActive: true);

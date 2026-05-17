@@ -1,6 +1,8 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
@@ -101,6 +103,106 @@ void main() {
           terminalReportsMouseWheel: false,
         ),
         isFalse,
+      );
+    });
+
+    test(
+      'routes forced MonkeyMux capability drags without alt or mouse mode',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: false,
+            terminalReportsMouseWheel: false,
+            forceTerminalScroll: true,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('does not force terminal scrolling on desktop', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: false,
+          isUsingAltBuffer: false,
+          terminalReportsMouseWheel: false,
+          forceTerminalScroll: true,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('MonkeyMux capability scroll input helper', () {
+    test('forces SGR scroll only for capable MonkeyMux windows', () {
+      expect(
+        shouldForceMonkeyMuxWindowScrollInput(
+          activeMuxBackend: RemoteMuxBackend.monkeyMux,
+          activeWindowCapabilities: const {
+            remoteWindowCapabilityVisualScrollback,
+          },
+          visualScrollbackAvailable: true,
+        ),
+        isTrue,
+      );
+
+      expect(
+        shouldForceMonkeyMuxWindowScrollInput(
+          activeMuxBackend: RemoteMuxBackend.tmux,
+          activeWindowCapabilities: const {
+            remoteWindowCapabilityVisualScrollback,
+          },
+          visualScrollbackAvailable: true,
+        ),
+        isFalse,
+      );
+
+      expect(
+        shouldForceMonkeyMuxWindowScrollInput(
+          activeMuxBackend: RemoteMuxBackend.monkeyMux,
+          activeWindowCapabilities: const <String>{},
+          visualScrollbackAvailable: true,
+        ),
+        isFalse,
+      );
+
+      expect(
+        shouldForceMonkeyMuxWindowScrollInput(
+          activeMuxBackend: RemoteMuxBackend.monkeyMux,
+          activeWindowCapabilities: const {
+            remoteWindowCapabilityVisualScrollback,
+          },
+          visualScrollbackAvailable: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('notifies when active window scroll capability state changes', () {
+      const previousWindows = <TmuxWindow>[
+        TmuxWindow(
+          index: 0,
+          id: '@1',
+          name: 'agent',
+          isActive: true,
+          capabilities: {remoteWindowCapabilityVisualScrollback},
+        ),
+      ];
+      const nextWindows = <TmuxWindow>[
+        TmuxWindow(
+          index: 0,
+          id: '@1',
+          name: 'agent',
+          isActive: true,
+          capabilities: {remoteWindowCapabilityVisualScrollback},
+          visualScrollbackAvailable: true,
+        ),
+      ];
+
+      expect(
+        shouldNotifyTmuxBarWindowStateChanged(previousWindows, nextWindows),
+        isTrue,
       );
     });
   });

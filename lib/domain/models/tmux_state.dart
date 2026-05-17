@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'agent_launch_preset.dart';
+import 'remote_multiplexer.dart';
 
 /// Field separator used for tmux format strings.
 ///
@@ -112,6 +113,8 @@ class TmuxWindow {
     this.paneTitle,
     this.paneStartCommand,
     this.agentTool,
+    this.capabilities = const <String>{},
+    this.visualScrollbackAvailable = false,
     this.activeAgentSessionId,
     this.agentSessionTitle,
     this.activeAgentSessionConfidence,
@@ -197,6 +200,12 @@ class TmuxWindow {
   /// App-provided agent tool metadata stored on the tmux window, if available.
   final AgentLaunchTool? agentTool;
 
+  /// Backend-reported feature capabilities for this window.
+  final Set<String> capabilities;
+
+  /// Whether server-managed visual scrollback currently has rows to scroll.
+  final bool visualScrollbackAvailable;
+
   /// Live coding-agent session id observed from process metadata, if available.
   final String? activeAgentSessionId;
 
@@ -257,6 +266,8 @@ class TmuxWindow {
     String? paneTitle,
     String? paneStartCommand,
     AgentLaunchTool? agentTool,
+    Set<String>? capabilities,
+    bool? visualScrollbackAvailable,
     String? activeAgentSessionId,
     String? agentSessionTitle,
     AgentSessionConfidence? activeAgentSessionConfidence,
@@ -274,6 +285,9 @@ class TmuxWindow {
     paneTitle: paneTitle ?? this.paneTitle,
     paneStartCommand: paneStartCommand ?? this.paneStartCommand,
     agentTool: agentTool ?? this.agentTool,
+    capabilities: capabilities ?? this.capabilities,
+    visualScrollbackAvailable:
+        visualScrollbackAvailable ?? this.visualScrollbackAvailable,
     activeAgentSessionId: clearActiveAgentSessionMetadata
         ? null
         : activeAgentSessionId ?? this.activeAgentSessionId,
@@ -287,6 +301,10 @@ class TmuxWindow {
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
   );
+
+  /// Whether this window supports server-managed visual scrollback.
+  bool get supportsVisualScrollback =>
+      capabilities.contains(remoteWindowCapabilityVisualScrollback);
 
   /// A best-effort coding-agent session identifier found in tmux metadata.
   String? get agentSessionId {
@@ -531,14 +549,13 @@ class TmuxWindow {
 
   /// The supported agent CLI running in the foreground, if one can be inferred.
   AgentLaunchTool? get foregroundAgentTool {
-    if (agentTool != null) return agentTool;
     for (final candidate in [currentCommand]) {
       final tool = agentLaunchToolForCommandName(candidate);
       if (tool != null) {
         return tool;
       }
     }
-    for (final candidate in [name, paneTitle]) {
+    for (final candidate in [paneTitle, name]) {
       final tool =
           agentLaunchToolForCommandName(candidate) ??
           _agentToolFromTerminalTitle(candidate);
@@ -546,6 +563,7 @@ class TmuxWindow {
         return tool;
       }
     }
+    if (agentTool != null) return agentTool;
     return _agentToolFromCommandText(paneStartCommand);
   }
 
@@ -569,6 +587,8 @@ class TmuxWindow {
           paneTitle == other.paneTitle &&
           paneStartCommand == other.paneStartCommand &&
           agentTool == other.agentTool &&
+          setEquals(capabilities, other.capabilities) &&
+          visualScrollbackAvailable == other.visualScrollbackAvailable &&
           activeAgentSessionId == other.activeAgentSessionId &&
           agentSessionTitle == other.agentSessionTitle &&
           activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
@@ -588,6 +608,8 @@ class TmuxWindow {
     paneTitle,
     paneStartCommand,
     agentTool,
+    Object.hashAllUnordered(capabilities),
+    visualScrollbackAvailable,
     activeAgentSessionId,
     agentSessionTitle,
     activeAgentSessionConfidence,
@@ -973,7 +995,7 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
     'copilot cli',
     'github copilot',
   },
-  AgentLaunchTool.codex => const {'codex'},
+  AgentLaunchTool.codex => const {'codex', 'openai codex'},
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
 };

@@ -1,3 +1,6 @@
+/// Remote window capability for server-managed visual scrollback and repaint.
+const remoteWindowCapabilityVisualScrollback = 'visual-scrollback-v1';
+
 /// Remote terminal multiplexer backend configured for a host.
 enum RemoteMuxBackend {
   /// Let MonkeySSH choose the best available backend.

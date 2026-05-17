@@ -696,6 +696,89 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     .firstOrNull
     ?.foregroundAgentTool;
 
+/// Resolves backend-reported capabilities for the active tmux window.
+@visibleForTesting
+Set<String> resolveTmuxBarActiveWindowCapabilities(
+  Iterable<TmuxWindow>? windows,
+) =>
+    windows?.where((window) => window.isActive).firstOrNull?.capabilities ??
+    const <String>{};
+
+/// Whether the active tmux window currently has server-managed scrollback.
+@visibleForTesting
+bool resolveTmuxBarActiveWindowVisualScrollbackAvailable(
+  Iterable<TmuxWindow>? windows,
+) =>
+    windows
+        ?.where((window) => window.isActive)
+        .firstOrNull
+        ?.visualScrollbackAvailable ??
+    false;
+
+/// Whether a tmux bar snapshot should notify listeners about window state.
+@visibleForTesting
+bool shouldNotifyTmuxBarWindowStateChanged(
+  List<TmuxWindow> previousWindows,
+  List<TmuxWindow> nextWindows,
+) {
+  if (previousWindows.length != nextWindows.length) {
+    return true;
+  }
+  for (final nextWindow in nextWindows) {
+    final previousWindow = previousWindows
+        .where((window) => _isSameTmuxWindowForStateRefresh(window, nextWindow))
+        .firstOrNull;
+    if (previousWindow == null ||
+        _tmuxWindowStateRefreshIdentity(previousWindow) !=
+            _tmuxWindowStateRefreshIdentity(nextWindow)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _isSameTmuxWindowForStateRefresh(
+  TmuxWindow previousWindow,
+  TmuxWindow nextWindow,
+) {
+  final nextId = nextWindow.id;
+  if (nextId != null) {
+    return previousWindow.id == nextId;
+  }
+  return previousWindow.index == nextWindow.index;
+}
+
+({
+  String capabilitiesKey,
+  String? currentCommand,
+  AgentLaunchTool? foregroundAgentTool,
+  String? id,
+  int index,
+  bool isActive,
+  int? panePid,
+  String? paneStartCommand,
+  bool visualScrollbackAvailable,
+})
+_tmuxWindowStateRefreshIdentity(TmuxWindow window) => (
+  capabilitiesKey: _tmuxWindowCapabilitiesKey(window.capabilities),
+  currentCommand: window.currentCommand,
+  foregroundAgentTool: window.foregroundAgentTool,
+  id: window.id,
+  index: window.index,
+  isActive: window.isActive,
+  panePid: window.panePid,
+  paneStartCommand: window.paneStartCommand,
+  visualScrollbackAvailable: window.visualScrollbackAvailable,
+);
+
+String _tmuxWindowCapabilitiesKey(Set<String> capabilities) {
+  if (capabilities.isEmpty) {
+    return '';
+  }
+  final sorted = capabilities.toList()..sort();
+  return sorted.join('\x1f');
+}
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting
@@ -2094,7 +2177,22 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+  bool forceTerminalScroll = false,
+}) =>
+    isMobile &&
+    (forceTerminalScroll || isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether MonkeyMux should receive direct SGR scroll input for the active
+/// window's server-managed scrollback capability.
+@visibleForTesting
+bool shouldForceMonkeyMuxWindowScrollInput({
+  required RemoteMuxBackend activeMuxBackend,
+  required Set<String> activeWindowCapabilities,
+  required bool visualScrollbackAvailable,
+}) =>
+    activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+    visualScrollbackAvailable &&
+    activeWindowCapabilities.contains(remoteWindowCapabilityVisualScrollback);
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2877,10 +2975,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
+  Set<String> get _activeTmuxWindowCapabilities =>
+      resolveTmuxBarActiveWindowCapabilities(
+        _tmuxBarKey.currentState?.currentWindowsSnapshot,
+      );
+
+  bool get _activeTmuxWindowVisualScrollbackAvailable =>
+      resolveTmuxBarActiveWindowVisualScrollbackAvailable(
+        _tmuxBarKey.currentState?.currentWindowsSnapshot,
+      );
+
+  bool get _forceSgrScrollMouseInputForMuxWindow =>
+      shouldForceMonkeyMuxWindowScrollInput(
+        activeMuxBackend: _activeMuxBackend,
+        activeWindowCapabilities: _activeTmuxWindowCapabilities,
+        visualScrollbackAvailable: _activeTmuxWindowVisualScrollbackAvailable,
+      );
+
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
+    forceTerminalScroll: _forceSgrScrollMouseInputForMuxWindow,
   );
 
   MenuStyle _terminalOverflowMenuStyle({
@@ -3839,6 +3955,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      if (mounted) {
+        setState(() {});
+      }
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
         _refreshTerminalAfterMonkeyMuxWindowChange();
@@ -7514,16 +7633,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       switch (action) {
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
-        case TmuxNewWindowAction(:final command, :final windowName):
-          await _createTmuxWindow(session, command: command, name: windowName);
+        case TmuxNewWindowAction(
+          :final command,
+          :final windowName,
+          :final windowCapabilities,
+        ):
+          await _createTmuxWindow(
+            session,
+            command: command,
+            name: windowName,
+            windowCapabilities: windowCapabilities,
+          );
         case TmuxResumeSessionAction(
           :final resumeCommand,
           :final workingDirectory,
+          :final windowCapabilities,
         ):
           await _createTmuxWindow(
             session,
             command: resumeCommand,
             workingDirectory: workingDirectory,
+            windowCapabilities: windowCapabilities,
           );
         case TmuxCloseWindowAction(:final windowIndex):
           await _closeTmuxWindow(session, windowIndex);
@@ -7671,6 +7801,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String? command,
     String? name,
     String? workingDirectory,
+    Iterable<String> windowCapabilities = const <String>[],
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
@@ -7692,6 +7823,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
+      windowCapabilities: windowCapabilities,
     );
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,
@@ -9308,6 +9440,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               : <TerminalTextUnderline>[?_hoveredTerminalPathUnderline]
         : const <TerminalTextUnderline>[];
     final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
+    final forceSgrScrollMouseInput = _forceSgrScrollMouseInputForMuxWindow;
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -9340,6 +9473,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      forceSgrScrollMouseInput: forceSgrScrollMouseInput,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
     );

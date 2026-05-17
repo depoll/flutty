@@ -25,6 +25,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -32,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.23"
+	monkeyMuxVersion         = "0.1.82"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -42,18 +43,25 @@ const (
 	runCommandOutputMaxBytes = 8 * 1024 * 1024
 	runCommandTimeout        = 20 * time.Second
 	socketTimeout            = 2 * time.Second
+	redrawNudgeRestoreDelay  = 80 * time.Millisecond
 	windowUpdateMinInterval  = 750 * time.Millisecond
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
 	csiBufferLimitBytes      = 64
+	terminalParserLimitBytes = 4096
+	agentScrollbackMaxLines  = 4000
 	restoreFileMode          = 0o600
 	restoreSchemaVersion     = 1
 )
 
 const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
+const windowCapabilityVisualScrollback = "visual-scrollback-v1"
+
 var (
 	preReplayPrivateModes = []string{
+		"47",
+		"1047",
 		"1049",
 		"6",
 		"7",
@@ -79,6 +87,7 @@ var (
 	}
 	trackedPrivateModes = map[string]struct{}{
 		"1":    {},
+		"47":   {},
 		"6":    {},
 		"7":    {},
 		"1000": {},
@@ -86,6 +95,7 @@ var (
 		"1003": {},
 		"1004": {},
 		"1006": {},
+		"1047": {},
 		"1049": {},
 		"2004": {},
 		"2031": {},
@@ -112,6 +122,7 @@ var capabilities = []string{
 	"attach-update-policy",
 	"attach-state",
 	"upgrade-restore-v1",
+	"window-capabilities-v1",
 }
 
 var (
@@ -128,15 +139,96 @@ var signalForegroundResize = func(processGroup int) {
 	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
 }
 
+type redrawNudgeMode uint8
+
+const (
+	redrawNudgeNone redrawNudgeMode = iota
+	redrawNudgeSignal
+	redrawNudgeSameSize
+	redrawNudgeResize
+)
+
+type redrawNudgeRequest struct {
+	window *muxWindow
+	width  int
+	height int
+	mode   redrawNudgeMode
+}
+
+func runRedrawNudgeIfNeeded(request redrawNudgeRequest) {
+	if request.window == nil {
+		return
+	}
+	switch request.mode {
+	case redrawNudgeResize:
+		nudgeForegroundResize(request.window, request.width, request.height)
+	case redrawNudgeSameSize:
+		nudgeForegroundSameSize(request.window, request.width, request.height)
+	case redrawNudgeSignal:
+		signalForegroundResize(foregroundProcessGroupForWindow(request.window))
+	}
+}
+
+var nudgeForegroundResize = func(window *muxWindow, width int, height int) {
+	if window == nil || !validPtySize(width, height) {
+		return
+	}
+	nudgeWidth, nudgeHeight, ok := resizeNudgeSize(width, height)
+	if !ok {
+		signalForegroundResize(foregroundProcessGroupForWindow(window))
+		return
+	}
+	generation, err := window.setPtySizeTracked(&pty.Winsize{
+		Rows: uint16(nudgeHeight),
+		Cols: uint16(nudgeWidth),
+	})
+	if err != nil {
+		signalForegroundResize(foregroundProcessGroupForWindow(window))
+		return
+	}
+	go func() {
+		time.Sleep(redrawNudgeRestoreDelay)
+		_ = window.setPtySizeIfGeneration(generation, &pty.Winsize{
+			Rows: uint16(height),
+			Cols: uint16(width),
+		})
+	}()
+}
+
+var nudgeForegroundSameSize = func(window *muxWindow, width int, height int) {
+	if window == nil {
+		return
+	}
+	if validPtySize(width, height) {
+		_, _ = window.setPtySizeTracked(&pty.Winsize{
+			Rows: uint16(height),
+			Cols: uint16(width),
+		})
+	}
+	signalForegroundResize(foregroundProcessGroupForWindow(window))
+}
+
+func validPtySize(width int, height int) bool {
+	return width > 0 && width <= 65535 && height > 0 && height <= 65535
+}
+
+func resizeNudgeSize(width int, height int) (int, int, bool) {
+	switch {
+	case width > 0 && width < 65535:
+		return width + 1, height, true
+	case width > 1:
+		return width - 1, height, true
+	case height > 0 && height < 65535:
+		return width, height + 1, true
+	case height > 1:
+		return width, height - 1, true
+	default:
+		return width, height, false
+	}
+}
+
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
-	if window == nil || window.pty == nil {
-		return 0
-	}
-	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
-		return 0
-	}
-	return pgrp
+	return window.foregroundProcessGroup()
 }
 
 const (
@@ -169,21 +261,22 @@ var (
 )
 
 type controlMessage struct {
-	Role        string   `json:"role,omitempty"`
-	ID          string   `json:"id,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Session     string   `json:"session,omitempty"`
-	WindowID    string   `json:"windowId,omitempty"`
-	WindowIndex *int     `json:"windowIndex,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	Command     string   `json:"command,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Data        string   `json:"data,omitempty"`
-	Width       int      `json:"width,omitempty"`
-	Height      int      `json:"height,omitempty"`
-	PixelWidth  int      `json:"pixelWidth,omitempty"`
-	PixelHeight int      `json:"pixelHeight,omitempty"`
+	Role         string   `json:"role,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	Type         string   `json:"type,omitempty"`
+	Session      string   `json:"session,omitempty"`
+	WindowID     string   `json:"windowId,omitempty"`
+	WindowIndex  *int     `json:"windowIndex,omitempty"`
+	Name         string   `json:"name,omitempty"`
+	Cwd          string   `json:"cwd,omitempty"`
+	Command      string   `json:"command,omitempty"`
+	Args         []string `json:"args,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Data         string   `json:"data,omitempty"`
+	Width        int      `json:"width,omitempty"`
+	Height       int      `json:"height,omitempty"`
+	PixelWidth   int      `json:"pixelWidth,omitempty"`
+	PixelHeight  int      `json:"pixelHeight,omitempty"`
 }
 
 type controlResponse struct {
@@ -205,17 +298,19 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                       string `json:"id"`
-	Index                    int    `json:"index"`
-	Name                     string `json:"name"`
-	Active                   bool   `json:"active"`
-	CurrentCommand           string `json:"currentCommand,omitempty"`
-	CurrentPath              string `json:"currentPath,omitempty"`
-	PanePid                  int    `json:"panePid,omitempty"`
-	Flags                    string `json:"flags,omitempty"`
-	PaneTitle                string `json:"paneTitle,omitempty"`
-	AgentTool                string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
+	ID                        string   `json:"id"`
+	Index                     int      `json:"index"`
+	Name                      string   `json:"name"`
+	Active                    bool     `json:"active"`
+	CurrentCommand            string   `json:"currentCommand,omitempty"`
+	CurrentPath               string   `json:"currentPath,omitempty"`
+	PanePid                   int      `json:"panePid,omitempty"`
+	Flags                     string   `json:"flags,omitempty"`
+	PaneTitle                 string   `json:"paneTitle,omitempty"`
+	AgentTool                 string   `json:"agentTool,omitempty"`
+	Capabilities              []string `json:"capabilities,omitempty"`
+	VisualScrollbackAvailable bool     `json:"visualScrollbackAvailable,omitempty"`
+	LastActivityEpochSeconds  int64    `json:"lastActivityEpochSeconds,omitempty"`
 }
 
 type serverRestore struct {
@@ -225,19 +320,20 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                    string `json:"id,omitempty"`
-	Index                 int    `json:"index,omitempty"`
-	Name                  string `json:"name,omitempty"`
-	Cwd                   string `json:"cwd,omitempty"`
-	CurrentCommand        string `json:"currentCommand,omitempty"`
-	PanePid               int    `json:"panePid,omitempty"`
-	PaneTitle             string `json:"paneTitle,omitempty"`
-	AgentTool             string `json:"agentTool,omitempty"`
-	AgentSessionID        string `json:"agentSessionId,omitempty"`
-	HistoryBase64         string `json:"historyBase64,omitempty"`
-	CursorVisible         bool   `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown bool   `json:"cursorVisibilityKnown,omitempty"`
-	Active                bool   `json:"active,omitempty"`
+	ID                    string   `json:"id,omitempty"`
+	Index                 int      `json:"index,omitempty"`
+	Name                  string   `json:"name,omitempty"`
+	Cwd                   string   `json:"cwd,omitempty"`
+	CurrentCommand        string   `json:"currentCommand,omitempty"`
+	PanePid               int      `json:"panePid,omitempty"`
+	PaneTitle             string   `json:"paneTitle,omitempty"`
+	AgentTool             string   `json:"agentTool,omitempty"`
+	Capabilities          []string `json:"capabilities,omitempty"`
+	AgentSessionID        string   `json:"agentSessionId,omitempty"`
+	HistoryBase64         string   `json:"historyBase64,omitempty"`
+	CursorVisible         bool     `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown bool     `json:"cursorVisibilityKnown,omitempty"`
+	Active                bool     `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -266,11 +362,20 @@ type muxWindow struct {
 	foregroundPid              int
 	foregroundCommand          string
 	paneTitle                  string
+	ptyMu                      sync.Mutex
 	pty                        *os.File
+	ptyClosed                  bool
 	cmd                        *exec.Cmd
 	history                    []byte
+	screen                     *terminalScreen
+	capabilities               []string
+	ptyWidth                   int
+	ptyHeight                  int
+	ptyResizeGeneration        uint64
+	scrollbackOffset           int
 	oscBuffer                  []byte
 	csiBuffer                  []byte
+	terminalQueryBuffer        []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -286,14 +391,88 @@ type muxWindow struct {
 	closed                     bool
 }
 
+func (w *muxWindow) setPtySize(size *pty.Winsize) error {
+	_, err := w.setPtySizeTracked(size)
+	return err
+}
+
+func (w *muxWindow) setPtySizeTracked(size *pty.Winsize) (uint64, error) {
+	if w == nil {
+		return 0, os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return 0, os.ErrClosed
+	}
+	if err := pty.Setsize(w.pty, size); err != nil {
+		return 0, err
+	}
+	w.ptyResizeGeneration++
+	return w.ptyResizeGeneration, nil
+}
+
+func (w *muxWindow) setPtySizeIfGeneration(
+	generation uint64,
+	size *pty.Winsize,
+) error {
+	if w == nil {
+		return os.ErrClosed
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return os.ErrClosed
+	}
+	if w.ptyResizeGeneration != generation {
+		return nil
+	}
+	if err := pty.Setsize(w.pty, size); err != nil {
+		return err
+	}
+	w.ptyResizeGeneration++
+	return nil
+}
+
+func (w *muxWindow) closePty() error {
+	if w == nil {
+		return nil
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return nil
+	}
+	w.ptyClosed = true
+	return w.pty.Close()
+}
+
+func (w *muxWindow) foregroundProcessGroup() int {
+	if w == nil {
+		return 0
+	}
+	w.ptyMu.Lock()
+	defer w.ptyMu.Unlock()
+	if w.pty == nil || w.ptyClosed {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
+}
+
 type windowBroadcastIdentity struct {
-	name      string
-	cwd       string
-	command   string
-	paneTitle string
-	agentTool string
-	panePid   int
-	alert     bool
+	name                      string
+	cwd                       string
+	command                   string
+	paneTitle                 string
+	agentTool                 string
+	capabilities              string
+	visualScrollbackAvailable bool
+	panePid                   int
+	alert                     bool
 }
 
 type controlClient struct {
@@ -329,8 +508,27 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--window-capability CAP] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
 	os.Exit(2)
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			*f = append(*f, part)
+		}
+	}
+	return nil
 }
 
 func attachCommand(args []string) {
@@ -340,6 +538,8 @@ func attachCommand(args []string) {
 	command := fs.String("command", "", "initial command")
 	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
+	var windowCapabilities stringListFlag
+	fs.Var(&windowCapabilities, "window-capability", "initial window capability")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		usageAndExit()
@@ -352,9 +552,10 @@ func attachCommand(args []string) {
 	if err := ensureServer(
 		session,
 		createWindowOptions{
-			cwd:     *cwd,
-			name:    *name,
-			command: *command,
+			cwd:          *cwd,
+			name:         *name,
+			command:      *command,
+			capabilities: windowCapabilities,
 		},
 		policy,
 		*restoreYolo,
@@ -560,7 +761,7 @@ func ensureServer(
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Env = terminalEnvironment(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -1297,9 +1498,9 @@ func createWindowOptionsForRestore(
 	)
 	command := ""
 	if agentTool != "" {
-		command = agentLaunchCommand(agentTool, startInYoloMode)
+		command = agentLaunchCommand(agentTool, startInYoloMode, state.Cwd)
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
-			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			command = agentResumeCommand(agentTool, sessionID, startInYoloMode, state.Cwd)
 		}
 	}
 	history := []byte(nil)
@@ -1313,9 +1514,14 @@ func createWindowOptionsForRestore(
 		history:               history,
 		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
 		agentTool:             agentTool,
+		capabilities:          restoreWindowCapabilities(state),
 		cursorVisible:         state.CursorVisible,
 		cursorVisibilityKnown: state.CursorVisibilityKnown,
 	}
+}
+
+func restoreWindowCapabilities(state restoreWindowState) []string {
+	return normalizeWindowCapabilities(state.Capabilities)
 }
 
 func decodeRestoreHistory(encoded string) []byte {
@@ -1354,6 +1560,7 @@ type createWindowOptions struct {
 	history               []byte
 	paneTitle             string
 	agentTool             string
+	capabilities          []string
 	cursorVisible         bool
 	cursorVisibilityKnown bool
 }
@@ -1399,7 +1606,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Env = terminalEnvironment(os.Environ())
 
 	s.mu.Lock()
 	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
@@ -1408,6 +1615,14 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	file, err := pty.StartWithSize(cmd, size)
 	if err != nil {
 		return nil, err
+	}
+
+	ptyWidth := int(size.Cols)
+	ptyHeight := int(size.Rows)
+	windowCapabilities := normalizeWindowCapabilities(options.capabilities)
+	var screen *terminalScreen
+	if windowSupportsCapability(windowCapabilities, windowCapabilityVisualScrollback) {
+		screen = newTerminalScreen(ptyWidth, ptyHeight)
 	}
 
 	s.mu.Lock()
@@ -1425,6 +1640,10 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		pty:                   file,
 		cmd:                   cmd,
 		history:               append([]byte(nil), options.history...),
+		screen:                screen,
+		capabilities:          windowCapabilities,
+		ptyWidth:              ptyWidth,
+		ptyHeight:             ptyHeight,
 		lastActivity:          time.Now(),
 		cursorVisible:         cursorVisible,
 		cursorVisibilityKnown: options.cursorVisibilityKnown,
@@ -1479,6 +1698,7 @@ func (s *muxServer) readWindow(window *muxWindow) {
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
 	var shouldWrite bool
+	var attachOutput []byte
 	var snapshot *windowSnapshot
 	now := time.Now()
 
@@ -1493,11 +1713,18 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.observeTerminalMetadataLocked(chunk)
 	window.observeTerminalModesLocked(chunk)
-	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
+	window.maybeEnableVisualScrollbackLocked(chunk)
+	if window.shouldUseVisualScrollbackLocked() {
+		window.observeTerminalScreenLocked(chunk)
+	}
+	window.appendHistoryLocked(chunk)
 	if s.activeID == windowID {
 		attach = s.attachConn
-		shouldWrite = attach != nil
+		if attach != nil && window.scrollbackOffset == 0 {
+			shouldWrite = true
+			attachOutput = window.liveAttachOutputLocked(s, chunk)
+		}
 	} else if containsTerminalBell(chunk) {
 		window.alert = true
 	}
@@ -1513,7 +1740,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	s.mu.Unlock()
 
 	if shouldWrite {
-		s.writeAttachIfActive(windowID, attach, chunk)
+		s.writeAttachIfActive(windowID, attach, attachOutput)
 	}
 
 	if snapshot != nil {
@@ -1529,7 +1756,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
-	var foregroundProcessGroup int
+	var redrawNudge redrawNudgeRequest
 	var shouldShutdown bool
 
 	s.attachMu.Lock()
@@ -1542,7 +1769,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
-	_ = window.pty.Close()
+	_ = window.closePty()
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		s.activeID = ""
@@ -1553,7 +1780,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
-				foregroundProcessGroup = candidate.foregroundProcessGroupLocked()
+				redrawNudge = s.redrawNudgeForWindowLocked(candidate)
 				activeChanged = true
 				break
 			}
@@ -1583,7 +1810,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
+		runRedrawNudgeIfNeeded(redrawNudge)
 	}
 	if shouldShutdown {
 		go s.close()
@@ -1614,6 +1841,7 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
+	var redrawNudge redrawNudgeRequest
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -1625,8 +1853,10 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
+	redrawNudge = s.activeRedrawNudgeLocked()
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
+	runRedrawNudgeIfNeeded(redrawNudge)
 	s.broadcastWindowList("active_window_changed")
 
 	defer func() {
@@ -1711,10 +1941,11 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		})
 	case "create_window":
 		window, err := s.createWindow(createWindowOptions{
-			name:    request.Name,
-			cwd:     request.Cwd,
-			command: request.Command,
-			args:    request.Args,
+			name:         request.Name,
+			cwd:          request.Cwd,
+			command:      request.Command,
+			args:         request.Args,
+			capabilities: request.Capabilities,
 		})
 		if err != nil {
 			client.sendError(request, err)
@@ -1999,6 +2230,7 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 			PanePid:               window.metadataProcessIDLocked(),
 			PaneTitle:             window.paneTitle,
 			AgentTool:             window.agentToolLocked(),
+			Capabilities:          append([]string(nil), window.capabilities...),
 			CursorVisible:         window.cursorVisible,
 			CursorVisibilityKnown: window.cursorVisibilityKnown,
 			Active:                s.activeID == window.id,
@@ -2024,17 +2256,19 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		flags = "#"
 	}
 	return windowSnapshot{
-		ID:                       window.id,
-		Index:                    window.index,
-		Name:                     window.name,
-		Active:                   s.activeID == window.id,
-		CurrentCommand:           window.currentCommandLocked(),
-		CurrentPath:              window.cwd,
-		PanePid:                  window.metadataProcessIDLocked(),
-		Flags:                    flags,
-		PaneTitle:                window.paneTitle,
-		AgentTool:                window.agentToolLocked(),
-		LastActivityEpochSeconds: window.lastActivity.Unix(),
+		ID:                        window.id,
+		Index:                     window.index,
+		Name:                      window.name,
+		Active:                    s.activeID == window.id,
+		CurrentCommand:            window.currentCommandLocked(),
+		CurrentPath:               window.cwd,
+		PanePid:                   window.metadataProcessIDLocked(),
+		Flags:                     flags,
+		PaneTitle:                 window.paneTitle,
+		AgentTool:                 window.agentToolLocked(),
+		Capabilities:              append([]string(nil), window.capabilities...),
+		VisualScrollbackAvailable: window.visualScrollbackAvailableLocked(),
+		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 	}
 }
 
@@ -2183,7 +2417,7 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
-	var foregroundProcessGroup int
+	var redrawNudge redrawNudgeRequest
 	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
@@ -2197,12 +2431,12 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
-	foregroundProcessGroup = window.foregroundProcessGroupLocked()
+	redrawNudge = s.redrawNudgeForWindowLocked(window)
 	s.mu.Unlock()
 	s.writeAttachLocked(attach, replay)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
-	signalForegroundResize(foregroundProcessGroup)
+	runRedrawNudgeIfNeeded(redrawNudge)
 	return nil
 }
 
@@ -2210,10 +2444,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
-	var foregroundProcessGroup int
+	var redrawNudge redrawNudgeRequest
 	var shouldShutdown bool
 	var command *exec.Cmd
-	var windowPty *os.File
 	var snapshots []windowSnapshot
 
 	s.attachMu.Lock()
@@ -2238,7 +2471,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
-			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
+			redrawNudge = s.redrawNudgeForWindowLocked(replacement)
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -2247,7 +2480,6 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	window.closed = true
 	window.alert = false
 	command = window.cmd
-	windowPty = window.pty
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
@@ -2273,12 +2505,10 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
+		runRedrawNudgeIfNeeded(redrawNudge)
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
-	if windowPty != nil {
-		_ = windowPty.Close()
-	}
+	_ = window.closePty()
 	return shouldShutdown, nil
 }
 
@@ -2300,22 +2530,75 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	var attach net.Conn
+	var replay []byte
+
+	s.attachMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
 	s.resizeActiveLocked(width, height)
+	if window := s.windowByIDLocked(s.activeID); window != nil &&
+		window.scrollbackOffset > 0 {
+		attach = s.attachConn
+		replay = s.agentScrollbackReplayBytesLocked(window)
+	}
+	s.mu.Unlock()
+	if len(replay) > 0 {
+		s.writeAttachLocked(attach, replay)
+	}
+	s.attachMu.Unlock()
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
-	if window == nil || window.closed || window.pty == nil {
+	if window == nil || window.closed {
 		return
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
+	window.ptyWidth = width
+	window.ptyHeight = height
+	if window.screen != nil {
+		window.screen.resize(width, height)
+		window.clampScrollbackOffsetLocked()
+	}
+	_ = window.setPtySize(&pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
+}
+
+func (s *muxServer) activeRedrawNudgeLocked() redrawNudgeRequest {
+	window := s.windowByIDLocked(s.activeID)
+	return s.redrawNudgeForWindowLocked(window)
+}
+
+func (s *muxServer) redrawNudgeForWindowLocked(window *muxWindow) redrawNudgeRequest {
+	if window == nil || window.closed {
+		return redrawNudgeRequest{}
+	}
+	return redrawNudgeRequest{
+		window: window,
+		width:  s.width,
+		height: s.height,
+		mode:   window.redrawNudgeModeLocked(),
+	}
+}
+
+func (w *muxWindow) redrawNudgeModeLocked() redrawNudgeMode {
+	if w == nil {
+		return redrawNudgeNone
+	}
+	if w.shouldUseVisualScrollbackLocked() {
+		return redrawNudgeSameSize
+	}
+	if w.usesAlternateScreenLocked() {
+		return redrawNudgeResize
+	}
+	return redrawNudgeSignal
+}
+
+func (w *muxWindow) usesAlternateScreenLocked() bool {
+	return w != nil && (w.privateModes["47"] || w.privateModes["1047"] || w.privateModes["1049"])
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -2336,6 +2619,12 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	window.scrollbackOffset = 0
+	if window.shouldUseVisualScrollbackLocked() &&
+		window.screen != nil &&
+		window.screen.hasContent() {
+		return s.agentScreenReplayBytesLocked(window, true)
+	}
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	history = trimReplayHistoryForAttach(history)
 	title := terminalTitleReplaySequence(window)
@@ -2354,6 +2643,137 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay = append(replay, history...)
 	replay = append(replay, postModes...)
 	replay = append(replay, cursor...)
+	return replay
+}
+
+func (s *muxServer) agentScreenReplayBytesLocked(window *muxWindow, clean bool) []byte {
+	if window == nil || window.screen == nil {
+		return nil
+	}
+	rows := window.screen.visibleRows()
+	cursorRow, cursorCol := window.screen.cursorPosition()
+	return s.agentRowsReplayBytesLocked(
+		window,
+		rows,
+		clean,
+		cursorRow,
+		cursorCol,
+		window.cursorVisibleForReplayLocked(),
+	)
+}
+
+func (s *muxServer) agentScrollbackReplayBytesLocked(window *muxWindow) []byte {
+	if window == nil || window.screen == nil {
+		return nil
+	}
+	lines := window.screen.historyRows()
+	height := window.screen.height
+	if height <= 0 {
+		height = s.height
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	start := len(lines) - height - window.scrollbackOffset
+	if start < 0 {
+		start = 0
+	}
+	end := start + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return s.agentRowsReplayBytesLocked(
+		window,
+		lines[start:end],
+		false,
+		height-1,
+		0,
+		false,
+	)
+}
+
+func (s *muxServer) agentRowsReplayBytesLocked(
+	window *muxWindow,
+	rows []terminalRow,
+	clean bool,
+	cursorRow int,
+	cursorCol int,
+	cursorVisible bool,
+) []byte {
+	width, height := s.width, s.height
+	if window != nil && window.screen != nil {
+		width, height = window.screen.size()
+	}
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+
+	title := terminalTitleReplaySequence(window)
+	preModes := terminalModePreReplaySequence(window)
+	postModes := terminalModePostReplaySequence(window)
+	cursor := cursorVisibilityReplaySequence(cursorVisible)
+	var replay []byte
+	if clean {
+		replay = append(replay, activeWindowReplayPrefix...)
+	}
+	replay = append(replay, title...)
+	replay = append(replay, preModes...)
+	replay = append(replay, "\x1b[0m\x1b[?7l\x1b[H\x1b[2J"...)
+	for row := 0; row < height; row++ {
+		replay = append(replay, "\x1b[0m\x1b["...)
+		replay = strconv.AppendInt(replay, int64(row+1), 10)
+		replay = append(replay, ";1H\x1b[2K"...)
+		if row < len(rows) {
+			replay = appendTerminalRowReplay(replay, rows[row], width)
+		}
+	}
+	if cursorRow < 0 {
+		cursorRow = 0
+	} else if cursorRow >= height {
+		cursorRow = height - 1
+	}
+	if cursorCol < 0 {
+		cursorCol = 0
+	} else if cursorCol >= width {
+		cursorCol = width - 1
+	}
+	replay = append(replay, "\x1b["...)
+	replay = strconv.AppendInt(replay, int64(cursorRow+1), 10)
+	replay = append(replay, ';')
+	replay = strconv.AppendInt(replay, int64(cursorCol+1), 10)
+	replay = append(replay, 'H')
+	replay = append(replay, "\x1b[0m"...)
+	replay = append(replay, postModes...)
+	replay = append(replay, cursor...)
+	return replay
+}
+
+func appendTerminalRowReplay(replay []byte, row terminalRow, width int) []byte {
+	if width <= 0 {
+		return replay
+	}
+	end := minInt(len(row), width)
+	for end > 0 && row[end-1].isDefaultBlank() {
+		end--
+	}
+	style := terminalStyle{}
+	for col := 0; col < end; col++ {
+		cell := row[col]
+		if cell.ch == 0 {
+			cell.ch = ' '
+		}
+		if cell.style != style {
+			replay = appendTerminalStyleTransition(replay, style, cell.style)
+			style = cell.style
+		}
+		replay = utf8.AppendRune(replay, cell.ch)
+	}
+	if style != (terminalStyle{}) {
+		replay = append(replay, "\x1b[0m"...)
+	}
 	return replay
 }
 
@@ -2438,6 +2858,7 @@ func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) {
 	if conn == nil || len(data) == 0 {
 		return
 	}
+	data = normalizeAttachOutputForXterm(data)
 	_, err := conn.Write(data)
 	if err != nil {
 		s.mu.Lock()
@@ -2446,6 +2867,99 @@ func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+func normalizeAttachOutputForXterm(data []byte) []byte {
+	var output []byte
+	for index := 0; index < len(data); {
+		if data[index] != '\x1b' ||
+			index+2 >= len(data) ||
+			data[index+1] != '[' {
+			if output != nil {
+				output = append(output, data[index])
+			}
+			index++
+			continue
+		}
+		end := csiSequenceEnd(data, index+2)
+		if end < 0 {
+			if output != nil {
+				output = append(output, data[index:]...)
+			}
+			break
+		}
+		original := data[index : end+1]
+		if data[end] != 'm' {
+			if output != nil {
+				output = append(output, original...)
+			}
+			index = end + 1
+			continue
+		}
+		normalized, changed := normalizeSGROutputForXterm(data[index+2 : end])
+		if !changed {
+			if output != nil {
+				output = append(output, original...)
+			}
+			index = end + 1
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)+len(normalized)-len(original))
+			output = append(output, data[:index]...)
+		}
+		output = append(output, normalized...)
+		index = end + 1
+	}
+	if output == nil {
+		return data
+	}
+	return output
+}
+
+func normalizeSGROutputForXterm(paramsBytes []byte) ([]byte, bool) {
+	params := sgrIntParams(string(paramsBytes))
+	if len(params) == 0 {
+		return nil, false
+	}
+	var normalized []byte
+	normalParams := make([]int, 0, len(params))
+	sawExtendedColor := false
+	for index := 0; index < len(params); {
+		param := params[index]
+		if param == 38 || param == 48 {
+			color, end, ok := parseExtendedTerminalColor(params, index+1)
+			if !ok {
+				return nil, false
+			}
+			sawExtendedColor = true
+			normalized = appendSGRParamsIfAny(normalized, normalParams)
+			normalParams = normalParams[:0]
+			normalized = appendTerminalExtendedColorSGR(
+				normalized,
+				color,
+				param == 38,
+			)
+			index = end + 1
+			continue
+		}
+		if param < 0 {
+			return nil, false
+		}
+		normalParams = append(normalParams, param)
+		index++
+	}
+	normalized = appendSGRParamsIfAny(normalized, normalParams)
+	if len(normalized) == 0 {
+		return nil, false
+	}
+	if !sawExtendedColor {
+		return nil, false
+	}
+
+	original := append(append([]byte(nil), "\x1b["...), paramsBytes...)
+	original = append(original, 'm')
+	return normalized, !bytes.Equal(normalized, original)
 }
 
 func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
@@ -2463,7 +2977,78 @@ func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []b
 }
 
 func (s *muxServer) writeActive(data []byte) {
-	_ = s.writeWindow(s.activeWindowID(), data)
+	_ = s.writeActiveInput(data)
+}
+
+func (s *muxServer) writeActiveInput(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var attach net.Conn
+	var replay []byte
+	var ptyFile *os.File
+	var windowID string
+
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return fmt.Errorf("window %q not found", s.activeID)
+	}
+	if rows, ok := agentScrollRowsFromInput(data); ok &&
+		window.shouldUseVisualScrollbackLocked() {
+		windowID = window.id
+		attach = s.attachConn
+		replay = s.applyAgentScrollLocked(window, rows)
+		s.mu.Unlock()
+		if len(replay) > 0 {
+			s.writeAttachLocked(attach, replay)
+		}
+		s.attachMu.Unlock()
+		return nil
+	}
+	if window.scrollbackOffset > 0 {
+		window.scrollbackOffset = 0
+		attach = s.attachConn
+		replay = s.agentScreenReplayBytesLocked(window, false)
+	}
+	ptyFile = window.pty
+	windowID = window.id
+	s.mu.Unlock()
+	if len(replay) > 0 {
+		s.writeAttachLocked(attach, replay)
+	}
+	s.attachMu.Unlock()
+
+	if ptyFile == nil {
+		return fmt.Errorf("window %q has no pty", windowID)
+	}
+	_, err := ptyFile.Write(data)
+	return err
+}
+
+func (s *muxServer) applyAgentScrollLocked(window *muxWindow, rows int) []byte {
+	if window == nil || window.screen == nil || rows == 0 {
+		return nil
+	}
+	maxOffset := window.maxScrollbackOffsetLocked()
+	if maxOffset <= 0 {
+		window.scrollbackOffset = 0
+		return nil
+	}
+	window.scrollbackOffset += rows
+	if window.scrollbackOffset < 0 {
+		window.scrollbackOffset = 0
+	} else if window.scrollbackOffset > maxOffset {
+		window.scrollbackOffset = maxOffset
+	}
+	if window.scrollbackOffset == 0 {
+		return s.agentScreenReplayBytesLocked(window, false)
+	}
+	return s.agentScrollbackReplayBytesLocked(window)
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
@@ -2586,8 +3171,1111 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 	return history[start:]
 }
 
+type terminalScreen struct {
+	width  int
+	height int
+
+	rows       []terminalRow
+	scrollback []terminalRow
+
+	cursorRow int
+	cursorCol int
+	savedRow  int
+	savedCol  int
+
+	scrollTop    int
+	scrollBottom int
+	wrapEnabled  bool
+	pendingWrap  bool
+	currentStyle terminalStyle
+	parserBuffer []byte
+	contentSeen  bool
+}
+
+type terminalRow []terminalCell
+
+type terminalCell struct {
+	ch    rune
+	style terminalStyle
+}
+
+type terminalStyle struct {
+	foreground terminalColor
+	background terminalColor
+	flags      uint16
+}
+
+type terminalColor struct {
+	mode  terminalColorMode
+	value int
+	red   int
+	green int
+	blue  int
+}
+
+type terminalColorMode uint8
+
+const (
+	terminalColorDefault terminalColorMode = iota
+	terminalColorANSI
+	terminalColorIndexed
+	terminalColorRGB
+)
+
+const (
+	terminalStyleBold uint16 = 1 << iota
+	terminalStyleDim
+	terminalStyleItalic
+	terminalStyleUnderline
+	terminalStyleBlink
+	terminalStyleInverse
+	terminalStyleHidden
+	terminalStyleStrikethrough
+)
+
+func newTerminalScreen(width int, height int) *terminalScreen {
+	screen := &terminalScreen{wrapEnabled: true}
+	screen.resize(width, height)
+	return screen
+}
+
+func (w *muxWindow) observeTerminalScreenLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	if w.screen == nil {
+		width, height := w.terminalScreenSizeLocked()
+		w.screen = newTerminalScreen(width, height)
+	}
+	w.screen.write(chunk)
+}
+
+func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
+	if w == nil ||
+		!w.shouldUseVisualScrollbackLocked() ||
+		w.usesAlternateScreenLocked() ||
+		w.screen == nil ||
+		!w.screen.hasContent() {
+		w.terminalQueryBuffer = nil
+		return chunk
+	}
+	replay := s.agentScreenReplayBytesLocked(w, false)
+	queries := w.terminalQueriesFromOutputLocked(chunk)
+	if len(queries) == 0 {
+		return replay
+	}
+	output := make([]byte, 0, len(queries)+len(replay))
+	output = append(output, queries...)
+	output = append(output, replay...)
+	return output
+}
+
+func (w *muxWindow) terminalScreenSizeLocked() (int, int) {
+	if w == nil {
+		return defaultColumns, defaultRows
+	}
+	width := w.ptyWidth
+	height := w.ptyHeight
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	return width, height
+}
+
+func (t *terminalScreen) resize(width int, height int) {
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+	if t.width == width && t.height == height && len(t.rows) == height {
+		return
+	}
+	oldRows := t.rows
+	oldHeight := t.height
+	oldWidth := t.width
+	t.width = width
+	t.height = height
+	t.rows = make([]terminalRow, height)
+	for row := range t.rows {
+		t.rows[row] = blankTerminalRow(width, terminalStyle{})
+		if row < oldHeight && row < len(oldRows) {
+			copy(t.rows[row], oldRows[row][:minInt(oldWidth, width)])
+		}
+	}
+	t.cursorRow = clampInt(t.cursorRow, 0, height-1)
+	t.cursorCol = clampInt(t.cursorCol, 0, width-1)
+	t.savedRow = clampInt(t.savedRow, 0, height-1)
+	t.savedCol = clampInt(t.savedCol, 0, width-1)
+	t.scrollTop = 0
+	t.scrollBottom = height - 1
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) size() (int, int) {
+	if t == nil {
+		return defaultColumns, defaultRows
+	}
+	return t.width, t.height
+}
+
+func (t *terminalScreen) hasContent() bool {
+	return t != nil && t.contentSeen
+}
+
+func (t *terminalScreen) cursorPosition() (int, int) {
+	if t == nil {
+		return 0, 0
+	}
+	col := t.cursorCol
+	if t.pendingWrap && col >= t.width {
+		col = t.width - 1
+	}
+	return t.cursorRow, col
+}
+
+func (t *terminalScreen) visibleRows() []terminalRow {
+	if t == nil {
+		return nil
+	}
+	rows := make([]terminalRow, len(t.rows))
+	for i, row := range t.rows {
+		rows[i] = row
+	}
+	return rows
+}
+
+func (t *terminalScreen) visibleLines() []string {
+	if t == nil {
+		return nil
+	}
+	lines := make([]string, len(t.rows))
+	for i, row := range t.rows {
+		lines[i] = terminalRowString(row)
+	}
+	return lines
+}
+
+func (t *terminalScreen) historyRows() []terminalRow {
+	if t == nil {
+		return nil
+	}
+	rows := make([]terminalRow, 0, len(t.scrollback)+len(t.rows))
+	rows = append(rows, t.scrollback...)
+	rows = append(rows, t.visibleRows()...)
+	return rows
+}
+
+func (t *terminalScreen) historyLineCount() int {
+	if t == nil {
+		return 0
+	}
+	return len(t.scrollback) + len(t.rows)
+}
+
+func (t *terminalScreen) write(chunk []byte) {
+	data := chunk
+	if len(t.parserBuffer) > 0 {
+		combined := make([]byte, 0, len(t.parserBuffer)+len(chunk))
+		combined = append(combined, t.parserBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		t.parserBuffer = nil
+	}
+
+	for index := 0; index < len(data); {
+		switch data[index] {
+		case '\x1b':
+			consumed, ok := t.consumeEscape(data[index:])
+			if !ok {
+				t.storeParserRemainder(data[index:])
+				return
+			}
+			index += consumed
+		case '\r':
+			t.cursorCol = 0
+			t.pendingWrap = false
+			index++
+		case '\n':
+			t.index()
+			t.pendingWrap = false
+			index++
+		case '\b':
+			if t.cursorCol > 0 {
+				t.cursorCol--
+			}
+			t.pendingWrap = false
+			index++
+		case '\t':
+			nextTab := ((t.cursorCol / 8) + 1) * 8
+			t.cursorCol = clampInt(nextTab, 0, t.width-1)
+			t.pendingWrap = false
+			index++
+		default:
+			if data[index] < 0x20 || data[index] == 0x7f {
+				index++
+				continue
+			}
+			r, size := utf8.DecodeRune(data[index:])
+			if r == utf8.RuneError && size == 1 && !utf8.FullRune(data[index:]) {
+				t.storeParserRemainder(data[index:])
+				return
+			}
+			t.putRune(r)
+			index += size
+		}
+	}
+}
+
+func (t *terminalScreen) storeParserRemainder(data []byte) {
+	if len(data) > terminalParserLimitBytes {
+		t.parserBuffer = nil
+		return
+	}
+	t.parserBuffer = append(t.parserBuffer[:0], data...)
+}
+
+func (t *terminalScreen) consumeEscape(data []byte) (int, bool) {
+	if len(data) < 2 {
+		return 0, false
+	}
+	switch data[1] {
+	case '[':
+		end := csiSequenceEnd(data, 2)
+		if end < 0 {
+			return 0, false
+		}
+		t.applyCSI(data[2:end], data[end])
+		return end + 1, true
+	case ']':
+		end, terminatorLength, ok := findOscTerminator(data[2:])
+		if !ok {
+			return 0, false
+		}
+		return 2 + end + terminatorLength, true
+	case 'P', '^', '_', 'X':
+		end, terminatorLength, ok := findStringTerminator(data[2:])
+		if !ok {
+			return 0, false
+		}
+		return 2 + end + terminatorLength, true
+	case '7':
+		t.savedRow, t.savedCol = t.cursorRow, t.cursorCol
+		t.pendingWrap = false
+	case '8':
+		t.cursorRow, t.cursorCol = t.savedRow, t.savedCol
+		t.pendingWrap = false
+	case 'D':
+		t.index()
+		t.pendingWrap = false
+	case 'E':
+		t.cursorCol = 0
+		t.index()
+		t.pendingWrap = false
+	case 'M':
+		t.reverseIndex()
+		t.pendingWrap = false
+	case 'c':
+		t.reset()
+	case '(', ')', '*', '+', '-', '.', '/':
+		if len(data) < 3 {
+			return 0, false
+		}
+		return 3, true
+	}
+	return 2, true
+}
+
+func findStringTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\x1b' {
+			if i+1 >= len(data) {
+				return 0, 0, false
+			}
+			if data[i+1] == '\\' {
+				return i, 2, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func (t *terminalScreen) applyCSI(paramsBytes []byte, final byte) {
+	paramsText := string(paramsBytes)
+	private := strings.HasPrefix(paramsText, "?")
+	if private {
+		paramsText = strings.TrimPrefix(paramsText, "?")
+	}
+
+	switch final {
+	case 'm':
+		if !private {
+			t.applySGR(paramsText)
+		}
+	case 'h', 'l':
+		params := csiIntParams(paramsText)
+		if private {
+			t.applyPrivateMode(params, final == 'h')
+		} else {
+			t.pendingWrap = false
+		}
+	case 'H', 'f':
+		params := csiIntParams(paramsText)
+		row := csiParam(params, 0, 1) - 1
+		col := csiParam(params, 1, 1) - 1
+		t.moveCursor(row, col)
+	case 'A':
+		params := csiIntParams(paramsText)
+		t.moveCursor(t.cursorRow-csiParam(params, 0, 1), t.cursorCol)
+	case 'B':
+		params := csiIntParams(paramsText)
+		t.moveCursor(t.cursorRow+csiParam(params, 0, 1), t.cursorCol)
+	case 'C':
+		params := csiIntParams(paramsText)
+		t.moveCursor(t.cursorRow, t.cursorCol+csiParam(params, 0, 1))
+	case 'D':
+		params := csiIntParams(paramsText)
+		t.moveCursor(t.cursorRow, t.cursorCol-csiParam(params, 0, 1))
+	case 'G':
+		params := csiIntParams(paramsText)
+		t.moveCursor(t.cursorRow, csiParam(params, 0, 1)-1)
+	case 'd':
+		params := csiIntParams(paramsText)
+		t.moveCursor(csiParam(params, 0, 1)-1, t.cursorCol)
+	case 'J':
+		params := csiIntParams(paramsText)
+		t.eraseDisplay(csiParam(params, 0, 0))
+	case 'K':
+		params := csiIntParams(paramsText)
+		t.eraseLine(csiParam(params, 0, 0))
+	case 'r':
+		params := csiIntParams(paramsText)
+		top := csiParam(params, 0, 1) - 1
+		bottom := csiParam(params, 1, t.height) - 1
+		if top < 0 || bottom < top || bottom >= t.height {
+			top = 0
+			bottom = t.height - 1
+		}
+		t.scrollTop = top
+		t.scrollBottom = bottom
+		t.moveCursor(0, 0)
+	case 'S':
+		params := csiIntParams(paramsText)
+		t.scrollUp(csiParam(params, 0, 1))
+	case 'T':
+		params := csiIntParams(paramsText)
+		t.scrollDown(csiParam(params, 0, 1))
+	case 'L':
+		params := csiIntParams(paramsText)
+		t.insertLines(csiParam(params, 0, 1))
+	case 'M':
+		params := csiIntParams(paramsText)
+		t.deleteLines(csiParam(params, 0, 1))
+	case 'P':
+		params := csiIntParams(paramsText)
+		t.deleteChars(csiParam(params, 0, 1))
+	case '@':
+		params := csiIntParams(paramsText)
+		t.insertChars(csiParam(params, 0, 1))
+	case 'X':
+		params := csiIntParams(paramsText)
+		t.eraseChars(csiParam(params, 0, 1))
+	case 's':
+		t.savedRow, t.savedCol = t.cursorRow, t.cursorCol
+		t.pendingWrap = false
+	case 'u':
+		t.moveCursor(t.savedRow, t.savedCol)
+	default:
+		t.pendingWrap = false
+	}
+}
+
+func (t *terminalScreen) applyPrivateMode(params []int, enabled bool) {
+	for _, param := range params {
+		switch param {
+		case 7:
+			t.wrapEnabled = enabled
+		case 1049:
+			t.reset()
+			t.scrollback = nil
+		}
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) reset() {
+	width, height := t.width, t.height
+	t.rows = make([]terminalRow, height)
+	for row := range t.rows {
+		t.rows[row] = blankTerminalRow(width, terminalStyle{})
+	}
+	t.cursorRow = 0
+	t.cursorCol = 0
+	t.savedRow = 0
+	t.savedCol = 0
+	t.scrollTop = 0
+	t.scrollBottom = height - 1
+	t.pendingWrap = false
+	t.currentStyle = terminalStyle{}
+}
+
+func (t *terminalScreen) moveCursor(row int, col int) {
+	t.cursorRow = clampInt(row, 0, t.height-1)
+	t.cursorCol = clampInt(col, 0, t.width-1)
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) putRune(r rune) {
+	if t.pendingWrap {
+		t.cursorCol = 0
+		t.index()
+		t.pendingWrap = false
+	}
+	t.cursorRow = clampInt(t.cursorRow, 0, t.height-1)
+	t.cursorCol = clampInt(t.cursorCol, 0, t.width-1)
+	t.rows[t.cursorRow][t.cursorCol] = terminalCell{
+		ch:    r,
+		style: t.currentStyle,
+	}
+	t.contentSeen = true
+	if t.cursorCol == t.width-1 {
+		if t.wrapEnabled {
+			t.pendingWrap = true
+		}
+		return
+	}
+	t.cursorCol++
+}
+
+func (t *terminalScreen) index() {
+	if t.cursorRow == t.scrollBottom {
+		t.scrollUp(1)
+		return
+	}
+	t.cursorRow = clampInt(t.cursorRow+1, 0, t.height-1)
+}
+
+func (t *terminalScreen) reverseIndex() {
+	if t.cursorRow == t.scrollTop {
+		t.scrollDown(1)
+		return
+	}
+	t.cursorRow = clampInt(t.cursorRow-1, 0, t.height-1)
+}
+
+func (t *terminalScreen) scrollUp(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	for ; count > 0; count-- {
+		t.appendScrollbackLine(t.rows[t.scrollTop])
+		for row := t.scrollTop; row < t.scrollBottom; row++ {
+			t.rows[row] = t.rows[row+1]
+		}
+		t.rows[t.scrollBottom] = blankTerminalRow(t.width, t.currentStyle)
+	}
+}
+
+func (t *terminalScreen) scrollDown(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	for ; count > 0; count-- {
+		for row := t.scrollBottom; row > t.scrollTop; row-- {
+			t.rows[row] = t.rows[row-1]
+		}
+		t.rows[t.scrollTop] = blankTerminalRow(t.width, t.currentStyle)
+	}
+}
+
+func (t *terminalScreen) appendScrollbackLine(row terminalRow) {
+	t.scrollback = append(t.scrollback, cloneTerminalRow(row))
+	if len(t.scrollback) > agentScrollbackMaxLines {
+		copy(t.scrollback, t.scrollback[len(t.scrollback)-agentScrollbackMaxLines:])
+		t.scrollback = t.scrollback[:agentScrollbackMaxLines]
+	}
+}
+
+func (t *terminalScreen) insertLines(count int) {
+	if t.cursorRow < t.scrollTop || t.cursorRow > t.scrollBottom {
+		return
+	}
+	if count <= 0 {
+		count = 1
+	}
+	if count > t.scrollBottom-t.cursorRow+1 {
+		count = t.scrollBottom - t.cursorRow + 1
+	}
+	for row := t.scrollBottom; row >= t.cursorRow+count; row-- {
+		t.rows[row] = t.rows[row-count]
+	}
+	for row := t.cursorRow; row < t.cursorRow+count; row++ {
+		t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) deleteLines(count int) {
+	if t.cursorRow < t.scrollTop || t.cursorRow > t.scrollBottom {
+		return
+	}
+	if count <= 0 {
+		count = 1
+	}
+	if count > t.scrollBottom-t.cursorRow+1 {
+		count = t.scrollBottom - t.cursorRow + 1
+	}
+	for row := t.cursorRow; row <= t.scrollBottom-count; row++ {
+		t.rows[row] = t.rows[row+count]
+	}
+	for row := t.scrollBottom - count + 1; row <= t.scrollBottom; row++ {
+		t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) insertChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	row := t.rows[t.cursorRow]
+	if count > t.width-t.cursorCol {
+		count = t.width - t.cursorCol
+	}
+	copy(row[t.cursorCol+count:], row[t.cursorCol:t.width-count])
+	for col := t.cursorCol; col < t.cursorCol+count; col++ {
+		row[col] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) deleteChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	row := t.rows[t.cursorRow]
+	if count > t.width-t.cursorCol {
+		count = t.width - t.cursorCol
+	}
+	copy(row[t.cursorCol:], row[t.cursorCol+count:])
+	for col := t.width - count; col < t.width; col++ {
+		row[col] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseChars(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	end := t.cursorCol + count
+	if end > t.width {
+		end = t.width
+	}
+	for col := t.cursorCol; col < end; col++ {
+		t.rows[t.cursorRow][col] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	if t.currentStyle != (terminalStyle{}) && end > t.cursorCol {
+		t.contentSeen = true
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseDisplay(mode int) {
+	switch mode {
+	case 0:
+		t.eraseLineFrom(t.cursorRow, t.cursorCol)
+		for row := t.cursorRow + 1; row < t.height; row++ {
+			t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
+		}
+	case 1:
+		for row := 0; row < t.cursorRow; row++ {
+			t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
+		}
+		t.eraseLineTo(t.cursorRow, t.cursorCol)
+	case 2:
+		for row := 0; row < t.height; row++ {
+			t.rows[row] = blankTerminalRow(t.width, t.currentStyle)
+		}
+		if t.currentStyle != (terminalStyle{}) {
+			t.contentSeen = true
+		}
+	case 3:
+		t.scrollback = nil
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseLine(mode int) {
+	switch mode {
+	case 0:
+		t.eraseLineFrom(t.cursorRow, t.cursorCol)
+	case 1:
+		t.eraseLineTo(t.cursorRow, t.cursorCol)
+	case 2:
+		t.rows[t.cursorRow] = blankTerminalRow(t.width, t.currentStyle)
+		if t.currentStyle != (terminalStyle{}) {
+			t.contentSeen = true
+		}
+	}
+	t.pendingWrap = false
+}
+
+func (t *terminalScreen) eraseLineFrom(row int, col int) {
+	for i := clampInt(col, 0, t.width-1); i < t.width; i++ {
+		t.rows[row][i] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	if t.currentStyle != (terminalStyle{}) && col < t.width {
+		t.contentSeen = true
+	}
+}
+
+func (t *terminalScreen) eraseLineTo(row int, col int) {
+	for i := 0; i <= clampInt(col, 0, t.width-1); i++ {
+		t.rows[row][i] = terminalCell{
+			ch:    ' ',
+			style: t.currentStyle,
+		}
+	}
+	if t.currentStyle != (terminalStyle{}) && t.width > 0 {
+		t.contentSeen = true
+	}
+}
+
+func blankTerminalRow(width int, style terminalStyle) terminalRow {
+	row := make(terminalRow, width)
+	for i := range row {
+		row[i] = terminalCell{
+			ch:    ' ',
+			style: style,
+		}
+	}
+	return row
+}
+
+func cloneTerminalRow(row terminalRow) terminalRow {
+	if row == nil {
+		return nil
+	}
+	cloned := make(terminalRow, len(row))
+	copy(cloned, row)
+	return cloned
+}
+
+func terminalRowString(row terminalRow) string {
+	end := len(row)
+	for end > 0 && (row[end-1].ch == 0 || row[end-1].ch == ' ') {
+		end--
+	}
+	var builder strings.Builder
+	for _, cell := range row[:end] {
+		if cell.ch == 0 {
+			builder.WriteRune(' ')
+			continue
+		}
+		builder.WriteRune(cell.ch)
+	}
+	return builder.String()
+}
+
+func (c terminalCell) isDefaultBlank() bool {
+	return (c.ch == 0 || c.ch == ' ') && c.style == (terminalStyle{})
+}
+
+func (s terminalStyle) appendSGR(output []byte) []byte {
+	if s == (terminalStyle{}) {
+		return append(output, "\x1b[0m"...)
+	}
+	return appendTerminalStyle(output, s)
+}
+
+func appendTerminalStyleTransition(output []byte, from, to terminalStyle) []byte {
+	if to == (terminalStyle{}) {
+		return append(output, "\x1b[0m"...)
+	}
+	if terminalStyleTransitionNeedsReset(from, to) {
+		output = append(output, "\x1b[0m"...)
+		from = terminalStyle{}
+	}
+	if from == (terminalStyle{}) {
+		return appendTerminalStyle(output, to)
+	}
+
+	params := make([]int, 0, 8)
+	if added := to.flags &^ from.flags; added != 0 {
+		params = appendTerminalStyleFlagSGR(params, added)
+	}
+	params = appendChangedTerminalColorSGR(params, from.foreground, to.foreground, true)
+	params = appendChangedTerminalColorSGR(params, from.background, to.background, false)
+	output = appendSGRParamsIfAny(output, params)
+	output = appendChangedTerminalExtendedColorSGR(output, from.foreground, to.foreground, true)
+	output = appendChangedTerminalExtendedColorSGR(output, from.background, to.background, false)
+	return output
+}
+
+func terminalStyleTransitionNeedsReset(from, to terminalStyle) bool {
+	if from == (terminalStyle{}) {
+		return false
+	}
+	if from.flags&^to.flags != 0 {
+		return true
+	}
+	if from.foreground.mode != terminalColorDefault && to.foreground.mode == terminalColorDefault {
+		return true
+	}
+	if from.background.mode != terminalColorDefault && to.background.mode == terminalColorDefault {
+		return true
+	}
+	return false
+}
+
+func appendTerminalStyle(output []byte, style terminalStyle) []byte {
+	params := make([]int, 0, 16)
+	params = appendTerminalStyleFlagSGR(params, style.flags)
+	params = appendTerminalANSISGR(params, style.foreground, true)
+	params = appendTerminalANSISGR(params, style.background, false)
+	output = appendSGRParamsIfAny(output, params)
+	output = appendTerminalExtendedColorSGR(output, style.foreground, true)
+	output = appendTerminalExtendedColorSGR(output, style.background, false)
+	return output
+}
+
+func appendTerminalStyleFlagSGR(params []int, flags uint16) []int {
+	if flags&terminalStyleBold != 0 {
+		params = append(params, 1)
+	}
+	if flags&terminalStyleDim != 0 {
+		params = append(params, 2)
+	}
+	if flags&terminalStyleItalic != 0 {
+		params = append(params, 3)
+	}
+	if flags&terminalStyleUnderline != 0 {
+		params = append(params, 4)
+	}
+	if flags&terminalStyleBlink != 0 {
+		params = append(params, 5)
+	}
+	if flags&terminalStyleInverse != 0 {
+		params = append(params, 7)
+	}
+	if flags&terminalStyleHidden != 0 {
+		params = append(params, 8)
+	}
+	if flags&terminalStyleStrikethrough != 0 {
+		params = append(params, 9)
+	}
+	return params
+}
+
+func appendChangedTerminalColorSGR(params []int, from, to terminalColor, foreground bool) []int {
+	if from == to {
+		return params
+	}
+	return appendTerminalANSISGR(params, to, foreground)
+}
+
+func appendTerminalANSISGR(params []int, color terminalColor, foreground bool) []int {
+	switch color.mode {
+	case terminalColorANSI:
+		return append(params, color.value)
+	default:
+		return params
+	}
+}
+
+func appendChangedTerminalExtendedColorSGR(output []byte, from, to terminalColor, foreground bool) []byte {
+	if from == to {
+		return output
+	}
+	return appendTerminalExtendedColorSGR(output, to, foreground)
+}
+
+func appendTerminalExtendedColorSGR(output []byte, color terminalColor, foreground bool) []byte {
+	params := make([]int, 0, 5)
+	prefix := 38
+	if !foreground {
+		prefix = 48
+	}
+	switch color.mode {
+	case terminalColorIndexed:
+		params = append(params, prefix, 5, color.value)
+	case terminalColorRGB:
+		params = append(params, prefix, 2, color.red, color.green, color.blue)
+	default:
+		return output
+	}
+	return appendSGRParams(output, params)
+}
+
+func appendSGRParamsIfAny(output []byte, params []int) []byte {
+	if len(params) == 0 {
+		return output
+	}
+	return appendSGRParams(output, params)
+}
+
+func appendSGRParams(output []byte, params []int) []byte {
+	if len(params) == 0 {
+		return append(output, "\x1b[0m"...)
+	}
+	output = append(output, "\x1b["...)
+	for i, param := range params {
+		if i > 0 {
+			output = append(output, ';')
+		}
+		output = strconv.AppendInt(output, int64(param), 10)
+	}
+	output = append(output, 'm')
+	return output
+}
+
+func (t *terminalScreen) applySGR(paramsText string) {
+	params := sgrIntParams(paramsText)
+	for i := 0; i < len(params); i++ {
+		param := params[i]
+		if param < 0 {
+			param = 0
+		}
+		switch {
+		case param == 0:
+			t.currentStyle = terminalStyle{}
+		case param == 1:
+			t.currentStyle.flags |= terminalStyleBold
+		case param == 2:
+			t.currentStyle.flags |= terminalStyleDim
+		case param == 3:
+			t.currentStyle.flags |= terminalStyleItalic
+		case param == 4:
+			t.currentStyle.flags |= terminalStyleUnderline
+		case param == 5:
+			t.currentStyle.flags |= terminalStyleBlink
+		case param == 7:
+			t.currentStyle.flags |= terminalStyleInverse
+		case param == 8:
+			t.currentStyle.flags |= terminalStyleHidden
+		case param == 9:
+			t.currentStyle.flags |= terminalStyleStrikethrough
+		case param == 22:
+			t.currentStyle.flags &^= terminalStyleBold | terminalStyleDim
+		case param == 23:
+			t.currentStyle.flags &^= terminalStyleItalic
+		case param == 24:
+			t.currentStyle.flags &^= terminalStyleUnderline
+		case param == 25:
+			t.currentStyle.flags &^= terminalStyleBlink
+		case param == 27:
+			t.currentStyle.flags &^= terminalStyleInverse
+		case param == 28:
+			t.currentStyle.flags &^= terminalStyleHidden
+		case param == 29:
+			t.currentStyle.flags &^= terminalStyleStrikethrough
+		case (param >= 30 && param <= 37) || (param >= 90 && param <= 97):
+			t.currentStyle.foreground = terminalColor{
+				mode:  terminalColorANSI,
+				value: param,
+			}
+		case param == 39:
+			t.currentStyle.foreground = terminalColor{}
+		case (param >= 40 && param <= 47) || (param >= 100 && param <= 107):
+			t.currentStyle.background = terminalColor{
+				mode:  terminalColorANSI,
+				value: param,
+			}
+		case param == 49:
+			t.currentStyle.background = terminalColor{}
+		case param == 38 || param == 48:
+			color, end, ok := parseExtendedTerminalColor(params, i+1)
+			if ok {
+				if param == 38 {
+					t.currentStyle.foreground = color
+				} else {
+					t.currentStyle.background = color
+				}
+				i = end
+			}
+		}
+	}
+}
+
+func sgrIntParams(paramsText string) []int {
+	if paramsText == "" {
+		return []int{0}
+	}
+	fields := strings.FieldsFunc(paramsText, func(r rune) bool {
+		return r == ';' || r == ':'
+	})
+	params := make([]int, 0, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			params = append(params, -1)
+			continue
+		}
+		value, err := strconv.Atoi(field)
+		if err != nil {
+			params = append(params, -1)
+			continue
+		}
+		params = append(params, value)
+	}
+	if len(params) == 0 {
+		return []int{0}
+	}
+	return params
+}
+
+func parseExtendedTerminalColor(params []int, start int) (terminalColor, int, bool) {
+	if start >= len(params) {
+		return terminalColor{}, start, false
+	}
+	switch params[start] {
+	case 5:
+		if start+1 >= len(params) || !isByteValue(params[start+1]) {
+			return terminalColor{}, start, false
+		}
+		return terminalColor{
+			mode:  terminalColorIndexed,
+			value: params[start+1],
+		}, start + 1, true
+	case 2:
+		redIndex := start + 1
+		if redIndex < len(params) && params[redIndex] < 0 {
+			redIndex++
+		}
+		if redIndex+2 >= len(params) ||
+			!isByteValue(params[redIndex]) ||
+			!isByteValue(params[redIndex+1]) ||
+			!isByteValue(params[redIndex+2]) {
+			return terminalColor{}, start, false
+		}
+		return terminalColor{
+			mode:  terminalColorRGB,
+			red:   params[redIndex],
+			green: params[redIndex+1],
+			blue:  params[redIndex+2],
+		}, redIndex + 2, true
+	default:
+		return terminalColor{}, start, false
+	}
+}
+
+func isByteValue(value int) bool {
+	return value >= 0 && value <= 255
+}
+
+func csiIntParams(params string) []int {
+	if params == "" {
+		return nil
+	}
+	parts := strings.Split(params, ";")
+	values := make([]int, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			values = append(values, -1)
+			continue
+		}
+		value, _, _ := strings.Cut(part, ":")
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			values = append(values, -1)
+			continue
+		}
+		values = append(values, parsed)
+	}
+	return values
+}
+
+func csiParam(params []int, index int, fallback int) int {
+	if index >= len(params) || params[index] <= 0 {
+		return fallback
+	}
+	return params[index]
+}
+
+func clampInt(value int, minValue int, maxValue int) int {
+	if maxValue < minValue {
+		return minValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
+}
+
+func agentScrollRowsFromInput(data []byte) (int, bool) {
+	if len(data) == 0 {
+		return 0, false
+	}
+	rows := 0
+	for len(data) > 0 {
+		delta, consumed, ok := parseSGRWheelInput(data)
+		if !ok {
+			return 0, false
+		}
+		rows += delta
+		data = data[consumed:]
+	}
+	return rows, rows != 0
+}
+
+func parseSGRWheelInput(data []byte) (int, int, bool) {
+	if len(data) < 7 || !bytes.HasPrefix(data, []byte("\x1b[<")) {
+		return 0, 0, false
+	}
+	end := bytes.IndexByte(data, 'M')
+	if end < 0 {
+		return 0, 0, false
+	}
+	sequence := string(data[3:end])
+	parts := strings.Split(sequence, ";")
+	if len(parts) != 3 {
+		return 0, 0, false
+	}
+	button, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	// SGR mouse reports add modifier bits to the base wheel button. Strip the
+	// modifier bits so Shift/Alt/Ctrl scrolling still reaches MonkeyMux.
+	baseButton := button &^ 0x1c
+	switch baseButton {
+	case 64:
+		return 1, end + 1, true
+	case 65:
+		return -1, end + 1, true
+	default:
+		return 0, 0, false
+	}
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {
@@ -2639,6 +4327,71 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	}
 	output = append(output, data[copyStart:]...)
 	return output
+}
+
+func (w *muxWindow) terminalQueriesFromOutputLocked(data []byte) []byte {
+	if len(w.terminalQueryBuffer) > 0 {
+		combined := make([]byte, 0, len(w.terminalQueryBuffer)+len(data))
+		combined = append(combined, w.terminalQueryBuffer...)
+		combined = append(combined, data...)
+		data = combined
+		w.terminalQueryBuffer = nil
+	}
+	queries, pending := terminalQueriesAndPendingFromOutput(data)
+	if len(pending) > 0 && len(pending) <= terminalParserLimitBytes {
+		w.terminalQueryBuffer = append(w.terminalQueryBuffer[:0], pending...)
+	}
+	return queries
+}
+
+func terminalQueriesFromOutput(data []byte) []byte {
+	queries, _ := terminalQueriesAndPendingFromOutput(data)
+	return queries
+}
+
+func terminalQueriesAndPendingFromOutput(data []byte) ([]byte, []byte) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var output []byte
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' || i+1 >= len(data) {
+			if data[i] == '\x1b' {
+				return output, data[i:]
+			}
+			i++
+			continue
+		}
+		next := data[i+1]
+		queryEnd := -1
+		if next == '[' {
+			end := csiSequenceEnd(data, i+2)
+			if end < 0 {
+				return output, data[i:]
+			}
+			sequence := data[i : end+1]
+			if isReplayUnsafeCsiQuery(sequence) {
+				queryEnd = end + 1
+			}
+		} else if next == ']' {
+			end, terminatorLength, ok := findOscTerminator(data[i+2:])
+			if !ok {
+				return output, data[i:]
+			}
+			payload := data[i+2 : i+2+end]
+			if isReplayUnsafeOscQuery(payload) {
+				queryEnd = i + 2 + end + terminatorLength
+			}
+		}
+		if queryEnd < 0 {
+			i++
+			continue
+		}
+		output = append(output, data[i:queryEnd]...)
+		i = queryEnd
+	}
+	return output, nil
 }
 
 func csiSequenceEnd(data []byte, start int) int {
@@ -2713,24 +4466,89 @@ func (w *muxWindow) agentToolLocked() string {
 	if tool := agentToolFromCommandName(w.currentCommandLocked()); tool != "" {
 		return tool
 	}
-	if tool := strings.TrimSpace(w.agentTool); tool != "" {
+	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
 		return tool
 	}
-	if tool := agentToolFromTerminalTitle(w.paneTitle); tool != "" {
+	if tool := strings.TrimSpace(w.agentTool); tool != "" {
 		return tool
 	}
 	return agentToolFromCommandName(w.name)
 }
 
+func (w *muxWindow) shouldUseVisualScrollbackLocked() bool {
+	return w != nil && windowSupportsCapability(w.capabilities, windowCapabilityVisualScrollback)
+}
+
+func (w *muxWindow) visualScrollbackAvailableLocked() bool {
+	return w != nil && w.maxScrollbackOffsetLocked() > 0
+}
+
+func normalizeWindowCapabilities(capabilities []string) []string {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		capability = strings.TrimSpace(capability)
+		if capability == "" || windowSupportsCapability(normalized, capability) {
+			continue
+		}
+		switch capability {
+		case windowCapabilityVisualScrollback:
+			normalized = append(normalized, capability)
+		}
+	}
+	return normalized
+}
+
+func windowSupportsCapability(capabilities []string, capability string) bool {
+	for _, value := range capabilities {
+		if value == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *muxWindow) maxScrollbackOffsetLocked() int {
+	if w == nil || w.screen == nil {
+		return 0
+	}
+	lineCount := w.screen.historyLineCount()
+	height := w.screen.height
+	if height <= 0 {
+		height = defaultRows
+	}
+	if lineCount <= height {
+		return 0
+	}
+	return lineCount - height
+}
+
+func (w *muxWindow) clampScrollbackOffsetLocked() {
+	if w == nil {
+		return
+	}
+	maxOffset := w.maxScrollbackOffsetLocked()
+	if w.scrollbackOffset > maxOffset {
+		w.scrollbackOffset = maxOffset
+	}
+	if w.scrollbackOffset < 0 {
+		w.scrollbackOffset = 0
+	}
+}
+
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 	return windowBroadcastIdentity{
-		name:      w.name,
-		cwd:       w.cwd,
-		command:   w.currentCommandLocked(),
-		paneTitle: w.paneTitle,
-		agentTool: w.agentToolLocked(),
-		panePid:   w.metadataProcessIDLocked(),
-		alert:     w.alert,
+		name:                      w.name,
+		cwd:                       w.cwd,
+		command:                   w.currentCommandLocked(),
+		paneTitle:                 w.paneTitle,
+		agentTool:                 w.agentToolLocked(),
+		capabilities:              strings.Join(w.capabilities, "\x1f"),
+		visualScrollbackAvailable: w.visualScrollbackAvailableLocked(),
+		panePid:                   w.metadataProcessIDLocked(),
+		alert:                     w.alert,
 	}
 }
 
@@ -2903,7 +4721,7 @@ func agentToolFromCommandName(command string) string {
 	}
 }
 
-func agentLaunchCommand(tool string, startInYoloMode bool) string {
+func agentLaunchCommand(tool string, startInYoloMode bool, cwd string) string {
 	switch tool {
 	case "claude":
 		if startInYoloMode {
@@ -2912,7 +4730,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 		return "claude"
 	case "copilot":
 		if startInYoloMode {
-			return "copilot --yolo"
+			return "copilot --yolo" + copilotAllowedDirectoryFlag(cwd)
 		}
 		return "copilot"
 	case "codex":
@@ -2935,7 +4753,7 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 	}
 }
 
-func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
+func agentResumeCommand(tool string, sessionID string, startInYoloMode bool, cwd string) string {
 	quotedSessionID := shellQuote(sessionID)
 	switch tool {
 	case "claude":
@@ -2945,7 +4763,7 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 		return "claude --resume " + quotedSessionID
 	case "copilot":
 		if startInYoloMode {
-			return "copilot --yolo --resume " + quotedSessionID
+			return "copilot --yolo" + copilotAllowedDirectoryFlag(cwd) + " --resume " + quotedSessionID
 		}
 		return "copilot --resume " + quotedSessionID
 	case "codex":
@@ -2972,6 +4790,17 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 	}
 }
 
+func copilotAllowedDirectoryFlag(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	if expanded, err := expandHomePath(cwd); err == nil {
+		cwd = expanded
+	}
+	return " --add-dir " + shellQuote(cwd)
+}
+
 func canonicalAgentCommandName(command string) string {
 	return firstNonEmptyString(agentToolFromCommandName(command), cleanProcessCommandName(command))
 }
@@ -2986,7 +4815,8 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "copilot" || normalized == "copilot cli" ||
 		strings.HasPrefix(normalized, "copilot cli "):
 		return "copilot"
-	case normalized == "codex" || strings.HasPrefix(normalized, "codex "):
+	case normalized == "codex" || strings.HasPrefix(normalized, "codex ") ||
+		normalized == "openai codex" || strings.HasPrefix(normalized, "openai codex "):
 		return "codex"
 	case normalized == "opencode" || normalized == "open code" ||
 		strings.HasPrefix(normalized, "opencode "):
@@ -3143,6 +4973,141 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 		w.privateModes = map[string]bool{}
 	}
 	w.privateModes[mode] = enabled
+}
+
+func (w *muxWindow) maybeEnableVisualScrollbackLocked(chunk []byte) bool {
+	if w == nil || w.shouldUseVisualScrollbackLocked() {
+		return false
+	}
+	if !w.shouldAutoEnableVisualScrollbackLocked(chunk) {
+		return false
+	}
+	w.capabilities = normalizeWindowCapabilities(
+		append(w.capabilities, windowCapabilityVisualScrollback),
+	)
+	if w.screen == nil {
+		width, height := w.terminalScreenSizeLocked()
+		w.screen = newTerminalScreen(width, height)
+	}
+	return true
+}
+
+func (w *muxWindow) shouldAutoEnableVisualScrollbackLocked(chunk []byte) bool {
+	if len(chunk) == 0 || w.usesAlternateScreenLocked() {
+		return false
+	}
+	command := w.currentCommandLocked()
+	if strings.TrimSpace(command) == "" || isShellCommandName(command) {
+		return false
+	}
+	features := terminalOutputFeaturesFromBytes(chunk)
+	if features.entersAlternateScreen {
+		return false
+	}
+	return features.mainBufferMouseScroll ||
+		w.mainBufferMouseScrollModeLocked() ||
+		(features.cursorAddressCount >= 3 &&
+			features.homeCursor &&
+			(features.eraseDisplay || features.eraseLineCount >= 2))
+}
+
+func (w *muxWindow) mainBufferMouseScrollModeLocked() bool {
+	if w == nil || w.privateModes == nil {
+		return false
+	}
+	return w.privateModes["1006"] &&
+		(w.privateModes["1000"] ||
+			w.privateModes["1002"] ||
+			w.privateModes["1003"])
+}
+
+type terminalOutputFeatures struct {
+	entersAlternateScreen bool
+	mainBufferMouseScroll bool
+	homeCursor            bool
+	eraseDisplay          bool
+	eraseLineCount        int
+	cursorAddressCount    int
+	mouseTracking         bool
+	mouseSgr              bool
+}
+
+func terminalOutputFeaturesFromBytes(data []byte) terminalOutputFeatures {
+	var features terminalOutputFeatures
+	for index := 0; index < len(data); {
+		escapeIndex := bytes.IndexByte(data[index:], '\x1b')
+		if escapeIndex < 0 {
+			break
+		}
+		escapeIndex += index
+		if escapeIndex+1 >= len(data) {
+			break
+		}
+		if data[escapeIndex+1] != '[' {
+			index = escapeIndex + 2
+			continue
+		}
+		end := csiSequenceEnd(data, escapeIndex+2)
+		if end < 0 {
+			break
+		}
+		features.applyCSI(data[escapeIndex+2:end], data[end])
+		index = end + 1
+	}
+	return features
+}
+
+func (f *terminalOutputFeatures) applyCSI(paramsBytes []byte, final byte) {
+	paramsText := string(paramsBytes)
+	private := strings.HasPrefix(paramsText, "?")
+	if private {
+		paramsText = strings.TrimPrefix(paramsText, "?")
+	}
+	switch final {
+	case 'h':
+		if private {
+			modes := csiModeParams(paramsText)
+			if containsString(modes, "47") ||
+				containsString(modes, "1047") ||
+				containsString(modes, "1049") {
+				f.entersAlternateScreen = true
+			}
+			if containsString(modes, "1006") {
+				f.mouseSgr = true
+			}
+			if containsString(modes, "1000") ||
+				containsString(modes, "1002") ||
+				containsString(modes, "1003") {
+				f.mouseTracking = true
+			}
+			f.mainBufferMouseScroll = f.mouseSgr && f.mouseTracking
+		}
+	case 'H', 'f':
+		params := csiIntParams(paramsText)
+		row := csiParam(params, 0, 1)
+		col := csiParam(params, 1, 1)
+		f.cursorAddressCount++
+		if row <= 1 && col <= 1 {
+			f.homeCursor = true
+		}
+	case 'J':
+		if !private && csiParam(csiIntParams(paramsText), 0, 0) == 2 {
+			f.eraseDisplay = true
+		}
+	case 'K':
+		if !private && csiParam(csiIntParams(paramsText), 0, 0) == 2 {
+			f.eraseLineCount++
+		}
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func csiModeParams(params string) []string {
@@ -3336,9 +5301,7 @@ func (s *muxServer) close() {
 	}
 	for _, window := range windows {
 		signalCommandProcessGroup(window.cmd, syscall.SIGHUP)
-		if window.pty != nil {
-			_ = window.pty.Close()
-		}
+		_ = window.closePty()
 	}
 }
 
@@ -3526,6 +5489,38 @@ func inheritedEnvironment(base []string) []string {
 	return result
 }
 
+func terminalEnvironment(base []string) []string {
+	env := inheritedEnvironment(base)
+	env = appendEnvironmentDefault(env, "TERM", "xterm-256color", terminalTermIsUsable)
+	env = appendEnvironmentDefault(env, "COLORTERM", "truecolor", terminalColorTermIsTrueColor)
+	return env
+}
+
+func appendEnvironmentDefault(
+	env []string,
+	key string,
+	value string,
+	valid func(string) bool,
+) []string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) && valid(strings.TrimPrefix(entry, prefix)) {
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func terminalColorTermIsTrueColor(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized == "truecolor" || normalized == "24bit"
+}
+
+func terminalTermIsUsable(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized != "" && normalized != "dumb"
+}
+
 func expandHomePath(path string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {
 		return path, nil
@@ -3594,23 +5589,45 @@ func forwardResizeSignals(session string) func() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGWINCH)
 	done := make(chan struct{})
+	var state resizeForwarderState
+	sendCurrentSize := func() {
+		width, height := terminalSize()
+		if !state.shouldSend(width, height) {
+			return
+		}
+		sendResize(session, width, height)
+	}
 	go func() {
 		for {
 			select {
 			case <-signals:
-				width, height := terminalSize()
-				sendResize(session, width, height)
+				sendCurrentSize()
 			case <-done:
 				return
 			}
 		}
 	}()
-	width, height := terminalSize()
-	sendResize(session, width, height)
+	sendCurrentSize()
 	return func() {
 		close(done)
 		signal.Stop(signals)
 	}
+}
+
+type resizeForwarderState struct {
+	width   int
+	height  int
+	hasSize bool
+}
+
+func (s *resizeForwarderState) shouldSend(width int, height int) bool {
+	if s.hasSize && s.width == width && s.height == height {
+		return false
+	}
+	s.width = width
+	s.height = height
+	s.hasSize = true
+	return true
 }
 
 func sendResize(session string, width int, height int) {
