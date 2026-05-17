@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.23"
+	monkeyMuxVersion         = "0.1.24"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -50,7 +50,7 @@ const (
 	restoreSchemaVersion     = 1
 )
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 var (
 	preReplayPrivateModes = []string{
@@ -62,6 +62,7 @@ var (
 		"1002",
 		"1003",
 		"1006",
+		"1007",
 		"1004",
 		"2004",
 		"2031",
@@ -73,6 +74,7 @@ var (
 		"1002",
 		"1003",
 		"1006",
+		"1007",
 		"1004",
 		"2004",
 		"2031",
@@ -86,6 +88,7 @@ var (
 		"1003": {},
 		"1004": {},
 		"1006": {},
+		"1007": {},
 		"1049": {},
 		"2004": {},
 		"2031": {},
@@ -184,6 +187,15 @@ type controlMessage struct {
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
+}
+
+type terminalResizeRequest struct {
+	width  int
+	height int
+}
+
+func (r terminalResizeRequest) valid() bool {
+	return r.width > 0 && r.height > 0
 }
 
 type controlResponse struct {
@@ -1280,7 +1292,7 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		activeID = firstID
 	}
 	if activeID != "" {
-		_ = s.selectWindow(activeID)
+		_ = s.selectWindow(activeID, terminalResizeRequest{})
 	}
 	return nil
 }
@@ -1736,7 +1748,10 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("missing target window"))
 			return
 		}
-		if err := s.selectWindow(id); err != nil {
+		if err := s.selectWindow(id, terminalResizeRequest{
+			width:  request.Width,
+			height: request.Height,
+		}); err != nil {
 			client.sendError(request, err)
 			return
 		}
@@ -2180,7 +2195,10 @@ func (o *boundedCommandOutput) exceeded() bool {
 	return o.overLimit
 }
 
-func (s *muxServer) selectWindow(windowID string) error {
+func (s *muxServer) selectWindow(
+	windowID string,
+	resizeRequest terminalResizeRequest,
+) error {
 	var attach net.Conn
 	var replay []byte
 	var foregroundProcessGroup int
@@ -2194,6 +2212,10 @@ func (s *muxServer) selectWindow(windowID string) error {
 	}
 	s.activeID = windowID
 	window.alert = false
+	if resizeRequest.valid() {
+		s.width = resizeRequest.width
+		s.height = resizeRequest.height
+	}
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)

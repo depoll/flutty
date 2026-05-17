@@ -531,13 +531,13 @@ class TmuxWindow {
 
   /// The supported agent CLI running in the foreground, if one can be inferred.
   AgentLaunchTool? get foregroundAgentTool {
-    if (agentTool != null) return agentTool;
     for (final candidate in [currentCommand]) {
       final tool = agentLaunchToolForCommandName(candidate);
       if (tool != null) {
         return tool;
       }
     }
+    if (agentTool != null) return agentTool;
     for (final candidate in [name, paneTitle]) {
       final tool =
           agentLaunchToolForCommandName(candidate) ??
