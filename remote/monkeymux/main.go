@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.81"
+	monkeyMuxVersion         = "0.1.82"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -298,18 +298,19 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                       string   `json:"id"`
-	Index                    int      `json:"index"`
-	Name                     string   `json:"name"`
-	Active                   bool     `json:"active"`
-	CurrentCommand           string   `json:"currentCommand,omitempty"`
-	CurrentPath              string   `json:"currentPath,omitempty"`
-	PanePid                  int      `json:"panePid,omitempty"`
-	Flags                    string   `json:"flags,omitempty"`
-	PaneTitle                string   `json:"paneTitle,omitempty"`
-	AgentTool                string   `json:"agentTool,omitempty"`
-	Capabilities             []string `json:"capabilities,omitempty"`
-	LastActivityEpochSeconds int64    `json:"lastActivityEpochSeconds,omitempty"`
+	ID                        string   `json:"id"`
+	Index                     int      `json:"index"`
+	Name                      string   `json:"name"`
+	Active                    bool     `json:"active"`
+	CurrentCommand            string   `json:"currentCommand,omitempty"`
+	CurrentPath               string   `json:"currentPath,omitempty"`
+	PanePid                   int      `json:"panePid,omitempty"`
+	Flags                     string   `json:"flags,omitempty"`
+	PaneTitle                 string   `json:"paneTitle,omitempty"`
+	AgentTool                 string   `json:"agentTool,omitempty"`
+	Capabilities              []string `json:"capabilities,omitempty"`
+	VisualScrollbackAvailable bool     `json:"visualScrollbackAvailable,omitempty"`
+	LastActivityEpochSeconds  int64    `json:"lastActivityEpochSeconds,omitempty"`
 }
 
 type serverRestore struct {
@@ -463,14 +464,15 @@ func (w *muxWindow) foregroundProcessGroup() int {
 }
 
 type windowBroadcastIdentity struct {
-	name         string
-	cwd          string
-	command      string
-	paneTitle    string
-	agentTool    string
-	capabilities string
-	panePid      int
-	alert        bool
+	name                      string
+	cwd                       string
+	command                   string
+	paneTitle                 string
+	agentTool                 string
+	capabilities              string
+	visualScrollbackAvailable bool
+	panePid                   int
+	alert                     bool
 }
 
 type controlClient struct {
@@ -2253,18 +2255,19 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		flags = "#"
 	}
 	return windowSnapshot{
-		ID:                       window.id,
-		Index:                    window.index,
-		Name:                     window.name,
-		Active:                   s.activeID == window.id,
-		CurrentCommand:           window.currentCommandLocked(),
-		CurrentPath:              window.cwd,
-		PanePid:                  window.metadataProcessIDLocked(),
-		Flags:                    flags,
-		PaneTitle:                window.paneTitle,
-		AgentTool:                window.agentToolLocked(),
-		Capabilities:             append([]string(nil), window.capabilities...),
-		LastActivityEpochSeconds: window.lastActivity.Unix(),
+		ID:                        window.id,
+		Index:                     window.index,
+		Name:                      window.name,
+		Active:                    s.activeID == window.id,
+		CurrentCommand:            window.currentCommandLocked(),
+		CurrentPath:               window.cwd,
+		PanePid:                   window.metadataProcessIDLocked(),
+		Flags:                     flags,
+		PaneTitle:                 window.paneTitle,
+		AgentTool:                 window.agentToolLocked(),
+		Capabilities:              append([]string(nil), window.capabilities...),
+		VisualScrollbackAvailable: window.visualScrollbackAvailableLocked(),
+		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 	}
 }
 
@@ -2854,6 +2857,7 @@ func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) {
 	if conn == nil || len(data) == 0 {
 		return
 	}
+	data = normalizeAttachOutputForXterm(data)
 	_, err := conn.Write(data)
 	if err != nil {
 		s.mu.Lock()
@@ -2862,6 +2866,99 @@ func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+func normalizeAttachOutputForXterm(data []byte) []byte {
+	var output []byte
+	for index := 0; index < len(data); {
+		if data[index] != '\x1b' ||
+			index+2 >= len(data) ||
+			data[index+1] != '[' {
+			if output != nil {
+				output = append(output, data[index])
+			}
+			index++
+			continue
+		}
+		end := csiSequenceEnd(data, index+2)
+		if end < 0 {
+			if output != nil {
+				output = append(output, data[index:]...)
+			}
+			break
+		}
+		original := data[index : end+1]
+		if data[end] != 'm' {
+			if output != nil {
+				output = append(output, original...)
+			}
+			index = end + 1
+			continue
+		}
+		normalized, changed := normalizeSGROutputForXterm(data[index+2 : end])
+		if !changed {
+			if output != nil {
+				output = append(output, original...)
+			}
+			index = end + 1
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)+len(normalized)-len(original))
+			output = append(output, data[:index]...)
+		}
+		output = append(output, normalized...)
+		index = end + 1
+	}
+	if output == nil {
+		return data
+	}
+	return output
+}
+
+func normalizeSGROutputForXterm(paramsBytes []byte) ([]byte, bool) {
+	params := sgrIntParams(string(paramsBytes))
+	if len(params) == 0 {
+		return nil, false
+	}
+	var normalized []byte
+	normalParams := make([]int, 0, len(params))
+	sawExtendedColor := false
+	for index := 0; index < len(params); {
+		param := params[index]
+		if param == 38 || param == 48 {
+			color, end, ok := parseExtendedTerminalColor(params, index+1)
+			if !ok {
+				return nil, false
+			}
+			sawExtendedColor = true
+			normalized = appendSGRParamsIfAny(normalized, normalParams)
+			normalParams = normalParams[:0]
+			normalized = appendTerminalExtendedColorSGR(
+				normalized,
+				color,
+				param == 38,
+			)
+			index = end + 1
+			continue
+		}
+		if param < 0 {
+			return nil, false
+		}
+		normalParams = append(normalParams, param)
+		index++
+	}
+	normalized = appendSGRParamsIfAny(normalized, normalParams)
+	if len(normalized) == 0 {
+		return nil, false
+	}
+	if !sawExtendedColor {
+		return nil, false
+	}
+
+	original := append(append([]byte(nil), "\x1b["...), paramsBytes...)
+	original = append(original, 'm')
+	return normalized, !bytes.Equal(normalized, original)
 }
 
 func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
@@ -4381,6 +4478,10 @@ func (w *muxWindow) shouldUseVisualScrollbackLocked() bool {
 	return w != nil && windowSupportsCapability(w.capabilities, windowCapabilityVisualScrollback)
 }
 
+func (w *muxWindow) visualScrollbackAvailableLocked() bool {
+	return w != nil && w.maxScrollbackOffsetLocked() > 0
+}
+
 func normalizeWindowCapabilities(capabilities []string) []string {
 	if len(capabilities) == 0 {
 		return nil
@@ -4438,14 +4539,15 @@ func (w *muxWindow) clampScrollbackOffsetLocked() {
 
 func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 	return windowBroadcastIdentity{
-		name:         w.name,
-		cwd:          w.cwd,
-		command:      w.currentCommandLocked(),
-		paneTitle:    w.paneTitle,
-		agentTool:    w.agentToolLocked(),
-		capabilities: strings.Join(w.capabilities, "\x1f"),
-		panePid:      w.metadataProcessIDLocked(),
-		alert:        w.alert,
+		name:                      w.name,
+		cwd:                       w.cwd,
+		command:                   w.currentCommandLocked(),
+		paneTitle:                 w.paneTitle,
+		agentTool:                 w.agentToolLocked(),
+		capabilities:              strings.Join(w.capabilities, "\x1f"),
+		visualScrollbackAvailable: w.visualScrollbackAvailableLocked(),
+		panePid:                   w.metadataProcessIDLocked(),
+		alert:                     w.alert,
 	}
 }
 

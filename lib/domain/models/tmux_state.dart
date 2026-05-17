@@ -114,6 +114,7 @@ class TmuxWindow {
     this.paneStartCommand,
     this.agentTool,
     this.capabilities = const <String>{},
+    this.visualScrollbackAvailable = false,
     this.activeAgentSessionId,
     this.agentSessionTitle,
     this.activeAgentSessionConfidence,
@@ -202,6 +203,9 @@ class TmuxWindow {
   /// Backend-reported feature capabilities for this window.
   final Set<String> capabilities;
 
+  /// Whether server-managed visual scrollback currently has rows to scroll.
+  final bool visualScrollbackAvailable;
+
   /// Live coding-agent session id observed from process metadata, if available.
   final String? activeAgentSessionId;
 
@@ -263,6 +267,7 @@ class TmuxWindow {
     String? paneStartCommand,
     AgentLaunchTool? agentTool,
     Set<String>? capabilities,
+    bool? visualScrollbackAvailable,
     String? activeAgentSessionId,
     String? agentSessionTitle,
     AgentSessionConfidence? activeAgentSessionConfidence,
@@ -281,6 +286,8 @@ class TmuxWindow {
     paneStartCommand: paneStartCommand ?? this.paneStartCommand,
     agentTool: agentTool ?? this.agentTool,
     capabilities: capabilities ?? this.capabilities,
+    visualScrollbackAvailable:
+        visualScrollbackAvailable ?? this.visualScrollbackAvailable,
     activeAgentSessionId: clearActiveAgentSessionMetadata
         ? null
         : activeAgentSessionId ?? this.activeAgentSessionId,
@@ -581,6 +588,7 @@ class TmuxWindow {
           paneStartCommand == other.paneStartCommand &&
           agentTool == other.agentTool &&
           setEquals(capabilities, other.capabilities) &&
+          visualScrollbackAvailable == other.visualScrollbackAvailable &&
           activeAgentSessionId == other.activeAgentSessionId &&
           agentSessionTitle == other.agentSessionTitle &&
           activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
@@ -601,6 +609,7 @@ class TmuxWindow {
     paneStartCommand,
     agentTool,
     Object.hashAllUnordered(capabilities),
+    visualScrollbackAvailable,
     activeAgentSessionId,
     agentSessionTitle,
     activeAgentSessionConfidence,

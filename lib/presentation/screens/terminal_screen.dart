@@ -704,6 +704,17 @@ Set<String> resolveTmuxBarActiveWindowCapabilities(
     windows?.where((window) => window.isActive).firstOrNull?.capabilities ??
     const <String>{};
 
+/// Whether the active tmux window currently has server-managed scrollback.
+@visibleForTesting
+bool resolveTmuxBarActiveWindowVisualScrollbackAvailable(
+  Iterable<TmuxWindow>? windows,
+) =>
+    windows
+        ?.where((window) => window.isActive)
+        .firstOrNull
+        ?.visualScrollbackAvailable ??
+    false;
+
 /// Whether a tmux bar snapshot should notify listeners about window state.
 @visibleForTesting
 bool shouldNotifyTmuxBarWindowStateChanged(
@@ -746,6 +757,7 @@ bool _isSameTmuxWindowForStateRefresh(
   bool isActive,
   int? panePid,
   String? paneStartCommand,
+  bool visualScrollbackAvailable,
 })
 _tmuxWindowStateRefreshIdentity(TmuxWindow window) => (
   capabilitiesKey: _tmuxWindowCapabilitiesKey(window.capabilities),
@@ -756,6 +768,7 @@ _tmuxWindowStateRefreshIdentity(TmuxWindow window) => (
   isActive: window.isActive,
   panePid: window.panePid,
   paneStartCommand: window.paneStartCommand,
+  visualScrollbackAvailable: window.visualScrollbackAvailable,
 );
 
 String _tmuxWindowCapabilitiesKey(Set<String> capabilities) {
@@ -2175,8 +2188,10 @@ bool shouldRouteTouchScrollToTerminal({
 bool shouldForceMonkeyMuxWindowScrollInput({
   required RemoteMuxBackend activeMuxBackend,
   required Set<String> activeWindowCapabilities,
+  required bool visualScrollbackAvailable,
 }) =>
     activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+    visualScrollbackAvailable &&
     activeWindowCapabilities.contains(remoteWindowCapabilityVisualScrollback);
 
 /// Whether the native selection overlay should be visible for terminal content.
@@ -2965,10 +2980,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _tmuxBarKey.currentState?.currentWindowsSnapshot,
       );
 
+  bool get _activeTmuxWindowVisualScrollbackAvailable =>
+      resolveTmuxBarActiveWindowVisualScrollbackAvailable(
+        _tmuxBarKey.currentState?.currentWindowsSnapshot,
+      );
+
   bool get _forceSgrScrollMouseInputForMuxWindow =>
       shouldForceMonkeyMuxWindowScrollInput(
         activeMuxBackend: _activeMuxBackend,
         activeWindowCapabilities: _activeTmuxWindowCapabilities,
+        visualScrollbackAvailable: _activeTmuxWindowVisualScrollbackAvailable,
       );
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(

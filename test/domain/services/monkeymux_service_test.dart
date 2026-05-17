@@ -114,11 +114,13 @@ void main() {
         'panePid': 1234,
         'agentTool': 'gemini',
         'capabilities': [remoteWindowCapabilityVisualScrollback],
+        'visualScrollbackAvailable': true,
       });
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
       expect(window.supportsVisualScrollback, isTrue);
+      expect(window.visualScrollbackAvailable, isTrue);
     });
   });
 

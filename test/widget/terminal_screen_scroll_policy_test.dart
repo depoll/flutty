@@ -142,6 +142,7 @@ void main() {
           activeWindowCapabilities: const {
             remoteWindowCapabilityVisualScrollback,
           },
+          visualScrollbackAvailable: true,
         ),
         isTrue,
       );
@@ -152,6 +153,7 @@ void main() {
           activeWindowCapabilities: const {
             remoteWindowCapabilityVisualScrollback,
           },
+          visualScrollbackAvailable: true,
         ),
         isFalse,
       );
@@ -160,14 +162,32 @@ void main() {
         shouldForceMonkeyMuxWindowScrollInput(
           activeMuxBackend: RemoteMuxBackend.monkeyMux,
           activeWindowCapabilities: const <String>{},
+          visualScrollbackAvailable: true,
+        ),
+        isFalse,
+      );
+
+      expect(
+        shouldForceMonkeyMuxWindowScrollInput(
+          activeMuxBackend: RemoteMuxBackend.monkeyMux,
+          activeWindowCapabilities: const {
+            remoteWindowCapabilityVisualScrollback,
+          },
+          visualScrollbackAvailable: false,
         ),
         isFalse,
       );
     });
 
-    test('notifies when active window capabilities change', () {
+    test('notifies when active window scroll capability state changes', () {
       const previousWindows = <TmuxWindow>[
-        TmuxWindow(index: 0, id: '@1', name: 'agent', isActive: true),
+        TmuxWindow(
+          index: 0,
+          id: '@1',
+          name: 'agent',
+          isActive: true,
+          capabilities: {remoteWindowCapabilityVisualScrollback},
+        ),
       ];
       const nextWindows = <TmuxWindow>[
         TmuxWindow(
@@ -176,6 +196,7 @@ void main() {
           name: 'agent',
           isActive: true,
           capabilities: {remoteWindowCapabilityVisualScrollback},
+          visualScrollbackAvailable: true,
         ),
       ];
 

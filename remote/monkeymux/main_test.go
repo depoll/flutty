@@ -853,6 +853,10 @@ func TestCodexWheelScrollRendersOrderedVisualScrollback(t *testing.T) {
 	server, window, _ := newCodexScrollbackTestServer(t)
 	writeCodexNumberedLines(server, window.id)
 
+	if snapshot := server.snapshotLocked(window); !snapshot.VisualScrollbackAvailable {
+		t.Fatalf("snapshot did not report available visual scrollback: %#v", snapshot)
+	}
+
 	replay := string(server.applyAgentScrollLocked(window, 2))
 
 	if strings.Contains(replay, "\x1b[?1049l") {
@@ -941,6 +945,27 @@ func TestCapableAltBufferReplayPreservesClaudeTrueColor(t *testing.T) {
 	}
 	if !strings.Contains(replay, "\x1b[0m\x1b[38;2;215;119;87m▌") {
 		t.Fatalf("replay did not restore orange foreground after logo background reset: %q", replay)
+	}
+}
+
+func TestAttachOutputSplitsCombinedExtendedColorsForXterm(t *testing.T) {
+	input := []byte("\x1b[38;2;215;119;87;48;2;0;0;0m█")
+
+	got := string(normalizeAttachOutputForXterm(input))
+
+	want := "\x1b[38;2;215;119;87m\x1b[48;2;0;0;0m█"
+	if got != want {
+		t.Fatalf("normalized attach output = %q, want %q", got, want)
+	}
+}
+
+func TestAttachOutputPreservesPlainSgr(t *testing.T) {
+	input := []byte("\x1b[31mred\x1b[0m")
+
+	got := string(normalizeAttachOutputForXterm(input))
+
+	if got != string(input) {
+		t.Fatalf("normalized attach output = %q, want original %q", got, string(input))
 	}
 }
 

@@ -411,8 +411,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     TerminalThemeData theme, {
     String? extraFlags,
   }) async {
+    final reports = [
+      buildTerminalThemeModeReport(isDark: theme.isDark),
+      buildTerminalThemeRefreshReports(theme),
+    ].where((report) => report.isNotEmpty).join();
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
+      if (reports.isNotEmpty) 'data': reports,
     }, priority: SshExecPriority.low);
   }
 
@@ -1272,6 +1277,8 @@ TmuxWindow? _windowFromJson(Object? value) {
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
     capabilities: _windowCapabilitiesFromJson(value['capabilities']),
+    visualScrollbackAvailable:
+        value['visualScrollbackAvailable'] as bool? ?? false,
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }
