@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.78"
+	monkeyMuxVersion         = "0.1.79"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2587,10 +2587,14 @@ func (w *muxWindow) redrawNudgeModeLocked() redrawNudgeMode {
 	if w.shouldUseVisualScrollbackLocked() {
 		return redrawNudgeSameSize
 	}
-	if w.privateModes["47"] || w.privateModes["1047"] || w.privateModes["1049"] {
+	if w.usesAlternateScreenLocked() {
 		return redrawNudgeResize
 	}
 	return redrawNudgeSignal
+}
+
+func (w *muxWindow) usesAlternateScreenLocked() bool {
+	return w != nil && (w.privateModes["47"] || w.privateModes["1047"] || w.privateModes["1049"])
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -3151,6 +3155,7 @@ func (w *muxWindow) observeTerminalScreenLocked(chunk []byte) {
 func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
 	if w == nil ||
 		!w.shouldUseVisualScrollbackLocked() ||
+		w.usesAlternateScreenLocked() ||
 		w.screen == nil ||
 		!w.screen.hasContent() {
 		w.terminalQueryBuffer = nil
