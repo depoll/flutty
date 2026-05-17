@@ -561,34 +561,30 @@ void main() {
       expect(light.pendingInput, isEmpty);
     });
 
-    test('answers terminal ANSI palette OSC queries', () {
+    test('does not answer foreground or palette OSC queries directly', () {
       const theme = monkey_themes.TerminalThemes.defaultLightTheme;
       final result = buildTerminalWindowControlQueryResponses(
-        input: 'before\x1b]4;0;?\x07\x1b]4;7;?\x1b\\after',
+        input: 'before\x1b]10;?\x07\x1b]4;0;?\x07\x1b]4;7;?\x1b\\after',
         pendingInput: '',
         metrics: null,
         theme: theme,
       );
 
-      expect(
-        result.response,
-        '${buildTerminalThemeOscResponse(theme: theme, code: '4', args: const ['0', '?'])}'
-        '${buildTerminalThemeOscResponse(theme: theme, code: '4', args: const ['7', '?'])}',
-      );
+      expect(result.response, isNull);
       expect(result.pendingInput, isEmpty);
     });
 
-    test('preserves split terminal ANSI palette OSC queries across chunks', () {
+    test('preserves split background OSC queries across chunks', () {
       const theme = monkey_themes.TerminalThemes.defaultLightTheme;
       final first = buildTerminalWindowControlQueryResponses(
-        input: 'before\x1b]4;1',
+        input: 'before\x1b]11',
         pendingInput: '',
         metrics: null,
         theme: theme,
       );
 
       expect(first.response, isNull);
-      expect(first.pendingInput, '\x1b]4;1');
+      expect(first.pendingInput, '\x1b]11');
 
       final second = buildTerminalWindowControlQueryResponses(
         input: ';?\x07after',
@@ -601,8 +597,8 @@ void main() {
         second.response,
         buildTerminalThemeOscResponse(
           theme: theme,
-          code: '4',
-          args: const ['1', '?'],
+          code: '11',
+          args: const ['?'],
         ),
       );
       expect(second.pendingInput, isEmpty);
@@ -1305,35 +1301,30 @@ void main() {
     });
 
     test(
-      'flushes terminal ANSI palette OSC queries without frame delay',
+      'does not answer terminal foreground or palette OSC queries',
       () async {
         final shell = await openShell();
         final session = shell.session;
         final terminal = session.terminal!;
         session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
 
-        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]4;0;?\x07')));
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('\x1b]10;?\x07\x1b]4;0;?\x07')),
+        );
         await pumpEventQueue();
 
         expect(firstLineText(terminal), isEmpty);
-        expect(
-          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
-          buildTerminalThemeOscResponse(
-            theme: monkey_themes.TerminalThemes.defaultLightTheme,
-            code: '4',
-            args: const ['0', '?'],
-          ),
-        );
+        expect(shell.shellWrites, isEmpty);
       },
     );
 
-    test('answers split terminal ANSI palette OSC queries once', () async {
+    test('answers split terminal background OSC queries once', () async {
       final shell = await openShell();
       final session = shell.session;
       final terminal = session.terminal!;
       session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
 
-      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]4;0')));
+      shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]11')));
       await Future<void>.delayed(const Duration(milliseconds: 25));
 
       expect(firstLineText(terminal), isEmpty);
@@ -1346,8 +1337,8 @@ void main() {
         utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
         buildTerminalThemeOscResponse(
           theme: monkey_themes.TerminalThemes.defaultLightTheme,
-          code: '4',
-          args: const ['0', '?'],
+          code: '11',
+          args: const ['?'],
         ),
       );
     });
