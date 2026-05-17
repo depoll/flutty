@@ -52,6 +52,47 @@ func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
 	}
 }
 
+func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
+	base := []string{"USER=test"}
+
+	env := terminalEnvironment(base)
+
+	if !containsEnv(env, "TERM=xterm-256color") {
+		t.Fatalf("terminal environment = %#v, want TERM=xterm-256color", env)
+	}
+	if !containsEnv(env, "COLORTERM=truecolor") {
+		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
+	}
+	if !reflect.DeepEqual(base, []string{"USER=test"}) {
+		t.Fatalf("terminal environment mutated base = %#v", base)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
+	base := []string{
+		"TERM=screen-256color",
+		"COLORTERM=24bit",
+		"USER=test",
+	}
+
+	env := terminalEnvironment(base)
+
+	if !reflect.DeepEqual(env, base) {
+		t.Fatalf("terminal environment = %#v, want existing hints preserved", env)
+	}
+}
+
+func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
+	env := terminalEnvironment([]string{"TERM=dumb", "COLORTERM=color", "USER=test"})
+
+	if got := lastEnvValue(env, "TERM"); got != "xterm-256color" {
+		t.Fatalf("TERM = %q in %#v, want xterm-256color", got, env)
+	}
+	if got := lastEnvValue(env, "COLORTERM"); got != "truecolor" {
+		t.Fatalf("COLORTERM = %q in %#v, want truecolor", got, env)
+	}
+}
+
 func TestExpandHomePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -104,6 +145,26 @@ func TestShellCommandForScriptUsesInteractiveLoginShellWithoutTypingCommand(t *t
 	if got := cmd.Args[3]; got != "codex --yolo" {
 		t.Fatalf("script = %q, want launch command", got)
 	}
+}
+
+func containsEnv(env []string, entry string) bool {
+	for _, candidate := range env {
+		if candidate == entry {
+			return true
+		}
+	}
+	return false
+}
+
+func lastEnvValue(env []string, key string) string {
+	prefix := key + "="
+	value := ""
+	for _, candidate := range env {
+		if strings.HasPrefix(candidate, prefix) {
+			value = strings.TrimPrefix(candidate, prefix)
+		}
+	}
+	return value
 }
 
 func TestDefaultShellPathFallsBackToSh(t *testing.T) {
@@ -853,6 +914,27 @@ func TestCapableAltBufferLiveOutputPassesThroughRaw(t *testing.T) {
 
 	if got := attach.String(); got != "\x1b[?1049h\x1b[31mred\x1b[0m" {
 		t.Fatalf("alt-buffer live output = %q, want raw passthrough", got)
+	}
+}
+
+func TestCapableAltBufferReplayPreservesClaudeTrueColor(t *testing.T) {
+	server, window, _ := newCodexScrollbackTestServer(t)
+	server.width = 80
+	server.height = 24
+	window.ptyWidth = 80
+	window.ptyHeight = 24
+	window.screen.resize(80, 24)
+	server.handleWindowOutput(
+		window.id,
+		[]byte("\x1b[?1049h\x1b[H\r\x1b[1B\x1b[38;2;215;119;87m ▐\x1b[48;2;0;0;0m▛███▜\x1b[49m▌\x1b[3C\x1b[39m\x1b[1mClaude Code\x1b[22m"),
+	)
+
+	replay := string(server.replayBytesLocked(window))
+	if !strings.Contains(replay, "\x1b[38;2;215;119;87m ▐") {
+		t.Fatalf("replay did not preserve Claude orange foreground: %q", replay)
+	}
+	if !strings.Contains(replay, "48;2;0;0;0m▛███▜") {
+		t.Fatalf("replay did not preserve Claude logo background: %q", replay)
 	}
 }
 

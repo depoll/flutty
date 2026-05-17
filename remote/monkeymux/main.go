@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.79"
+	monkeyMuxVersion         = "0.1.80"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -759,7 +759,7 @@ func ensureServer(
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Env = terminalEnvironment(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -1604,7 +1604,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Env = terminalEnvironment(os.Environ())
 
 	s.mu.Lock()
 	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
@@ -5171,6 +5171,38 @@ func inheritedEnvironment(base []string) []string {
 	result := make([]string, len(base))
 	copy(result, base)
 	return result
+}
+
+func terminalEnvironment(base []string) []string {
+	env := inheritedEnvironment(base)
+	env = appendEnvironmentDefault(env, "TERM", "xterm-256color", terminalTermIsUsable)
+	env = appendEnvironmentDefault(env, "COLORTERM", "truecolor", terminalColorTermIsTrueColor)
+	return env
+}
+
+func appendEnvironmentDefault(
+	env []string,
+	key string,
+	value string,
+	valid func(string) bool,
+) []string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) && valid(strings.TrimPrefix(entry, prefix)) {
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func terminalColorTermIsTrueColor(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized == "truecolor" || normalized == "24bit"
+}
+
+func terminalTermIsUsable(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized != "" && normalized != "dumb"
 }
 
 func expandHomePath(path string) (string, error) {
