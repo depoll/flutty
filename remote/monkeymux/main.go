@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.84"
+	monkeyMuxVersion         = "0.1.85"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -274,6 +274,13 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	screen                     *terminalScreen
+	liveAttachRows             []terminalRow
+	liveAttachWidth            int
+	liveAttachHeight           int
+	liveAttachCursorRow        int
+	liveAttachCursorCol        int
+	liveAttachCursorVisible    bool
+	liveAttachSnapshotValid    bool
 	ptyWidth                   int
 	ptyHeight                  int
 	scrollbackOffset           int
@@ -2354,6 +2361,7 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window.ptyHeight = height
 	if window.screen != nil {
 		window.screen.resize(width, height)
+		window.clearLiveAttachSnapshotLocked()
 		window.clampScrollbackOffsetLocked()
 	}
 	_ = pty.Setsize(window.pty, &pty.Winsize{
@@ -2923,9 +2931,40 @@ func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
 		w.usesAlternateScreenLocked() ||
 		w.screen == nil ||
 		!w.screen.hasContent() {
+		w.clearLiveAttachSnapshotLocked()
 		return chunk
 	}
-	replay := s.agentScreenReplayBytesLocked(w, false)
+	rows := w.screen.visibleRows()
+	cursorRow, cursorCol := w.screen.cursorPosition()
+	cursorVisible := w.cursorVisibleForReplayLocked()
+	width, height := w.screen.size()
+	var replay []byte
+	if w.canDiffLiveAttachLocked(width, height) {
+		replay = s.agentRowsDeltaReplayBytesLocked(
+			w,
+			rows,
+			cursorRow,
+			cursorCol,
+			cursorVisible,
+		)
+	} else {
+		replay = s.agentRowsReplayBytesLocked(
+			w,
+			rows,
+			false,
+			cursorRow,
+			cursorCol,
+			cursorVisible,
+		)
+	}
+	w.recordLiveAttachSnapshotLocked(
+		rows,
+		width,
+		height,
+		cursorRow,
+		cursorCol,
+		cursorVisible,
+	)
 	queries := terminalQueriesFromOutput(chunk)
 	if len(queries) == 0 {
 		return replay
@@ -2934,6 +2973,152 @@ func (w *muxWindow) liveAttachOutputLocked(s *muxServer, chunk []byte) []byte {
 	output = append(output, queries...)
 	output = append(output, replay...)
 	return output
+}
+
+func (s *muxServer) agentRowsDeltaReplayBytesLocked(
+	window *muxWindow,
+	rows []terminalRow,
+	cursorRow int,
+	cursorCol int,
+	cursorVisible bool,
+) []byte {
+	if window == nil {
+		return nil
+	}
+	width, height := window.liveAttachWidth, window.liveAttachHeight
+	if window.screen != nil {
+		width, height = window.screen.size()
+	}
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
+
+	title := terminalTitleReplaySequence(window)
+	preModes := terminalModePreReplaySequence(window)
+	postModes := terminalModePostReplaySequence(window)
+	cursor := cursorVisibilityReplaySequence(cursorVisible)
+	replay := make(
+		[]byte,
+		0,
+		len(title)+len(preModes)+len(postModes)+len(cursor)+height*16,
+	)
+	replay = append(replay, title...)
+	replay = append(replay, preModes...)
+	replay = append(replay, "\x1b[0m\x1b[?7l"...)
+	for row := 0; row < height; row++ {
+		var current terminalRow
+		if row < len(rows) {
+			current = rows[row]
+		}
+		var previous terminalRow
+		if row < len(window.liveAttachRows) {
+			previous = window.liveAttachRows[row]
+		}
+		if terminalRowsEqual(current, previous, width) {
+			continue
+		}
+		replay = append(replay, "\x1b[0m\x1b["...)
+		replay = strconv.AppendInt(replay, int64(row+1), 10)
+		replay = append(replay, ";1H\x1b[2K"...)
+		replay = appendTerminalRowReplay(replay, current, width)
+	}
+	if cursorRow < 0 {
+		cursorRow = 0
+	} else if cursorRow >= height {
+		cursorRow = height - 1
+	}
+	if cursorCol < 0 {
+		cursorCol = 0
+	} else if cursorCol >= width {
+		cursorCol = width - 1
+	}
+	if cursorRow != window.liveAttachCursorRow ||
+		cursorCol != window.liveAttachCursorCol ||
+		cursorVisible != window.liveAttachCursorVisible ||
+		len(replay) > len(title)+len(preModes)+len("\x1b[0m\x1b[?7l") {
+		replay = append(replay, "\x1b["...)
+		replay = strconv.AppendInt(replay, int64(cursorRow+1), 10)
+		replay = append(replay, ';')
+		replay = strconv.AppendInt(replay, int64(cursorCol+1), 10)
+		replay = append(replay, 'H')
+	}
+	replay = append(replay, "\x1b[0m"...)
+	replay = append(replay, postModes...)
+	replay = append(replay, cursor...)
+	return replay
+}
+
+func (w *muxWindow) canDiffLiveAttachLocked(width int, height int) bool {
+	return w != nil &&
+		w.liveAttachSnapshotValid &&
+		w.liveAttachWidth == width &&
+		w.liveAttachHeight == height &&
+		len(w.liveAttachRows) == height
+}
+
+func (w *muxWindow) recordLiveAttachSnapshotLocked(
+	rows []terminalRow,
+	width int,
+	height int,
+	cursorRow int,
+	cursorCol int,
+	cursorVisible bool,
+) {
+	if w == nil {
+		return
+	}
+	w.liveAttachRows = cloneTerminalRows(rows)
+	w.liveAttachWidth = width
+	w.liveAttachHeight = height
+	w.liveAttachCursorRow = cursorRow
+	w.liveAttachCursorCol = cursorCol
+	w.liveAttachCursorVisible = cursorVisible
+	w.liveAttachSnapshotValid = true
+}
+
+func (w *muxWindow) clearLiveAttachSnapshotLocked() {
+	if w == nil {
+		return
+	}
+	w.liveAttachRows = nil
+	w.liveAttachSnapshotValid = false
+}
+
+func cloneTerminalRows(rows []terminalRow) []terminalRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	cloned := make([]terminalRow, len(rows))
+	for i, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		cloned[i] = append(terminalRow(nil), row...)
+	}
+	return cloned
+}
+
+func terminalRowsEqual(a terminalRow, b terminalRow, width int) bool {
+	if width <= 0 {
+		return true
+	}
+	for col := 0; col < width; col++ {
+		var left terminalCell
+		if col < len(a) {
+			left = a[col]
+		}
+		var right terminalCell
+		if col < len(b) {
+			right = b[col]
+		}
+		if left != right {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *muxWindow) terminalScreenSizeLocked() (int, int) {
