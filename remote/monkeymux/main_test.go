@@ -933,8 +933,14 @@ func TestCapableAltBufferReplayPreservesClaudeTrueColor(t *testing.T) {
 	if !strings.Contains(replay, "\x1b[38;2;215;119;87m ▐") {
 		t.Fatalf("replay did not preserve Claude orange foreground: %q", replay)
 	}
-	if !strings.Contains(replay, "48;2;0;0;0m▛███▜") {
+	if strings.Contains(replay, "\x1b[38;2;215;119;87;48;2;0;0;0m") {
+		t.Fatalf("replay combined foreground and background truecolor SGR: %q", replay)
+	}
+	if !strings.Contains(replay, "\x1b[48;2;0;0;0m▛███▜") {
 		t.Fatalf("replay did not preserve Claude logo background: %q", replay)
+	}
+	if !strings.Contains(replay, "\x1b[0m\x1b[38;2;215;119;87m▌") {
+		t.Fatalf("replay did not restore orange foreground after logo background reset: %q", replay)
 	}
 }
 

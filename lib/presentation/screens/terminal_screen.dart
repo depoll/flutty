@@ -704,6 +704,68 @@ Set<String> resolveTmuxBarActiveWindowCapabilities(
     windows?.where((window) => window.isActive).firstOrNull?.capabilities ??
     const <String>{};
 
+/// Whether a tmux bar snapshot should notify listeners about window state.
+@visibleForTesting
+bool shouldNotifyTmuxBarWindowStateChanged(
+  List<TmuxWindow> previousWindows,
+  List<TmuxWindow> nextWindows,
+) {
+  if (previousWindows.length != nextWindows.length) {
+    return true;
+  }
+  for (final nextWindow in nextWindows) {
+    final previousWindow = previousWindows
+        .where((window) => _isSameTmuxWindowForStateRefresh(window, nextWindow))
+        .firstOrNull;
+    if (previousWindow == null ||
+        _tmuxWindowStateRefreshIdentity(previousWindow) !=
+            _tmuxWindowStateRefreshIdentity(nextWindow)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _isSameTmuxWindowForStateRefresh(
+  TmuxWindow previousWindow,
+  TmuxWindow nextWindow,
+) {
+  final nextId = nextWindow.id;
+  if (nextId != null) {
+    return previousWindow.id == nextId;
+  }
+  return previousWindow.index == nextWindow.index;
+}
+
+({
+  String capabilitiesKey,
+  String? currentCommand,
+  AgentLaunchTool? foregroundAgentTool,
+  String? id,
+  int index,
+  bool isActive,
+  int? panePid,
+  String? paneStartCommand,
+})
+_tmuxWindowStateRefreshIdentity(TmuxWindow window) => (
+  capabilitiesKey: _tmuxWindowCapabilitiesKey(window.capabilities),
+  currentCommand: window.currentCommand,
+  foregroundAgentTool: window.foregroundAgentTool,
+  id: window.id,
+  index: window.index,
+  isActive: window.isActive,
+  panePid: window.panePid,
+  paneStartCommand: window.paneStartCommand,
+);
+
+String _tmuxWindowCapabilitiesKey(Set<String> capabilities) {
+  if (capabilities.isEmpty) {
+    return '';
+  }
+  final sorted = capabilities.toList()..sort();
+  return sorted.join('\x1f');
+}
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting

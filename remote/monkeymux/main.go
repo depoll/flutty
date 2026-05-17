@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.80"
+	monkeyMuxVersion         = "0.1.81"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2762,7 +2762,7 @@ func appendTerminalRowReplay(replay []byte, row terminalRow, width int) []byte {
 			cell.ch = ' '
 		}
 		if cell.style != style {
-			replay = cell.style.appendSGR(replay)
+			replay = appendTerminalStyleTransition(replay, style, cell.style)
 			style = cell.style
 		}
 		replay = utf8.AppendRune(replay, cell.ch)
@@ -3804,55 +3804,133 @@ func (s terminalStyle) appendSGR(output []byte) []byte {
 	if s == (terminalStyle{}) {
 		return append(output, "\x1b[0m"...)
 	}
-	params := make([]int, 0, 16)
-	if s.flags&terminalStyleBold != 0 {
-		params = append(params, 1)
-	}
-	if s.flags&terminalStyleDim != 0 {
-		params = append(params, 2)
-	}
-	if s.flags&terminalStyleItalic != 0 {
-		params = append(params, 3)
-	}
-	if s.flags&terminalStyleUnderline != 0 {
-		params = append(params, 4)
-	}
-	if s.flags&terminalStyleBlink != 0 {
-		params = append(params, 5)
-	}
-	if s.flags&terminalStyleInverse != 0 {
-		params = append(params, 7)
-	}
-	if s.flags&terminalStyleHidden != 0 {
-		params = append(params, 8)
-	}
-	if s.flags&terminalStyleStrikethrough != 0 {
-		params = append(params, 9)
-	}
-	params = appendTerminalColorSGR(params, s.foreground, true)
-	params = appendTerminalColorSGR(params, s.background, false)
-	return appendSGRParams(output, params)
+	return appendTerminalStyle(output, s)
 }
 
-func appendTerminalColorSGR(params []int, color terminalColor, foreground bool) []int {
+func appendTerminalStyleTransition(output []byte, from, to terminalStyle) []byte {
+	if to == (terminalStyle{}) {
+		return append(output, "\x1b[0m"...)
+	}
+	if terminalStyleTransitionNeedsReset(from, to) {
+		output = append(output, "\x1b[0m"...)
+		from = terminalStyle{}
+	}
+	if from == (terminalStyle{}) {
+		return appendTerminalStyle(output, to)
+	}
+
+	params := make([]int, 0, 8)
+	if added := to.flags &^ from.flags; added != 0 {
+		params = appendTerminalStyleFlagSGR(params, added)
+	}
+	params = appendChangedTerminalColorSGR(params, from.foreground, to.foreground, true)
+	params = appendChangedTerminalColorSGR(params, from.background, to.background, false)
+	output = appendSGRParamsIfAny(output, params)
+	output = appendChangedTerminalExtendedColorSGR(output, from.foreground, to.foreground, true)
+	output = appendChangedTerminalExtendedColorSGR(output, from.background, to.background, false)
+	return output
+}
+
+func terminalStyleTransitionNeedsReset(from, to terminalStyle) bool {
+	if from == (terminalStyle{}) {
+		return false
+	}
+	if from.flags&^to.flags != 0 {
+		return true
+	}
+	if from.foreground.mode != terminalColorDefault && to.foreground.mode == terminalColorDefault {
+		return true
+	}
+	if from.background.mode != terminalColorDefault && to.background.mode == terminalColorDefault {
+		return true
+	}
+	return false
+}
+
+func appendTerminalStyle(output []byte, style terminalStyle) []byte {
+	params := make([]int, 0, 16)
+	params = appendTerminalStyleFlagSGR(params, style.flags)
+	params = appendTerminalANSISGR(params, style.foreground, true)
+	params = appendTerminalANSISGR(params, style.background, false)
+	output = appendSGRParamsIfAny(output, params)
+	output = appendTerminalExtendedColorSGR(output, style.foreground, true)
+	output = appendTerminalExtendedColorSGR(output, style.background, false)
+	return output
+}
+
+func appendTerminalStyleFlagSGR(params []int, flags uint16) []int {
+	if flags&terminalStyleBold != 0 {
+		params = append(params, 1)
+	}
+	if flags&terminalStyleDim != 0 {
+		params = append(params, 2)
+	}
+	if flags&terminalStyleItalic != 0 {
+		params = append(params, 3)
+	}
+	if flags&terminalStyleUnderline != 0 {
+		params = append(params, 4)
+	}
+	if flags&terminalStyleBlink != 0 {
+		params = append(params, 5)
+	}
+	if flags&terminalStyleInverse != 0 {
+		params = append(params, 7)
+	}
+	if flags&terminalStyleHidden != 0 {
+		params = append(params, 8)
+	}
+	if flags&terminalStyleStrikethrough != 0 {
+		params = append(params, 9)
+	}
+	return params
+}
+
+func appendChangedTerminalColorSGR(params []int, from, to terminalColor, foreground bool) []int {
+	if from == to {
+		return params
+	}
+	return appendTerminalANSISGR(params, to, foreground)
+}
+
+func appendTerminalANSISGR(params []int, color terminalColor, foreground bool) []int {
 	switch color.mode {
 	case terminalColorANSI:
 		return append(params, color.value)
-	case terminalColorIndexed:
-		prefix := 38
-		if !foreground {
-			prefix = 48
-		}
-		return append(params, prefix, 5, color.value)
-	case terminalColorRGB:
-		prefix := 38
-		if !foreground {
-			prefix = 48
-		}
-		return append(params, prefix, 2, color.red, color.green, color.blue)
 	default:
 		return params
 	}
+}
+
+func appendChangedTerminalExtendedColorSGR(output []byte, from, to terminalColor, foreground bool) []byte {
+	if from == to {
+		return output
+	}
+	return appendTerminalExtendedColorSGR(output, to, foreground)
+}
+
+func appendTerminalExtendedColorSGR(output []byte, color terminalColor, foreground bool) []byte {
+	params := make([]int, 0, 5)
+	prefix := 38
+	if !foreground {
+		prefix = 48
+	}
+	switch color.mode {
+	case terminalColorIndexed:
+		params = append(params, prefix, 5, color.value)
+	case terminalColorRGB:
+		params = append(params, prefix, 2, color.red, color.green, color.blue)
+	default:
+		return output
+	}
+	return appendSGRParams(output, params)
+}
+
+func appendSGRParamsIfAny(output []byte, params []int) []byte {
+	if len(params) == 0 {
+		return output
+	}
+	return appendSGRParams(output, params)
 }
 
 func appendSGRParams(output []byte, params []int) []byte {

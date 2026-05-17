@@ -2,6 +2,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
@@ -161,6 +162,26 @@ void main() {
           activeWindowCapabilities: const <String>{},
         ),
         isFalse,
+      );
+    });
+
+    test('notifies when active window capabilities change', () {
+      const previousWindows = <TmuxWindow>[
+        TmuxWindow(index: 0, id: '@1', name: 'agent', isActive: true),
+      ];
+      const nextWindows = <TmuxWindow>[
+        TmuxWindow(
+          index: 0,
+          id: '@1',
+          name: 'agent',
+          isActive: true,
+          capabilities: {remoteWindowCapabilityVisualScrollback},
+        ),
+      ];
+
+      expect(
+        shouldNotifyTmuxBarWindowStateChanged(previousWindows, nextWindows),
+        isTrue,
       );
     });
   });
