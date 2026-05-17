@@ -495,11 +495,7 @@ class _SshSessionRuntime {
   }
 
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
-      _containsImmediateTerminalResponseQuery(terminalData) ||
-      (_terminalThemeOscQueryPendingInput.isNotEmpty &&
-          _containsImmediateTerminalResponseQuery(
-            _terminalThemeOscQueryPendingInput + terminalData,
-          ));
+      _containsImmediateTerminalResponseQuery(terminalData);
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();
@@ -514,16 +510,11 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      final themeOscResult = _consumeTerminalThemeOscQueries(
+      final themeOscResult = _preserveSplitTerminalOscQueries(
         input: output.terminalData,
         pendingInput: _terminalThemeOscQueryPendingInput,
-        theme: _session.terminalTheme,
       );
       _terminalThemeOscQueryPendingInput = themeOscResult.pendingInput;
-      final themeOscResponse = themeOscResult.response;
-      if (themeOscResponse != null) {
-        _shell?.write(utf8.encode(themeOscResponse));
-      }
 
       final terminalOutput = adaptTerminalInsertModeOutputForXterm(
         input: themeOscResult.terminalInput,

@@ -152,24 +152,6 @@ buildTerminalWindowControlQueryResponses({
     responses.write(buildTerminalThemeModeReport(isDark: theme.isDark));
   }
 
-  if (theme != null) {
-    for (final match in _terminalThemeOscQueryPattern.allMatches(
-      combinedInput,
-    )) {
-      final sequence = match.group(0);
-      if (sequence == null) {
-        continue;
-      }
-      final response = _buildDirectTerminalBackgroundOscQueryResponse(
-        sequence,
-        theme,
-      );
-      if (response != null) {
-        responses.write(response);
-      }
-    }
-  }
-
   final response = responses.isEmpty ? null : responses.toString();
   return (
     response: response,
@@ -221,45 +203,16 @@ extractTerminalControlModeUpdates({
   );
 }
 
-({String pendingInput, String? response, String terminalInput})
-_consumeTerminalThemeOscQueries({
+({String pendingInput, String terminalInput}) _preserveSplitTerminalOscQueries({
   required String input,
   required String pendingInput,
-  required TerminalThemeData? theme,
 }) {
   final combinedInput = pendingInput + input;
-  if (theme == null) {
-    return (pendingInput: '', response: null, terminalInput: combinedInput);
-  }
-
-  final pendingSuffix = _terminalThemeOscQueryPendingSuffix(combinedInput);
+  final pendingSuffix = _terminalOscQueryPendingSuffix(combinedInput);
   final scanInput = pendingSuffix.isEmpty
       ? combinedInput
       : combinedInput.substring(0, combinedInput.length - pendingSuffix.length);
-  final terminalInput = StringBuffer();
-  final responses = StringBuffer();
-  var cursor = 0;
-
-  for (final match in _terminalThemeOscQueryPattern.allMatches(scanInput)) {
-    terminalInput.write(scanInput.substring(cursor, match.start));
-    final sequence = match.group(0);
-    final response = sequence == null
-        ? null
-        : _buildDirectTerminalBackgroundOscQueryResponse(sequence, theme);
-    if (response == null) {
-      terminalInput.write(scanInput.substring(match.start, match.end));
-    } else {
-      responses.write(response);
-    }
-    cursor = match.end;
-  }
-
-  terminalInput.write(scanInput.substring(cursor));
-  return (
-    pendingInput: pendingSuffix,
-    response: responses.isEmpty ? null : responses.toString(),
-    terminalInput: terminalInput.toString(),
-  );
+  return (pendingInput: pendingSuffix, terminalInput: scanInput);
 }
 
 /// Normalizes terminal-generated output before it is sent to the remote shell.
@@ -281,7 +234,6 @@ bool _containsImmediateTerminalResponseQuery(String data) =>
     _terminalDeviceStatusQueryPattern.hasMatch(data) ||
     _terminalModeReportQueryPattern.hasMatch(data) ||
     _terminalThemeModeQueryPattern.hasMatch(data) ||
-    _terminalThemeOscQueryPattern.hasMatch(data) ||
     _terminalClipboardOscQueryPattern.hasMatch(data);
 
 /// Adapts remote terminal output so xterm.dart renders insert mode correctly.
@@ -350,7 +302,6 @@ final _terminalDeviceAttributeQueryPattern = RegExp(r'\x1b\[(?:[=>]?[0-9;]*)c');
 final _terminalDeviceStatusQueryPattern = RegExp(r'\x1b\[(?:[?]?[0-9;]*)n');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
-final _terminalThemeOscQueryPattern = RegExp(r'\x1b\]11;\?(?:\x07|\x1b\\)');
 final _terminalClipboardOscQueryPattern = RegExp(
   r'\x1b\]52;[^\x07\x1b]*;\?(?:\x07|\x1b\\)',
 );
@@ -443,33 +394,6 @@ String? _buildTerminalModeReportResponse(
     1016 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
     _ => null,
   };
-}
-
-String? _buildDirectTerminalBackgroundOscQueryResponse(
-  String sequence,
-  TerminalThemeData theme,
-) {
-  if (!sequence.startsWith('$_terminalEscape]') ||
-      !(sequence.endsWith('\x07') ||
-          sequence.endsWith(_terminalStringTerminator))) {
-    return null;
-  }
-  final terminatorLength = sequence.endsWith('\x07')
-      ? 1
-      : _terminalStringTerminator.length;
-  final payload = sequence.substring(2, sequence.length - terminatorLength);
-  final parts = payload.split(';');
-  if (parts.isEmpty) {
-    return null;
-  }
-  if (parts.first != '11') {
-    return null;
-  }
-  return buildTerminalThemeOscResponse(
-    theme: theme,
-    code: parts.first,
-    args: parts.sublist(1),
-  );
 }
 
 const _terminalModeNotRecognized = 0;
@@ -721,7 +645,7 @@ String _terminalControlQueryPendingSuffix(String input) {
   return '';
 }
 
-String _terminalThemeOscQueryPendingSuffix(String input) {
+String _terminalOscQueryPendingSuffix(String input) {
   final index = input.lastIndexOf('$_terminalEscape]');
   if (index < 0) {
     return '';
