@@ -23,7 +23,7 @@ func replayPrefixForTest(window *muxWindow) string {
 }
 
 func replayPostHistorySuffixForTest(cursorVisible bool) string {
-	return terminalCharacterSetResetSequence +
+	return terminalParserResetSequence + terminalCharacterSetResetSequence +
 		cursorVisibilityReplaySequence(cursorVisible)
 }
 
@@ -694,6 +694,9 @@ func TestReplayPrefixClearsScrollbackAndMargins(t *testing.T) {
 }
 
 func TestReplayPrefixResetsCharacterSetShift(t *testing.T) {
+	if !strings.HasPrefix(activeWindowReplayPrefix, terminalParserResetSequence) {
+		t.Fatalf("replay prefix %q does not start by resetting parser state", activeWindowReplayPrefix)
+	}
 	for _, sequence := range []string{"\x0f", "\x1b(B", "\x1b)B"} {
 		if !strings.Contains(activeWindowReplayPrefix, sequence) {
 			t.Fatalf("replay prefix %q does not reset character set with %q", activeWindowReplayPrefix, sequence)
@@ -720,7 +723,8 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	preModes := string(terminalModePreReplaySequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
 	want := replayPrefixForTest(window) + preModes + "nano screen" +
-		postModes + replayPostHistorySuffixForTest(true)
+		terminalParserResetSequence + postModes +
+		terminalCharacterSetResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
 	}
@@ -781,7 +785,8 @@ func TestActiveReplayRestoresResetEditorModesAfterHistory(t *testing.T) {
 	}
 	if !strings.HasSuffix(
 		string(server.activeReplayLocked()),
-		"stale\x1b[4h"+postModes+replayPostHistorySuffixForTest(true),
+		"stale\x1b[4h"+terminalParserResetSequence+postModes+
+			terminalCharacterSetResetSequence+cursorVisibilityReplaySequence(true),
 	) {
 		t.Fatalf("replay did not restore reset modes after history")
 	}
@@ -799,6 +804,21 @@ func TestActiveReplayResetsCharacterSetAfterHistory(t *testing.T) {
 		history+replayPostHistorySuffixForTest(true),
 	) {
 		t.Fatalf("replay did not reset shifted character set after history")
+	}
+}
+
+func TestActiveReplayTerminatesUnfinishedControlStringAfterHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := "screen\x1b]2;unterminated title"
+	window := &muxWindow{id: "@1", history: []byte(history)}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	if !strings.HasSuffix(
+		string(server.activeReplayLocked()),
+		history+replayPostHistorySuffixForTest(true),
+	) {
+		t.Fatalf("replay did not terminate unfinished control string after history")
 	}
 }
 
