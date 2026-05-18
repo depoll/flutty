@@ -2767,9 +2767,18 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 }
 
 func (w *muxWindow) hasActiveBackgroundColorQueryLocked() bool {
+	activePid := w.activeForegroundPidLocked()
 	return w.backgroundColorQuerySeen &&
 		w.backgroundColorQueryPid > 0 &&
-		w.backgroundColorQueryPid == w.metadataProcessIDLocked()
+		activePid > 0 &&
+		w.backgroundColorQueryPid == activePid
+}
+
+func (w *muxWindow) activeForegroundPidLocked() int {
+	if w.pty == nil {
+		return w.metadataProcessIDLocked()
+	}
+	return w.foregroundProcessGroupLocked()
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -3274,8 +3283,12 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) {
 		}
 	case "11":
 		if strings.TrimSpace(value) == "?" {
+			queryPid := w.activeForegroundPidLocked()
+			if queryPid <= 0 {
+				return
+			}
 			w.backgroundColorQuerySeen = true
-			w.backgroundColorQueryPid = w.metadataProcessIDLocked()
+			w.backgroundColorQueryPid = queryPid
 		}
 	}
 }
