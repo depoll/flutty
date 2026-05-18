@@ -120,6 +120,32 @@ void main() {
       expect(host!.password, plaintextPassword);
     });
 
+    test('getById migrates a legacy plaintext password', () async {
+      const plaintextPassword = 'legacy-secret';
+      final id = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Legacy Host',
+              hostname: '192.168.1.11',
+              username: 'admin',
+              password: const Value(plaintextPassword),
+            ),
+          );
+
+      final host = await repository.getById(id);
+      expect(host!.password, plaintextPassword);
+
+      final storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, startsWith('ENCv1:'));
+      expect(storedHost.password, isNot(plaintextPassword));
+
+      final migratedHost = await repository.getById(id);
+      expect(migratedHost!.password, plaintextPassword);
+    });
+
     test('insert stores auto-connect command fields', () async {
       final snippetId = await db
           .into(db.snippets)

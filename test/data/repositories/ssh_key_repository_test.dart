@@ -73,6 +73,38 @@ void main() {
       expect(key.passphrase, passphrase);
     });
 
+    test('getById migrates legacy plaintext key secrets', () async {
+      const privateKey = 'legacy-open-ssh-material...';
+      const passphrase = 'legacy-passphrase';
+      final id = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Legacy Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: privateKey,
+              passphrase: const Value(passphrase),
+            ),
+          );
+
+      final key = await repository.getById(id);
+      expect(key!.privateKey, privateKey);
+      expect(key.passphrase, passphrase);
+
+      final storedKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(storedKey.privateKey, startsWith('ENCv1:'));
+      expect(storedKey.privateKey, isNot(privateKey));
+      expect(storedKey.passphrase, startsWith('ENCv1:'));
+      expect(storedKey.passphrase, isNot(passphrase));
+
+      final migratedKey = await repository.getById(id);
+      expect(migratedKey!.privateKey, privateKey);
+      expect(migratedKey.passphrase, passphrase);
+    });
+
     test('getById returns key when exists', () async {
       final id = await repository.insert(
         SshKeysCompanion.insert(

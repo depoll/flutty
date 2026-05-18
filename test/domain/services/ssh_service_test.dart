@@ -1752,6 +1752,52 @@ void main() {
       expect(config.identityKeys, hasLength(2));
     });
 
+    test('connectToHost migrates legacy plaintext Auto keys', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      const privateKey = 'legacy-key-material';
+      final keyId = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Legacy Auto Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: privateKey,
+            ),
+          );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Auto Host',
+              hostname: '10.0.0.12',
+              username: 'admin',
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.identityKeys, hasLength(1));
+      expect(config.identityKeys!.single.privateKey, privateKey);
+
+      final rawKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(keyId))).getSingle();
+      expect(rawKey.privateKey, startsWith('ENCv1:'));
+      expect(rawKey.privateKey, isNot(privateKey));
+    });
+
     test('connectToHost caps Auto keys to avoid auth lockout', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
