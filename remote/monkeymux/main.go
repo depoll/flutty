@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.24"
+	monkeyMuxVersion         = "0.1.25"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -50,7 +50,9 @@ const (
 	restoreSchemaVersion     = 1
 )
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
+
+const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 var (
 	preReplayPrivateModes = []string{
@@ -2343,18 +2345,20 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	postModes := terminalModePostReplaySequence(window)
+	postCharset := []byte(terminalCharacterSetResetSequence)
 	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
 	replay := make(
 		[]byte,
 		0,
 		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
-			len(postModes)+len(cursor),
+			len(postModes)+len(postCharset)+len(cursor),
 	)
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
 	replay = append(replay, history...)
 	replay = append(replay, postModes...)
+	replay = append(replay, postCharset...)
 	replay = append(replay, cursor...)
 	return replay
 }
