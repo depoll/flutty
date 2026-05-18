@@ -1,4 +1,6 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +14,16 @@ double _contrastRatio(Color a, Color b) {
   final brightest = math.max(luminanceA, luminanceB);
   final darkest = math.min(luminanceA, luminanceB);
   return (brightest + 0.05) / (darkest + 0.05);
+}
+
+Color _rawRgbaPixel(ByteData data, int width, int x, int y) {
+  final offset = ((y * width) + x) * 4;
+  return Color.fromARGB(
+    data.getUint8(offset + 3),
+    data.getUint8(offset),
+    data.getUint8(offset + 1),
+    data.getUint8(offset + 2),
+  );
 }
 
 void main() {
@@ -336,6 +348,69 @@ void main() {
 
       expect(background, semanticBackground);
     });
+
+    test(
+      'paints Claude logo block cells as solid terminal rectangles',
+      () async {
+        const claudePink = Color(0xFFD77757);
+        const logoBlack = Color(0xFF000000);
+        final terminal = Terminal()
+          ..resize(12, 2)
+          ..write('\x1b[38;2;215;119;87m ▐\x1b[48;2;0;0;0m▛███▜\x1b[49m▌');
+        final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 32),
+          textScaler: TextScaler.noScaling,
+        );
+        final cellSize = painter.cellSize;
+        final imageWidth = (cellSize.width * 12).ceil() + 2;
+        final imageHeight = cellSize.height.ceil() + 2;
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, imageWidth.toDouble(), imageHeight.toDouble()),
+            Paint()..color = theme.background,
+          );
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+        final image = await recorder.endRecording().toImage(
+          imageWidth,
+          imageHeight,
+        );
+        final byteData = await image.toByteData();
+        expect(byteData, isNotNull);
+
+        Color sample(double x, double y) => _rawRgbaPixel(
+          byteData!,
+          imageWidth,
+          math.max(0, math.min(imageWidth - 1, x.round())),
+          math.max(0, math.min(imageHeight - 1, y.round())),
+        );
+
+        expect(
+          sample((cellSize.width * 3) + 1, cellSize.height / 2),
+          claudePink,
+        );
+        expect(
+          sample(
+            (cellSize.width * 3) + cellSize.width - 1,
+            cellSize.height / 2,
+          ),
+          claudePink,
+        );
+        expect(
+          sample((cellSize.width * 2) + (cellSize.width * 0.25), 1),
+          claudePink,
+        );
+        expect(
+          sample(
+            (cellSize.width * 2) + (cellSize.width * 0.75),
+            cellSize.height * 0.75,
+          ),
+          logoBlack,
+        );
+      },
+    );
 
     test('extends left-edge highlighted rows to line end', () {
       final terminal = Terminal()

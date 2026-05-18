@@ -68,6 +68,13 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async => null;
+
+  @override
+  Future<MonkeyMuxServerStatus?> runningServerStatusFromInstalledHelpers(
+    SshSession session,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async => null;
 }
 
 class _MockMonkeyMuxInstallerService extends Mock
@@ -4782,7 +4789,7 @@ void main() {
         await tester.pump();
 
         expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
-        expect(find.text('Version: 0.1.14'), findsOneWidget);
+        expect(find.text('Bundled version: 0.1.14'), findsOneWidget);
         expect(find.text('Platform: darwin-arm64'), findsOneWidget);
         expect(find.text('Size: 1.5 KB'), findsOneWidget);
         expect(executedCommands, isEmpty);
