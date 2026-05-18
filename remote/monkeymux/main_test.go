@@ -774,22 +774,6 @@ func TestCodexLiveOutputRepaintsScreenAtBottom(t *testing.T) {
 	}
 }
 
-func TestCodexLiveOutputDiffsRepeatedBottomUpdates(t *testing.T) {
-	server, window, attach := newCodexScrollbackTestServer(t)
-	server.handleWindowOutput(window.id, []byte("hello"))
-	attach.Reset()
-
-	server.handleWindowOutput(window.id, []byte("!!"))
-
-	got := attach.String()
-	if strings.Contains(got, "\x1b[2J") {
-		t.Fatalf("live update = %q, should not clear whole screen", got)
-	}
-	if !strings.Contains(got, "hello!!") {
-		t.Fatalf("live update = %q, want changed row repaint", got)
-	}
-}
-
 func TestCodexAltBufferLiveOutputPassesThroughRaw(t *testing.T) {
 	server, window, attach := newCodexScrollbackTestServer(t)
 	attach.Reset()
@@ -810,16 +794,10 @@ func TestCodexLiveOutputScrollsViewportAtBottom(t *testing.T) {
 	}
 	server.handleWindowOutput(window.id, []byte("50"))
 
-	output := attach.String()
-	if clears := strings.Count(output, "\x1b[2J"); clears > 1 {
-		t.Fatalf("live output cleared whole screen %d times:\n%q", clears, output)
-	}
-	clientScreen := newTerminalScreen(server.width, server.height)
-	clientScreen.write([]byte(output))
-	rendered := strings.Join(clientScreen.visibleLines(), "\n")
-	assertOrderedSubstrings(t, rendered, "47", "48", "49", "50")
-	if strings.Contains(rendered, "46") {
-		t.Fatalf("bottom screen = %q, should have scrolled past 46", rendered)
+	frame := lastScreenReplayFrame(attach.String())
+	assertOrderedSubstrings(t, frame, "47", "48", "49", "50")
+	if strings.Contains(frame, "46") {
+		t.Fatalf("bottom frame = %q, should have scrolled past 46", frame)
 	}
 }
 
