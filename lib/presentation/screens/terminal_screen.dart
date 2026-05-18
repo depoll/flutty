@@ -57,6 +57,7 @@ import '../widgets/ai_session_picker.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
@@ -213,7 +214,7 @@ double resolveTmuxBarMaxContentHeight(
 }
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
-const _terminalOverflowMenuScreenPadding = 8.0;
+const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
 const _tmuxDetectionRetrySchedule = <Duration>[
@@ -2894,12 +2895,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isMobilePlatform: isMobilePlatform,
       anchorTop: anchorTop,
     );
-    return MenuStyle(
-      minimumSize: const WidgetStatePropertyAll<Size>(
-        Size(_terminalOverflowMenuMinWidth, 0),
-      ),
-      maximumSize: WidgetStatePropertyAll<Size>(
-        Size(_terminalOverflowMenuMaxWidth, maxHeight ?? double.infinity),
+    return TerminalMenuStyles.menuStyle(
+      context,
+      minimumSize: const Size(_terminalOverflowMenuMinWidth, 0),
+      maximumSize: Size(
+        _terminalOverflowMenuMaxWidth,
+        maxHeight ?? double.infinity,
       ),
     );
   }
@@ -2948,20 +2949,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   Widget _terminalOverflowMenuItem({
+    required BuildContext context,
     required IconData icon,
     required String label,
     required String action,
   }) => MenuItemButton(
-    leadingIcon: Icon(icon, size: 20),
+    style: TerminalMenuStyles.itemButtonStyle(context),
+    leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
     onPressed: () => unawaited(_handleMenuAction(action)),
     child: _terminalOverflowMenuLabel(label),
   );
 
   Widget _terminalOverflowCheckboxMenuItem({
+    required BuildContext context,
     required String label,
     required bool checked,
     required String action,
   }) => CheckboxMenuButton(
+    style: TerminalMenuStyles.itemButtonStyle(context),
     value: checked,
     onChanged: (_) => unawaited(_handleMenuAction(action)),
     child: _terminalOverflowMenuLabel(label),
@@ -2974,7 +2979,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String label,
     required List<Widget> menuChildren,
   }) => SubmenuButton(
-    leadingIcon: Icon(icon, size: 20),
+    style: TerminalMenuStyles.itemButtonStyle(context),
+    leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
     menuStyle: _terminalOverflowMenuStyle(
       context: context,
       isMobilePlatform: isMobile,
@@ -2989,18 +2995,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     color: Theme.of(context).colorScheme.outlineVariant,
   );
 
-  List<Widget> _terminalPastingMenuItems() => [
+  List<Widget> _terminalPastingMenuItems(BuildContext context) => [
     _terminalOverflowMenuItem(
+      context: context,
       icon: Icons.paste_rounded,
       label: 'Paste',
       action: 'paste',
     ),
     _terminalOverflowMenuItem(
+      context: context,
       icon: Icons.image_outlined,
       label: 'Paste Images',
       action: 'paste_image',
     ),
     _terminalOverflowMenuItem(
+      context: context,
       icon: Icons.attach_file_rounded,
       label: 'Paste Files',
       action: 'paste_file',
@@ -3008,11 +3017,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ];
 
   List<Widget> _terminalOptionsMenuItems({
+    required BuildContext context,
     required bool hasTerminalInfo,
     required bool isMobile,
   }) => [
     if (hasTerminalInfo)
       _terminalOverflowMenuItem(
+        context: context,
         icon: _showsTerminalMetadata
             ? Icons.info_outlined
             : Icons.info_outline_rounded,
@@ -3023,17 +3034,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     if (_isTmuxActive)
       _terminalOverflowMenuItem(
+        context: context,
         icon: _showTmuxBar ? Icons.window_outlined : Icons.window_rounded,
         label: _showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar',
         action: 'toggle_tmux_bar',
       ),
     if (isMobile)
       _terminalOverflowCheckboxMenuItem(
+        context: context,
         label: 'Tap to Show Keyboard',
         checked: ref.read(tapToShowKeyboardNotifierProvider),
         action: 'toggle_tap_keyboard',
       ),
     _terminalOverflowCheckboxMenuItem(
+      context: context,
       label: 'Shell Completion Popups',
       checked: ref.read(shellCompletionsNotifierProvider),
       action: 'toggle_shell_completions',
@@ -8619,11 +8633,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ),
               menuChildren: [
                 _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.code_rounded,
                   label: 'Snippets',
                   action: 'snippets',
                 ),
                 _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.palette_outlined,
                   label: 'Change Theme',
                   action: 'change_theme',
@@ -8634,6 +8650,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   icon: Icons.tune_rounded,
                   label: 'Options',
                   menuChildren: _terminalOptionsMenuItems(
+                    context: context,
                     hasTerminalInfo: statusChips.isNotEmpty,
                     isMobile: isMobile,
                   ),
@@ -8641,6 +8658,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 _terminalOverflowMenuDivider(context),
                 if (!isMobile)
                   _terminalOverflowMenuItem(
+                    context: context,
                     icon: _isNativeSelectionMode
                         ? Icons.deselect_rounded
                         : Icons.select_all_rounded,
@@ -8651,12 +8669,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ),
                 if (_workingDirectoryPath != null)
                   _terminalOverflowMenuItem(
+                    context: context,
                     icon: Icons.folder_copy_outlined,
                     label: 'Copy Current Directory',
                     action: 'copy_working_directory',
                   ),
                 if (_currentTerminalSelectionText() != null)
                   _terminalOverflowMenuItem(
+                    context: context,
                     icon: Icons.code_rounded,
                     label: 'Create Snippet',
                     action: 'create_snippet',
@@ -8666,10 +8686,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   isMobile: isMobile,
                   icon: Icons.paste_rounded,
                   label: 'Paste',
-                  menuChildren: _terminalPastingMenuItems(),
+                  menuChildren: _terminalPastingMenuItems(context),
                 ),
                 _terminalOverflowMenuDivider(context),
                 _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.link_off_rounded,
                   label: 'Disconnect',
                   action: 'disconnect',
