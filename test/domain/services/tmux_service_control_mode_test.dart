@@ -13,6 +13,10 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
+String _tmuxSendKeysHex(String value) => value.codeUnits
+    .map((codeUnit) => codeUnit.toRadixString(16).padLeft(2, '0'))
+    .join(' ');
+
 void main() {
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
@@ -214,7 +218,8 @@ void main() {
       expect(command, contains(r'case "$agent_tool" in'));
       expect(command, contains('copilot)'));
       expect(command, contains('codex)'));
-      expect(command, contains('opencode|claude|gemini)'));
+      expect(command, contains('gemini)'));
+      expect(command, contains('opencode|claude)'));
       final directBranchStart = command.indexOf(
         r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
       );
@@ -256,27 +261,39 @@ void main() {
       expect(command, contains('1b 5b 49'));
       final copilotBranchStart = directBranch.indexOf('copilot)');
       final codexBranchStart = directBranch.indexOf('codex)');
-      final opencodeBranchStart = directBranch.indexOf(
-        'opencode|claude|gemini)',
-      );
+      final geminiBranchStart = directBranch.indexOf('gemini)');
+      final opencodeBranchStart = directBranch.indexOf('opencode|claude)');
       expect(copilotBranchStart, isNonNegative);
       expect(codexBranchStart, greaterThan(copilotBranchStart));
-      expect(opencodeBranchStart, greaterThan(codexBranchStart));
+      expect(geminiBranchStart, greaterThan(codexBranchStart));
+      expect(opencodeBranchStart, greaterThan(geminiBranchStart));
       expect(
         directBranch.substring(copilotBranchStart, codexBranchStart),
         contains('1b 5b 3f 39 39 37 3b 31 6e'),
       );
       expect(
-        directBranch.substring(codexBranchStart, opencodeBranchStart),
+        directBranch.substring(codexBranchStart, geminiBranchStart),
         isNot(contains('1b 5b 3f 39 39 37')),
       );
       expect(
-        directBranch.substring(opencodeBranchStart),
+        directBranch.substring(geminiBranchStart, opencodeBranchStart),
         isNot(contains('1b 5b 3f 39 39 37')),
       );
       expect(
-        directBranch.substring(codexBranchStart, opencodeBranchStart),
+        directBranch.substring(codexBranchStart, geminiBranchStart),
         isNot(contains('1b 5b 4f')),
+      );
+      expect(
+        directBranch.substring(geminiBranchStart, opencodeBranchStart),
+        contains(
+          _tmuxSendKeysHex(
+            buildTerminalThemeBackgroundColorReport(TerminalThemes.dracula),
+          ),
+        ),
+      );
+      expect(
+        directBranch.indexOf('1b 5b 4f', geminiBranchStart),
+        greaterThan(geminiBranchStart),
       );
       expect(
         directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
@@ -307,10 +324,10 @@ void main() {
         contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),
       );
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 31')));
+      expect(command, contains(r'send-keys -t "$pane" -H 1b 5d 31 31'));
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
       expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), isEmpty);
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(1));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),

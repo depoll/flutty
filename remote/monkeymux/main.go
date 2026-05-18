@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.23"
+	monkeyMuxVersion         = "0.1.24"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2474,6 +2474,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
+	agentTool := window.agentToolLocked()
 	if !window.supportsThemeHintLocked() {
 		s.mu.Unlock()
 		return false
@@ -2481,15 +2482,21 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	windowID := window.id
 	s.mu.Unlock()
 
-	if data != "" {
-		return s.writeWindow(windowID, []byte(data)) == nil
+	if data != "" && agentTool == "gemini" {
+		if err := s.writeWindow(windowID, []byte(data)); err != nil {
+			return false
+		}
 	}
+	s.sendFocusTransition(windowID)
+	return true
+}
+
+func (s *muxServer) sendFocusTransition(windowID string) {
 	go func() {
 		_ = s.writeWindow(windowID, []byte("\x1b[O"))
 		time.Sleep(50 * time.Millisecond)
 		_ = s.writeWindow(windowID, []byte("\x1b[I"))
 	}()
-	return true
 }
 
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
