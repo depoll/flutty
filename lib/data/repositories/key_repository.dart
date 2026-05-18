@@ -6,6 +6,8 @@ import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
 
+enum _KeySecretColumn { privateKey, passphrase }
+
 /// Repository for managing SSH keys.
 class KeyRepository {
   /// Creates a new [KeyRepository].
@@ -103,10 +105,20 @@ class KeyRepository {
       Future.wait(keys.map(_decryptKey));
 
   Future<SshKey> _decryptKey(SshKey key) async {
-    final decryptedPrivateKey = await _cachedDecryptRequired(key.privateKey);
+    final decryptedPrivateKey =
+        await _decryptOrMigrateKeySecret(
+          key.id,
+          key.privateKey,
+          _KeySecretColumn.privateKey,
+        ) ??
+        '';
     final passphrase = key.passphrase;
     final decryptedPassphrase = passphrase != null && passphrase.isNotEmpty
-        ? await _cachedDecrypt(passphrase)
+        ? await _decryptOrMigrateKeySecret(
+            key.id,
+            passphrase,
+            _KeySecretColumn.passphrase,
+          )
         : await _secretEncryptionService.decryptNullable(passphrase);
 
     return key.copyWith(
@@ -132,8 +144,33 @@ class KeyRepository {
     return plaintext;
   }
 
-  Future<String> _cachedDecryptRequired(String ciphertext) async =>
-      (await _cachedDecrypt(ciphertext)) ?? '';
+  Future<String?> _decryptOrMigrateKeySecret(
+    int keyId,
+    String storedSecret,
+    _KeySecretColumn column,
+  ) async {
+    if (_secretEncryptionService.isEncryptedValue(storedSecret)) {
+      return _cachedDecrypt(storedSecret);
+    }
+
+    final encryptedSecret = await _secretEncryptionService.encryptNullable(
+      storedSecret,
+    );
+    if (encryptedSecret != null && encryptedSecret != storedSecret) {
+      await (_db.update(_db.sshKeys)..where((k) => k.id.equals(keyId))).write(
+        switch (column) {
+          _KeySecretColumn.privateKey => SshKeysCompanion(
+            privateKey: Value(encryptedSecret),
+          ),
+          _KeySecretColumn.passphrase => SshKeysCompanion(
+            passphrase: Value(encryptedSecret),
+          ),
+        },
+      );
+      _rememberDecrypted(encryptedSecret, storedSecret);
+    }
+    return storedSecret;
+  }
 
   Future<({String? passphrase, String privateKey})?> _storedSecretsForKey(
     int id,
