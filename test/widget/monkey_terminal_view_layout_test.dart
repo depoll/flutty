@@ -533,7 +533,7 @@ void main() {
       );
     });
 
-    test('keeps foreground-only ANSI colors unchanged', () {
+    test('lifts low-contrast foreground-only ANSI colors', () {
       final terminal = Terminal()
         ..resize(24, 2)
         ..write('\x1b[90mforeground only');
@@ -546,9 +546,33 @@ void main() {
       final cellData = CellData.empty();
       terminal.buffer.lines[0].getCellData(0, cellData);
 
+      final foreground = painter.resolveMonkeyTerminalCellForegroundColor(
+        cellData,
+      );
+
+      expect(
+        _contrastRatio(foreground, theme.background),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(foreground, isNot(theme.brightBlack));
+    });
+
+    test('keeps readable foreground-only ANSI colors unchanged', () {
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[96mforeground only');
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final cellData = CellData.empty();
+      terminal.buffer.lines[0].getCellData(0, cellData);
+
       expect(
         painter.resolveMonkeyTerminalCellForegroundColor(cellData),
-        theme.brightBlack,
+        theme.brightCyan,
       );
     });
   });
