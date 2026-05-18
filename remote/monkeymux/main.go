@@ -2474,7 +2474,6 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	agentTool := window.agentToolLocked()
 	if !window.supportsThemeHintLocked() {
 		s.mu.Unlock()
 		return false
@@ -2482,7 +2481,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	windowID := window.id
 	s.mu.Unlock()
 
-	if data != "" && agentTool == "gemini" {
+	if data != "" {
 		if err := s.writeWindow(windowID, []byte(data)); err != nil {
 			return false
 		}

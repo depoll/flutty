@@ -1266,39 +1266,43 @@ func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 	}
 }
 
-func TestThemeHintSendsGeminiBackgroundReport(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
+func TestThemeHintSendsAgentBackgroundReport(t *testing.T) {
+	for _, foregroundCommand := range []string{"claude", "codex", "copilot", "gemini", "opencode"} {
+		t.Run(foregroundCommand, func(t *testing.T) {
+			inputReader, inputWriter, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = inputReader.Close()
+				_ = inputWriter.Close()
+			})
 
-	window := &muxWindow{id: "@1", foregroundCommand: "gemini", pty: inputWriter}
-	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
+			window := &muxWindow{id: "@1", foregroundCommand: foregroundCommand, pty: inputWriter}
+			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
 
-	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-	if !server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was not sent")
-	}
+			const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+			if !server.sendThemeHint(backgroundReport) {
+				t.Fatal("theme hint was not sent")
+			}
 
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
-	})
-	if !strings.HasPrefix(got, backgroundReport) {
-		t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
-	}
-	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
-		t.Fatalf("theme hint = %q, want focus transition", got)
+			got := readPipeUntil(t, inputReader, func(output string) bool {
+				return strings.Contains(output, "\x1b[I")
+			})
+			if !strings.HasPrefix(got, backgroundReport) {
+				t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
+			}
+			if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+				t.Fatalf("theme hint = %q, want focus transition", got)
+			}
+		})
 	}
 }
 
-func TestThemeHintDoesNotSendBackgroundReportToNonGemini(t *testing.T) {
+func TestThemeHintDoesNotSendBackgroundReportToShell(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -1308,25 +1312,15 @@ func TestThemeHintDoesNotSendBackgroundReportToNonGemini(t *testing.T) {
 		_ = inputWriter.Close()
 	})
 
-	window := &muxWindow{id: "@1", foregroundCommand: "codex", pty: inputWriter}
+	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: inputWriter}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-	if !server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was not sent")
-	}
-
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
-	})
-	if strings.Contains(got, backgroundReport) {
-		t.Fatalf("theme hint = %q, did not expect background report", got)
-	}
-	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
-		t.Fatalf("theme hint = %q, want focus transition", got)
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent to shell")
 	}
 }
 

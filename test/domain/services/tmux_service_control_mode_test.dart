@@ -263,6 +263,9 @@ void main() {
       final codexBranchStart = directBranch.indexOf('codex)');
       final geminiBranchStart = directBranch.indexOf('gemini)');
       final opencodeBranchStart = directBranch.indexOf('opencode|claude)');
+      final backgroundReportHex = _tmuxSendKeysHex(
+        buildTerminalThemeBackgroundColorReport(TerminalThemes.dracula),
+      );
       expect(copilotBranchStart, isNonNegative);
       expect(codexBranchStart, greaterThan(copilotBranchStart));
       expect(geminiBranchStart, greaterThan(codexBranchStart));
@@ -272,8 +275,16 @@ void main() {
         contains('1b 5b 3f 39 39 37 3b 31 6e'),
       );
       expect(
+        directBranch.substring(copilotBranchStart, codexBranchStart),
+        contains(backgroundReportHex),
+      );
+      expect(
         directBranch.substring(codexBranchStart, geminiBranchStart),
         isNot(contains('1b 5b 3f 39 39 37')),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, geminiBranchStart),
+        contains(backgroundReportHex),
       );
       expect(
         directBranch.substring(geminiBranchStart, opencodeBranchStart),
@@ -285,11 +296,11 @@ void main() {
       );
       expect(
         directBranch.substring(geminiBranchStart, opencodeBranchStart),
-        contains(
-          _tmuxSendKeysHex(
-            buildTerminalThemeBackgroundColorReport(TerminalThemes.dracula),
-          ),
-        ),
+        contains(backgroundReportHex),
+      );
+      expect(
+        directBranch.substring(opencodeBranchStart),
+        contains(backgroundReportHex),
       );
       expect(
         directBranch.indexOf('1b 5b 4f', geminiBranchStart),
@@ -327,7 +338,7 @@ void main() {
       expect(command, contains(r'send-keys -t "$pane" -H 1b 5d 31 31'));
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
       expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(1));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(4));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
