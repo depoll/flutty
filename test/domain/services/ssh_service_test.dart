@@ -437,6 +437,98 @@ void main() {
       expect(result.output, '\x1b[4h\x1b[@\x1b[@\u{1F44D}\u{1F3FD}\x1b[@Z');
     });
 
+    test(
+      'adapts reverse index at top margin to keep xterm buffer attached',
+      () {
+        final terminal = Terminal(maxLines: 100)..resize(61, 37);
+        final reverseIndexes = List.filled(9, '\x1bM').join();
+        final insertLines = List.filled(9, '\x1b[L').join();
+        final result = adaptTerminalInsertModeOutputForXterm(
+          input: '\x1b[1;37r\x1b[1;1H$reverseIndexes',
+          pendingInput: '',
+          insertMode: false,
+          terminalColumns: terminal.viewWidth,
+          terminalRows: terminal.viewHeight,
+          cursorColumn: terminal.buffer.cursorX,
+          cursorRow: terminal.buffer.cursorY,
+          marginTop: terminal.buffer.marginTop,
+          marginBottom: terminal.buffer.marginBottom,
+        );
+
+        terminal.write(result.output);
+
+        expect(result.pendingInput, isEmpty);
+        expect(result.insertMode, isFalse);
+        expect(result.output, '\x1b[1;37r\x1b[1;1H$insertLines');
+        expect(
+          List.generate(
+            terminal.buffer.height,
+            (index) => terminal.buffer.lines[index].attached,
+          ),
+          everyElement(isTrue),
+        );
+      },
+    );
+
+    test('preserves reverse index when cursor is below the top margin', () {
+      final result = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[5;4H\x1bM',
+        pendingInput: '',
+        insertMode: false,
+        terminalColumns: 61,
+        terminalRows: 37,
+        cursorColumn: 0,
+        cursorRow: 0,
+        marginTop: 0,
+        marginBottom: 36,
+      );
+
+      expect(result.output, '\x1b[5;4H\x1bM');
+    });
+
+    test('restores cursor column after adapted reverse index', () {
+      final result = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[1;4H\x1bM',
+        pendingInput: '',
+        insertMode: false,
+        terminalColumns: 61,
+        terminalRows: 37,
+        cursorColumn: 0,
+        cursorRow: 0,
+        marginTop: 0,
+        marginBottom: 36,
+      );
+
+      expect(result.output, '\x1b[1;4H\x1b[L\x1b[4G');
+    });
+
+    test('adapts origin-mode reverse index at the top margin', () {
+      final terminal = Terminal(maxLines: 100)..resize(61, 37);
+      final result = adaptTerminalInsertModeOutputForXterm(
+        input: '\x1b[2;10r\x1b[?6h\x1b[1;1H\x1bM',
+        pendingInput: '',
+        insertMode: false,
+        terminalColumns: terminal.viewWidth,
+        terminalRows: terminal.viewHeight,
+        cursorColumn: terminal.buffer.cursorX,
+        cursorRow: terminal.buffer.cursorY,
+        marginTop: terminal.buffer.marginTop,
+        marginBottom: terminal.buffer.marginBottom,
+        originMode: terminal.originMode,
+      );
+
+      terminal.write(result.output);
+
+      expect(result.output, '\x1b[2;10r\x1b[?6h\x1b[1;1H\x1b[L');
+      expect(
+        List.generate(
+          terminal.buffer.height,
+          (index) => terminal.buffer.lines[index].attached,
+        ),
+        everyElement(isTrue),
+      );
+    });
+
     test('unwraps complete tmux passthrough sequences', () {
       final result = unwrapTerminalTmuxPassthroughSequences(
         input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
