@@ -318,7 +318,6 @@ class MonkeyMuxInstallerService {
           executablePath: executablePath,
           platform: platform,
           version: manifest.version,
-          installedDuringCall: true,
         );
       }
 
@@ -432,6 +431,7 @@ class MonkeyMuxInstallerService {
         executablePath: executablePath,
         platform: platform,
         version: manifest.version,
+        installedDuringCall: true,
       );
     } finally {
       sftp.close();
