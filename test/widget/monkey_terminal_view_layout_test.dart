@@ -434,6 +434,51 @@ void main() {
       );
     });
 
+    test('extends neutral truecolor composer rows to line end', () {
+      const neutralBackground = Color(0xFF5F5F5F);
+      final terminal = Terminal()
+        ..resize(32, 2)
+        ..write('\x1b[48;2;95;95;95mAsk Codex\x1b[49m');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+        terminal.buffer.lines[0],
+      );
+
+      expect(fill, isNotNull);
+      expect(fill!.startColumn, 'Ask Codex'.length);
+      expect(fill.color, isNot(neutralBackground));
+      expect(
+        _contrastRatio(fill.color, TerminalThemes.defaultDarkTheme.background),
+        inInclusiveRange(1.04, 1.75),
+      );
+    });
+
+    test(
+      'extends neutral truecolor composer rows after blank leading cells',
+      () {
+        final terminal = Terminal()
+          ..resize(32, 2)
+          ..write('\x1b[2C\x1b[48;2;95;95;95mAsk Codex\x1b[49m');
+        final painter = MonkeyTerminalPainter(
+          theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+          textStyle: const TerminalStyle(),
+          textScaler: TextScaler.noScaling,
+        );
+
+        final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+          terminal.buffer.lines[0],
+        );
+
+        expect(fill, isNotNull);
+        expect(fill!.startColumn, 2 + 'Ask Codex'.length);
+      },
+    );
+
     test('does not extend inset highlighted runs', () {
       final terminal = Terminal()
         ..resize(24, 2)
@@ -456,6 +501,24 @@ void main() {
       final terminal = Terminal()
         ..resize(24, 2)
         ..write('\x1b[41mERROR\x1b[49m');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      expect(
+        painter.resolveMonkeyTerminalTrailingBackgroundFill(
+          terminal.buffer.lines[0],
+        ),
+        isNull,
+      );
+    });
+
+    test('does not extend saturated truecolor labels', () {
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[48;2;168;47;69mERROR\x1b[49m');
       final painter = MonkeyTerminalPainter(
         theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
         textStyle: const TerminalStyle(),
