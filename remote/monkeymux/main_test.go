@@ -1274,6 +1274,46 @@ func TestThemeHintUsesTerminalCapabilities(t *testing.T) {
 	}
 }
 
+func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	window := &muxWindow{
+		id:                         "@1",
+		foregroundCommand:          "unknown-tui",
+		foregroundPid:              42,
+		backgroundColorQuerySeen:   true,
+		backgroundColorQueryPid:    42,
+		lastProcessMetadataRefresh: time.Now(),
+		pty:                        inputWriter,
+	}
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 43
+		}
+		return 0
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent with stale foreground pid")
+	}
+}
+
 func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
@@ -1289,6 +1329,16 @@ func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
 		pty:               inputWriter,
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
 	}
 	window.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
