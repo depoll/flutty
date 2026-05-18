@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.26"
+	monkeyMuxVersion         = "0.1.27"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -54,7 +54,7 @@ const terminalParserResetSequence = "\x18\x1b\\"
 
 const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
 
-const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?1007l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
 
 var (
 	preReplayPrivateModes = []string{
@@ -67,6 +67,7 @@ var (
 		"1003",
 		"1006",
 		"1004",
+		"1007",
 		"2004",
 		"2031",
 	}
@@ -78,6 +79,7 @@ var (
 		"1003",
 		"1006",
 		"1004",
+		"1007",
 		"2004",
 		"2031",
 	}
@@ -90,6 +92,7 @@ var (
 		"1003": {},
 		"1004": {},
 		"1006": {},
+		"1007": {},
 		"1049": {},
 		"2004": {},
 		"2031": {},

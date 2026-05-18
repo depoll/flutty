@@ -670,6 +670,7 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 		"\x1b[?1003l",
 		"\x1b[?1006l",
 		"\x1b[?1004l",
+		"\x1b[?1007l",
 		"\x1b[?2004l",
 		"\x1b[?1l",
 		"\x1b[?6l",
@@ -716,7 +717,7 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	server.activeID = "@1"
 
 	window.observeTerminalModesLocked(
-		[]byte("\x1b[?1049h\x1b[?1h\x1b=\x1b[?2004h\x1b[4h"),
+		[]byte("\x1b[?1049h\x1b[?1h\x1b[?1007h\x1b=\x1b[?2004h\x1b[4h"),
 	)
 
 	replay := string(server.activeReplayLocked())
@@ -731,6 +732,7 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	for _, sequence := range []string{
 		"\x1b[?1049h",
 		"\x1b[?1h",
+		"\x1b[?1007h",
 		"\x1b[?2004h",
 		"\x1b[4h",
 		"\x1b=",
@@ -741,6 +743,7 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	}
 	for _, sequence := range []string{
 		"\x1b[?1h",
+		"\x1b[?1007h",
 		"\x1b[?2004h",
 		"\x1b[4h",
 		"\x1b=",

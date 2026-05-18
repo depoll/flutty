@@ -2073,13 +2073,8 @@ bool shouldUseSyntheticAltBufferScrollFallback({
   required bool isUsingAltBuffer,
   required bool preferExplicitMouseReporting,
   required bool terminalReportsMouseWheel,
-  bool isAgentToolActive = false,
 }) {
   if (!isUsingAltBuffer) {
-    return false;
-  }
-
-  if (isAgentToolActive) {
     return false;
   }
 
@@ -2092,18 +2087,14 @@ bool shouldUseSyntheticAltBufferScrollFallback({
 
 /// Whether mobile touch drags should be routed into terminal scroll input.
 ///
-/// Full-screen apps like tmux need direct wheel or synthetic arrow events
-/// instead of letting the Flutter viewport absorb the gesture. Agent tools are
-/// excluded because arrow events navigate prompt history.
+/// Full-screen apps like tmux or Copilot CLI need direct wheel or synthetic
+/// arrow events instead of letting the Flutter viewport absorb the gesture.
 @visibleForTesting
 bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-  bool isAgentToolActive = false,
-}) =>
-    isMobile &&
-    (terminalReportsMouseWheel || (isUsingAltBuffer && !isAgentToolActive));
+}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2890,19 +2881,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
-    isAgentToolActive: _isAgentToolActive,
   );
-
-  bool get _isAgentToolActive {
-    final activeWindowTool = resolveTmuxBarActiveWindowTool(
-      _tmuxBarKey.currentState?.currentWindowsSnapshot,
-    );
-    if (activeWindowTool != null) {
-      return true;
-    }
-    final command = _tmuxCurrentCommand?.trim();
-    return command != null && agentLaunchToolForCommandName(command) != null;
-  }
 
   MenuStyle _terminalOverflowMenuStyle({
     required BuildContext context,
@@ -9394,13 +9373,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
       // Let alt-buffer apps keep raw wheel events when they explicitly enable
-      // mouse reporting, but avoid synthetic arrows in agent tools where they
-      // navigate prompt history.
+      // mouse reporting, but fall back to synthetic arrows when they do not.
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
-        isAgentToolActive: _isAgentToolActive,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
