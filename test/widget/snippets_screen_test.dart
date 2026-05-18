@@ -15,6 +15,15 @@ import 'package:monkeyssh/presentation/screens/snippets_screen.dart';
 
 class _MockSnippetRepository extends Mock implements SnippetRepository {}
 
+void _callReorderCallback(
+  ReorderCallback? callback,
+  int oldIndex,
+  int newIndex,
+) {
+  expect(callback, isNotNull);
+  callback?.call(oldIndex, newIndex);
+}
+
 Snippet _buildSnippet({
   required int id,
   required String name,
@@ -409,7 +418,8 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      list.onReorder(0, 2);
+      // ignore: deprecated_member_use
+      _callReorderCallback(list.onReorder, 0, 2);
       await tester.pumpAndSettle();
 
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
@@ -467,7 +477,8 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      list.onReorder(0, 2);
+      // ignore: deprecated_member_use
+      _callReorderCallback(list.onReorder, 0, 2);
       await tester.pumpAndSettle();
 
       verify(() => snippetRepository.reorderByIds([1, 3, 2, 4])).called(1);
