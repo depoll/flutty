@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -41,6 +42,7 @@ class SecretEncryptionService {
   static const _encryptedPrefix = 'ENCv1:';
   static const _masterKeyBytes = 32;
   static const _nonceBytes = 12;
+  static const _errSecDuplicateItem = -25299;
   static const _secureStorage = FlutterSecureStorage(
     iOptions: IOSOptions(
       accessibility: KeychainAccessibility.first_unlock_this_device,
@@ -231,14 +233,40 @@ class SecretEncryptionService {
       return storage.read(key: key);
     }
 
-    final current = await storage.read(key: key, iOptions: _hardenedIosOptions);
+    String? current;
+    try {
+      current = await storage.read(key: key, iOptions: _hardenedIosOptions);
+    } on PlatformException {
+      final legacy = await storage.read(key: key, iOptions: _legacyIosOptions);
+      if (legacy != null) {
+        await _migrateStorageValue(storage, key: key, value: legacy);
+        return legacy;
+      }
+      rethrow;
+    }
     if (current != null) return current;
 
     final legacy = await storage.read(key: key, iOptions: _legacyIosOptions);
     if (legacy != null) {
-      await _writeStorageValue(storage, key: key, value: legacy);
+      await _migrateStorageValue(storage, key: key, value: legacy);
     }
     return legacy;
+  }
+
+  Future<void> _migrateStorageValue(
+    FlutterSecureStorage storage, {
+    required String key,
+    required String value,
+  }) async {
+    try {
+      await _writeStorageValue(storage, key: key, value: value);
+    } on PlatformException catch (error) {
+      if (!_isDuplicateKeychainItem(error)) {
+        rethrow;
+      }
+      await storage.delete(key: key, iOptions: _legacyIosOptions);
+      await _writeStorageValue(storage, key: key, value: value);
+    }
   }
 
   Future<void> _writeStorageValue(
@@ -251,6 +279,12 @@ class SecretEncryptionService {
     }
     return storage.write(key: key, value: value, iOptions: _hardenedIosOptions);
   }
+
+  bool _isDuplicateKeychainItem(PlatformException error) =>
+      error.details == _errSecDuplicateItem ||
+      error.details == _errSecDuplicateItem.toString() ||
+      (error.message?.contains(_errSecDuplicateItem.toString()) ?? false) ||
+      (error.message?.contains('already exists') ?? false);
 
   List<int> _decodeEnvelopeField(Map<String, dynamic> envelope, String key) {
     final value = envelope[key];

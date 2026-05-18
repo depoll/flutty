@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -193,6 +194,130 @@ void main() {
         ),
       );
     });
+
+    test(
+      'falls back to legacy iOS accessibility when hardened read throws',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() {
+          debugDefaultTargetPlatformOverride = null;
+        });
+        final storage = _MockFlutterSecureStorage();
+        final legacyValue = base64Encode(
+          List<int>.generate(32, (index) => index),
+        );
+        const hardenedOptions = IOSOptions(
+          accessibility: KeychainAccessibility.first_unlock_this_device,
+        );
+        const legacyOptions = IOSOptions.defaultOptions;
+
+        when(
+          () => storage.read(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: hardenedOptions,
+          ),
+        ).thenThrow(PlatformException(code: 'read_failed'));
+        when(
+          () => storage.read(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: legacyOptions,
+          ),
+        ).thenAnswer((_) async => legacyValue);
+        when(
+          () => storage.write(
+            key: 'flutty_db_encryption_key_v1',
+            value: legacyValue,
+            iOptions: hardenedOptions,
+          ),
+        ).thenAnswer((_) async {});
+
+        service = SecretEncryptionService(storage: storage, random: Random(1));
+
+        final encrypted = await service.encryptNullable('migrate-me');
+
+        expect(encrypted, startsWith('ENCv1:'));
+        verify(
+          () => storage.read(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: legacyOptions,
+          ),
+        ).called(1);
+        verify(
+          () => storage.write(
+            key: 'flutty_db_encryption_key_v1',
+            value: legacyValue,
+            iOptions: hardenedOptions,
+          ),
+        ).called(1);
+      },
+    );
+
+    test(
+      'replaces duplicate legacy iOS keychain item during migration',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() {
+          debugDefaultTargetPlatformOverride = null;
+        });
+        final storage = _MockFlutterSecureStorage();
+        final legacyValue = base64Encode(
+          List<int>.generate(32, (index) => index),
+        );
+        const hardenedOptions = IOSOptions(
+          accessibility: KeychainAccessibility.first_unlock_this_device,
+        );
+        const legacyOptions = IOSOptions.defaultOptions;
+
+        when(
+          () => storage.read(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: hardenedOptions,
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => storage.read(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: legacyOptions,
+          ),
+        ).thenAnswer((_) async => legacyValue);
+        var writeCount = 0;
+        when(
+          () => storage.write(
+            key: 'flutty_db_encryption_key_v1',
+            value: legacyValue,
+            iOptions: hardenedOptions,
+          ),
+        ).thenAnswer((_) async {
+          writeCount++;
+          if (writeCount == 1) {
+            throw PlatformException(
+              code: 'Unexpected security result code',
+              message: 'The specified item already exists in the keychain.',
+              details: -25299,
+            );
+          }
+        });
+        when(
+          () => storage.delete(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: legacyOptions,
+          ),
+        ).thenAnswer((_) async {});
+
+        service = SecretEncryptionService(storage: storage, random: Random(1));
+
+        final encrypted = await service.encryptNullable('migrate-me');
+
+        expect(encrypted, startsWith('ENCv1:'));
+        expect(writeCount, 2);
+        verify(
+          () => storage.delete(
+            key: 'flutty_db_encryption_key_v1',
+            iOptions: legacyOptions,
+          ),
+        ).called(1);
+      },
+    );
 
     group('tamper and corruption resistance', () {
       test('rejects a value with a tampered MAC', () async {

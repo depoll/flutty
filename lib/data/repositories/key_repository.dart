@@ -58,29 +58,14 @@ class KeyRepository {
   /// Get all keys that can be decrypted, skipping unreadable stored keys.
   Future<SshKeyLoadResult> getAllDecryptable() async {
     final keys = await _db.select(_db.sshKeys).get();
-    final decryptedKeys = <SshKey>[];
-    var unreadableCount = 0;
-    String? firstUnreadableErrorType;
-
-    for (final key in keys) {
-      try {
-        decryptedKeys.add(await _decryptKey(key));
-      } on Exception catch (error) {
-        unreadableCount++;
-        firstUnreadableErrorType ??= error.runtimeType.toString();
-      }
-    }
-
-    return SshKeyLoadResult(
-      keys: List.unmodifiable(decryptedKeys),
-      unreadableCount: unreadableCount,
-      firstUnreadableErrorType: firstUnreadableErrorType,
-    );
+    return _loadDecryptable(keys);
   }
 
   /// Watch all keys.
-  Stream<List<SshKey>> watchAll() =>
-      _db.select(_db.sshKeys).watch().asyncMap(_decryptKeys);
+  Stream<List<SshKey>> watchAll() => _db
+      .select(_db.sshKeys)
+      .watch()
+      .asyncMap((keys) async => (await _loadDecryptable(keys)).keys);
 
   /// Get a key by ID.
   Future<SshKey?> getById(int id) async {
@@ -94,9 +79,10 @@ class KeyRepository {
   }
 
   /// Search keys by name.
-  Future<List<SshKey>> search(String query) => (_db.select(
-    _db.sshKeys,
-  )..where((k) => k.name.like('%$query%'))).get().then(_decryptKeys);
+  Future<List<SshKey>> search(String query) =>
+      (_db.select(_db.sshKeys)..where((k) => k.name.like('%$query%')))
+          .get()
+          .then((keys) async => (await _loadDecryptable(keys)).keys);
 
   /// Insert a new key.
   Future<int> insert(SshKeysCompanion key) async {
@@ -143,8 +129,26 @@ class KeyRepository {
     return deleted;
   }
 
-  Future<List<SshKey>> _decryptKeys(List<SshKey> keys) =>
-      Future.wait(keys.map(_decryptKey));
+  Future<SshKeyLoadResult> _loadDecryptable(List<SshKey> keys) async {
+    final decryptedKeys = <SshKey>[];
+    var unreadableCount = 0;
+    String? firstUnreadableErrorType;
+
+    for (final key in keys) {
+      try {
+        decryptedKeys.add(await _decryptKey(key));
+      } on Exception catch (error) {
+        unreadableCount++;
+        firstUnreadableErrorType ??= error.runtimeType.toString();
+      }
+    }
+
+    return SshKeyLoadResult(
+      keys: List.unmodifiable(decryptedKeys),
+      unreadableCount: unreadableCount,
+      firstUnreadableErrorType: firstUnreadableErrorType,
+    );
+  }
 
   Future<SshKey> _decryptKey(SshKey key) async {
     final decryptedPrivateKey =
