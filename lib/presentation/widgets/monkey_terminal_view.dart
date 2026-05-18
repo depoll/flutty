@@ -1663,16 +1663,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     final firstCell = CellData.empty();
-    line.getCellData(0, firstCell);
-    if (_cellBackgroundColorType(firstCell) == CellColor.normal) {
-      return null;
-    }
-    if (!_shouldExtendTrailingBackgroundFill(firstCell)) {
+    final runStartColumn = _trailingBackgroundRunStartColumn(line, firstCell);
+    if (runStartColumn == null) {
       return null;
     }
 
     final background = firstCell.background;
-    var fillStartColumn = 0;
+    var fillStartColumn = runStartColumn;
     var hasHighlightedContent = false;
     for (; fillStartColumn < line.length; fillStartColumn += 1) {
       if (line.getBackground(fillStartColumn) != background) {
@@ -1696,6 +1693,29 @@ class MonkeyTerminalPainter extends TerminalPainter {
       startColumn: fillStartColumn,
       color: _resolveCellBackgroundPaintColor(firstCell),
     );
+  }
+
+  int? _trailingBackgroundRunStartColumn(BufferLine line, CellData firstCell) {
+    line.getCellData(0, firstCell);
+    if (_shouldExtendTrailingBackgroundFill(firstCell)) {
+      return 0;
+    }
+
+    for (var column = 0; column < line.length; column += 1) {
+      line.getCellData(column, firstCell);
+      if (_shouldExtendTrailingBackgroundFill(firstCell)) {
+        return column;
+      }
+      final charCode = firstCell.content & CellContent.codepointMask;
+      final isBlankNormalCell =
+          charCode == 0 &&
+          (firstCell.flags & CellFlags.inverse) == 0 &&
+          _cellBackgroundColorType(firstCell) == CellColor.normal;
+      if (!isBlankNormalCell) {
+        return null;
+      }
+    }
+    return null;
   }
 
   @override
@@ -1974,13 +1994,19 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return false;
     }
     final backgroundType = _cellBackgroundColorType(firstCell);
-    if (backgroundType != CellColor.named &&
-        backgroundType != CellColor.palette) {
+    if (backgroundType == CellColor.normal) {
       return false;
     }
     // ANSI bright black is commonly used as a neutral prompt/message row
     // background; semantic color labels should stay text-width.
-    return _cellColorValue(firstCell.background) == 8;
+    if ((backgroundType == CellColor.named ||
+            backgroundType == CellColor.palette) &&
+        _cellColorValue(firstCell.background) == 8) {
+      return true;
+    }
+    return _isNeutralTerminalColor(
+      resolveBackgroundColor(firstCell.background),
+    );
   }
 
   Color _resolveCellBackgroundPaintColor(
