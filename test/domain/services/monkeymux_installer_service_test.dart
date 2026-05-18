@@ -36,6 +36,7 @@ class _FakeAssetBundle extends CachingAssetBundle {
 
 class _FakeRemoteFileService extends RemoteFileService {
   bool uploaded = false;
+  int uploadCount = 0;
 
   @override
   Future<String> resolveInitialDirectory(SftpClient sftp) async =>
@@ -55,6 +56,7 @@ class _FakeRemoteFileService extends RemoteFileService {
     required Uint8List bytes,
   }) async {
     uploaded = true;
+    uploadCount++;
   }
 }
 
@@ -135,6 +137,7 @@ void main() {
         const Duration(seconds: 2),
       );
       expect(installation.version, '9.9.9');
+      expect(installation.installedDuringCall, isTrue);
       expect(acceptedConfirmations, <bool>[true]);
       expect(sftpOpenCount, 2);
 
@@ -142,6 +145,62 @@ void main() {
       await probeOnlyInstall;
     },
   );
+
+  test('reused helper is not marked as installed during the call', () async {
+    final assetBytes = Uint8List.fromList(utf8.encode('monkeymux-binary'));
+    final expectedSha = sha256.convert(assetBytes).toString();
+    final remoteFileService = _FakeRemoteFileService()..uploaded = true;
+    final installer = MonkeyMuxInstallerService(
+      manifestFuture: Future.value(
+        MonkeyMuxManifest(
+          version: '9.9.9',
+          entries: [
+            MonkeyMuxManifestEntry(
+              platform: 'darwin-arm64',
+              asset: 'assets/test/monkeymux',
+              sha256: expectedSha,
+              size: assetBytes.length,
+            ),
+          ],
+        ),
+      ),
+      remoteFileService: remoteFileService,
+      assetBundle: _FakeAssetBundle({'assets/test/monkeymux': assetBytes}),
+    );
+    const connectionId = 246810;
+    final client = _MockSshClient();
+    final sftp = _MockSftpClient();
+    when(sftp.close).thenReturn(null);
+    when(client.sftp).thenAnswer((_) async => sftp);
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      invocation,
+    ) async {
+      final command = invocation.positionalArguments.single as String;
+      final output = _outputForCommand(
+        command,
+        expectedSha: expectedSha,
+        remoteFileService: remoteFileService,
+      );
+      return _execSession(output);
+    });
+    final session = SshSession(
+      connectionId: connectionId,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'proof',
+      ),
+    );
+    addTearDown(() => installer.clearCache(connectionId));
+
+    final installation = await installer.ensureInstalled(session);
+
+    expect(installation.version, '9.9.9');
+    expect(installation.installedDuringCall, isFalse);
+    expect(remoteFileService.uploadCount, 0);
+  });
 }
 
 String _outputForCommand(
