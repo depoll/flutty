@@ -255,6 +255,49 @@ void main() {
     expect(resizeEvents.last.pixelHeight, initialEvent.pixelHeight);
   });
 
+  testWidgets('keyboard inset reduces rows when layout size is unchanged', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 400)),
+    );
+
+    expect(resizeEvents, isNotEmpty);
+    final initialEvent = resizeEvents.last;
+    final initialCount = resizeEvents.length;
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        size: const Size(320, 400),
+        keyboardInset: 160,
+      ),
+    );
+
+    expect(resizeEvents, hasLength(initialCount));
+    expect(terminal.viewHeight, initialEvent.height);
+
+    await tester.pump(terminalKeyboardResizeDebounceDuration);
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(resizeEvents.last.width, initialEvent.width);
+    expect(resizeEvents.last.height, lessThan(initialEvent.height));
+    expect(resizeEvents.last.pixelWidth, 320);
+    expect(resizeEvents.last.pixelHeight, 240);
+  });
+
   testWidgets('emits focus reports when focus reporting mode is enabled', (
     tester,
   ) async {
