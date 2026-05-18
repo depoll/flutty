@@ -45,6 +45,21 @@ void main() {
     );
 
     test(
+      'does not synthesize arrows for agent tools without wheel reporting',
+      () {
+        expect(
+          shouldUseSyntheticAltBufferScrollFallback(
+            isUsingAltBuffer: true,
+            preferExplicitMouseReporting: true,
+            terminalReportsMouseWheel: false,
+            isAgentToolActive: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test(
       'falls back when explicit reporting is preferred but not active yet',
       () {
         expect(
@@ -77,6 +92,33 @@ void main() {
           isMobile: true,
           isUsingAltBuffer: true,
           terminalReportsMouseWheel: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+      'keeps mobile agent drags in the viewport when wheel reporting is off',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: true,
+            terminalReportsMouseWheel: false,
+            isAgentToolActive: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('routes mobile agent drags when wheel reporting is active', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: true,
+          terminalReportsMouseWheel: true,
+          isAgentToolActive: true,
         ),
         isTrue,
       );
