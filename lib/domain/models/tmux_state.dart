@@ -537,7 +537,8 @@ class TmuxWindow {
         return tool;
       }
     }
-    for (final candidate in [paneTitle, name]) {
+    if (agentTool != null) return agentTool;
+    for (final candidate in [name, paneTitle]) {
       final tool =
           agentLaunchToolForCommandName(candidate) ??
           _agentToolFromTerminalTitle(candidate);
@@ -545,7 +546,6 @@ class TmuxWindow {
         return tool;
       }
     }
-    if (agentTool != null) return agentTool;
     return _agentToolFromCommandText(paneStartCommand);
   }
 
@@ -973,7 +973,7 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
     'copilot cli',
     'github copilot',
   },
-  AgentLaunchTool.codex => const {'codex', 'openai codex'},
+  AgentLaunchTool.codex => const {'codex'},
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
 };

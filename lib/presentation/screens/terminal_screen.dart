@@ -2094,20 +2094,7 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-  bool forceTerminalScroll = false,
-}) =>
-    isMobile &&
-    (forceTerminalScroll || isUsingAltBuffer || terminalReportsMouseWheel);
-
-/// Whether MonkeyMux should receive direct SGR scroll input for the active
-/// window's server-managed scrollback.
-@visibleForTesting
-bool shouldForceMonkeyMuxCodexScrollInput({
-  required RemoteMuxBackend activeMuxBackend,
-  required AgentLaunchTool? activeWindowTool,
-}) =>
-    activeMuxBackend == RemoteMuxBackend.monkeyMux &&
-    activeWindowTool == AgentLaunchTool.codex;
+}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2890,21 +2877,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
-  AgentLaunchTool? get _activeTmuxWindowTool => resolveTmuxBarActiveWindowTool(
-    _tmuxBarKey.currentState?.currentWindowsSnapshot,
-  );
-
-  bool get _forceSgrScrollMouseInputForMuxWindow =>
-      shouldForceMonkeyMuxCodexScrollInput(
-        activeMuxBackend: _activeMuxBackend,
-        activeWindowTool: _activeTmuxWindowTool,
-      );
-
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
-    forceTerminalScroll: _forceSgrScrollMouseInputForMuxWindow,
   );
 
   MenuStyle _terminalOverflowMenuStyle({
@@ -3863,9 +3839,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      if (mounted) {
-        setState(() {});
-      }
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
         _refreshTerminalAfterMonkeyMuxWindowChange();
@@ -6403,7 +6376,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final installation = await _monkeyMuxInstallerService.ensureInstalled(
           session,
           priority: SshExecPriority.normal,
-          confirmInstall: _confirmMonkeyMuxInstall,
+          confirmInstall: (request) => _confirmMonkeyMuxInstall(
+            request,
+            resolveRunningStatus: () => _monkeyMuxService
+                .runningServerStatusFromInstalledHelpers(session, sessionName),
+          ),
         );
         final updatePolicy = await _resolveMonkeyMuxServerUpdatePolicy(
           session,
@@ -6485,6 +6462,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (status == null || !status.needsUpdate(installation.version)) {
       return MonkeyMuxServerUpdatePolicy.never;
     }
+    if (installation.installedDuringCall) {
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'upgrade_confirmed_by_install',
+        fields: {
+          'connectionId': session.connectionId,
+          'supportsShutdown': status.supportsShutdown,
+        },
+      );
+      return MonkeyMuxServerUpdatePolicy.always;
+    }
     DiagnosticsLogService.instance.info(
       'monkeymux.install',
       'upgrade_prompt',
@@ -6514,26 +6502,47 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return MonkeyMuxServerUpdatePolicy.always;
   }
 
-  Future<bool> _confirmMonkeyMuxInstall(MonkeyMuxInstallRequest request) async {
+  Future<bool> _confirmMonkeyMuxInstall(
+    MonkeyMuxInstallRequest request, {
+    Future<MonkeyMuxServerStatus?> Function()? resolveRunningStatus,
+  }) async {
     if (!mounted) {
       return false;
     }
+    MonkeyMuxServerStatus? runningStatus;
+    if (resolveRunningStatus != null) {
+      runningStatus = await resolveRunningStatus();
+      if (!mounted) {
+        return false;
+      }
+    }
+    final updateStatus =
+        runningStatus != null && runningStatus.needsUpdate(request.version)
+        ? runningStatus
+        : null;
+    final title = updateStatus == null
+        ? 'Install MonkeyMux helper?'
+        : 'Update MonkeyMux helper?';
+    final confirmLabel = updateStatus == null ? 'Install' : 'Update';
     final confirmed = await showDialog<bool>(
       context: context,
       requestFocus: terminalOverlayRouteRequestFocus(context),
       builder: (context) => AlertDialog(
-        title: const Text('Install MonkeyMux helper?'),
+        title: Text(title),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'MonkeySSH needs to upload its bundled MonkeyMux helper before '
-                'using MonkeyMux on this connected host.',
+              Text(
+                updateStatus == null
+                    ? 'MonkeySSH needs to upload its bundled MonkeyMux helper before using MonkeyMux on this connected host.'
+                    : 'This MonkeyMux session is running helper ${updateStatus.version ?? 'unknown'}. MonkeySSH needs to upload helper ${request.version}, restart MonkeyMux for this session, and try to restore its current windows.',
               ),
               const SizedBox(height: 12),
-              Text('Version: ${request.version}'),
+              if (updateStatus != null)
+                Text('Running version: ${updateStatus.version ?? 'unknown'}'),
+              Text('Bundled version: ${request.version}'),
               Text('Platform: ${request.platform}'),
               Text('Size: ${_formatMonkeyMuxInstallSize(request.size)}'),
               const SizedBox(height: 12),
@@ -6551,7 +6560,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Install'),
+            child: Text(confirmLabel),
           ),
         ],
       ),
@@ -6628,7 +6637,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
-        confirmInstall: _confirmMonkeyMuxInstall,
+        confirmInstall: (request) => _confirmMonkeyMuxInstall(
+          request,
+          resolveRunningStatus: () => _monkeyMuxService
+              .runningServerStatusFromInstalledHelpers(session, sessionName),
+        ),
       );
       DiagnosticsLogService.instance.info(
         'terminal.agent_launch',
@@ -9335,7 +9348,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               : <TerminalTextUnderline>[?_hoveredTerminalPathUnderline]
         : const <TerminalTextUnderline>[];
     final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
-    final forceSgrScrollMouseInput = _forceSgrScrollMouseInputForMuxWindow;
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -9368,7 +9380,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
-      forceSgrScrollMouseInput: forceSgrScrollMouseInput,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
     );
