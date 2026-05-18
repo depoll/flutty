@@ -447,13 +447,9 @@ double resolveTerminalHorizontalFillScale({
 ({int width, int height}) resolveTerminalResizePixelDimensions({
   required Size viewportSize,
   EdgeInsets padding = EdgeInsets.zero,
-  double bottomInset = 0,
 }) {
   final width = math.max(0.0, viewportSize.width - padding.horizontal);
-  final height = math.max(
-    0.0,
-    viewportSize.height - padding.vertical - math.max(0.0, bottomInset),
-  );
+  final height = math.max(0.0, viewportSize.height - padding.vertical);
   return (width: width.round(), height: height.round());
 }
 
@@ -2151,7 +2147,6 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   double _resizeBottomInset;
-  double? _keyboardResizeBaselineHeight;
   set resizeBottomInset(double value) {
     if (value == _resizeBottomInset) return;
     final previousInset = _resizeBottomInset;
@@ -3071,7 +3066,6 @@ class MonkeyRenderTerminal extends RenderBox
 
   void _updateViewportSize({bool notifyIfUnchanged = false}) {
     final availableWidth = size.width - _padding.horizontal;
-    _refreshKeyboardResizeBaseline();
     final availableHeight = _viewportHeight;
     if (availableWidth <= _painter.cellSize.width ||
         availableHeight <= _painter.cellSize.height) {
@@ -3085,7 +3079,6 @@ class MonkeyRenderTerminal extends RenderBox
     final pixelSize = resolveTerminalResizePixelDimensions(
       viewportSize: size,
       padding: _padding,
-      bottomInset: _effectiveResizeBottomInset,
     );
 
     if (_viewportSize != viewportSize) {
@@ -3138,7 +3131,6 @@ class MonkeyRenderTerminal extends RenderBox
         resolveTerminalResizePixelDimensions(
           viewportSize: size,
           padding: _padding,
-          bottomInset: _effectiveResizeBottomInset,
         );
 
     if (_isDebouncingKeyboardResize) {
@@ -3251,34 +3243,7 @@ class MonkeyRenderTerminal extends RenderBox
   bool get _shouldShowCursor =>
       _terminal.cursorVisibleMode || _alwaysShowCursor || _isComposingText;
 
-  void _refreshKeyboardResizeBaseline() {
-    if (_resizeBottomInset <= 0) {
-      _keyboardResizeBaselineHeight = _availableViewportHeight;
-    }
-  }
-
-  double get _availableViewportHeight =>
-      math.max(0.0, size.height - _padding.vertical);
-
-  double get _viewportHeight =>
-      _availableViewportHeight - _effectiveResizeBottomInset;
-
-  double get _effectiveResizeBottomInset {
-    final availableHeight = _availableViewportHeight;
-    final inset = _resizeBottomInset.clamp(0.0, availableHeight);
-    final baselineHeight = _keyboardResizeBaselineHeight;
-    if (inset <= 0 || baselineHeight == null) {
-      return inset;
-    }
-
-    // Ancestors such as Scaffold may already shrink the terminal while leaving
-    // viewInsets.bottom set, so only remove the inset that is still overlapping.
-    final heightAlreadyRemoved = (baselineHeight - availableHeight).clamp(
-      0.0,
-      inset,
-    );
-    return inset - heightAlreadyRemoved;
-  }
+  double get _viewportHeight => size.height - _padding.vertical;
 
   double get _maxScrollExtent =>
       math.max(_terminalHeight - _viewportHeight, 0.0);
