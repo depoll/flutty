@@ -332,6 +332,15 @@ void main() {
       expect(reports, isNot(contains('\x1b]19;')));
     });
 
+    test('buildTerminalThemeBackgroundColorReport answers OSC 11', () {
+      const theme = TerminalThemes.githubLightDefault;
+
+      expect(
+        buildTerminalThemeBackgroundColorReport(theme),
+        '\x1b]11;rgb:ffff/ffff/ffff\x1b\\',
+      );
+    });
+
     test('buildTerminalThemeOscResponse ignores unsupported OSC values', () {
       const theme = TerminalThemes.githubLightDefault;
 

@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.23"
+	monkeyMuxVersion         = "0.1.24"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -282,6 +282,8 @@ type muxWindow struct {
 	applicationKeypadEnabled   bool
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
+	backgroundColorQuerySeen   bool
+	backgroundColorQueryPid    int
 	alert                      bool
 	closed                     bool
 }
@@ -1491,10 +1493,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	before := window.broadcastIdentityLocked()
 	wasAlert := window.alert
 	window.lastActivity = now
+	window.refreshProcessMetadataLocked(now)
 	window.observeTerminalMetadataLocked(chunk)
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
-	window.refreshProcessMetadataLocked(now)
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
@@ -2474,22 +2476,32 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	if !window.supportsThemeHintLocked() {
+	sendBackgroundReport := data != "" && window.hasActiveBackgroundColorQueryLocked()
+	sendFocusTransition := window.focusModeEnabled
+	if !sendBackgroundReport && !sendFocusTransition {
 		s.mu.Unlock()
 		return false
 	}
 	windowID := window.id
 	s.mu.Unlock()
 
-	if data != "" {
-		return s.writeWindow(windowID, []byte(data)) == nil
+	if sendBackgroundReport {
+		if err := s.writeWindow(windowID, []byte(data)); err != nil {
+			return false
+		}
 	}
+	if sendFocusTransition {
+		s.sendFocusTransition(windowID)
+	}
+	return true
+}
+
+func (s *muxServer) sendFocusTransition(windowID string) {
 	go func() {
 		_ = s.writeWindow(windowID, []byte("\x1b[O"))
 		time.Sleep(50 * time.Millisecond)
 		_ = s.writeWindow(windowID, []byte("\x1b[I"))
 	}()
-	return true
 }
 
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
@@ -2751,7 +2763,22 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeEnabled && w.agentToolLocked() != ""
+	return w.focusModeEnabled || w.hasActiveBackgroundColorQueryLocked()
+}
+
+func (w *muxWindow) hasActiveBackgroundColorQueryLocked() bool {
+	activePid := w.activeForegroundPidLocked()
+	return w.backgroundColorQuerySeen &&
+		w.backgroundColorQueryPid > 0 &&
+		activePid > 0 &&
+		w.backgroundColorQueryPid == activePid
+}
+
+func (w *muxWindow) activeForegroundPidLocked() int {
+	if w.pty == nil {
+		return w.metadataProcessIDLocked()
+	}
+	return w.foregroundProcessGroupLocked()
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -3253,6 +3280,15 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) {
 		path := pathFromOsc7(value)
 		if path != "" {
 			w.cwd = path
+		}
+	case "11":
+		if strings.TrimSpace(value) == "?" {
+			queryPid := w.activeForegroundPidLocked()
+			if queryPid <= 0 {
+				return
+			}
+			w.backgroundColorQuerySeen = true
+			w.backgroundColorQueryPid = queryPid
 		}
 	}
 }

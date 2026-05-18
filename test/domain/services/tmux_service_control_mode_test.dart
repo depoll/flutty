@@ -13,6 +13,10 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
+String _tmuxSendKeysHex(String value) => value.codeUnits
+    .map((codeUnit) => codeUnit.toRadixString(16).padLeft(2, '0'))
+    .join(' ');
+
 void main() {
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
@@ -151,22 +155,23 @@ void main() {
       expect(
         command,
         contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{pane_title}${SEP}#{pane_start_command}${SEP}#{@flutty_agent_tool}',
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_start_command}',
         ),
       );
       expect(
         command,
         contains(
-          r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_title pane_start_command agent_metadata',
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_start_command',
         ),
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
-      expect(command, contains(r'[ "$alternate" = 1 ]'));
+      expect(command, isNot(contains(r'[ "$alternate" = 1 ]')));
       expect(command, isNot(contains(r'[ "$theme_refresh_tui" = 1 ]')));
       expect(command, isNot(contains('theme_refresh_tui=0')));
       expect(command, contains('flutty_set_agent_tool_from_command_name'));
-      expect(command, contains('flutty_set_agent_tool_from_exact_name'));
+      expect(command, isNot(contains('flutty_set_agent_tool_from_exact_name')));
+      expect(command, contains('flutty_is_generic_runtime_command_name'));
       expect(command, contains('flutty_set_agent_tool_from_command_text'));
       expect(command, contains(r'current_agent_tool=$agent_tool'));
       expect(
@@ -175,15 +180,7 @@ void main() {
       );
       expect(
         command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$agent_metadata"'),
-      );
-      expect(
-        command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$window_name"'),
-      );
-      expect(
-        command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$pane_title"'),
+        contains(r'flutty_is_generic_runtime_command_name "$pane_command"'),
       );
       expect(
         command,
@@ -196,6 +193,7 @@ void main() {
       expect(command, contains('codex|codex-*'));
       expect(command, contains('opencode|opencode-*'));
       expect(command, contains('gemini|gemini-*'));
+      expect(command, contains('node|nodejs|npm|npx|bun|deno|python|python3'));
       expect(command, isNot(contains(r'case "$pane_title" in')));
       expect(command, isNot(contains('*Copilot*|*copilot*')));
       expect(command, isNot(contains('*Codex*|*codex*')));
@@ -205,18 +203,14 @@ void main() {
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
-      expect(
-        command,
-        contains(
-          r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
-        ),
-      );
+      expect(command, contains(r'if [ -n "$current_agent_tool" ]; then'));
       expect(command, contains(r'case "$agent_tool" in'));
       expect(command, contains('copilot)'));
       expect(command, contains('codex)'));
-      expect(command, contains('opencode|claude|gemini)'));
+      expect(command, contains('gemini)'));
+      expect(command, contains('opencode|claude)'));
       final directBranchStart = command.indexOf(
-        r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
+        r'if [ -n "$current_agent_tool" ]; then',
       );
       expect(directBranchStart, isNonNegative);
       final directBranch = command.substring(directBranchStart);
@@ -256,27 +250,50 @@ void main() {
       expect(command, contains('1b 5b 49'));
       final copilotBranchStart = directBranch.indexOf('copilot)');
       final codexBranchStart = directBranch.indexOf('codex)');
-      final opencodeBranchStart = directBranch.indexOf(
-        'opencode|claude|gemini)',
+      final geminiBranchStart = directBranch.indexOf('gemini)');
+      final opencodeBranchStart = directBranch.indexOf('opencode|claude)');
+      final backgroundReportHex = _tmuxSendKeysHex(
+        buildTerminalThemeBackgroundColorReport(TerminalThemes.dracula),
       );
       expect(copilotBranchStart, isNonNegative);
       expect(codexBranchStart, greaterThan(copilotBranchStart));
-      expect(opencodeBranchStart, greaterThan(codexBranchStart));
+      expect(geminiBranchStart, greaterThan(codexBranchStart));
+      expect(opencodeBranchStart, greaterThan(geminiBranchStart));
       expect(
         directBranch.substring(copilotBranchStart, codexBranchStart),
         contains('1b 5b 3f 39 39 37 3b 31 6e'),
       );
       expect(
-        directBranch.substring(codexBranchStart, opencodeBranchStart),
+        directBranch.substring(copilotBranchStart, codexBranchStart),
+        contains(backgroundReportHex),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, geminiBranchStart),
         isNot(contains('1b 5b 3f 39 39 37')),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, geminiBranchStart),
+        contains(backgroundReportHex),
+      );
+      expect(
+        directBranch.substring(geminiBranchStart, opencodeBranchStart),
+        isNot(contains('1b 5b 3f 39 39 37')),
+      );
+      expect(
+        directBranch.substring(codexBranchStart, geminiBranchStart),
+        isNot(contains('1b 5b 4f')),
+      );
+      expect(
+        directBranch.substring(geminiBranchStart, opencodeBranchStart),
+        contains(backgroundReportHex),
       );
       expect(
         directBranch.substring(opencodeBranchStart),
-        isNot(contains('1b 5b 3f 39 39 37')),
+        contains(backgroundReportHex),
       );
       expect(
-        directBranch.substring(codexBranchStart, opencodeBranchStart),
-        isNot(contains('1b 5b 4f')),
+        directBranch.indexOf('1b 5b 4f', geminiBranchStart),
+        greaterThan(geminiBranchStart),
       );
       expect(
         directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
@@ -307,10 +324,10 @@ void main() {
         contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),
       );
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 31')));
+      expect(command, contains(r'send-keys -t "$pane" -H 1b 5d 31 31'));
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
       expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), isEmpty);
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(4));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
