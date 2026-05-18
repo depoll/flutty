@@ -464,6 +464,7 @@ class _SshSessionRuntime {
         cursorRow: terminal.buffer.cursorY,
         marginTop: terminal.buffer.marginTop,
         marginBottom: terminal.buffer.marginBottom,
+        originMode: terminal.originMode,
       );
       _terminalInsertModePendingInput = terminalOutput.pendingInput;
       _terminalInsertMode = terminalOutput.insertMode;

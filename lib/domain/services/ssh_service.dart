@@ -225,6 +225,7 @@ adaptTerminalInsertModeOutputForXterm({
   int? cursorRow,
   int? marginTop,
   int? marginBottom,
+  bool originMode = false,
 }) {
   final combinedInput = pendingInput + input;
   final output = StringBuffer();
@@ -237,6 +238,7 @@ adaptTerminalInsertModeOutputForXterm({
     cursorRow: cursorRow,
     marginTop: marginTop,
     marginBottom: marginBottom,
+    originMode: originMode,
   );
 
   while (cursor < combinedInput.length) {
@@ -289,8 +291,10 @@ class _TerminalOutputCursorTracker {
     required int? cursorRow,
     required int? marginTop,
     required int? marginBottom,
+    required bool originMode,
   }) : _columns = columns != null && columns > 0 ? columns : null,
-       _rows = rows != null && rows > 0 ? rows : null {
+       _rows = rows != null && rows > 0 ? rows : null,
+       _originMode = originMode {
     final validRows = _rows;
     final validColumns = _columns;
     if (validRows == null ||
@@ -317,6 +321,7 @@ class _TerminalOutputCursorTracker {
   int? _cursorRow;
   int? _marginTop;
   int? _marginBottom;
+  bool _originMode;
 
   bool get _hasPosition =>
       _columns != null &&
@@ -398,6 +403,12 @@ class _TerminalOutputCursorTracker {
 
     final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
     final params = _terminalCsiNumericParams(sequence);
+    final originModeUpdate = _terminalDecOriginModeUpdate(sequence);
+    if (originModeUpdate != null) {
+      _originMode = originModeUpdate;
+      return;
+    }
+
     switch (finalCodeUnit) {
       case _terminalCursorUpFinalCodeUnit:
         _moveCursorRows(-_terminalCsiParam(params, 0, defaultValue: 1));
@@ -454,7 +465,11 @@ class _TerminalOutputCursorTracker {
   }
 
   void _setCursor({required int row, required int column}) {
-    _setCursorRow(row);
+    if (_originMode) {
+      _cursorRow = (row + _marginTop!).clamp(0, _marginBottom!);
+    } else {
+      _setCursorRow(row);
+    }
     _setCursorColumn(column);
   }
 
@@ -490,6 +505,7 @@ class _TerminalOutputCursorTracker {
     _cursorRow = 0;
     _marginTop = 0;
     _marginBottom = _rows! - 1;
+    _originMode = false;
   }
 }
 
@@ -616,6 +632,7 @@ const _terminalHorizontalVerticalPositionFinalCodeUnit = 0x66;
 const _terminalLinePositionAbsoluteFinalCodeUnit = 0x64;
 const _terminalSetMarginsFinalCodeUnit = 0x72;
 const _terminalInsertMode = 4;
+const _terminalOriginMode = 6;
 const _terminalSetModeFinalCodeUnit = 0x68;
 const _terminalResetModeFinalCodeUnit = 0x6C;
 const _terminalSoftResetFinalCodeUnit = 0x70;
@@ -760,6 +777,32 @@ bool? _terminalInsertModeUpdate(String sequence) {
   }
   for (final param in params.split(';')) {
     if (int.tryParse(param) == _terminalInsertMode) {
+      return finalCodeUnit == _terminalSetModeFinalCodeUnit;
+    }
+  }
+  return null;
+}
+
+bool? _terminalDecOriginModeUpdate(String sequence) {
+  if (sequence.length < 5 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
+    return null;
+  }
+
+  final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
+  if (finalCodeUnit != _terminalSetModeFinalCodeUnit &&
+      finalCodeUnit != _terminalResetModeFinalCodeUnit) {
+    return null;
+  }
+
+  final params = sequence.substring(2, sequence.length - 1);
+  if (!params.startsWith('?')) {
+    return null;
+  }
+
+  for (final param in params.substring(1).split(';')) {
+    if (int.tryParse(param) == _terminalOriginMode) {
       return finalCodeUnit == _terminalSetModeFinalCodeUnit;
     }
   }
