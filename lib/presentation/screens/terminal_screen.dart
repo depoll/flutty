@@ -2976,7 +2976,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     children: [
       Icon(icon, size: 20),
       const SizedBox(width: 12),
-      Expanded(child: Text(label)),
+      Expanded(child: Text(label, overflow: TextOverflow.ellipsis)),
       if (showsSubmenu) ...const [
         SizedBox(width: 12),
         Icon(Icons.chevron_right_rounded, size: 20),

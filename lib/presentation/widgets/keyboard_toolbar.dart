@@ -284,7 +284,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   static const _pasteOptionsWidth = 200.0;
   static const _pasteSnippetMenuWidth = 180.0;
   static const _pasteOptionHeight = 44.0;
-  static const _pasteOptionsDividerHeight = 1.0;
+  static const _pasteOptionsDividerHeight = 0.0;
+  static const _pasteOptionsVerticalPadding = 8.0;
   static const _pasteOptionsGap = 8.0;
   static const _pasteOptionsScreenMargin = 8.0;
 
@@ -727,8 +728,11 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (globalSnippetRect != null &&
         globalSnippetRect.contains(globalPosition)) {
       final entries = _expandedSnippetMenuEntries;
-      final index =
-          (globalPosition.dy - globalSnippetRect.top) ~/ _pasteOptionHeight;
+      final localDy =
+          globalPosition.dy -
+          globalSnippetRect.top -
+          _pasteOptionsVerticalPadding;
+      final index = localDy ~/ _pasteOptionHeight;
       if (index >= 0 && index < entries.length) {
         final entry = entries[index];
         return _PasteMenuHit(
@@ -793,7 +797,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     Rect? snippetMenuRect;
     var snippetMenuOpensLeft = true;
     if (entries.isNotEmpty) {
-      final snippetMenuHeight = entries.length * _pasteOptionHeight;
+      final snippetMenuHeight =
+          entries.length * _pasteOptionHeight +
+          _pasteOptionsVerticalPadding * 2;
       final canOpenLeft =
           mainRect.left -
               _pasteOptionsGap -
@@ -843,15 +849,17 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   double get _pasteOptionsMenuHeight =>
       _PasteToolbarAction.values.length * _pasteOptionHeight +
-      (_PasteToolbarAction.values.length - 1) * _pasteOptionsDividerHeight;
+      (_PasteToolbarAction.values.length - 1) * _pasteOptionsDividerHeight +
+      _pasteOptionsVerticalPadding * 2;
 
   int _pasteMainActionIndexAt(double localDy) {
-    if (localDy < 0) {
+    final dy = localDy - _pasteOptionsVerticalPadding;
+    if (dy < 0) {
       return -1;
     }
     for (var index = 0; index < _PasteToolbarAction.values.length; index += 1) {
       final top = index * (_pasteOptionHeight + _pasteOptionsDividerHeight);
-      if (localDy >= top && localDy < top + _pasteOptionHeight) {
+      if (dy >= top && dy < top + _pasteOptionHeight) {
         return index;
       }
     }
@@ -1139,34 +1147,40 @@ class _PasteOptionsMenu extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     return Material(
       color: colorScheme.surfaceContainerHighest,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(12),
+      elevation: 6,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: colorScheme.outline),
+      ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _PasteOptionsMenuItem(
-            icon: Icons.code_rounded,
-            label: 'Snippets',
-            enabled: snippetsEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.snippets,
-            trailingIcon: snippetsTrailingIcon,
-          ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
-          _PasteOptionsMenuItem(
-            icon: Icons.image_outlined,
-            label: 'Paste Images',
-            enabled: imageEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.images,
-          ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
-          _PasteOptionsMenuItem(
-            icon: Icons.attach_file_rounded,
-            label: 'Paste Files',
-            enabled: filesEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.files,
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          vertical: KeyboardToolbarState._pasteOptionsVerticalPadding,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _PasteOptionsMenuItem(
+              icon: Icons.code_rounded,
+              label: 'Snippets',
+              enabled: snippetsEnabled,
+              highlighted: highlightedAction == _PasteToolbarAction.snippets,
+              trailingIcon: snippetsTrailingIcon,
+            ),
+            _PasteOptionsMenuItem(
+              icon: Icons.image_outlined,
+              label: 'Paste Images',
+              enabled: imageEnabled,
+              highlighted: highlightedAction == _PasteToolbarAction.images,
+            ),
+            _PasteOptionsMenuItem(
+              icon: Icons.attach_file_rounded,
+              label: 'Paste Files',
+              enabled: filesEnabled,
+              highlighted: highlightedAction == _PasteToolbarAction.files,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1217,10 +1231,18 @@ class _CascadeMenuFrame extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     return Material(
       color: colorScheme.surfaceContainerHighest,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(12),
+      elevation: 6,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: colorScheme.outline),
+      ),
       clipBehavior: Clip.antiAlias,
-      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          vertical: KeyboardToolbarState._pasteOptionsVerticalPadding,
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: children),
+      ),
     );
   }
 }
@@ -1246,8 +1268,8 @@ class _PasteOptionsMenuItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final contentColor = enabled
-        ? colorScheme.onSurfaceVariant
-        : colorScheme.onSurfaceVariant.withAlpha(96);
+        ? colorScheme.onSurface
+        : colorScheme.onSurface.withAlpha(96);
     final backgroundColor = highlighted && enabled
         ? colorScheme.primaryContainer
         : Colors.transparent;
@@ -1263,7 +1285,7 @@ class _PasteOptionsMenuItem extends StatelessWidget {
       child: Container(
         height: KeyboardToolbarState._pasteOptionHeight,
         color: backgroundColor,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Row(
           children: [
             if (leadingIndent > 0) SizedBox(width: leadingIndent),
@@ -1275,7 +1297,8 @@ class _PasteOptionsMenuItem extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: foregroundColor,
-                  fontWeight: highlighted ? FontWeight.w600 : FontWeight.w500,
+                  fontSize: 14,
+                  fontWeight: highlighted ? FontWeight.w600 : FontWeight.w400,
                 ),
               ),
             ),
