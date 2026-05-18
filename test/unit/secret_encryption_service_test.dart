@@ -92,6 +92,15 @@ void main() {
       );
     });
 
+    test('validates encrypted envelope structure', () async {
+      const prefixedPlaintext = 'ENCv1:not-a-valid-envelope';
+      final encrypted = await service.encryptNullable(prefixedPlaintext);
+
+      expect(service.isEncryptedValue(prefixedPlaintext), isTrue);
+      expect(service.isValidEncryptedEnvelope(prefixedPlaintext), isFalse);
+      expect(service.isValidEncryptedEnvelope(encrypted!), isTrue);
+    });
+
     test('reuses and migrates the legacy master key entry', () async {
       final storage = _MockFlutterSecureStorage();
       final writes = <String, String>{};

@@ -57,6 +57,10 @@ class SecretEncryptionService {
   /// Returns whether [value] is already in encrypted envelope format.
   bool isEncryptedValue(String value) => value.startsWith(_encryptedPrefix);
 
+  /// Returns whether [value] is a structurally valid encrypted envelope.
+  bool isValidEncryptedEnvelope(String value) =>
+      _isValidEncryptedEnvelope(value);
+
   /// Encrypts an optional value for database persistence.
   Future<String?> encryptNullable(String? plaintext) async {
     if (plaintext == null || plaintext.isEmpty) {
