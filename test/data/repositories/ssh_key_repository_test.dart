@@ -441,6 +441,72 @@ void main() {
       expect(firstValue, hasLength(1));
     });
 
+    test('watchAll skips unreadable stored keys', () async {
+      await repository.insert(
+        SshKeysCompanion.insert(
+          name: 'Readable Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: 'fixture-open-ssh-material...',
+        ),
+      );
+      final otherEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.generate(32, (index) => 255 - index),
+      );
+      final unreadablePrivateKey = await otherEncryptionService.encryptRequired(
+        'unreadable-open-ssh-material...',
+      );
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unreadable Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 BBBB...',
+              privateKey: unreadablePrivateKey,
+            ),
+          );
+
+      final firstValue = await repository.watchAll().first;
+
+      expect(firstValue, hasLength(1));
+      expect(firstValue.single.name, 'Readable Key');
+    });
+
+    test('getAllDecryptable reports unreadable stored keys', () async {
+      await repository.insert(
+        SshKeysCompanion.insert(
+          name: 'Readable Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: 'fixture-open-ssh-material...',
+        ),
+      );
+      final otherEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.generate(32, (index) => 255 - index),
+      );
+      final unreadablePrivateKey = await otherEncryptionService.encryptRequired(
+        'unreadable-open-ssh-material...',
+      );
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unreadable Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 BBBB...',
+              privateKey: unreadablePrivateKey,
+            ),
+          );
+
+      final result = await repository.getAllDecryptable();
+
+      expect(result.keys, hasLength(1));
+      expect(result.keys.single.name, 'Readable Key');
+      expect(result.unreadableCount, 1);
+      expect(result.firstUnreadableErrorType, 'FormatException');
+    });
+
     test('insert multiple keys', () async {
       await repository.insert(
         SshKeysCompanion.insert(
