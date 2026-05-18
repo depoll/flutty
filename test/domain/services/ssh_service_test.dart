@@ -92,6 +92,12 @@ class _CountingKeyRepository extends KeyRepository {
   }
 
   @override
+  Future<SshKeyLoadResult> getAllDecryptable() async {
+    getAllCallCount++;
+    return super.getAllDecryptable();
+  }
+
+  @override
   Future<SshKey?> getById(int id) async {
     if (returnNullOnGetById) {
       return null;
@@ -228,6 +234,15 @@ Future<int> _unusedLoopbackPort() async {
   final port = socket.port;
   await socket.close();
   return port;
+}
+
+String _structurallyValidInvalidEncryptedSecret() {
+  final envelope = {
+    'n': base64Url.encode(List<int>.filled(12, 1)),
+    'c': base64Url.encode([1, 2, 3]),
+    'm': base64Url.encode(List<int>.filled(16, 2)),
+  };
+  return 'ENCv1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
 }
 
 void main() {
@@ -1797,6 +1812,98 @@ void main() {
       expect(rawKey.privateKey, startsWith('ENCv1:'));
       expect(rawKey.privateKey, isNot(privateKey));
     });
+
+    test('connectToHost skips unreadable Auto keys', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unreadable Auto Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 BAD',
+              privateKey: _structurallyValidInvalidEncryptedSecret(),
+            ),
+          );
+      await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Readable Auto Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 GOOD',
+          privateKey: 'readable-key-material',
+        ),
+      );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Auto Host',
+              hostname: '10.0.0.14',
+              username: 'admin',
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.identityKeys, hasLength(1));
+      expect(config.identityKeys!.single.name, 'Readable Auto Key');
+    });
+
+    test(
+      'connectToHost fails during preflight for unreadable explicit key',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostRepo = HostRepository(db, encryptionService);
+        final keyRepo = KeyRepository(db, encryptionService);
+        final service = _CapturingSshService(
+          hostRepository: hostRepo,
+          keyRepository: keyRepo,
+        );
+
+        final keyId = await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Unreadable Explicit Key',
+                keyType: 'ed25519',
+                publicKey: 'ssh-ed25519 BAD',
+                privateKey: _structurallyValidInvalidEncryptedSecret(),
+              ),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Explicit Key Host',
+                hostname: '10.0.0.15',
+                username: 'admin',
+                keyId: Value(keyId),
+              ),
+            );
+
+        final result = await service.connectToHost(hostId);
+
+        expect(result.success, isFalse);
+        expect(
+          result.error,
+          'Connection setup failed. Check saved credentials and try again.',
+        );
+        expect(service.capturedConfig, isNull);
+      },
+    );
 
     test('connectToHost caps Auto keys to avoid auth lockout', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
