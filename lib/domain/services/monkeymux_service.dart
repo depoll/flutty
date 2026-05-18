@@ -466,6 +466,36 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
   }
 
+  /// Returns running server status using any already-installed helper version.
+  Future<MonkeyMuxServerStatus?> runningServerStatusFromInstalledHelpers(
+    SshSession session,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    final command =
+        r'for helper in "$HOME"/.monkeyssh/bin/monkeymux/*/*/monkeymux; do '
+        r'[ -x "$helper" ] || continue; '
+        r'"$helper" control --json '
+        '${_shellQuote(sessionName)}'
+        ' 2>/dev/null && exit 0; done; exit 1';
+    try {
+      return await session.runQueuedExec(
+        () => _readRunningServerStatus(session, command),
+        priority: priority,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.status',
+        'installed_helper_unavailable',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
   Future<_MonkeyMuxControlResponse> _runControlCommand(
     SshSession session,
     String sessionName,
@@ -561,7 +591,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       _cancelAgentMetadataPeriodicRefresh(key);
       return;
     }
-    if (_observers.containsKey(key)) {
+    final observer = _observers[key];
+    if (observer != null) {
+      if (!observer.isControlChannelReady) {
+        return;
+      }
       _ensureAgentMetadataPeriodicRefresh(session, sessionName, key);
     }
     if (_agentMetadataRequests.containsKey(key)) {
@@ -904,6 +938,9 @@ class _MonkeyMuxWindowChangeObserver {
   int _reconnectAttempts = 0;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  bool get isControlChannelReady =>
+      !_disposed && !_controller.isClosed && _controlSession != null;
 
   void emitWindowList(List<TmuxWindow> windows) {
     if (_disposed || _controller.isClosed || windows.isEmpty) {

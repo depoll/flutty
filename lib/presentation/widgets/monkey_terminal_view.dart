@@ -1716,7 +1716,12 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
 
-    final paint = Paint()..color = _resolveCellBackgroundPaintColor(cellData);
+    final charCode = cellData.content & CellContent.codepointMask;
+    final paint = Paint()
+      ..color = _resolveCellBackgroundPaintColor(
+        cellData,
+        toneNeutralBackgrounds: !_isRectPaintedBlockElement(charCode),
+      );
     final doubleWidth = cellData.content >> CellContent.widthShift == 2;
     final widthScale = doubleWidth ? 2 : 1;
     final size = Size(cellSize.width * widthScale + 1, cellSize.height);
@@ -1784,13 +1789,22 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
 
+    final cellFlags = cellData.flags;
+    final color = resolveMonkeyTerminalCellForegroundColor(cellData);
+    if (_paintBlockElementForeground(
+      canvas,
+      offset,
+      cellData,
+      charCode,
+      color,
+    )) {
+      return;
+    }
+
     final cacheKey = cellData.getHash() ^ textScaler.hashCode;
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
-      final cellFlags = cellData.flags;
-      final color = resolveMonkeyTerminalCellForegroundColor(cellData);
-
       final style = textStyle.toTextStyle(
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
@@ -1814,6 +1828,120 @@ class MonkeyTerminalPainter extends TerminalPainter {
     canvas.drawParagraph(paragraph, offset);
   }
 
+  bool _paintBlockElementForeground(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+    int charCode,
+    Color color,
+  ) {
+    final widthScale = cellData.content >> CellContent.widthShift == 2 ? 2 : 1;
+    final width = (cellSize.width * widthScale) + 1;
+    final height = cellSize.height;
+    final halfWidth = width / 2;
+    final halfHeight = height / 2;
+    final paint = Paint()..color = color;
+
+    void drawRect(
+      double left,
+      double top,
+      double rectWidth,
+      double rectHeight,
+    ) {
+      canvas.drawRect(
+        Rect.fromLTWH(offset.dx + left, offset.dy + top, rectWidth, rectHeight),
+        paint,
+      );
+    }
+
+    void drawQuadrants({
+      bool upperLeft = false,
+      bool upperRight = false,
+      bool lowerLeft = false,
+      bool lowerRight = false,
+    }) {
+      if (upperLeft) {
+        drawRect(0, 0, halfWidth, halfHeight);
+      }
+      if (upperRight) {
+        drawRect(halfWidth, 0, width - halfWidth, halfHeight);
+      }
+      if (lowerLeft) {
+        drawRect(0, halfHeight, halfWidth, height - halfHeight);
+      }
+      if (lowerRight) {
+        drawRect(halfWidth, halfHeight, width - halfWidth, height - halfHeight);
+      }
+    }
+
+    if (charCode >= 0x2581 && charCode <= 0x2587) {
+      final blockHeight = height * (charCode - 0x2580) / 8;
+      drawRect(0, height - blockHeight, width, blockHeight);
+      return true;
+    }
+    if (charCode >= 0x2589 && charCode <= 0x258F) {
+      final blockWidth = width * (0x2590 - charCode) / 8;
+      drawRect(0, 0, blockWidth, height);
+      return true;
+    }
+
+    switch (charCode) {
+      case 0x2580:
+        drawRect(0, 0, width, halfHeight);
+        return true;
+      case 0x2588:
+        drawRect(0, 0, width, height);
+        return true;
+      case 0x2590:
+        drawRect(halfWidth, 0, width - halfWidth, height);
+        return true;
+      case 0x2594:
+        drawRect(0, 0, width, height / 8);
+        return true;
+      case 0x2595:
+        drawRect(width * 7 / 8, 0, width / 8, height);
+        return true;
+      case 0x2596:
+        drawQuadrants(lowerLeft: true);
+        return true;
+      case 0x2597:
+        drawQuadrants(lowerRight: true);
+        return true;
+      case 0x2598:
+        drawQuadrants(upperLeft: true);
+        return true;
+      case 0x2599:
+        drawQuadrants(upperLeft: true, lowerLeft: true, lowerRight: true);
+        return true;
+      case 0x259A:
+        drawQuadrants(upperLeft: true, lowerRight: true);
+        return true;
+      case 0x259B:
+        drawQuadrants(upperLeft: true, upperRight: true, lowerLeft: true);
+        return true;
+      case 0x259C:
+        drawQuadrants(upperLeft: true, upperRight: true, lowerRight: true);
+        return true;
+      case 0x259D:
+        drawQuadrants(upperRight: true);
+        return true;
+      case 0x259E:
+        drawQuadrants(upperRight: true, lowerLeft: true);
+        return true;
+      case 0x259F:
+        drawQuadrants(upperRight: true, lowerLeft: true, lowerRight: true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  bool _isRectPaintedBlockElement(int charCode) =>
+      (charCode >= 0x2580 && charCode <= 0x2590) ||
+      charCode == 0x2594 ||
+      charCode == 0x2595 ||
+      (charCode >= 0x2596 && charCode <= 0x259F);
+
   @visibleForTesting
   Color resolveMonkeyTerminalCellForegroundColor(CellData cellData) {
     final cellFlags = cellData.flags;
@@ -1830,6 +1958,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
         foreground: color,
         background: background,
       );
+    }
+    if (_isRectPaintedBlockElement(
+      cellData.content & CellContent.codepointMask,
+    )) {
+      return color;
     }
     if (!_cellPaintsBackground(cellData)) {
       return color;
@@ -1860,7 +1993,10 @@ class MonkeyTerminalPainter extends TerminalPainter {
     return _cellColorValue(firstCell.background) == 8;
   }
 
-  Color _resolveCellBackgroundPaintColor(CellData cellData) {
+  Color _resolveCellBackgroundPaintColor(
+    CellData cellData, {
+    bool toneNeutralBackgrounds = true,
+  }) {
     final cellFlags = cellData.flags;
     final inverse = cellFlags & CellFlags.inverse != 0;
     final background = inverse
@@ -1873,7 +2009,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       foreground: foreground,
       background: background,
       terminalBackground: theme.background,
-      toneNeutralBackgrounds: !inverse,
+      toneNeutralBackgrounds: !inverse && toneNeutralBackgrounds,
     );
   }
 
