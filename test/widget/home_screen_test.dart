@@ -44,6 +44,15 @@ class _MockAgentSessionDiscoveryService extends Mock
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
+void _callReorderCallback(
+  ReorderCallback? callback,
+  int oldIndex,
+  int newIndex,
+) {
+  expect(callback, isNotNull);
+  callback?.call(oldIndex, newIndex);
+}
+
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   @override
   Map<int, SshConnectionState> build() => <int, SshConnectionState>{};
@@ -337,7 +346,8 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      list.onReorder(0, 2);
+      // ignore: deprecated_member_use
+      _callReorderCallback(list.onReorder, 0, 2);
       await tester.pump();
 
       verify(() => hostRepository.reorderByIds([2, 1])).called(1);
@@ -389,7 +399,8 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      list.onReorder(0, 2);
+      // ignore: deprecated_member_use
+      _callReorderCallback(list.onReorder, 0, 2);
       await tester.pump();
 
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
