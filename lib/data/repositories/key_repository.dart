@@ -8,6 +8,25 @@ import '../security/secret_encryption_service.dart';
 
 enum _KeySecretColumn { privateKey, passphrase }
 
+/// Result from loading decryptable SSH keys while tolerating unreadable rows.
+class SshKeyLoadResult {
+  /// Creates a new [SshKeyLoadResult].
+  const SshKeyLoadResult({
+    required this.keys,
+    required this.unreadableCount,
+    this.firstUnreadableErrorType,
+  });
+
+  /// Keys whose encrypted secrets were readable.
+  final List<SshKey> keys;
+
+  /// Number of stored keys skipped because their secrets were unreadable.
+  final int unreadableCount;
+
+  /// Runtime type for the first unreadable-key error, if any.
+  final String? firstUnreadableErrorType;
+}
+
 /// Repository for managing SSH keys.
 class KeyRepository {
   /// Creates a new [KeyRepository].
@@ -34,6 +53,29 @@ class KeyRepository {
   Future<List<SshKey>> getAll() async {
     final keys = await _db.select(_db.sshKeys).get();
     return Future.wait(keys.map(_decryptKey));
+  }
+
+  /// Get all keys that can be decrypted, skipping unreadable stored keys.
+  Future<SshKeyLoadResult> getAllDecryptable() async {
+    final keys = await _db.select(_db.sshKeys).get();
+    final decryptedKeys = <SshKey>[];
+    var unreadableCount = 0;
+    String? firstUnreadableErrorType;
+
+    for (final key in keys) {
+      try {
+        decryptedKeys.add(await _decryptKey(key));
+      } on Exception catch (error) {
+        unreadableCount++;
+        firstUnreadableErrorType ??= error.runtimeType.toString();
+      }
+    }
+
+    return SshKeyLoadResult(
+      keys: List.unmodifiable(decryptedKeys),
+      unreadableCount: unreadableCount,
+      firstUnreadableErrorType: firstUnreadableErrorType,
+    );
   }
 
   /// Watch all keys.
