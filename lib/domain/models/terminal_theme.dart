@@ -50,8 +50,8 @@ String buildTerminalThemeDefaultColorReports(TerminalThemeData theme) => [
 
 /// Builds an unsolicited default background color report.
 ///
-/// Gemini CLI listens for OSC 11 responses when deciding whether its default
-/// theme should switch between light and dark.
+/// Theme-aware TUIs listen for OSC 11 responses when deciding whether their
+/// default theme should switch between light and dark.
 String buildTerminalThemeBackgroundColorReport(TerminalThemeData theme) =>
     buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?'])!;
 

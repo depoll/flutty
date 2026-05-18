@@ -1243,66 +1243,76 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 	}
 }
 
-func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
-	agentWindow := &muxWindow{foregroundCommand: "codex"}
-	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	agentWithoutFocus := &muxWindow{foregroundCommand: "gemini"}
-	shellWindow := &muxWindow{foregroundCommand: "zsh"}
-	shellWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-
-	if !agentWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware agent foreground window did not support theme hints")
+func TestThemeHintUsesTerminalCapabilities(t *testing.T) {
+	focusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
+	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	colorQueryWindow := &muxWindow{
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
 	}
-	if agentWithoutFocus.supportsThemeHintLocked() {
-		t.Fatal("agent foreground window without focus mode supported theme hints")
+	colorQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
+	plainWindow := &muxWindow{foregroundCommand: "codex"}
+
+	if !focusWindow.supportsThemeHintLocked() {
+		t.Fatal("focus-aware window did not support theme hints")
 	}
-	if shellWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware shell foreground window unexpectedly supported theme hints")
+	if !colorQueryWindow.supportsThemeHintLocked() {
+		t.Fatal("OSC 11 query window did not support theme hints")
+	}
+	if plainWindow.supportsThemeHintLocked() {
+		t.Fatal("window without focus mode or OSC 11 query supported theme hints")
 	}
 
-	agentWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
-	if agentWindow.supportsThemeHintLocked() {
-		t.Fatal("agent foreground window supported theme hints after focus mode disabled")
+	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
+	if focusWindow.supportsThemeHintLocked() {
+		t.Fatal("window supported theme hints after focus mode disabled")
 	}
-}
 
-func TestThemeHintSendsAgentBackgroundReport(t *testing.T) {
-	for _, foregroundCommand := range []string{"claude", "codex", "copilot", "gemini", "opencode"} {
-		t.Run(foregroundCommand, func(t *testing.T) {
-			inputReader, inputWriter, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				_ = inputReader.Close()
-				_ = inputWriter.Close()
-			})
-
-			window := &muxWindow{id: "@1", foregroundCommand: foregroundCommand, pty: inputWriter}
-			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-			server := newMuxServer("test")
-			server.windows = []*muxWindow{window}
-			server.activeID = "@1"
-
-			const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-			if !server.sendThemeHint(backgroundReport) {
-				t.Fatal("theme hint was not sent")
-			}
-
-			got := readPipeUntil(t, inputReader, func(output string) bool {
-				return strings.Contains(output, "\x1b[I")
-			})
-			if !strings.HasPrefix(got, backgroundReport) {
-				t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
-			}
-			if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
-				t.Fatalf("theme hint = %q, want focus transition", got)
-			}
-		})
+	colorQueryWindow.foregroundPid = 43
+	if colorQueryWindow.supportsThemeHintLocked() {
+		t.Fatal("stale OSC 11 query supported theme hints after foreground pid changed")
 	}
 }
 
-func TestThemeHintDoesNotSendBackgroundReportToShell(t *testing.T) {
+func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+	}
+	window.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	if !server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -1319,8 +1329,39 @@ func TestThemeHintDoesNotSendBackgroundReportToShell(t *testing.T) {
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	if !server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, did not expect background report", got)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintIgnoresWindowsWithoutThemeCapabilities(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: inputWriter}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
 	if server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was sent to shell")
+		t.Fatal("theme hint was sent")
 	}
 }
 
