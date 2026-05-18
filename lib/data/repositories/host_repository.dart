@@ -289,7 +289,7 @@ class HostRepository {
     int hostId,
     String storedPassword,
   ) async {
-    if (_secretEncryptionService.isEncryptedValue(storedPassword)) {
+    if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
       return _cachedDecrypt(storedPassword);
     }
 
@@ -297,9 +297,10 @@ class HostRepository {
       storedPassword,
     );
     if (encryptedPassword != null && encryptedPassword != storedPassword) {
-      await (_db.update(_db.hosts)..where((h) => h.id.equals(hostId))).write(
-        HostsCompanion(password: Value(encryptedPassword)),
-      );
+      await (_db.update(_db.hosts)..where(
+            (h) => h.id.equals(hostId) & h.password.equals(storedPassword),
+          ))
+          .write(HostsCompanion(password: Value(encryptedPassword)));
       _rememberDecrypted(encryptedPassword, storedPassword);
     }
     return storedPassword;

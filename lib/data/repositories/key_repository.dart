@@ -149,7 +149,7 @@ class KeyRepository {
     String storedSecret,
     _KeySecretColumn column,
   ) async {
-    if (_secretEncryptionService.isEncryptedValue(storedSecret)) {
+    if (_secretEncryptionService.isValidEncryptedEnvelope(storedSecret)) {
       return _cachedDecrypt(storedSecret);
     }
 
@@ -157,16 +157,26 @@ class KeyRepository {
       storedSecret,
     );
     if (encryptedSecret != null && encryptedSecret != storedSecret) {
-      await (_db.update(_db.sshKeys)..where((k) => k.id.equals(keyId))).write(
-        switch (column) {
-          _KeySecretColumn.privateKey => SshKeysCompanion(
-            privateKey: Value(encryptedSecret),
-          ),
-          _KeySecretColumn.passphrase => SshKeysCompanion(
-            passphrase: Value(encryptedSecret),
-          ),
-        },
-      );
+      await (_db.update(_db.sshKeys)..where(
+            (k) =>
+                k.id.equals(keyId) &
+                (switch (column) {
+                  _KeySecretColumn.privateKey => k.privateKey.equals(
+                    storedSecret,
+                  ),
+                  _KeySecretColumn.passphrase => k.passphrase.equals(
+                    storedSecret,
+                  ),
+                }),
+          ))
+          .write(switch (column) {
+            _KeySecretColumn.privateKey => SshKeysCompanion(
+              privateKey: Value(encryptedSecret),
+            ),
+            _KeySecretColumn.passphrase => SshKeysCompanion(
+              passphrase: Value(encryptedSecret),
+            ),
+          });
       _rememberDecrypted(encryptedSecret, storedSecret);
     }
     return storedSecret;
