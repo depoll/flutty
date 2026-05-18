@@ -1266,6 +1266,109 @@ func TestThemeHintOnlyTargetsFocusAwareAgentWindows(t *testing.T) {
 	}
 }
 
+func TestThemeHintSendsGeminiBackgroundReport(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{id: "@1", foregroundCommand: "gemini", pty: inputWriter}
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	if !server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintDoesNotSendBackgroundReportToNonGemini(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{id: "@1", foregroundCommand: "codex", pty: inputWriter}
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	if !server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, did not expect background report", got)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func readPipeUntil(
+	t *testing.T,
+	reader *os.File,
+	predicate func(output string) bool,
+) string {
+	t.Helper()
+	result := make(chan string, 1)
+	go func() {
+		var output strings.Builder
+		buffer := make([]byte, 64)
+		for {
+			n, err := reader.Read(buffer)
+			if n > 0 {
+				output.Write(buffer[:n])
+				current := output.String()
+				if predicate(current) {
+					result <- current
+					return
+				}
+			}
+			if err != nil {
+				result <- output.String()
+				return
+			}
+		}
+	}()
+
+	select {
+	case output := <-result:
+		if !predicate(output) {
+			t.Fatalf("pipe output = %q, predicate was not satisfied", output)
+		}
+		return output
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pipe output")
+		return ""
+	}
+}
+
 func TestRunShellCommandUsesServerEnvironment(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	t.Setenv("MONKEYMUX_TEST_ENV", "ok")

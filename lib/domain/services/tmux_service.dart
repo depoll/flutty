@@ -2638,7 +2638,13 @@ String buildTmuxRefreshTerminalThemeCommand(
       'injected=1; '
       '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      'opencode|claude|gemini) '
+      'gemini) '
+      'injected=1; '
+      '( ${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
+      '2>/dev/null || true; sleep 0.05; '
+      '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
+      'opencode|claude) '
       'injected=1; '
       '( ${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
@@ -2791,6 +2797,14 @@ String _buildTmuxSendPaneThemeModeReportCommand(
   String? extraFlags,
 }) => _buildTmuxSendPaneReportCommand(
   buildTerminalThemeModeReport(isDark: theme.isDark),
+  extraFlags: extraFlags,
+);
+
+String _buildTmuxSendPaneBackgroundColorReportCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) => _buildTmuxSendPaneReportCommand(
+  buildTerminalThemeBackgroundColorReport(theme),
   extraFlags: extraFlags,
 );
 
