@@ -48,6 +48,13 @@ String buildTerminalThemeDefaultColorReports(TerminalThemeData theme) => [
   buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
 ].whereType<String>().join();
 
+/// Builds an unsolicited default background color report.
+///
+/// Theme-aware TUIs listen for OSC 11 responses when deciding whether their
+/// default theme should switch between light and dark.
+String buildTerminalThemeBackgroundColorReport(TerminalThemeData theme) =>
+    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?'])!;
+
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///
 /// Modern TUIs use these queries (notably `OSC 11;?`) to detect whether the
