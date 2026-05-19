@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_menu_style.dart';
 import 'package:xterm/xterm.dart';
 
 String _terminalKeyOutput(
@@ -369,6 +370,49 @@ void main() {
       expect(filePasteCount, 0);
       expect(find.text('Paste Images'), findsNothing);
       expect(find.text('Paste Files'), findsNothing);
+    });
+
+    testWidgets('Paste long press uses terminal menu styling', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  onPasteImageRequested: () async {},
+                  onPasteFilesRequested: () async {},
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      final pasteImages = find.text('Paste Images');
+      final menuMaterial = tester.widget<Material>(
+        find.ancestor(of: pasteImages, matching: find.byType(Material)).first,
+      );
+      final menuContext = tester.element(pasteImages);
+
+      expect(menuMaterial.color, TerminalMenuStyles.surfaceColor(menuContext));
+      expect(menuMaterial.elevation, TerminalMenuStyles.elevation);
+      expect(
+        menuMaterial.shape,
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(TerminalMenuStyles.borderRadius),
+        ),
+      );
+      expect(find.byType(Divider), findsNothing);
+
+      await gesture.cancel();
+      await tester.pump();
     });
 
     testWidgets('Paste long press releases over a top-level snippet', (
