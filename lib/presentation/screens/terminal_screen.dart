@@ -2074,8 +2074,13 @@ bool shouldUseSyntheticAltBufferScrollFallback({
   required bool isUsingAltBuffer,
   required bool preferExplicitMouseReporting,
   required bool terminalReportsMouseWheel,
+  bool isAgentToolActive = false,
 }) {
   if (!isUsingAltBuffer) {
+    return false;
+  }
+
+  if (isAgentToolActive) {
     return false;
   }
 
@@ -2088,14 +2093,36 @@ bool shouldUseSyntheticAltBufferScrollFallback({
 
 /// Whether mobile touch drags should be routed into terminal scroll input.
 ///
-/// Full-screen apps like tmux or Copilot CLI need direct wheel or synthetic
-/// arrow events instead of letting the Flutter viewport absorb the gesture.
+/// Full-screen apps like tmux need direct wheel or synthetic arrow events
+/// instead of letting the Flutter viewport absorb the gesture. Agent tools are
+/// excluded because arrow events navigate prompt history.
 @visibleForTesting
 bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+  bool isAgentToolActive = false,
+}) =>
+    isMobile &&
+    (terminalReportsMouseWheel || (isUsingAltBuffer && !isAgentToolActive));
+
+/// Whether the active terminal context is a known agent tool for scroll policy.
+@visibleForTesting
+bool isAgentToolActiveForTerminalScroll({
+  required AgentLaunchTool? activeWindowTool,
+  required AgentLaunchTool? startupTool,
+  required bool hasWindowSnapshot,
+  String? currentCommand,
+}) {
+  if (activeWindowTool != null) {
+    return true;
+  }
+  final command = currentCommand?.trim();
+  if (command != null && agentLaunchToolForCommandName(command) != null) {
+    return true;
+  }
+  return !hasWindowSnapshot && startupTool != null;
+}
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2843,6 +2870,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final MonkeyMuxInstallerService _monkeyMuxInstallerService;
   late final TerminalConnectionBackendService _terminalBackendService;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
+  AgentLaunchTool? _remoteMuxStartupTool;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -2882,7 +2910,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
+    isAgentToolActive: _isAgentToolActive,
   );
+
+  bool get _isAgentToolActive {
+    final windows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
+    return isAgentToolActiveForTerminalScroll(
+      activeWindowTool: resolveTmuxBarActiveWindowTool(windows),
+      startupTool: _remoteMuxStartupTool,
+      hasWindowSnapshot: windows != null,
+      currentCommand: _tmuxCurrentCommand,
+    );
+  }
 
   MenuStyle _terminalOverflowMenuStyle({
     required BuildContext context,
@@ -6735,6 +6774,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     void apply() {
       _activeMuxBackend = command.backend;
+      _remoteMuxStartupTool = command.tool;
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
@@ -6810,6 +6850,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
+    _remoteMuxStartupTool = null;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
@@ -9399,6 +9440,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
+        isAgentToolActive: _isAgentToolActive,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
