@@ -3,6 +3,9 @@ import 'dart:collection';
 import 'package:flutter/material.dart';
 
 /// Reorders visible items within the full ordered list while preserving hidden ones.
+///
+/// The [newIndex] must already be adjusted for the removal of [oldIndex], as
+/// provided by Flutter's `onReorderItem` callback.
 List<int> reorderVisibleIdsInFullOrder({
   required List<int> allIds,
   required List<int> visibleIds,
@@ -13,10 +16,9 @@ List<int> reorderVisibleIdsInFullOrder({
     return List<int>.from(allIds);
   }
 
-  final adjustedNewIndex = oldIndex < newIndex ? newIndex - 1 : newIndex;
   final reorderedVisibleIds = List<int>.from(visibleIds);
   final movedId = reorderedVisibleIds.removeAt(oldIndex);
-  reorderedVisibleIds.insert(adjustedNewIndex, movedId);
+  reorderedVisibleIds.insert(newIndex, movedId);
 
   final reorderedVisibleQueue = Queue<int>.from(reorderedVisibleIds);
   final visibleIdSet = visibleIds.toSet();

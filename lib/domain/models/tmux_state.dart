@@ -911,6 +911,7 @@ bool _isUnhelpfulTmuxTitle(
   String? normalizedCommand,
 }) {
   if (value == null || value.isEmpty) return true;
+  if (_isDecorativeShellTitle(value)) return true;
   final lowered = value.toLowerCase();
   if (_genericTmuxTitles.contains(lowered)) return true;
   if (normalizedName != null && lowered == normalizedName.toLowerCase()) {
@@ -939,6 +940,7 @@ bool _isUnhelpfulAgentTitle(
   required String? contextLabel,
 }) {
   if (value == null || value.isEmpty) return true;
+  if (_isDecorativeShellTitle(value)) return true;
   final lowered = _normalizeAgentTitleForComparison(value);
   if (lowered.isEmpty) return true;
   if (_agentTitleAliases(tool).contains(lowered)) return true;
@@ -959,6 +961,13 @@ bool _isUnhelpfulAgentTitle(
   return statusContext == null ||
       statusContext.isEmpty ||
       statusContext == loweredContext;
+}
+
+bool _isDecorativeShellTitle(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return true;
+  if (trimmed == '~' || trimmed.endsWith('|~')) return true;
+  return !trimmed.runes.any(_isAsciiLetterOrDigit);
 }
 
 String _normalizeAgentTitleForComparison(String value) =>
