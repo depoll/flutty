@@ -1293,184 +1293,236 @@ class SshService {
     ConnectionProgressCallback? onProgress,
     bool useHostThemeOverrides = true,
   }) async {
+    var preflightPhase = 'start';
     DiagnosticsLogService.instance.info(
       'ssh.connect',
       'connect_to_host_start',
       fields: {'hostId': hostId},
     );
-    if (hostRepository == null) {
-      DiagnosticsLogService.instance.warning(
+    try {
+      if (hostRepository == null) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.connect',
+          'connect_to_host_unavailable',
+          fields: {'hostId': hostId, 'reason': 'missing_host_repository'},
+        );
+        return const SshConnectionResult(
+          success: false,
+          error: 'Host repository not available',
+        );
+      }
+
+      preflightPhase = 'load_host';
+      final host = await hostRepository!.getById(hostId);
+      if (host == null) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.connect',
+          'connect_to_host_missing_host',
+          fields: {'hostId': hostId},
+        );
+        return const SshConnectionResult(
+          success: false,
+          error: 'Host not found',
+        );
+      }
+      DiagnosticsLogService.instance.info(
         'ssh.connect',
-        'connect_to_host_unavailable',
-        fields: {'hostId': hostId, 'reason': 'missing_host_repository'},
+        'connect_to_host_loaded_host',
+        fields: {
+          'hostId': hostId,
+          'hasPassword': host.password != null,
+          'hasKeyId': host.keyId != null,
+          'hasJumpHost': host.jumpHostId != null,
+        },
       );
-      return const SshConnectionResult(
-        success: false,
-        error: 'Host repository not available',
-      );
-    }
 
-    final host = await hostRepository!.getById(hostId);
-    if (host == null) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_to_host_missing_host',
-        fields: {'hostId': hostId},
-      );
-      return const SshConnectionResult(success: false, error: 'Host not found');
-    }
+      List<SshKey>? cachedAutoKeys;
+      var didLoadAutoKeys = false;
+      Future<List<SshKey>?> loadAutoKeys() async {
+        if (didLoadAutoKeys) {
+          return cachedAutoKeys;
+        }
+        didLoadAutoKeys = true;
+        if (keyRepository == null) {
+          return null;
+        }
+        preflightPhase = 'load_auto_keys';
+        final keyLoadResult = await keyRepository!.getAllDecryptable();
+        if (keyLoadResult.unreadableCount > 0) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.connect',
+            'auto_key_load_skipped_unreadable',
+            fields: {
+              'hostId': hostId,
+              'unreadableCount': keyLoadResult.unreadableCount,
+              'loadedCount': keyLoadResult.keys.length,
+              'errorType': keyLoadResult.firstUnreadableErrorType,
+            },
+          );
+        }
+        final keys = keyLoadResult.keys;
+        if (keys.isEmpty) {
+          return null;
+        }
+        final sortedKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
+        final autoKeys = sortedKeys.length > _maxAutoKeysPerAttempt
+            ? sortedKeys.take(_maxAutoKeysPerAttempt).toList(growable: false)
+            : sortedKeys;
+        return cachedAutoKeys = autoKeys;
+      }
 
-    List<SshKey>? cachedAutoKeys;
-    var didLoadAutoKeys = false;
-    Future<List<SshKey>?> loadAutoKeys() async {
-      if (didLoadAutoKeys) {
-        return cachedAutoKeys;
-      }
-      didLoadAutoKeys = true;
-      if (keyRepository == null) {
-        return null;
-      }
-      final keys = await keyRepository!.getAll();
-      if (keys.isEmpty) {
-        return null;
-      }
-      final sortedKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
-      final autoKeys = sortedKeys.length > _maxAutoKeysPerAttempt
-          ? sortedKeys.take(_maxAutoKeysPerAttempt).toList(growable: false)
-          : sortedKeys;
-      return cachedAutoKeys = autoKeys;
-    }
-
-    // Get SSH key if explicitly selected, otherwise use auto keys.
-    SshKey? key;
-    List<SshKey>? identityKeys;
-    if (host.keyId != null && keyRepository != null) {
-      key = await keyRepository!.getById(host.keyId!);
-      if (key == null && host.password == null) {
+      // Get SSH key if explicitly selected, otherwise use auto keys.
+      SshKey? key;
+      List<SshKey>? identityKeys;
+      if (host.keyId != null && keyRepository != null) {
+        preflightPhase = 'load_host_key';
+        key = await keyRepository!.getById(host.keyId!);
+        if (key == null && host.password == null) {
+          identityKeys = await loadAutoKeys();
+        }
+      } else if (host.password == null) {
         identityKeys = await loadAutoKeys();
       }
-    } else if (host.password == null) {
-      identityKeys = await loadAutoKeys();
-    }
 
-    // Get jump host config if specified, unless the device is currently
-    // connected to a Wi-Fi network on the host's skip list (in which case
-    // the host is reachable directly).
-    SshConnectionConfig? jumpHostConfig;
-    if (host.jumpHostId != null) {
-      var skipJumpHost = false;
-      if (host.skipJumpHostOnSsids != null &&
-          host.skipJumpHostOnSsids!.isNotEmpty) {
-        onProgress?.call(
-          const ConnectionProgressUpdate(
-            state: SshConnectionState.connecting,
-            message: 'Checking Wi-Fi network for jump host bypass…',
-          ),
-        );
-        final permission = await wifiNetworkService.requestPermission();
-        String? currentSsid;
-        if (permission == WifiPermissionStatus.granted) {
-          currentSsid = await wifiNetworkService.getCurrentSsid();
-          skipJumpHost = shouldSkipJumpHostForSsid(
-            currentSsid: currentSsid,
-            skipJumpHostOnSsids: host.skipJumpHostOnSsids,
-          );
-        } else {
+      // Get jump host config if specified, unless the device is currently
+      // connected to a Wi-Fi network on the host's skip list (in which case
+      // the host is reachable directly).
+      SshConnectionConfig? jumpHostConfig;
+      if (host.jumpHostId != null) {
+        var skipJumpHost = false;
+        if (host.skipJumpHostOnSsids != null &&
+            host.skipJumpHostOnSsids!.isNotEmpty) {
           onProgress?.call(
             const ConnectionProgressUpdate(
               state: SshConnectionState.connecting,
-              message: 'Wi-Fi permission denied. Using jump host…',
+              message: 'Checking Wi-Fi network for jump host bypass…',
             ),
           );
-        }
-        DiagnosticsLogService.instance.info(
-          'ssh.connect',
-          'jump_host_ssid_check',
-          fields: {
-            'hostId': hostId,
-            'permissionStatus': permission.name,
-            'hasCurrentSsid': currentSsid != null,
-            'skipJumpHost': skipJumpHost,
-          },
-        );
-      }
-      if (!skipJumpHost) {
-        final jumpHost = await hostRepository!.getById(host.jumpHostId!);
-        if (jumpHost != null) {
-          SshKey? jumpKey;
-          List<SshKey>? jumpIdentityKeys;
-          if (jumpHost.keyId != null && keyRepository != null) {
-            jumpKey = await keyRepository!.getById(jumpHost.keyId!);
-            if (jumpKey == null && jumpHost.password == null) {
-              jumpIdentityKeys = await loadAutoKeys();
-            }
-          } else if (jumpHost.password == null) {
-            jumpIdentityKeys = await loadAutoKeys();
+          preflightPhase = 'check_wifi_bypass';
+          final permission = await wifiNetworkService.requestPermission();
+          String? currentSsid;
+          if (permission == WifiPermissionStatus.granted) {
+            currentSsid = await wifiNetworkService.getCurrentSsid();
+            skipJumpHost = shouldSkipJumpHostForSsid(
+              currentSsid: currentSsid,
+              skipJumpHostOnSsids: host.skipJumpHostOnSsids,
+            );
+          } else {
+            onProgress?.call(
+              const ConnectionProgressUpdate(
+                state: SshConnectionState.connecting,
+                message: 'Wi-Fi permission denied. Using jump host…',
+              ),
+            );
           }
-          jumpHostConfig = SshConnectionConfig.fromHost(
-            jumpHost,
-            key: jumpKey,
-            identityKeys: jumpIdentityKeys,
+          DiagnosticsLogService.instance.info(
+            'ssh.connect',
+            'jump_host_ssid_check',
+            fields: {
+              'hostId': hostId,
+              'permissionStatus': permission.name,
+              'hasCurrentSsid': currentSsid != null,
+              'skipJumpHost': skipJumpHost,
+            },
           );
         }
+        if (!skipJumpHost) {
+          preflightPhase = 'load_jump_host';
+          final jumpHost = await hostRepository!.getById(host.jumpHostId!);
+          if (jumpHost != null) {
+            SshKey? jumpKey;
+            List<SshKey>? jumpIdentityKeys;
+            if (jumpHost.keyId != null && keyRepository != null) {
+              preflightPhase = 'load_jump_host_key';
+              jumpKey = await keyRepository!.getById(jumpHost.keyId!);
+              if (jumpKey == null && jumpHost.password == null) {
+                jumpIdentityKeys = await loadAutoKeys();
+              }
+            } else if (jumpHost.password == null) {
+              jumpIdentityKeys = await loadAutoKeys();
+            }
+            jumpHostConfig = SshConnectionConfig.fromHost(
+              jumpHost,
+              key: jumpKey,
+              identityKeys: jumpIdentityKeys,
+            );
+          }
+        }
       }
-    }
 
-    final config = SshConnectionConfig.fromHost(
-      host,
-      key: key,
-      identityKeys: identityKeys,
-      jumpHostConfig: jumpHostConfig,
-    );
-
-    final result = await connect(config, onProgress: onProgress);
-
-    if (result.success && result.client != null) {
-      final connectionId = _nextConnectionId++;
-      _sessions[connectionId] = SshSession(
-        connectionId: connectionId,
-        hostId: hostId,
-        client: result.client!,
-        config: config,
-        dependentClients: result.dependentClients,
-        terminalThemeLightId: useHostThemeOverrides
-            ? host.terminalThemeLightId
-            : null,
-        terminalThemeDarkId: useHostThemeOverrides
-            ? host.terminalThemeDarkId
-            : null,
+      preflightPhase = 'build_config';
+      final config = SshConnectionConfig.fromHost(
+        host,
+        key: key,
+        identityKeys: identityKeys,
+        jumpHostConfig: jumpHostConfig,
       );
 
-      // Update last connected timestamp
-      await hostRepository!.updateLastConnected(hostId);
-      DiagnosticsLogService.instance.info(
+      preflightPhase = 'connect';
+      final result = await connect(config, onProgress: onProgress);
+
+      if (result.success && result.client != null) {
+        final connectionId = _nextConnectionId++;
+        _sessions[connectionId] = SshSession(
+          connectionId: connectionId,
+          hostId: hostId,
+          client: result.client!,
+          config: config,
+          dependentClients: result.dependentClients,
+          terminalThemeLightId: useHostThemeOverrides
+              ? host.terminalThemeLightId
+              : null,
+          terminalThemeDarkId: useHostThemeOverrides
+              ? host.terminalThemeDarkId
+              : null,
+        );
+
+        // Update last connected timestamp
+        await hostRepository!.updateLastConnected(hostId);
+        DiagnosticsLogService.instance.info(
+          'ssh.connect',
+          'connect_to_host_success',
+          fields: {
+            'hostId': hostId,
+            'connectionId': connectionId,
+            'usesJumpHost': config.jumpHost != null,
+            'usesPassword': config.password != null,
+            'identityCount': config.identityKeys?.length ?? 0,
+          },
+        );
+        return SshConnectionResult(
+          success: true,
+          client: result.client,
+          connectionId: connectionId,
+          dependentClients: result.dependentClients,
+        );
+      }
+
+      DiagnosticsLogService.instance.warning(
         'ssh.connect',
-        'connect_to_host_success',
+        'connect_to_host_failed',
         fields: {
           'hostId': hostId,
-          'connectionId': connectionId,
-          'usesJumpHost': config.jumpHost != null,
-          'usesPassword': config.password != null,
-          'identityCount': config.identityKeys?.length ?? 0,
+          'errorType': _diagnosticSshResultErrorKind(result.error),
         },
       );
-      return SshConnectionResult(
-        success: true,
-        client: result.client,
-        connectionId: connectionId,
-        dependentClients: result.dependentClients,
+      return result;
+    } on Exception catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_to_host_preflight_failed',
+        fields: {
+          'hostId': hostId,
+          'phase': preflightPhase,
+          'errorType': e.runtimeType,
+        },
+      );
+      return const SshConnectionResult(
+        success: false,
+        error:
+            'Connection setup failed. Check saved credentials and try again.',
       );
     }
-
-    DiagnosticsLogService.instance.warning(
-      'ssh.connect',
-      'connect_to_host_failed',
-      fields: {
-        'hostId': hostId,
-        'errorType': _diagnosticSshResultErrorKind(result.error),
-      },
-    );
-    return result;
   }
 
   /// Connect with a configuration.

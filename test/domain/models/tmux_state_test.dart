@@ -327,6 +327,22 @@ void main() {
       expect(window.secondaryTitle, isNull);
     });
 
+    test('ignores decorative shell titles for agent windows', () {
+      const window = TmuxWindow(
+        index: 2,
+        name: '|~',
+        isActive: false,
+        currentCommand: 'copilot',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: '|~',
+      );
+
+      expect(window.foregroundAgentTool, AgentLaunchTool.copilotCli);
+      expect(window.displayTitle, 'Copilot CLI · flutty');
+      expect(window.handleTitle, 'Copilot CLI · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
     test('shows live agent session titles when available', () {
       const window = TmuxWindow(
         index: 1,
