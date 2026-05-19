@@ -332,6 +332,29 @@ Color resolveMonkeyTerminalReadableForegroundColor({
     return foreground;
   }
 
+  if (_contrastRatio(terminalForeground, background) >= minimumContrast) {
+    var low = 0.0;
+    var high = 1.0;
+    for (var iteration = 0; iteration < 12; iteration += 1) {
+      final mid = (low + high) / 2;
+      final candidate = Color.lerp(foreground, terminalForeground, mid)!;
+      if (_contrastRatio(candidate, background) >= minimumContrast) {
+        high = mid;
+      } else {
+        low = mid;
+      }
+    }
+
+    final readableForeground = Color.lerp(
+      foreground,
+      terminalForeground,
+      high,
+    )!;
+    return _contrastRatio(readableForeground, background) >= minimumContrast
+        ? readableForeground
+        : terminalForeground;
+  }
+
   final candidates = <Color>[
     terminalForeground,
     terminalBackground,
@@ -1974,12 +1997,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
     )) {
       return color;
     }
-    if (!_cellPaintsBackground(cellData)) {
-      return color;
-    }
+
+    final background = _cellPaintsBackground(cellData)
+        ? _resolveCellBackgroundPaintColor(cellData)
+        : theme.background;
     return resolveMonkeyTerminalReadableForegroundColor(
       foreground: color,
-      background: _resolveCellBackgroundPaintColor(cellData),
+      background: background,
       terminalForeground: theme.foreground,
       terminalBackground: theme.background,
     );
