@@ -998,31 +998,33 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       child: GestureDetector(
         onVerticalDragUpdate: _onVerticalDragUpdate,
         onVerticalDragEnd: _onVerticalDragEnd,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            border: Border(
-              top: BorderSide(
-                color: theme.colorScheme.outlineVariant,
-                width: 0.5,
+        child: Material(
+          color: theme.colorScheme.surfaceContainerHighest,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(
+                  color: theme.colorScheme.outlineVariant,
+                  width: 0.5,
+                ),
               ),
             ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildHandleBar(theme),
-              AnimatedContainer(
-                duration: _dragOffset > 0
-                    ? Duration.zero
-                    : const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-                height: contentHeight,
-                child: contentHeight > 0
-                    ? ClipRect(child: _buildWindowList(theme))
-                    : const SizedBox.shrink(),
-              ),
-            ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildHandleBar(theme),
+                AnimatedContainer(
+                  duration: _dragOffset > 0
+                      ? Duration.zero
+                      : const Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                  height: contentHeight,
+                  child: contentHeight > 0
+                      ? ClipRect(child: _buildWindowList(theme))
+                      : const SizedBox.shrink(),
+                ),
+              ],
+            ),
           ),
         ),
       ),
