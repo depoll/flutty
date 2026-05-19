@@ -214,7 +214,7 @@ void main() {
       expect(windows.single.displayTitle, 'Implement MonkeyMux refresh');
     });
 
-    test('clears stale Copilot session titles after a refreshed miss', () {
+    test('keeps Copilot session titles after a transient refreshed miss', () {
       const window = TmuxWindow(
         index: 1,
         id: '@7',
@@ -233,9 +233,9 @@ void main() {
         refreshedPanePids: const {42},
       );
 
-      expect(windows.single.activeAgentSessionId, isNull);
-      expect(windows.single.agentSessionTitle, isNull);
-      expect(windows.single.displayTitle, 'Copilot CLI');
+      expect(windows.single.activeAgentSessionId, 'stale-session');
+      expect(windows.single.agentSessionTitle, 'Stale Copilot session');
+      expect(windows.single.displayTitle, 'Stale Copilot session');
     });
 
     test('keeps existing Copilot metadata when pane was not refreshed', () {
