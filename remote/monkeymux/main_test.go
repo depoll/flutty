@@ -294,6 +294,52 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
+func TestAttachSignalsResizeAfterReplay(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("foreground output"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	wantReplay := replayPrefixForTest(window) + "foreground output" +
+		replayPostHistorySuffixForTest(true)
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 4343
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize signaled before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+
+	server.handleAttach(
+		attach,
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 120, Height: 40},
+	)
+
+	if !reflect.DeepEqual(signaled, []int{4343}) {
+		t.Fatalf("signaled process groups = %#v, want [4343]", signaled)
+	}
+}
+
 func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
