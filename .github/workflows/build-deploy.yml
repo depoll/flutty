@@ -185,6 +185,9 @@ permissions:
   contents: read
   issues: write
 
+env:
+  FLUTTER_VERSION: '3.44.0'
+
 jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
@@ -259,7 +262,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.android-reuse-aab-artifact-name == ''
         with:
-          flutter-version: '3.x'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
@@ -694,7 +697,7 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
-          flutter-version: '3.x'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
           cache: true
 
