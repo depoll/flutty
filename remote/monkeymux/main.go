@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.27"
+	monkeyMuxVersion         = "0.1.28"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1623,6 +1623,7 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
+	var foregroundProcessGroup int
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -1634,9 +1635,13 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
+	if window := s.windowByIDLocked(s.activeID); window != nil {
+		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+	}
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
 	s.broadcastWindowList("active_window_changed")
+	signalForegroundResize(foregroundProcessGroup)
 
 	defer func() {
 		s.mu.Lock()
