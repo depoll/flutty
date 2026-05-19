@@ -17,7 +17,7 @@ import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
-void _callReorderCallback(
+void _callReorderItemCallback(
   ReorderCallback? callback,
   int oldIndex,
   int newIndex,
@@ -216,8 +216,7 @@ void main() {
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
     );
-    // ignore: deprecated_member_use
-    _callReorderCallback(list.onReorder, 0, 2);
+    _callReorderItemCallback(list.onReorderItem, 0, 1);
     await tester.pumpAndSettle();
 
     verify(() => hostRepository.reorderByIds([2, 1])).called(1);

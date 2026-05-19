@@ -44,7 +44,7 @@ class _MockAgentSessionDiscoveryService extends Mock
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
-void _callReorderCallback(
+void _callReorderItemCallback(
   ReorderCallback? callback,
   int oldIndex,
   int newIndex,
@@ -346,8 +346,7 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      // ignore: deprecated_member_use
-      _callReorderCallback(list.onReorder, 0, 2);
+      _callReorderItemCallback(list.onReorderItem, 0, 1);
       await tester.pump();
 
       verify(() => hostRepository.reorderByIds([2, 1])).called(1);
@@ -399,8 +398,7 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      // ignore: deprecated_member_use
-      _callReorderCallback(list.onReorder, 0, 2);
+      _callReorderItemCallback(list.onReorderItem, 0, 1);
       await tester.pump();
 
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
