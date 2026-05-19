@@ -11,7 +11,7 @@ void main() {
         allIds: const [1, 2, 3, 4, 5],
         visibleIds: const [1, 3, 5],
         oldIndex: 0,
-        newIndex: 3,
+        newIndex: 2,
       );
 
       expect(reordered, [3, 2, 5, 4, 1]);
@@ -22,7 +22,7 @@ void main() {
         allIds: const [10, 11, 12],
         visibleIds: const [10, 11, 12],
         oldIndex: 0,
-        newIndex: 3,
+        newIndex: 2,
       );
 
       expect(reordered, [11, 12, 10]);
