@@ -221,13 +221,18 @@ class _TestShellCompletionService extends ShellCompletionService {
 }
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
-  _TestActiveSessionsNotifier(this.session, {SshSession? reconnectSession})
-    : reconnectSession = reconnectSession ?? session;
+  _TestActiveSessionsNotifier(
+    this.session, {
+    SshSession? reconnectSession,
+    this.connectCompleter,
+  }) : reconnectSession = reconnectSession ?? session;
 
   final SshSession session;
   final SshSession reconnectSession;
+  final Completer<void>? connectCompleter;
   final disconnectedConnectionIds = <int>[];
   final connectForceNewValues = <bool>[];
+  ConnectionAttemptStatus? _connectionAttempt;
 
   Iterable<SshSession> get _sessions sync* {
     yield session;
@@ -244,7 +249,17 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   };
 
   @override
-  ConnectionAttemptStatus? getConnectionAttempt(int hostId) => null;
+  ConnectionAttemptStatus? getConnectionAttempt(int hostId) =>
+      _connectionAttempt?.hostId == hostId ? _connectionAttempt : null;
+
+  @override
+  void clearConnectionAttempt(int hostId) {
+    if (_connectionAttempt?.hostId != hostId) {
+      return;
+    }
+    _connectionAttempt = null;
+    state = {...state};
+  }
 
   @override
   List<int> getConnectionsForHost(int hostId) => _sessions
@@ -277,15 +292,53 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
     bool useHostThemeOverrides = true,
   }) async {
     connectForceNewValues.add(forceNew);
+    _updateConnectionAttempt(
+      hostId,
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connecting,
+        message: 'Preparing connection…',
+      ),
+      resetLog: true,
+    );
+    await connectCompleter?.future;
     disconnectedConnectionIds.remove(reconnectSession.connectionId);
     state = {
       ...state,
       reconnectSession.connectionId: SshConnectionState.connected,
     };
+    _updateConnectionAttempt(
+      hostId,
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connected,
+        message: 'Connection established. Opening terminal…',
+      ),
+    );
     return SshConnectionResult(
       success: true,
       connectionId: reconnectSession.connectionId,
     );
+  }
+
+  void _updateConnectionAttempt(
+    int hostId,
+    ConnectionProgressUpdate update, {
+    bool resetLog = false,
+  }) {
+    final existing = resetLog ? null : _connectionAttempt;
+    final existingForHost = existing != null && existing.hostId == hostId
+        ? existing
+        : null;
+    final logLines = <String>[...?existingForHost?.logLines];
+    if (logLines.isEmpty || logLines.last != update.message) {
+      logLines.add(update.message);
+    }
+    _connectionAttempt = ConnectionAttemptStatus(
+      hostId: hostId,
+      state: update.state,
+      latestMessage: update.message,
+      logLines: List.unmodifiable(logLines),
+    );
+    state = {...state};
   }
 
   @override
@@ -1170,13 +1223,14 @@ void main() {
     }
 
     testWidgets(
-      'automatically reconnects when the active session disappears unexpectedly',
+      'offers reconnect when the active session disappears unexpectedly',
       (tester) async {
         final reconnectClient = _MockSshClient();
         final reconnectShell = _MockShellChannel();
         final reconnectDoneCompleter = Completer<void>();
         final reconnectStdoutController =
             StreamController<Uint8List>.broadcast();
+        final reconnectCompleter = Completer<void>();
         addTearDown(reconnectStdoutController.close);
 
         when(
@@ -1206,12 +1260,28 @@ void main() {
         final activeSessions = _TestActiveSessionsNotifier(
           session,
           reconnectSession: reconnectSession,
+          connectCompleter: reconnectCompleter,
         )..disconnectedConnectionIds.add(reconnectSession.connectionId);
 
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
 
         await activeSessions.disconnect(session.connectionId);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.text('Disconnected'), findsOneWidget);
+        expect(find.text('Reconnect'), findsOneWidget);
+        expect(activeSessions.connectForceNewValues, isEmpty);
+
+        await tester.tap(find.text('Reconnect'));
+        await tester.pump();
+
+        expect(find.text('Connecting to Terminal test host'), findsOneWidget);
+        expect(find.text('Preparing connection…'), findsWidgets);
+
+        reconnectCompleter.complete();
         await tester.pump();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
@@ -1226,13 +1296,14 @@ void main() {
     );
 
     testWidgets(
-      'automatically reconnects when the session lookup is stale',
+      'offers reconnect when the session lookup is stale',
       (tester) async {
         final reconnectClient = _MockSshClient();
         final reconnectShell = _MockShellChannel();
         final reconnectDoneCompleter = Completer<void>();
         final reconnectStdoutController =
             StreamController<Uint8List>.broadcast();
+        final reconnectCompleter = Completer<void>();
         addTearDown(reconnectStdoutController.close);
 
         when(
@@ -1262,12 +1333,28 @@ void main() {
         final activeSessions = _TestActiveSessionsNotifier(
           session,
           reconnectSession: reconnectSession,
+          connectCompleter: reconnectCompleter,
         )..disconnectedConnectionIds.add(reconnectSession.connectionId);
 
         await pumpScreen(tester, activeSessions: activeSessions);
         verify(() => sshClient.shell(pty: any(named: 'pty'))).called(1);
 
         activeSessions.dropSessionButKeepConnectedState(session.connectionId);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.text('Disconnected'), findsOneWidget);
+        expect(find.text('Reconnect'), findsOneWidget);
+        expect(activeSessions.connectForceNewValues, isEmpty);
+
+        await tester.tap(find.text('Reconnect'));
+        await tester.pump();
+
+        expect(find.text('Connecting to Terminal test host'), findsOneWidget);
+        expect(find.text('Preparing connection…'), findsWidgets);
+
+        reconnectCompleter.complete();
         await tester.pump();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
