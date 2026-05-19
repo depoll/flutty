@@ -850,7 +850,7 @@ class HostsPanel extends ConsumerWidget {
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: hosts.length,
-    onReorder: (oldIndex, newIndex) => unawaited(
+    onReorderItem: (oldIndex, newIndex) => unawaited(
       _reorderHosts(
         ref: ref,
         hosts: hosts,
@@ -2635,7 +2635,7 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: visibleSnippets.length,
-    onReorder: (oldIndex, newIndex) => unawaited(
+    onReorderItem: (oldIndex, newIndex) => unawaited(
       _reorderSnippets(
         allSnippets: allSnippets,
         visibleSnippets: visibleSnippets,

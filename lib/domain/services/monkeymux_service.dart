@@ -758,13 +758,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         final panePid = window.panePid;
         final metadata = panePid == null ? null : metadataByPanePid[panePid];
         if (metadata == null || metadata.tool != window.foregroundAgentTool) {
-          if (panePid != null &&
-              refreshedPanePids != null &&
-              refreshedPanePids.contains(panePid) &&
-              _hasMonkeyMuxAgentSessionMetadata(window)) {
-            changed = true;
-            return window.copyWith(clearActiveAgentSessionMetadata: true);
-          }
           return window;
         }
         if (window.activeAgentSessionId == metadata.sessionId &&
@@ -782,11 +775,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       .toList(growable: false);
   return (windows: changed ? enriched : windows, changed: changed);
 }
-
-bool _hasMonkeyMuxAgentSessionMetadata(TmuxWindow window) =>
-    window.activeAgentSessionId != null ||
-    window.agentSessionTitle != null ||
-    window.activeAgentSessionConfidence != null;
 
 /// Applies live Copilot metadata to MonkeyMux windows for regression tests.
 @visibleForTesting
