@@ -224,24 +224,22 @@ List<TerminalCommandReviewReason> _collectPasteCommandReviewReasons(
     TerminalCommandReviewReason.commandSubstitution,
   );
 
-  final shouldReviewUnbracketedMultilineShellText =
-      !bracketedPasteModeEnabled &&
-      hasMultiline &&
-      (hasShellChaining || hasRedirection);
+  final shouldReviewUnbracketedMultilineText =
+      !bracketedPasteModeEnabled && hasMultiline;
 
-  if (!shouldReviewUnbracketedMultilineShellText &&
+  if (!shouldReviewUnbracketedMultilineText &&
       !hasControlCharacters &&
       !hasCommandSubstitution) {
     return const <TerminalCommandReviewReason>[];
   }
 
   return [
-    if (shouldReviewUnbracketedMultilineShellText)
+    if (shouldReviewUnbracketedMultilineText)
       TerminalCommandReviewReason.multiline,
     if (hasControlCharacters) TerminalCommandReviewReason.controlCharacters,
-    if (shouldReviewUnbracketedMultilineShellText && hasShellChaining)
+    if (shouldReviewUnbracketedMultilineText && hasShellChaining)
       TerminalCommandReviewReason.shellChaining,
-    if (shouldReviewUnbracketedMultilineShellText && hasRedirection)
+    if (shouldReviewUnbracketedMultilineText && hasRedirection)
       TerminalCommandReviewReason.redirection,
     if (hasCommandSubstitution) TerminalCommandReviewReason.commandSubstitution,
   ];

