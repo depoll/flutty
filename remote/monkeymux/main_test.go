@@ -358,6 +358,62 @@ func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
 	}
 }
 
+func TestAttachInputDropsFocusReportsUntilActiveWindowEnablesFocus(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: writer, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.writeActiveFromAttach([]byte("typed\x1b[I\x1b[Oinput"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != "typedinput" {
+		t.Fatalf("pty input = %q, want focus reports stripped", got)
+	}
+}
+
+func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{
+		id:               "@1",
+		index:            0,
+		pty:              writer,
+		lastActivity:     time.Now(),
+		focusModeEnabled: true,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.writeActiveFromAttach([]byte("typed\x1b[I\x1b[Oinput"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != "typed\x1b[I\x1b[Oinput" {
+		t.Fatalf("pty input = %q, want focus reports preserved", got)
+	}
+}
+
 func TestInactiveWindowBellMarksAlert(t *testing.T) {
 	server := newMuxServer("test")
 	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
@@ -416,6 +472,65 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 		"suffix",
 	) {
 		t.Fatalf("replay did not preserve recent output suffix")
+	}
+}
+
+func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"\x1b[?1049h" +
+			"alternate-screen-start" +
+			strings.Repeat("\x1b]66;semantic\a", windowReplayLimitBytes/8) +
+			"alternate-screen-end",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked(history)
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, "alternate-screen-start") {
+		t.Fatalf("alternate-screen replay was capped before screen start")
+	}
+	if !strings.Contains(replay, "alternate-screen-end") {
+		t.Fatalf("alternate-screen replay lost screen end")
+	}
+	if got, want := len(window.history), len(history); got != want {
+		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayCapsExitedAlternateScreenHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"\x1b[?1049h" +
+			"stale-alt-screen-start" +
+			strings.Repeat("main-screen-output", windowReplayLimitBytes/8) +
+			"main-screen-suffix",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked([]byte("\x1b[?1049h\x1b[?1049l"))
+	replay := string(server.activeReplayLocked())
+
+	if strings.Contains(replay, "stale-alt-screen-start") {
+		t.Fatalf("main-screen replay retained stale alternate-screen prefix")
+	}
+	if !strings.Contains(replay, "main-screen-suffix") {
+		t.Fatalf("main-screen replay lost recent suffix")
 	}
 }
 
@@ -757,6 +872,27 @@ func TestReplayParserFenceDoesNotEmitVisibleCancelByte(t *testing.T) {
 	}
 	if strings.ContainsAny(terminalParserResetSequence, "\x18\x1a") {
 		t.Fatalf("parser fence = %q, must not include visible cancel controls", terminalParserResetSequence)
+	}
+}
+
+func TestActiveReplayDoesNotRestoreStaleFocusMode(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                 "@1",
+		index:              0,
+		foregroundPid:      222,
+		privateModes:       map[string]bool{"1004": true},
+		focusModeEnabled:   true,
+		focusModeProcessID: 111,
+		lastActivity:       time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := strings.TrimPrefix(string(server.activeReplayLocked()), activeWindowReplayPrefix)
+
+	if strings.Contains(replay, "\x1b[?1004h") {
+		t.Fatalf("replay restored stale focus mode: %q", replay)
 	}
 }
 
