@@ -498,11 +498,40 @@ func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
 	if !strings.Contains(replay, "alternate-screen-start") {
 		t.Fatalf("alternate-screen replay was capped before screen start")
 	}
+	if !strings.Contains(
+		replay,
+		"\x1b[?1049h"+terminalScreenClearSequence+"\x1b[?1049halternate-screen-start",
+	) {
+		t.Fatalf("alternate-screen replay did not clear stale alternate buffer before history: %q", replay)
+	}
 	if !strings.Contains(replay, "alternate-screen-end") {
 		t.Fatalf("alternate-screen replay lost screen end")
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayPrefixClearsMainAndAlternateScreens(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("shell prompt"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replayPrefixForTest(window), terminalAllScreensClearSequence) {
+		t.Fatal("replay prefix does not clear both main and alternate screens")
+	}
+	clearIndex := strings.Index(replay, terminalAllScreensClearSequence)
+	historyIndex := strings.Index(replay, "shell prompt")
+	if clearIndex < 0 || historyIndex < 0 || clearIndex > historyIndex {
+		t.Fatalf("main-screen replay did not clear stale alternate buffer before history: %q", replay)
 	}
 }
 
@@ -913,8 +942,9 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 	preModes := string(terminalModePreReplaySequence(window))
+	preHistoryClear := string(terminalPreHistoryClearSequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
-	want := replayPrefixForTest(window) + preModes + "nano screen" +
+	want := replayPrefixForTest(window) + preModes + preHistoryClear + "nano screen" +
 		terminalParserResetSequence + postModes +
 		terminalCharacterSetResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
@@ -1601,6 +1631,51 @@ func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent before the window requested a background color")
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b]11;?\x1b\\"))
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("theme hint = %q, want %q", got, backgroundReport)
 	}
 }
 
