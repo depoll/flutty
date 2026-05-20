@@ -948,8 +948,45 @@ cwd: /tmp/demo
       expect(metadata.parsedAny, isTrue);
     });
 
-    test('returns empty results for malformed JSON', () {
+    test('returns empty results for malformed JSON without fields', () {
       final metadata = parseAntigravitySessionMetadata('invalid');
+
+      expect(metadata.sessionId, isNull);
+      expect(metadata.summary, isNull);
+      expect(metadata.workingDirectory, isNull);
+      expect(metadata.updatedAt, isNull);
+      expect(metadata.parsedAny, isFalse);
+    });
+
+    test(
+      'extracts metadata from truncated/malformed JSON with partial parsing',
+      () {
+        final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "antigravity-trunc",
+  "name": "Partial refactoring",
+  "workingDirectory": "/Users/demo/trunc",
+  "updatedAt": "202
+'''); // Truncated/unclosed JSON
+
+        expect(metadata.sessionId, 'antigravity-trunc');
+        expect(metadata.summary, 'Partial refactoring');
+        expect(metadata.workingDirectory, '/Users/demo/trunc');
+        expect(
+          metadata.updatedAt,
+          isNull,
+        ); // Truncated date value cannot be parsed
+        expect(metadata.parsedAny, isTrue);
+      },
+    );
+
+    test('returns parsedAny: false for valid JSON with unexpected keys', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "random_field": "val",
+  "another_one": 123
+}
+''');
 
       expect(metadata.sessionId, isNull);
       expect(metadata.summary, isNull);

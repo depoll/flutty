@@ -26,6 +26,7 @@ const _profileSourcingPrefix =
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
 const _geminiSessionMetadataMaxBytes = 64 * 1024;
+const _antigravitySessionMetadataMaxBytes = 8 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -629,29 +630,66 @@ parseClaudeSessionMetadata(String raw) {
 parseAntigravitySessionMetadata(String raw) {
   final decoded = _tryDecodeJsonObject(raw);
   if (decoded == null) {
-    return (
-      sessionId: null,
-      summary: null,
-      workingDirectory: null,
-      updatedAt: null,
-      parsedAny: false,
-    );
+    return _parsePartialAntigravitySessionMetadata(raw);
   }
 
+  final sessionId =
+      _readStringField(decoded, 'id') ?? _readStringField(decoded, 'sessionId');
+  final summary =
+      _readStringField(decoded, 'summary') ?? _readStringField(decoded, 'name');
+  final workingDirectory =
+      _readStringField(decoded, 'workingDirectory') ??
+      _readStringField(decoded, 'cwd');
+  final updatedAt =
+      _parseDateTimeValue(decoded['updatedAt']) ??
+      _parseDateTimeValue(decoded['lastActive']);
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      workingDirectory != null ||
+      updatedAt != null;
+
   return (
-    sessionId:
-        _readStringField(decoded, 'id') ??
-        _readStringField(decoded, 'sessionId'),
-    summary:
-        _readStringField(decoded, 'summary') ??
-        _readStringField(decoded, 'name'),
-    workingDirectory:
-        _readStringField(decoded, 'workingDirectory') ??
-        _readStringField(decoded, 'cwd'),
-    updatedAt:
-        _parseDateTimeValue(decoded['updatedAt']) ??
-        _parseDateTimeValue(decoded['lastActive']),
-    parsedAny: true,
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parsedAny: parsedAny,
+  );
+}
+
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+_parsePartialAntigravitySessionMetadata(String raw) {
+  final sessionId =
+      _readJsonStringFromRaw(raw, 'id') ??
+      _readJsonStringFromRaw(raw, 'sessionId');
+  final summary =
+      _readJsonStringFromRaw(raw, 'summary') ??
+      _readJsonStringFromRaw(raw, 'name');
+  final workingDirectory =
+      _readJsonStringFromRaw(raw, 'workingDirectory') ??
+      _readJsonStringFromRaw(raw, 'cwd');
+  final updatedAt =
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'updatedAt')) ??
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'lastActive'));
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      workingDirectory != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parsedAny: parsedAny,
   );
 }
 
@@ -2406,6 +2444,7 @@ class AgentSessionDiscoveryService {
       final sessionSnapshots = await _readRemoteFileSnapshots(
         session,
         recentSessionPaths,
+        maxBytes: _antigravitySessionMetadataMaxBytes,
       );
 
       final sessions = <ToolSessionInfo>[];
