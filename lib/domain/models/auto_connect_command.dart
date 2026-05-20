@@ -135,13 +135,16 @@ bool importedAutoConnectRequiresReview({
     resolveAutoConnectCommandMode(command: command, snippetId: snippetId) !=
     AutoConnectCommandMode.none;
 
-/// Assesses a clipboard paste for multiline or suspicious shell content.
+/// Assesses pasted text for shell content that still deserves review.
 TerminalCommandReview assessClipboardPasteCommand(
   String command, {
   required bool bracketedPasteModeEnabled,
 }) => TerminalCommandReview(
   command: command,
-  reasons: _collectSuspiciousCommandReasons(command),
+  reasons: _collectPasteCommandReviewReasons(
+    command,
+    bracketedPasteModeEnabled: bracketedPasteModeEnabled,
+  ),
   bracketedPasteModeEnabled: bracketedPasteModeEnabled,
 );
 
@@ -198,6 +201,50 @@ List<TerminalCommandReviewReason> _collectSuspiciousCommandReasons(
     reasons.add(TerminalCommandReviewReason.commandSubstitution);
   }
   return reasons;
+}
+
+List<TerminalCommandReviewReason> _collectPasteCommandReviewReasons(
+  String command, {
+  required bool bracketedPasteModeEnabled,
+}) {
+  final suspiciousReasons = _collectSuspiciousCommandReasons(command);
+  final hasMultiline = suspiciousReasons.contains(
+    TerminalCommandReviewReason.multiline,
+  );
+  final hasShellChaining = suspiciousReasons.contains(
+    TerminalCommandReviewReason.shellChaining,
+  );
+  final hasRedirection = suspiciousReasons.contains(
+    TerminalCommandReviewReason.redirection,
+  );
+  final hasControlCharacters = suspiciousReasons.contains(
+    TerminalCommandReviewReason.controlCharacters,
+  );
+  final hasCommandSubstitution = suspiciousReasons.contains(
+    TerminalCommandReviewReason.commandSubstitution,
+  );
+
+  final shouldReviewUnbracketedMultilineShellText =
+      !bracketedPasteModeEnabled &&
+      hasMultiline &&
+      (hasShellChaining || hasRedirection);
+
+  if (!shouldReviewUnbracketedMultilineShellText &&
+      !hasControlCharacters &&
+      !hasCommandSubstitution) {
+    return const <TerminalCommandReviewReason>[];
+  }
+
+  return [
+    if (shouldReviewUnbracketedMultilineShellText)
+      TerminalCommandReviewReason.multiline,
+    if (hasControlCharacters) TerminalCommandReviewReason.controlCharacters,
+    if (shouldReviewUnbracketedMultilineShellText && hasShellChaining)
+      TerminalCommandReviewReason.shellChaining,
+    if (shouldReviewUnbracketedMultilineShellText && hasRedirection)
+      TerminalCommandReviewReason.redirection,
+    if (hasCommandSubstitution) TerminalCommandReviewReason.commandSubstitution,
+  ];
 }
 
 ({bool shellChaining, bool redirection, bool commandSubstitution})
