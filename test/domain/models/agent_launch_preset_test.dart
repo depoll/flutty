@@ -33,6 +33,13 @@ void main() {
         buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
         'gemini --yolo',
       );
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.antigravity,
+          startInYoloMode: true,
+        ),
+        'antigravity --yolo',
+      );
     });
   });
 
@@ -69,6 +76,14 @@ void main() {
           startInYoloMode: true,
         ),
         "gemini --yolo --resume 'gemini-session'",
+      );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.antigravity,
+          'antigravity-session',
+          startInYoloMode: true,
+        ),
+        "antigravity --yolo --resume 'antigravity-session'",
       );
       expect(
         buildAgentResumeCommand(
@@ -267,6 +282,12 @@ void main() {
       expect(buildAgentLaunchCommand(preset), 'gemini');
     });
 
+    test('builds command for antigravity tool', () {
+      const preset = AgentLaunchPreset(tool: AgentLaunchTool.antigravity);
+
+      expect(buildAgentLaunchCommand(preset), 'antigravity');
+    });
+
     test('adds yolo mode to supported presets', () {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.codex,
@@ -360,6 +381,7 @@ void main() {
       AgentLaunchTool.codex,
       AgentLaunchTool.openCode,
       AgentLaunchTool.geminiCli,
+      AgentLaunchTool.antigravity,
     ]) {
       final preset = AgentLaunchPreset(tool: tool);
       final decoded = AgentLaunchPreset.fromJson(preset.toJson());
@@ -388,12 +410,14 @@ void main() {
       expect(AgentLaunchTool.codex.label, 'Codex');
       expect(AgentLaunchTool.openCode.label, 'OpenCode');
       expect(AgentLaunchTool.geminiCli.label, 'Gemini CLI');
+      expect(AgentLaunchTool.antigravity.label, 'Antigravity');
     });
 
     test('new tool command names are correct', () {
       expect(AgentLaunchTool.codex.commandName, 'codex');
       expect(AgentLaunchTool.openCode.commandName, 'opencode');
       expect(AgentLaunchTool.geminiCli.commandName, 'gemini');
+      expect(AgentLaunchTool.antigravity.commandName, 'antigravity');
     });
 
     test('command lookup resolves bare names, paths, and argv tokens', () {
@@ -414,6 +438,14 @@ void main() {
       expect(
         agentLaunchToolForCommandName('gemini --yolo'),
         AgentLaunchTool.geminiCli,
+      );
+      expect(
+        agentLaunchToolForCommandName('antigravity'),
+        AgentLaunchTool.antigravity,
+      );
+      expect(
+        agentLaunchToolForCommandName('antigravity-cli'),
+        AgentLaunchTool.antigravity,
       );
       expect(
         agentLaunchToolForCommandName('gemini-cli'),

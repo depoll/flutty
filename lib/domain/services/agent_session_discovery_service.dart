@@ -83,6 +83,7 @@ const _knownDiscoveredSessionTools = <String>[
   'Codex',
   'Gemini CLI',
   'OpenCode',
+  'Antigravity',
 ];
 
 /// Orders discovered-session providers for UI rendering in a stable list.
@@ -305,6 +306,8 @@ bool _isLikelyToolStateWorkingDirectory(String directory) =>
     directory.contains('/.gemini/') ||
     directory.endsWith('/.local/share/opencode') ||
     directory.contains('/.local/share/opencode/') ||
+    directory.endsWith('/.antigravity') ||
+    directory.contains('/.antigravity/') ||
     directory.startsWith('/tmp/') ||
     directory.startsWith('/private/tmp/') ||
     directory.startsWith('/var/folders/');
@@ -611,6 +614,44 @@ parseClaudeSessionMetadata(String raw) {
     lastPrompt: lastPrompt,
     userSummary: userSummary,
     parsedAny: parsedAny,
+  );
+}
+
+/// Parses Antigravity session metadata from a saved session JSON file.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+parseAntigravitySessionMetadata(String raw) {
+  final decoded = _tryDecodeJsonObject(raw);
+  if (decoded == null) {
+    return (
+      sessionId: null,
+      summary: null,
+      workingDirectory: null,
+      updatedAt: null,
+      parsedAny: false,
+    );
+  }
+
+  return (
+    sessionId:
+        _readStringField(decoded, 'id') ??
+        _readStringField(decoded, 'sessionId'),
+    summary:
+        _readStringField(decoded, 'summary') ??
+        _readStringField(decoded, 'name'),
+    workingDirectory:
+        _readStringField(decoded, 'workingDirectory') ??
+        _readStringField(decoded, 'cwd'),
+    updatedAt:
+        _parseDateTimeValue(decoded['updatedAt']) ??
+        _parseDateTimeValue(decoded['lastActive']),
+    parsedAny: true,
   );
 }
 
@@ -1461,6 +1502,13 @@ class AgentSessionDiscoveryService {
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
+            _discoverAntigravitySessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
           ]
         : [
             _discoverSessionsForTool(
@@ -1505,6 +1553,12 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Claude Code' => _discoverClaudeSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Antigravity' => _discoverAntigravitySessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -2301,6 +2355,114 @@ class AgentSessionDiscoveryService {
       sortAndLimitDiscoveredSessions(sessions, max),
       hadError: hadError,
     );
+  }
+
+  // ── Antigravity CLI ────────────────────────────────────────────────────
+  // Sessions: ~/.antigravity/sessions/*.json
+
+  Future<_ToolDiscoveryResult> _discoverAntigravitySessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+
+      final output = await _exec(
+        session,
+        'find ~/.antigravity/sessions -name "*.json" -type f '
+        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+      );
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Antigravity', []);
+      }
+
+      final sessionPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+      final recentSessionPaths = sessionPaths
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final sessionSnapshots = await _readRemoteFileSnapshots(
+        session,
+        recentSessionPaths,
+      );
+
+      final sessions = <ToolSessionInfo>[];
+      var hadError = false;
+
+      for (final filePath in recentSessionPaths) {
+        final fileName = filePath.split('/').last.replaceAll('.json', '');
+        final snapshot = sessionSnapshots[filePath];
+        if (snapshot == null) {
+          hadError = true;
+          continue;
+        }
+
+        try {
+          final metadata = parseAntigravitySessionMetadata(snapshot.content);
+          if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
+            hadError = true;
+          }
+
+          sessions.add(
+            ToolSessionInfo(
+              toolName: 'Antigravity',
+              sessionId: metadata.sessionId ?? fileName,
+              workingDirectory: metadata.workingDirectory,
+              lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
+              summary: metadata.summary ?? _truncateId(fileName),
+            ),
+          );
+        } on Object {
+          hadError = true;
+        }
+      }
+
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+
+      return _ToolDiscoveryResult.success(
+        'Antigravity',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Antigravity');
+    }
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────

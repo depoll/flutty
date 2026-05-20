@@ -506,6 +506,7 @@ branch refs/heads/fix/session-resumption
         'Codex',
         'Gemini CLI',
         'OpenCode',
+        'Antigravity',
       ]);
     });
 
@@ -522,6 +523,7 @@ branch refs/heads/fix/session-resumption
         'Copilot CLI',
         'Gemini CLI',
         'OpenCode',
+        'Antigravity',
         'Custom Tool',
       ]);
     });
@@ -908,6 +910,52 @@ cwd: /tmp/demo
       );
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
       expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
+    });
+  });
+
+  group('parseAntigravitySessionMetadata', () {
+    test('extracts session metadata from JSON fields', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "antigravity-123",
+  "name": "Refactor authentication",
+  "workingDirectory": "/Users/demo/app",
+  "updatedAt": "2024-03-20T12:00:00Z"
+}
+''');
+
+      expect(metadata.sessionId, 'antigravity-123');
+      expect(metadata.summary, 'Refactor authentication');
+      expect(metadata.workingDirectory, '/Users/demo/app');
+      expect(metadata.updatedAt, DateTime.parse('2024-03-20T12:00:00Z'));
+      expect(metadata.parsedAny, isTrue);
+    });
+
+    test('falls back to alternate field names', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "sessionId": "ag-456",
+  "summary": "Fix layout",
+  "cwd": "/tmp",
+  "lastActive": "2024-03-20T13:00:00Z"
+}
+''');
+
+      expect(metadata.sessionId, 'ag-456');
+      expect(metadata.summary, 'Fix layout');
+      expect(metadata.workingDirectory, '/tmp');
+      expect(metadata.updatedAt, DateTime.parse('2024-03-20T13:00:00Z'));
+      expect(metadata.parsedAny, isTrue);
+    });
+
+    test('returns empty results for malformed JSON', () {
+      final metadata = parseAntigravitySessionMetadata('invalid');
+
+      expect(metadata.sessionId, isNull);
+      expect(metadata.summary, isNull);
+      expect(metadata.workingDirectory, isNull);
+      expect(metadata.updatedAt, isNull);
+      expect(metadata.parsedAny, isFalse);
     });
   });
 

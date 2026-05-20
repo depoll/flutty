@@ -91,7 +91,8 @@ void main() {
           '/b/copilot\n'
           '/b/codex\n'
           '/b/gemini\n'
-          '/b/opencode\n';
+          '/b/opencode\n'
+          '/b/antigravity\n';
       expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
     });
 
@@ -193,14 +194,16 @@ void main() {
         'codex${sep}codex-1${sep}502${sep}43${sep}medium$sep\n'
         'gemini${sep}gemini-1${sep}503${sep}44${sep}medium$sep\n'
         'opencode${sep}opencode-1${sep}504${sep}45${sep}medium$sep\n'
+        'antigravity${sep}anti-1${sep}506${sep}47${sep}medium$sep\n'
         'copilot${sep}copilot-1${sep}505${sep}46${sep}medium${sep}Title\n',
-        const {42, 43, 44, 45, 46},
+        const {42, 43, 44, 45, 46, 47},
       );
 
       expect(metadata[42]?.tool, AgentLaunchTool.claudeCode);
       expect(metadata[43]?.tool, AgentLaunchTool.codex);
       expect(metadata[44]?.tool, AgentLaunchTool.geminiCli);
       expect(metadata[45]?.tool, AgentLaunchTool.openCode);
+      expect(metadata[47]?.tool, AgentLaunchTool.antigravity);
       expect(metadata[46]?.tool, AgentLaunchTool.copilotCli);
       expect(metadata[46]?.title, 'Title');
       expect(metadata[46]?.confidence, AgentSessionConfidence.medium);

@@ -17,6 +17,9 @@ enum AgentLaunchTool {
 
   /// Google Gemini CLI.
   geminiCli,
+
+  /// Antigravity CLI.
+  antigravity,
 }
 
 /// Presentation helpers for [AgentLaunchTool].
@@ -28,6 +31,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
+    AgentLaunchTool.antigravity => 'Antigravity',
   };
 
   /// Shell command used to launch this tool.
@@ -37,6 +41,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.codex => 'codex',
     AgentLaunchTool.openCode => 'opencode',
     AgentLaunchTool.geminiCli => 'gemini',
+    AgentLaunchTool.antigravity => 'antigravity',
   };
 
   /// Whether this tool supports session resume.
@@ -46,6 +51,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.codex => true,
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
+    AgentLaunchTool.antigravity => true,
   };
 
   /// Matching discovered-session provider name, if this tool supports recent
@@ -56,6 +62,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
+    AgentLaunchTool.antigravity => 'Antigravity',
   };
 
   /// Whether this tool supports launching directly into YOLO mode.
@@ -69,6 +76,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.codex => const ['--yolo'],
     AgentLaunchTool.openCode => const [],
     AgentLaunchTool.geminiCli => const ['--yolo'],
+    AgentLaunchTool.antigravity => const ['--yolo'],
   };
 
   /// Environment variables that enable YOLO mode for this tool.
@@ -94,6 +102,7 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     'codex' || 'codex-cli' => AgentLaunchTool.codex,
     'opencode' || 'open-code' => AgentLaunchTool.openCode,
     'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
+    'antigravity' || 'antigravity-cli' => AgentLaunchTool.antigravity,
     _ => null,
   };
 }
@@ -324,6 +333,7 @@ final _copilotAllowAllPathsPattern = RegExp(
 );
 final _copilotAllowAllUrlsPattern = RegExp(r'(?<!\S)--allow-all-urls(?=\s|$)');
 final _geminiYoloPattern = RegExp(r'(?<!\S)(?:--yolo|-y)(?=\s|$)');
+final _antigravityYoloPattern = RegExp(r'(?<!\S)--yolo(?=\s|$)');
 final _openCodeDangerouslySkipPermissionsPattern = RegExp(
   r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
 );
@@ -414,6 +424,7 @@ List<String> _buildAgentResumeArguments(
   AgentLaunchTool.copilotCli => ['--resume', _quoteShellArgument(sessionId)],
   AgentLaunchTool.codex => ['resume', _quoteShellArgument(sessionId)],
   AgentLaunchTool.geminiCli => ['--resume', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.antigravity => ['--resume', _quoteShellArgument(sessionId)],
   AgentLaunchTool.openCode =>
     sessionId == '_continue'
         ? const ['--continue']
@@ -455,6 +466,10 @@ String? _normalizeAgentToolArguments({
     AgentLaunchTool.geminiCli => _stripArgumentPatterns(
       trimmedAdditionalArguments,
       [_geminiYoloPattern],
+    ),
+    AgentLaunchTool.antigravity => _stripArgumentPatterns(
+      trimmedAdditionalArguments,
+      [_antigravityYoloPattern],
     ),
   };
 
