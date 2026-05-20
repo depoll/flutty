@@ -751,6 +751,15 @@ func TestReplayPrefixResetsCharacterSetShift(t *testing.T) {
 	}
 }
 
+func TestReplayParserFenceDoesNotEmitVisibleCancelByte(t *testing.T) {
+	if terminalParserResetSequence != "\x1b\\" {
+		t.Fatalf("parser fence = %q, want ST-only fence", terminalParserResetSequence)
+	}
+	if strings.ContainsAny(terminalParserResetSequence, "\x18\x1a") {
+		t.Fatalf("parser fence = %q, must not include visible cancel controls", terminalParserResetSequence)
+	}
+}
+
 func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
