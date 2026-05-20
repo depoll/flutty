@@ -54,6 +54,7 @@ import '../../domain/services/tmux_service.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
@@ -5599,6 +5600,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _connect({
     int? preferredConnectionId,
     bool forceNew = false,
+    bool showProgressDialog = false,
   }) async {
     if (!mounted) return;
 
@@ -5640,13 +5642,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref.read(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
 
-    final result = await _sessionsNotifier!.connect(
-      widget.hostId,
-      forceNew: shouldForceNew,
-      useHostThemeOverrides: monetizationState.allowsFeature(
-        MonetizationFeature.hostSpecificThemes,
-      ),
-    );
+    if (!mounted) return;
+    final result = showProgressDialog && _host != null
+        ? await connectToHostWithProgressDialog(
+            context,
+            ref,
+            _host!,
+            forceNew: shouldForceNew,
+          )
+        : await _sessionsNotifier!.connect(
+            widget.hostId,
+            forceNew: shouldForceNew,
+            useHostThemeOverrides: monetizationState.allowsFeature(
+              MonetizationFeature.hostSpecificThemes,
+            ),
+          );
 
     if (!mounted) return;
 
@@ -5935,7 +5945,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         unawaited(
           _cleanupUnexpectedDisconnect(
             session.connectionId,
-            message: 'Connection became unresponsive. Reconnecting…',
+            message: 'Connection became unresponsive. Reconnect to continue.',
           ),
         );
       }
@@ -8147,10 +8157,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _startAutomaticReconnect(
-      connectionId,
-      reason: 'tracked_connection_disconnected',
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'disconnected_prompt_show',
+      fields: {'connectionId': connectionId},
     );
+    setState(() {
+      _isConnecting = false;
+      _error ??= 'Connection closed';
+    });
   }
 
   void _prepareTerminalForLostConnection(SshSession? session) {
@@ -8168,20 +8183,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sessionController.clearObservedSession(session: session);
     _clearTmuxState();
     _detectedSensitiveKeyboardPrompt = false;
-  }
-
-  void _startAutomaticReconnect(int connectionId, {required String reason}) {
-    if (_isConnecting || _connectionId != connectionId) {
-      return;
-    }
-
-    DiagnosticsLogService.instance.info(
-      'terminal',
-      'auto_reconnect_start',
-      fields: {'connectionId': connectionId, 'reason': reason},
-    );
-    _terminal.write('\r\n[reconnecting...]\r\n');
-    unawaited(_reconnect());
   }
 
   void _handleShellClosed() {
@@ -8262,7 +8263,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _reconnect() async {
+  Future<void> _reconnect({bool showProgressDialog = true}) async {
     if (_isConnecting) {
       return;
     }
@@ -8298,7 +8299,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) {
         return;
       }
-      await _connect(forceNew: true);
+      await _connect(forceNew: true, showProgressDialog: showProgressDialog);
     } finally {
       if (!mounted) {
         _isConnecting = false;
@@ -8370,7 +8371,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
-        _reconnect();
+        unawaited(_reconnect(showProgressDialog: false));
       } else if (session != null) {
         unawaited(
           _reloadTerminalThemeForDependencies(
@@ -9314,9 +9315,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final connectionAttempt = ref
         .read(activeSessionsProvider.notifier)
         .getConnectionAttempt(widget.hostId);
-    final connectionState = _connectionId == null
-        ? SshConnectionState.disconnected
-        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
+    final connectionState = _selectTrackedConnectionState(connectionStates);
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
