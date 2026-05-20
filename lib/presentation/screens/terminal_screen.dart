@@ -8330,7 +8330,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
-        _reconnect(showProgressDialog: false);
+        unawaited(_reconnect(showProgressDialog: false));
       } else if (session != null) {
         unawaited(
           _reloadTerminalThemeForDependencies(
