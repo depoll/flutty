@@ -85,9 +85,11 @@ String buildMonkeyMuxAttachCommand({
   String? workingDirectory,
   String? launchCommand,
   String? windowName,
+  String? terminalThemeBackgroundReport,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
 }) {
+  final themeHint = terminalThemeBackgroundReport?.trim();
   final parts = <String>[
     _shellQuote(executablePath),
     'attach',
@@ -96,6 +98,10 @@ String buildMonkeyMuxAttachCommand({
       serverUpdatePolicy.cliValue,
     ],
     if (startInYoloMode) '--restore-yolo',
+    if (themeHint != null && themeHint.isNotEmpty) ...[
+      '--theme-hint-base64',
+      base64Encode(utf8.encode(themeHint)),
+    ],
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
       _shellQuote(workingDirectory.trim()),

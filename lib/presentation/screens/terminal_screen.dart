@@ -6450,12 +6450,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           installation,
           sessionName,
         );
+        final terminalThemeBackgroundReport =
+            buildTerminalThemeBackgroundColorReport(
+              session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
+            );
         if (!mounted) {
           return (
             command: buildMonkeyMuxAttachCommand(
               executablePath: installation.executablePath,
               sessionName: sessionName,
               workingDirectory: host.tmuxWorkingDirectory,
+              terminalThemeBackgroundReport: terminalThemeBackgroundReport,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
               startInYoloMode: _startClisInYoloMode,
             ),
@@ -6467,6 +6472,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             executablePath: installation.executablePath,
             sessionName: sessionName,
             workingDirectory: host.tmuxWorkingDirectory,
+            terminalThemeBackgroundReport: terminalThemeBackgroundReport,
             serverUpdatePolicy: updatePolicy,
             startInYoloMode: _startClisInYoloMode,
           ),
@@ -6720,12 +6726,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         installation,
         sessionName,
       );
+      final terminalThemeBackgroundReport =
+          buildTerminalThemeBackgroundColorReport(
+            session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
+          );
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
+        terminalThemeBackgroundReport: terminalThemeBackgroundReport,
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
       );
