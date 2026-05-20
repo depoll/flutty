@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.29"
+	monkeyMuxVersion         = "0.1.30"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -289,6 +289,7 @@ type muxWindow struct {
 	applicationKeypadEnabled   bool
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
+	focusModeProcessID         int
 	backgroundColorQuerySeen   bool
 	backgroundColorQueryPid    int
 	alert                      bool
@@ -1656,7 +1657,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			s.writeActive(buf[:n])
+			s.writeActiveFromAttach(buf[:n])
 		}
 		if err != nil {
 			return
@@ -2351,7 +2352,9 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
-	history = trimReplayHistoryForAttach(history)
+	if !window.usesAlternateScreenForReplayLocked() {
+		history = trimReplayHistoryForAttach(history)
+	}
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
 	postModes := terminalModePostReplaySequence(window)
@@ -2373,6 +2376,13 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay = append(replay, postCharset...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func (w *muxWindow) usesAlternateScreenForReplayLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.privateModes["1049"]
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -2416,6 +2426,9 @@ func terminalModeReplaySequence(
 	for _, mode := range privateModes {
 		enabled, ok := window.privateModes[mode]
 		if !ok {
+			continue
+		}
+		if mode == "1004" && enabled && !window.focusModeActiveLocked() {
 			continue
 		}
 		final := byte('l')
@@ -2484,6 +2497,24 @@ func (s *muxServer) writeActive(data []byte) {
 	_ = s.writeWindow(s.activeWindowID(), data)
 }
 
+func (s *muxServer) writeActiveFromAttach(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	s.mu.Lock()
+	windowID := s.activeID
+	window := s.windowByIDLocked(windowID)
+	stripFocusReports := window == nil || !window.focusModeActiveLocked()
+	s.mu.Unlock()
+	if stripFocusReports {
+		data = stripFocusReportsFromAttachInput(data)
+		if len(data) == 0 {
+			return
+		}
+	}
+	_ = s.writeWindow(windowID, data)
+}
+
 func (s *muxServer) sendThemeHint(data string) bool {
 	s.mu.Lock()
 	window := s.windowByIDLocked(s.activeID)
@@ -2493,7 +2524,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	}
 	window.refreshProcessMetadataLocked(time.Now())
 	sendBackgroundReport := data != "" && window.hasActiveBackgroundColorQueryLocked()
-	sendFocusTransition := window.focusModeEnabled
+	sendFocusTransition := window.focusModeActiveLocked()
 	if !sendBackgroundReport && !sendFocusTransition {
 		s.mu.Unlock()
 		return false
@@ -2612,6 +2643,31 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 		}
 	}
 	return history[start:]
+}
+
+func stripFocusReportsFromAttachInput(data []byte) []byte {
+	if len(data) < 3 || !bytes.Contains(data, []byte("\x1b[")) {
+		return data
+	}
+	var output []byte
+	copyStart := 0
+	for i := 0; i+2 < len(data); i++ {
+		if data[i] != '\x1b' || data[i+1] != '[' ||
+			(data[i+2] != 'I' && data[i+2] != 'O') {
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-3)
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = i + 3
+		i += 2
+	}
+	if output == nil {
+		return data
+	}
+	output = append(output, data[copyStart:]...)
+	return output
 }
 
 func containsTerminalBell(data []byte) bool {
@@ -2779,7 +2835,7 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeEnabled || w.hasActiveBackgroundColorQueryLocked()
+	return w.focusModeActiveLocked() || w.hasActiveBackgroundColorQueryLocked()
 }
 
 func (w *muxWindow) hasActiveBackgroundColorQueryLocked() bool {
@@ -2795,6 +2851,16 @@ func (w *muxWindow) activeForegroundPidLocked() int {
 		return w.metadataProcessIDLocked()
 	}
 	return w.foregroundProcessGroupLocked()
+}
+
+func (w *muxWindow) focusModeActiveLocked() bool {
+	if w == nil || !w.focusModeEnabled {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.focusModeProcessID <= 0 ||
+		activePid <= 0 ||
+		w.focusModeProcessID == activePid
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -3178,6 +3244,11 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 	}
 	if mode == "1004" {
 		w.focusModeEnabled = enabled
+		if enabled {
+			w.focusModeProcessID = w.activeForegroundPidLocked()
+		} else {
+			w.focusModeProcessID = 0
+		}
 	}
 	if _, ok := trackedPrivateModes[mode]; !ok {
 		return
