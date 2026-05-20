@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.28"
+	monkeyMuxVersion         = "0.1.29"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -50,7 +50,7 @@ const (
 	restoreSchemaVersion     = 1
 )
 
-const terminalParserResetSequence = "\x18\x1b\\"
+const terminalParserResetSequence = "\x1b\\"
 
 const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
 
