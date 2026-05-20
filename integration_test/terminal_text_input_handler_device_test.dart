@@ -983,7 +983,7 @@ void main() {
       },
     );
 
-    testWidgets('reviews suspicious IME paste before sending it', (
+    testWidgets('reviews high-risk IME paste before sending it', (
       tester,
     ) async {
       final terminalOutput = <String>[];
@@ -1014,8 +1014,8 @@ void main() {
       (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
           .updateEditingValue(
             const TextEditingValue(
-              text: '\u200B\u200Becho ready\necho deploy',
-              selection: TextSelection.collapsed(offset: 24),
+              text: '\u200B\u200Becho \$(id)',
+              selection: TextSelection.collapsed(offset: 12),
             ),
           );
       await tester.pump();
@@ -1024,7 +1024,7 @@ void main() {
       expect(reviews, hasLength(1));
       expect(
         reviews.single.reasons,
-        contains(TerminalCommandReviewReason.multiline),
+        contains(TerminalCommandReviewReason.commandSubstitution),
       );
       expect(terminalOutput, isEmpty);
 
