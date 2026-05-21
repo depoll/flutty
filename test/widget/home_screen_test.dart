@@ -1074,9 +1074,12 @@ void main() {
       await tester.tap(find.text('AI Sessions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
+      await tester.drag(find.text('work · 1 windows'), const Offset(0, -120));
+      await tester.pump();
       await tester.tap(find.text('Codex'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
+      await tester.ensureVisible(find.text('Resume codex work'));
       await tester.tap(find.text('Resume codex work'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
