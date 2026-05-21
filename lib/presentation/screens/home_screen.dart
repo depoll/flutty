@@ -1662,21 +1662,33 @@ class _ConnectionsPanel extends ConsumerWidget {
                     final endpoint =
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
-                    final preview = connection.preview;
-                    final previewTheme = resolveConnectionPreviewTheme(
+                    void openConnection() => unawaited(
+                      context.push(
+                        '/terminal/${connection.hostId}'
+                        '?connectionId=${connection.connectionId}',
+                      ),
+                    );
+                    final previewEntry = buildConnectionPreviewStackEntry(
+                      connectionId: connection.connectionId,
+                      state: state,
                       brightness: theme.brightness,
                       themeSettings: terminalThemeSettings,
                       availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection.terminalThemeLightId ??
-                          (hasHostThemeAccess
-                              ? host?.terminalThemeLightId
-                              : null),
-                      darkThemeId:
-                          connection.terminalThemeDarkId ??
-                          (hasHostThemeAccess
-                              ? host?.terminalThemeDarkId
-                              : null),
+                      preview: connection.preview,
+                      sessionTitle: connection.sessionTitle,
+                      windowTitle: connection.windowTitle,
+                      iconName: connection.iconName,
+                      workingDirectory: connection.workingDirectory,
+                      shellStatus: connection.shellStatus,
+                      lastExitCode: connection.lastExitCode,
+                      hostLightThemeId: hasHostThemeAccess
+                          ? host?.terminalThemeLightId
+                          : null,
+                      hostDarkThemeId: hasHostThemeAccess
+                          ? host?.terminalThemeDarkId
+                          : null,
+                      connectionLightThemeId: connection.terminalThemeLightId,
+                      connectionDarkThemeId: connection.terminalThemeDarkId,
                     );
                     final preferredTmuxSessionName =
                         resolvePreferredTmuxSessionName(
@@ -1688,6 +1700,11 @@ class _ConnectionsPanel extends ConsumerWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                          ),
+                          horizontalTitleGap: 16,
+                          minLeadingWidth: 40,
                           leading: Icon(
                             Icons.terminal,
                             color: state == SshConnectionState.connected
@@ -1697,19 +1714,9 @@ class _ConnectionsPanel extends ConsumerWidget {
                           title: Text(
                             host?.label ?? 'Host ${connection.hostId}',
                           ),
-                          subtitle: _ConnectionPreviewText(
-                            endpoint:
-                                '$endpoint  •  Connection #${connection.connectionId}',
-                            preview: preview,
-                            sessionTitle: connection.sessionTitle,
-                            windowTitle: connection.windowTitle,
-                            iconName: connection.iconName,
-                            workingDirectory: connection.workingDirectory,
-                            shellStatus: connection.shellStatus,
-                            lastExitCode: connection.lastExitCode,
-                            terminalTheme: previewTheme,
+                          subtitle: Text(
+                            '$endpoint  •  Connection #${connection.connectionId}',
                           ),
-                          isThreeLine: preview?.trim().isNotEmpty ?? false,
                           trailing: IconButton(
                             icon: const Icon(Icons.close),
                             tooltip: 'Disconnect',
@@ -1720,10 +1727,15 @@ class _ConnectionsPanel extends ConsumerWidget {
                               ),
                             ),
                           ),
-                          onTap: () => unawaited(
-                            context.push(
-                              '/terminal/${connection.hostId}'
-                              '?connectionId=${connection.connectionId}',
+                          onTap: openConnection,
+                        ),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: openConnection,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+                            child: ConnectionPreviewStack(
+                              entries: [previewEntry],
                             ),
                           ),
                         ),
@@ -1743,12 +1755,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                                 ) ??
                                 RemoteMuxBackend.tmux,
                             tmuxExtraFlags: host?.tmuxExtraFlags,
-                            onTap: () => unawaited(
-                              context.push(
-                                '/terminal/${connection.hostId}'
-                                '?connectionId=${connection.connectionId}',
-                              ),
-                            ),
+                            onTap: openConnection,
                           ),
                       ],
                     );

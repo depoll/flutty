@@ -735,8 +735,8 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('Active: Implement onboarding'), findsOneWidget);
-      expect(find.text('Active: Designing app prompt'), findsNothing);
+      expect(find.text('Connection #7 • Implement onboarding'), findsOneWidget);
+      expect(find.text('Connection #7 • Designing app prompt'), findsNothing);
     },
   );
 
