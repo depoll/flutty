@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.34"
+	monkeyMuxVersion         = "0.1.35"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1892,7 +1892,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "focus_hint_sent", Status: "ok"})
 	case "theme_changed":
-		s.sendThemeHintAndRedraw(request.Data)
+		s.sendThemeHint(request.Data)
 		client.send(controlResponse{ID: request.ID, Type: "theme_hint_ack", Status: "ok"})
 	case "shutdown":
 		client.send(controlResponse{ID: request.ID, Type: "shutdown", Status: "ok"})
@@ -2378,20 +2378,11 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
-	var foregroundProcessGroup int
 	s.mu.Lock()
-	sameSize := s.width == width && s.height == height
+	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
-	window := s.windowByIDLocked(s.activeID)
 	s.resizeActiveLocked(width, height)
-	if sameSize && window.shouldSignalResizeRedrawLocked() {
-		foregroundProcessGroup = window.foregroundProcessGroupLocked()
-	}
-	s.mu.Unlock()
-	if foregroundProcessGroup > 0 {
-		signalForegroundResize(foregroundProcessGroup)
-	}
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -2598,17 +2589,8 @@ func (s *muxServer) writeActiveFromAttach(data []byte) {
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
-	return s.sendThemeHintWithRedraw(data, false)
-}
-
-func (s *muxServer) sendThemeHintAndRedraw(data string) bool {
-	return s.sendThemeHintWithRedraw(data, true)
-}
-
-func (s *muxServer) sendThemeHintWithRedraw(data string, requestRedraw bool) bool {
 	data = strings.TrimSpace(data)
 	var themeHintData []byte
-	var foregroundProcessGroup int
 	s.mu.Lock()
 	if data != "" {
 		s.themeHint = append(s.themeHint[:0], data...)
@@ -2630,9 +2612,6 @@ func (s *muxServer) sendThemeHintWithRedraw(data string, requestRedraw bool) boo
 		s.mu.Unlock()
 		return false
 	}
-	if requestRedraw && window.shouldSignalResizeRedrawLocked() {
-		foregroundProcessGroup = window.foregroundProcessGroupLocked()
-	}
 	windowID := window.id
 	s.mu.Unlock()
 
@@ -2643,9 +2622,6 @@ func (s *muxServer) sendThemeHintWithRedraw(data string, requestRedraw bool) boo
 	}
 	if sendFocusTransition {
 		s.sendFocusTransition(windowID)
-	}
-	if foregroundProcessGroup > 0 {
-		signalForegroundResize(foregroundProcessGroup)
 	}
 	return true
 }
@@ -2960,14 +2936,6 @@ func (w *muxWindow) shouldSendFocusThemeReportsLocked() bool {
 	}
 	command := w.currentCommandLocked()
 	return command != "" && !isShellCommandName(command)
-}
-
-func (w *muxWindow) shouldSignalResizeRedrawLocked() bool {
-	if w == nil || !w.focusModeActiveLocked() {
-		return false
-	}
-	command := w.currentCommandLocked()
-	return command == "" || !isShellCommandName(command)
 }
 
 func (w *muxWindow) observedPaletteThemeColorQueryKeysLocked() []string {

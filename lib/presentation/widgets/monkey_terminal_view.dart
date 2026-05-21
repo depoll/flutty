@@ -1653,8 +1653,25 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   @override
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
+    paintLineBackground(canvas, offset, line);
     paintLineTrailingBackgroundFill(canvas, offset, line);
     super.paintLine(canvas, offset, line);
+  }
+
+  void paintLineBackground(Canvas canvas, Offset offset, BufferLine line) {
+    if (line.length == 0) {
+      return;
+    }
+
+    canvas.drawRect(
+      Rect.fromLTWH(
+        offset.dx,
+        offset.dy,
+        line.length * cellSize.width,
+        cellSize.height,
+      ),
+      Paint()..color = theme.background,
+    );
   }
 
   void paintLineTrailingBackgroundFill(

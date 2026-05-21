@@ -425,11 +425,19 @@ void main() {
 
     expect(focusNode.hasFocus, isTrue);
     final renderTerminal = terminalKey.currentState!.renderTerminal;
+    final paintPattern = paints;
+    for (var row = 0; row < terminal.viewHeight; row += 1) {
+      paintPattern.rect(color: backgroundColor, style: PaintingStyle.fill);
+      if (row == 0) {
+        paintPattern.paragraph();
+      }
+    }
     expect(
       renderTerminal,
-      paints
+      paintPattern
         ..rect(color: hiddenColor, style: PaintingStyle.fill)
         ..save()
+        ..clipRect()
         ..paragraph()
         ..restore(),
     );

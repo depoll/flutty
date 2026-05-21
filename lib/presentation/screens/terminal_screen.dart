@@ -5968,6 +5968,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelHeight: pixelHeight,
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
+      unawaited(
+        _syncActiveMonkeyMuxTerminalSize(session, columns: width, rows: height),
+      );
     }
 
     _terminalResizeHandler = handleTerminalResize;
@@ -6055,6 +6058,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       },
     );
+  }
+
+  Future<void> _syncActiveMonkeyMuxTerminalSize(
+    SshSession session, {
+    int? columns,
+    int? rows,
+    bool refreshVisibleTerminal = false,
+  }) async {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    final sessionName = _tmuxSessionName ?? session.remoteMuxSessionName;
+    if (sessionName == null || sessionName.trim().isEmpty) {
+      return;
+    }
+
+    if (refreshVisibleTerminal) {
+      _terminalViewKey.currentState?.refreshTerminalSize();
+    }
+
+    final terminalColumns = columns ?? _terminal.viewWidth;
+    final terminalRows = rows ?? _terminal.viewHeight;
+    if (terminalColumns <= 0 || terminalRows <= 0) {
+      return;
+    }
+
+    try {
+      await _monkeyMuxService.resizeTerminal(
+        session,
+        sessionName,
+        columns: terminalColumns,
+        rows: terminalRows,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.resize',
+        'sync_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   SshConnectionState _readCurrentConnectionState() {
@@ -7750,6 +7799,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      await _syncActiveMonkeyMuxTerminalSize(
+        session,
+        refreshVisibleTerminal: true,
+      );
+    }
     if (targetWindowId == null) {
       await backend.selectWindow(windowIndex);
     } else {
@@ -7803,6 +7858,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
       hostWorkingDirectory: _host?.tmuxWorkingDirectory,
     );
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      await _syncActiveMonkeyMuxTerminalSize(
+        session,
+        refreshVisibleTerminal: true,
+      );
+    }
     await backend.createWindow(
       command: command,
       name: name,

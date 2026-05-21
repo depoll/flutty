@@ -411,6 +411,21 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }, priority: SshExecPriority.low);
   }
 
+  /// Resizes the active MonkeyMux PTY to match the visible terminal.
+  Future<void> resizeTerminal(
+    SshSession session,
+    String sessionName, {
+    required int columns,
+    required int rows,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    await _runControlCommand(session, sessionName, {
+      'type': 'resize',
+      'width': columns,
+      'height': rows,
+    }, priority: priority);
+  }
+
   /// Runs a short-lived command through the MonkeyMux control client.
   Future<TerminalClientCommandResult> runClientCommand(
     SshSession session,

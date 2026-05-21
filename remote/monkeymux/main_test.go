@@ -340,7 +340,7 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
-func TestSameSizeResizeSignalsFocusAwareTui(t *testing.T) {
+func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
@@ -374,8 +374,8 @@ func TestSameSizeResizeSignalsFocusAwareTui(t *testing.T) {
 
 	server.resize(120, 40)
 
-	if !reflect.DeepEqual(signaled, []int{5151}) {
-		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
 	}
 }
 
@@ -1881,7 +1881,7 @@ func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
 	}
 }
 
-func TestThemeHintRedrawSignalsFocusAwareTui(t *testing.T) {
+func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -1921,12 +1921,12 @@ func TestThemeHintRedrawSignalsFocusAwareTui(t *testing.T) {
 
 	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
 	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
-	if !server.sendThemeHintAndRedraw(foregroundReport + backgroundReport) {
+	if !server.sendThemeHint(foregroundReport + backgroundReport) {
 		t.Fatal("theme hint was not sent")
 	}
 
-	if !reflect.DeepEqual(signaled, []int{6262}) {
-		t.Fatalf("signaled process groups = %#v, want [6262]", signaled)
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
 	}
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
