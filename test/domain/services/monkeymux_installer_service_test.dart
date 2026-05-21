@@ -121,17 +121,33 @@ void main() {
       addTearDown(() => installer.clearCache(connectionId));
 
       final probeOnlyInstall = installer.ensureInstalled(session);
+      MonkeyMuxInstallation? probeOnlyInstallation;
+      Object? probeOnlyError;
+      final observedProbeOnlyInstall = probeOnlyInstall.then<void>(
+        (installation) => probeOnlyInstallation = installation,
+        onError: (Object error) => probeOnlyError = error,
+      );
       await _waitUntil(() => sftpOpenCount == 1);
 
       final acceptedConfirmations = <bool>[];
+      final confirmationMayFinish = Completer<void>();
       final confirmableInstall = installer.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
         confirmInstall: (request) async {
           acceptedConfirmations.add(true);
+          await confirmationMayFinish.future;
           return true;
         },
       );
+      await _waitUntil(() => acceptedConfirmations.length == 1);
+
+      firstSftpMayContinue.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(probeOnlyInstallation, isNull);
+      expect(probeOnlyError, isNull);
+
+      confirmationMayFinish.complete();
 
       final installation = await confirmableInstall.timeout(
         const Duration(seconds: 2),
@@ -141,8 +157,9 @@ void main() {
       expect(acceptedConfirmations, <bool>[true]);
       expect(sftpOpenCount, 2);
 
-      firstSftpMayContinue.complete();
-      await probeOnlyInstall;
+      await observedProbeOnlyInstall.timeout(const Duration(seconds: 2));
+      expect(probeOnlyError, isNull);
+      expect(probeOnlyInstallation?.version, '9.9.9');
     },
   );
 
