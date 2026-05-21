@@ -6,10 +6,10 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 
-const _previewMaxLines = 10;
+const _previewMaxLines = 15;
 const _previewFontSize = 8.0;
 const _previewLineHeight = 1.18;
-const _stackPreviewCardHeight = 130.0;
+const _stackPreviewCardHeight = 178.0;
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
 TerminalThemeData resolveConnectionPreviewTheme({

@@ -67,13 +67,15 @@ void main() {
     expect(find.text('Active: Designing app prompt'), findsNothing);
   });
 
-  testWidgets('renders about ten lines in the default preview', (tester) async {
-    final preview = previewLines(12);
+  testWidgets('renders about fifteen lines in the default preview', (
+    tester,
+  ) async {
+    final preview = previewLines(17);
 
     await tester.pumpWidget(buildSnippet(preview: preview));
 
     final previewText = tester.widget<Text>(find.text(preview));
-    expect(previewText.maxLines, 10);
+    expect(previewText.maxLines, 15);
     expect(previewText.style?.fontSize, 8);
     expect(previewText.style?.height, 1.18);
   });
@@ -98,8 +100,10 @@ void main() {
     expect(RegExp('Designing app prompt').allMatches(entry.title), isEmpty);
   });
 
-  testWidgets('renders about ten lines in stacked previews', (tester) async {
-    final preview = previewLines(12);
+  testWidgets('renders about fifteen lines in stacked previews', (
+    tester,
+  ) async {
+    final preview = previewLines(17);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -116,9 +120,9 @@ void main() {
       ),
     );
 
-    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 130);
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 178);
     final previewText = tester.widget<Text>(find.text(preview));
-    expect(previewText.maxLines, 10);
+    expect(previewText.maxLines, 15);
     expect(previewText.style?.fontSize, 8);
     expect(previewText.style?.height, 1.18);
   });
