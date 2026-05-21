@@ -2902,7 +2902,7 @@ class SshSession {
     );
   }
 
-  /// Builds a compact plain-text preview from the terminal scrollback.
+  /// Builds a plain-text preview from the latest terminal display rows.
   static String? buildTerminalPreview(
     Terminal terminal, {
     int maxLines = _previewLineCount,
@@ -2911,7 +2911,6 @@ class SshSession {
     final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
     final effectiveMaxChars = maxChars < 1 ? 1 : maxChars;
     final previewLines = <String>[];
-    final currentSegments = <String>[];
 
     for (
       var index = terminal.lines.length - 1;
@@ -2922,22 +2921,10 @@ class SshSession {
       final cleanedLine = _sanitizePreviewFragment(rawLine);
 
       if (cleanedLine.isEmpty) {
-        if (currentSegments.isNotEmpty) {
-          previewLines.insert(0, currentSegments.reversed.join());
-          currentSegments.clear();
-        }
         continue;
       }
 
-      currentSegments.add(cleanedLine);
-      if (!terminal.lines[index].isWrapped) {
-        previewLines.insert(0, currentSegments.reversed.join());
-        currentSegments.clear();
-      }
-    }
-
-    if (currentSegments.isNotEmpty && previewLines.length < effectiveMaxLines) {
-      previewLines.insert(0, currentSegments.reversed.join());
+      previewLines.insert(0, cleanedLine);
     }
 
     if (previewLines.isEmpty) {
