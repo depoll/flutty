@@ -6,6 +6,11 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 
+const _previewMaxLines = 10;
+const _previewFontSize = 8.0;
+const _previewLineHeight = 1.18;
+const _stackPreviewCardHeight = 130.0;
+
 /// Resolves the terminal theme that should be reflected in a preview chip.
 TerminalThemeData resolveConnectionPreviewTheme({
   required Brightness brightness,
@@ -129,7 +134,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     this.endpointStyle,
     this.terminalTheme,
     this.showEndpoint = true,
-    this.previewMaxLines = 5,
+    this.previewMaxLines = _previewMaxLines,
     super.key,
   });
 
@@ -246,8 +251,8 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             const SizedBox(height: 4),
           Container(
             width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 52),
-            padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
             decoration: BoxDecoration(
               color: previewBackgroundBase,
               border: Border.all(color: borderColor),
@@ -265,9 +270,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
               maxLines: previewMaxLines,
               overflow: TextOverflow.ellipsis,
               style: FluttyTheme.monoStyle.copyWith(
-                fontSize: 9,
+                fontSize: _previewFontSize,
                 color: previewTextColor,
-                height: 1.25,
+                height: _previewLineHeight,
               ),
             ),
           ),
@@ -313,7 +318,7 @@ class ConnectionPreviewStack extends StatelessWidget {
   /// Creates a [ConnectionPreviewStack].
   const ConnectionPreviewStack({
     required this.entries,
-    this.cardHeight = 74,
+    this.cardHeight = _stackPreviewCardHeight,
     this.verticalOffset = 14,
     this.horizontalOffset = 10,
     super.key,
@@ -410,7 +415,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       opacity: opacity.clamp(0.7, 1).toDouble(),
       child: Container(
         height: height,
-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
         decoration: BoxDecoration(
           color: backgroundColor,
           border: Border.all(color: borderColor),
@@ -435,16 +440,16 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Expanded(
               child: Text(
                 entry.body,
-                maxLines: 2,
+                maxLines: _previewMaxLines,
                 overflow: TextOverflow.ellipsis,
                 style: FluttyTheme.monoStyle.copyWith(
-                  fontSize: 9,
+                  fontSize: _previewFontSize,
                   color: textColor,
-                  height: 1.25,
+                  height: _previewLineHeight,
                 ),
               ),
             ),

@@ -10,6 +10,7 @@ import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
 
 void main() {
   Widget buildSnippet({
+    String? preview = 'ready',
     String? sessionTitle,
     String? windowTitle,
     String? iconName,
@@ -17,13 +18,15 @@ void main() {
     home: Scaffold(
       body: ConnectionPreviewSnippet(
         endpoint: 'depoll@mac-mini.home:22 - Connection #1',
-        preview: 'ready',
+        preview: preview,
         sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
       ),
     ),
   );
+  String previewLines(int count) =>
+      List.generate(count, (index) => 'line ${index + 1}').join('\n');
 
   testWidgets(
     'shows one active title when the window title and icon name match',
@@ -64,6 +67,17 @@ void main() {
     expect(find.text('Active: Designing app prompt'), findsNothing);
   });
 
+  testWidgets('renders about ten lines in the default preview', (tester) async {
+    final preview = previewLines(12);
+
+    await tester.pumpWidget(buildSnippet(preview: preview));
+
+    final previewText = tester.widget<Text>(find.text(preview));
+    expect(previewText.maxLines, 10);
+    expect(previewText.style?.fontSize, 8);
+    expect(previewText.style?.height, 1.18);
+  });
+
   test('stack preview titles prefer session title over terminal metadata', () {
     final entry = buildConnectionPreviewStackEntry(
       connectionId: 1,
@@ -82,5 +96,30 @@ void main() {
     expect(entry.title, startsWith('Connection #1'));
     expect(entry.title, contains('Implement onboarding'));
     expect(RegExp('Designing app prompt').allMatches(entry.title), isEmpty);
+  });
+
+  testWidgets('renders about ten lines in stacked previews', (tester) async {
+    final preview = previewLines(12);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewStack(
+            entries: [
+              ConnectionPreviewStackEntry(
+                title: 'Connection #1',
+                body: preview,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 130);
+    final previewText = tester.widget<Text>(find.text(preview));
+    expect(previewText.maxLines, 10);
+    expect(previewText.style?.fontSize, 8);
+    expect(previewText.style?.height, 1.18);
   });
 }
