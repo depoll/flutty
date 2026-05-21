@@ -66,7 +66,7 @@ void main() {
       final command = buildMonkeyMuxAttachCommand(
         executablePath: '/home/me/.monkeyssh/bin/monkeymux',
         sessionName: 'work',
-        terminalThemeBackgroundReport: '\x1b]11;rgb:0000/1111/2222\x1b\\',
+        terminalThemeReports: '\x1b]11;rgb:0000/1111/2222\x1b\\',
       );
 
       expect(

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.32"
+	monkeyMuxVersion         = "0.1.33"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -296,8 +297,8 @@ type muxWindow struct {
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
 	focusModeProcessID         int
-	backgroundColorQuerySeen   bool
-	backgroundColorQueryPid    int
+	themeColorQueryPid         int
+	themeColorQueryKeys        map[string]bool
 	alert                      bool
 	closed                     bool
 }
@@ -355,7 +356,7 @@ func attachCommand(args []string) {
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
 	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
-	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme response")
+	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
@@ -466,7 +467,7 @@ func serveCommand(args []string) {
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
 	restoreFile := fs.String("restore-file", "", "window restore snapshot")
-	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme response")
+	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*session) == "" {
 		usageAndExit()
@@ -1527,7 +1528,7 @@ func (s *muxServer) readWindow(window *muxWindow) {
 
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
-	var themeHint []byte
+	var themeHintData []byte
 	var shouldWrite bool
 	var snapshot *windowSnapshot
 	now := time.Now()
@@ -1542,8 +1543,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	wasAlert := window.alert
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
-	if window.observeTerminalMetadataLocked(chunk) && len(s.themeHint) > 0 {
-		themeHint = append([]byte(nil), s.themeHint...)
+	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
+		themeHintData = themeHintResponsesForKeys(s.themeHint, queryKeys)
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
@@ -1564,8 +1566,8 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 	s.mu.Unlock()
 
-	if len(themeHint) > 0 {
-		_ = s.writeWindow(windowID, themeHint)
+	if len(themeHintData) > 0 {
+		_ = s.writeWindow(windowID, themeHintData)
 	}
 
 	if shouldWrite {
@@ -1671,7 +1673,7 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
 	var foregroundProcessGroup int
-	var themeHint []byte
+	var themeHintData []byte
 	var themeHintWindowID string
 	s.mu.Lock()
 	if s.attachConn != nil {
@@ -1689,15 +1691,18 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	replay = s.activeReplayLocked()
 	if window := s.windowByIDLocked(s.activeID); window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
-		if len(s.themeHint) > 0 && window.hasActiveBackgroundColorQueryLocked() {
-			themeHint = append([]byte(nil), s.themeHint...)
+		if len(s.themeHint) > 0 {
+			themeHintData = themeHintResponsesForKeys(
+				s.themeHint,
+				window.themeHintRefreshKeysLocked(),
+			)
 			themeHintWindowID = window.id
 		}
 	}
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
-	if len(themeHint) > 0 {
-		_ = s.writeWindow(themeHintWindowID, themeHint)
+	if len(themeHintData) > 0 {
+		_ = s.writeWindow(themeHintWindowID, themeHintData)
 	}
 	s.broadcastWindowList("active_window_changed")
 	signalForegroundResize(foregroundProcessGroup)
@@ -2585,6 +2590,7 @@ func (s *muxServer) writeActiveFromAttach(data []byte) {
 
 func (s *muxServer) sendThemeHint(data string) bool {
 	data = strings.TrimSpace(data)
+	var themeHintData []byte
 	s.mu.Lock()
 	if data != "" {
 		s.themeHint = append(s.themeHint[:0], data...)
@@ -2595,17 +2601,22 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	sendBackgroundReport := data != "" && window.hasActiveBackgroundColorQueryLocked()
+	if data != "" {
+		themeHintData = themeHintResponsesForKeys(
+			[]byte(data),
+			window.themeHintRefreshKeysLocked(),
+		)
+	}
 	sendFocusTransition := window.focusModeActiveLocked()
-	if !sendBackgroundReport && !sendFocusTransition {
+	if len(themeHintData) == 0 && !sendFocusTransition {
 		s.mu.Unlock()
 		return false
 	}
 	windowID := window.id
 	s.mu.Unlock()
 
-	if sendBackgroundReport {
-		if err := s.writeWindow(windowID, []byte(data)); err != nil {
+	if len(themeHintData) > 0 {
+		if err := s.writeWindow(windowID, themeHintData); err != nil {
 			return false
 		}
 	}
@@ -2907,15 +2918,39 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeActiveLocked() || w.hasActiveBackgroundColorQueryLocked()
+	return w.focusModeActiveLocked() || len(w.activeThemeColorQueryKeysLocked()) > 0
 }
 
-func (w *muxWindow) hasActiveBackgroundColorQueryLocked() bool {
+func (w *muxWindow) themeHintRefreshKeysLocked() []string {
+	keys := w.activeThemeColorQueryKeysLocked()
+	if w.shouldSendFocusDefaultColorReportsLocked() {
+		keys = appendThemeQueryKeys(keys, []string{"10", "11"})
+	}
+	return keys
+}
+
+func (w *muxWindow) shouldSendFocusDefaultColorReportsLocked() bool {
+	if w == nil || !w.focusModeActiveLocked() {
+		return false
+	}
+	command := w.currentCommandLocked()
+	return command != "" && !isShellCommandName(command)
+}
+
+func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
 	activePid := w.activeForegroundPidLocked()
-	return w.backgroundColorQuerySeen &&
-		w.backgroundColorQueryPid > 0 &&
-		activePid > 0 &&
-		w.backgroundColorQueryPid == activePid
+	if w.themeColorQueryPid <= 0 ||
+		activePid <= 0 ||
+		w.themeColorQueryPid != activePid ||
+		len(w.themeColorQueryKeys) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(w.themeColorQueryKeys))
+	for key := range w.themeColorQueryKeys {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (w *muxWindow) activeForegroundPidLocked() int {
@@ -3360,9 +3395,9 @@ func cursorVisibilityReplaySequence(visible bool) string {
 	return "\x1b[?25l"
 }
 
-func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) bool {
+func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) []string {
 	if len(chunk) == 0 {
-		return false
+		return nil
 	}
 	data := chunk
 	if len(w.oscBuffer) > 0 {
@@ -3373,15 +3408,15 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) bool {
 		w.oscBuffer = nil
 	}
 
-	observedBackgroundQuery := false
+	var observedThemeQueries []string
 	for len(data) > 0 {
 		escapeIndex := bytes.IndexByte(data, '\x1b')
 		if escapeIndex < 0 {
-			return observedBackgroundQuery
+			return observedThemeQueries
 		}
 		if escapeIndex+1 >= len(data) {
 			w.storePartialOscLocked(data[escapeIndex:])
-			return observedBackgroundQuery
+			return observedThemeQueries
 		}
 		if data[escapeIndex+1] != ']' {
 			data = data[escapeIndex+1:]
@@ -3392,14 +3427,17 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) bool {
 		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 		if !ok {
 			w.storePartialOscLocked(data[escapeIndex:])
-			return observedBackgroundQuery
+			return observedThemeQueries
 		}
-		observedBackgroundQuery = w.applyOscPayloadLocked(
-			string(data[payloadStart:payloadStart+payloadEnd]),
-		) || observedBackgroundQuery
+		observedThemeQueries = appendThemeQueryKeys(
+			observedThemeQueries,
+			w.applyOscPayloadLocked(
+				string(data[payloadStart:payloadStart+payloadEnd]),
+			),
+		)
 		data = data[payloadStart+payloadEnd+terminatorLength:]
 	}
-	return observedBackgroundQuery
+	return observedThemeQueries
 }
 
 func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
@@ -3427,16 +3465,16 @@ func (w *muxWindow) storePartialOscLocked(data []byte) {
 	w.oscBuffer = append(w.oscBuffer[:0], data...)
 }
 
-func (w *muxWindow) applyOscPayloadLocked(payload string) bool {
+func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 	code, value, ok := strings.Cut(payload, ";")
 	if !ok {
-		return false
+		return nil
 	}
 	switch code {
 	case "0", "1", "2":
 		title := cleanTerminalTitle(value)
 		if title == "" {
-			return false
+			return nil
 		}
 		w.paneTitle = title
 	case "7":
@@ -3444,18 +3482,159 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) bool {
 		if path != "" {
 			w.cwd = path
 		}
-	case "11":
-		if strings.TrimSpace(value) == "?" {
-			queryPid := w.activeForegroundPidLocked()
-			if queryPid <= 0 {
-				return false
-			}
-			w.backgroundColorQuerySeen = true
-			w.backgroundColorQueryPid = queryPid
-			return true
+	}
+	queryKeys := themeQueryKeysFromOscPayload(payload)
+	if len(queryKeys) == 0 {
+		return nil
+	}
+	queryPid := w.activeForegroundPidLocked()
+	if queryPid <= 0 {
+		return nil
+	}
+	if w.themeColorQueryPid != queryPid {
+		w.themeColorQueryKeys = nil
+	}
+	w.themeColorQueryPid = queryPid
+	if w.themeColorQueryKeys == nil {
+		w.themeColorQueryKeys = map[string]bool{}
+	}
+	for _, key := range queryKeys {
+		w.themeColorQueryKeys[key] = true
+	}
+	return queryKeys
+}
+
+func appendThemeQueryKeys(existing []string, keys []string) []string {
+	if len(keys) == 0 {
+		return existing
+	}
+	seen := make(map[string]bool, len(existing)+len(keys))
+	for _, key := range existing {
+		seen[key] = true
+	}
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		existing = append(existing, key)
+	}
+	return existing
+}
+
+func themeQueryKeysFromOscPayload(payload string) []string {
+	parts := strings.Split(payload, ";")
+	if len(parts) < 2 {
+		return nil
+	}
+	code := strings.TrimSpace(parts[0])
+	args := parts[1:]
+	switch code {
+	case "4":
+		return paletteThemeQueryKeys(args)
+	case "10", "11", "12", "17", "19":
+		if strings.TrimSpace(args[0]) == "?" {
+			return []string{code}
 		}
 	}
-	return false
+	return nil
+}
+
+func paletteThemeQueryKeys(args []string) []string {
+	var keys []string
+	for i := 0; i+1 < len(args); i += 2 {
+		if strings.TrimSpace(args[i+1]) != "?" {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(args[i]))
+		if err != nil || index < 0 || index > 255 {
+			continue
+		}
+		keys = append(keys, fmt.Sprintf("4;%d", index))
+	}
+	return keys
+}
+
+func themeHintResponsesForKeys(hint []byte, keys []string) []byte {
+	if len(hint) == 0 || len(keys) == 0 {
+		return nil
+	}
+	responses := themeHintResponseMap(hint)
+	if len(responses) == 0 {
+		return nil
+	}
+	var output []byte
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		response := responses[key]
+		if len(response) == 0 {
+			continue
+		}
+		output = append(output, response...)
+	}
+	return output
+}
+
+func themeHintResponseMap(hint []byte) map[string][]byte {
+	responses := map[string][]byte{}
+	data := hint
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return responses
+		}
+		if escapeIndex+1 >= len(data) {
+			return responses
+		}
+		if data[escapeIndex+1] != ']' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		payloadStart := escapeIndex + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			return responses
+		}
+		sequenceEnd := payloadStart + payloadEnd + terminatorLength
+		key := themeResponseKeyFromOscPayload(
+			string(data[payloadStart : payloadStart+payloadEnd]),
+		)
+		if key != "" {
+			responses[key] = append([]byte(nil), data[escapeIndex:sequenceEnd]...)
+		}
+		data = data[sequenceEnd:]
+	}
+	return responses
+}
+
+func themeResponseKeyFromOscPayload(payload string) string {
+	parts := strings.Split(payload, ";")
+	if len(parts) < 2 {
+		return ""
+	}
+	code := strings.TrimSpace(parts[0])
+	switch code {
+	case "4":
+		if len(parts) < 3 {
+			return ""
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || index < 0 || index > 255 {
+			return ""
+		}
+		return fmt.Sprintf("4;%d", index)
+	case "10", "11", "12", "17", "19":
+		if strings.TrimSpace(parts[1]) == "?" {
+			return ""
+		}
+		return code
+	}
+	return ""
 }
 
 func cleanTerminalTitle(value string) string {
