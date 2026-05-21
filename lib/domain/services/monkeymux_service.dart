@@ -85,11 +85,11 @@ String buildMonkeyMuxAttachCommand({
   String? workingDirectory,
   String? launchCommand,
   String? windowName,
-  String? terminalThemeBackgroundReport,
+  String? terminalThemeReports,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
 }) {
-  final themeHint = terminalThemeBackgroundReport?.trim();
+  final themeHint = terminalThemeReports?.trim();
   final parts = <String>[
     _shellQuote(executablePath),
     'attach',
@@ -407,7 +407,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
-      'data': buildTerminalThemeBackgroundColorReport(theme),
+      'data': buildTerminalThemeRefreshReports(theme),
     }, priority: SshExecPriority.low);
   }
 

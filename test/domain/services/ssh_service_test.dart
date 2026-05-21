@@ -397,6 +397,25 @@ void main() {
       expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
     });
 
+    test('strips private CSI modifier controls that xterm treats as SGR', () {
+      final first = adaptTerminalInsertModeOutputForXterm(
+        input: 'before\x1b[>4;',
+        pendingInput: '',
+        insertMode: false,
+      );
+      final second = adaptTerminalInsertModeOutputForXterm(
+        input: '1mafter',
+        pendingInput: first.pendingInput,
+        insertMode: first.insertMode,
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1b[>4;');
+      expect(second.output, 'after');
+      expect(second.pendingInput, isEmpty);
+      expect(second.insertMode, isFalse);
+    });
+
     test('clears tracked insert mode on terminal reset sequences', () {
       final fullReset = adaptTerminalInsertModeOutputForXterm(
         input: '\x1b[4hA\x1bcB',

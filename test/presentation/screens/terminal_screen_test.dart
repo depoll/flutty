@@ -19,6 +19,7 @@ import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
@@ -2152,6 +2153,7 @@ void main() {
           TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
         ];
         var themeRefreshCount = 0;
+        final refreshedThemes = <TerminalThemeData>[];
         host = _buildHost(
           id: host.id,
           tmuxSessionName: sessionName,
@@ -2189,8 +2191,11 @@ void main() {
             any(),
             extraFlags: any(named: 'extraFlags'),
           ),
-        ).thenAnswer((_) async {
+        ).thenAnswer((invocation) async {
           themeRefreshCount += 1;
+          refreshedThemes.add(
+            invocation.positionalArguments[2] as TerminalThemeData,
+          );
         });
 
         await tester.pumpWidget(
@@ -2226,6 +2231,7 @@ void main() {
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         shellWrites.clear();
         themeRefreshCount = 0;
+        refreshedThemes.clear();
 
         windowEvents.add(
           const TmuxWindowSnapshotEvent(
@@ -2266,6 +2272,10 @@ void main() {
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
         expect(themeRefreshCount, 1);
+        expect(
+          refreshedThemes.single.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
         expect(shellTextAfterThemeChange, isNot(contains('\x1b[O')));
         expect(shellTextAfterThemeChange, isNot(contains('\x1b[I')));
         expect(shellTextAfterThemeChange, isNot(contains('\x1b]10;')));
