@@ -63,6 +63,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   MonkeyMuxServerStatus? installedHelpersStatus;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
+  final resizeTerminalCalls = <({String sessionName, int columns, int rows})>[];
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
@@ -86,6 +87,21 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   }) async {
     runningServerStatusFromInstalledHelpersCalls++;
     return installedHelpersStatus;
+  }
+
+  @override
+  Future<void> resizeTerminal(
+    SshSession session,
+    String sessionName, {
+    required int columns,
+    required int rows,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    resizeTerminalCalls.add((
+      sessionName: sessionName,
+      columns: columns,
+      rows: rows,
+    ));
   }
 }
 
@@ -4792,6 +4808,11 @@ void main() {
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, 'agents');
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
+        final resizeCall = monkeyMuxService.resizeTerminalCalls.last;
+        expect(resizeCall.sessionName, 'agents');
+        expect(resizeCall.columns, greaterThan(0));
+        expect(resizeCall.rows, greaterThan(0));
         verifyNever(() => sshClient.shell(pty: any(named: 'pty')));
         verify(
           () => monkeyMuxInstallerService.ensureInstalled(
