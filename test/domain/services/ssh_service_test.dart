@@ -1196,6 +1196,18 @@ void main() {
       expect(preview, 'second line\nthird line');
     });
 
+    test('builds ten preview lines by default', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write(List.generate(12, (index) => 'line ${index + 1}').join('\r\n'));
+
+      final preview = SshSession.buildTerminalPreview(terminal);
+
+      expect(
+        preview,
+        List.generate(10, (index) => 'line ${index + 3}').join('\n'),
+      );
+    });
+
     test('sanitizes control characters and truncates long previews', () {
       final terminal = Terminal(maxLines: 100)
         ..write('prompt> \u0007hello world\r\n')
