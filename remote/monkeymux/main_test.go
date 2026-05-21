@@ -340,6 +340,84 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
+func TestSameSizeResizeSignalsFocusAwareTui(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		focusModeEnabled:  true,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resize(120, 40)
+
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestSameSizeResizeDoesNotSignalShell(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "zsh",
+		focusModeEnabled:  true,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resize(120, 40)
+
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
+	}
+}
+
 func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -1797,6 +1875,126 @@ func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
 	}
 	if strings.Contains(got, paletteReport) {
 		t.Fatalf("theme hint = %q, did not expect unsolicited palette report", got)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintRedrawSignalsFocusAwareTui(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "codex",
+		pty:               inputWriter,
+	}
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 6262
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+	if !server.sendThemeHintAndRedraw(foregroundReport + backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	if !reflect.DeepEqual(signaled, []int{6262}) {
+		t.Fatalf("signaled process groups = %#v, want [6262]", signaled)
+	}
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, want default color reports prefix %q",
+			got,
+			foregroundReport+backgroundReport,
+		)
+	}
+}
+
+func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "opencode",
+		pty:               inputWriter,
+	}
+	foregroundProcessGroup := 42
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return foregroundProcessGroup
+		}
+		return 0
+	}
+	window.observeTerminalMetadataLocked([]byte("\x1b]4;0;?\x1b\\"))
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	foregroundProcessGroup = 0
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+	const paletteReport0 = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
+	const paletteReport1 = "\x1b]4;1;rgb:dddd/eeee/ffff\x1b\\"
+	if !server.sendThemeHint(
+		foregroundReport + backgroundReport + paletteReport0 + paletteReport1,
+	) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, foregroundReport+backgroundReport+paletteReport0) {
+		t.Fatalf(
+			"theme hint = %q, want observed color reports prefix %q",
+			got,
+			foregroundReport+backgroundReport+paletteReport0,
+		)
+	}
+	if strings.Contains(got, paletteReport1) {
+		t.Fatalf("theme hint = %q, did not expect unqueried palette report", got)
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)
