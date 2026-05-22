@@ -7,9 +7,9 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 
 const _previewMaxLines = 15;
-const _previewFontSize = 8.0;
-const _previewLineHeight = 1.18;
-const _stackPreviewCardHeight = 178.0;
+const _previewFontSize = 9.0;
+const _previewLineHeight = 1.22;
+const _stackPreviewCardHeight = 198.0;
 const _stackPreviewMetadataHeight = 18.0;
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
