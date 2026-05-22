@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.36"
+	monkeyMuxVersion         = "0.1.37"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -240,19 +240,24 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                    string `json:"id,omitempty"`
-	Index                 int    `json:"index,omitempty"`
-	Name                  string `json:"name,omitempty"`
-	Cwd                   string `json:"cwd,omitempty"`
-	CurrentCommand        string `json:"currentCommand,omitempty"`
-	PanePid               int    `json:"panePid,omitempty"`
-	PaneTitle             string `json:"paneTitle,omitempty"`
-	AgentTool             string `json:"agentTool,omitempty"`
-	AgentSessionID        string `json:"agentSessionId,omitempty"`
-	HistoryBase64         string `json:"historyBase64,omitempty"`
-	CursorVisible         bool   `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown bool   `json:"cursorVisibilityKnown,omitempty"`
-	Active                bool   `json:"active,omitempty"`
+	ID                       string          `json:"id,omitempty"`
+	Index                    int             `json:"index,omitempty"`
+	Name                     string          `json:"name,omitempty"`
+	Cwd                      string          `json:"cwd,omitempty"`
+	CurrentCommand           string          `json:"currentCommand,omitempty"`
+	PanePid                  int             `json:"panePid,omitempty"`
+	PaneTitle                string          `json:"paneTitle,omitempty"`
+	AgentTool                string          `json:"agentTool,omitempty"`
+	AgentSessionID           string          `json:"agentSessionId,omitempty"`
+	HistoryBase64            string          `json:"historyBase64,omitempty"`
+	CursorVisible            bool            `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
+	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
+	InsertModeEnabled        bool            `json:"insertModeEnabled,omitempty"`
+	InsertModeKnown          bool            `json:"insertModeKnown,omitempty"`
+	ApplicationKeypadEnabled bool            `json:"applicationKeypadEnabled,omitempty"`
+	ApplicationKeypadKnown   bool            `json:"applicationKeypadKnown,omitempty"`
+	Active                   bool            `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -373,6 +378,7 @@ func attachCommand(args []string) {
 		fatal(err)
 	}
 	session := fs.Arg(0)
+	width, height := terminalSize()
 	if err := ensureServer(
 		session,
 		createWindowOptions{
@@ -383,6 +389,8 @@ func attachCommand(args []string) {
 		},
 		policy,
 		*restoreYolo,
+		width,
+		height,
 	); err != nil {
 		fatal(err)
 	}
@@ -393,7 +401,6 @@ func attachCommand(args []string) {
 	}
 	defer conn.Close()
 
-	width, height := terminalSize()
 	hello := controlMessage{
 		Role:    "attach",
 		Session: session,
@@ -469,6 +476,8 @@ func serveCommand(args []string) {
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
 	restoreFile := fs.String("restore-file", "", "window restore snapshot")
+	width := fs.Int("width", defaultColumns, "initial terminal columns")
+	height := fs.Int("height", defaultRows, "initial terminal rows")
 	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*session) == "" {
@@ -487,7 +496,7 @@ func serveCommand(args []string) {
 		name:      *name,
 		command:   *command,
 		themeHint: themeHint,
-	}, restore); err != nil {
+	}, restore, *width, *height); err != nil {
 		fatal(err)
 	}
 }
@@ -538,6 +547,8 @@ func ensureServer(
 	initialWindow createWindowOptions,
 	updatePolicy string,
 	startInYoloMode bool,
+	width int,
+	height int,
 ) error {
 	var restore *serverRestore
 	if status, err := queryRunningServerStatus(session); err == nil {
@@ -588,6 +599,15 @@ func ensureServer(
 		return err
 	}
 	cmd := exec.Command(exe, "serve", "--session", session)
+	if width > 0 && height > 0 {
+		cmd.Args = append(
+			cmd.Args,
+			"--width",
+			strconv.Itoa(width),
+			"--height",
+			strconv.Itoa(height),
+		)
+	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
 		if err == nil {
@@ -755,10 +775,25 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 			PanePid:        window.PanePid,
 			PaneTitle:      window.PaneTitle,
 			AgentTool:      window.AgentTool,
+			PrivateModes:   privateModesFromWindowSnapshot(window),
 			Active:         window.Active,
 		})
 	}
 	return restore
+}
+
+func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
+	modes := map[string]bool{}
+	if window.TerminalReportsMouseWheel {
+		modes["1000"] = true
+	}
+	if window.TerminalMouseReportSgr {
+		modes["1006"] = true
+	}
+	if len(modes) == 0 {
+		return nil
+	}
+	return modes
 }
 
 func enrichRestoreWithCapturedShellHistory(session string, restore *serverRestore) {
@@ -1171,6 +1206,8 @@ func serveSession(
 	session string,
 	initialWindow createWindowOptions,
 	restore *serverRestore,
+	width int,
+	height int,
 ) error {
 	socket, err := socketPath(session)
 	if err != nil {
@@ -1190,7 +1227,7 @@ func serveSession(
 	}()
 	_ = os.Chmod(socket, 0o600)
 
-	server := newMuxServer(session)
+	server := newMuxServerWithSize(session, width, height)
 	server.themeHint = append([]byte(nil), initialWindow.themeHint...)
 	server.listener = listener
 	if err := server.restoreOrCreateInitialWindow(restore, initialWindow); err != nil {
@@ -1220,10 +1257,20 @@ func serveSession(
 }
 
 func newMuxServer(session string) *muxServer {
+	return newMuxServerWithSize(session, defaultColumns, defaultRows)
+}
+
+func newMuxServerWithSize(session string, width int, height int) *muxServer {
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
 	return &muxServer{
 		session:  session,
-		width:    defaultColumns,
-		height:   defaultRows,
+		width:    width,
+		height:   height,
 		controls: map[*controlClient]struct{}{},
 	}
 }
@@ -1358,14 +1405,19 @@ func createWindowOptionsForRestore(
 		history = decodeRestoreHistory(state.HistoryBase64)
 	}
 	return createWindowOptions{
-		name:                  firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
-		cwd:                   state.Cwd,
-		command:               command,
-		history:               history,
-		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
-		agentTool:             agentTool,
-		cursorVisible:         state.CursorVisible,
-		cursorVisibilityKnown: state.CursorVisibilityKnown,
+		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
+		cwd:                      state.Cwd,
+		command:                  command,
+		history:                  history,
+		paneTitle:                firstNonEmptyString(state.PaneTitle, state.Name),
+		agentTool:                agentTool,
+		cursorVisible:            state.CursorVisible,
+		cursorVisibilityKnown:    state.CursorVisibilityKnown,
+		privateModes:             copyPrivateModes(state.PrivateModes),
+		insertModeEnabled:        state.InsertModeEnabled,
+		insertModeKnown:          state.InsertModeKnown,
+		applicationKeypadEnabled: state.ApplicationKeypadEnabled,
+		applicationKeypadKnown:   state.ApplicationKeypadKnown,
 	}
 }
 
@@ -1398,16 +1450,21 @@ func isShellRestoreWindow(state restoreWindowState) bool {
 }
 
 type createWindowOptions struct {
-	name                  string
-	cwd                   string
-	command               string
-	args                  []string
-	history               []byte
-	paneTitle             string
-	agentTool             string
-	cursorVisible         bool
-	cursorVisibilityKnown bool
-	themeHint             []byte
+	name                     string
+	cwd                      string
+	command                  string
+	args                     []string
+	history                  []byte
+	paneTitle                string
+	agentTool                string
+	cursorVisible            bool
+	cursorVisibilityKnown    bool
+	privateModes             map[string]bool
+	insertModeEnabled        bool
+	insertModeKnown          bool
+	applicationKeypadEnabled bool
+	applicationKeypadKnown   bool
+	themeHint                []byte
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
@@ -1465,21 +1522,26 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.mu.Lock()
 	s.nextID++
 	window := &muxWindow{
-		id:                    fmt.Sprintf("@%d", s.nextID),
-		index:                 len(s.windows),
-		name:                  name,
-		cwd:                   cwd,
-		command:               filepath.Base(cmd.Path),
-		agentTool:             agentTool,
-		foregroundPid:         cmd.Process.Pid,
-		foregroundCommand:     filepath.Base(cmd.Path),
-		paneTitle:             paneTitle,
-		pty:                   file,
-		cmd:                   cmd,
-		history:               append([]byte(nil), options.history...),
-		lastActivity:          time.Now(),
-		cursorVisible:         cursorVisible,
-		cursorVisibilityKnown: options.cursorVisibilityKnown,
+		id:                       fmt.Sprintf("@%d", s.nextID),
+		index:                    len(s.windows),
+		name:                     name,
+		cwd:                      cwd,
+		command:                  filepath.Base(cmd.Path),
+		agentTool:                agentTool,
+		foregroundPid:            cmd.Process.Pid,
+		foregroundCommand:        filepath.Base(cmd.Path),
+		paneTitle:                paneTitle,
+		pty:                      file,
+		cmd:                      cmd,
+		history:                  append([]byte(nil), options.history...),
+		lastActivity:             time.Now(),
+		cursorVisible:            cursorVisible,
+		cursorVisibilityKnown:    options.cursorVisibilityKnown,
+		privateModes:             copyPrivateModes(options.privateModes),
+		insertModeEnabled:        options.insertModeEnabled,
+		insertModeKnown:          options.insertModeKnown,
+		applicationKeypadEnabled: options.applicationKeypadEnabled,
+		applicationKeypadKnown:   options.applicationKeypadKnown,
 	}
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
@@ -1688,7 +1750,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if hello.Width > 0 && hello.Height > 0 {
 		s.width = hello.Width
 		s.height = hello.Height
-		s.resizeActiveLocked(hello.Width, hello.Height)
+		s.resizeAllLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
 	if window := s.windowByIDLocked(s.activeID); window != nil {
@@ -2071,17 +2133,22 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 		}
 		window.refreshProcessMetadataLocked(time.Now())
 		state := restoreWindowState{
-			ID:                    window.id,
-			Index:                 window.index,
-			Name:                  window.name,
-			Cwd:                   window.cwd,
-			CurrentCommand:        window.currentCommandLocked(),
-			PanePid:               window.metadataProcessIDLocked(),
-			PaneTitle:             window.paneTitle,
-			AgentTool:             window.agentToolLocked(),
-			CursorVisible:         window.cursorVisible,
-			CursorVisibilityKnown: window.cursorVisibilityKnown,
-			Active:                s.activeID == window.id,
+			ID:                       window.id,
+			Index:                    window.index,
+			Name:                     window.name,
+			Cwd:                      window.cwd,
+			CurrentCommand:           window.currentCommandLocked(),
+			PanePid:                  window.metadataProcessIDLocked(),
+			PaneTitle:                window.paneTitle,
+			AgentTool:                window.agentToolLocked(),
+			CursorVisible:            window.cursorVisible,
+			CursorVisibilityKnown:    window.cursorVisibilityKnown,
+			PrivateModes:             copyPrivateModes(window.privateModes),
+			InsertModeEnabled:        window.insertModeEnabled,
+			InsertModeKnown:          window.insertModeKnown,
+			ApplicationKeypadEnabled: window.applicationKeypadEnabled,
+			ApplicationKeypadKnown:   window.applicationKeypadKnown,
+			Active:                   s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
 			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
@@ -2386,11 +2453,21 @@ func (s *muxServer) resize(width int, height int) {
 	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
-	s.resizeActiveLocked(width, height)
+	s.resizeAllLocked(width, height)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
+	s.resizeWindowLocked(window, width, height)
+}
+
+func (s *muxServer) resizeAllLocked(width int, height int) {
+	for _, window := range s.windows {
+		s.resizeWindowLocked(window, width, height)
+	}
+}
+
+func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int) {
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
@@ -2462,6 +2539,22 @@ func (w *muxWindow) reportsMouseWheelLocked() bool {
 	return w.privateModes["1000"] ||
 		w.privateModes["1002"] ||
 		w.privateModes["1003"]
+}
+
+func copyPrivateModes(privateModes map[string]bool) map[string]bool {
+	if len(privateModes) == 0 {
+		return nil
+	}
+	copied := make(map[string]bool, len(privateModes))
+	for mode, enabled := range privateModes {
+		if _, ok := trackedPrivateModes[mode]; ok {
+			copied[mode] = enabled
+		}
+	}
+	if len(copied) == 0 {
+		return nil
+	}
+	return copied
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
