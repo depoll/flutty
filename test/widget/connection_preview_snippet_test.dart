@@ -100,6 +100,25 @@ void main() {
     expect(RegExp('Designing app prompt').allMatches(entry.title), isEmpty);
   });
 
+  test('stack preview metadata is separate from terminal preview text', () {
+    final entry = buildConnectionPreviewStackEntry(
+      connectionId: 1,
+      state: SshConnectionState.connected,
+      brightness: Brightness.dark,
+      themeSettings: const TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      ),
+      availableThemes: TerminalThemes.all,
+      preview: previewLines(15),
+      workingDirectory: Uri.parse('file:///Users/depoll/Code/flutty'),
+      shellStatus: TerminalShellStatus.runningCommand,
+    );
+
+    expect(entry.metadata, isNotNull);
+    expect(entry.body.split('\n'), hasLength(15));
+  });
+
   testWidgets('renders about fifteen lines in stacked previews', (
     tester,
   ) async {
@@ -125,5 +144,32 @@ void main() {
     expect(previewText.maxLines, 15);
     expect(previewText.style?.fontSize, 8);
     expect(previewText.style?.height, 1.18);
+  });
+
+  testWidgets('renders stack metadata without consuming preview line budget', (
+    tester,
+  ) async {
+    final preview = previewLines(17);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewStack(
+            entries: [
+              ConnectionPreviewStackEntry(
+                title: 'Connection #1',
+                body: preview,
+                metadata: '~/Code/flutty • Running',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 196);
+    final previewText = tester.widget<Text>(find.text(preview));
+    expect(previewText.maxLines, 15);
+    expect(find.text('~/Code/flutty • Running'), findsOneWidget);
   });
 }

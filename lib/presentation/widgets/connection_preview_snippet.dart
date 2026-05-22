@@ -10,6 +10,7 @@ const _previewMaxLines = 15;
 const _previewFontSize = 8.0;
 const _previewLineHeight = 1.18;
 const _stackPreviewCardHeight = 178.0;
+const _stackPreviewMetadataHeight = 18.0;
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
 TerminalThemeData resolveConnectionPreviewTheme({
@@ -98,17 +99,14 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   if ((shellStatusLabel ?? '').isNotEmpty) {
     metadataSegments.add(shellStatusLabel!);
   }
-  final body = [
-    if (metadataSegments.isNotEmpty) metadataSegments.join(' • '),
-    if (resolvedPreview == null || resolvedPreview.isEmpty)
-      fallbackConnectionPreviewStatus(state)
-    else
-      resolvedPreview,
-  ].join('\n');
+  final body = resolvedPreview == null || resolvedPreview.isEmpty
+      ? fallbackConnectionPreviewStatus(state)
+      : resolvedPreview;
 
   return ConnectionPreviewStackEntry(
     title: titleSegments.join(' • '),
     body: body,
+    metadata: metadataSegments.isEmpty ? null : metadataSegments.join(' • '),
     terminalTheme: resolveConnectionPreviewTheme(
       brightness: brightness,
       themeSettings: themeSettings,
@@ -289,6 +287,7 @@ class ConnectionPreviewStackEntry {
   const ConnectionPreviewStackEntry({
     required this.title,
     required this.body,
+    this.metadata,
     this.terminalTheme,
   });
 
@@ -297,6 +296,9 @@ class ConnectionPreviewStackEntry {
 
   /// Main preview or status text shown inside the card.
   final String body;
+
+  /// Connection metadata shown separately from the terminal preview.
+  final String? metadata;
 
   /// Terminal theme used to tint the preview surface.
   final TerminalThemeData? terminalTheme;
@@ -307,10 +309,11 @@ class ConnectionPreviewStackEntry {
       other is ConnectionPreviewStackEntry &&
           other.title == title &&
           other.body == body &&
+          other.metadata == metadata &&
           other.terminalTheme == terminalTheme;
 
   @override
-  int get hashCode => Object.hash(title, body, terminalTheme);
+  int get hashCode => Object.hash(title, body, metadata, terminalTheme);
 }
 
 /// Renders one or more connection preview cards in a visibly offset stack.
@@ -342,7 +345,13 @@ class ConnectionPreviewStack extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final stackHeight = cardHeight + ((entries.length - 1) * verticalOffset);
+    final effectiveCardHeight =
+        cardHeight +
+        (entries.any((entry) => entry.metadata != null)
+            ? _stackPreviewMetadataHeight
+            : 0);
+    final stackHeight =
+        effectiveCardHeight + ((entries.length - 1) * verticalOffset);
 
     return SizedBox(
       width: double.infinity,
@@ -364,7 +373,7 @@ class ConnectionPreviewStack extends StatelessWidget {
                   width: cardWidth,
                   child: _ConnectionPreviewStackCard(
                     entry: entries[index],
-                    height: cardHeight,
+                    height: effectiveCardHeight,
                     opacity: index == entries.length - 1
                         ? 1
                         : 0.9 - ((entries.length - index - 2) * 0.05),
@@ -441,6 +450,17 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 3),
+            if (entry.metadata != null) ...[
+              Text(
+                entry.metadata!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: textColor.withAlpha(190),
+                ),
+              ),
+              const SizedBox(height: 3),
+            ],
             Expanded(
               child: Text(
                 entry.body,

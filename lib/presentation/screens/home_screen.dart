@@ -50,6 +50,13 @@ import 'transfer_screen.dart';
 const _redactStoreScreenshotIdentities = bool.fromEnvironment(
   'STORE_SCREENSHOT_REDACT_IDENTITIES',
 );
+const _connectionTileHorizontalPadding = 16.0;
+const _connectionTileMinLeadingWidth = 40.0;
+const _connectionTileHorizontalTitleGap = 16.0;
+const _connectionPreviewLeadingInset =
+    _connectionTileHorizontalPadding +
+    _connectionTileMinLeadingWidth +
+    _connectionTileHorizontalTitleGap;
 
 /// Top-level sections available on the home screen.
 enum HomeScreenTab {
@@ -1701,10 +1708,10 @@ class _ConnectionsPanel extends ConsumerWidget {
                       children: [
                         ListTile(
                           contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
+                            horizontal: _connectionTileHorizontalPadding,
                           ),
-                          horizontalTitleGap: 16,
-                          minLeadingWidth: 40,
+                          horizontalTitleGap: _connectionTileHorizontalTitleGap,
+                          minLeadingWidth: _connectionTileMinLeadingWidth,
                           leading: Icon(
                             Icons.terminal,
                             color: state == SshConnectionState.connected
@@ -1733,7 +1740,12 @@ class _ConnectionsPanel extends ConsumerWidget {
                           behavior: HitTestBehavior.opaque,
                           onTap: openConnection,
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(72, 0, 16, 8),
+                            padding: const EdgeInsets.fromLTRB(
+                              _connectionPreviewLeadingInset,
+                              0,
+                              _connectionTileHorizontalPadding,
+                              8,
+                            ),
                             child: ConnectionPreviewStack(
                               entries: [previewEntry],
                             ),
