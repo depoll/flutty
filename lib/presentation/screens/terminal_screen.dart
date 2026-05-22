@@ -2699,6 +2699,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
+  bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -2835,6 +2836,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTerminalSizeRefreshQueued = false;
   bool _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+  bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
@@ -6023,9 +6025,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelHeight: pixelHeight,
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
-      unawaited(
-        _syncActiveMonkeyMuxTerminalSize(session, columns: width, rows: height),
-      );
+      if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
+        unawaited(
+          _syncActiveMonkeyMuxTerminalSize(
+            session,
+            columns: width,
+            rows: height,
+          ),
+        );
+      }
     }
 
     _terminalResizeHandler = handleTerminalResize;
@@ -6056,6 +6064,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _scheduleTerminalSizeRefresh({
     bool forceDisplayRefresh = false,
     bool revealLatestOutput = false,
+    bool suppressMonkeyMuxResizeSync = false,
   }) {
     _pendingTerminalSizeRefreshForcesDisplayRefresh =
         _pendingTerminalSizeRefreshForcesDisplayRefresh ||
@@ -6063,6 +6072,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         revealLatestOutput;
     _pendingTerminalSizeRefreshRevealsLatestOutput =
         _pendingTerminalSizeRefreshRevealsLatestOutput || revealLatestOutput;
+    _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync =
+        _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync ||
+        suppressMonkeyMuxResizeSync;
     if (_isTerminalSizeRefreshQueued) {
       return;
     }
@@ -6073,20 +6085,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _pendingTerminalSizeRefreshForcesDisplayRefresh;
       final shouldRevealLatestOutput =
           _pendingTerminalSizeRefreshRevealsLatestOutput;
+      final shouldSuppressMonkeyMuxResizeSync =
+          _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync;
       _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
       _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+      _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
       if (!mounted) {
         return;
       }
       final revealLatestOutput =
           shouldRevealLatestOutput && !_isTerminalOutputFollowPaused;
       final terminalView = _terminalViewKey.currentState;
-      if (forceDisplayRefresh) {
-        terminalView?.refreshTerminalDisplay(
-          revealLatestOutput: revealLatestOutput,
-        );
-      } else {
-        terminalView?.refreshTerminalSize();
+      _suppressMonkeyMuxResizeSyncFromTerminalRefresh =
+          shouldSuppressMonkeyMuxResizeSync;
+      try {
+        if (forceDisplayRefresh) {
+          terminalView?.refreshTerminalDisplay(
+            revealLatestOutput: revealLatestOutput,
+          );
+        } else {
+          terminalView?.refreshTerminalSize();
+        }
+      } finally {
+        _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
       }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
@@ -6097,6 +6118,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _scheduleTerminalSizeRefresh(
       forceDisplayRefresh: true,
       revealLatestOutput: true,
+      suppressMonkeyMuxResizeSync: true,
     );
     unawaited(
       _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
@@ -6113,6 +6135,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _scheduleTerminalSizeRefresh(
           forceDisplayRefresh: true,
           revealLatestOutput: true,
+          suppressMonkeyMuxResizeSync: true,
         );
         unawaited(
           _syncActiveMonkeyMuxTerminalSize(
@@ -6142,7 +6165,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (refreshVisibleTerminal) {
-      _terminalViewKey.currentState?.refreshTerminalSize();
+      _suppressMonkeyMuxResizeSyncFromTerminalRefresh = true;
+      try {
+        _terminalViewKey.currentState?.refreshTerminalSize();
+      } finally {
+        _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
+      }
     }
 
     final terminalColumns = columns ?? _terminal.viewWidth;
