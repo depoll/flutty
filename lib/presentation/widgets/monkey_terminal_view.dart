@@ -524,6 +524,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
+    this.forceSgrTouchScroll = false,
     this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
@@ -658,6 +659,9 @@ class MonkeyTerminalView extends StatefulWidget {
   /// instead of scrolling the Flutter viewport.
   final bool touchScrollToTerminal;
 
+  /// If true, sends SGR wheel reports even when local mouse mode state is stale.
+  final bool forceSgrTouchScroll;
+
   /// If true, the terminal keeps the viewport pinned to the newest output while
   /// it is already scrolled to the bottom.
   final bool liveOutputAutoScroll;
@@ -774,6 +778,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _touchScrollRemainder = 0;
     }
     if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
+      _stopTouchScrollInertia();
+      _touchScrollRemainder = 0;
+    }
+    if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
@@ -953,6 +961,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       child = MonkeyTerminalScrollGestureHandler(
         terminal: widget.terminal,
         simulateScroll: widget.simulateScroll,
+        forceSgr: widget.forceSgrTouchScroll,
         getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
         getLineHeight: () => renderTerminal.lineHeight,
         child: child,
@@ -1254,6 +1263,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     terminal: widget.terminal,
     button: button,
     position: position,
+    forceSgr: widget.forceSgrTouchScroll,
   );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {
@@ -1653,8 +1663,25 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   @override
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
+    paintLineBackground(canvas, offset, line);
     paintLineTrailingBackgroundFill(canvas, offset, line);
     super.paintLine(canvas, offset, line);
+  }
+
+  void paintLineBackground(Canvas canvas, Offset offset, BufferLine line) {
+    if (line.length == 0) {
+      return;
+    }
+
+    canvas.drawRect(
+      Rect.fromLTWH(
+        offset.dx,
+        offset.dy,
+        line.length * cellSize.width,
+        cellSize.height,
+      ),
+      Paint()..color = theme.background,
+    );
   }
 
   void paintLineTrailingBackgroundFill(
@@ -3131,7 +3158,11 @@ class MonkeyRenderTerminal extends RenderBox
       padding: _padding,
     );
 
-    if (_viewportSize != viewportSize) {
+    final terminalNeedsResize =
+        _terminal.viewWidth != viewportSize.width ||
+        _terminal.viewHeight != viewportSize.height;
+
+    if (_viewportSize != viewportSize || terminalNeedsResize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
     } else if (_viewportPixelSize != pixelSize || notifyIfUnchanged) {
       _notifyTerminalResizeIfNeeded(

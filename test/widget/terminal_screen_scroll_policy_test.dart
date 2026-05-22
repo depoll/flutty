@@ -184,6 +184,38 @@ void main() {
     });
   });
 
+  group('terminal mux mouse mode scroll helpers', () {
+    test('uses mux window mouse reporting when local mode is stale', () {
+      expect(
+        terminalReportsMouseWheelForScroll(
+          localTerminalReportsMouseWheel: false,
+          activeWindowReportsMouseWheel: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not force SGR without mux SGR mode metadata', () {
+      expect(
+        shouldForceSgrTouchScroll(
+          activeWindowReportsMouseWheel: true,
+          activeWindowMouseReportSgr: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('forces SGR when mux reports wheel and SGR modes', () {
+      expect(
+        shouldForceSgrTouchScroll(
+          activeWindowReportsMouseWheel: true,
+          activeWindowMouseReportSgr: true,
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('terminal output follow helpers', () {
     test('follows output when no scroll clients are attached yet', () {
       expect(
