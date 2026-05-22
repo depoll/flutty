@@ -3148,7 +3148,11 @@ class MonkeyRenderTerminal extends RenderBox
       padding: _padding,
     );
 
-    if (_viewportSize != viewportSize) {
+    final terminalNeedsResize =
+        _terminal.viewWidth != viewportSize.width ||
+        _terminal.viewHeight != viewportSize.height;
+
+    if (_viewportSize != viewportSize || terminalNeedsResize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
     } else if (_viewportPixelSize != pixelSize || notifyIfUnchanged) {
       _notifyTerminalResizeIfNeeded(

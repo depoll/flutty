@@ -2561,6 +2561,8 @@ void main() {
         final position = scrollableState.position..jumpTo(0);
         await tester.pump();
         expect(position.pixels, 0);
+        final resizeCountBeforeWindowEvent =
+            monkeyMuxService.resizeTerminalCalls.length;
 
         final gesture = await tester.startGesture(
           tester.getCenter(find.byType(MonkeyTerminalView)),
@@ -2578,6 +2580,14 @@ void main() {
         await tester.pump(const Duration(milliseconds: 120));
         await tester.pump();
 
+        expect(
+          monkeyMuxService.resizeTerminalCalls.length,
+          greaterThan(resizeCountBeforeWindowEvent),
+        );
+        final resizeCall = monkeyMuxService.resizeTerminalCalls.last;
+        expect(resizeCall.sessionName, sessionName);
+        expect(resizeCall.columns, greaterThan(0));
+        expect(resizeCall.rows, greaterThan(0));
         expect(position.pixels, position.maxScrollExtent);
         expect(
           tester
