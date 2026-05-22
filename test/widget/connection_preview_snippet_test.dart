@@ -76,7 +76,9 @@ void main() {
 
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 15);
-    expect(previewText.style?.fontSize, 9);
+    expect(previewText.softWrap, isFalse);
+    expect(previewText.overflow, TextOverflow.clip);
+    expect(previewText.style?.fontSize, 10.5);
     expect(previewText.style?.height, 1.22);
   });
 
@@ -142,8 +144,43 @@ void main() {
     expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 198);
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 15);
-    expect(previewText.style?.fontSize, 9);
+    expect(previewText.softWrap, isFalse);
+    expect(previewText.overflow, TextOverflow.clip);
+    expect(previewText.style?.fontSize, lessThanOrEqualTo(10.5));
     expect(previewText.style?.height, 1.22);
+  });
+
+  testWidgets('scales narrow stack previews instead of wrapping terminal rows', (
+    tester,
+  ) async {
+    final preview = [
+      'line 1',
+      'this-is-a-long-terminal-row-that-should-scale-down-instead-of-wrapping',
+      ...List.generate(13, (index) => 'line ${index + 3}'),
+    ].join('\n');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 260,
+            child: ConnectionPreviewStack(
+              entries: [
+                ConnectionPreviewStackEntry(
+                  title: 'Connection #1',
+                  body: preview,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final previewText = tester.widget<Text>(find.text(preview));
+    expect(previewText.softWrap, isFalse);
+    expect(previewText.overflow, TextOverflow.clip);
+    expect(previewText.style?.fontSize, lessThan(10.5));
   });
 
   testWidgets('renders stack metadata without consuming preview line budget', (
