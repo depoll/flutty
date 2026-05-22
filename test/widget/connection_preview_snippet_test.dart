@@ -174,9 +174,39 @@ void main() {
     );
 
     final previewText = tester.widget<Text>(find.text(preview));
+    expect(
+      tester.getSize(find.byType(ConnectionPreviewStack)).height,
+      lessThan(198),
+    );
     expect(previewText.softWrap, isFalse);
     expect(previewText.overflow, TextOverflow.clip);
     expect(previewText.style?.fontSize, lessThan(10.5));
+  });
+
+  testWidgets('sizes stack previews to rendered rows', (tester) async {
+    final preview = previewLines(6);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewStack(
+            entries: [
+              ConnectionPreviewStackEntry(
+                title: 'Connection #1',
+                body: preview,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      tester.getSize(find.byType(ConnectionPreviewStack)).height,
+      lessThan(198),
+    );
+    final previewText = tester.widget<Text>(find.text(preview));
+    expect(previewText.maxLines, 17);
   });
 
   testWidgets('renders stack metadata without consuming preview line budget', (

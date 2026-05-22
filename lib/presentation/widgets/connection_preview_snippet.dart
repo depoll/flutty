@@ -14,6 +14,11 @@ const _previewMaxFontSize = 10.5;
 const _previewLineHeight = 1.22;
 const _stackPreviewCardHeight = 198.0;
 const _stackPreviewMetadataHeight = 18.0;
+const _stackPreviewCardHorizontalPadding = 20.0;
+const _stackPreviewCardVerticalPadding = 14.0;
+const _stackPreviewTitleGap = 3.0;
+const _stackPreviewMetadataGap = 3.0;
+const _stackPreviewMinCardHeight = 72.0;
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
 TerminalThemeData resolveConnectionPreviewTheme({
@@ -343,25 +348,32 @@ class ConnectionPreviewStack extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final effectiveCardHeight =
-        cardHeight +
-        (entries.any((entry) => entry.metadata != null)
-            ? _stackPreviewMetadataHeight
-            : 0);
-    final stackHeight =
-        effectiveCardHeight + ((entries.length - 1) * verticalOffset);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
+        final cardWidth = constraints.maxWidth > maxHorizontalInset
+            ? constraints.maxWidth - maxHorizontalInset
+            : 0.0;
+        final cardHeights = [
+          for (final entry in entries)
+            _stackPreviewCardHeightForEntry(
+              context: context,
+              entry: entry,
+              maxHeight:
+                  cardHeight +
+                  (entry.metadata != null ? _stackPreviewMetadataHeight : 0),
+              cardWidth: cardWidth,
+            ),
+        ];
+        final stackHeight = [
+          for (var index = 0; index < cardHeights.length; index++)
+            cardHeights[index] + (index * verticalOffset),
+        ].reduce(math.max);
 
-    return SizedBox(
-      width: double.infinity,
-      height: stackHeight,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
-          final cardWidth = constraints.maxWidth > maxHorizontalInset
-              ? constraints.maxWidth - maxHorizontalInset
-              : 0.0;
-
-          return Stack(
+        return SizedBox(
+          width: double.infinity,
+          height: stackHeight,
+          child: Stack(
             clipBehavior: Clip.none,
             children: [
               for (var index = 0; index < entries.length; index++)
@@ -371,16 +383,16 @@ class ConnectionPreviewStack extends StatelessWidget {
                   width: cardWidth,
                   child: _ConnectionPreviewStackCard(
                     entry: entries[index],
-                    height: effectiveCardHeight,
+                    height: cardHeights[index],
                     opacity: index == entries.length - 1
                         ? 1
                         : 0.9 - ((entries.length - index - 2) * 0.05),
                   ),
                 ),
             ],
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -471,6 +483,82 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       ),
     );
   }
+}
+
+double _stackPreviewCardHeightForEntry({
+  required BuildContext context,
+  required ConnectionPreviewStackEntry entry,
+  required double maxHeight,
+  required double cardWidth,
+}) {
+  final textDirection = Directionality.of(context);
+  final textScaler = MediaQuery.textScalerOf(context);
+  final theme = Theme.of(context);
+  final titleHeight = _singleLineTextHeight(
+    style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700),
+    textDirection: textDirection,
+    textScaler: textScaler,
+  );
+  final metadataHeight = entry.metadata == null
+      ? 0.0
+      : _singleLineTextHeight(
+          style: theme.textTheme.labelSmall,
+          textDirection: textDirection,
+          textScaler: textScaler,
+        );
+  final chromeHeight =
+      _stackPreviewCardVerticalPadding +
+      titleHeight +
+      _stackPreviewTitleGap +
+      (entry.metadata == null
+          ? 0.0
+          : metadataHeight + _stackPreviewMetadataGap);
+  final previewMaxHeight = math.max<double>(0, maxHeight - chromeHeight);
+  final previewWidth = math.max<double>(
+    0,
+    cardWidth - _stackPreviewCardHorizontalPadding,
+  );
+  final baseStyle = FluttyTheme.monoStyle.copyWith(
+    fontSize: _previewMaxFontSize,
+    height: _previewLineHeight,
+  );
+  final fontSize = _fitPreviewFontSize(
+    text: entry.body,
+    maxLines: _previewMaxLines,
+    constraints: BoxConstraints(
+      maxWidth: previewWidth,
+      maxHeight: previewMaxHeight,
+    ),
+    baseStyle: baseStyle,
+    textDirection: textDirection,
+    textScaler: textScaler,
+  );
+  final previewHeight = _previewTextHeight(
+    text: entry.body,
+    maxLines: _previewMaxLines,
+    maxWidth: previewWidth,
+    style: baseStyle.copyWith(fontSize: fontSize),
+    textDirection: textDirection,
+    textScaler: textScaler,
+  );
+  return (chromeHeight + math.min(previewHeight, previewMaxHeight)).clamp(
+    _stackPreviewMinCardHeight,
+    maxHeight,
+  );
+}
+
+double _singleLineTextHeight({
+  required TextStyle? style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final painter = TextPainter(
+    text: TextSpan(text: 'Hg', style: style),
+    textDirection: textDirection,
+    textScaler: textScaler,
+    maxLines: 1,
+  )..layout();
+  return painter.height;
 }
 
 class _AdaptiveTerminalPreviewText extends StatelessWidget {
@@ -567,6 +655,24 @@ double _fitPreviewFontSize({
   }
 
   return low;
+}
+
+double _previewTextHeight({
+  required String text,
+  required int maxLines,
+  required double maxWidth,
+  required TextStyle style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final displayText = text.split('\n').take(maxLines).join('\n');
+  final painter = TextPainter(
+    text: TextSpan(text: displayText, style: style),
+    textDirection: textDirection,
+    textScaler: textScaler,
+    maxLines: maxLines,
+  )..layout(maxWidth: maxWidth.isFinite ? maxWidth : double.infinity);
+  return painter.height;
 }
 
 double _widestPreviewLineWidth({
