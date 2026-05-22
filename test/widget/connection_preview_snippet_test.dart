@@ -76,8 +76,8 @@ void main() {
 
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 15);
-    expect(previewText.style?.fontSize, 8);
-    expect(previewText.style?.height, 1.18);
+    expect(previewText.style?.fontSize, 9);
+    expect(previewText.style?.height, 1.22);
   });
 
   test('stack preview titles prefer session title over terminal metadata', () {
@@ -139,11 +139,11 @@ void main() {
       ),
     );
 
-    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 178);
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 198);
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 15);
-    expect(previewText.style?.fontSize, 8);
-    expect(previewText.style?.height, 1.18);
+    expect(previewText.style?.fontSize, 9);
+    expect(previewText.style?.height, 1.22);
   });
 
   testWidgets('renders stack metadata without consuming preview line budget', (
@@ -167,7 +167,7 @@ void main() {
       ),
     );
 
-    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 196);
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 216);
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 15);
     expect(find.text('~/Code/flutty • Running'), findsOneWidget);
