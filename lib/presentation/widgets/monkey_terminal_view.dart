@@ -3162,9 +3162,17 @@ class MonkeyRenderTerminal extends RenderBox
         _terminal.viewWidth != viewportSize.width ||
         _terminal.viewHeight != viewportSize.height;
 
-    if (_viewportSize != viewportSize || terminalNeedsResize) {
+    if (terminalNeedsResize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
-    } else if (_viewportPixelSize != pixelSize || notifyIfUnchanged) {
+      return;
+    }
+
+    final hasCachedViewportSize = _viewportSize != null;
+    final pixelSizeChanged = _viewportPixelSize != pixelSize;
+    _viewportSize = viewportSize;
+    _viewportPixelSize = pixelSize;
+
+    if ((hasCachedViewportSize && pixelSizeChanged) || notifyIfUnchanged) {
       _notifyTerminalResizeIfNeeded(
         viewportSize: viewportSize,
         pixelSize: pixelSize,
