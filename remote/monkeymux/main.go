@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.37"
+	monkeyMuxVersion         = "0.1.38"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1744,8 +1744,8 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		_ = s.attachConn.Close()
 	}
 	s.attachConn = conn
-	if hello.Data != "" {
-		s.themeHint = append(s.themeHint[:0], hello.Data...)
+	if themeHint := themeHintDataFromString(hello.Data); len(themeHint) > 0 {
+		s.themeHint = append(s.themeHint[:0], themeHint...)
 	}
 	if hello.Width > 0 && hello.Height > 0 {
 		s.width = hello.Width
@@ -2695,11 +2695,11 @@ func (s *muxServer) writeActiveFromAttach(data []byte) {
 }
 
 func (s *muxServer) sendThemeHint(data string) bool {
-	data = strings.TrimSpace(data)
+	themeHint := themeHintDataFromString(data)
 	var themeHintData []byte
 	s.mu.Lock()
-	if data != "" {
-		s.themeHint = append(s.themeHint[:0], data...)
+	if len(themeHint) > 0 {
+		s.themeHint = append(s.themeHint[:0], themeHint...)
 	}
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed {
@@ -2707,9 +2707,9 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	if data != "" {
+	if len(themeHint) > 0 {
 		themeHintData = themeHintResponsesForKeys(
-			[]byte(data),
+			themeHint,
 			window.themeHintRefreshKeysLocked(),
 		)
 	}
@@ -2730,6 +2730,14 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		s.sendFocusTransition(windowID)
 	}
 	return true
+}
+
+func themeHintDataFromString(data string) []byte {
+	data = strings.TrimSpace(data)
+	if data == "" || len(data) > themeHintLimitBytes {
+		return nil
+	}
+	return []byte(data)
 }
 
 func (s *muxServer) sendFocusTransition(windowID string) {
