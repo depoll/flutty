@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 func replayPrefixForTest(window *muxWindow) string {
@@ -25,6 +27,36 @@ func replayPrefixForTest(window *muxWindow) string {
 func replayPostHistorySuffixForTest(cursorVisible bool) string {
 	return terminalParserResetSequence + terminalCharacterSetResetSequence +
 		cursorVisibilityReplaySequence(cursorVisible)
+}
+
+func openTestPty(t *testing.T) *os.File {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = ptmx.Close()
+		_ = tty.Close()
+	})
+	return ptmx
+}
+
+func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
+	t.Helper()
+	size, err := pty.GetsizeFull(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(size.Cols) != columns || int(size.Rows) != rows {
+		t.Fatalf(
+			"pty size = %dx%d, want %dx%d",
+			size.Cols,
+			size.Rows,
+			columns,
+			rows,
+		)
+	}
 }
 
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
@@ -338,6 +370,56 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	if !reflect.DeepEqual(signaled, []int{4343}) {
 		t.Fatalf("signaled process groups = %#v, want [4343]", signaled)
 	}
+}
+
+func TestResizeUpdatesInactiveWindowPtys(t *testing.T) {
+	server := newMuxServer("test")
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
+		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	server.resize(132, 43)
+
+	assertPtySize(t, activePty, 132, 43)
+	assertPtySize(t, inactivePty, 132, 43)
+}
+
+func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
+	server := newMuxServer("test")
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
+		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	server.handleAttach(
+		&recordingConn{},
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 132, Height: 43},
+	)
+
+	assertPtySize(t, activePty, 132, 43)
+	assertPtySize(t, inactivePty, 132, 43)
+}
+
+func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
+	server := newMuxServerWithSize("test", 132, 43)
+	t.Cleanup(server.close)
+
+	window, err := server.createWindow(createWindowOptions{
+		args: []string{"/bin/sh", "-c", "sleep 0.2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertPtySize(t, window.pty, 132, 43)
 }
 
 func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
@@ -851,6 +933,58 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	}
 	if !snapshot.TerminalMouseReportSgr {
 		t.Fatal("snapshot did not report SGR mouse mode")
+	}
+}
+
+func TestRestoreSnapshotPreservesTerminalModes(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		name:                     "Mouse app",
+		privateModes:             map[string]bool{"1049": true, "7": false, "9999": true},
+		insertModeEnabled:        true,
+		insertModeKnown:          true,
+		applicationKeypadEnabled: true,
+		applicationKeypadKnown:   true,
+		lastActivity:             time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	restore := server.restoreSnapshot()
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	state := restore.Windows[0]
+	if !state.PrivateModes["1049"] {
+		t.Fatal("restore did not preserve alternate-screen mode")
+	}
+	if enabled, ok := state.PrivateModes["7"]; !ok || enabled {
+		t.Fatalf("restore wrap mode = %v, %v, want present false", enabled, ok)
+	}
+	if _, ok := state.PrivateModes["9999"]; ok {
+		t.Fatal("restore preserved untracked private mode")
+	}
+	if !state.InsertModeKnown || !state.InsertModeEnabled {
+		t.Fatal("restore did not preserve insert mode")
+	}
+	if !state.ApplicationKeypadKnown || !state.ApplicationKeypadEnabled {
+		t.Fatal("restore did not preserve application keypad mode")
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+	if enabled, ok := options.privateModes["7"]; !ok || enabled {
+		t.Fatalf("restored options wrap mode = %v, %v, want present false", enabled, ok)
+	}
+	if !options.privateModes["1049"] {
+		t.Fatalf("restored options private modes = %#v", options.privateModes)
+	}
+	if !options.insertModeKnown || !options.insertModeEnabled {
+		t.Fatal("restored options did not preserve insert mode")
+	}
+	if !options.applicationKeypadKnown || !options.applicationKeypadEnabled {
+		t.Fatal("restored options did not preserve application keypad mode")
 	}
 }
 
