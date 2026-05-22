@@ -2582,7 +2582,7 @@ void main() {
 
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
-          greaterThan(resizeCountBeforeWindowEvent),
+          resizeCountBeforeWindowEvent + 3,
         );
         final resizeCall = monkeyMuxService.resizeTerminalCalls.last;
         expect(resizeCall.sessionName, sessionName);
