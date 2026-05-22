@@ -2103,9 +2103,31 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
   bool isAgentToolActive = false,
+  bool forceTerminalScroll = false,
 }) =>
     isMobile &&
-    (terminalReportsMouseWheel || (isUsingAltBuffer && !isAgentToolActive));
+    (forceTerminalScroll ||
+        terminalReportsMouseWheel ||
+        (isUsingAltBuffer && !isAgentToolActive));
+
+/// Whether the active terminal context is a known agent tool for scroll policy.
+@visibleForTesting
+AgentLaunchTool? activeAgentToolForTerminalScroll({
+  required AgentLaunchTool? activeWindowTool,
+  required AgentLaunchTool? startupTool,
+  required bool hasWindowSnapshot,
+  String? currentCommand,
+}) {
+  if (activeWindowTool != null) {
+    return activeWindowTool;
+  }
+  final command = currentCommand?.trim();
+  final commandTool = agentLaunchToolForCommandName(command);
+  if (commandTool != null) {
+    return commandTool;
+  }
+  return !hasWindowSnapshot ? startupTool : null;
+}
 
 /// Whether the active terminal context is a known agent tool for scroll policy.
 @visibleForTesting
@@ -2114,16 +2136,20 @@ bool isAgentToolActiveForTerminalScroll({
   required AgentLaunchTool? startupTool,
   required bool hasWindowSnapshot,
   String? currentCommand,
-}) {
-  if (activeWindowTool != null) {
-    return true;
-  }
-  final command = currentCommand?.trim();
-  if (command != null && agentLaunchToolForCommandName(command) != null) {
-    return true;
-  }
-  return !hasWindowSnapshot && startupTool != null;
-}
+}) =>
+    activeAgentToolForTerminalScroll(
+      activeWindowTool: activeWindowTool,
+      startupTool: startupTool,
+      hasWindowSnapshot: hasWindowSnapshot,
+      currentCommand: currentCommand,
+    ) !=
+    null;
+
+/// Whether touch scroll should send SGR wheel reports for an agent tool even
+/// when the replayed terminal mode does not currently show mouse reporting.
+@visibleForTesting
+bool shouldForceSgrTouchScrollForAgent(AgentLaunchTool? tool) =>
+    tool == AgentLaunchTool.copilotCli;
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2912,17 +2938,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     isUsingAltBuffer: _isUsingAltBuffer,
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
     isAgentToolActive: _isAgentToolActive,
+    forceTerminalScroll: _forceSgrTouchScroll,
   );
 
-  bool get _isAgentToolActive {
+  AgentLaunchTool? get _activeAgentTool {
     final windows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
-    return isAgentToolActiveForTerminalScroll(
+    return activeAgentToolForTerminalScroll(
       activeWindowTool: resolveTmuxBarActiveWindowTool(windows),
       startupTool: _remoteMuxStartupTool,
       hasWindowSnapshot: windows != null,
       currentCommand: _tmuxCurrentCommand,
     );
   }
+
+  bool get _isAgentToolActive => _activeAgentTool != null;
+
+  bool get _forceSgrTouchScroll =>
+      shouldForceSgrTouchScrollForAgent(_activeAgentTool);
 
   MenuStyle _terminalOverflowMenuStyle({
     required BuildContext context,
@@ -9522,6 +9554,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isAgentToolActive: _isAgentToolActive,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      forceSgrTouchScroll: _forceSgrTouchScroll,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
     );

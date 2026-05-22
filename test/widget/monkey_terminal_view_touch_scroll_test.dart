@@ -86,6 +86,42 @@ void main() {
   });
 
   testWidgets(
+    'forced touch scroll sends SGR wheel before mouse mode is known',
+    (tester) async {
+      final terminal = Terminal();
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      final arrowOutput = <String>[];
+      Terminal()
+        ..onOutput = arrowOutput.add
+        ..keyInput(TerminalKey.arrowDown);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              terminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+              simulateScroll: false,
+              forceSgrTouchScroll: true,
+            ),
+          ),
+        ),
+      );
+
+      await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
+      await tester.pump();
+
+      expect(output.join(), contains('\u001b[<65;'));
+      expect(output.join(), isNot(contains(arrowOutput.join())));
+    },
+  );
+
+  testWidgets(
     'mouse-reporting apps require more drag distance per touch scroll step',
     (tester) async {
       final expectedOutput = <String>[];
