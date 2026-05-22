@@ -113,6 +113,22 @@ void main() {
       },
     );
 
+    test(
+      'routes forced mobile agent drags before wheel reporting is observed',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: false,
+            terminalReportsMouseWheel: false,
+            isAgentToolActive: true,
+            forceTerminalScroll: true,
+          ),
+          isTrue,
+        );
+      },
+    );
+
     test('routes mobile agent drags when wheel reporting is active', () {
       expect(
         shouldRouteTouchScrollToTerminal(
@@ -181,6 +197,33 @@ void main() {
         ),
         isTrue,
       );
+    });
+
+    test('resolves the current active agent tool', () {
+      expect(
+        activeAgentToolForTerminalScroll(
+          activeWindowTool: null,
+          startupTool: null,
+          hasWindowSnapshot: true,
+          currentCommand: 'copilot',
+        ),
+        AgentLaunchTool.copilotCli,
+      );
+    });
+  });
+
+  group('terminal forced touch scroll helper', () {
+    test('forces SGR touch scroll only for Copilot CLI', () {
+      expect(
+        shouldForceSgrTouchScrollForAgent(AgentLaunchTool.copilotCli),
+        isTrue,
+      );
+      expect(shouldForceSgrTouchScrollForAgent(AgentLaunchTool.codex), isFalse);
+      expect(
+        shouldForceSgrTouchScrollForAgent(AgentLaunchTool.openCode),
+        isFalse,
+      );
+      expect(shouldForceSgrTouchScrollForAgent(null), isFalse);
     });
   });
 
