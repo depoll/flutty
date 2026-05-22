@@ -7,6 +7,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -191,6 +192,31 @@ class _TestHomeScreenShortcutService extends HomeScreenShortcutService {
 
   @override
   Future<void> dispose() async {}
+}
+
+class _RecordingTerminalPage extends StatefulWidget {
+  const _RecordingTerminalPage({
+    required this.route,
+    required this.openedRoutes,
+  });
+
+  final String route;
+  final List<String> openedRoutes;
+
+  @override
+  State<_RecordingTerminalPage> createState() => _RecordingTerminalPageState();
+}
+
+class _RecordingTerminalPageState extends State<_RecordingTerminalPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.openedRoutes.add(widget.route);
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      Scaffold(body: Text('Terminal ${widget.route}'));
 }
 
 Host _buildHost({
@@ -462,6 +488,84 @@ void main() {
         find.textContaining('Connections appear here while terminals are open'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('repeated connection taps push one terminal route', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final openedRoutes = <String>[];
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            state: SshConnectionState.connecting,
+          ),
+        ],
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const HomeScreen(initialTab: HomeScreenTab.connections),
+          ),
+          GoRoute(
+            path: '/terminal/:hostId',
+            builder: (context, state) => _RecordingTerminalPage(
+              route: state.uri.toString(),
+              openedRoutes: openedRoutes,
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            transferIntentServiceProvider.overrideWith(
+              (ref) => _TestTransferIntentService(),
+            ),
+            homeScreenShortcutServiceProvider.overrideWith(
+              (ref) => _TestHomeScreenShortcutService(),
+            ),
+            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+              (ref) => Stream<Set<int>>.value(const <int>{}),
+            ),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+          child: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final connectionPosition = tester.getCenter(find.text('Alpha'));
+      await tester.tapAt(connectionPosition);
+      await tester.tapAt(connectionPosition);
+      await tester.pumpAndSettle();
+
+      expect(openedRoutes, ['/terminal/1?connectionId=7']);
+      expect(find.text('Terminal /terminal/1?connectionId=7'), findsOneWidget);
+
+      router.pop();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Alpha'), findsOneWidget);
+      expect(find.text('Terminal /terminal/1?connectionId=7'), findsNothing);
     });
   });
 
