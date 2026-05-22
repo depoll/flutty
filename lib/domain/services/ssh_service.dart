@@ -523,6 +523,7 @@ final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
+final _terminalCsiNumericParamsPattern = RegExp(r'^[0-9;]*$');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -828,7 +829,7 @@ bool _shouldDropTerminalOutputSequenceForXterm(String sequence) {
   }
 
   final params = sequence.substring(3, sequence.length - 1);
-  return RegExp(r'^[0-9;]*$').hasMatch(params);
+  return _terminalCsiNumericParamsPattern.hasMatch(params);
 }
 
 List<int?> _terminalCsiNumericParams(String sequence) {
@@ -842,7 +843,7 @@ List<int?> _terminalCsiNumericParams(String sequence) {
   if (params.isEmpty) {
     return const [];
   }
-  if (!RegExp(r'^[0-9;]*$').hasMatch(params)) {
+  if (!_terminalCsiNumericParamsPattern.hasMatch(params)) {
     return const [];
   }
   return params

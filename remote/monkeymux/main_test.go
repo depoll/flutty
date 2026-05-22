@@ -408,6 +408,26 @@ func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
 	assertPtySize(t, inactivePty, 132, 43)
 }
 
+func TestAttachIgnoresOversizedThemeHint(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{{id: "@1", index: 0, lastActivity: time.Now()}}
+	server.activeID = "@1"
+
+	server.handleAttach(
+		&recordingConn{},
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{
+			Width:  132,
+			Height: 43,
+			Data:   strings.Repeat("x", themeHintLimitBytes+1),
+		},
+	)
+
+	if len(server.themeHint) != 0 {
+		t.Fatalf("theme hint length = %d, want 0", len(server.themeHint))
+	}
+}
+
 func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
 	server := newMuxServerWithSize("test", 132, 43)
 	t.Cleanup(server.close)
@@ -2091,6 +2111,22 @@ func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 			got,
 			foregroundReport+backgroundReport,
 		)
+	}
+}
+
+func TestSendThemeHintIgnoresOversizedPayload(t *testing.T) {
+	server := newMuxServer("test")
+	server.themeHint = []byte("existing")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	if server.sendThemeHint(strings.Repeat("x", themeHintLimitBytes+1)) {
+		t.Fatal("oversized theme hint was sent")
+	}
+	if got := string(server.themeHint); got != "existing" {
+		t.Fatalf("theme hint = %q, want existing", got)
 	}
 }
 
