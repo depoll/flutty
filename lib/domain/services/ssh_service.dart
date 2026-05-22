@@ -213,6 +213,10 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 /// vertical margin region down. When cursor state is provided, that RI is
 /// rewritten to IL (`CSI L`), which has the same effect at the top margin
 /// without reusing detached buffer lines internally.
+///
+/// xterm.dart also treats private `CSI > ... m` keyboard modifier controls as
+/// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
+/// accidentally enabling underline/bold while painting spaces.
 @visibleForTesting
 ({String output, String pendingInput, bool insertMode})
 adaptTerminalInsertModeOutputForXterm({
@@ -254,10 +258,12 @@ adaptTerminalInsertModeOutputForXterm({
       }
 
       final sequence = combinedInput.substring(cursor, endIndex);
-      output.write(cursorTracker.adaptEscapeSequence(sequence));
-      final insertModeUpdate = _terminalInsertModeUpdate(sequence);
-      if (insertModeUpdate != null) {
-        nextInsertMode = insertModeUpdate;
+      if (!_shouldDropTerminalOutputSequenceForXterm(sequence)) {
+        output.write(cursorTracker.adaptEscapeSequence(sequence));
+        final insertModeUpdate = _terminalInsertModeUpdate(sequence);
+        if (insertModeUpdate != null) {
+          nextInsertMode = insertModeUpdate;
+        }
       }
       cursor = endIndex;
       continue;
@@ -517,6 +523,7 @@ final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
+final _terminalCsiNumericParamsPattern = RegExp(r'^[0-9;]*$');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -637,6 +644,8 @@ const _terminalSetModeFinalCodeUnit = 0x68;
 const _terminalResetModeFinalCodeUnit = 0x6C;
 const _terminalSoftResetFinalCodeUnit = 0x70;
 const _terminalFullResetFinalCodeUnit = 0x63;
+const _terminalPrivateMarkerCodeUnit = 0x3E;
+const _terminalSelectGraphicRenditionFinalCodeUnit = 0x6D;
 const _terminalInsertBlankCharacterSequence = '\x1b[@';
 const _terminalReverseIndexSequence = '\x1bM';
 const _terminalInsertLineSequence = '\x1b[L';
@@ -809,6 +818,20 @@ bool? _terminalDecOriginModeUpdate(String sequence) {
   return null;
 }
 
+bool _shouldDropTerminalOutputSequenceForXterm(String sequence) {
+  if (sequence.length < 4 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit ||
+      sequence.codeUnitAt(2) != _terminalPrivateMarkerCodeUnit ||
+      sequence.codeUnitAt(sequence.length - 1) !=
+          _terminalSelectGraphicRenditionFinalCodeUnit) {
+    return false;
+  }
+
+  final params = sequence.substring(3, sequence.length - 1);
+  return _terminalCsiNumericParamsPattern.hasMatch(params);
+}
+
 List<int?> _terminalCsiNumericParams(String sequence) {
   if (sequence.length < 3 ||
       sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
@@ -820,7 +843,7 @@ List<int?> _terminalCsiNumericParams(String sequence) {
   if (params.isEmpty) {
     return const [];
   }
-  if (!RegExp(r'^[0-9;]*$').hasMatch(params)) {
+  if (!_terminalCsiNumericParamsPattern.hasMatch(params)) {
     return const [];
   }
   return params
