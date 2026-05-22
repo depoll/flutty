@@ -237,6 +237,45 @@ void main() {
   });
 
   group('explicit cell background rendering', () {
+    test(
+      'clears normal-background cells before drawing terminal rows',
+      () async {
+        final terminal = Terminal()..resize(8, 1);
+        final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final cellSize = painter.cellSize;
+        final imageWidth = (cellSize.width * 8).ceil();
+        final imageHeight = cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, imageWidth.toDouble(), imageHeight.toDouble()),
+            Paint()..color = const Color(0xFFFF0000),
+          );
+
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+        final image = await recorder.endRecording().toImage(
+          imageWidth,
+          imageHeight,
+        );
+        final byteData = await image.toByteData();
+        expect(byteData, isNotNull);
+
+        final sample = _rawRgbaPixel(
+          byteData!,
+          imageWidth,
+          imageWidth ~/ 2,
+          imageHeight ~/ 2,
+        );
+        expect(sample, theme.background);
+      },
+    );
+
     test('keeps bright-black rows readable on the light theme', () {
       final background = resolveMonkeyTerminalReadableBackgroundColor(
         foreground: TerminalThemes.defaultLightTheme.foreground,
