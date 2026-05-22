@@ -88,6 +88,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   late int _selectedIndex;
+  bool _isOpeningTerminalRoute = false;
 
   /// Switches to the Connections tab so the user lands there when
   /// returning from the terminal.
@@ -98,6 +99,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// Switches back to the Hosts tab.
   void switchToHostsTab() {
     if (_selectedIndex != 0) setState(() => _selectedIndex = 0);
+  }
+
+  Future<void> _openTerminalRoute(String route) async {
+    if (_isOpeningTerminalRoute) {
+      return;
+    }
+    final router = GoRouter.maybeOf(context);
+    if (router == null) {
+      return;
+    }
+    _isOpeningTerminalRoute = true;
+    try {
+      await router.push(route);
+    } finally {
+      _isOpeningTerminalRoute = false;
+    }
   }
 
   StreamSubscription<String>? _incomingTransferSubscription;
@@ -381,7 +398,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
 
     switchToConnectionsTab();
-    unawaited(context.push('/terminal/${host.id}'));
+    unawaited(_openTerminalRoute('/terminal/${host.id}'));
   }
 
   @override
@@ -394,6 +411,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!hadConnections || next.isNotEmpty || _selectedIndex != 1) {
         return;
       }
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _selectedIndex != 1) {
           return;
@@ -587,6 +605,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     3 => const SnippetsPanel(),
     _ => const HostsPanel(),
   };
+}
+
+void _openTerminalRoute(BuildContext context, String route) {
+  final homeState = context.findAncestorStateOfType<_HomeScreenState>();
+  if (homeState != null) {
+    unawaited(homeState._openTerminalRoute(route));
+    return;
+  }
+  final router = GoRouter.maybeOf(context);
+  if (router != null) {
+    unawaited(router.push(route));
+  }
 }
 
 class _NavItem extends StatelessWidget {
@@ -1131,10 +1161,9 @@ class _HostRow extends ConsumerWidget {
         context
             .findAncestorStateOfType<_HomeScreenState>()
             ?.switchToConnectionsTab();
-        unawaited(
-          context.push(
-            '/terminal/${host.id}?connectionId=${connectionIds.first}',
-          ),
+        _openTerminalRoute(
+          context,
+          '/terminal/${host.id}?connectionId=${connectionIds.first}',
         );
       }
       return;
@@ -1217,7 +1246,10 @@ class _HostRow extends ConsumerWidget {
       context
           .findAncestorStateOfType<_HomeScreenState>()
           ?.switchToConnectionsTab();
-      unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
+      _openTerminalRoute(
+        context,
+        '/terminal/${host.id}?connectionId=$selectedId',
+      );
     }
   }
 
@@ -1247,13 +1279,14 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
-    unawaited(
-      context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
-    );
     if (context.mounted) {
       context
           .findAncestorStateOfType<_HomeScreenState>()
           ?.switchToConnectionsTab();
+      _openTerminalRoute(
+        context,
+        '/terminal/${host.id}?connectionId=${result.connectionId}',
+      );
     }
   }
 
@@ -1669,11 +1702,10 @@ class _ConnectionsPanel extends ConsumerWidget {
                     final endpoint =
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
-                    void openConnection() => unawaited(
-                      context.push(
-                        '/terminal/${connection.hostId}'
-                        '?connectionId=${connection.connectionId}',
-                      ),
+                    void openConnection() => _openTerminalRoute(
+                      context,
+                      '/terminal/${connection.hostId}'
+                      '?connectionId=${connection.connectionId}',
                     );
                     final previewEntry = buildConnectionPreviewStackEntry(
                       connectionId: connection.connectionId,
