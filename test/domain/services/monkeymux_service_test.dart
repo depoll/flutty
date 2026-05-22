@@ -131,6 +131,21 @@ void main() {
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
     });
+
+    test('maps helper terminal mouse mode metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Mouse app',
+        'active': true,
+        'terminalReportsMouseWheel': true,
+        'terminalMouseReportSgr': true,
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalReportsMouseWheel, isTrue);
+      expect(window.terminalMouseReportSgr, isTrue);
+    });
   });
 
   group('MonkeyMux agent metadata', () {

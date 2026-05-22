@@ -698,6 +698,23 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     .firstOrNull
     ?.foregroundAgentTool;
 
+/// Resolves whether the active tmux window requested mouse-wheel input.
+@visibleForTesting
+bool? resolveTmuxBarActiveWindowReportsMouseWheel(
+  Iterable<TmuxWindow>? windows,
+) => windows
+    ?.where((window) => window.isActive)
+    .firstOrNull
+    ?.terminalReportsMouseWheel;
+
+/// Resolves whether the active tmux window requested SGR mouse reporting.
+@visibleForTesting
+bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
+    windows
+        ?.where((window) => window.isActive)
+        .firstOrNull
+        ?.terminalMouseReportSgr;
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting
@@ -2103,31 +2120,17 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
   bool isAgentToolActive = false,
-  bool forceTerminalScroll = false,
 }) =>
     isMobile &&
-    (forceTerminalScroll ||
-        terminalReportsMouseWheel ||
-        (isUsingAltBuffer && !isAgentToolActive));
+    (terminalReportsMouseWheel || (isUsingAltBuffer && !isAgentToolActive));
 
-/// Whether the active terminal context is a known agent tool for scroll policy.
+/// Resolves the effective mouse-wheel state for scroll routing.
 @visibleForTesting
-AgentLaunchTool? activeAgentToolForTerminalScroll({
-  required AgentLaunchTool? activeWindowTool,
-  required AgentLaunchTool? startupTool,
-  required bool hasWindowSnapshot,
-  String? currentCommand,
-}) {
-  if (activeWindowTool != null) {
-    return activeWindowTool;
-  }
-  final command = currentCommand?.trim();
-  final commandTool = agentLaunchToolForCommandName(command);
-  if (commandTool != null) {
-    return commandTool;
-  }
-  return !hasWindowSnapshot ? startupTool : null;
-}
+bool terminalReportsMouseWheelForScroll({
+  required bool localTerminalReportsMouseWheel,
+  bool? activeWindowReportsMouseWheel,
+}) =>
+    localTerminalReportsMouseWheel || (activeWindowReportsMouseWheel ?? false);
 
 /// Whether the active terminal context is a known agent tool for scroll policy.
 @visibleForTesting
@@ -2136,20 +2139,26 @@ bool isAgentToolActiveForTerminalScroll({
   required AgentLaunchTool? startupTool,
   required bool hasWindowSnapshot,
   String? currentCommand,
-}) =>
-    activeAgentToolForTerminalScroll(
-      activeWindowTool: activeWindowTool,
-      startupTool: startupTool,
-      hasWindowSnapshot: hasWindowSnapshot,
-      currentCommand: currentCommand,
-    ) !=
-    null;
+}) {
+  if (activeWindowTool != null) {
+    return true;
+  }
+  final command = currentCommand?.trim();
+  if (command != null && agentLaunchToolForCommandName(command) != null) {
+    return true;
+  }
+  return !hasWindowSnapshot && startupTool != null;
+}
 
-/// Whether touch scroll should send SGR wheel reports for an agent tool even
-/// when the replayed terminal mode does not currently show mouse reporting.
+/// Whether touch scroll should send SGR wheel reports from mux metadata even
+/// when local xterm mouse-mode state is stale.
 @visibleForTesting
-bool shouldForceSgrTouchScrollForAgent(AgentLaunchTool? tool) =>
-    tool == AgentLaunchTool.copilotCli;
+bool shouldForceSgrTouchScroll({
+  bool? activeWindowReportsMouseWheel,
+  bool? activeWindowMouseReportSgr,
+}) =>
+    (activeWindowReportsMouseWheel ?? false) &&
+    (activeWindowMouseReportSgr ?? false);
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2933,17 +2942,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
+  Iterable<TmuxWindow>? get _currentTmuxWindowsSnapshot =>
+      _tmuxBarKey.currentState?.currentWindowsSnapshot;
+
+  bool? get _activeWindowReportsMouseWheel =>
+      resolveTmuxBarActiveWindowReportsMouseWheel(_currentTmuxWindowsSnapshot);
+
+  bool? get _activeWindowMouseReportSgr =>
+      resolveTmuxBarActiveWindowMouseReportSgr(_currentTmuxWindowsSnapshot);
+
+  bool get _terminalReportsMouseWheelForScroll =>
+      terminalReportsMouseWheelForScroll(
+        localTerminalReportsMouseWheel: _terminalReportsMouseWheel,
+        activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
+      );
+
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
-    terminalReportsMouseWheel: _terminalReportsMouseWheel,
+    terminalReportsMouseWheel: _terminalReportsMouseWheelForScroll,
     isAgentToolActive: _isAgentToolActive,
-    forceTerminalScroll: _forceSgrTouchScroll,
   );
 
-  AgentLaunchTool? get _activeAgentTool {
-    final windows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
-    return activeAgentToolForTerminalScroll(
+  bool get _isAgentToolActive {
+    final windows = _currentTmuxWindowsSnapshot;
+    return isAgentToolActiveForTerminalScroll(
       activeWindowTool: resolveTmuxBarActiveWindowTool(windows),
       startupTool: _remoteMuxStartupTool,
       hasWindowSnapshot: windows != null,
@@ -2951,10 +2974,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  bool get _isAgentToolActive => _activeAgentTool != null;
-
-  bool get _forceSgrTouchScroll =>
-      shouldForceSgrTouchScrollForAgent(_activeAgentTool);
+  bool get _forceSgrTouchScroll => shouldForceSgrTouchScroll(
+    activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
+    activeWindowMouseReportSgr: _activeWindowMouseReportSgr,
+  );
 
   MenuStyle _terminalOverflowMenuStyle({
     required BuildContext context,
@@ -9550,7 +9573,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
-        terminalReportsMouseWheel: _terminalReportsMouseWheel,
+        terminalReportsMouseWheel: _terminalReportsMouseWheelForScroll,
         isAgentToolActive: _isAgentToolActive,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,

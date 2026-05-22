@@ -113,22 +113,6 @@ void main() {
       },
     );
 
-    test(
-      'routes forced mobile agent drags before wheel reporting is observed',
-      () {
-        expect(
-          shouldRouteTouchScrollToTerminal(
-            isMobile: true,
-            isUsingAltBuffer: false,
-            terminalReportsMouseWheel: false,
-            isAgentToolActive: true,
-            forceTerminalScroll: true,
-          ),
-          isTrue,
-        );
-      },
-    );
-
     test('routes mobile agent drags when wheel reporting is active', () {
       expect(
         shouldRouteTouchScrollToTerminal(
@@ -198,32 +182,37 @@ void main() {
         isTrue,
       );
     });
-
-    test('resolves the current active agent tool', () {
-      expect(
-        activeAgentToolForTerminalScroll(
-          activeWindowTool: null,
-          startupTool: null,
-          hasWindowSnapshot: true,
-          currentCommand: 'copilot',
-        ),
-        AgentLaunchTool.copilotCli,
-      );
-    });
   });
 
-  group('terminal forced touch scroll helper', () {
-    test('forces SGR touch scroll only for Copilot CLI', () {
+  group('terminal mux mouse mode scroll helpers', () {
+    test('uses mux window mouse reporting when local mode is stale', () {
       expect(
-        shouldForceSgrTouchScrollForAgent(AgentLaunchTool.copilotCli),
+        terminalReportsMouseWheelForScroll(
+          localTerminalReportsMouseWheel: false,
+          activeWindowReportsMouseWheel: true,
+        ),
         isTrue,
       );
-      expect(shouldForceSgrTouchScrollForAgent(AgentLaunchTool.codex), isFalse);
+    });
+
+    test('does not force SGR without mux SGR mode metadata', () {
       expect(
-        shouldForceSgrTouchScrollForAgent(AgentLaunchTool.openCode),
+        shouldForceSgrTouchScroll(
+          activeWindowReportsMouseWheel: true,
+          activeWindowMouseReportSgr: false,
+        ),
         isFalse,
       );
-      expect(shouldForceSgrTouchScrollForAgent(null), isFalse);
+    });
+
+    test('forces SGR when mux reports wheel and SGR modes', () {
+      expect(
+        shouldForceSgrTouchScroll(
+          activeWindowReportsMouseWheel: true,
+          activeWindowMouseReportSgr: true,
+        ),
+        isTrue,
+      );
     });
   });
 

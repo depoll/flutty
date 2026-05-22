@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.35"
+	monkeyMuxVersion         = "0.1.36"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -218,17 +218,19 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                       string `json:"id"`
-	Index                    int    `json:"index"`
-	Name                     string `json:"name"`
-	Active                   bool   `json:"active"`
-	CurrentCommand           string `json:"currentCommand,omitempty"`
-	CurrentPath              string `json:"currentPath,omitempty"`
-	PanePid                  int    `json:"panePid,omitempty"`
-	Flags                    string `json:"flags,omitempty"`
-	PaneTitle                string `json:"paneTitle,omitempty"`
-	AgentTool                string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
+	ID                        string `json:"id"`
+	Index                     int    `json:"index"`
+	Name                      string `json:"name"`
+	Active                    bool   `json:"active"`
+	CurrentCommand            string `json:"currentCommand,omitempty"`
+	CurrentPath               string `json:"currentPath,omitempty"`
+	PanePid                   int    `json:"panePid,omitempty"`
+	Flags                     string `json:"flags,omitempty"`
+	PaneTitle                 string `json:"paneTitle,omitempty"`
+	AgentTool                 string `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds  int64  `json:"lastActivityEpochSeconds,omitempty"`
+	TerminalReportsMouseWheel bool   `json:"terminalReportsMouseWheel,omitempty"`
+	TerminalMouseReportSgr    bool   `json:"terminalMouseReportSgr,omitempty"`
 }
 
 type serverRestore struct {
@@ -2102,17 +2104,19 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		flags = "#"
 	}
 	return windowSnapshot{
-		ID:                       window.id,
-		Index:                    window.index,
-		Name:                     window.name,
-		Active:                   s.activeID == window.id,
-		CurrentCommand:           window.currentCommandLocked(),
-		CurrentPath:              window.cwd,
-		PanePid:                  window.metadataProcessIDLocked(),
-		Flags:                    flags,
-		PaneTitle:                window.paneTitle,
-		AgentTool:                window.agentToolLocked(),
-		LastActivityEpochSeconds: window.lastActivity.Unix(),
+		ID:                        window.id,
+		Index:                     window.index,
+		Name:                      window.name,
+		Active:                    s.activeID == window.id,
+		CurrentCommand:            window.currentCommandLocked(),
+		CurrentPath:               window.cwd,
+		PanePid:                   window.metadataProcessIDLocked(),
+		Flags:                     flags,
+		PaneTitle:                 window.paneTitle,
+		AgentTool:                 window.agentToolLocked(),
+		LastActivityEpochSeconds:  window.lastActivity.Unix(),
+		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
+		TerminalMouseReportSgr:    window.privateModes["1006"],
 	}
 }
 
@@ -2449,6 +2453,15 @@ func (w *muxWindow) usesAlternateScreenForReplayLocked() bool {
 		return false
 	}
 	return w.privateModes["1049"]
+}
+
+func (w *muxWindow) reportsMouseWheelLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.privateModes["1000"] ||
+		w.privateModes["1002"] ||
+		w.privateModes["1003"]
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
