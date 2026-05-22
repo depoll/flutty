@@ -834,6 +834,26 @@ func TestWindowTitleUpdatesStillBroadcast(t *testing.T) {
 	}
 }
 
+func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Mouse app",
+		privateModes: map[string]bool{"1000": true, "1006": true},
+		lastActivity: time.Now(),
+	}
+
+	snapshot := server.snapshot(window)
+
+	if !snapshot.TerminalReportsMouseWheel {
+		t.Fatal("snapshot did not report mouse wheel mode")
+	}
+	if !snapshot.TerminalMouseReportSgr {
+		t.Fatal("snapshot did not report SGR mouse mode")
+	}
+}
+
 func TestActiveReplaySetsWindowTitle(t *testing.T) {
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{
