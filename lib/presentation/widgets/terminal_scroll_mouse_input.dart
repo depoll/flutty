@@ -5,9 +5,11 @@ bool sendTerminalScrollMouseInput({
   required Terminal terminal,
   required TerminalMouseButton button,
   required CellOffset position,
+  bool forceSgr = false,
 }) {
-  if (terminal.mouseMode.reportScroll &&
-      terminal.mouseReportMode == MouseReportMode.sgr) {
+  if (forceSgr ||
+      (terminal.mouseMode.reportScroll &&
+          terminal.mouseReportMode == MouseReportMode.sgr)) {
     final sgrButtonId = switch (button) {
       TerminalMouseButton.wheelUp => 64,
       TerminalMouseButton.wheelDown => 65,

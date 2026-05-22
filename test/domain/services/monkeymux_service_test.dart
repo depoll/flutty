@@ -61,6 +61,21 @@ void main() {
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
     });
+
+    test('passes terminal theme reports as base64 data', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: '/home/me/.monkeyssh/bin/monkeymux',
+        sessionName: 'work',
+        terminalThemeReports: '\x1b]11;rgb:0000/1111/2222\x1b\\',
+      );
+
+      expect(
+        command,
+        "'/home/me/.monkeyssh/bin/monkeymux' attach --theme-hint-base64 "
+        'G10xMTtyZ2I6MDAwMC8xMTExLzIyMjIbXA== '
+        "'work'",
+      );
+    });
   });
 
   group('MonkeyMuxServerStatus', () {
@@ -115,6 +130,21 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+
+    test('maps helper terminal mouse mode metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Mouse app',
+        'active': true,
+        'terminalReportsMouseWheel': true,
+        'terminalMouseReportSgr': true,
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalReportsMouseWheel, isTrue);
+      expect(window.terminalMouseReportSgr, isTrue);
     });
   });
 

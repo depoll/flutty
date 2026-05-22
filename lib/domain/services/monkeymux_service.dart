@@ -85,9 +85,11 @@ String buildMonkeyMuxAttachCommand({
   String? workingDirectory,
   String? launchCommand,
   String? windowName,
+  String? terminalThemeReports,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
 }) {
+  final themeHint = terminalThemeReports?.trim();
   final parts = <String>[
     _shellQuote(executablePath),
     'attach',
@@ -96,6 +98,10 @@ String buildMonkeyMuxAttachCommand({
       serverUpdatePolicy.cliValue,
     ],
     if (startInYoloMode) '--restore-yolo',
+    if (themeHint != null && themeHint.isNotEmpty) ...[
+      '--theme-hint-base64',
+      base64Encode(utf8.encode(themeHint)),
+    ],
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
       _shellQuote(workingDirectory.trim()),
@@ -401,8 +407,23 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
-      'data': buildTerminalThemeBackgroundColorReport(theme),
+      'data': buildTerminalThemeRefreshReports(theme),
     }, priority: SshExecPriority.low);
+  }
+
+  /// Resizes the active MonkeyMux PTY to match the visible terminal.
+  Future<void> resizeTerminal(
+    SshSession session,
+    String sessionName, {
+    required int columns,
+    required int rows,
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
+    await _runControlCommand(session, sessionName, {
+      'type': 'resize',
+      'width': columns,
+      'height': rows,
+    }, priority: priority);
   }
 
   /// Runs a short-lived command through the MonkeyMux control client.
@@ -1285,6 +1306,8 @@ TmuxWindow? _windowFromJson(Object? value) {
     panePid: value['panePid'] as int?,
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
+    terminalReportsMouseWheel: value['terminalReportsMouseWheel'] as bool?,
+    terminalMouseReportSgr: value['terminalMouseReportSgr'] as bool?,
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }

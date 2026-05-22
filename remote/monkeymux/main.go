@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.28"
+	monkeyMuxVersion         = "0.1.38"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -46,15 +47,20 @@ const (
 	windowHistoryLimitBytes  = 128 * 1024
 	windowReplayLimitBytes   = 32 * 1024
 	csiBufferLimitBytes      = 64
+	themeHintLimitBytes      = 1024
 	restoreFileMode          = 0o600
 	restoreSchemaVersion     = 1
 )
 
-const terminalParserResetSequence = "\x18\x1b\\"
+const terminalParserResetSequence = "\x1b\\"
 
 const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
 
-const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?1007l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const terminalScreenClearSequence = "\x1b[H\x1b[2J\x1b[3J"
+
+const terminalAllScreensClearSequence = terminalScreenClearSequence + "\x1b[?1049h" + terminalScreenClearSequence + "\x1b[?1049l" + terminalScreenClearSequence
+
+const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?1007l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m" + terminalAllScreensClearSequence
 
 var (
 	preReplayPrivateModes = []string{
@@ -212,17 +218,19 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                       string `json:"id"`
-	Index                    int    `json:"index"`
-	Name                     string `json:"name"`
-	Active                   bool   `json:"active"`
-	CurrentCommand           string `json:"currentCommand,omitempty"`
-	CurrentPath              string `json:"currentPath,omitempty"`
-	PanePid                  int    `json:"panePid,omitempty"`
-	Flags                    string `json:"flags,omitempty"`
-	PaneTitle                string `json:"paneTitle,omitempty"`
-	AgentTool                string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
+	ID                        string `json:"id"`
+	Index                     int    `json:"index"`
+	Name                      string `json:"name"`
+	Active                    bool   `json:"active"`
+	CurrentCommand            string `json:"currentCommand,omitempty"`
+	CurrentPath               string `json:"currentPath,omitempty"`
+	PanePid                   int    `json:"panePid,omitempty"`
+	Flags                     string `json:"flags,omitempty"`
+	PaneTitle                 string `json:"paneTitle,omitempty"`
+	AgentTool                 string `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds  int64  `json:"lastActivityEpochSeconds,omitempty"`
+	TerminalReportsMouseWheel bool   `json:"terminalReportsMouseWheel,omitempty"`
+	TerminalMouseReportSgr    bool   `json:"terminalMouseReportSgr,omitempty"`
 }
 
 type serverRestore struct {
@@ -232,19 +240,24 @@ type serverRestore struct {
 }
 
 type restoreWindowState struct {
-	ID                    string `json:"id,omitempty"`
-	Index                 int    `json:"index,omitempty"`
-	Name                  string `json:"name,omitempty"`
-	Cwd                   string `json:"cwd,omitempty"`
-	CurrentCommand        string `json:"currentCommand,omitempty"`
-	PanePid               int    `json:"panePid,omitempty"`
-	PaneTitle             string `json:"paneTitle,omitempty"`
-	AgentTool             string `json:"agentTool,omitempty"`
-	AgentSessionID        string `json:"agentSessionId,omitempty"`
-	HistoryBase64         string `json:"historyBase64,omitempty"`
-	CursorVisible         bool   `json:"cursorVisible,omitempty"`
-	CursorVisibilityKnown bool   `json:"cursorVisibilityKnown,omitempty"`
-	Active                bool   `json:"active,omitempty"`
+	ID                       string          `json:"id,omitempty"`
+	Index                    int             `json:"index,omitempty"`
+	Name                     string          `json:"name,omitempty"`
+	Cwd                      string          `json:"cwd,omitempty"`
+	CurrentCommand           string          `json:"currentCommand,omitempty"`
+	PanePid                  int             `json:"panePid,omitempty"`
+	PaneTitle                string          `json:"paneTitle,omitempty"`
+	AgentTool                string          `json:"agentTool,omitempty"`
+	AgentSessionID           string          `json:"agentSessionId,omitempty"`
+	HistoryBase64            string          `json:"historyBase64,omitempty"`
+	CursorVisible            bool            `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
+	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
+	InsertModeEnabled        bool            `json:"insertModeEnabled,omitempty"`
+	InsertModeKnown          bool            `json:"insertModeKnown,omitempty"`
+	ApplicationKeypadEnabled bool            `json:"applicationKeypadEnabled,omitempty"`
+	ApplicationKeypadKnown   bool            `json:"applicationKeypadKnown,omitempty"`
+	Active                   bool            `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -260,6 +273,7 @@ type muxServer struct {
 	attachConn net.Conn
 	attachMu   sync.Mutex
 	controls   map[*controlClient]struct{}
+	themeHint  []byte
 	closed     bool
 }
 
@@ -289,8 +303,9 @@ type muxWindow struct {
 	applicationKeypadEnabled   bool
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
-	backgroundColorQuerySeen   bool
-	backgroundColorQueryPid    int
+	focusModeProcessID         int
+	themeColorQueryPid         int
+	themeColorQueryKeys        map[string]bool
 	alert                      bool
 	closed                     bool
 }
@@ -338,7 +353,7 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--theme-hint-base64 DATA] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
 	os.Exit(2)
 }
 
@@ -348,6 +363,7 @@ func attachCommand(args []string) {
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
 	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
+	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
@@ -357,16 +373,24 @@ func attachCommand(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	themeHint, err := decodeThemeHintBase64(*themeHintBase64)
+	if err != nil {
+		fatal(err)
+	}
 	session := fs.Arg(0)
+	width, height := terminalSize()
 	if err := ensureServer(
 		session,
 		createWindowOptions{
-			cwd:     *cwd,
-			name:    *name,
-			command: *command,
+			cwd:       *cwd,
+			name:      *name,
+			command:   *command,
+			themeHint: themeHint,
 		},
 		policy,
 		*restoreYolo,
+		width,
+		height,
 	); err != nil {
 		fatal(err)
 	}
@@ -377,12 +401,12 @@ func attachCommand(args []string) {
 	}
 	defer conn.Close()
 
-	width, height := terminalSize()
 	hello := controlMessage{
 		Role:    "attach",
 		Session: session,
 		Width:   width,
 		Height:  height,
+		Data:    string(themeHint),
 	}
 	if err := json.NewEncoder(conn).Encode(hello); err != nil {
 		fatal(err)
@@ -452,21 +476,44 @@ func serveCommand(args []string) {
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
 	restoreFile := fs.String("restore-file", "", "window restore snapshot")
+	width := fs.Int("width", defaultColumns, "initial terminal columns")
+	height := fs.Int("height", defaultRows, "initial terminal rows")
+	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*session) == "" {
 		usageAndExit()
+	}
+	themeHint, err := decodeThemeHintBase64(*themeHintBase64)
+	if err != nil {
+		fatal(err)
 	}
 	restore, err := readRestoreFile(*restoreFile)
 	if err != nil {
 		fatal(err)
 	}
 	if err := serveSession(*session, createWindowOptions{
-		cwd:     *cwd,
-		name:    *name,
-		command: *command,
-	}, restore); err != nil {
+		cwd:       *cwd,
+		name:      *name,
+		command:   *command,
+		themeHint: themeHint,
+	}, restore, *width, *height); err != nil {
 		fatal(err)
 	}
+}
+
+func decodeThemeHintBase64(encoded string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("invalid theme hint: %w", err)
+	}
+	if len(decoded) > themeHintLimitBytes {
+		return nil, fmt.Errorf("theme hint is too large")
+	}
+	return decoded, nil
 }
 
 func gcCommand() {
@@ -500,6 +547,8 @@ func ensureServer(
 	initialWindow createWindowOptions,
 	updatePolicy string,
 	startInYoloMode bool,
+	width int,
+	height int,
 ) error {
 	var restore *serverRestore
 	if status, err := queryRunningServerStatus(session); err == nil {
@@ -550,6 +599,15 @@ func ensureServer(
 		return err
 	}
 	cmd := exec.Command(exe, "serve", "--session", session)
+	if width > 0 && height > 0 {
+		cmd.Args = append(
+			cmd.Args,
+			"--width",
+			strconv.Itoa(width),
+			"--height",
+			strconv.Itoa(height),
+		)
+	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
 		if err == nil {
@@ -565,6 +623,9 @@ func ensureServer(
 	}
 	if strings.TrimSpace(initialWindow.command) != "" {
 		cmd.Args = append(cmd.Args, "--command", initialWindow.command)
+	}
+	if len(initialWindow.themeHint) > 0 {
+		cmd.Args = append(cmd.Args, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
 	}
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -714,10 +775,25 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 			PanePid:        window.PanePid,
 			PaneTitle:      window.PaneTitle,
 			AgentTool:      window.AgentTool,
+			PrivateModes:   privateModesFromWindowSnapshot(window),
 			Active:         window.Active,
 		})
 	}
 	return restore
+}
+
+func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
+	modes := map[string]bool{}
+	if window.TerminalReportsMouseWheel {
+		modes["1000"] = true
+	}
+	if window.TerminalMouseReportSgr {
+		modes["1006"] = true
+	}
+	if len(modes) == 0 {
+		return nil
+	}
+	return modes
 }
 
 func enrichRestoreWithCapturedShellHistory(session string, restore *serverRestore) {
@@ -1130,6 +1206,8 @@ func serveSession(
 	session string,
 	initialWindow createWindowOptions,
 	restore *serverRestore,
+	width int,
+	height int,
 ) error {
 	socket, err := socketPath(session)
 	if err != nil {
@@ -1149,7 +1227,8 @@ func serveSession(
 	}()
 	_ = os.Chmod(socket, 0o600)
 
-	server := newMuxServer(session)
+	server := newMuxServerWithSize(session, width, height)
+	server.themeHint = append([]byte(nil), initialWindow.themeHint...)
 	server.listener = listener
 	if err := server.restoreOrCreateInitialWindow(restore, initialWindow); err != nil {
 		return err
@@ -1178,10 +1257,20 @@ func serveSession(
 }
 
 func newMuxServer(session string) *muxServer {
+	return newMuxServerWithSize(session, defaultColumns, defaultRows)
+}
+
+func newMuxServerWithSize(session string, width int, height int) *muxServer {
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
 	return &muxServer{
 		session:  session,
-		width:    defaultColumns,
-		height:   defaultRows,
+		width:    width,
+		height:   height,
 		controls: map[*controlClient]struct{}{},
 	}
 }
@@ -1316,14 +1405,19 @@ func createWindowOptionsForRestore(
 		history = decodeRestoreHistory(state.HistoryBase64)
 	}
 	return createWindowOptions{
-		name:                  firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
-		cwd:                   state.Cwd,
-		command:               command,
-		history:               history,
-		paneTitle:             firstNonEmptyString(state.PaneTitle, state.Name),
-		agentTool:             agentTool,
-		cursorVisible:         state.CursorVisible,
-		cursorVisibilityKnown: state.CursorVisibilityKnown,
+		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
+		cwd:                      state.Cwd,
+		command:                  command,
+		history:                  history,
+		paneTitle:                firstNonEmptyString(state.PaneTitle, state.Name),
+		agentTool:                agentTool,
+		cursorVisible:            state.CursorVisible,
+		cursorVisibilityKnown:    state.CursorVisibilityKnown,
+		privateModes:             copyPrivateModes(state.PrivateModes),
+		insertModeEnabled:        state.InsertModeEnabled,
+		insertModeKnown:          state.InsertModeKnown,
+		applicationKeypadEnabled: state.ApplicationKeypadEnabled,
+		applicationKeypadKnown:   state.ApplicationKeypadKnown,
 	}
 }
 
@@ -1356,15 +1450,21 @@ func isShellRestoreWindow(state restoreWindowState) bool {
 }
 
 type createWindowOptions struct {
-	name                  string
-	cwd                   string
-	command               string
-	args                  []string
-	history               []byte
-	paneTitle             string
-	agentTool             string
-	cursorVisible         bool
-	cursorVisibilityKnown bool
+	name                     string
+	cwd                      string
+	command                  string
+	args                     []string
+	history                  []byte
+	paneTitle                string
+	agentTool                string
+	cursorVisible            bool
+	cursorVisibilityKnown    bool
+	privateModes             map[string]bool
+	insertModeEnabled        bool
+	insertModeKnown          bool
+	applicationKeypadEnabled bool
+	applicationKeypadKnown   bool
+	themeHint                []byte
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
@@ -1422,21 +1522,26 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.mu.Lock()
 	s.nextID++
 	window := &muxWindow{
-		id:                    fmt.Sprintf("@%d", s.nextID),
-		index:                 len(s.windows),
-		name:                  name,
-		cwd:                   cwd,
-		command:               filepath.Base(cmd.Path),
-		agentTool:             agentTool,
-		foregroundPid:         cmd.Process.Pid,
-		foregroundCommand:     filepath.Base(cmd.Path),
-		paneTitle:             paneTitle,
-		pty:                   file,
-		cmd:                   cmd,
-		history:               append([]byte(nil), options.history...),
-		lastActivity:          time.Now(),
-		cursorVisible:         cursorVisible,
-		cursorVisibilityKnown: options.cursorVisibilityKnown,
+		id:                       fmt.Sprintf("@%d", s.nextID),
+		index:                    len(s.windows),
+		name:                     name,
+		cwd:                      cwd,
+		command:                  filepath.Base(cmd.Path),
+		agentTool:                agentTool,
+		foregroundPid:            cmd.Process.Pid,
+		foregroundCommand:        filepath.Base(cmd.Path),
+		paneTitle:                paneTitle,
+		pty:                      file,
+		cmd:                      cmd,
+		history:                  append([]byte(nil), options.history...),
+		lastActivity:             time.Now(),
+		cursorVisible:            cursorVisible,
+		cursorVisibilityKnown:    options.cursorVisibilityKnown,
+		privateModes:             copyPrivateModes(options.privateModes),
+		insertModeEnabled:        options.insertModeEnabled,
+		insertModeKnown:          options.insertModeKnown,
+		applicationKeypadEnabled: options.applicationKeypadEnabled,
+		applicationKeypadKnown:   options.applicationKeypadKnown,
 	}
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
@@ -1487,6 +1592,7 @@ func (s *muxServer) readWindow(window *muxWindow) {
 
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
+	var themeHintData []byte
 	var shouldWrite bool
 	var snapshot *windowSnapshot
 	now := time.Now()
@@ -1501,7 +1607,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	wasAlert := window.alert
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
-	window.observeTerminalMetadataLocked(chunk)
+	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
+		themeHintData = themeHintResponsesForKeys(s.themeHint, queryKeys)
+	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	if s.activeID == windowID {
@@ -1520,6 +1629,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		window.lastBroadcast = now
 	}
 	s.mu.Unlock()
+
+	if len(themeHintData) > 0 {
+		_ = s.writeWindow(windowID, themeHintData)
+	}
 
 	if shouldWrite {
 		s.writeAttachIfActive(windowID, attach, chunk)
@@ -1624,22 +1737,37 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
 	var foregroundProcessGroup int
+	var themeHintData []byte
+	var themeHintWindowID string
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
 	}
 	s.attachConn = conn
+	if themeHint := themeHintDataFromString(hello.Data); len(themeHint) > 0 {
+		s.themeHint = append(s.themeHint[:0], themeHint...)
+	}
 	if hello.Width > 0 && hello.Height > 0 {
 		s.width = hello.Width
 		s.height = hello.Height
-		s.resizeActiveLocked(hello.Width, hello.Height)
+		s.resizeAllLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
 	if window := s.windowByIDLocked(s.activeID); window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+		if len(s.themeHint) > 0 {
+			themeHintData = themeHintResponsesForKeys(
+				s.themeHint,
+				window.themeHintRefreshKeysLocked(),
+			)
+			themeHintWindowID = window.id
+		}
 	}
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
+	if len(themeHintData) > 0 {
+		_ = s.writeWindow(themeHintWindowID, themeHintData)
+	}
 	s.broadcastWindowList("active_window_changed")
 	signalForegroundResize(foregroundProcessGroup)
 
@@ -1656,7 +1784,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			s.writeActive(buf[:n])
+			s.writeActiveFromAttach(buf[:n])
 		}
 		if err != nil {
 			return
@@ -2005,17 +2133,22 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 		}
 		window.refreshProcessMetadataLocked(time.Now())
 		state := restoreWindowState{
-			ID:                    window.id,
-			Index:                 window.index,
-			Name:                  window.name,
-			Cwd:                   window.cwd,
-			CurrentCommand:        window.currentCommandLocked(),
-			PanePid:               window.metadataProcessIDLocked(),
-			PaneTitle:             window.paneTitle,
-			AgentTool:             window.agentToolLocked(),
-			CursorVisible:         window.cursorVisible,
-			CursorVisibilityKnown: window.cursorVisibilityKnown,
-			Active:                s.activeID == window.id,
+			ID:                       window.id,
+			Index:                    window.index,
+			Name:                     window.name,
+			Cwd:                      window.cwd,
+			CurrentCommand:           window.currentCommandLocked(),
+			PanePid:                  window.metadataProcessIDLocked(),
+			PaneTitle:                window.paneTitle,
+			AgentTool:                window.agentToolLocked(),
+			CursorVisible:            window.cursorVisible,
+			CursorVisibilityKnown:    window.cursorVisibilityKnown,
+			PrivateModes:             copyPrivateModes(window.privateModes),
+			InsertModeEnabled:        window.insertModeEnabled,
+			InsertModeKnown:          window.insertModeKnown,
+			ApplicationKeypadEnabled: window.applicationKeypadEnabled,
+			ApplicationKeypadKnown:   window.applicationKeypadKnown,
+			Active:                   s.activeID == window.id,
 		}
 		if isShellRestoreWindow(state) && len(window.history) > 0 {
 			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
@@ -2038,17 +2171,19 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		flags = "#"
 	}
 	return windowSnapshot{
-		ID:                       window.id,
-		Index:                    window.index,
-		Name:                     window.name,
-		Active:                   s.activeID == window.id,
-		CurrentCommand:           window.currentCommandLocked(),
-		CurrentPath:              window.cwd,
-		PanePid:                  window.metadataProcessIDLocked(),
-		Flags:                    flags,
-		PaneTitle:                window.paneTitle,
-		AgentTool:                window.agentToolLocked(),
-		LastActivityEpochSeconds: window.lastActivity.Unix(),
+		ID:                        window.id,
+		Index:                     window.index,
+		Name:                      window.name,
+		Active:                    s.activeID == window.id,
+		CurrentCommand:            window.currentCommandLocked(),
+		CurrentPath:               window.cwd,
+		PanePid:                   window.metadataProcessIDLocked(),
+		Flags:                     flags,
+		PaneTitle:                 window.paneTitle,
+		AgentTool:                 window.agentToolLocked(),
+		LastActivityEpochSeconds:  window.lastActivity.Unix(),
+		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
+		TerminalMouseReportSgr:    window.privateModes["1006"],
 	}
 }
 
@@ -2318,11 +2453,21 @@ func (s *muxServer) resize(width int, height int) {
 	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
-	s.resizeActiveLocked(width, height)
+	s.resizeAllLocked(width, height)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
+	s.resizeWindowLocked(window, width, height)
+}
+
+func (s *muxServer) resizeAllLocked(width int, height int) {
+	for _, window := range s.windows {
+		s.resizeWindowLocked(window, width, height)
+	}
+}
+
+func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int) {
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
@@ -2351,9 +2496,12 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
-	history = trimReplayHistoryForAttach(history)
+	if !window.usesAlternateScreenForReplayLocked() {
+		history = trimReplayHistoryForAttach(history)
+	}
 	title := terminalTitleReplaySequence(window)
 	preModes := terminalModePreReplaySequence(window)
+	preHistoryClear := terminalPreHistoryClearSequence(window)
 	postModes := terminalModePostReplaySequence(window)
 	postParser := []byte(terminalParserResetSequence)
 	postCharset := []byte(terminalCharacterSetResetSequence)
@@ -2361,18 +2509,52 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	replay := make(
 		[]byte,
 		0,
-		len(activeWindowReplayPrefix)+len(title)+len(preModes)+len(history)+
+		len(activeWindowReplayPrefix)+len(title)+len(preModes)+
+			len(preHistoryClear)+len(history)+
 			len(postParser)+len(postModes)+len(postCharset)+len(cursor),
 	)
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, title...)
 	replay = append(replay, preModes...)
+	replay = append(replay, preHistoryClear...)
 	replay = append(replay, history...)
 	replay = append(replay, postParser...)
 	replay = append(replay, postModes...)
 	replay = append(replay, postCharset...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func (w *muxWindow) usesAlternateScreenForReplayLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.privateModes["1049"]
+}
+
+func (w *muxWindow) reportsMouseWheelLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.privateModes["1000"] ||
+		w.privateModes["1002"] ||
+		w.privateModes["1003"]
+}
+
+func copyPrivateModes(privateModes map[string]bool) map[string]bool {
+	if len(privateModes) == 0 {
+		return nil
+	}
+	copied := make(map[string]bool, len(privateModes))
+	for mode, enabled := range privateModes {
+		if _, ok := trackedPrivateModes[mode]; ok {
+			copied[mode] = enabled
+		}
+	}
+	if len(copied) == 0 {
+		return nil
+	}
+	return copied
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -2400,6 +2582,13 @@ func terminalModePreReplaySequence(window *muxWindow) []byte {
 	return terminalModeReplaySequence(window, preReplayPrivateModes, true)
 }
 
+func terminalPreHistoryClearSequence(window *muxWindow) []byte {
+	if window == nil || !window.privateModes["1049"] {
+		return nil
+	}
+	return []byte(terminalScreenClearSequence)
+}
+
 func terminalModePostReplaySequence(window *muxWindow) []byte {
 	if window == nil {
 		return nil
@@ -2416,6 +2605,9 @@ func terminalModeReplaySequence(
 	for _, mode := range privateModes {
 		enabled, ok := window.privateModes[mode]
 		if !ok {
+			continue
+		}
+		if mode == "1004" && enabled && !window.focusModeActiveLocked() {
 			continue
 		}
 		final := byte('l')
@@ -2484,25 +2676,53 @@ func (s *muxServer) writeActive(data []byte) {
 	_ = s.writeWindow(s.activeWindowID(), data)
 }
 
-func (s *muxServer) sendThemeHint(data string) bool {
+func (s *muxServer) writeActiveFromAttach(data []byte) {
+	if len(data) == 0 {
+		return
+	}
 	s.mu.Lock()
+	windowID := s.activeID
+	window := s.windowByIDLocked(windowID)
+	stripFocusReports := window == nil || !window.focusModeActiveLocked()
+	s.mu.Unlock()
+	if stripFocusReports {
+		data = stripFocusReportsFromAttachInput(data)
+		if len(data) == 0 {
+			return
+		}
+	}
+	_ = s.writeWindow(windowID, data)
+}
+
+func (s *muxServer) sendThemeHint(data string) bool {
+	themeHint := themeHintDataFromString(data)
+	var themeHintData []byte
+	s.mu.Lock()
+	if len(themeHint) > 0 {
+		s.themeHint = append(s.themeHint[:0], themeHint...)
+	}
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	sendBackgroundReport := data != "" && window.hasActiveBackgroundColorQueryLocked()
-	sendFocusTransition := window.focusModeEnabled
-	if !sendBackgroundReport && !sendFocusTransition {
+	if len(themeHint) > 0 {
+		themeHintData = themeHintResponsesForKeys(
+			themeHint,
+			window.themeHintRefreshKeysLocked(),
+		)
+	}
+	sendFocusTransition := window.focusModeActiveLocked()
+	if len(themeHintData) == 0 && !sendFocusTransition {
 		s.mu.Unlock()
 		return false
 	}
 	windowID := window.id
 	s.mu.Unlock()
 
-	if sendBackgroundReport {
-		if err := s.writeWindow(windowID, []byte(data)); err != nil {
+	if len(themeHintData) > 0 {
+		if err := s.writeWindow(windowID, themeHintData); err != nil {
 			return false
 		}
 	}
@@ -2510,6 +2730,14 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		s.sendFocusTransition(windowID)
 	}
 	return true
+}
+
+func themeHintDataFromString(data string) []byte {
+	data = strings.TrimSpace(data)
+	if data == "" || len(data) > themeHintLimitBytes {
+		return nil
+	}
+	return []byte(data)
 }
 
 func (s *muxServer) sendFocusTransition(windowID string) {
@@ -2612,6 +2840,31 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 		}
 	}
 	return history[start:]
+}
+
+func stripFocusReportsFromAttachInput(data []byte) []byte {
+	if len(data) < 3 || !bytes.Contains(data, []byte("\x1b[")) {
+		return data
+	}
+	var output []byte
+	copyStart := 0
+	for i := 0; i+2 < len(data); i++ {
+		if data[i] != '\x1b' || data[i+1] != '[' ||
+			(data[i+2] != 'I' && data[i+2] != 'O') {
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-3)
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = i + 3
+		i += 2
+	}
+	if output == nil {
+		return data
+	}
+	output = append(output, data[copyStart:]...)
+	return output
 }
 
 func containsTerminalBell(data []byte) bool {
@@ -2779,15 +3032,54 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeEnabled || w.hasActiveBackgroundColorQueryLocked()
+	return w.focusModeActiveLocked() || len(w.activeThemeColorQueryKeysLocked()) > 0
 }
 
-func (w *muxWindow) hasActiveBackgroundColorQueryLocked() bool {
+func (w *muxWindow) themeHintRefreshKeysLocked() []string {
+	keys := w.activeThemeColorQueryKeysLocked()
+	if w.shouldSendFocusThemeReportsLocked() {
+		keys = appendThemeQueryKeys(keys, []string{"10", "11"})
+		keys = appendThemeQueryKeys(keys, w.observedPaletteThemeColorQueryKeysLocked())
+	}
+	return keys
+}
+
+func (w *muxWindow) shouldSendFocusThemeReportsLocked() bool {
+	if w == nil || !w.focusModeActiveLocked() {
+		return false
+	}
+	command := w.currentCommandLocked()
+	return command != "" && !isShellCommandName(command)
+}
+
+func (w *muxWindow) observedPaletteThemeColorQueryKeysLocked() []string {
+	if w == nil || len(w.themeColorQueryKeys) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(w.themeColorQueryKeys))
+	for key := range w.themeColorQueryKeys {
+		if strings.HasPrefix(key, "4;") {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
 	activePid := w.activeForegroundPidLocked()
-	return w.backgroundColorQuerySeen &&
-		w.backgroundColorQueryPid > 0 &&
-		activePid > 0 &&
-		w.backgroundColorQueryPid == activePid
+	if w.themeColorQueryPid <= 0 ||
+		activePid <= 0 ||
+		w.themeColorQueryPid != activePid ||
+		len(w.themeColorQueryKeys) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(w.themeColorQueryKeys))
+	for key := range w.themeColorQueryKeys {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (w *muxWindow) activeForegroundPidLocked() int {
@@ -2795,6 +3087,16 @@ func (w *muxWindow) activeForegroundPidLocked() int {
 		return w.metadataProcessIDLocked()
 	}
 	return w.foregroundProcessGroupLocked()
+}
+
+func (w *muxWindow) focusModeActiveLocked() bool {
+	if w == nil || !w.focusModeEnabled {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.focusModeProcessID <= 0 ||
+		activePid <= 0 ||
+		w.focusModeProcessID == activePid
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -3178,6 +3480,11 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 	}
 	if mode == "1004" {
 		w.focusModeEnabled = enabled
+		if enabled {
+			w.focusModeProcessID = w.activeForegroundPidLocked()
+		} else {
+			w.focusModeProcessID = 0
+		}
 	}
 	if _, ok := trackedPrivateModes[mode]; !ok {
 		return
@@ -3217,9 +3524,9 @@ func cursorVisibilityReplaySequence(visible bool) string {
 	return "\x1b[?25l"
 }
 
-func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
+func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) []string {
 	if len(chunk) == 0 {
-		return
+		return nil
 	}
 	data := chunk
 	if len(w.oscBuffer) > 0 {
@@ -3230,14 +3537,15 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
 		w.oscBuffer = nil
 	}
 
+	var observedThemeQueries []string
 	for len(data) > 0 {
 		escapeIndex := bytes.IndexByte(data, '\x1b')
 		if escapeIndex < 0 {
-			return
+			return observedThemeQueries
 		}
 		if escapeIndex+1 >= len(data) {
 			w.storePartialOscLocked(data[escapeIndex:])
-			return
+			return observedThemeQueries
 		}
 		if data[escapeIndex+1] != ']' {
 			data = data[escapeIndex+1:]
@@ -3248,11 +3556,17 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
 		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 		if !ok {
 			w.storePartialOscLocked(data[escapeIndex:])
-			return
+			return observedThemeQueries
 		}
-		w.applyOscPayloadLocked(string(data[payloadStart : payloadStart+payloadEnd]))
+		observedThemeQueries = appendThemeQueryKeys(
+			observedThemeQueries,
+			w.applyOscPayloadLocked(
+				string(data[payloadStart:payloadStart+payloadEnd]),
+			),
+		)
 		data = data[payloadStart+payloadEnd+terminatorLength:]
 	}
+	return observedThemeQueries
 }
 
 func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
@@ -3280,16 +3594,16 @@ func (w *muxWindow) storePartialOscLocked(data []byte) {
 	w.oscBuffer = append(w.oscBuffer[:0], data...)
 }
 
-func (w *muxWindow) applyOscPayloadLocked(payload string) {
+func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 	code, value, ok := strings.Cut(payload, ";")
 	if !ok {
-		return
+		return nil
 	}
 	switch code {
 	case "0", "1", "2":
 		title := cleanTerminalTitle(value)
 		if title == "" {
-			return
+			return nil
 		}
 		w.paneTitle = title
 	case "7":
@@ -3297,16 +3611,159 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) {
 		if path != "" {
 			w.cwd = path
 		}
-	case "11":
-		if strings.TrimSpace(value) == "?" {
-			queryPid := w.activeForegroundPidLocked()
-			if queryPid <= 0 {
-				return
-			}
-			w.backgroundColorQuerySeen = true
-			w.backgroundColorQueryPid = queryPid
+	}
+	queryKeys := themeQueryKeysFromOscPayload(payload)
+	if len(queryKeys) == 0 {
+		return nil
+	}
+	queryPid := w.activeForegroundPidLocked()
+	if queryPid <= 0 {
+		return nil
+	}
+	if w.themeColorQueryPid != queryPid {
+		w.themeColorQueryKeys = nil
+	}
+	w.themeColorQueryPid = queryPid
+	if w.themeColorQueryKeys == nil {
+		w.themeColorQueryKeys = map[string]bool{}
+	}
+	for _, key := range queryKeys {
+		w.themeColorQueryKeys[key] = true
+	}
+	return queryKeys
+}
+
+func appendThemeQueryKeys(existing []string, keys []string) []string {
+	if len(keys) == 0 {
+		return existing
+	}
+	seen := make(map[string]bool, len(existing)+len(keys))
+	for _, key := range existing {
+		seen[key] = true
+	}
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		existing = append(existing, key)
+	}
+	return existing
+}
+
+func themeQueryKeysFromOscPayload(payload string) []string {
+	parts := strings.Split(payload, ";")
+	if len(parts) < 2 {
+		return nil
+	}
+	code := strings.TrimSpace(parts[0])
+	args := parts[1:]
+	switch code {
+	case "4":
+		return paletteThemeQueryKeys(args)
+	case "10", "11", "12", "17", "19":
+		if strings.TrimSpace(args[0]) == "?" {
+			return []string{code}
 		}
 	}
+	return nil
+}
+
+func paletteThemeQueryKeys(args []string) []string {
+	var keys []string
+	for i := 0; i+1 < len(args); i += 2 {
+		if strings.TrimSpace(args[i+1]) != "?" {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(args[i]))
+		if err != nil || index < 0 || index > 255 {
+			continue
+		}
+		keys = append(keys, fmt.Sprintf("4;%d", index))
+	}
+	return keys
+}
+
+func themeHintResponsesForKeys(hint []byte, keys []string) []byte {
+	if len(hint) == 0 || len(keys) == 0 {
+		return nil
+	}
+	responses := themeHintResponseMap(hint)
+	if len(responses) == 0 {
+		return nil
+	}
+	var output []byte
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		response := responses[key]
+		if len(response) == 0 {
+			continue
+		}
+		output = append(output, response...)
+	}
+	return output
+}
+
+func themeHintResponseMap(hint []byte) map[string][]byte {
+	responses := map[string][]byte{}
+	data := hint
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return responses
+		}
+		if escapeIndex+1 >= len(data) {
+			return responses
+		}
+		if data[escapeIndex+1] != ']' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		payloadStart := escapeIndex + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			return responses
+		}
+		sequenceEnd := payloadStart + payloadEnd + terminatorLength
+		key := themeResponseKeyFromOscPayload(
+			string(data[payloadStart : payloadStart+payloadEnd]),
+		)
+		if key != "" {
+			responses[key] = append([]byte(nil), data[escapeIndex:sequenceEnd]...)
+		}
+		data = data[sequenceEnd:]
+	}
+	return responses
+}
+
+func themeResponseKeyFromOscPayload(payload string) string {
+	parts := strings.Split(payload, ";")
+	if len(parts) < 2 {
+		return ""
+	}
+	code := strings.TrimSpace(parts[0])
+	switch code {
+	case "4":
+		if len(parts) < 3 {
+			return ""
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || index < 0 || index > 255 {
+			return ""
+		}
+		return fmt.Sprintf("4;%d", index)
+	case "10", "11", "12", "17", "19":
+		if strings.TrimSpace(parts[1]) == "?" {
+			return ""
+		}
+		return code
+	}
+	return ""
 }
 
 func cleanTerminalTitle(value string) string {
