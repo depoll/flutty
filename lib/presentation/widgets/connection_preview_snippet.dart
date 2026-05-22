@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
@@ -7,7 +9,8 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 
 const _previewMaxLines = 15;
-const _previewFontSize = 9.0;
+const _previewMinFontSize = 6.5;
+const _previewMaxFontSize = 10.5;
 const _previewLineHeight = 1.22;
 const _stackPreviewCardHeight = 198.0;
 const _stackPreviewMetadataHeight = 18.0;
@@ -263,15 +266,10 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                 ),
               ],
             ),
-            child: Text(
-              previewText,
+            child: _AdaptiveTerminalPreviewText(
+              text: previewText,
+              color: previewTextColor,
               maxLines: previewMaxLines,
-              overflow: TextOverflow.ellipsis,
-              style: FluttyTheme.monoStyle.copyWith(
-                fontSize: _previewFontSize,
-                color: previewTextColor,
-                height: _previewLineHeight,
-              ),
             ),
           ),
         ],
@@ -462,15 +460,10 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
               const SizedBox(height: 3),
             ],
             Expanded(
-              child: Text(
-                entry.body,
+              child: _AdaptiveTerminalPreviewText(
+                text: entry.body,
+                color: textColor,
                 maxLines: _previewMaxLines,
-                overflow: TextOverflow.ellipsis,
-                style: FluttyTheme.monoStyle.copyWith(
-                  fontSize: _previewFontSize,
-                  color: textColor,
-                  height: _previewLineHeight,
-                ),
               ),
             ),
           ],
@@ -478,4 +471,126 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AdaptiveTerminalPreviewText extends StatelessWidget {
+  const _AdaptiveTerminalPreviewText({
+    required this.text,
+    required this.color,
+    required this.maxLines,
+  });
+
+  final String text;
+  final Color color;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    final textDirection = Directionality.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final style = FluttyTheme.monoStyle.copyWith(
+          fontSize: _previewMaxFontSize,
+          color: color,
+          height: _previewLineHeight,
+        );
+        final fontSize = _fitPreviewFontSize(
+          text: text,
+          maxLines: maxLines,
+          constraints: constraints,
+          baseStyle: style,
+          textDirection: textDirection,
+          textScaler: textScaler,
+        );
+
+        return Text(
+          text,
+          maxLines: maxLines,
+          overflow: TextOverflow.clip,
+          softWrap: false,
+          style: style.copyWith(fontSize: fontSize),
+        );
+      },
+    );
+  }
+}
+
+double _fitPreviewFontSize({
+  required String text,
+  required int maxLines,
+  required BoxConstraints constraints,
+  required TextStyle baseStyle,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final lines = text.split('\n').take(maxLines).toList(growable: false);
+  final visibleLineCount = math.max(lines.length, 1);
+  var maxFontSize = _previewMaxFontSize;
+  if (constraints.maxHeight.isFinite && constraints.maxHeight > 0) {
+    maxFontSize = math.min(
+      maxFontSize,
+      constraints.maxHeight / (visibleLineCount * _previewLineHeight),
+    );
+  }
+
+  if (!constraints.maxWidth.isFinite || constraints.maxWidth <= 0) {
+    return maxFontSize.clamp(_previewMinFontSize, _previewMaxFontSize);
+  }
+
+  var low = _previewMinFontSize;
+  var high = maxFontSize.clamp(_previewMinFontSize, _previewMaxFontSize);
+  if (_widestPreviewLineWidth(
+        lines: lines,
+        style: baseStyle.copyWith(fontSize: high),
+        textDirection: textDirection,
+        textScaler: textScaler,
+      ) <=
+      constraints.maxWidth) {
+    return high;
+  }
+
+  for (var index = 0; index < 10; index++) {
+    final midpoint = (low + high) / 2;
+    final midpointWidth = _widestPreviewLineWidth(
+      lines: lines,
+      style: baseStyle.copyWith(fontSize: midpoint),
+      textDirection: textDirection,
+      textScaler: textScaler,
+    );
+    if (midpointWidth <= constraints.maxWidth) {
+      low = midpoint;
+    } else {
+      high = midpoint;
+    }
+  }
+
+  return low;
+}
+
+double _widestPreviewLineWidth({
+  required Iterable<String> lines,
+  required TextStyle style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final painter = TextPainter(
+    textDirection: textDirection,
+    textScaler: textScaler,
+    maxLines: 1,
+  );
+  var widest = 0.0;
+  for (final line in lines) {
+    if (line.isEmpty) {
+      continue;
+    }
+    final width =
+        (painter
+              ..text = TextSpan(text: line, style: style)
+              ..layout())
+            .width;
+    widest = math.max(widest, width);
+  }
+  return widest;
 }
