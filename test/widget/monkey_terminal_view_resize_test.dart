@@ -103,6 +103,47 @@ void main() {
     expect(resizeEvents.last, initialEvent);
   });
 
+  testWidgets('size refresh repairs stale terminal cell dimensions', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+      ),
+    );
+
+    final viewportColumns = terminal.viewWidth;
+    final viewportRows = terminal.viewHeight;
+    expect(viewportColumns, greaterThan(1));
+    expect(viewportRows, greaterThan(1));
+
+    terminal.resize(viewportColumns - 1, viewportRows - 1);
+    expect(terminal.viewWidth, viewportColumns - 1);
+    expect(terminal.viewHeight, viewportRows - 1);
+
+    terminalKey.currentState!.refreshTerminalSize();
+
+    expect(terminal.viewWidth, viewportColumns);
+    expect(terminal.viewHeight, viewportRows);
+    expect(resizeEvents.last.width, viewportColumns);
+    expect(resizeEvents.last.height, viewportRows);
+  });
+
   testWidgets('same-size refresh preserves terminal scroll margins', (
     tester,
   ) async {

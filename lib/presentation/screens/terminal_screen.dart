@@ -3895,7 +3895,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
-        _refreshTerminalAfterMonkeyMuxWindowChange();
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
         _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
           session: session,
           sessionName: sessionName,
@@ -6037,11 +6037,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  void _refreshTerminalAfterMonkeyMuxWindowChange() {
+  void _refreshTerminalAfterMonkeyMuxWindowChange(SshSession session) {
     _followLiveOutput();
     _scheduleTerminalSizeRefresh(
       forceDisplayRefresh: true,
       revealLatestOutput: true,
+    );
+    unawaited(
+      _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
     );
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
@@ -6055,6 +6058,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _scheduleTerminalSizeRefresh(
           forceDisplayRefresh: true,
           revealLatestOutput: true,
+        );
+        unawaited(
+          _syncActiveMonkeyMuxTerminalSize(
+            session,
+            refreshVisibleTerminal: true,
+          ),
         );
       },
     );
@@ -7819,7 +7828,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
     }
@@ -7876,7 +7885,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _reattachTmuxIfNeeded(session, sessionName);
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
     }
@@ -7922,7 +7931,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _prepareTerminalForMuxWindowChange();
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
     }
