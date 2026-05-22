@@ -1215,15 +1215,15 @@ void main() {
       expect(preview, 'second line\nthird line');
     });
 
-    test('builds fifteen preview lines by default', () {
+    test('builds extra preview lines by default', () {
       final terminal = Terminal(maxLines: 100)
-        ..write(List.generate(17, (index) => 'line ${index + 1}').join('\r\n'));
+        ..write(List.generate(19, (index) => 'line ${index + 1}').join('\r\n'));
 
       final preview = SshSession.buildTerminalPreview(terminal);
 
       expect(
         preview,
-        List.generate(15, (index) => 'line ${index + 3}').join('\n'),
+        List.generate(17, (index) => 'line ${index + 3}').join('\n'),
       );
     });
 

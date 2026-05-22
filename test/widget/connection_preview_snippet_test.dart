@@ -67,15 +67,13 @@ void main() {
     expect(find.text('Active: Designing app prompt'), findsNothing);
   });
 
-  testWidgets('renders about fifteen lines in the default preview', (
-    tester,
-  ) async {
-    final preview = previewLines(17);
+  testWidgets('renders extra rows in the default preview', (tester) async {
+    final preview = previewLines(19);
 
     await tester.pumpWidget(buildSnippet(preview: preview));
 
     final previewText = tester.widget<Text>(find.text(preview));
-    expect(previewText.maxLines, 15);
+    expect(previewText.maxLines, 17);
     expect(previewText.softWrap, isFalse);
     expect(previewText.overflow, TextOverflow.clip);
     expect(previewText.style?.fontSize, 10.5);
@@ -112,19 +110,17 @@ void main() {
         darkThemeId: TerminalThemes.defaultDarkThemeId,
       ),
       availableThemes: TerminalThemes.all,
-      preview: previewLines(15),
+      preview: previewLines(17),
       workingDirectory: Uri.parse('file:///Users/depoll/Code/flutty'),
       shellStatus: TerminalShellStatus.runningCommand,
     );
 
     expect(entry.metadata, isNotNull);
-    expect(entry.body.split('\n'), hasLength(15));
+    expect(entry.body.split('\n'), hasLength(17));
   });
 
-  testWidgets('renders about fifteen lines in stacked previews', (
-    tester,
-  ) async {
-    final preview = previewLines(17);
+  testWidgets('renders extra rows in stacked previews', (tester) async {
+    final preview = previewLines(19);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -143,7 +139,7 @@ void main() {
 
     expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 198);
     final previewText = tester.widget<Text>(find.text(preview));
-    expect(previewText.maxLines, 15);
+    expect(previewText.maxLines, 17);
     expect(previewText.softWrap, isFalse);
     expect(previewText.overflow, TextOverflow.clip);
     expect(previewText.style?.fontSize, lessThanOrEqualTo(10.5));
@@ -156,7 +152,7 @@ void main() {
     final preview = [
       'line 1',
       'this-is-a-long-terminal-row-that-should-scale-down-instead-of-wrapping',
-      ...List.generate(13, (index) => 'line ${index + 3}'),
+      ...List.generate(15, (index) => 'line ${index + 3}'),
     ].join('\n');
 
     await tester.pumpWidget(
@@ -186,7 +182,7 @@ void main() {
   testWidgets('renders stack metadata without consuming preview line budget', (
     tester,
   ) async {
-    final preview = previewLines(17);
+    final preview = previewLines(19);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -206,7 +202,7 @@ void main() {
 
     expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 216);
     final previewText = tester.widget<Text>(find.text(preview));
-    expect(previewText.maxLines, 15);
+    expect(previewText.maxLines, 17);
     expect(find.text('~/Code/flutty • Running'), findsOneWidget);
   });
 }

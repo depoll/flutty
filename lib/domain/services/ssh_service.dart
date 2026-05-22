@@ -2551,8 +2551,8 @@ class SshSession {
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
   ];
-  static const _previewLineCount = 15;
-  static const _previewMaxChars = 1500;
+  static const _previewLineCount = 17;
+  static const _previewMaxChars = 1700;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
   static final _windowTitleSanitizerPattern = RegExp(r'[\x00-\x1F\x7F]');
 

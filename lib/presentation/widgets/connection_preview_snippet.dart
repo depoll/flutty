@@ -8,7 +8,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 
-const _previewMaxLines = 15;
+const _previewMaxLines = 17;
 const _previewMinFontSize = 6.5;
 const _previewMaxFontSize = 10.5;
 const _previewLineHeight = 1.22;
