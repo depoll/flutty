@@ -208,7 +208,7 @@ void main() {
       expect(command, contains('copilot)'));
       expect(command, contains('codex)'));
       expect(command, contains('gemini)'));
-      expect(command, contains('opencode|claude)'));
+      expect(command, contains('opencode|claude|antigravity)'));
       final directBranchStart = command.indexOf(
         r'if [ -n "$current_agent_tool" ]; then',
       );
@@ -251,7 +251,9 @@ void main() {
       final copilotBranchStart = directBranch.indexOf('copilot)');
       final codexBranchStart = directBranch.indexOf('codex)');
       final geminiBranchStart = directBranch.indexOf('gemini)');
-      final opencodeBranchStart = directBranch.indexOf('opencode|claude)');
+      final opencodeBranchStart = directBranch.indexOf(
+        'opencode|claude|antigravity)',
+      );
       final backgroundReportHex = _tmuxSendKeysHex(
         buildTerminalThemeBackgroundColorReport(TerminalThemes.dracula),
       );

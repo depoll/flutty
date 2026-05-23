@@ -50,6 +50,13 @@ import 'transfer_screen.dart';
 const _redactStoreScreenshotIdentities = bool.fromEnvironment(
   'STORE_SCREENSHOT_REDACT_IDENTITIES',
 );
+const _connectionTileHorizontalPadding = 16.0;
+const _connectionTileMinLeadingWidth = 40.0;
+const _connectionTileHorizontalTitleGap = 16.0;
+const _connectionPreviewLeadingInset =
+    _connectionTileHorizontalPadding +
+    _connectionTileMinLeadingWidth +
+    _connectionTileHorizontalTitleGap;
 
 /// Top-level sections available on the home screen.
 enum HomeScreenTab {
@@ -81,6 +88,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   late int _selectedIndex;
+  bool _isOpeningTerminalRoute = false;
 
   /// Switches to the Connections tab so the user lands there when
   /// returning from the terminal.
@@ -91,6 +99,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// Switches back to the Hosts tab.
   void switchToHostsTab() {
     if (_selectedIndex != 0) setState(() => _selectedIndex = 0);
+  }
+
+  Future<void> _openTerminalRoute(String route) async {
+    if (_isOpeningTerminalRoute) {
+      return;
+    }
+    final router = GoRouter.maybeOf(context);
+    if (router == null) {
+      return;
+    }
+    _isOpeningTerminalRoute = true;
+    try {
+      await router.push(route);
+    } finally {
+      _isOpeningTerminalRoute = false;
+    }
   }
 
   StreamSubscription<String>? _incomingTransferSubscription;
@@ -374,7 +398,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
 
     switchToConnectionsTab();
-    unawaited(context.push('/terminal/${host.id}'));
+    unawaited(_openTerminalRoute('/terminal/${host.id}'));
   }
 
   @override
@@ -387,6 +411,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!hadConnections || next.isNotEmpty || _selectedIndex != 1) {
         return;
       }
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _selectedIndex != 1) {
           return;
@@ -580,6 +605,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     3 => const SnippetsPanel(),
     _ => const HostsPanel(),
   };
+}
+
+void _openTerminalRoute(BuildContext context, String route) {
+  final homeState = context.findAncestorStateOfType<_HomeScreenState>();
+  if (homeState != null) {
+    unawaited(homeState._openTerminalRoute(route));
+    return;
+  }
+  final router = GoRouter.maybeOf(context);
+  if (router != null) {
+    unawaited(router.push(route));
+  }
 }
 
 class _NavItem extends StatelessWidget {
@@ -850,7 +887,7 @@ class HostsPanel extends ConsumerWidget {
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: hosts.length,
-    onReorder: (oldIndex, newIndex) => unawaited(
+    onReorderItem: (oldIndex, newIndex) => unawaited(
       _reorderHosts(
         ref: ref,
         hosts: hosts,
@@ -1124,10 +1161,9 @@ class _HostRow extends ConsumerWidget {
         context
             .findAncestorStateOfType<_HomeScreenState>()
             ?.switchToConnectionsTab();
-        unawaited(
-          context.push(
-            '/terminal/${host.id}?connectionId=${connectionIds.first}',
-          ),
+        _openTerminalRoute(
+          context,
+          '/terminal/${host.id}?connectionId=${connectionIds.first}',
         );
       }
       return;
@@ -1210,7 +1246,10 @@ class _HostRow extends ConsumerWidget {
       context
           .findAncestorStateOfType<_HomeScreenState>()
           ?.switchToConnectionsTab();
-      unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
+      _openTerminalRoute(
+        context,
+        '/terminal/${host.id}?connectionId=$selectedId',
+      );
     }
   }
 
@@ -1240,13 +1279,14 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
-    unawaited(
-      context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
-    );
     if (context.mounted) {
       context
           .findAncestorStateOfType<_HomeScreenState>()
           ?.switchToConnectionsTab();
+      _openTerminalRoute(
+        context,
+        '/terminal/${host.id}?connectionId=${result.connectionId}',
+      );
     }
   }
 
@@ -1662,21 +1702,32 @@ class _ConnectionsPanel extends ConsumerWidget {
                     final endpoint =
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
-                    final preview = connection.preview;
-                    final previewTheme = resolveConnectionPreviewTheme(
+                    void openConnection() => _openTerminalRoute(
+                      context,
+                      '/terminal/${connection.hostId}'
+                      '?connectionId=${connection.connectionId}',
+                    );
+                    final previewEntry = buildConnectionPreviewStackEntry(
+                      connectionId: connection.connectionId,
+                      state: state,
                       brightness: theme.brightness,
                       themeSettings: terminalThemeSettings,
                       availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection.terminalThemeLightId ??
-                          (hasHostThemeAccess
-                              ? host?.terminalThemeLightId
-                              : null),
-                      darkThemeId:
-                          connection.terminalThemeDarkId ??
-                          (hasHostThemeAccess
-                              ? host?.terminalThemeDarkId
-                              : null),
+                      preview: connection.preview,
+                      sessionTitle: connection.sessionTitle,
+                      windowTitle: connection.windowTitle,
+                      iconName: connection.iconName,
+                      workingDirectory: connection.workingDirectory,
+                      shellStatus: connection.shellStatus,
+                      lastExitCode: connection.lastExitCode,
+                      hostLightThemeId: hasHostThemeAccess
+                          ? host?.terminalThemeLightId
+                          : null,
+                      hostDarkThemeId: hasHostThemeAccess
+                          ? host?.terminalThemeDarkId
+                          : null,
+                      connectionLightThemeId: connection.terminalThemeLightId,
+                      connectionDarkThemeId: connection.terminalThemeDarkId,
                     );
                     final preferredTmuxSessionName =
                         resolvePreferredTmuxSessionName(
@@ -1688,6 +1739,11 @@ class _ConnectionsPanel extends ConsumerWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: _connectionTileHorizontalPadding,
+                          ),
+                          horizontalTitleGap: _connectionTileHorizontalTitleGap,
+                          minLeadingWidth: _connectionTileMinLeadingWidth,
                           leading: Icon(
                             Icons.terminal,
                             color: state == SshConnectionState.connected
@@ -1697,19 +1753,9 @@ class _ConnectionsPanel extends ConsumerWidget {
                           title: Text(
                             host?.label ?? 'Host ${connection.hostId}',
                           ),
-                          subtitle: _ConnectionPreviewText(
-                            endpoint:
-                                '$endpoint  •  Connection #${connection.connectionId}',
-                            preview: preview,
-                            sessionTitle: connection.sessionTitle,
-                            windowTitle: connection.windowTitle,
-                            iconName: connection.iconName,
-                            workingDirectory: connection.workingDirectory,
-                            shellStatus: connection.shellStatus,
-                            lastExitCode: connection.lastExitCode,
-                            terminalTheme: previewTheme,
+                          subtitle: Text(
+                            '$endpoint  •  Connection #${connection.connectionId}',
                           ),
-                          isThreeLine: preview?.trim().isNotEmpty ?? false,
                           trailing: IconButton(
                             icon: const Icon(Icons.close),
                             tooltip: 'Disconnect',
@@ -1720,10 +1766,20 @@ class _ConnectionsPanel extends ConsumerWidget {
                               ),
                             ),
                           ),
-                          onTap: () => unawaited(
-                            context.push(
-                              '/terminal/${connection.hostId}'
-                              '?connectionId=${connection.connectionId}',
+                          onTap: openConnection,
+                        ),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: openConnection,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(
+                              _connectionPreviewLeadingInset,
+                              0,
+                              _connectionTileHorizontalPadding,
+                              8,
+                            ),
+                            child: ConnectionPreviewStack(
+                              entries: [previewEntry],
                             ),
                           ),
                         ),
@@ -1743,12 +1799,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                                 ) ??
                                 RemoteMuxBackend.tmux,
                             tmuxExtraFlags: host?.tmuxExtraFlags,
-                            onTap: () => unawaited(
-                              context.push(
-                                '/terminal/${connection.hostId}'
-                                '?connectionId=${connection.connectionId}',
-                              ),
-                            ),
+                            onTap: openConnection,
                           ),
                       ],
                     );
@@ -2635,7 +2686,7 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: visibleSnippets.length,
-    onReorder: (oldIndex, newIndex) => unawaited(
+    onReorderItem: (oldIndex, newIndex) => unawaited(
       _reorderSnippets(
         allSnippets: allSnippets,
         visibleSnippets: visibleSnippets,

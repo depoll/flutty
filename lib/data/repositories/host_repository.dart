@@ -260,7 +260,10 @@ class HostRepository {
       return host;
     }
 
-    final decryptedPassword = await _cachedDecrypt(storedPassword);
+    final decryptedPassword = await _cachedDecryptOrMigratePassword(
+      host.id,
+      storedPassword,
+    );
     return host.copyWith(password: Value(decryptedPassword));
   }
 
@@ -280,6 +283,27 @@ class HostRepository {
       _rememberDecrypted(ciphertext, plaintext);
     }
     return plaintext;
+  }
+
+  Future<String?> _cachedDecryptOrMigratePassword(
+    int hostId,
+    String storedPassword,
+  ) async {
+    if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
+      return _cachedDecrypt(storedPassword);
+    }
+
+    final encryptedPassword = await _secretEncryptionService.encryptNullable(
+      storedPassword,
+    );
+    if (encryptedPassword != null && encryptedPassword != storedPassword) {
+      await (_db.update(_db.hosts)..where(
+            (h) => h.id.equals(hostId) & h.password.equals(storedPassword),
+          ))
+          .write(HostsCompanion(password: Value(encryptedPassword)));
+      _rememberDecrypted(encryptedPassword, storedPassword);
+    }
+    return storedPassword;
   }
 
   Future<String?> _storedPasswordForHost(int id) async {

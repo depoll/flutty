@@ -983,7 +983,7 @@ void main() {
       },
     );
 
-    testWidgets('reviews suspicious IME paste before sending it', (
+    testWidgets('reviews unbracketed multiline IME paste before sending it', (
       tester,
     ) async {
       final terminalOutput = <String>[];

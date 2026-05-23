@@ -246,13 +246,18 @@ class MonkeyMuxInstallerService {
 
     final request = _MonkeyMuxInstallInFlight(
       canPrompt: confirmInstall != null,
-      future: _ensureInstalled(
+    );
+    _installRequests[connectionId] = request;
+    // A prompt-capable install supersedes a probe-only install, but callers
+    // already waiting on the probe should receive the prompt-capable result.
+    existingRequest?.supersedeWith(request.future);
+    request.bind(
+      _ensureInstalled(
         session,
         priority: priority,
         confirmInstall: confirmInstall,
       ),
     );
-    _installRequests[connectionId] = request;
     request.future.then((installation) {
       if (identical(_installRequests[connectionId], request)) {
         _installCache[connectionId] = installation;
@@ -543,13 +548,51 @@ class MonkeyMuxInstallerService {
 }
 
 class _MonkeyMuxInstallInFlight {
-  const _MonkeyMuxInstallInFlight({
-    required this.canPrompt,
-    required this.future,
-  });
+  _MonkeyMuxInstallInFlight({required this.canPrompt});
 
   final bool canPrompt;
-  final Future<MonkeyMuxInstallation> future;
+  final _completer = Completer<MonkeyMuxInstallation>();
+  bool _superseded = false;
+
+  Future<MonkeyMuxInstallation> get future => _completer.future;
+
+  void bind(Future<MonkeyMuxInstallation> operation) {
+    operation
+        .then(
+          (installation) {
+            if (!_superseded && !_completer.isCompleted) {
+              _completer.complete(installation);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!_superseded && !_completer.isCompleted) {
+              _completer.completeError(error, stackTrace);
+            }
+          },
+        )
+        .ignore();
+  }
+
+  void supersedeWith(Future<MonkeyMuxInstallation> replacement) {
+    if (_completer.isCompleted) {
+      return;
+    }
+    _superseded = true;
+    replacement
+        .then(
+          (installation) {
+            if (!_completer.isCompleted) {
+              _completer.complete(installation);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!_completer.isCompleted) {
+              _completer.completeError(error, stackTrace);
+            }
+          },
+        )
+        .ignore();
+  }
 }
 
 Future<String> _runRemoteCommand(

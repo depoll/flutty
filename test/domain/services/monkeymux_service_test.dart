@@ -61,6 +61,21 @@ void main() {
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
       );
     });
+
+    test('passes terminal theme reports as base64 data', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: '/home/me/.monkeyssh/bin/monkeymux',
+        sessionName: 'work',
+        terminalThemeReports: '\x1b]11;rgb:0000/1111/2222\x1b\\',
+      );
+
+      expect(
+        command,
+        "'/home/me/.monkeyssh/bin/monkeymux' attach --theme-hint-base64 "
+        'G10xMTtyZ2I6MDAwMC8xMTExLzIyMjIbXA== '
+        "'work'",
+      );
+    });
   });
 
   group('MonkeyMuxServerStatus', () {
@@ -115,6 +130,21 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+
+    test('maps helper terminal mouse mode metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Mouse app',
+        'active': true,
+        'terminalReportsMouseWheel': true,
+        'terminalMouseReportSgr': true,
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalReportsMouseWheel, isTrue);
+      expect(window.terminalMouseReportSgr, isTrue);
     });
   });
 
@@ -214,7 +244,7 @@ void main() {
       expect(windows.single.displayTitle, 'Implement MonkeyMux refresh');
     });
 
-    test('clears stale Copilot session titles after a refreshed miss', () {
+    test('keeps Copilot session titles after a transient refreshed miss', () {
       const window = TmuxWindow(
         index: 1,
         id: '@7',
@@ -233,9 +263,9 @@ void main() {
         refreshedPanePids: const {42},
       );
 
-      expect(windows.single.activeAgentSessionId, isNull);
-      expect(windows.single.agentSessionTitle, isNull);
-      expect(windows.single.displayTitle, 'Copilot CLI');
+      expect(windows.single.activeAgentSessionId, 'stale-session');
+      expect(windows.single.agentSessionTitle, 'Stale Copilot session');
+      expect(windows.single.displayTitle, 'Stale Copilot session');
     });
 
     test('keeps existing Copilot metadata when pane was not refreshed', () {

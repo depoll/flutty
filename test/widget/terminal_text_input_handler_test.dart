@@ -5710,7 +5710,7 @@ void main() {
       },
     );
 
-    testWidgets('reviews suspicious multi-character IME insertion', (
+    testWidgets('reviews high-risk multi-character IME insertion', (
       tester,
     ) async {
       final terminalOutput = <String>[];
@@ -5741,17 +5741,17 @@ void main() {
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
-          text: '\u200B\u200Becho ready; rm -rf /',
-          selection: TextSelection.collapsed(offset: 21),
+          text: '\u200B\u200Becho \$(id)',
+          selection: TextSelection.collapsed(offset: 12),
         ),
       );
       await tester.pump();
 
       expect(reviews, hasLength(1));
-      expect(reviews.single.command, 'echo ready; rm -rf /');
+      expect(reviews.single.command, r'echo $(id)');
       expect(
         reviews.single.reasons,
-        contains(TerminalCommandReviewReason.shellChaining),
+        contains(TerminalCommandReviewReason.commandSubstitution),
       );
       expect(terminalOutput, isEmpty);
 
@@ -5760,8 +5760,8 @@ void main() {
       await tester.pump();
 
       expect(_terminalStateFromEvents(terminalOutput), (
-        text: 'echo ready; rm -rf /',
-        cursorOffset: 'echo ready; rm -rf '.length,
+        text: r'echo $(id)',
+        cursorOffset: r'echo $(id)'.length,
       ));
 
       focusNode.dispose();
@@ -5815,7 +5815,7 @@ void main() {
     );
 
     testWidgets(
-      'reviews a suspicious committed IME payload after composition ends',
+      'reviews a high-risk committed IME payload after composition ends',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -5845,9 +5845,9 @@ void main() {
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
-            text: '\u200B\u200Becho ready; rm -rf /',
-            selection: TextSelection.collapsed(offset: 21),
-            composing: TextRange(start: 2, end: 21),
+            text: '\u200B\u200Becho \$(id)',
+            selection: TextSelection.collapsed(offset: 12),
+            composing: TextRange(start: 2, end: 12),
           ),
         );
         await tester.pump();
@@ -5857,14 +5857,14 @@ void main() {
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
-            text: '\u200B\u200Becho ready; rm -rf /',
-            selection: TextSelection.collapsed(offset: 21),
+            text: '\u200B\u200Becho \$(id)',
+            selection: TextSelection.collapsed(offset: 12),
           ),
         );
         await tester.pump();
 
         expect(reviews, hasLength(1));
-        expect(reviews.single.command, 'echo ready; rm -rf /');
+        expect(reviews.single.command, r'echo $(id)');
         expect(terminalOutput, isEmpty);
 
         decision.complete(true);
@@ -5872,21 +5872,20 @@ void main() {
         await tester.pump();
 
         expect(_terminalStateFromEvents(terminalOutput), (
-          text: 'echo ready; rm -rf /',
-          cursorOffset: 'echo ready; rm -rf '.length,
+          text: r'echo $(id)',
+          cursorOffset: r'echo $(id)'.length,
         ));
 
         focusNode.dispose();
       },
     );
 
-    testWidgets('reviews a committed IME payload with a standalone ampersand', (
+    testWidgets('does not review harmless IME text with standalone ampersand', (
       tester,
     ) async {
       final terminalOutput = <String>[];
       final terminal = Terminal(onOutput: terminalOutput.add);
       final focusNode = FocusNode();
-      final decision = Completer<bool>();
       final reviews = <TerminalCommandReview>[];
 
       await tester.pumpWidget(
@@ -5896,9 +5895,9 @@ void main() {
               terminal: terminal,
               focusNode: focusNode,
               deleteDetection: true,
-              onReviewInsertedText: (review) {
+              onReviewInsertedText: (review) async {
                 reviews.add(review);
-                return decision.future;
+                return true;
               },
               child: const SizedBox.expand(),
             ),
@@ -5917,25 +5916,14 @@ void main() {
       );
       await tester.pump();
 
-      expect(reviews, hasLength(1));
-      expect(reviews.single.command, 'echo ready & echo done');
-      expect(
-        reviews.single.reasons,
-        contains(TerminalCommandReviewReason.shellChaining),
-      );
-      expect(terminalOutput, isEmpty);
-
-      decision.complete(true);
-      await tester.pump();
-      await tester.pump();
-
+      expect(reviews, isEmpty);
       expect(terminalOutput.join(), 'echo ready & echo done');
 
       focusNode.dispose();
     });
 
     testWidgets(
-      'reviews a suspicious committed IME payload while keeping its selection',
+      'reviews a high-risk committed IME payload while keeping its selection',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -5963,8 +5951,8 @@ void main() {
         focusNode.requestFocus();
         await tester.pump();
 
-        const suspiciousUserText = 'echo ready; rm -rf /';
-        const suspiciousText = '\u200B\u200Becho ready; rm -rf /';
+        const suspiciousUserText = r'echo $(id)';
+        const suspiciousText = '\u200B\u200Becho \$(id)';
         const suspiciousSelection = TextSelection(
           baseOffset: _deleteDetectionMarker.length,
           extentOffset: suspiciousText.length,
@@ -5983,7 +5971,7 @@ void main() {
         expect(reviews.single.command, suspiciousUserText);
         expect(
           reviews.single.reasons,
-          contains(TerminalCommandReviewReason.shellChaining),
+          contains(TerminalCommandReviewReason.commandSubstitution),
         );
         expect(terminalOutput, isEmpty);
         expect(
@@ -6020,7 +6008,7 @@ void main() {
       },
     );
 
-    testWidgets('rejects suspicious IME insertion until the user approves', (
+    testWidgets('rejects high-risk IME insertion until the user approves', (
       tester,
     ) async {
       final terminalOutput = <String>[];
@@ -6046,8 +6034,8 @@ void main() {
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
-          text: '\u200B\u200Becho ready\necho deploy',
-          selection: TextSelection.collapsed(offset: 24),
+          text: '\u200B\u200Becho \$(id)',
+          selection: TextSelection.collapsed(offset: 12),
         ),
       );
       await tester.pump();
@@ -6063,7 +6051,7 @@ void main() {
     });
 
     testWidgets(
-      'reviews IME insertions against the full terminal line context',
+      'reviews high-risk IME insertions against the full terminal line context',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -6090,7 +6078,7 @@ void main() {
         focusNode.requestFocus();
         await tester.pump();
 
-        const existingCommand = 'echo ready &';
+        const existingCommand = r'echo $(';
         for (var index = 1; index <= existingCommand.length; index++) {
           final currentCommand = existingCommand.substring(0, index);
           tester.testTextInput.updateEditingValue(
@@ -6106,7 +6094,7 @@ void main() {
 
         reviews.clear();
 
-        const combinedCommand = '$existingCommand echo done';
+        const combinedCommand = '${existingCommand}id)';
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
             text: '$_deleteDetectionMarker$combinedCommand',
@@ -6123,7 +6111,7 @@ void main() {
         expect(reviews.single.command, combinedCommand);
         expect(
           reviews.single.reasons,
-          contains(TerminalCommandReviewReason.shellChaining),
+          contains(TerminalCommandReviewReason.commandSubstitution),
         );
 
         focusNode.dispose();
@@ -6161,8 +6149,8 @@ void main() {
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
-            text: '\u200B\u200Becho ready; rm -rf /',
-            selection: TextSelection.collapsed(offset: 21),
+            text: '\u200B\u200Becho \$(id)',
+            selection: TextSelection.collapsed(offset: 12),
           ),
         );
         await tester.pump();
@@ -6232,8 +6220,8 @@ void main() {
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
-            text: '\u200B\u200Becho ready; rm -rf /',
-            selection: TextSelection.collapsed(offset: 21),
+            text: '\u200B\u200Becho \$(id)',
+            selection: TextSelection.collapsed(offset: 12),
           ),
         );
         await tester.pump();
@@ -6285,8 +6273,8 @@ void main() {
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
-            text: '\u200B\u200Becho ready; rm -rf /',
-            selection: TextSelection.collapsed(offset: 21),
+            text: '\u200B\u200Becho \$(id)',
+            selection: TextSelection.collapsed(offset: 12),
           ),
         );
         await tester.pump();
@@ -6324,89 +6312,86 @@ void main() {
       },
     );
 
-    testWidgets(
-      'reviews IME insertions against terminal state after input resets',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-        final reviews = <TerminalCommandReview>[];
-        var readOnly = false;
+    testWidgets('reviews high-risk IME insertions after input resets', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final reviews = <TerminalCommandReview>[];
+      var readOnly = false;
 
-        Widget buildHandler() => MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              readOnly: readOnly,
-              buildReviewTextForInsertedText: (delta, currentText) =>
-                  applyTerminalInputDelta(
-                    currentText: _terminalTextFromEvents(terminalOutput),
-                    cursorOffset: _terminalTextFromEvents(
-                      terminalOutput,
-                    ).length,
-                    deletedCount: delta.deletedCount,
-                    appendedText: delta.appendedText,
-                  ),
-              onReviewInsertedText: (review) async {
-                reviews.add(review);
-                return false;
-              },
-              child: const SizedBox.expand(),
-            ),
+      Widget buildHandler() => MaterialApp(
+        home: Scaffold(
+          body: TerminalTextInputHandler(
+            terminal: terminal,
+            focusNode: focusNode,
+            deleteDetection: true,
+            readOnly: readOnly,
+            buildReviewTextForInsertedText: (delta, currentText) =>
+                applyTerminalInputDelta(
+                  currentText: _terminalTextFromEvents(terminalOutput),
+                  cursorOffset: _terminalTextFromEvents(terminalOutput).length,
+                  deletedCount: delta.deletedCount,
+                  appendedText: delta.appendedText,
+                ),
+            onReviewInsertedText: (review) async {
+              reviews.add(review);
+              return false;
+            },
+            child: const SizedBox.expand(),
           ),
-        );
+        ),
+      );
 
-        await tester.pumpWidget(buildHandler());
+      await tester.pumpWidget(buildHandler());
 
-        focusNode.requestFocus();
-        await tester.pump();
+      focusNode.requestFocus();
+      await tester.pump();
 
-        const existingCommand = 'echo ready &';
-        for (var index = 1; index <= existingCommand.length; index++) {
-          final currentCommand = existingCommand.substring(0, index);
-          tester.testTextInput.updateEditingValue(
-            TextEditingValue(
-              text: '$_deleteDetectionMarker$currentCommand',
-              selection: TextSelection.collapsed(
-                offset: _deleteDetectionMarker.length + currentCommand.length,
-              ),
-            ),
-          );
-          await tester.pump();
-        }
-
-        readOnly = true;
-        await tester.pumpWidget(buildHandler());
-        await tester.pump();
-
-        readOnly = false;
-        await tester.pumpWidget(buildHandler());
-        await tester.pump();
-
-        reviews.clear();
-
+      const existingCommand = r'echo $(';
+      for (var index = 1; index <= existingCommand.length; index++) {
+        final currentCommand = existingCommand.substring(0, index);
         tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '$_deleteDetectionMarker echo done',
-            selection: TextSelection.collapsed(offset: 12),
+          TextEditingValue(
+            text: '$_deleteDetectionMarker$currentCommand',
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length + currentCommand.length,
+            ),
           ),
         );
         await tester.pump();
-        await tester.pump();
+      }
 
-        expect(reviews, hasLength(1));
-        expect(reviews.single.command, 'echo ready & echo done');
-        expect(
-          reviews.single.reasons,
-          contains(TerminalCommandReviewReason.shellChaining),
-        );
-        expect(_terminalTextFromEvents(terminalOutput), existingCommand);
+      readOnly = true;
+      await tester.pumpWidget(buildHandler());
+      await tester.pump();
 
-        focusNode.dispose();
-      },
-    );
+      readOnly = false;
+      await tester.pumpWidget(buildHandler());
+      await tester.pump();
+
+      reviews.clear();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '$_deleteDetectionMarker id)',
+          selection: TextSelection.collapsed(offset: 6),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(reviews.single.command, r'echo $( id)');
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.commandSubstitution),
+      );
+      expect(_terminalTextFromEvents(terminalOutput), existingCommand);
+
+      focusNode.dispose();
+    });
   });
 
   group('shouldRequestKeyboardForTerminalPointerUp', () {

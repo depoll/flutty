@@ -237,6 +237,45 @@ void main() {
   });
 
   group('explicit cell background rendering', () {
+    test(
+      'clears normal-background cells before drawing terminal rows',
+      () async {
+        final terminal = Terminal()..resize(8, 1);
+        final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final cellSize = painter.cellSize;
+        final imageWidth = (cellSize.width * 8).ceil();
+        final imageHeight = cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, imageWidth.toDouble(), imageHeight.toDouble()),
+            Paint()..color = const Color(0xFFFF0000),
+          );
+
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+        final image = await recorder.endRecording().toImage(
+          imageWidth,
+          imageHeight,
+        );
+        final byteData = await image.toByteData();
+        expect(byteData, isNotNull);
+
+        final sample = _rawRgbaPixel(
+          byteData!,
+          imageWidth,
+          imageWidth ~/ 2,
+          imageHeight ~/ 2,
+        );
+        expect(sample, theme.background);
+      },
+    );
+
     test('keeps bright-black rows readable on the light theme', () {
       final background = resolveMonkeyTerminalReadableBackgroundColor(
         foreground: TerminalThemes.defaultLightTheme.foreground,
@@ -533,7 +572,7 @@ void main() {
       );
     });
 
-    test('keeps foreground-only ANSI colors unchanged', () {
+    test('lifts low-contrast foreground-only ANSI colors', () {
       final terminal = Terminal()
         ..resize(24, 2)
         ..write('\x1b[90mforeground only');
@@ -546,9 +585,33 @@ void main() {
       final cellData = CellData.empty();
       terminal.buffer.lines[0].getCellData(0, cellData);
 
+      final foreground = painter.resolveMonkeyTerminalCellForegroundColor(
+        cellData,
+      );
+
+      expect(
+        _contrastRatio(foreground, theme.background),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(foreground, isNot(theme.brightBlack));
+    });
+
+    test('keeps readable foreground-only ANSI colors unchanged', () {
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[96mforeground only');
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final cellData = CellData.empty();
+      terminal.buffer.lines[0].getCellData(0, cellData);
+
       expect(
         painter.resolveMonkeyTerminalCellForegroundColor(cellData),
-        theme.brightBlack,
+        theme.brightCyan,
       );
     });
   });

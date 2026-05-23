@@ -54,9 +54,11 @@ import '../../domain/services/tmux_service.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
+import '../widgets/terminal_menu_style.dart';
 import '../widgets/terminal_overlay_focus.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
@@ -213,7 +215,7 @@ double resolveTmuxBarMaxContentHeight(
 }
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
-const _terminalOverflowMenuScreenPadding = 8.0;
+const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
 const _tmuxDetectionRetrySchedule = <Duration>[
@@ -695,6 +697,23 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     ?.where((window) => window.isActive)
     .firstOrNull
     ?.foregroundAgentTool;
+
+/// Resolves whether the active tmux window requested mouse-wheel input.
+@visibleForTesting
+bool? resolveTmuxBarActiveWindowReportsMouseWheel(
+  Iterable<TmuxWindow>? windows,
+) => windows
+    ?.where((window) => window.isActive)
+    .firstOrNull
+    ?.terminalReportsMouseWheel;
+
+/// Resolves whether the active tmux window requested SGR mouse reporting.
+@visibleForTesting
+bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
+    windows
+        ?.where((window) => window.isActive)
+        .firstOrNull
+        ?.terminalMouseReportSgr;
 
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
@@ -2073,8 +2092,13 @@ bool shouldUseSyntheticAltBufferScrollFallback({
   required bool isUsingAltBuffer,
   required bool preferExplicitMouseReporting,
   required bool terminalReportsMouseWheel,
+  bool isAgentToolActive = false,
 }) {
   if (!isUsingAltBuffer) {
+    return false;
+  }
+
+  if (isAgentToolActive) {
     return false;
   }
 
@@ -2087,14 +2111,54 @@ bool shouldUseSyntheticAltBufferScrollFallback({
 
 /// Whether mobile touch drags should be routed into terminal scroll input.
 ///
-/// Full-screen apps like tmux or Copilot CLI need direct wheel or synthetic
-/// arrow events instead of letting the Flutter viewport absorb the gesture.
+/// Full-screen apps like tmux need direct wheel or synthetic arrow events
+/// instead of letting the Flutter viewport absorb the gesture. Agent tools are
+/// excluded because arrow events navigate prompt history.
 @visibleForTesting
 bool shouldRouteTouchScrollToTerminal({
   required bool isMobile,
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
-}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+  bool isAgentToolActive = false,
+}) =>
+    isMobile &&
+    (terminalReportsMouseWheel || (isUsingAltBuffer && !isAgentToolActive));
+
+/// Resolves the effective mouse-wheel state for scroll routing.
+@visibleForTesting
+bool terminalReportsMouseWheelForScroll({
+  required bool localTerminalReportsMouseWheel,
+  bool? activeWindowReportsMouseWheel,
+}) =>
+    localTerminalReportsMouseWheel || (activeWindowReportsMouseWheel ?? false);
+
+/// Whether the active terminal context is a known agent tool for scroll policy.
+@visibleForTesting
+bool isAgentToolActiveForTerminalScroll({
+  required AgentLaunchTool? activeWindowTool,
+  required AgentLaunchTool? startupTool,
+  required bool hasWindowSnapshot,
+  String? currentCommand,
+}) {
+  if (activeWindowTool != null) {
+    return true;
+  }
+  final command = currentCommand?.trim();
+  if (command != null && agentLaunchToolForCommandName(command) != null) {
+    return true;
+  }
+  return !hasWindowSnapshot && startupTool != null;
+}
+
+/// Whether touch scroll should send SGR wheel reports from mux metadata even
+/// when local xterm mouse-mode state is stale.
+@visibleForTesting
+bool shouldForceSgrTouchScroll({
+  bool? activeWindowReportsMouseWheel,
+  bool? activeWindowMouseReportSgr,
+}) =>
+    (activeWindowReportsMouseWheel ?? false) &&
+    (activeWindowMouseReportSgr ?? false);
 
 /// Whether the native selection overlay should be visible for terminal content.
 @visibleForTesting
@@ -2635,6 +2699,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Terminal? _terminalWithOwnedCallbacks;
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
+  bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -2771,6 +2836,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTerminalSizeRefreshQueued = false;
   bool _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+  bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
@@ -2842,6 +2908,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final MonkeyMuxInstallerService _monkeyMuxInstallerService;
   late final TerminalConnectionBackendService _terminalBackendService;
   RemoteMuxBackend _activeMuxBackend = RemoteMuxBackend.tmux;
+  AgentLaunchTool? _remoteMuxStartupTool;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -2877,10 +2944,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _terminalLiveOutputAutoScrollEnabled =>
       !_isTerminalOutputFollowPaused;
 
+  Iterable<TmuxWindow>? get _currentTmuxWindowsSnapshot =>
+      _tmuxBarKey.currentState?.currentWindowsSnapshot;
+
+  bool? get _activeWindowReportsMouseWheel =>
+      resolveTmuxBarActiveWindowReportsMouseWheel(_currentTmuxWindowsSnapshot);
+
+  bool? get _activeWindowMouseReportSgr =>
+      resolveTmuxBarActiveWindowMouseReportSgr(_currentTmuxWindowsSnapshot);
+
+  bool get _terminalReportsMouseWheelForScroll =>
+      terminalReportsMouseWheelForScroll(
+        localTerminalReportsMouseWheel: _terminalReportsMouseWheel,
+        activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
+      );
+
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
-    terminalReportsMouseWheel: _terminalReportsMouseWheel,
+    terminalReportsMouseWheel: _terminalReportsMouseWheelForScroll,
+    isAgentToolActive: _isAgentToolActive,
+  );
+
+  bool get _isAgentToolActive {
+    final windows = _currentTmuxWindowsSnapshot;
+    return isAgentToolActiveForTerminalScroll(
+      activeWindowTool: resolveTmuxBarActiveWindowTool(windows),
+      startupTool: _remoteMuxStartupTool,
+      hasWindowSnapshot: windows != null,
+      currentCommand: _tmuxCurrentCommand,
+    );
+  }
+
+  bool get _forceSgrTouchScroll => shouldForceSgrTouchScroll(
+    activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
+    activeWindowMouseReportSgr: _activeWindowMouseReportSgr,
   );
 
   MenuStyle _terminalOverflowMenuStyle({
@@ -2894,12 +2992,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isMobilePlatform: isMobilePlatform,
       anchorTop: anchorTop,
     );
-    return MenuStyle(
-      minimumSize: const WidgetStatePropertyAll<Size>(
-        Size(_terminalOverflowMenuMinWidth, 0),
-      ),
-      maximumSize: WidgetStatePropertyAll<Size>(
-        Size(_terminalOverflowMenuMaxWidth, maxHeight ?? double.infinity),
+    return TerminalMenuStyles.menuStyle(
+      context,
+      minimumSize: const Size(_terminalOverflowMenuMinWidth, 0),
+      maximumSize: Size(
+        _terminalOverflowMenuMaxWidth,
+        maxHeight ?? double.infinity,
       ),
     );
   }
@@ -2948,20 +3046,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   Widget _terminalOverflowMenuItem({
+    required BuildContext context,
     required IconData icon,
     required String label,
     required String action,
   }) => MenuItemButton(
-    leadingIcon: Icon(icon, size: 20),
+    style: TerminalMenuStyles.itemButtonStyle(context),
+    leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
     onPressed: () => unawaited(_handleMenuAction(action)),
     child: _terminalOverflowMenuLabel(label),
   );
 
   Widget _terminalOverflowCheckboxMenuItem({
+    required BuildContext context,
     required String label,
     required bool checked,
     required String action,
   }) => CheckboxMenuButton(
+    style: TerminalMenuStyles.itemButtonStyle(context),
     value: checked,
     onChanged: (_) => unawaited(_handleMenuAction(action)),
     child: _terminalOverflowMenuLabel(label),
@@ -2974,7 +3076,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String label,
     required List<Widget> menuChildren,
   }) => SubmenuButton(
-    leadingIcon: Icon(icon, size: 20),
+    style: TerminalMenuStyles.itemButtonStyle(context),
+    leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
     menuStyle: _terminalOverflowMenuStyle(
       context: context,
       isMobilePlatform: isMobile,
@@ -2989,18 +3092,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     color: Theme.of(context).colorScheme.outlineVariant,
   );
 
-  List<Widget> _terminalPastingMenuItems() => [
+  List<Widget> _terminalPastingMenuItems(BuildContext context) => [
     _terminalOverflowMenuItem(
+      context: context,
       icon: Icons.paste_rounded,
       label: 'Paste',
       action: 'paste',
     ),
     _terminalOverflowMenuItem(
+      context: context,
       icon: Icons.image_outlined,
       label: 'Paste Images',
       action: 'paste_image',
     ),
     _terminalOverflowMenuItem(
+      context: context,
       icon: Icons.attach_file_rounded,
       label: 'Paste Files',
       action: 'paste_file',
@@ -3008,11 +3114,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ];
 
   List<Widget> _terminalOptionsMenuItems({
+    required BuildContext context,
     required bool hasTerminalInfo,
     required bool isMobile,
   }) => [
     if (hasTerminalInfo)
       _terminalOverflowMenuItem(
+        context: context,
         icon: _showsTerminalMetadata
             ? Icons.info_outlined
             : Icons.info_outline_rounded,
@@ -3023,17 +3131,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     if (_isTmuxActive)
       _terminalOverflowMenuItem(
+        context: context,
         icon: _showTmuxBar ? Icons.window_outlined : Icons.window_rounded,
         label: _showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar',
         action: 'toggle_tmux_bar',
       ),
     if (isMobile)
       _terminalOverflowCheckboxMenuItem(
+        context: context,
         label: 'Tap to Show Keyboard',
         checked: ref.read(tapToShowKeyboardNotifierProvider),
         action: 'toggle_tap_keyboard',
       ),
     _terminalOverflowCheckboxMenuItem(
+      context: context,
       label: 'Shell Completion Popups',
       checked: ref.read(shellCompletionsNotifierProvider),
       action: 'toggle_shell_completions',
@@ -3841,7 +3952,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
-        _refreshTerminalAfterMonkeyMuxWindowChange();
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
         _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
           session: session,
           sessionName: sessionName,
@@ -4526,7 +4637,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ThemeMode.dark => Brightness.dark,
       ThemeMode.light => Brightness.light,
       ThemeMode.system =>
-        WidgetsBinding.instance.platformDispatcher.platformBrightness,
+        MediaQuery.maybeOf(context)?.platformBrightness ??
+            WidgetsBinding.instance.platformDispatcher.platformBrightness,
     };
   }
 
@@ -5546,6 +5658,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _connect({
     int? preferredConnectionId,
     bool forceNew = false,
+    bool showProgressDialog = false,
   }) async {
     if (!mounted) return;
 
@@ -5587,13 +5700,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref.read(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
 
-    final result = await _sessionsNotifier!.connect(
-      widget.hostId,
-      forceNew: shouldForceNew,
-      useHostThemeOverrides: monetizationState.allowsFeature(
-        MonetizationFeature.hostSpecificThemes,
-      ),
-    );
+    if (!mounted) return;
+    final result = showProgressDialog && _host != null
+        ? await connectToHostWithProgressDialog(
+            context,
+            ref,
+            _host!,
+            forceNew: shouldForceNew,
+          )
+        : await _sessionsNotifier!.connect(
+            widget.hostId,
+            forceNew: shouldForceNew,
+            useHostThemeOverrides: monetizationState.allowsFeature(
+              MonetizationFeature.hostSpecificThemes,
+            ),
+          );
 
     if (!mounted) return;
 
@@ -5673,7 +5794,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isConnecting = false;
         });
         _syncTerminalWakeLock(SshConnectionState.connected);
-        _scheduleTerminalSizeRefresh();
+        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        } else {
+          _scheduleTerminalSizeRefresh();
+        }
         _restoreTerminalFocus();
 
         // Detect tmux on existing sessions too (may not have been detected
@@ -5755,7 +5880,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       });
       _syncTerminalWakeLock(SshConnectionState.connected);
-      _scheduleTerminalSizeRefresh();
+      if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      } else {
+        _scheduleTerminalSizeRefresh();
+      }
       _restoreTerminalFocus();
 
       // Start port forwards
@@ -5882,7 +6011,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         unawaited(
           _cleanupUnexpectedDisconnect(
             session.connectionId,
-            message: 'Connection became unresponsive. Reconnecting…',
+            message: 'Connection became unresponsive. Reconnect to continue.',
           ),
         );
       }
@@ -5904,6 +6033,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelHeight: pixelHeight,
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
+      if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
+        unawaited(
+          _syncActiveMonkeyMuxTerminalSize(
+            session,
+            columns: width,
+            rows: height,
+          ),
+        );
+      }
     }
 
     _terminalResizeHandler = handleTerminalResize;
@@ -5934,6 +6072,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _scheduleTerminalSizeRefresh({
     bool forceDisplayRefresh = false,
     bool revealLatestOutput = false,
+    bool suppressMonkeyMuxResizeSync = false,
   }) {
     _pendingTerminalSizeRefreshForcesDisplayRefresh =
         _pendingTerminalSizeRefreshForcesDisplayRefresh ||
@@ -5941,6 +6080,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         revealLatestOutput;
     _pendingTerminalSizeRefreshRevealsLatestOutput =
         _pendingTerminalSizeRefreshRevealsLatestOutput || revealLatestOutput;
+    _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync =
+        _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync ||
+        suppressMonkeyMuxResizeSync;
     if (_isTerminalSizeRefreshQueued) {
       return;
     }
@@ -5951,46 +6093,119 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _pendingTerminalSizeRefreshForcesDisplayRefresh;
       final shouldRevealLatestOutput =
           _pendingTerminalSizeRefreshRevealsLatestOutput;
+      final shouldSuppressMonkeyMuxResizeSync =
+          _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync;
       _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
       _pendingTerminalSizeRefreshRevealsLatestOutput = false;
+      _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
       if (!mounted) {
         return;
       }
       final revealLatestOutput =
           shouldRevealLatestOutput && !_isTerminalOutputFollowPaused;
       final terminalView = _terminalViewKey.currentState;
-      if (forceDisplayRefresh) {
-        terminalView?.refreshTerminalDisplay(
-          revealLatestOutput: revealLatestOutput,
-        );
-      } else {
-        terminalView?.refreshTerminalSize();
+      _suppressMonkeyMuxResizeSyncFromTerminalRefresh =
+          shouldSuppressMonkeyMuxResizeSync;
+      try {
+        if (forceDisplayRefresh) {
+          terminalView?.refreshTerminalDisplay(
+            revealLatestOutput: revealLatestOutput,
+          );
+        } else {
+          terminalView?.refreshTerminalSize();
+        }
+      } finally {
+        _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
       }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  void _refreshTerminalAfterMonkeyMuxWindowChange() {
+  void _refreshTerminalAfterMonkeyMuxWindowChange(SshSession session) {
     _followLiveOutput();
     _scheduleTerminalSizeRefresh(
       forceDisplayRefresh: true,
       revealLatestOutput: true,
+      suppressMonkeyMuxResizeSync: true,
+    );
+    unawaited(
+      _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
     );
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
       const Duration(milliseconds: 50),
       () {
         _monkeyMuxWindowRefreshFollowUpTimer = null;
-        if (!mounted || _isTerminalOutputFollowPaused) {
+        if (!mounted ||
+            _isTerminalOutputFollowPaused ||
+            _connectionId != session.connectionId) {
           return;
         }
         _followLiveOutput();
         _scheduleTerminalSizeRefresh(
           forceDisplayRefresh: true,
           revealLatestOutput: true,
+          suppressMonkeyMuxResizeSync: true,
+        );
+        unawaited(
+          _syncActiveMonkeyMuxTerminalSize(
+            session,
+            refreshVisibleTerminal: true,
+          ),
         );
       },
     );
+  }
+
+  Future<void> _syncActiveMonkeyMuxTerminalSize(
+    SshSession session, {
+    int? columns,
+    int? rows,
+    bool refreshVisibleTerminal = false,
+  }) async {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    final sessionName = _tmuxSessionName ?? session.remoteMuxSessionName;
+    if (sessionName == null || sessionName.trim().isEmpty) {
+      return;
+    }
+
+    if (refreshVisibleTerminal) {
+      _suppressMonkeyMuxResizeSyncFromTerminalRefresh = true;
+      try {
+        _terminalViewKey.currentState?.refreshTerminalSize();
+      } finally {
+        _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
+      }
+    }
+
+    final terminalColumns = columns ?? _terminal.viewWidth;
+    final terminalRows = rows ?? _terminal.viewHeight;
+    if (terminalColumns <= 0 || terminalRows <= 0) {
+      return;
+    }
+
+    try {
+      await _monkeyMuxService.resizeTerminal(
+        session,
+        sessionName,
+        columns: terminalColumns,
+        rows: terminalRows,
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'monkeymux.resize',
+        'sync_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
   }
 
   SshConnectionState _readCurrentConnectionState() {
@@ -6387,12 +6602,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           installation,
           sessionName,
         );
+        final terminalThemeReports = buildTerminalThemeRefreshReports(
+          session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
+        );
         if (!mounted) {
           return (
             command: buildMonkeyMuxAttachCommand(
               executablePath: installation.executablePath,
               sessionName: sessionName,
               workingDirectory: host.tmuxWorkingDirectory,
+              terminalThemeReports: terminalThemeReports,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
               startInYoloMode: _startClisInYoloMode,
             ),
@@ -6404,6 +6623,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             executablePath: installation.executablePath,
             sessionName: sessionName,
             workingDirectory: host.tmuxWorkingDirectory,
+            terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
             startInYoloMode: _startClisInYoloMode,
           ),
@@ -6657,12 +6877,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         installation,
         sessionName,
       );
+      final terminalThemeReports = buildTerminalThemeRefreshReports(
+        session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
+      );
       attachCommand = buildMonkeyMuxAttachCommand(
         executablePath: installation.executablePath,
         sessionName: sessionName,
         workingDirectory: preset.workingDirectory,
         windowName: preset.tool.label,
         launchCommand: launchCommand,
+        terminalThemeReports: terminalThemeReports,
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
       );
@@ -6721,6 +6945,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     void apply() {
       _activeMuxBackend = command.backend;
+      _remoteMuxStartupTool = command.tool;
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
@@ -6796,6 +7021,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
+    _remoteMuxStartupTool = null;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
     _tmuxCurrentCommand = null;
@@ -6920,6 +7146,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
+    final wasMuxActive = _isTmuxActive;
+    final previousMuxBackend = _activeMuxBackend;
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final configuredBackend = _configuredRemoteMuxBackend(host);
@@ -7172,6 +7400,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _primeTmuxTerminalTheme(session);
         }
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
+        if (muxBackend == RemoteMuxBackend.monkeyMux &&
+            (!wasMuxActive ||
+                previousMuxBackend != RemoteMuxBackend.monkeyMux)) {
+          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        }
         return true;
       }
 
@@ -7675,6 +7908,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      await _syncActiveMonkeyMuxTerminalSize(
+        session,
+        refreshVisibleTerminal: true,
+      );
+    }
     if (targetWindowId == null) {
       await backend.selectWindow(windowIndex);
     } else {
@@ -7689,7 +7928,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
     }
@@ -7728,6 +7967,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
       hostWorkingDirectory: _host?.tmuxWorkingDirectory,
     );
+    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      await _syncActiveMonkeyMuxTerminalSize(
+        session,
+        refreshVisibleTerminal: true,
+      );
+    }
     await backend.createWindow(
       command: command,
       name: name,
@@ -7740,7 +7985,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _reattachTmuxIfNeeded(session, sessionName);
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
     }
@@ -7786,7 +8031,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _prepareTerminalForMuxWindowChange();
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
       _scheduleTerminalSizeRefresh();
     }
@@ -8047,7 +8292,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       });
-      _scheduleTerminalSizeRefresh();
+      if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      } else {
+        _scheduleTerminalSizeRefresh();
+      }
     }
     return shell;
   }
@@ -8092,10 +8341,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _startAutomaticReconnect(
-      connectionId,
-      reason: 'tracked_connection_disconnected',
+    DiagnosticsLogService.instance.info(
+      'terminal',
+      'disconnected_prompt_show',
+      fields: {'connectionId': connectionId},
     );
+    setState(() {
+      _isConnecting = false;
+      _error ??= 'Connection closed';
+    });
   }
 
   void _prepareTerminalForLostConnection(SshSession? session) {
@@ -8113,20 +8367,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sessionController.clearObservedSession(session: session);
     _clearTmuxState();
     _detectedSensitiveKeyboardPrompt = false;
-  }
-
-  void _startAutomaticReconnect(int connectionId, {required String reason}) {
-    if (_isConnecting || _connectionId != connectionId) {
-      return;
-    }
-
-    DiagnosticsLogService.instance.info(
-      'terminal',
-      'auto_reconnect_start',
-      fields: {'connectionId': connectionId, 'reason': reason},
-    );
-    _terminal.write('\r\n[reconnecting...]\r\n');
-    unawaited(_reconnect());
   }
 
   void _handleShellClosed() {
@@ -8207,7 +8447,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _reconnect() async {
+  Future<void> _reconnect({bool showProgressDialog = true}) async {
     if (_isConnecting) {
       return;
     }
@@ -8243,7 +8483,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) {
         return;
       }
-      await _connect(forceNew: true);
+      await _connect(forceNew: true, showProgressDialog: showProgressDialog);
     } finally {
       if (!mounted) {
         _isConnecting = false;
@@ -8307,15 +8547,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _restoreKeyboardAfterAppResume = false;
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
-      _scheduleTerminalSizeRefresh();
       final session = _observedSession;
+      if (_isTmuxActive &&
+          _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+          session != null) {
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      } else {
+        _scheduleTerminalSizeRefresh();
+      }
       if (session != null && session.clipboardSharingEnabled) {
         unawaited(_startSharedClipboardSync(session));
       }
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
-        _reconnect();
+        unawaited(_reconnect(showProgressDialog: false));
       } else if (session != null) {
         unawaited(
           _reloadTerminalThemeForDependencies(
@@ -8619,11 +8865,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ),
               menuChildren: [
                 _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.code_rounded,
                   label: 'Snippets',
                   action: 'snippets',
                 ),
                 _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.palette_outlined,
                   label: 'Change Theme',
                   action: 'change_theme',
@@ -8634,6 +8882,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   icon: Icons.tune_rounded,
                   label: 'Options',
                   menuChildren: _terminalOptionsMenuItems(
+                    context: context,
                     hasTerminalInfo: statusChips.isNotEmpty,
                     isMobile: isMobile,
                   ),
@@ -8641,6 +8890,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 _terminalOverflowMenuDivider(context),
                 if (!isMobile)
                   _terminalOverflowMenuItem(
+                    context: context,
                     icon: _isNativeSelectionMode
                         ? Icons.deselect_rounded
                         : Icons.select_all_rounded,
@@ -8651,12 +8901,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ),
                 if (_workingDirectoryPath != null)
                   _terminalOverflowMenuItem(
+                    context: context,
                     icon: Icons.folder_copy_outlined,
                     label: 'Copy Current Directory',
                     action: 'copy_working_directory',
                   ),
                 if (_currentTerminalSelectionText() != null)
                   _terminalOverflowMenuItem(
+                    context: context,
                     icon: Icons.code_rounded,
                     label: 'Create Snippet',
                     action: 'create_snippet',
@@ -8666,10 +8918,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   isMobile: isMobile,
                   icon: Icons.paste_rounded,
                   label: 'Paste',
-                  menuChildren: _terminalPastingMenuItems(),
+                  menuChildren: _terminalPastingMenuItems(context),
                 ),
                 _terminalOverflowMenuDivider(context),
                 _terminalOverflowMenuItem(
+                  context: context,
                   icon: Icons.link_off_rounded,
                   label: 'Disconnect',
                   action: 'disconnect',
@@ -9252,9 +9505,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final connectionAttempt = ref
         .read(activeSessionsProvider.notifier)
         .getConnectionAttempt(widget.hostId);
-    final connectionState = _connectionId == null
-        ? SshConnectionState.disconnected
-        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
+    final connectionState = _selectTrackedConnectionState(connectionStates);
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
@@ -9377,9 +9628,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
-        terminalReportsMouseWheel: _terminalReportsMouseWheel,
+        terminalReportsMouseWheel: _terminalReportsMouseWheelForScroll,
+        isAgentToolActive: _isAgentToolActive,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      forceSgrTouchScroll: _forceSgrTouchScroll,
       onInsertText: isMobile ? null : _confirmDesktopInsertedText,
       onPasteText: isMobile ? null : _pasteClipboard,
     );

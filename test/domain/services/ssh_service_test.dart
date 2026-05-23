@@ -92,6 +92,12 @@ class _CountingKeyRepository extends KeyRepository {
   }
 
   @override
+  Future<SshKeyLoadResult> getAllDecryptable() async {
+    getAllCallCount++;
+    return super.getAllDecryptable();
+  }
+
+  @override
   Future<SshKey?> getById(int id) async {
     if (returnNullOnGetById) {
       return null;
@@ -228,6 +234,15 @@ Future<int> _unusedLoopbackPort() async {
   final port = socket.port;
   await socket.close();
   return port;
+}
+
+String _structurallyValidInvalidEncryptedSecret() {
+  final envelope = {
+    'n': base64Url.encode(List<int>.filled(12, 1)),
+    'c': base64Url.encode([1, 2, 3]),
+    'm': base64Url.encode(List<int>.filled(16, 2)),
+  };
+  return 'ENCv1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
 }
 
 void main() {
@@ -380,6 +395,25 @@ void main() {
       expect(result.pendingInput, isEmpty);
       expect(result.insertMode, isTrue);
       expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
+    });
+
+    test('strips private CSI modifier controls that xterm treats as SGR', () {
+      final first = adaptTerminalInsertModeOutputForXterm(
+        input: 'before\x1b[>4;',
+        pendingInput: '',
+        insertMode: false,
+      );
+      final second = adaptTerminalInsertModeOutputForXterm(
+        input: '1mafter',
+        pendingInput: first.pendingInput,
+        insertMode: first.insertMode,
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1b[>4;');
+      expect(second.output, 'after');
+      expect(second.pendingInput, isEmpty);
+      expect(second.insertMode, isFalse);
     });
 
     test('clears tracked insert mode on terminal reset sequences', () {
@@ -1181,6 +1215,28 @@ void main() {
       expect(preview, 'second line\nthird line');
     });
 
+    test('builds extra preview lines by default', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write(List.generate(19, (index) => 'line ${index + 1}').join('\r\n'));
+
+      final preview = SshSession.buildTerminalPreview(terminal);
+
+      expect(
+        preview,
+        List.generate(17, (index) => 'line ${index + 3}').join('\n'),
+      );
+    });
+
+    test('preserves wrapped terminal display rows', () {
+      final terminal = Terminal(maxLines: 100)
+        ..resize(8, 10)
+        ..write('alpha beta gamma delta epsilon');
+
+      final preview = SshSession.buildTerminalPreview(terminal, maxLines: 3);
+
+      expect(preview?.split('\n'), hasLength(3));
+    });
+
     test('sanitizes control characters and truncates long previews', () {
       final terminal = Terminal(maxLines: 100)
         ..write('prompt> \u0007hello world\r\n')
@@ -1751,6 +1807,144 @@ void main() {
       expect(config!.privateKey, isNull);
       expect(config.identityKeys, hasLength(2));
     });
+
+    test('connectToHost migrates legacy plaintext Auto keys', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      const privateKey = 'legacy-key-material';
+      final keyId = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Legacy Auto Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: privateKey,
+            ),
+          );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Auto Host',
+              hostname: '10.0.0.12',
+              username: 'admin',
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.identityKeys, hasLength(1));
+      expect(config.identityKeys!.single.privateKey, privateKey);
+
+      final rawKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(keyId))).getSingle();
+      expect(rawKey.privateKey, startsWith('ENCv1:'));
+      expect(rawKey.privateKey, isNot(privateKey));
+    });
+
+    test('connectToHost skips unreadable Auto keys', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unreadable Auto Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 BAD',
+              privateKey: _structurallyValidInvalidEncryptedSecret(),
+            ),
+          );
+      await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Readable Auto Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 GOOD',
+          privateKey: 'readable-key-material',
+        ),
+      );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Auto Host',
+              hostname: '10.0.0.14',
+              username: 'admin',
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.identityKeys, hasLength(1));
+      expect(config.identityKeys!.single.name, 'Readable Auto Key');
+    });
+
+    test(
+      'connectToHost fails during preflight for unreadable explicit key',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostRepo = HostRepository(db, encryptionService);
+        final keyRepo = KeyRepository(db, encryptionService);
+        final service = _CapturingSshService(
+          hostRepository: hostRepo,
+          keyRepository: keyRepo,
+        );
+
+        final keyId = await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Unreadable Explicit Key',
+                keyType: 'ed25519',
+                publicKey: 'ssh-ed25519 BAD',
+                privateKey: _structurallyValidInvalidEncryptedSecret(),
+              ),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Explicit Key Host',
+                hostname: '10.0.0.15',
+                username: 'admin',
+                keyId: Value(keyId),
+              ),
+            );
+
+        final result = await service.connectToHost(hostId);
+
+        expect(result.success, isFalse);
+        expect(
+          result.error,
+          'Connection setup failed. Check saved credentials and try again.',
+        );
+        expect(service.capturedConfig, isNull);
+      },
+    );
 
     test('connectToHost caps Auto keys to avoid auth lockout', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
@@ -5,6 +7,18 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+
+const _previewMaxLines = 17;
+const _previewMinFontSize = 6.5;
+const _previewMaxFontSize = 10.5;
+const _previewLineHeight = 1.22;
+const _stackPreviewCardHeight = 198.0;
+const _stackPreviewMetadataHeight = 18.0;
+const _stackPreviewCardVerticalPadding = 14.0;
+const _stackPreviewTitleGap = 3.0;
+const _stackPreviewMetadataGap = 3.0;
+const _stackPreviewTextTopInset = 3.0;
+const _stackPreviewMinCardHeight = 72.0;
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
 TerminalThemeData resolveConnectionPreviewTheme({
@@ -93,17 +107,14 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   if ((shellStatusLabel ?? '').isNotEmpty) {
     metadataSegments.add(shellStatusLabel!);
   }
-  final body = [
-    if (metadataSegments.isNotEmpty) metadataSegments.join(' • '),
-    if (resolvedPreview == null || resolvedPreview.isEmpty)
-      fallbackConnectionPreviewStatus(state)
-    else
-      resolvedPreview,
-  ].join('\n');
+  final body = resolvedPreview == null || resolvedPreview.isEmpty
+      ? fallbackConnectionPreviewStatus(state)
+      : resolvedPreview;
 
   return ConnectionPreviewStackEntry(
     title: titleSegments.join(' • '),
     body: body,
+    metadata: metadataSegments.isEmpty ? null : metadataSegments.join(' • '),
     terminalTheme: resolveConnectionPreviewTheme(
       brightness: brightness,
       themeSettings: themeSettings,
@@ -129,7 +140,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     this.endpointStyle,
     this.terminalTheme,
     this.showEndpoint = true,
-    this.previewMaxLines = 5,
+    this.previewMaxLines = _previewMaxLines,
     super.key,
   });
 
@@ -246,8 +257,8 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             const SizedBox(height: 4),
           Container(
             width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 52),
-            padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
             decoration: BoxDecoration(
               color: previewBackgroundBase,
               border: Border.all(color: borderColor),
@@ -260,15 +271,10 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                 ),
               ],
             ),
-            child: Text(
-              previewText,
+            child: _AdaptiveTerminalPreviewText(
+              text: previewText,
+              color: previewTextColor,
               maxLines: previewMaxLines,
-              overflow: TextOverflow.ellipsis,
-              style: FluttyTheme.monoStyle.copyWith(
-                fontSize: 9,
-                color: previewTextColor,
-                height: 1.25,
-              ),
             ),
           ),
         ],
@@ -284,6 +290,7 @@ class ConnectionPreviewStackEntry {
   const ConnectionPreviewStackEntry({
     required this.title,
     required this.body,
+    this.metadata,
     this.terminalTheme,
   });
 
@@ -292,6 +299,9 @@ class ConnectionPreviewStackEntry {
 
   /// Main preview or status text shown inside the card.
   final String body;
+
+  /// Connection metadata shown separately from the terminal preview.
+  final String? metadata;
 
   /// Terminal theme used to tint the preview surface.
   final TerminalThemeData? terminalTheme;
@@ -302,10 +312,11 @@ class ConnectionPreviewStackEntry {
       other is ConnectionPreviewStackEntry &&
           other.title == title &&
           other.body == body &&
+          other.metadata == metadata &&
           other.terminalTheme == terminalTheme;
 
   @override
-  int get hashCode => Object.hash(title, body, terminalTheme);
+  int get hashCode => Object.hash(title, body, metadata, terminalTheme);
 }
 
 /// Renders one or more connection preview cards in a visibly offset stack.
@@ -313,7 +324,7 @@ class ConnectionPreviewStack extends StatelessWidget {
   /// Creates a [ConnectionPreviewStack].
   const ConnectionPreviewStack({
     required this.entries,
-    this.cardHeight = 74,
+    this.cardHeight = _stackPreviewCardHeight,
     this.verticalOffset = 14,
     this.horizontalOffset = 10,
     super.key,
@@ -337,19 +348,31 @@ class ConnectionPreviewStack extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final stackHeight = cardHeight + ((entries.length - 1) * verticalOffset);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
+        final cardWidth = constraints.maxWidth > maxHorizontalInset
+            ? constraints.maxWidth - maxHorizontalInset
+            : 0.0;
+        final cardHeights = [
+          for (final entry in entries)
+            _stackPreviewCardHeightForEntry(
+              context: context,
+              entry: entry,
+              maxHeight:
+                  cardHeight +
+                  (entry.metadata != null ? _stackPreviewMetadataHeight : 0),
+            ),
+        ];
+        final stackHeight = [
+          for (var index = 0; index < cardHeights.length; index++)
+            cardHeights[index] + (index * verticalOffset),
+        ].reduce(math.max);
 
-    return SizedBox(
-      width: double.infinity,
-      height: stackHeight,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
-          final cardWidth = constraints.maxWidth > maxHorizontalInset
-              ? constraints.maxWidth - maxHorizontalInset
-              : 0.0;
-
-          return Stack(
+        return SizedBox(
+          width: double.infinity,
+          height: stackHeight,
+          child: Stack(
             clipBehavior: Clip.none,
             children: [
               for (var index = 0; index < entries.length; index++)
@@ -359,16 +382,16 @@ class ConnectionPreviewStack extends StatelessWidget {
                   width: cardWidth,
                   child: _ConnectionPreviewStackCard(
                     entry: entries[index],
-                    height: cardHeight,
+                    height: cardHeights[index],
                     opacity: index == entries.length - 1
                         ? 1
                         : 0.9 - ((entries.length - index - 2) * 0.05),
                   ),
                 ),
             ],
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -410,7 +433,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       opacity: opacity.clamp(0.7, 1).toDouble(),
       child: Container(
         height: height,
-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
         decoration: BoxDecoration(
           color: backgroundColor,
           border: Border.all(color: borderColor),
@@ -435,16 +458,29 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
-            const SizedBox(height: 4),
-            Expanded(
-              child: Text(
-                entry.body,
-                maxLines: 2,
+            const SizedBox(height: 3),
+            if (entry.metadata != null) ...[
+              Text(
+                entry.metadata!,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: FluttyTheme.monoStyle.copyWith(
-                  fontSize: 9,
-                  color: textColor,
-                  height: 1.25,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: textColor.withAlpha(190),
+                ),
+              ),
+              const SizedBox(height: 3),
+            ],
+            Expanded(
+              child: ClipRect(
+                child: Padding(
+                  padding: const EdgeInsets.only(
+                    top: _stackPreviewTextTopInset,
+                  ),
+                  child: _AdaptiveTerminalPreviewText(
+                    text: entry.body,
+                    color: textColor,
+                    maxLines: _previewMaxLines,
+                  ),
                 ),
               ),
             ),
@@ -453,4 +489,145 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       ),
     );
   }
+}
+
+double _stackPreviewCardHeightForEntry({
+  required BuildContext context,
+  required ConnectionPreviewStackEntry entry,
+  required double maxHeight,
+}) {
+  final textDirection = Directionality.of(context);
+  final textScaler = MediaQuery.textScalerOf(context);
+  final theme = Theme.of(context);
+  final titleHeight = _singleLineTextHeight(
+    style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700),
+    textDirection: textDirection,
+    textScaler: textScaler,
+  );
+  final metadataHeight = entry.metadata == null
+      ? 0.0
+      : _singleLineTextHeight(
+          style: theme.textTheme.labelSmall,
+          textDirection: textDirection,
+          textScaler: textScaler,
+        );
+  final chromeHeight =
+      _stackPreviewCardVerticalPadding +
+      titleHeight +
+      _stackPreviewTitleGap +
+      (entry.metadata == null
+          ? 0.0
+          : metadataHeight + _stackPreviewMetadataGap);
+  final previewMaxHeight = math.max<double>(0, maxHeight - chromeHeight);
+  final previewTextMaxHeight = math.max<double>(
+    0,
+    previewMaxHeight - _stackPreviewTextTopInset,
+  );
+  final baseStyle = FluttyTheme.monoStyle.copyWith(
+    fontSize: _previewMaxFontSize,
+    height: _previewLineHeight,
+  );
+  final fontSize = _fitPreviewFontSize(
+    text: entry.body,
+    maxLines: _previewMaxLines,
+    constraints: BoxConstraints(maxHeight: previewTextMaxHeight),
+  );
+  final previewHeight =
+      _previewTextHeight(
+        text: entry.body,
+        maxLines: _previewMaxLines,
+        style: baseStyle.copyWith(fontSize: fontSize),
+        textDirection: textDirection,
+        textScaler: textScaler,
+      ) +
+      _stackPreviewTextTopInset;
+  return (chromeHeight + math.min(previewHeight, previewMaxHeight)).clamp(
+    _stackPreviewMinCardHeight,
+    maxHeight,
+  );
+}
+
+double _singleLineTextHeight({
+  required TextStyle? style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final painter = TextPainter(
+    text: TextSpan(text: 'Hg', style: style),
+    textDirection: textDirection,
+    textScaler: textScaler,
+    maxLines: 1,
+  )..layout();
+  return painter.height;
+}
+
+class _AdaptiveTerminalPreviewText extends StatelessWidget {
+  const _AdaptiveTerminalPreviewText({
+    required this.text,
+    required this.color,
+    required this.maxLines,
+  });
+
+  final String text;
+  final Color color;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final style = FluttyTheme.monoStyle.copyWith(
+        fontSize: _previewMaxFontSize,
+        color: color,
+        height: _previewLineHeight,
+      );
+      final fontSize = _fitPreviewFontSize(
+        text: text,
+        maxLines: maxLines,
+        constraints: constraints,
+      );
+
+      return Text(
+        text,
+        maxLines: maxLines,
+        overflow: TextOverflow.clip,
+        softWrap: false,
+        style: style.copyWith(fontSize: fontSize),
+      );
+    },
+  );
+}
+
+double _fitPreviewFontSize({
+  required String text,
+  required int maxLines,
+  required BoxConstraints constraints,
+}) {
+  final lines = text.split('\n').take(maxLines).toList(growable: false);
+  final visibleLineCount = math.max(lines.length, 1);
+  var maxFontSize = _previewMaxFontSize;
+  if (constraints.maxHeight.isFinite && constraints.maxHeight > 0) {
+    maxFontSize = math.min(
+      maxFontSize,
+      constraints.maxHeight / (visibleLineCount * _previewLineHeight),
+    );
+  }
+
+  return maxFontSize.clamp(_previewMinFontSize, _previewMaxFontSize);
+}
+
+double _previewTextHeight({
+  required String text,
+  required int maxLines,
+  required TextStyle style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final lineCount = math.max(text.split('\n').take(maxLines).length, 1);
+  final linePainter = TextPainter(
+    text: TextSpan(text: 'Hg', style: style),
+    textDirection: textDirection,
+    textScaler: textScaler,
+    maxLines: 1,
+  )..layout();
+  return linePainter.height * lineCount;
 }
