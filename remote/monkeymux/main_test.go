@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 func replayPrefixForTest(window *muxWindow) string {
@@ -25,6 +27,36 @@ func replayPrefixForTest(window *muxWindow) string {
 func replayPostHistorySuffixForTest(cursorVisible bool) string {
 	return terminalParserResetSequence + terminalCharacterSetResetSequence +
 		cursorVisibilityReplaySequence(cursorVisible)
+}
+
+func openTestPty(t *testing.T) *os.File {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = ptmx.Close()
+		_ = tty.Close()
+	})
+	return ptmx
+}
+
+func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
+	t.Helper()
+	size, err := pty.GetsizeFull(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(size.Cols) != columns || int(size.Rows) != rows {
+		t.Fatalf(
+			"pty size = %dx%d, want %dx%d",
+			size.Cols,
+			size.Rows,
+			columns,
+			rows,
+		)
+	}
 }
 
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
@@ -294,6 +326,200 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
+func TestAttachSignalsResizeAfterReplay(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("foreground output"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	wantReplay := replayPrefixForTest(window) + "foreground output" +
+		replayPostHistorySuffixForTest(true)
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 4343
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize signaled before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+
+	server.handleAttach(
+		attach,
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 120, Height: 40},
+	)
+
+	if !reflect.DeepEqual(signaled, []int{4343}) {
+		t.Fatalf("signaled process groups = %#v, want [4343]", signaled)
+	}
+}
+
+func TestResizeUpdatesInactiveWindowPtys(t *testing.T) {
+	server := newMuxServer("test")
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
+		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	server.resize(132, 43)
+
+	assertPtySize(t, activePty, 132, 43)
+	assertPtySize(t, inactivePty, 132, 43)
+}
+
+func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
+	server := newMuxServer("test")
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
+		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	server.handleAttach(
+		&recordingConn{},
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 132, Height: 43},
+	)
+
+	assertPtySize(t, activePty, 132, 43)
+	assertPtySize(t, inactivePty, 132, 43)
+}
+
+func TestAttachIgnoresOversizedThemeHint(t *testing.T) {
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{{id: "@1", index: 0, lastActivity: time.Now()}}
+	server.activeID = "@1"
+
+	server.handleAttach(
+		&recordingConn{},
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{
+			Width:  132,
+			Height: 43,
+			Data:   strings.Repeat("x", themeHintLimitBytes+1),
+		},
+	)
+
+	if len(server.themeHint) != 0 {
+		t.Fatalf("theme hint length = %d, want 0", len(server.themeHint))
+	}
+}
+
+func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
+	server := newMuxServerWithSize("test", 132, 43)
+	t.Cleanup(server.close)
+
+	window, err := server.createWindow(createWindowOptions{
+		args: []string{"/bin/sh", "-c", "sleep 0.2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertPtySize(t, window.pty, 132, 43)
+}
+
+func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		focusModeEnabled:  true,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resize(120, 40)
+
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
+	}
+}
+
+func TestSameSizeResizeDoesNotSignalShell(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "zsh",
+		focusModeEnabled:  true,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resize(120, 40)
+
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
+	}
+}
+
 func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -309,6 +535,62 @@ func TestAttachWriteSkipsStaleActiveWindowOutput(t *testing.T) {
 
 	if got := attach.String(); got != "fresh new output" {
 		t.Fatalf("attach output = %q, want only fresh active output", got)
+	}
+}
+
+func TestAttachInputDropsFocusReportsUntilActiveWindowEnablesFocus(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{id: "@1", index: 0, pty: writer, lastActivity: time.Now()}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.writeActiveFromAttach([]byte("typed\x1b[I\x1b[Oinput"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != "typedinput" {
+		t.Fatalf("pty input = %q, want focus reports stripped", got)
+	}
+}
+
+func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T) {
+	server := newMuxServer("test")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	window := &muxWindow{
+		id:               "@1",
+		index:            0,
+		pty:              writer,
+		lastActivity:     time.Now(),
+		focusModeEnabled: true,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	server.writeActiveFromAttach([]byte("typed\x1b[I\x1b[Oinput"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(output); got != "typed\x1b[I\x1b[Oinput" {
+		t.Fatalf("pty input = %q, want focus reports preserved", got)
 	}
 }
 
@@ -370,6 +652,94 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 		"suffix",
 	) {
 		t.Fatalf("replay did not preserve recent output suffix")
+	}
+}
+
+func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"\x1b[?1049h" +
+			"alternate-screen-start" +
+			strings.Repeat("\x1b]66;semantic\a", windowReplayLimitBytes/8) +
+			"alternate-screen-end",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked(history)
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, "alternate-screen-start") {
+		t.Fatalf("alternate-screen replay was capped before screen start")
+	}
+	if !strings.Contains(
+		replay,
+		"\x1b[?1049h"+terminalScreenClearSequence+"\x1b[?1049halternate-screen-start",
+	) {
+		t.Fatalf("alternate-screen replay did not clear stale alternate buffer before history: %q", replay)
+	}
+	if !strings.Contains(replay, "alternate-screen-end") {
+		t.Fatalf("alternate-screen replay lost screen end")
+	}
+	if got, want := len(window.history), len(history); got != want {
+		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayPrefixClearsMainAndAlternateScreens(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      []byte("shell prompt"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replayPrefixForTest(window), terminalAllScreensClearSequence) {
+		t.Fatal("replay prefix does not clear both main and alternate screens")
+	}
+	clearIndex := strings.Index(replay, terminalAllScreensClearSequence)
+	historyIndex := strings.Index(replay, "shell prompt")
+	if clearIndex < 0 || historyIndex < 0 || clearIndex > historyIndex {
+		t.Fatalf("main-screen replay did not clear stale alternate buffer before history: %q", replay)
+	}
+}
+
+func TestActiveReplayCapsExitedAlternateScreenHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"\x1b[?1049h" +
+			"stale-alt-screen-start" +
+			strings.Repeat("main-screen-output", windowReplayLimitBytes/8) +
+			"main-screen-suffix",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	window.observeTerminalModesLocked([]byte("\x1b[?1049h\x1b[?1049l"))
+	replay := string(server.activeReplayLocked())
+
+	if strings.Contains(replay, "stale-alt-screen-start") {
+		t.Fatalf("main-screen replay retained stale alternate-screen prefix")
+	}
+	if !strings.Contains(replay, "main-screen-suffix") {
+		t.Fatalf("main-screen replay lost recent suffix")
 	}
 }
 
@@ -566,6 +936,78 @@ func TestWindowTitleUpdatesStillBroadcast(t *testing.T) {
 	}
 }
 
+func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Mouse app",
+		privateModes: map[string]bool{"1000": true, "1006": true},
+		lastActivity: time.Now(),
+	}
+
+	snapshot := server.snapshot(window)
+
+	if !snapshot.TerminalReportsMouseWheel {
+		t.Fatal("snapshot did not report mouse wheel mode")
+	}
+	if !snapshot.TerminalMouseReportSgr {
+		t.Fatal("snapshot did not report SGR mouse mode")
+	}
+}
+
+func TestRestoreSnapshotPreservesTerminalModes(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                       "@1",
+		index:                    0,
+		name:                     "Mouse app",
+		privateModes:             map[string]bool{"1049": true, "7": false, "9999": true},
+		insertModeEnabled:        true,
+		insertModeKnown:          true,
+		applicationKeypadEnabled: true,
+		applicationKeypadKnown:   true,
+		lastActivity:             time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	restore := server.restoreSnapshot()
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	state := restore.Windows[0]
+	if !state.PrivateModes["1049"] {
+		t.Fatal("restore did not preserve alternate-screen mode")
+	}
+	if enabled, ok := state.PrivateModes["7"]; !ok || enabled {
+		t.Fatalf("restore wrap mode = %v, %v, want present false", enabled, ok)
+	}
+	if _, ok := state.PrivateModes["9999"]; ok {
+		t.Fatal("restore preserved untracked private mode")
+	}
+	if !state.InsertModeKnown || !state.InsertModeEnabled {
+		t.Fatal("restore did not preserve insert mode")
+	}
+	if !state.ApplicationKeypadKnown || !state.ApplicationKeypadEnabled {
+		t.Fatal("restore did not preserve application keypad mode")
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+	if enabled, ok := options.privateModes["7"]; !ok || enabled {
+		t.Fatalf("restored options wrap mode = %v, %v, want present false", enabled, ok)
+	}
+	if !options.privateModes["1049"] {
+		t.Fatalf("restored options private modes = %#v", options.privateModes)
+	}
+	if !options.insertModeKnown || !options.insertModeEnabled {
+		t.Fatal("restored options did not preserve insert mode")
+	}
+	if !options.applicationKeypadKnown || !options.applicationKeypadEnabled {
+		t.Fatal("restored options did not preserve application keypad mode")
+	}
+}
+
 func TestActiveReplaySetsWindowTitle(t *testing.T) {
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{
@@ -705,6 +1147,36 @@ func TestReplayPrefixResetsCharacterSetShift(t *testing.T) {
 	}
 }
 
+func TestReplayParserFenceDoesNotEmitVisibleCancelByte(t *testing.T) {
+	if terminalParserResetSequence != "\x1b\\" {
+		t.Fatalf("parser fence = %q, want ST-only fence", terminalParserResetSequence)
+	}
+	if strings.ContainsAny(terminalParserResetSequence, "\x18\x1a") {
+		t.Fatalf("parser fence = %q, must not include visible cancel controls", terminalParserResetSequence)
+	}
+}
+
+func TestActiveReplayDoesNotRestoreStaleFocusMode(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                 "@1",
+		index:              0,
+		foregroundPid:      222,
+		privateModes:       map[string]bool{"1004": true},
+		focusModeEnabled:   true,
+		focusModeProcessID: 111,
+		lastActivity:       time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := strings.TrimPrefix(string(server.activeReplayLocked()), activeWindowReplayPrefix)
+
+	if strings.Contains(replay, "\x1b[?1004h") {
+		t.Fatalf("replay restored stale focus mode: %q", replay)
+	}
+}
+
 func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -722,8 +1194,9 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 	preModes := string(terminalModePreReplaySequence(window))
+	preHistoryClear := string(terminalPreHistoryClearSequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
-	want := replayPrefixForTest(window) + preModes + "nano screen" +
+	want := replayPrefixForTest(window) + preModes + preHistoryClear + "nano screen" +
 		terminalParserResetSequence + postModes +
 		terminalCharacterSetResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
@@ -963,6 +1436,7 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		{tool: "codex", args: "codex resume run-42", want: "run-42"},
 		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
 		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
+		{tool: "antigravity", args: `agy --conversation "antigravity session"`, want: "antigravity session"},
 	}
 
 	for _, tt := range tests {
@@ -1279,6 +1753,28 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
 			agentTool: "opencode",
 		},
+		{
+			name: "antigravity resume",
+			state: restoreWindowState{
+				Name:           "Antigravity",
+				CurrentCommand: "agy",
+				AgentTool:      "antigravity",
+				AgentSessionID: "session-456",
+			},
+			want:      `agy --dangerously-skip-permissions --conversation 'session-456'`,
+			agentTool: "antigravity",
+		},
+		{
+			name: "antigravity resume continue",
+			state: restoreWindowState{
+				Name:           "Antigravity",
+				CurrentCommand: "agy",
+				AgentTool:      "antigravity",
+				AgentSessionID: "_continue",
+			},
+			want:      `agy --dangerously-skip-permissions --continue`,
+			agentTool: "antigravity",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1344,8 +1840,8 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 		id:                         "@1",
 		foregroundCommand:          "unknown-tui",
 		foregroundPid:              42,
-		backgroundColorQuerySeen:   true,
-		backgroundColorQueryPid:    42,
+		themeColorQueryPid:         42,
+		themeColorQueryKeys:        map[string]bool{"11": true},
 		lastProcessMetadataRefresh: time.Now(),
 		pty:                        inputWriter,
 	}
@@ -1413,6 +1909,98 @@ func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
 	}
 }
 
+func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent before the window requested a background color")
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b]11;?\x1b\\"))
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("theme hint = %q, want %q", got, backgroundReport)
+	}
+}
+
+func TestThemeHintAnswersFuturePaletteQuery(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	const paletteReport0 = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
+	const paletteReport1 = "\x1b]4;1;rgb:dddd/eeee/ffff\x1b\\"
+	if server.sendThemeHint(backgroundReport + paletteReport0 + paletteReport1) {
+		t.Fatal("theme hint was sent before the window requested a color")
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b]4;0;?\x1b\\"))
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, paletteReport0)
+	})
+	if got != paletteReport0 {
+		t.Fatalf("theme hint = %q, want only palette response %q", got, paletteReport0)
+	}
+}
+
 func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
@@ -1439,6 +2027,187 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 	})
 	if strings.Contains(got, backgroundReport) {
 		t.Fatalf("theme hint = %q, did not expect background report", got)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "codex",
+		pty:               inputWriter,
+	}
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+	const paletteReport = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
+	if !server.sendThemeHint(foregroundReport + backgroundReport + paletteReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, want default color reports prefix %q",
+			got,
+			foregroundReport+backgroundReport,
+		)
+	}
+	if strings.Contains(got, paletteReport) {
+		t.Fatalf("theme hint = %q, did not expect unsolicited palette report", got)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
+	}
+}
+
+func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "codex",
+		pty:               inputWriter,
+	}
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 6262
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+	if !server.sendThemeHint(foregroundReport + backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
+	}
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, want default color reports prefix %q",
+			got,
+			foregroundReport+backgroundReport,
+		)
+	}
+}
+
+func TestSendThemeHintIgnoresOversizedPayload(t *testing.T) {
+	server := newMuxServer("test")
+	server.themeHint = []byte("existing")
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	if server.sendThemeHint(strings.Repeat("x", themeHintLimitBytes+1)) {
+		t.Fatal("oversized theme hint was sent")
+	}
+	if got := string(server.themeHint); got != "existing" {
+		t.Fatalf("theme hint = %q, want existing", got)
+	}
+}
+
+func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "opencode",
+		pty:               inputWriter,
+	}
+	foregroundProcessGroup := 42
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return foregroundProcessGroup
+		}
+		return 0
+	}
+	window.observeTerminalMetadataLocked([]byte("\x1b]4;0;?\x1b\\"))
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	foregroundProcessGroup = 0
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+	const paletteReport0 = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
+	const paletteReport1 = "\x1b]4;1;rgb:dddd/eeee/ffff\x1b\\"
+	if !server.sendThemeHint(
+		foregroundReport + backgroundReport + paletteReport0 + paletteReport1,
+	) {
+		t.Fatal("theme hint was not sent")
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if !strings.HasPrefix(got, foregroundReport+backgroundReport+paletteReport0) {
+		t.Fatalf(
+			"theme hint = %q, want observed color reports prefix %q",
+			got,
+			foregroundReport+backgroundReport+paletteReport0,
+		)
+	}
+	if strings.Contains(got, paletteReport1) {
+		t.Fatalf("theme hint = %q, did not expect unqueried palette report", got)
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)

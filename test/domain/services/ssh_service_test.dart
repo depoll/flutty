@@ -397,6 +397,25 @@ void main() {
       expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
     });
 
+    test('strips private CSI modifier controls that xterm treats as SGR', () {
+      final first = adaptTerminalInsertModeOutputForXterm(
+        input: 'before\x1b[>4;',
+        pendingInput: '',
+        insertMode: false,
+      );
+      final second = adaptTerminalInsertModeOutputForXterm(
+        input: '1mafter',
+        pendingInput: first.pendingInput,
+        insertMode: first.insertMode,
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1b[>4;');
+      expect(second.output, 'after');
+      expect(second.pendingInput, isEmpty);
+      expect(second.insertMode, isFalse);
+    });
+
     test('clears tracked insert mode on terminal reset sequences', () {
       final fullReset = adaptTerminalInsertModeOutputForXterm(
         input: '\x1b[4hA\x1bcB',
@@ -1194,6 +1213,28 @@ void main() {
       final preview = SshSession.buildTerminalPreview(terminal, maxLines: 2);
 
       expect(preview, 'second line\nthird line');
+    });
+
+    test('builds extra preview lines by default', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write(List.generate(19, (index) => 'line ${index + 1}').join('\r\n'));
+
+      final preview = SshSession.buildTerminalPreview(terminal);
+
+      expect(
+        preview,
+        List.generate(17, (index) => 'line ${index + 3}').join('\n'),
+      );
+    });
+
+    test('preserves wrapped terminal display rows', () {
+      final terminal = Terminal(maxLines: 100)
+        ..resize(8, 10)
+        ..write('alpha beta gamma delta epsilon');
+
+      final preview = SshSession.buildTerminalPreview(terminal, maxLines: 3);
+
+      expect(preview?.split('\n'), hasLength(3));
     });
 
     test('sanitizes control characters and truncates long previews', () {

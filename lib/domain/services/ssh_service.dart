@@ -213,6 +213,10 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 /// vertical margin region down. When cursor state is provided, that RI is
 /// rewritten to IL (`CSI L`), which has the same effect at the top margin
 /// without reusing detached buffer lines internally.
+///
+/// xterm.dart also treats private `CSI > ... m` keyboard modifier controls as
+/// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
+/// accidentally enabling underline/bold while painting spaces.
 @visibleForTesting
 ({String output, String pendingInput, bool insertMode})
 adaptTerminalInsertModeOutputForXterm({
@@ -254,10 +258,12 @@ adaptTerminalInsertModeOutputForXterm({
       }
 
       final sequence = combinedInput.substring(cursor, endIndex);
-      output.write(cursorTracker.adaptEscapeSequence(sequence));
-      final insertModeUpdate = _terminalInsertModeUpdate(sequence);
-      if (insertModeUpdate != null) {
-        nextInsertMode = insertModeUpdate;
+      if (!_shouldDropTerminalOutputSequenceForXterm(sequence)) {
+        output.write(cursorTracker.adaptEscapeSequence(sequence));
+        final insertModeUpdate = _terminalInsertModeUpdate(sequence);
+        if (insertModeUpdate != null) {
+          nextInsertMode = insertModeUpdate;
+        }
       }
       cursor = endIndex;
       continue;
@@ -517,6 +523,7 @@ final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
+final _terminalCsiNumericParamsPattern = RegExp(r'^[0-9;]*$');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -637,6 +644,8 @@ const _terminalSetModeFinalCodeUnit = 0x68;
 const _terminalResetModeFinalCodeUnit = 0x6C;
 const _terminalSoftResetFinalCodeUnit = 0x70;
 const _terminalFullResetFinalCodeUnit = 0x63;
+const _terminalPrivateMarkerCodeUnit = 0x3E;
+const _terminalSelectGraphicRenditionFinalCodeUnit = 0x6D;
 const _terminalInsertBlankCharacterSequence = '\x1b[@';
 const _terminalReverseIndexSequence = '\x1bM';
 const _terminalInsertLineSequence = '\x1b[L';
@@ -809,6 +818,20 @@ bool? _terminalDecOriginModeUpdate(String sequence) {
   return null;
 }
 
+bool _shouldDropTerminalOutputSequenceForXterm(String sequence) {
+  if (sequence.length < 4 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit ||
+      sequence.codeUnitAt(2) != _terminalPrivateMarkerCodeUnit ||
+      sequence.codeUnitAt(sequence.length - 1) !=
+          _terminalSelectGraphicRenditionFinalCodeUnit) {
+    return false;
+  }
+
+  final params = sequence.substring(3, sequence.length - 1);
+  return _terminalCsiNumericParamsPattern.hasMatch(params);
+}
+
 List<int?> _terminalCsiNumericParams(String sequence) {
   if (sequence.length < 3 ||
       sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
@@ -820,7 +843,7 @@ List<int?> _terminalCsiNumericParams(String sequence) {
   if (params.isEmpty) {
     return const [];
   }
-  if (!RegExp(r'^[0-9;]*$').hasMatch(params)) {
+  if (!_terminalCsiNumericParamsPattern.hasMatch(params)) {
     return const [];
   }
   return params
@@ -2528,8 +2551,8 @@ class SshSession {
     Duration(milliseconds: 250),
     Duration(milliseconds: 750),
   ];
-  static const _previewLineCount = 3;
-  static const _previewMaxChars = 220;
+  static const _previewLineCount = 17;
+  static const _previewMaxChars = 1700;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
   static final _windowTitleSanitizerPattern = RegExp(r'[\x00-\x1F\x7F]');
 
@@ -2902,7 +2925,7 @@ class SshSession {
     );
   }
 
-  /// Builds a compact plain-text preview from the terminal scrollback.
+  /// Builds a plain-text preview from the latest terminal display rows.
   static String? buildTerminalPreview(
     Terminal terminal, {
     int maxLines = _previewLineCount,
@@ -2911,7 +2934,6 @@ class SshSession {
     final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
     final effectiveMaxChars = maxChars < 1 ? 1 : maxChars;
     final previewLines = <String>[];
-    final currentSegments = <String>[];
 
     for (
       var index = terminal.lines.length - 1;
@@ -2922,22 +2944,10 @@ class SshSession {
       final cleanedLine = _sanitizePreviewFragment(rawLine);
 
       if (cleanedLine.isEmpty) {
-        if (currentSegments.isNotEmpty) {
-          previewLines.insert(0, currentSegments.reversed.join());
-          currentSegments.clear();
-        }
         continue;
       }
 
-      currentSegments.add(cleanedLine);
-      if (!terminal.lines[index].isWrapped) {
-        previewLines.insert(0, currentSegments.reversed.join());
-        currentSegments.clear();
-      }
-    }
-
-    if (currentSegments.isNotEmpty && previewLines.length < effectiveMaxLines) {
-      previewLines.insert(0, currentSegments.reversed.join());
+      previewLines.insert(0, cleanedLine);
     }
 
     if (previewLines.isEmpty) {
