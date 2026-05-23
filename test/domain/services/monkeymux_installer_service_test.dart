@@ -88,6 +88,9 @@ void main() {
       final client = _MockSshClient();
       final sftp = _MockSftpClient();
       final firstSftpMayContinue = Completer<void>();
+      final acceptedConfirmations = <bool>[];
+      final confirmationMayFinish = Completer<void>();
+      final supersededProbeReachedShaCheck = Completer<void>();
       var sftpOpenCount = 0;
       when(sftp.close).thenReturn(null);
       when(client.sftp).thenAnswer((_) {
@@ -101,6 +104,12 @@ void main() {
         invocation,
       ) async {
         final command = invocation.positionalArguments.single as String;
+        if (acceptedConfirmations.isNotEmpty &&
+            !supersededProbeReachedShaCheck.isCompleted &&
+            (command.contains('sha256sum') ||
+                command.contains('shasum -a 256'))) {
+          supersededProbeReachedShaCheck.complete();
+        }
         final output = _outputForCommand(
           command,
           expectedSha: expectedSha,
@@ -121,17 +130,33 @@ void main() {
       addTearDown(() => installer.clearCache(connectionId));
 
       final probeOnlyInstall = installer.ensureInstalled(session);
+      MonkeyMuxInstallation? probeOnlyInstallation;
+      Object? probeOnlyError;
+      final observedProbeOnlyInstall = probeOnlyInstall.then<void>(
+        (installation) => probeOnlyInstallation = installation,
+        onError: (Object error) => probeOnlyError = error,
+      );
       await _waitUntil(() => sftpOpenCount == 1);
 
-      final acceptedConfirmations = <bool>[];
       final confirmableInstall = installer.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
         confirmInstall: (request) async {
           acceptedConfirmations.add(true);
+          await confirmationMayFinish.future;
           return true;
         },
       );
+      await _waitUntil(() => acceptedConfirmations.length == 1);
+
+      firstSftpMayContinue.complete();
+      await supersededProbeReachedShaCheck.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(probeOnlyInstallation, isNull);
+      expect(probeOnlyError, isNull);
+
+      confirmationMayFinish.complete();
 
       final installation = await confirmableInstall.timeout(
         const Duration(seconds: 2),
@@ -141,8 +166,9 @@ void main() {
       expect(acceptedConfirmations, <bool>[true]);
       expect(sftpOpenCount, 2);
 
-      firstSftpMayContinue.complete();
-      await probeOnlyInstall;
+      await observedProbeOnlyInstall.timeout(const Duration(seconds: 2));
+      expect(probeOnlyError, isNull);
+      expect(probeOnlyInstallation?.version, '9.9.9');
     },
   );
 
