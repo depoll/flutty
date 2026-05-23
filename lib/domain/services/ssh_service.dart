@@ -2707,6 +2707,18 @@ class SshSession {
   Terminal getOrCreateTerminal({int maxLines = 10000}) =>
       _runtime.getOrCreateTerminal(maxLines: maxLines);
 
+  /// Local-only preview-sized [Terminal] that mirrors the live session at
+  /// preview-card dimensions. Used to render connection preview snippets.
+  Terminal? get previewTerminal => _runtime.previewTerminal;
+
+  /// Resize the preview-sized terminal so the connection preview card can
+  /// re-flow recent output at the card's natural width.
+  ///
+  /// The remote app is not notified about this resize; only the local preview
+  /// terminal's column/row count changes.
+  void resizePreviewTerminal({required int columns, required int rows}) =>
+      _runtime.resizePreviewTerminal(columns: columns, rows: rows);
+
   /// Active port forward tunnels.
   final Map<int, _ActiveTunnel> _activeTunnels = {};
 

@@ -309,6 +309,57 @@ void main() {
   });
 
   testWidgets(
+    'styled preview invokes onPreviewLayout with card-derived geometry',
+    (tester) async {
+      final terminal = Terminal(maxLines: 100)
+        ..resize(80, 24)
+        ..write(['hello', 'world', r'$'].join('\r\n'));
+      final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+      int? reportedCols;
+      int? reportedRows;
+      var callCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 360,
+              child: ConnectionPreviewStack(
+                entries: [
+                  ConnectionPreviewStackEntry(
+                    title: 'Connection #1',
+                    body: preview.plainText,
+                    previewSnapshot: preview,
+                    terminalTheme: TerminalThemes.defaultDarkTheme,
+                    onPreviewLayout: ({required columns, required rows}) {
+                      callCount++;
+                      reportedCols = columns;
+                      reportedRows = rows;
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(callCount, greaterThanOrEqualTo(1));
+      // The card has 1px border + 10px LR padding so the inner content area
+      // is ~338px wide. Dividing by the 12pt mono cell width should yield
+      // somewhere between 20 and 80 columns; we only assert sanity bounds
+      // here since exact font metrics differ by platform.
+      expect(reportedCols, isNotNull);
+      expect(reportedCols, greaterThan(20));
+      expect(reportedCols, lessThan(80));
+      expect(reportedRows, isNotNull);
+      expect(reportedRows, greaterThan(0));
+    },
+  );
+
+  testWidgets(
     'styled preview content fills card width without horizontal slack',
     (tester) async {
       // Wide content that should width-fill at a small-to-medium font.
@@ -349,14 +400,14 @@ void main() {
 
       final styledPainter = find.byWidgetPredicate(
         (widget) =>
-            widget is CustomPaint && widget.painter.runtimeType.toString().contains('_TerminalPreviewPainter'),
+            widget is CustomPaint &&
+            widget.painter.runtimeType.toString().contains(
+              '_TerminalPreviewPainter',
+            ),
       );
       final painterSize = tester.getSize(styledPainter);
       // Card has 1px border + 10px LR padding on each side = card_width - 22.
       expect(painterSize.width, closeTo(360 - 22, 1));
-      // And the rendered cells must reach the right edge: at the chosen font,
-      // contentColumns * cellWidth should match painterSize.width within one
-      // cell.
       expect(painterSize.height, greaterThan(0));
     },
   );
