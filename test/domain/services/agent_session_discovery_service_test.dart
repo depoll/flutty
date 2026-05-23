@@ -1131,6 +1131,69 @@ branch refs/heads/main
       );
     });
 
+    test('Antigravity discovery uses unified Python script', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+          );
+        }
+        if (command.contains('python3 -c')) {
+          return _buildExecSession(
+            stdout: '''
+[
+  {
+    "sessionId": "7b9feba4-ca71-4c6f-8b31-478231f7154d",
+    "summary": "Implement antigravity",
+    "workingDirectory": "/Users/depoll/Code/flutty",
+    "lastActive": "2026-05-22T21:45:35Z"
+  }
+]
+''',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: '/Users/depoll/Code/flutty',
+        toolName: 'Antigravity',
+      );
+
+      expect(result.sessions, hasLength(1));
+      expect(result.sessions.single.toolName, 'Antigravity');
+      expect(
+        result.sessions.single.sessionId,
+        '7b9feba4-ca71-4c6f-8b31-478231f7154d',
+      );
+      expect(result.sessions.single.summary, 'Implement antigravity');
+      expect(
+        result.sessions.single.workingDirectory,
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        result.sessions.single.lastActive,
+        DateTime.parse('2026-05-22T21:45:35Z'),
+      );
+
+      expect(
+        commands.where((command) => command.contains('python3 -c')),
+        hasLength(1),
+      );
+    });
+
     test(
       'all-provider discovery skips ACP probes for fast panel loads',
       () async {
