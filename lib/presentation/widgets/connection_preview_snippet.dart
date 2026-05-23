@@ -648,7 +648,6 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
         return _StyledTerminalPreviewText(
           preview: styledPreview,
           terminalTheme: resolvedTerminalTheme,
-          fontSize: fontSize,
           maxLines: maxLines,
           maxWidth: constraints.maxWidth,
           maxHeight: constraints.maxHeight,
@@ -670,7 +669,6 @@ class _StyledTerminalPreviewText extends StatelessWidget {
   const _StyledTerminalPreviewText({
     required this.preview,
     required this.terminalTheme,
-    required this.fontSize,
     required this.maxLines,
     required this.maxWidth,
     required this.maxHeight,
@@ -678,13 +676,19 @@ class _StyledTerminalPreviewText extends StatelessWidget {
 
   final TerminalPreviewSnapshot preview;
   final TerminalThemeData terminalTheme;
-  final double fontSize;
   final int maxLines;
   final double maxWidth;
   final double maxHeight;
 
   @override
   Widget build(BuildContext context) {
+    final textScaler = MediaQuery.textScalerOf(context);
+    final fontSize = _fitStyledPreviewFontSize(
+      preview: preview,
+      maxLines: maxLines,
+      maxHeight: maxHeight,
+      textScaler: textScaler,
+    );
     final textStyle = TerminalStyle.fromTextStyle(
       FluttyTheme.monoStyle.copyWith(
         fontSize: fontSize,
@@ -694,7 +698,7 @@ class _StyledTerminalPreviewText extends StatelessWidget {
     final painter = MonkeyTerminalPainter(
       theme: terminalTheme.toXtermTheme(),
       textStyle: textStyle,
-      textScaler: MediaQuery.textScalerOf(context),
+      textScaler: textScaler,
     );
     final lineCount = math.min(preview.lines.length, maxLines);
     final height = maxHeight.isFinite
@@ -718,6 +722,39 @@ class _StyledTerminalPreviewText extends StatelessWidget {
             ),
     );
   }
+}
+
+double _fitStyledPreviewFontSize({
+  required TerminalPreviewSnapshot preview,
+  required int maxLines,
+  required double maxHeight,
+  required TextScaler textScaler,
+}) {
+  if (!maxHeight.isFinite || maxHeight <= 0) {
+    return _previewMaxFontSize;
+  }
+  final lineCount = math.max(1, math.min(preview.lines.length, maxLines));
+  var low = _previewMinFontSize;
+  var high = _previewMaxFontSize;
+  for (var index = 0; index < 10; index++) {
+    final midpoint = (low + high) / 2;
+    final painter = MonkeyTerminalPainter(
+      theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+      textStyle: TerminalStyle.fromTextStyle(
+        FluttyTheme.monoStyle.copyWith(
+          fontSize: midpoint,
+          height: _previewLineHeight,
+        ),
+      ),
+      textScaler: textScaler,
+    );
+    if (painter.cellSize.height * lineCount <= maxHeight) {
+      low = midpoint;
+    } else {
+      high = midpoint;
+    }
+  }
+  return low;
 }
 
 class _TerminalPreviewPainter extends CustomPainter {
