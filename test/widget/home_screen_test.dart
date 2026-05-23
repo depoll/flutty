@@ -642,7 +642,14 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      await tester.tapAt(tester.getCenter(find.byType(ConnectionPreviewStack)));
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(ConnectionPreviewStack),
+              matching: find.byType(CustomPaint),
+            )
+            .last,
+      );
       await tester.pumpAndSettle();
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
@@ -707,7 +714,14 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      await tester.tapAt(tester.getCenter(find.byType(ConnectionPreviewStack)));
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(ConnectionPreviewStack),
+              matching: find.byType(CustomPaint),
+            )
+            .last,
+      );
       await tester.pumpAndSettle();
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
