@@ -529,10 +529,13 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     if (handleTap == null) {
       return card;
     }
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: handleTap,
-      child: card,
+    return Material(
+      type: MaterialType.transparency,
+      child: InkWell(
+        onTap: handleTap,
+        borderRadius: BorderRadius.circular(12),
+        child: card,
+      ),
     );
   }
 }
@@ -730,35 +733,34 @@ class _TerminalPreviewPainter extends CustomPainter {
     final cellData = CellData.empty();
     final cellWidth = painter.cellSize.width;
     final lineHeight = painter.cellSize.height;
-    final lineCount = math.min(preview.lines.length, maxLines);
-    final sourceColumns = preview.lines
-        .take(lineCount)
-        .fold<int>(
-          1,
-          (maxLength, line) => math.max(maxLength, line.cells.length),
-        );
-    final sourceWidth = sourceColumns * cellWidth;
-    final sourceHeight = lineCount * lineHeight;
-    final scaleX = sourceWidth <= 0 ? 1.0 : size.width / sourceWidth;
-    final scaleY = sourceHeight <= 0 ? 1.0 : size.height / sourceHeight;
+    final visibleRows = math.max(1, size.height ~/ lineHeight);
+    final lineCount = math.min(
+      math.min(preview.lines.length, maxLines),
+      visibleRows,
+    );
+    final visibleColumns = math.max(1, (size.width / cellWidth).ceil());
 
     canvas
       ..save()
       ..clipRect(Offset.zero & size)
-      ..scale(scaleX, scaleY);
+      ..drawRect(Offset.zero & size, Paint()..color = painter.theme.background);
 
     for (var row = 0; row < lineCount; row++) {
       final line = preview.lines[row].cells;
       final y = row * lineHeight;
       canvas
         ..save()
-        ..clipRect(Rect.fromLTWH(0, y, sourceWidth, lineHeight));
+        ..clipRect(Rect.fromLTWH(0, y, size.width, lineHeight));
       painter.paintLineTrailingBackgroundFill(canvas, Offset(0, y), line);
-      for (var column = 0; column < line.length; column++) {
+      for (
+        var column = 0;
+        column < line.length && column < visibleColumns;
+        column++
+      ) {
         line.getCellData(column, cellData);
         final width = cellData.content >> CellContent.widthShift;
         final x = column * cellWidth;
-        if (x >= sourceWidth) {
+        if (x >= size.width) {
           break;
         }
         painter.paintCell(canvas, Offset(x, y), cellData);
