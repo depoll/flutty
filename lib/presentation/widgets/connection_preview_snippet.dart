@@ -76,6 +76,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required Iterable<TerminalThemeData> availableThemes,
   String? preview,
   TerminalPreviewSnapshot? previewSnapshot,
+  TerminalThemeData? activeTerminalTheme,
   String? sessionTitle,
   String? windowTitle,
   String? iconName,
@@ -120,13 +121,15 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
     body: body,
     previewSnapshot: previewSnapshot,
     metadata: metadataSegments.isEmpty ? null : metadataSegments.join(' • '),
-    terminalTheme: resolveConnectionPreviewTheme(
-      brightness: brightness,
-      themeSettings: themeSettings,
-      availableThemes: availableThemes,
-      lightThemeId: connectionLightThemeId ?? hostLightThemeId,
-      darkThemeId: connectionDarkThemeId ?? hostDarkThemeId,
-    ),
+    terminalTheme:
+        activeTerminalTheme ??
+        resolveConnectionPreviewTheme(
+          brightness: brightness,
+          themeSettings: themeSettings,
+          availableThemes: availableThemes,
+          lightThemeId: connectionLightThemeId ?? hostLightThemeId,
+          darkThemeId: connectionDarkThemeId ?? hostDarkThemeId,
+        ),
   );
 }
 

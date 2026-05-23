@@ -3423,6 +3423,7 @@ class ActiveConnection {
     required this.config,
     this.preview,
     this.previewSnapshot,
+    this.terminalTheme,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -3455,6 +3456,9 @@ class ActiveConnection {
 
   /// The latest styled terminal preview snippet, when available.
   final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// The active terminal theme resolved for this connection.
+  final TerminalThemeData? terminalTheme;
 
   /// The active coding-agent session title, when available.
   final String? sessionTitle;
@@ -3731,6 +3735,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       config: session.config,
       preview: session.terminalPreview,
       previewSnapshot: session.terminalPreviewSnapshot,
+      terminalTheme: session.terminalTheme,
       sessionTitle: _connectionSessionTitles[connectionId],
       windowTitle: session.windowTitle,
       iconName: session.iconName,
@@ -3802,6 +3807,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           config: session.config,
           preview: session.terminalPreview,
           previewSnapshot: session.terminalPreviewSnapshot,
+          terminalTheme: session.terminalTheme,
           sessionTitle: _connectionSessionTitles[connectionId],
           windowTitle: session.windowTitle,
           iconName: session.iconName,

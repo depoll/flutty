@@ -120,6 +120,23 @@ void main() {
     expect(entry.body.split('\n'), hasLength(17));
   });
 
+  test('stack preview prefers the active connection terminal theme', () {
+    final entry = buildConnectionPreviewStackEntry(
+      connectionId: 1,
+      state: SshConnectionState.connected,
+      brightness: Brightness.light,
+      themeSettings: const TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      ),
+      availableThemes: TerminalThemes.all,
+      preview: 'ready',
+      activeTerminalTheme: TerminalThemes.defaultDarkTheme,
+    );
+
+    expect(entry.terminalTheme, TerminalThemes.defaultDarkTheme);
+  });
+
   testWidgets('renders extra rows in stacked previews', (tester) async {
     final preview = previewLines(19);
 
