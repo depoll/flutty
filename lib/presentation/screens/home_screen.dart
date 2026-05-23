@@ -1203,23 +1203,25 @@ class _HostRow extends ConsumerWidget {
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
                     previewSnapshot: connection?.previewSnapshot,
+                    terminalTheme:
+                        connection?.terminalTheme ??
+                        resolveConnectionPreviewTheme(
+                          brightness: Theme.of(context).brightness,
+                          themeSettings: terminalThemeSettings,
+                          availableThemes: terminalThemes,
+                          lightThemeId:
+                              connection?.terminalThemeLightId ??
+                              host.terminalThemeLightId,
+                          darkThemeId:
+                              connection?.terminalThemeDarkId ??
+                              host.terminalThemeDarkId,
+                        ),
                     sessionTitle: connection?.sessionTitle,
                     windowTitle: connection?.windowTitle,
                     iconName: connection?.iconName,
                     workingDirectory: connection?.workingDirectory,
                     shellStatus: connection?.shellStatus,
                     lastExitCode: connection?.lastExitCode,
-                    terminalTheme: resolveConnectionPreviewTheme(
-                      brightness: Theme.of(context).brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection?.terminalThemeLightId ??
-                          host.terminalThemeLightId,
-                      darkThemeId:
-                          connection?.terminalThemeDarkId ??
-                          host.terminalThemeDarkId,
-                    ),
                     createdAt: sessionsNotifier
                         .getSession(connectionId)
                         ?.createdAt,
@@ -1724,6 +1726,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                       availableThemes: terminalThemes,
                       preview: connection.preview,
                       previewSnapshot: connection.previewSnapshot,
+                      activeTerminalTheme: connection.terminalTheme,
                       sessionTitle: connection.sessionTitle,
                       windowTitle: connection.windowTitle,
                       iconName: connection.iconName,

@@ -17,6 +17,7 @@ import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_preview.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
@@ -132,6 +133,7 @@ class _MutableActiveSessionsNotifier extends ActiveSessionsNotifier {
       config: existing.config,
       preview: existing.preview,
       previewSnapshot: existing.previewSnapshot,
+      terminalTheme: existing.terminalTheme,
       sessionTitle: nextSessionTitle,
       windowTitle: existing.windowTitle,
       iconName: existing.iconName,
@@ -281,6 +283,7 @@ ActiveConnection _buildActiveConnection({
   SshConnectionState state = SshConnectionState.connected,
   String? preview,
   TerminalPreviewSnapshot? previewSnapshot,
+  TerminalThemeData? terminalTheme,
   String? sessionTitle,
   String? windowTitle,
   String? iconName,
@@ -298,6 +301,7 @@ ActiveConnection _buildActiveConnection({
   ),
   preview: preview,
   previewSnapshot: previewSnapshot,
+  terminalTheme: terminalTheme,
   sessionTitle: sessionTitle,
   windowTitle: windowTitle,
   iconName: iconName,
