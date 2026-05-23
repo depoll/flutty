@@ -15,6 +15,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
+import '../../domain/models/terminal_preview.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -1197,6 +1198,7 @@ class _HostRow extends ConsumerWidget {
                         SshConnectionState.disconnected,
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
+                    previewSnapshot: connection?.previewSnapshot,
                     sessionTitle: connection?.sessionTitle,
                     windowTitle: connection?.windowTitle,
                     iconName: connection?.iconName,
@@ -1575,6 +1577,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.endpoint,
     required this.onTap,
     this.preview,
+    this.previewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -1589,6 +1592,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final SshConnectionState state;
   final String endpoint;
   final String? preview;
+  final TerminalPreviewSnapshot? previewSnapshot;
   final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
@@ -1613,6 +1617,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
+        previewSnapshot: previewSnapshot,
         sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
@@ -1714,6 +1719,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                       themeSettings: terminalThemeSettings,
                       availableThemes: terminalThemes,
                       preview: connection.preview,
+                      previewSnapshot: connection.previewSnapshot,
                       sessionTitle: connection.sessionTitle,
                       windowTitle: connection.windowTitle,
                       iconName: connection.iconName,
@@ -1824,6 +1830,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   const _ConnectionPreviewText({
     required this.endpoint,
     this.preview,
+    this.previewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -1835,6 +1842,7 @@ class _ConnectionPreviewText extends StatelessWidget {
 
   final String endpoint;
   final String? preview;
+  final TerminalPreviewSnapshot? previewSnapshot;
   final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
@@ -1847,6 +1855,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
     preview: preview,
+    previewSnapshot: previewSnapshot,
     sessionTitle: sessionTitle,
     windowTitle: windowTitle,
     iconName: iconName,
