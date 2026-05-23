@@ -178,6 +178,9 @@ var (
 		"opencode": {
 			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
 		},
+		"antigravity": {
+			regexp.MustCompile(`(?:^|\s)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
 	}
 )
 
@@ -3243,6 +3246,8 @@ func agentToolFromCommandName(command string) string {
 		return "opencode"
 	case "gemini", "gemini-cli":
 		return "gemini"
+	case "agy", "antigravity", "antigravity-cli":
+		return "antigravity"
 	default:
 		return ""
 	}
@@ -3275,6 +3280,11 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "gemini --yolo"
 		}
 		return "gemini"
+	case "antigravity":
+		if startInYoloMode {
+			return "agy --dangerously-skip-permissions"
+		}
+		return "agy"
 	default:
 		return ""
 	}
@@ -3312,6 +3322,17 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return "gemini --yolo --resume " + quotedSessionID
 		}
 		return "gemini --resume " + quotedSessionID
+	case "antigravity":
+		commandPrefix := ""
+		if startInYoloMode {
+			commandPrefix = "agy --dangerously-skip-permissions "
+		} else {
+			commandPrefix = "agy "
+		}
+		if sessionID == "_continue" {
+			return commandPrefix + "--continue"
+		}
+		return commandPrefix + "--conversation " + quotedSessionID
 	default:
 		return ""
 	}
@@ -3339,6 +3360,9 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "gemini" || normalized == "gemini cli" ||
 		strings.HasPrefix(normalized, "gemini cli "):
 		return "gemini"
+	case normalized == "agy" || normalized == "antigravity" ||
+		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
+		return "antigravity"
 	default:
 		return ""
 	}
