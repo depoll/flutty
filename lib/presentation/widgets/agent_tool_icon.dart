@@ -121,8 +121,13 @@ final Map<AgentLaunchTool, String> _svgByTool = <AgentLaunchTool, String>{
   ]),
   AgentLaunchTool.antigravity: _buildSvg('0 0 24 24', const [
     _SvgPathSpec(
-      'M12 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm-8 13c0-3.3 3.6-6 8-6s8 2.7 8 6a1 1 0 0 1-2 0c0-2.2-2.7-4-6-4s-6 1.8-6 4a1 1 0 0 1-2 0zm3 3c0-2.2 2.2-4 5-4s5 1.8 5 4a1 1 0 0 1-2 0c0-1.1-1.3-2-3-2s-3 .9-3 2a1 1 0 0 1-2 0z',
+      'M12 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zm0 2.5L9 7.5h1.5v3h3v-3H15L12 4.5z',
+      fillRule: 'evenodd',
+      clipRule: 'evenodd',
     ),
+    _SvgPathSpec('M6 14.5c2-1.3 10-1.3 12 0-2-.8-10-.8-12 0z'),
+    _SvgPathSpec('M5 17c2.5-1.3 11.5-1.3 14 0-2.5-.8-11.5-.8-14 0z'),
+    _SvgPathSpec('M4 19.5c3-1.3 13-1.3 16 0-3-.8-13-.8-16 0z'),
   ]),
 };
 

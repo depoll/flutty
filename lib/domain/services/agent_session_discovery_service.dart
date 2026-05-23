@@ -26,7 +26,6 @@ const _profileSourcingPrefix =
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
 const _geminiSessionMetadataMaxBytes = 64 * 1024;
-const _antigravitySessionMetadataMaxBytes = 8 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -2465,73 +2464,199 @@ class AgentSessionDiscoveryService {
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      const pyScript = r'''
+import os
+import sys
+import json
+import re
+import glob
+from datetime import datetime
 
-      final output = await _exec(
-        session,
-        'find ~/.antigravity/sessions ~/.agy/sessions ./.antigravitycli ./.agycli -name "*.json" -type f '
-        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
-      );
-      if (output.trim().isEmpty) {
-        return const _ToolDiscoveryResult.success('Antigravity', []);
-      }
+def extract_partial_json_field(raw, key):
+    pattern = r"\"" + re.escape(key) + r"\"\s*:\s*\"([^\"]*)\""
+    match = re.search(pattern, raw)
+    if match:
+        return match.group(1)
+    return None
 
-      final sessionPaths = output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toList(growable: false);
-      final recentSessionPaths = sessionPaths
-          .take(metadataReadLimit)
-          .toList(growable: false);
-      final sessionSnapshots = await _readRemoteFileSnapshots(
-        session,
-        recentSessionPaths,
-        maxBytes: _antigravitySessionMetadataMaxBytes,
-      );
+home = os.path.expanduser("~")
+legacy_dirs = [
+    os.path.join(home, ".antigravity", "sessions"),
+    os.path.join(home, ".agy", "sessions"),
+    "./.antigravitycli",
+    "./.agycli"
+]
+
+sessions = []
+visited_session_ids = set()
+
+for d in legacy_dirs:
+    if os.path.isdir(d):
+        for fp in glob.glob(os.path.join(d, "*.json")):
+            try:
+                mtime = os.path.getmtime(fp)
+                dt = datetime.utcfromtimestamp(mtime)
+                last_active = dt.isoformat() + "Z"
+                
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                
+                metadata = {}
+                try:
+                    metadata = json.loads(content)
+                except Exception:
+                    session_id = extract_partial_json_field(content, "id") or extract_partial_json_field(content, "sessionId")
+                    summary = extract_partial_json_field(content, "summary") or extract_partial_json_field(content, "name")
+                    cwd = extract_partial_json_field(content, "workingDirectory") or extract_partial_json_field(content, "cwd")
+                    if not cwd:
+                        folder_uri = extract_partial_json_field(content, "folderUri")
+                        if folder_uri and folder_uri.startswith("file://"):
+                            cwd = folder_uri[7:]
+                    if not cwd and summary and summary.startswith("/"):
+                        cwd = summary
+                    updated_at = extract_partial_json_field(content, "updatedAt") or extract_partial_json_field(content, "lastActive")
+                    
+                    if session_id or summary or cwd or updated_at:
+                        metadata = {
+                            "id": session_id,
+                            "summary": summary,
+                            "workingDirectory": cwd,
+                            "updatedAt": updated_at
+                        }
+                
+                session_id = metadata.get("id") or metadata.get("sessionId") or os.path.basename(fp).replace(".json", "")
+                if session_id in visited_session_ids:
+                    continue
+                visited_session_ids.add(session_id)
+                
+                summary = metadata.get("summary") or metadata.get("name") or session_id[:8]
+                cwd = metadata.get("workingDirectory") or metadata.get("cwd")
+                
+                if not cwd:
+                    res = metadata.get("projectResources", {}).get("resources", [])
+                    for r in res:
+                        git_folder = r.get("gitFolder", {}) if isinstance(r, dict) else {}
+                        uri_str = git_folder.get("folderUri")
+                        if uri_str and uri_str.startswith("file://"):
+                            cwd = uri_str[7:]
+                            break
+                
+                if not cwd and summary and summary.startswith("/"):
+                    cwd = summary
+                
+                updated_at = metadata.get("updatedAt") or metadata.get("lastActive")
+                if updated_at:
+                    last_active = updated_at
+                
+                sessions.append({
+                    "sessionId": session_id,
+                    "summary": summary,
+                    "workingDirectory": cwd,
+                    "lastActive": last_active
+                })
+            except Exception:
+                pass
+
+history_path = os.path.join(home, ".gemini", "antigravity-cli", "history.jsonl")
+history_by_id = {}
+if os.path.exists(history_path):
+    with open(history_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                conv_id = entry.get("conversationId")
+                if conv_id:
+                    history_by_id[conv_id] = entry
+            except Exception:
+                pass
+
+conv_dirs = [
+    os.path.join(home, ".gemini", "antigravity-cli", "conversations"),
+    os.path.join(home, ".gemini", "antigravity-cli", "implicit")
+]
+
+for d in conv_dirs:
+    if os.path.isdir(d):
+        for fp in glob.glob(os.path.join(d, "*.pb")):
+            try:
+                conv_id = os.path.basename(fp).replace(".pb", "")
+                if conv_id in visited_session_ids:
+                    continue
+                visited_session_ids.add(conv_id)
+                
+                mtime = os.path.getmtime(fp)
+                dt = datetime.utcfromtimestamp(mtime)
+                last_active = dt.isoformat() + "Z"
+                
+                annotation_path = os.path.join(home, ".gemini", "antigravity-cli", "annotations", conv_id + ".pbtxt")
+                title = None
+                if os.path.exists(annotation_path):
+                    with open(annotation_path, "r", encoding="utf-8", errors="ignore") as af:
+                        ann_content = af.read()
+                        m = re.search(r"title\s*:\s*\"([^\"]+)\"", ann_content)
+                        if m:
+                            title = m.group(1)
+                
+                history_entry = history_by_id.get(conv_id, {})
+                summary = title or history_entry.get("display") or conv_id[:8]
+                cwd = history_entry.get("workspace")
+                
+                timestamp = history_entry.get("timestamp")
+                if timestamp:
+                    try:
+                        dt_hist = datetime.utcfromtimestamp(timestamp / 1000.0)
+                        last_active = dt_hist.isoformat() + "Z"
+                    except Exception:
+                        pass
+                
+                sessions.append({
+                    "sessionId": conv_id,
+                    "summary": summary,
+                    "workingDirectory": cwd,
+                    "lastActive": last_active
+                })
+            except Exception:
+                pass
+
+print(json.dumps(sessions))
+''';
+
+      final pyCommand = "python3 -c '${pyScript.replaceAll("'", r"'\''")}'";
+      final output = await _exec(session, pyCommand);
 
       final sessions = <ToolSessionInfo>[];
       var hadError = false;
 
-      for (final filePath in recentSessionPaths) {
-        final fileName = filePath.split('/').last.replaceAll('.json', '');
-        final snapshot = sessionSnapshots[filePath];
-        if (snapshot == null) {
-          hadError = true;
-          continue;
-        }
-
+      if (output.trim().isNotEmpty) {
         try {
-          final metadata = parseAntigravitySessionMetadata(snapshot.content);
-          if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
-            hadError = true;
-          }
+          final List<dynamic> decoded = jsonDecode(output);
+          for (final entry in decoded) {
+            if (entry is Map<String, dynamic>) {
+              final sessionId = entry['sessionId'] as String?;
+              final summary = entry['summary'] as String?;
+              final workingDir = entry['workingDirectory'] as String?;
+              final lastActiveStr = entry['lastActive'] as String?;
 
-          sessions.add(
-            ToolSessionInfo(
-              toolName: 'Antigravity',
-              sessionId: metadata.sessionId ?? fileName,
-              workingDirectory: metadata.workingDirectory,
-              lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
-              summary: metadata.summary ?? _truncateId(fileName),
-            ),
-          );
+              if (sessionId != null) {
+                DateTime? lastActive;
+                if (lastActiveStr != null) {
+                  lastActive = DateTime.tryParse(lastActiveStr);
+                }
+                sessions.add(
+                  ToolSessionInfo(
+                    toolName: 'Antigravity',
+                    sessionId: sessionId,
+                    workingDirectory: workingDir,
+                    lastActive: lastActive,
+                    summary: summary ?? _truncateId(sessionId),
+                  ),
+                );
+              }
+            }
+          }
         } on Object {
           hadError = true;
         }
