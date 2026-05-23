@@ -813,6 +813,115 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	}
 }
 
+// TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach guards against the
+// "hermes spew" regression: when MonkeyMux can answer an OSC theme query from
+// its cached theme hint, the query bytes must be removed from the chunk
+// forwarded to the attach (SSH client) side. Otherwise the client would also
+// answer the query, and that duplicate response would round-trip back through
+// the attach input pipe into the active window's PTY, where the TUI renders
+// it as literal text.
+func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	attach := &recordingConn{}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	server.themeHint = []byte(backgroundReport)
+
+	server.handleWindowOutput("@1", []byte("hello\x1b]11;?\x1b\\world"))
+
+	if got := attach.String(); got != "helloworld" {
+		t.Fatalf("active attach output = %q, want OSC 11 query stripped", got)
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("window pty got = %q, want background report %q", got, backgroundReport)
+	}
+}
+
+// TestActiveOutputKeepsUnansweredPaletteQueryInAttach verifies that when the
+// theme hint cannot answer every key in a multi-key OSC 4 palette query, the
+// query is left intact so the SSH client can still reply.
+func TestActiveOutputKeepsUnansweredPaletteQueryInAttach(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.themeHint = []byte("\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\")
+
+	server.handleWindowOutput("@1", []byte("\x1b]4;0;?;7;?\x1b\\"))
+
+	if got := attach.String(); got != "\x1b]4;0;?;7;?\x1b\\" {
+		t.Fatalf("active attach output = %q, want palette query preserved", got)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesLeavesNormalOutput(t *testing.T) {
+	chunk := []byte("plain text without queries\x1b]2;Title\x07")
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	got := stripLocallyAnsweredThemeQueries(chunk, hint)
+	if string(got) != string(chunk) {
+		t.Fatalf("got = %q, want unchanged %q", got, chunk)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesIsNoopWithoutHint(t *testing.T) {
+	chunk := []byte("\x1b]11;?\x1b\\")
+
+	got := stripLocallyAnsweredThemeQueries(chunk, nil)
+	if string(got) != string(chunk) {
+		t.Fatalf("got = %q, want unchanged %q", got, chunk)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesStripsAnsweredQuery(t *testing.T) {
+	chunk := []byte("before\x1b]11;?\x07middle\x1b]4;5;?\x1b\\after")
+	hint := []byte(
+		"\x1b]11;rgb:1111/2222/3333\x1b\\" +
+			"\x1b]4;5;rgb:aaaa/bbbb/cccc\x1b\\",
+	)
+
+	got := stripLocallyAnsweredThemeQueries(chunk, hint)
+	if string(got) != "beforemiddleafter" {
+		t.Fatalf("got = %q, want %q", got, "beforemiddleafter")
+	}
+}
+
 func TestCreateWindowClearsAttachBeforePromptOutput(t *testing.T) {
 	server := newMuxServer("test")
 	t.Cleanup(server.close)

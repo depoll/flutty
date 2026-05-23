@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.38"
+	monkeyMuxVersion         = "0.1.39"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -1638,7 +1638,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 
 	if shouldWrite {
-		s.writeAttachIfActive(windowID, attach, chunk)
+		forwarded := stripLocallyAnsweredThemeQueries(chunk, s.themeHintSnapshot())
+		if len(forwarded) > 0 {
+			s.writeAttachIfActive(windowID, attach, forwarded)
+		}
 	}
 
 	if snapshot != nil {
@@ -2872,6 +2875,79 @@ func stripFocusReportsFromAttachInput(data []byte) []byte {
 
 func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
+}
+
+// themeHintSnapshot returns a copy of the cached theme-hint bytes, taken under
+// the server mutex. Used to inspect the hint outside the lock without racing
+// concurrent updates.
+func (s *muxServer) themeHintSnapshot() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.themeHint) == 0 {
+		return nil
+	}
+	return append([]byte(nil), s.themeHint...)
+}
+
+// stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
+// queries and OSC 4 palette queries from chunk when MonkeyMux can answer them
+// locally from hint. The daemon already writes the cached responses directly
+// to the window PTY in handleWindowOutput, so forwarding the same queries to
+// the SSH client would produce a duplicate reply. That duplicate would travel
+// back through the attach socket as keyboard input and surface inside the
+// active TUI as literal text (the user-visible "spew" bug). Queries we cannot
+// answer (no cached response for every queried key) are left in place so the
+// client can still reply.
+func stripLocallyAnsweredThemeQueries(chunk []byte, hint []byte) []byte {
+	if len(chunk) == 0 || len(hint) == 0 {
+		return chunk
+	}
+	responses := themeHintResponseMap(hint)
+	if len(responses) == 0 {
+		return chunk
+	}
+	var output []byte
+	copyStart := 0
+	for i := 0; i < len(chunk); {
+		if chunk[i] != '\x1b' || i+1 >= len(chunk) || chunk[i+1] != ']' {
+			i++
+			continue
+		}
+		payloadStart := i + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(chunk[payloadStart:])
+		if !ok {
+			break
+		}
+		sequenceEnd := payloadStart + payloadEnd + terminatorLength
+		payload := chunk[payloadStart : payloadStart+payloadEnd]
+		queryKeys := themeQueryKeysFromOscPayload(string(payload))
+		if len(queryKeys) == 0 {
+			i = sequenceEnd
+			continue
+		}
+		answerable := true
+		for _, key := range queryKeys {
+			if len(responses[key]) == 0 {
+				answerable = false
+				break
+			}
+		}
+		if !answerable {
+			i = sequenceEnd
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(chunk)-(sequenceEnd-i))
+		}
+		output = append(output, chunk[copyStart:i]...)
+		copyStart = sequenceEnd
+		i = sequenceEnd
+	}
+	if output == nil {
+		return chunk
+	}
+	output = append(output, chunk[copyStart:]...)
+	return output
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {
