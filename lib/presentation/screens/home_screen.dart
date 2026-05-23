@@ -1741,9 +1741,6 @@ class _ConnectionsPanel extends ConsumerWidget {
                           : null,
                       connectionLightThemeId: connection.terminalThemeLightId,
                       connectionDarkThemeId: connection.terminalThemeDarkId,
-                      activeSession: sessionsNotifier.getSession(
-                        connection.connectionId,
-                      ),
                     );
                     final preferredTmuxSessionName =
                         resolvePreferredTmuxSessionName(

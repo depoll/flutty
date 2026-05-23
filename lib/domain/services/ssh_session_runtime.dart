@@ -35,26 +35,15 @@ class _SshSessionRuntime {
   bool _terminalInsertMode = false;
 
   Terminal? _terminal;
-  Terminal? _previewTerminal;
-  int _previewTerminalCols = _defaultPreviewTerminalCols;
-  int _previewTerminalRows = _defaultPreviewTerminalRows;
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
-  static const _defaultPreviewTerminalCols = 60;
-  static const _defaultPreviewTerminalRows = 24;
-  static const _previewTerminalMaxLines = 200;
 
   SSHSession? get shell => _shell;
 
   bool get hasShell => _shell != null;
 
   Terminal? get terminal => _terminal;
-
-  /// Local-only terminal sized for the preview card. Receives the same SSH
-  /// bytes as [terminal] so its content reflects the live session, but laid
-  /// out at preview-friendly dimensions for the connection preview cards.
-  Terminal? get previewTerminal => _previewTerminal;
 
   bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
 
@@ -88,37 +77,8 @@ class _SshSessionRuntime {
       ..onIconChange = _session._handleIconNameChange;
     _session.terminalHyperlinkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
-    _ensurePreviewTerminal();
     _refreshTerminalPreview();
     return _terminal!;
-  }
-
-  Terminal _ensurePreviewTerminal() {
-    final existing = _previewTerminal;
-    if (existing != null) {
-      return existing;
-    }
-    final created = Terminal(maxLines: _previewTerminalMaxLines)
-      ..resize(_previewTerminalCols, _previewTerminalRows);
-    _previewTerminal = created;
-    return created;
-  }
-
-  void resizePreviewTerminal({required int columns, required int rows}) {
-    final clampedCols = columns < 1 ? 1 : columns;
-    final clampedRows = rows < 1 ? 1 : rows;
-    if (clampedCols == _previewTerminalCols &&
-        clampedRows == _previewTerminalRows) {
-      return;
-    }
-    _previewTerminalCols = clampedCols;
-    _previewTerminalRows = clampedRows;
-    final preview = _previewTerminal;
-    if (preview == null) {
-      return;
-    }
-    preview.resize(clampedCols, clampedRows);
-    _refreshTerminalPreview();
   }
 
   void writeToShell(String data) {
@@ -245,9 +205,6 @@ class _SshSessionRuntime {
     _terminalColorSchemeUpdatesMode = false;
     _terminalInsertMode = false;
     _terminal = null;
-    _previewTerminal = null;
-    _previewTerminalCols = _defaultPreviewTerminalCols;
-    _previewTerminalRows = _defaultPreviewTerminalRows;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
       'close_complete',
@@ -513,7 +470,6 @@ class _SshSessionRuntime {
       _terminalInsertMode = terminalOutput.insertMode;
       if (terminalOutput.output.isNotEmpty) {
         terminal.write(terminalOutput.output);
-        _ensurePreviewTerminal().write(terminalOutput.output);
       }
       _respondToTerminalWindowControlQueries(output.terminalData, terminal);
       if (terminalOutput.output.isNotEmpty) {
@@ -654,13 +610,12 @@ class _SshSessionRuntime {
   }
 
   void _refreshTerminalPreview() {
-    final captureTerminal = _previewTerminal ?? _terminal;
-    final nextPreview = captureTerminal == null
+    final nextPreview = _terminal == null
         ? null
-        : SshSession.buildTerminalPreview(captureTerminal);
-    final nextPreviewSnapshot = captureTerminal == null
+        : SshSession.buildTerminalPreview(_terminal!);
+    final nextPreviewSnapshot = _terminal == null
         ? null
-        : SshSession.buildTerminalPreviewSnapshot(captureTerminal);
+        : SshSession.buildTerminalPreviewSnapshot(_terminal!);
     if (nextPreview == _session._terminalPreview &&
         nextPreviewSnapshot == _session._terminalPreviewSnapshot) {
       return;
