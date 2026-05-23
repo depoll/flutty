@@ -2592,6 +2592,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       'codex|codex-*) agent_tool=codex ;; '
       'opencode|opencode-*) agent_tool=opencode ;; '
       'gemini|gemini-*) agent_tool=gemini ;; '
+      'agy|agy-*|antigravity|antigravity-*) agent_tool=antigravity ;; '
       'esac; }; '
       'flutty_is_generic_runtime_command_name() { '
       r'case "${1##*/}" in '
@@ -2645,7 +2646,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       '2>/dev/null || true; sleep 0.05; '
       '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      'opencode|claude) '
+      'opencode|claude|antigravity) '
       'injected=1; '
       '( ${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
       '2>/dev/null || true; sleep 0.05; '
@@ -3976,7 +3977,11 @@ AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
 @visibleForTesting
 String buildAgentToolDetectionCommand() {
   final binaries =
-      AgentLaunchTool.values.map((t) => t.commandName).toSet().toList()..sort();
+      AgentLaunchTool.values
+          .expand((t) => t.candidateCommandNames)
+          .toSet()
+          .toList()
+        ..sort();
   final inner =
       'for c in ${binaries.join(' ')}; do '
       r'command -v "$c" 2>/dev/null; '
@@ -4450,6 +4455,7 @@ END {
     else if (command[pid] ~ /(^|[\\/@[:space:]])codex([\\/._[:space:]-]|\$)/) tool = "codex"
     else if (command[pid] ~ /(^|[\\/@[:space:]])gemini([\\/._[:space:]-]|\$)/) tool = "gemini"
     else if (command[pid] ~ /(^|[\\/@[:space:]])opencode([\\/._[:space:]-]|\$)/) tool = "opencode"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])(agy|antigravity|antigravity-cli)([\\/._[:space:]-]|\$)/) tool = "antigravity"
     if (tool == "") continue
     current = pid
     seen = 0
@@ -4506,6 +4512,7 @@ END {
       if [ -z "\$session_id" ]; then
         case "\$tool" in
           claude|copilot|gemini) session_id=\$(flutty_arg_value --resume "\$command_text") ;;
+          antigravity) session_id=\$(flutty_arg_value --conversation "\$command_text") ;;
           codex) session_id=\$(flutty_codex_resume_id "\$command_text") ;;
           opencode) session_id=\$(flutty_arg_value --session "\$command_text") ;;
         esac

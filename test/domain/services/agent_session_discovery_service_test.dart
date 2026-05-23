@@ -506,6 +506,7 @@ branch refs/heads/fix/session-resumption
         'Codex',
         'Gemini CLI',
         'OpenCode',
+        'Antigravity',
       ]);
     });
 
@@ -522,6 +523,7 @@ branch refs/heads/fix/session-resumption
         'Copilot CLI',
         'Gemini CLI',
         'OpenCode',
+        'Antigravity',
         'Custom Tool',
       ]);
     });
@@ -838,6 +840,87 @@ cwd: /tmp/demo
         expect(metadata.lastPrompt, 'newer');
       },
     );
+  });
+
+  group('parseAntigravitySessionMetadata', () {
+    test('uses stored summary, sessionId, workingDirectory, and updatedAt', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "summary": "Fix some bugs",
+  "workingDirectory": "/Users/depoll/Code/flutty",
+  "updatedAt": "2026-04-12T21:29:53.292Z"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.sessionId, 'e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3');
+      expect(metadata.summary, 'Fix some bugs');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
+    });
+
+    test('extracts working directory from nested folderUri', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "Untitled",
+  "projectResources": {
+    "resources": [
+      {
+        "gitFolder": {
+          "folderUri": "file:///Users/depoll/Code/flutty",
+          "allowWrite": true
+        }
+      }
+    ]
+  }
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+    });
+
+    test('falls back to name when it is an absolute path', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "/Users/depoll/Code/flutty"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+    });
+
+    test(
+      'extracts metadata from a truncated JSON prefix (partial parsing)',
+      () {
+        final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "/Users/depoll/Code/flutty",
+  "folderUri": "file:///Users/depoll/Code/flutty",
+  "updatedAt": "2026-04-12T21:29:53.2
+''');
+
+        expect(metadata.parsedAny, isTrue);
+        expect(metadata.sessionId, 'e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3');
+        expect(metadata.summary, '/Users/depoll/Code/flutty');
+        expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      },
+    );
+
+    test('sets parsedAny to false when no recognized fields are present', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "unknownField": "value"
+}
+''');
+
+      expect(metadata.parsedAny, isFalse);
+    });
   });
 
   group('parseGeminiSessionMetadata', () {

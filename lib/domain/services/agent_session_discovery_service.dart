@@ -26,6 +26,7 @@ const _profileSourcingPrefix =
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
 const _geminiSessionMetadataMaxBytes = 64 * 1024;
+const _antigravitySessionMetadataMaxBytes = 8 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -83,6 +84,7 @@ const _knownDiscoveredSessionTools = <String>[
   'Codex',
   'Gemini CLI',
   'OpenCode',
+  'Antigravity',
 ];
 
 /// Orders discovered-session providers for UI rendering in a stable list.
@@ -305,6 +307,14 @@ bool _isLikelyToolStateWorkingDirectory(String directory) =>
     directory.contains('/.gemini/') ||
     directory.endsWith('/.local/share/opencode') ||
     directory.contains('/.local/share/opencode/') ||
+    directory.endsWith('/.antigravity') ||
+    directory.contains('/.antigravity/') ||
+    directory.endsWith('/.antigravitycli') ||
+    directory.contains('/.antigravitycli/') ||
+    directory.endsWith('/.agy') ||
+    directory.contains('/.agy/') ||
+    directory.endsWith('/.agycli') ||
+    directory.contains('/.agycli/') ||
     directory.startsWith('/tmp/') ||
     directory.startsWith('/private/tmp/') ||
     directory.startsWith('/var/folders/');
@@ -610,6 +620,134 @@ parseClaudeSessionMetadata(String raw) {
     agentName: agentName,
     lastPrompt: lastPrompt,
     userSummary: userSummary,
+    parsedAny: parsedAny,
+  );
+}
+
+/// Parses Antigravity session metadata from a saved session JSON file.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+parseAntigravitySessionMetadata(String raw) {
+  final decoded = _tryDecodeJsonObject(raw);
+  if (decoded == null) {
+    return _parsePartialAntigravitySessionMetadata(raw);
+  }
+
+  final sessionId =
+      _readStringField(decoded, 'id') ?? _readStringField(decoded, 'sessionId');
+  final summary =
+      _readStringField(decoded, 'summary') ?? _readStringField(decoded, 'name');
+
+  var workingDirectory =
+      _readStringField(decoded, 'workingDirectory') ??
+      _readStringField(decoded, 'cwd');
+
+  if (workingDirectory == null) {
+    final projectResources = _readMapField(decoded, 'projectResources');
+    final resources = _readListField(projectResources, 'resources');
+    if (resources != null) {
+      for (final resource in resources) {
+        if (resource is Map) {
+          final resourceMap = resource.map((k, v) => MapEntry('$k', v));
+          final gitFolder = _readMapField(resourceMap, 'gitFolder');
+          final folderUriStr = _readStringField(gitFolder, 'folderUri');
+          if (folderUriStr != null) {
+            try {
+              final uri = Uri.tryParse(folderUriStr);
+              if (uri != null && uri.isScheme('file')) {
+                workingDirectory = uri.toFilePath();
+                break;
+              }
+            } on Object {
+              // Ignore uri parsing errors
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (workingDirectory == null && summary != null && summary.startsWith('/')) {
+    workingDirectory = summary;
+  }
+
+  final updatedAt =
+      _parseDateTimeValue(decoded['updatedAt']) ??
+      _parseDateTimeValue(decoded['lastActive']);
+
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      workingDirectory != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parsedAny: parsedAny,
+  );
+}
+
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+_parsePartialAntigravitySessionMetadata(String raw) {
+  final sessionId =
+      _readJsonStringFromRaw(raw, 'id') ??
+      _readJsonStringFromRaw(raw, 'sessionId');
+  final summary =
+      _readJsonStringFromRaw(raw, 'summary') ??
+      _readJsonStringFromRaw(raw, 'name');
+
+  var workingDirectory =
+      _readJsonStringFromRaw(raw, 'workingDirectory') ??
+      _readJsonStringFromRaw(raw, 'cwd');
+
+  if (workingDirectory == null) {
+    final folderUriStr = _readJsonStringFromRaw(raw, 'folderUri');
+    if (folderUriStr != null) {
+      try {
+        final uri = Uri.tryParse(folderUriStr);
+        if (uri != null && uri.isScheme('file')) {
+          workingDirectory = uri.toFilePath();
+        }
+      } on Object {
+        // Ignore uri parsing errors
+      }
+    }
+  }
+
+  if (workingDirectory == null && summary != null && summary.startsWith('/')) {
+    workingDirectory = summary;
+  }
+
+  final updatedAt =
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'updatedAt')) ??
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'lastActive'));
+
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      workingDirectory != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
     parsedAny: parsedAny,
   );
 }
@@ -1461,6 +1599,13 @@ class AgentSessionDiscoveryService {
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
+            _discoverAntigravitySessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
           ]
         : [
             _discoverSessionsForTool(
@@ -1505,6 +1650,12 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Claude Code' => _discoverClaudeSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Antigravity' => _discoverAntigravitySessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -2301,6 +2452,115 @@ class AgentSessionDiscoveryService {
       sortAndLimitDiscoveredSessions(sessions, max),
       hadError: hadError,
     );
+  }
+
+  // ── Antigravity CLI ────────────────────────────────────────────────────
+  // Sessions: ~/.antigravity/sessions/*.json
+
+  Future<_ToolDiscoveryResult> _discoverAntigravitySessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+
+      final output = await _exec(
+        session,
+        'find ~/.antigravity/sessions ~/.agy/sessions ./.antigravitycli ./.agycli -name "*.json" -type f '
+        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+      );
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Antigravity', []);
+      }
+
+      final sessionPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+      final recentSessionPaths = sessionPaths
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final sessionSnapshots = await _readRemoteFileSnapshots(
+        session,
+        recentSessionPaths,
+        maxBytes: _antigravitySessionMetadataMaxBytes,
+      );
+
+      final sessions = <ToolSessionInfo>[];
+      var hadError = false;
+
+      for (final filePath in recentSessionPaths) {
+        final fileName = filePath.split('/').last.replaceAll('.json', '');
+        final snapshot = sessionSnapshots[filePath];
+        if (snapshot == null) {
+          hadError = true;
+          continue;
+        }
+
+        try {
+          final metadata = parseAntigravitySessionMetadata(snapshot.content);
+          if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
+            hadError = true;
+          }
+
+          sessions.add(
+            ToolSessionInfo(
+              toolName: 'Antigravity',
+              sessionId: metadata.sessionId ?? fileName,
+              workingDirectory: metadata.workingDirectory,
+              lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
+              summary: metadata.summary ?? _truncateId(fileName),
+            ),
+          );
+        } on Object {
+          hadError = true;
+        }
+      }
+
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+
+      return _ToolDiscoveryResult.success(
+        'Antigravity',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Antigravity');
+    }
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────
