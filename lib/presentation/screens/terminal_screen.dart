@@ -5794,7 +5794,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isConnecting = false;
         });
         _syncTerminalWakeLock(SshConnectionState.connected);
-        _scheduleTerminalSizeRefresh();
+        if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        } else {
+          _scheduleTerminalSizeRefresh();
+        }
         _restoreTerminalFocus();
 
         // Detect tmux on existing sessions too (may not have been detected
@@ -5876,7 +5880,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       });
       _syncTerminalWakeLock(SshConnectionState.connected);
-      _scheduleTerminalSizeRefresh();
+      if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      } else {
+        _scheduleTerminalSizeRefresh();
+      }
       _restoreTerminalFocus();
 
       // Start port forwards
@@ -6128,7 +6136,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       const Duration(milliseconds: 50),
       () {
         _monkeyMuxWindowRefreshFollowUpTimer = null;
-        if (!mounted || _isTerminalOutputFollowPaused) {
+        if (!mounted ||
+            _isTerminalOutputFollowPaused ||
+            _connectionId != session.connectionId) {
           return;
         }
         _followLiveOutput();
@@ -7136,6 +7146,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
+    final wasMuxActive = _isTmuxActive;
+    final previousMuxBackend = _activeMuxBackend;
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final configuredBackend = _configuredRemoteMuxBackend(host);
@@ -7388,6 +7400,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _primeTmuxTerminalTheme(session);
         }
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
+        if (muxBackend == RemoteMuxBackend.monkeyMux &&
+            (!wasMuxActive ||
+                previousMuxBackend != RemoteMuxBackend.monkeyMux)) {
+          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        }
         return true;
       }
 
@@ -8275,7 +8292,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       });
-      _scheduleTerminalSizeRefresh();
+      if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      } else {
+        _scheduleTerminalSizeRefresh();
+      }
     }
     return shell;
   }
@@ -8526,8 +8547,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _restoreKeyboardAfterAppResume = false;
       _wasBackgrounded = false;
       _syncTerminalWakeLock();
-      _scheduleTerminalSizeRefresh();
       final session = _observedSession;
+      if (_isTmuxActive &&
+          _activeMuxBackend == RemoteMuxBackend.monkeyMux &&
+          session != null) {
+        _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      } else {
+        _scheduleTerminalSizeRefresh();
+      }
       if (session != null && session.clipboardSharingEnabled) {
         unawaited(_startSharedClipboardSync(session));
       }
