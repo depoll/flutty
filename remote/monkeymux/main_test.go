@@ -1436,6 +1436,7 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		{tool: "codex", args: "codex resume run-42", want: "run-42"},
 		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
 		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
+		{tool: "antigravity", args: `agy --conversation "antigravity session"`, want: "antigravity session"},
 	}
 
 	for _, tt := range tests {
@@ -1751,6 +1752,28 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			},
 			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
 			agentTool: "opencode",
+		},
+		{
+			name: "antigravity resume",
+			state: restoreWindowState{
+				Name:           "Antigravity",
+				CurrentCommand: "agy",
+				AgentTool:      "antigravity",
+				AgentSessionID: "session-456",
+			},
+			want:      `agy --dangerously-skip-permissions --conversation 'session-456'`,
+			agentTool: "antigravity",
+		},
+		{
+			name: "antigravity resume continue",
+			state: restoreWindowState{
+				Name:           "Antigravity",
+				CurrentCommand: "agy",
+				AgentTool:      "antigravity",
+				AgentSessionID: "_continue",
+			},
+			want:      `agy --dangerously-skip-permissions --continue`,
+			agentTool: "antigravity",
 		},
 	}
 
