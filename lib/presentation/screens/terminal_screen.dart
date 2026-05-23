@@ -6136,7 +6136,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       const Duration(milliseconds: 50),
       () {
         _monkeyMuxWindowRefreshFollowUpTimer = null;
-        if (!mounted || _isTerminalOutputFollowPaused) {
+        if (!mounted ||
+            _isTerminalOutputFollowPaused ||
+            _connectionId != session.connectionId) {
           return;
         }
         _followLiveOutput();
