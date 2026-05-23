@@ -33,6 +33,13 @@ void main() {
         buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
         'gemini --yolo',
       );
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.antigravity,
+          startInYoloMode: true,
+        ),
+        'agy --dangerously-skip-permissions',
+      );
     });
   });
 
@@ -78,6 +85,14 @@ void main() {
         ),
         r"""OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode --session 'opencode-session'""",
       );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.antigravity,
+          'agy-session',
+          startInYoloMode: true,
+        ),
+        "agy --dangerously-skip-permissions --conversation 'agy-session'",
+      );
     });
 
     test('preserves OpenCode continue resume command in yolo mode', () {
@@ -88,6 +103,17 @@ void main() {
           startInYoloMode: true,
         ),
         r'OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode --continue',
+      );
+    });
+
+    test('preserves Antigravity continue resume command in yolo mode', () {
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.antigravity,
+          '_continue',
+          startInYoloMode: true,
+        ),
+        'agy --dangerously-skip-permissions --continue',
       );
     });
   });
@@ -360,6 +386,7 @@ void main() {
       AgentLaunchTool.codex,
       AgentLaunchTool.openCode,
       AgentLaunchTool.geminiCli,
+      AgentLaunchTool.antigravity,
     ]) {
       final preset = AgentLaunchPreset(tool: tool);
       final decoded = AgentLaunchPreset.fromJson(preset.toJson());
@@ -388,12 +415,14 @@ void main() {
       expect(AgentLaunchTool.codex.label, 'Codex');
       expect(AgentLaunchTool.openCode.label, 'OpenCode');
       expect(AgentLaunchTool.geminiCli.label, 'Gemini CLI');
+      expect(AgentLaunchTool.antigravity.label, 'Antigravity');
     });
 
     test('new tool command names are correct', () {
       expect(AgentLaunchTool.codex.commandName, 'codex');
       expect(AgentLaunchTool.openCode.commandName, 'opencode');
       expect(AgentLaunchTool.geminiCli.commandName, 'gemini');
+      expect(AgentLaunchTool.antigravity.commandName, 'agy');
     });
 
     test('command lookup resolves bare names, paths, and argv tokens', () {
@@ -420,6 +449,18 @@ void main() {
         AgentLaunchTool.geminiCli,
       );
       expect(agentLaunchToolForCommandName('codex-cli'), AgentLaunchTool.codex);
+      expect(
+        agentLaunchToolForCommandName('agy --dangerously-skip-permissions'),
+        AgentLaunchTool.antigravity,
+      );
+      expect(
+        agentLaunchToolForCommandName('antigravity'),
+        AgentLaunchTool.antigravity,
+      );
+      expect(
+        agentLaunchToolForCommandName('antigravity-cli'),
+        AgentLaunchTool.antigravity,
+      );
       expect(agentLaunchToolForCommandName('vim'), isNull);
       expect(agentLaunchToolForCommandName(''), isNull);
     });

@@ -119,6 +119,16 @@ final Map<AgentLaunchTool, String> _svgByTool = <AgentLaunchTool, String>{
       'M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81',
     ),
   ]),
+  AgentLaunchTool.antigravity: _buildSvg('0 0 24 24', const [
+    _SvgPathSpec(
+      'M12 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zm0 2.5L9 7.5h1.5v3h3v-3H15L12 4.5z',
+      fillRule: 'evenodd',
+      clipRule: 'evenodd',
+    ),
+    _SvgPathSpec('M6 14.5c2-1.3 10-1.3 12 0-2-.8-10-.8-12 0z'),
+    _SvgPathSpec('M5 17c2.5-1.3 11.5-1.3 14 0-2.5-.8-11.5-.8-14 0z'),
+    _SvgPathSpec('M4 19.5c3-1.3 13-1.3 16 0-3-.8-13-.8-16 0z'),
+  ]),
 };
 
 class _SvgPathSpec {
