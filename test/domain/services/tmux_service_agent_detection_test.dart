@@ -139,6 +139,8 @@ void main() {
         expect(command, contains('flutty_codex_logs_resume_match'));
         expect(command, contains('flutty_codex_recent_session_match'));
         expect(command, contains('flutty_gemini_recent_session_match'));
+        expect(command, contains('flutty_antigravity_recent_session_match'));
+        expect(command, contains('flutty_antigravity_session_title'));
         expect(command, contains('customTitle'));
         expect(command, contains('thread_name'));
         expect(command, contains('summary'));
@@ -194,8 +196,9 @@ void main() {
         'codex${sep}codex-1${sep}502${sep}43${sep}medium$sep\n'
         'gemini${sep}gemini-1${sep}503${sep}44${sep}medium$sep\n'
         'opencode${sep}opencode-1${sep}504${sep}45${sep}medium$sep\n'
+        'antigravity${sep}antigravity-1${sep}506${sep}47${sep}medium${sep}Anti Title\n'
         'copilot${sep}copilot-1${sep}505${sep}46${sep}medium${sep}Title\n',
-        const {42, 43, 44, 45, 46},
+        const {42, 43, 44, 45, 46, 47},
       );
 
       expect(metadata[42]?.tool, AgentLaunchTool.claudeCode);
@@ -205,6 +208,9 @@ void main() {
       expect(metadata[46]?.tool, AgentLaunchTool.copilotCli);
       expect(metadata[46]?.title, 'Title');
       expect(metadata[46]?.confidence, AgentSessionConfidence.medium);
+      expect(metadata[47]?.tool, AgentLaunchTool.antigravity);
+      expect(metadata[47]?.sessionId, 'antigravity-1');
+      expect(metadata[47]?.title, 'Anti Title');
     });
 
     test(
