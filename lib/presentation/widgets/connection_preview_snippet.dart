@@ -407,6 +407,7 @@ class ConnectionPreviewStack extends StatelessWidget {
                     opacity: index == entries.length - 1
                         ? 1
                         : 0.9 - ((entries.length - index - 2) * 0.05),
+                    onTap: onTap,
                   ),
                 ),
             ],
@@ -432,11 +433,13 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     required this.entry,
     required this.height,
     required this.opacity,
+    this.onTap,
   });
 
   final ConnectionPreviewStackEntry entry;
   final double height;
   final double opacity;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -460,7 +463,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     final textColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
 
-    return Opacity(
+    final card = Opacity(
       opacity: opacity.clamp(0.7, 1).toDouble(),
       child: Container(
         height: height,
@@ -520,6 +523,16 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+
+    final handleTap = onTap;
+    if (handleTap == null) {
+      return card;
+    }
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: handleTap,
+      child: card,
     );
   }
 }
@@ -718,22 +731,34 @@ class _TerminalPreviewPainter extends CustomPainter {
     final cellWidth = painter.cellSize.width;
     final lineHeight = painter.cellSize.height;
     final lineCount = math.min(preview.lines.length, maxLines);
+    final sourceColumns = preview.lines
+        .take(lineCount)
+        .fold<int>(
+          1,
+          (maxLength, line) => math.max(maxLength, line.cells.length),
+        );
+    final sourceWidth = sourceColumns * cellWidth;
+    final sourceHeight = lineCount * lineHeight;
+    final scaleX = sourceWidth <= 0 ? 1.0 : size.width / sourceWidth;
+    final scaleY = sourceHeight <= 0 ? 1.0 : size.height / sourceHeight;
+
+    canvas
+      ..save()
+      ..clipRect(Offset.zero & size)
+      ..scale(scaleX, scaleY);
 
     for (var row = 0; row < lineCount; row++) {
       final line = preview.lines[row].cells;
       final y = row * lineHeight;
-      if (y >= size.height) {
-        break;
-      }
       canvas
         ..save()
-        ..clipRect(Rect.fromLTWH(0, y, size.width, lineHeight));
+        ..clipRect(Rect.fromLTWH(0, y, sourceWidth, lineHeight));
       painter.paintLineTrailingBackgroundFill(canvas, Offset(0, y), line);
       for (var column = 0; column < line.length; column++) {
         line.getCellData(column, cellData);
         final width = cellData.content >> CellContent.widthShift;
         final x = column * cellWidth;
-        if (x >= size.width) {
+        if (x >= sourceWidth) {
           break;
         }
         painter.paintCell(canvas, Offset(x, y), cellData);
@@ -743,6 +768,7 @@ class _TerminalPreviewPainter extends CustomPainter {
       }
       canvas.restore();
     }
+    canvas.restore();
   }
 
   @override
