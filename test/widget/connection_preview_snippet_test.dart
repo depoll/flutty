@@ -250,6 +250,64 @@ void main() {
     expect(find.text(preview.plainText), findsNothing);
   });
 
+  testWidgets('styled preview fills its container vertically without slack', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 100)
+      ..resize(80, 24)
+      ..write(
+        [
+          'cd ~/Code/flutty',
+          'git status --short',
+          ' M lib/foo.dart',
+          ' M lib/bar.dart',
+          'echo done',
+          r'$',
+        ].join('\r\n'),
+      );
+    final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            child: ConnectionPreviewStack(
+              entries: [
+                ConnectionPreviewStackEntry(
+                  title: 'Connection #1',
+                  body: preview.plainText,
+                  previewSnapshot: preview,
+                  terminalTheme: TerminalThemes.defaultDarkTheme,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final styledPainter = find
+        .descendant(
+          of: find.byType(ConnectionPreviewStack),
+          matching: find.byType(CustomPaint),
+        )
+        .last;
+    final painterSize = tester.getSize(styledPainter);
+    final cardSize = tester.getSize(
+      find
+          .descendant(
+            of: find.byType(ConnectionPreviewStack),
+            matching: find.byType(ClipRect),
+          )
+          .last,
+    );
+    // The styled preview painter must take up the full vertical area it was
+    // given; no slack at the bottom of the rendered card.
+    expect(painterSize.height, greaterThan(0));
+    expect(painterSize.height, cardSize.height);
+  });
+
   testWidgets('sizes long non-wrapping previews to terminal rows', (
     tester,
   ) async {

@@ -14,6 +14,7 @@ import 'monkey_terminal_view.dart';
 const _previewMaxLines = 17;
 const _previewMinFontSize = 6.5;
 const _previewMaxFontSize = 10.5;
+const _styledPreviewMaxFontSize = 18.0;
 const _previewLineHeight = 1.22;
 const _stackPreviewCardHeight = 198.0;
 const _stackPreviewMetadataHeight = 18.0;
@@ -575,24 +576,42 @@ double _stackPreviewCardHeightForEntry({
     0,
     previewMaxHeight - _stackPreviewTextTopInset,
   );
-  final baseStyle = FluttyTheme.monoStyle.copyWith(
-    fontSize: _previewMaxFontSize,
-    height: _previewLineHeight,
-  );
-  final fontSize = _fitPreviewFontSize(
-    text: entry.body,
-    maxLines: _previewMaxLines,
-    constraints: BoxConstraints(maxHeight: previewTextMaxHeight),
-  );
-  final previewHeight =
-      _previewTextHeight(
-        text: entry.body,
-        maxLines: _previewMaxLines,
-        style: baseStyle.copyWith(fontSize: fontSize),
-        textDirection: textDirection,
-        textScaler: textScaler,
-      ) +
-      _stackPreviewTextTopInset;
+
+  final styledSnapshot = entry.previewSnapshot;
+  final styledTheme = entry.terminalTheme;
+  double previewHeight;
+  if (styledSnapshot != null && styledTheme != null) {
+    final lineCount = math.max(
+      1,
+      math.min(styledSnapshot.lines.length, _previewMaxLines),
+    );
+    final cellHeight = _styledPreviewCellHeight(
+      terminalTheme: styledTheme,
+      lineCount: lineCount,
+      maxHeight: previewTextMaxHeight,
+      textScaler: textScaler,
+    );
+    previewHeight = cellHeight * lineCount + _stackPreviewTextTopInset;
+  } else {
+    final baseStyle = FluttyTheme.monoStyle.copyWith(
+      fontSize: _previewMaxFontSize,
+      height: _previewLineHeight,
+    );
+    final fontSize = _fitPreviewFontSize(
+      text: entry.body,
+      maxLines: _previewMaxLines,
+      constraints: BoxConstraints(maxHeight: previewTextMaxHeight),
+    );
+    previewHeight =
+        _previewTextHeight(
+          text: entry.body,
+          maxLines: _previewMaxLines,
+          style: baseStyle.copyWith(fontSize: fontSize),
+          textDirection: textDirection,
+          textScaler: textScaler,
+        ) +
+        _stackPreviewTextTopInset;
+  }
   return (chromeHeight + math.min(previewHeight, previewMaxHeight)).clamp(
     _stackPreviewMinCardHeight,
     maxHeight,
@@ -683,24 +702,18 @@ class _StyledTerminalPreviewText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textScaler = MediaQuery.textScalerOf(context);
+    final lineCount = math.max(1, math.min(preview.lines.length, maxLines));
     final fontSize = _fitStyledPreviewFontSize(
-      preview: preview,
-      maxLines: maxLines,
+      terminalTheme: terminalTheme,
+      lineCount: lineCount,
       maxHeight: maxHeight,
       textScaler: textScaler,
     );
-    final textStyle = TerminalStyle.fromTextStyle(
-      FluttyTheme.monoStyle.copyWith(
-        fontSize: fontSize,
-        height: _previewLineHeight,
-      ),
-    );
-    final painter = MonkeyTerminalPainter(
-      theme: terminalTheme.toXtermTheme(),
-      textStyle: textStyle,
+    final painter = _buildStyledPreviewPainter(
+      terminalTheme: terminalTheme,
+      fontSize: fontSize,
       textScaler: textScaler,
     );
-    final lineCount = math.min(preview.lines.length, maxLines);
     final height = maxHeight.isFinite
         ? maxHeight
         : painter.cellSize.height * lineCount;
@@ -725,27 +738,24 @@ class _StyledTerminalPreviewText extends StatelessWidget {
 }
 
 double _fitStyledPreviewFontSize({
-  required TerminalPreviewSnapshot preview,
-  required int maxLines,
+  required TerminalThemeData terminalTheme,
+  required int lineCount,
   required double maxHeight,
   required TextScaler textScaler,
 }) {
-  if (!maxHeight.isFinite || maxHeight <= 0) {
+  if (!maxHeight.isFinite || maxHeight <= 0 || lineCount <= 0) {
     return _previewMaxFontSize;
   }
-  final lineCount = math.max(1, math.min(preview.lines.length, maxLines));
+  // Pick the largest font size where painter.cellSize.height * lineCount fits
+  // inside maxHeight, using the actual terminal painter metrics so the card
+  // chrome and the painter agree.
   var low = _previewMinFontSize;
-  var high = _previewMaxFontSize;
-  for (var index = 0; index < 10; index++) {
+  var high = _styledPreviewMaxFontSize;
+  for (var index = 0; index < 12; index++) {
     final midpoint = (low + high) / 2;
-    final painter = MonkeyTerminalPainter(
-      theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
-      textStyle: TerminalStyle.fromTextStyle(
-        FluttyTheme.monoStyle.copyWith(
-          fontSize: midpoint,
-          height: _previewLineHeight,
-        ),
-      ),
+    final painter = _buildStyledPreviewPainter(
+      terminalTheme: terminalTheme,
+      fontSize: midpoint,
       textScaler: textScaler,
     );
     if (painter.cellSize.height * lineCount <= maxHeight) {
@@ -755,6 +765,40 @@ double _fitStyledPreviewFontSize({
     }
   }
   return low;
+}
+
+MonkeyTerminalPainter _buildStyledPreviewPainter({
+  required TerminalThemeData terminalTheme,
+  required double fontSize,
+  required TextScaler textScaler,
+}) => MonkeyTerminalPainter(
+  theme: terminalTheme.toXtermTheme(),
+  textStyle: TerminalStyle.fromTextStyle(
+    FluttyTheme.monoStyle.copyWith(
+      fontSize: fontSize,
+      height: _previewLineHeight,
+    ),
+  ),
+  textScaler: textScaler,
+);
+
+double _styledPreviewCellHeight({
+  required TerminalThemeData terminalTheme,
+  required int lineCount,
+  required double maxHeight,
+  required TextScaler textScaler,
+}) {
+  final fontSize = _fitStyledPreviewFontSize(
+    terminalTheme: terminalTheme,
+    lineCount: lineCount,
+    maxHeight: maxHeight,
+    textScaler: textScaler,
+  );
+  return _buildStyledPreviewPainter(
+    terminalTheme: terminalTheme,
+    fontSize: fontSize,
+    textScaler: textScaler,
+  ).cellSize.height;
 }
 
 class _TerminalPreviewPainter extends CustomPainter {
