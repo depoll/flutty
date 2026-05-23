@@ -180,7 +180,6 @@ final hostRowDataProvider = Provider.autoDispose
               hostDarkThemeId: hasHostThemeAccess ? args.darkThemeId : null,
               connectionLightThemeId: connection?.terminalThemeLightId,
               connectionDarkThemeId: connection?.terminalThemeDarkId,
-              activeSession: notifier.getSession(connectionId),
             );
           })
           .toList(growable: false);

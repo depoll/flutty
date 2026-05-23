@@ -70,9 +70,6 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 
   @override
   ActiveConnection? getActiveConnection(int connectionId) => null;
-
-  @override
-  SshSession? getSession(int connectionId) => null;
 }
 
 class _MutableActiveSessionsNotifier extends ActiveSessionsNotifier {
