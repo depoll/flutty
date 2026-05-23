@@ -88,6 +88,9 @@ void main() {
       final client = _MockSshClient();
       final sftp = _MockSftpClient();
       final firstSftpMayContinue = Completer<void>();
+      final acceptedConfirmations = <bool>[];
+      final confirmationMayFinish = Completer<void>();
+      final supersededProbeReachedShaCheck = Completer<void>();
       var sftpOpenCount = 0;
       when(sftp.close).thenReturn(null);
       when(client.sftp).thenAnswer((_) {
@@ -101,6 +104,12 @@ void main() {
         invocation,
       ) async {
         final command = invocation.positionalArguments.single as String;
+        if (acceptedConfirmations.isNotEmpty &&
+            !supersededProbeReachedShaCheck.isCompleted &&
+            (command.contains('sha256sum') ||
+                command.contains('shasum -a 256'))) {
+          supersededProbeReachedShaCheck.complete();
+        }
         final output = _outputForCommand(
           command,
           expectedSha: expectedSha,
@@ -129,8 +138,6 @@ void main() {
       );
       await _waitUntil(() => sftpOpenCount == 1);
 
-      final acceptedConfirmations = <bool>[];
-      final confirmationMayFinish = Completer<void>();
       final confirmableInstall = installer.ensureInstalled(
         session,
         priority: SshExecPriority.normal,
@@ -143,7 +150,9 @@ void main() {
       await _waitUntil(() => acceptedConfirmations.length == 1);
 
       firstSftpMayContinue.complete();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await supersededProbeReachedShaCheck.future.timeout(
+        const Duration(seconds: 2),
+      );
       expect(probeOnlyInstallation, isNull);
       expect(probeOnlyError, isNull);
 
