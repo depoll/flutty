@@ -14,7 +14,6 @@ const _previewMaxFontSize = 10.5;
 const _previewLineHeight = 1.22;
 const _stackPreviewCardHeight = 198.0;
 const _stackPreviewMetadataHeight = 18.0;
-const _stackPreviewCardHorizontalPadding = 20.0;
 const _stackPreviewCardVerticalPadding = 14.0;
 const _stackPreviewTitleGap = 3.0;
 const _stackPreviewMetadataGap = 3.0;
@@ -362,7 +361,6 @@ class ConnectionPreviewStack extends StatelessWidget {
               maxHeight:
                   cardHeight +
                   (entry.metadata != null ? _stackPreviewMetadataHeight : 0),
-              cardWidth: cardWidth,
             ),
         ];
         final stackHeight = [
@@ -489,7 +487,6 @@ double _stackPreviewCardHeightForEntry({
   required BuildContext context,
   required ConnectionPreviewStackEntry entry,
   required double maxHeight,
-  required double cardWidth,
 }) {
   final textDirection = Directionality.of(context);
   final textScaler = MediaQuery.textScalerOf(context);
@@ -514,10 +511,6 @@ double _stackPreviewCardHeightForEntry({
           ? 0.0
           : metadataHeight + _stackPreviewMetadataGap);
   final previewMaxHeight = math.max<double>(0, maxHeight - chromeHeight);
-  final previewWidth = math.max<double>(
-    0,
-    cardWidth - _stackPreviewCardHorizontalPadding,
-  );
   final baseStyle = FluttyTheme.monoStyle.copyWith(
     fontSize: _previewMaxFontSize,
     height: _previewLineHeight,
@@ -525,18 +518,11 @@ double _stackPreviewCardHeightForEntry({
   final fontSize = _fitPreviewFontSize(
     text: entry.body,
     maxLines: _previewMaxLines,
-    constraints: BoxConstraints(
-      maxWidth: previewWidth,
-      maxHeight: previewMaxHeight,
-    ),
-    baseStyle: baseStyle,
-    textDirection: textDirection,
-    textScaler: textScaler,
+    constraints: BoxConstraints(maxHeight: previewMaxHeight),
   );
   final previewHeight = _previewTextHeight(
     text: entry.body,
     maxLines: _previewMaxLines,
-    maxWidth: previewWidth,
     style: baseStyle.copyWith(fontSize: fontSize),
     textDirection: textDirection,
     textScaler: textScaler,
@@ -573,45 +559,34 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
   final int maxLines;
 
   @override
-  Widget build(BuildContext context) {
-    final textDirection = Directionality.of(context);
-    final textScaler = MediaQuery.textScalerOf(context);
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final style = FluttyTheme.monoStyle.copyWith(
+        fontSize: _previewMaxFontSize,
+        color: color,
+        height: _previewLineHeight,
+      );
+      final fontSize = _fitPreviewFontSize(
+        text: text,
+        maxLines: maxLines,
+        constraints: constraints,
+      );
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final style = FluttyTheme.monoStyle.copyWith(
-          fontSize: _previewMaxFontSize,
-          color: color,
-          height: _previewLineHeight,
-        );
-        final fontSize = _fitPreviewFontSize(
-          text: text,
-          maxLines: maxLines,
-          constraints: constraints,
-          baseStyle: style,
-          textDirection: textDirection,
-          textScaler: textScaler,
-        );
-
-        return Text(
-          text,
-          maxLines: maxLines,
-          overflow: TextOverflow.clip,
-          softWrap: false,
-          style: style.copyWith(fontSize: fontSize),
-        );
-      },
-    );
-  }
+      return Text(
+        text,
+        maxLines: maxLines,
+        overflow: TextOverflow.clip,
+        softWrap: false,
+        style: style.copyWith(fontSize: fontSize),
+      );
+    },
+  );
 }
 
 double _fitPreviewFontSize({
   required String text,
   required int maxLines,
   required BoxConstraints constraints,
-  required TextStyle baseStyle,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
 }) {
   final lines = text.split('\n').take(maxLines).toList(growable: false);
   final visibleLineCount = math.max(lines.length, 1);
@@ -623,80 +598,22 @@ double _fitPreviewFontSize({
     );
   }
 
-  if (!constraints.maxWidth.isFinite || constraints.maxWidth <= 0) {
-    return maxFontSize.clamp(_previewMinFontSize, _previewMaxFontSize);
-  }
-
-  var low = _previewMinFontSize;
-  var high = maxFontSize.clamp(_previewMinFontSize, _previewMaxFontSize);
-  if (_widestPreviewLineWidth(
-        lines: lines,
-        style: baseStyle.copyWith(fontSize: high),
-        textDirection: textDirection,
-        textScaler: textScaler,
-      ) <=
-      constraints.maxWidth) {
-    return high;
-  }
-
-  for (var index = 0; index < 10; index++) {
-    final midpoint = (low + high) / 2;
-    final midpointWidth = _widestPreviewLineWidth(
-      lines: lines,
-      style: baseStyle.copyWith(fontSize: midpoint),
-      textDirection: textDirection,
-      textScaler: textScaler,
-    );
-    if (midpointWidth <= constraints.maxWidth) {
-      low = midpoint;
-    } else {
-      high = midpoint;
-    }
-  }
-
-  return low;
+  return maxFontSize.clamp(_previewMinFontSize, _previewMaxFontSize);
 }
 
 double _previewTextHeight({
   required String text,
   required int maxLines,
-  required double maxWidth,
   required TextStyle style,
   required TextDirection textDirection,
   required TextScaler textScaler,
 }) {
-  final displayText = text.split('\n').take(maxLines).join('\n');
-  final painter = TextPainter(
-    text: TextSpan(text: displayText, style: style),
-    textDirection: textDirection,
-    textScaler: textScaler,
-    maxLines: maxLines,
-  )..layout(maxWidth: maxWidth.isFinite ? maxWidth : double.infinity);
-  return painter.height;
-}
-
-double _widestPreviewLineWidth({
-  required Iterable<String> lines,
-  required TextStyle style,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-}) {
-  final painter = TextPainter(
+  final lineCount = math.max(text.split('\n').take(maxLines).length, 1);
+  final linePainter = TextPainter(
+    text: TextSpan(text: 'Hg', style: style),
     textDirection: textDirection,
     textScaler: textScaler,
     maxLines: 1,
-  );
-  var widest = 0.0;
-  for (final line in lines) {
-    if (line.isEmpty) {
-      continue;
-    }
-    final width =
-        (painter
-              ..text = TextSpan(text: line, style: style)
-              ..layout())
-            .width;
-    widest = math.max(widest, width);
-  }
-  return widest;
+  )..layout();
+  return linePainter.height * lineCount;
 }
