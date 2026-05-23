@@ -7,6 +7,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -43,6 +44,15 @@ class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
+
+void _callReorderItemCallback(
+  ReorderCallback? callback,
+  int oldIndex,
+  int newIndex,
+) {
+  expect(callback, isNotNull);
+  callback?.call(oldIndex, newIndex);
+}
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   @override
@@ -182,6 +192,31 @@ class _TestHomeScreenShortcutService extends HomeScreenShortcutService {
 
   @override
   Future<void> dispose() async {}
+}
+
+class _RecordingTerminalPage extends StatefulWidget {
+  const _RecordingTerminalPage({
+    required this.route,
+    required this.openedRoutes,
+  });
+
+  final String route;
+  final List<String> openedRoutes;
+
+  @override
+  State<_RecordingTerminalPage> createState() => _RecordingTerminalPageState();
+}
+
+class _RecordingTerminalPageState extends State<_RecordingTerminalPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.openedRoutes.add(widget.route);
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      Scaffold(body: Text('Terminal ${widget.route}'));
 }
 
 Host _buildHost({
@@ -337,7 +372,7 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      list.onReorder(0, 2);
+      _callReorderItemCallback(list.onReorderItem, 0, 1);
       await tester.pump();
 
       verify(() => hostRepository.reorderByIds([2, 1])).called(1);
@@ -389,7 +424,7 @@ void main() {
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
-      list.onReorder(0, 2);
+      _callReorderItemCallback(list.onReorderItem, 0, 1);
       await tester.pump();
 
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
@@ -453,6 +488,84 @@ void main() {
         find.textContaining('Connections appear here while terminals are open'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('repeated connection taps push one terminal route', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final openedRoutes = <String>[];
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            state: SshConnectionState.connecting,
+          ),
+        ],
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const HomeScreen(initialTab: HomeScreenTab.connections),
+          ),
+          GoRoute(
+            path: '/terminal/:hostId',
+            builder: (context, state) => _RecordingTerminalPage(
+              route: state.uri.toString(),
+              openedRoutes: openedRoutes,
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            transferIntentServiceProvider.overrideWith(
+              (ref) => _TestTransferIntentService(),
+            ),
+            homeScreenShortcutServiceProvider.overrideWith(
+              (ref) => _TestHomeScreenShortcutService(),
+            ),
+            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+              (ref) => Stream<Set<int>>.value(const <int>{}),
+            ),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+          child: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final connectionPosition = tester.getCenter(find.text('Alpha'));
+      await tester.tapAt(connectionPosition);
+      await tester.tapAt(connectionPosition);
+      await tester.pumpAndSettle();
+
+      expect(openedRoutes, ['/terminal/1?connectionId=7']);
+      expect(find.text('Terminal /terminal/1?connectionId=7'), findsOneWidget);
+
+      router.pop();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Alpha'), findsOneWidget);
+      expect(find.text('Terminal /terminal/1?connectionId=7'), findsNothing);
     });
   });
 
@@ -726,8 +839,8 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('Active: Implement onboarding'), findsOneWidget);
-      expect(find.text('Active: Designing app prompt'), findsNothing);
+      expect(find.text('Connection #7 • Implement onboarding'), findsOneWidget);
+      expect(find.text('Connection #7 • Designing app prompt'), findsNothing);
     },
   );
 
@@ -1065,9 +1178,12 @@ void main() {
       await tester.tap(find.text('AI Sessions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
+      await tester.drag(find.text('work · 1 windows'), const Offset(0, -120));
+      await tester.pump();
       await tester.tap(find.text('Codex'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
+      await tester.ensureVisible(find.text('Resume codex work'));
       await tester.tap(find.text('Resume codex work'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));

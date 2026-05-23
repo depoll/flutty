@@ -2592,6 +2592,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       'codex|codex-*) agent_tool=codex ;; '
       'opencode|opencode-*) agent_tool=opencode ;; '
       'gemini|gemini-*) agent_tool=gemini ;; '
+      'agy|agy-*|antigravity|antigravity-*) agent_tool=antigravity ;; '
       'esac; }; '
       'flutty_is_generic_runtime_command_name() { '
       r'case "${1##*/}" in '
@@ -2645,7 +2646,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       '2>/dev/null || true; sleep 0.05; '
       '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      'opencode|claude) '
+      'opencode|claude|antigravity) '
       'injected=1; '
       '( ${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
       '2>/dev/null || true; sleep 0.05; '
@@ -3976,7 +3977,11 @@ AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
 @visibleForTesting
 String buildAgentToolDetectionCommand() {
   final binaries =
-      AgentLaunchTool.values.map((t) => t.commandName).toSet().toList()..sort();
+      AgentLaunchTool.values
+          .expand((t) => t.candidateCommandNames)
+          .toSet()
+          .toList()
+        ..sort();
   final inner =
       'for c in ${binaries.join(' ')}; do '
       r'command -v "$c" 2>/dev/null; '
@@ -4375,6 +4380,44 @@ flutty_gemini_recent_session_match() {
     break
   done
 }
+flutty_antigravity_session_title() {
+  session_id=\$1
+  [ -n "\$session_id" ] || return 0
+  title=
+  annotation_file="\$home/.gemini/antigravity-cli/annotations/\${session_id}.pbtxt"
+  if [ -r "\$annotation_file" ]; then
+    title=\$(grep -E '^[[:space:]]*title[[:space:]]*:[[:space:]]*' "\$annotation_file" 2>/dev/null |
+      sed -E 's/^[[:space:]]*title[[:space:]]*:[[:space:]]*"([^"]*)".*/\\1/' | head -n 1)
+  fi
+  if [ -z "\$title" ] && [ -r "\$home/.gemini/antigravity-cli/history.jsonl" ]; then
+    title=\$(grep -F "\$session_id" "\$home/.gemini/antigravity-cli/history.jsonl" 2>/dev/null |
+      grep '"display"' | tail -n 1 | flutty_json_string_field_from_stdin display)
+  fi
+  if [ -z "\$title" ]; then
+    title="\$session_id"
+  fi
+  flutty_clean_session_title "\$title"
+}
+flutty_antigravity_recent_session_match() {
+  process_cwd=\$1
+  process_start_epoch=\$2
+  [ -n "\$process_cwd" ] || return 0
+  case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
+  history_file="\$home/.gemini/antigravity-cli/history.jsonl"
+  [ -r "\$history_file" ] || return 0
+  session_id=\$(tail -n 100 "\$history_file" 2>/dev/null |
+    grep -F "\$process_cwd" |
+    tail -n 1 |
+    flutty_json_string_field_from_stdin conversationId)
+  if [ -z "\$session_id" ]; then
+    session_id=\$(tail -n 1 "\$history_file" 2>/dev/null |
+      flutty_json_string_field_from_stdin conversationId)
+  fi
+  if [ -n "\$session_id" ]; then
+    title=\$(flutty_antigravity_session_title "\$session_id")
+    flutty_emit_lsof_match "\$session_id" "\$title"
+  fi
+}
 flutty_emit_lsof_match() {
   value=\$(printf '%s' "\$1" | tr "\\037\\r\\n" "   ")
   title=\$(flutty_clean_session_title "\$2")
@@ -4450,6 +4493,7 @@ END {
     else if (command[pid] ~ /(^|[\\/@[:space:]])codex([\\/._[:space:]-]|\$)/) tool = "codex"
     else if (command[pid] ~ /(^|[\\/@[:space:]])gemini([\\/._[:space:]-]|\$)/) tool = "gemini"
     else if (command[pid] ~ /(^|[\\/@[:space:]])opencode([\\/._[:space:]-]|\$)/) tool = "opencode"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])(agy|antigravity|antigravity-cli)([\\/._[:space:]-]|\$)/) tool = "antigravity"
     if (tool == "") continue
     current = pid
     seen = 0
@@ -4496,6 +4540,7 @@ END {
         case "\$tool" in
           codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" "\$pid" || true) ;;
           gemini) recent_match=\$(flutty_gemini_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
+          antigravity) recent_match=\$(flutty_antigravity_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
           *) recent_match= ;;
         esac
         if [ -n "\$recent_match" ]; then
@@ -4506,8 +4551,14 @@ END {
       if [ -z "\$session_id" ]; then
         case "\$tool" in
           claude|copilot|gemini) session_id=\$(flutty_arg_value --resume "\$command_text") ;;
+          antigravity) session_id=\$(flutty_arg_value --conversation "\$command_text") ;;
           codex) session_id=\$(flutty_codex_resume_id "\$command_text") ;;
           opencode) session_id=\$(flutty_arg_value --session "\$command_text") ;;
+        esac
+      fi
+      if [ -n "\$session_id" ] && [ -z "\$title" ]; then
+        case "\$tool" in
+          antigravity) title=\$(flutty_antigravity_session_title "\$session_id") ;;
         esac
       fi
       [ -n "\$session_id" ] || continue

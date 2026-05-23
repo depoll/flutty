@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +9,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+
+class _PausingSecretEncryptionService extends SecretEncryptionService {
+  _PausingSecretEncryptionService({required this.pausePlaintext})
+    : super.forTesting();
+
+  final String pausePlaintext;
+  final _paused = Completer<void>();
+  final _resume = Completer<void>();
+
+  Future<void> get paused => _paused.future;
+
+  void resume() {
+    if (!_resume.isCompleted) {
+      _resume.complete();
+    }
+  }
+
+  @override
+  Future<String?> encryptNullable(String? plaintext) async {
+    if (plaintext == pausePlaintext && !_paused.isCompleted) {
+      _paused.complete();
+      await _resume.future;
+    }
+    return super.encryptNullable(plaintext);
+  }
+}
 
 void main() {
   late AppDatabase db;
@@ -118,6 +146,100 @@ void main() {
 
       final host = await repository.getById(id);
       expect(host!.password, plaintextPassword);
+    });
+
+    test('getById migrates a legacy plaintext password', () async {
+      const plaintextPassword = 'legacy-secret';
+      final id = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Legacy Host',
+              hostname: '192.168.1.11',
+              username: 'admin',
+              password: const Value(plaintextPassword),
+            ),
+          );
+
+      final host = await repository.getById(id);
+      expect(host!.password, plaintextPassword);
+
+      final storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, startsWith('ENCv1:'));
+      expect(storedHost.password, isNot(plaintextPassword));
+
+      final migratedHost = await repository.getById(id);
+      expect(migratedHost!.password, plaintextPassword);
+    });
+
+    test(
+      'getById migrates malformed ENCv1-prefixed plaintext password',
+      () async {
+        const plaintextPassword = 'ENCv1:not-a-valid-password-envelope';
+        final id = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Legacy Host',
+                hostname: '192.168.1.12',
+                username: 'admin',
+                password: const Value(plaintextPassword),
+              ),
+            );
+
+        final host = await repository.getById(id);
+        expect(host!.password, plaintextPassword);
+
+        final storedHost = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(id))).getSingle();
+        expect(storedHost.password, startsWith('ENCv1:'));
+        expect(storedHost.password, isNot(plaintextPassword));
+        await expectLater(
+          encryptionService.decryptNullable(storedHost.password),
+          completion(plaintextPassword),
+        );
+      },
+    );
+
+    test('legacy password migration does not overwrite newer writes', () async {
+      final encryptionService = _PausingSecretEncryptionService(
+        pausePlaintext: 'legacy-secret',
+      );
+      repository = HostRepository(db, encryptionService);
+      final id = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Legacy Host',
+              hostname: '192.168.1.13',
+              username: 'admin',
+              password: const Value('legacy-secret'),
+            ),
+          );
+
+      final pendingRead = repository.getById(id);
+      await encryptionService.paused;
+      final newerEncryptedPassword = await encryptionService.encryptNullable(
+        'newer-secret',
+      );
+      await (db.update(db.hosts)..where((h) => h.id.equals(id))).write(
+        HostsCompanion(password: Value(newerEncryptedPassword)),
+      );
+      encryptionService.resume();
+
+      final host = await pendingRead;
+      expect(host!.password, 'legacy-secret');
+
+      final storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      await expectLater(
+        encryptionService.decryptNullable(storedHost.password),
+        completion('newer-secret'),
+      );
     });
 
     test('insert stores auto-connect command fields', () async {

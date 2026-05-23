@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
 import 'terminal_key_input.dart';
+import 'terminal_menu_style.dart';
 
 /// Whether the toolbar should keep the bottom safe-area inset.
 ///
@@ -283,10 +284,8 @@ class KeyboardToolbar extends StatefulWidget {
 class KeyboardToolbarState extends State<KeyboardToolbar> {
   static const _pasteOptionsWidth = 200.0;
   static const _pasteSnippetMenuWidth = 180.0;
-  static const _pasteOptionHeight = 44.0;
-  static const _pasteOptionsDividerHeight = 1.0;
-  static const _pasteOptionsGap = 8.0;
-  static const _pasteOptionsScreenMargin = 8.0;
+  static const _pasteOptionsGap = TerminalMenuStyles.cascadeGap;
+  static const _pasteOptionsScreenMargin = TerminalMenuStyles.screenMargin;
 
   late final KeyboardToolbarController _fallbackController;
   final _pasteButtonKey = GlobalKey();
@@ -730,7 +729,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         globalSnippetRect.contains(globalPosition)) {
       final entries = _expandedSnippetMenuEntries;
       final index =
-          (globalPosition.dy - globalSnippetRect.top) ~/ _pasteOptionHeight;
+          (globalPosition.dy - globalSnippetRect.top) ~/
+          TerminalMenuStyles.itemHeight;
       if (index >= 0 && index < entries.length) {
         final entry = entries[index];
         return _PasteMenuHit(
@@ -795,7 +795,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     Rect? snippetMenuRect;
     var snippetMenuOpensLeft = true;
     if (entries.isNotEmpty) {
-      final snippetMenuHeight = entries.length * _pasteOptionHeight;
+      final snippetMenuHeight = entries.length * TerminalMenuStyles.itemHeight;
       final canOpenLeft =
           mainRect.left -
               _pasteOptionsGap -
@@ -844,16 +844,15 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       widget.onSnippetPasteRequested != null && _snippetMenuEntries.isNotEmpty;
 
   double get _pasteOptionsMenuHeight =>
-      _PasteToolbarAction.values.length * _pasteOptionHeight +
-      (_PasteToolbarAction.values.length - 1) * _pasteOptionsDividerHeight;
+      _PasteToolbarAction.values.length * TerminalMenuStyles.itemHeight;
 
   int _pasteMainActionIndexAt(double localDy) {
     if (localDy < 0) {
       return -1;
     }
     for (var index = 0; index < _PasteToolbarAction.values.length; index += 1) {
-      final top = index * (_pasteOptionHeight + _pasteOptionsDividerHeight);
-      if (localDy >= top && localDy < top + _pasteOptionHeight) {
+      final top = index * TerminalMenuStyles.itemHeight;
+      if (localDy >= top && localDy < top + TerminalMenuStyles.itemHeight) {
         return index;
       }
     }
@@ -1137,41 +1136,33 @@ class _PasteOptionsMenu extends StatelessWidget {
   final IconData snippetsTrailingIcon;
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: colorScheme.surfaceContainerHighest,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _PasteOptionsMenuItem(
-            icon: Icons.code_rounded,
-            label: 'Snippets',
-            enabled: snippetsEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.snippets,
-            trailingIcon: snippetsTrailingIcon,
-          ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
-          _PasteOptionsMenuItem(
-            icon: Icons.image_outlined,
-            label: 'Paste Images',
-            enabled: imageEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.images,
-          ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
-          _PasteOptionsMenuItem(
-            icon: Icons.attach_file_rounded,
-            label: 'Paste Files',
-            enabled: filesEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.files,
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => TerminalMenuStyles.surface(
+    context,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _PasteOptionsMenuItem(
+          icon: Icons.code_rounded,
+          label: 'Snippets',
+          enabled: snippetsEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.snippets,
+          trailingIcon: snippetsTrailingIcon,
+        ),
+        _PasteOptionsMenuItem(
+          icon: Icons.image_outlined,
+          label: 'Paste Images',
+          enabled: imageEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.images,
+        ),
+        _PasteOptionsMenuItem(
+          icon: Icons.attach_file_rounded,
+          label: 'Paste Files',
+          enabled: filesEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.files,
+        ),
+      ],
+    ),
+  );
 }
 
 class _SnippetCascadeMenu extends StatelessWidget {
@@ -1215,16 +1206,10 @@ class _CascadeMenuFrame extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: colorScheme.surfaceContainerHighest,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: Column(mainAxisSize: MainAxisSize.min, children: children),
-    );
-  }
+  Widget build(BuildContext context) => TerminalMenuStyles.surface(
+    context,
+    child: Column(mainAxisSize: MainAxisSize.min, children: children),
+  );
 }
 
 class _PasteOptionsMenuItem extends StatelessWidget {
@@ -1263,27 +1248,37 @@ class _PasteOptionsMenuItem extends StatelessWidget {
       selected: highlighted,
       label: label,
       child: Container(
-        height: KeyboardToolbarState._pasteOptionHeight,
+        height: TerminalMenuStyles.itemHeight,
         color: backgroundColor,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(
+          horizontal: TerminalMenuStyles.itemHorizontalPadding,
+        ),
         child: Row(
           children: [
             if (leadingIndent > 0) SizedBox(width: leadingIndent),
-            Icon(icon, size: 20, color: foregroundColor),
-            const SizedBox(width: 12),
+            Icon(
+              icon,
+              size: TerminalMenuStyles.iconSize,
+              color: foregroundColor,
+            ),
+            const SizedBox(width: TerminalMenuStyles.iconLabelGap),
             Expanded(
               child: Text(
                 label,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: foregroundColor,
-                  fontWeight: highlighted ? FontWeight.w600 : FontWeight.w500,
-                ),
+                style: TerminalMenuStyles.itemTextStyle(
+                  context,
+                  emphasized: highlighted,
+                ).copyWith(color: foregroundColor),
               ),
             ),
             if (trailingIcon case final trailingIcon?) ...[
               const SizedBox(width: 8),
-              Icon(trailingIcon, size: 20, color: foregroundColor),
+              Icon(
+                trailingIcon,
+                size: TerminalMenuStyles.iconSize,
+                color: foregroundColor,
+              ),
             ],
           ],
         ),

@@ -311,6 +311,26 @@ void main() {
       expect(window.secondaryTitle, 'active session');
     });
 
+    test(
+      'shows resumed Antigravity session metadata from pane start commands',
+      () {
+        const window = TmuxWindow(
+          index: 1,
+          name: 'agent',
+          isActive: false,
+          currentPath: '/Users/depoll/Code/flutty',
+          paneTitle: 'localhost',
+          paneStartCommand:
+              'agy --conversation rollout-2026-04-26-conversation',
+        );
+
+        expect(window.foregroundAgentTool, AgentLaunchTool.antigravity);
+        expect(window.agentSessionId, 'rollout-2026-04-26-conversation');
+        expect(window.displayTitle, 'Antigravity · flutty');
+        expect(window.secondaryTitle, 'active session');
+      },
+    );
+
     test('uses foreground command to label MonkeyMux Codex windows', () {
       const window = TmuxWindow(
         index: 5,
@@ -324,6 +344,22 @@ void main() {
       expect(window.foregroundAgentTool, AgentLaunchTool.codex);
       expect(window.displayTitle, 'Codex · flutty');
       expect(window.handleTitle, 'Codex · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('ignores decorative shell titles for agent windows', () {
+      const window = TmuxWindow(
+        index: 2,
+        name: '|~',
+        isActive: false,
+        currentCommand: 'copilot',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: '|~',
+      );
+
+      expect(window.foregroundAgentTool, AgentLaunchTool.copilotCli);
+      expect(window.displayTitle, 'Copilot CLI · flutty');
+      expect(window.handleTitle, 'Copilot CLI · flutty');
       expect(window.secondaryTitle, isNull);
     });
 

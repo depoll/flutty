@@ -115,6 +115,8 @@ class TmuxWindow {
     this.activeAgentSessionId,
     this.agentSessionTitle,
     this.activeAgentSessionConfidence,
+    this.terminalReportsMouseWheel,
+    this.terminalMouseReportSgr,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
@@ -207,6 +209,12 @@ class TmuxWindow {
   /// Confidence level for [activeAgentSessionId] and [agentSessionTitle].
   final AgentSessionConfidence? activeAgentSessionConfidence;
 
+  /// Whether the foreground application requested terminal mouse-wheel input.
+  final bool? terminalReportsMouseWheel;
+
+  /// Whether the foreground application requested SGR mouse reporting.
+  final bool? terminalMouseReportSgr;
+
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
 
@@ -260,6 +268,8 @@ class TmuxWindow {
     String? activeAgentSessionId,
     String? agentSessionTitle,
     AgentSessionConfidence? activeAgentSessionConfidence,
+    bool? terminalReportsMouseWheel,
+    bool? terminalMouseReportSgr,
     bool clearActiveAgentSessionMetadata = false,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
@@ -283,6 +293,10 @@ class TmuxWindow {
     activeAgentSessionConfidence: clearActiveAgentSessionMetadata
         ? null
         : activeAgentSessionConfidence ?? this.activeAgentSessionConfidence,
+    terminalReportsMouseWheel:
+        terminalReportsMouseWheel ?? this.terminalReportsMouseWheel,
+    terminalMouseReportSgr:
+        terminalMouseReportSgr ?? this.terminalMouseReportSgr,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
@@ -572,6 +586,8 @@ class TmuxWindow {
           activeAgentSessionId == other.activeAgentSessionId &&
           agentSessionTitle == other.agentSessionTitle &&
           activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
+          terminalReportsMouseWheel == other.terminalReportsMouseWheel &&
+          terminalMouseReportSgr == other.terminalMouseReportSgr &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -591,6 +607,8 @@ class TmuxWindow {
     activeAgentSessionId,
     agentSessionTitle,
     activeAgentSessionConfidence,
+    terminalReportsMouseWheel,
+    terminalMouseReportSgr,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
@@ -911,6 +929,7 @@ bool _isUnhelpfulTmuxTitle(
   String? normalizedCommand,
 }) {
   if (value == null || value.isEmpty) return true;
+  if (_isDecorativeShellTitle(value)) return true;
   final lowered = value.toLowerCase();
   if (_genericTmuxTitles.contains(lowered)) return true;
   if (normalizedName != null && lowered == normalizedName.toLowerCase()) {
@@ -939,6 +958,7 @@ bool _isUnhelpfulAgentTitle(
   required String? contextLabel,
 }) {
   if (value == null || value.isEmpty) return true;
+  if (_isDecorativeShellTitle(value)) return true;
   final lowered = _normalizeAgentTitleForComparison(value);
   if (lowered.isEmpty) return true;
   if (_agentTitleAliases(tool).contains(lowered)) return true;
@@ -961,6 +981,13 @@ bool _isUnhelpfulAgentTitle(
       statusContext == loweredContext;
 }
 
+bool _isDecorativeShellTitle(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return true;
+  if (trimmed == '~' || trimmed.endsWith('|~')) return true;
+  return !trimmed.runes.any(_isAsciiLetterOrDigit);
+}
+
 String _normalizeAgentTitleForComparison(String value) =>
     _stripLeadingDecorativePrefix(
       value,
@@ -976,6 +1003,7 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   AgentLaunchTool.codex => const {'codex'},
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
+  AgentLaunchTool.antigravity => const {'agy', 'antigravity'},
 };
 
 AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
@@ -1088,6 +1116,9 @@ String? agentSessionIdFromLaunchCommand(
     ],
     AgentLaunchTool.openCode => const [
       r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.antigravity => const [
+      r'''(?<!\S)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
   };
 

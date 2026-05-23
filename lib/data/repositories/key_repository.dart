@@ -6,6 +6,27 @@ import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
 
+enum _KeySecretColumn { privateKey, passphrase }
+
+/// Result from loading decryptable SSH keys while tolerating unreadable rows.
+class SshKeyLoadResult {
+  /// Creates a new [SshKeyLoadResult].
+  const SshKeyLoadResult({
+    required this.keys,
+    required this.unreadableCount,
+    this.firstUnreadableErrorType,
+  });
+
+  /// Keys whose encrypted secrets were readable.
+  final List<SshKey> keys;
+
+  /// Number of stored keys skipped because their secrets were unreadable.
+  final int unreadableCount;
+
+  /// Runtime type for the first unreadable-key error, if any.
+  final String? firstUnreadableErrorType;
+}
+
 /// Repository for managing SSH keys.
 class KeyRepository {
   /// Creates a new [KeyRepository].
@@ -34,9 +55,17 @@ class KeyRepository {
     return Future.wait(keys.map(_decryptKey));
   }
 
+  /// Get all keys that can be decrypted, skipping unreadable stored keys.
+  Future<SshKeyLoadResult> getAllDecryptable() async {
+    final keys = await _db.select(_db.sshKeys).get();
+    return _loadDecryptable(keys);
+  }
+
   /// Watch all keys.
-  Stream<List<SshKey>> watchAll() =>
-      _db.select(_db.sshKeys).watch().asyncMap(_decryptKeys);
+  Stream<List<SshKey>> watchAll() => _db
+      .select(_db.sshKeys)
+      .watch()
+      .asyncMap((keys) async => (await _loadDecryptable(keys)).keys);
 
   /// Get a key by ID.
   Future<SshKey?> getById(int id) async {
@@ -50,9 +79,10 @@ class KeyRepository {
   }
 
   /// Search keys by name.
-  Future<List<SshKey>> search(String query) => (_db.select(
-    _db.sshKeys,
-  )..where((k) => k.name.like('%$query%'))).get().then(_decryptKeys);
+  Future<List<SshKey>> search(String query) =>
+      (_db.select(_db.sshKeys)..where((k) => k.name.like('%$query%')))
+          .get()
+          .then((keys) async => (await _loadDecryptable(keys)).keys);
 
   /// Insert a new key.
   Future<int> insert(SshKeysCompanion key) async {
@@ -99,14 +129,42 @@ class KeyRepository {
     return deleted;
   }
 
-  Future<List<SshKey>> _decryptKeys(List<SshKey> keys) =>
-      Future.wait(keys.map(_decryptKey));
+  Future<SshKeyLoadResult> _loadDecryptable(List<SshKey> keys) async {
+    final decryptedKeys = <SshKey>[];
+    var unreadableCount = 0;
+    String? firstUnreadableErrorType;
+
+    for (final key in keys) {
+      try {
+        decryptedKeys.add(await _decryptKey(key));
+      } on Exception catch (error) {
+        unreadableCount++;
+        firstUnreadableErrorType ??= error.runtimeType.toString();
+      }
+    }
+
+    return SshKeyLoadResult(
+      keys: List.unmodifiable(decryptedKeys),
+      unreadableCount: unreadableCount,
+      firstUnreadableErrorType: firstUnreadableErrorType,
+    );
+  }
 
   Future<SshKey> _decryptKey(SshKey key) async {
-    final decryptedPrivateKey = await _cachedDecryptRequired(key.privateKey);
+    final decryptedPrivateKey =
+        await _decryptOrMigrateKeySecret(
+          key.id,
+          key.privateKey,
+          _KeySecretColumn.privateKey,
+        ) ??
+        '';
     final passphrase = key.passphrase;
     final decryptedPassphrase = passphrase != null && passphrase.isNotEmpty
-        ? await _cachedDecrypt(passphrase)
+        ? await _decryptOrMigrateKeySecret(
+            key.id,
+            passphrase,
+            _KeySecretColumn.passphrase,
+          )
         : await _secretEncryptionService.decryptNullable(passphrase);
 
     return key.copyWith(
@@ -132,8 +190,43 @@ class KeyRepository {
     return plaintext;
   }
 
-  Future<String> _cachedDecryptRequired(String ciphertext) async =>
-      (await _cachedDecrypt(ciphertext)) ?? '';
+  Future<String?> _decryptOrMigrateKeySecret(
+    int keyId,
+    String storedSecret,
+    _KeySecretColumn column,
+  ) async {
+    if (_secretEncryptionService.isValidEncryptedEnvelope(storedSecret)) {
+      return _cachedDecrypt(storedSecret);
+    }
+
+    final encryptedSecret = await _secretEncryptionService.encryptNullable(
+      storedSecret,
+    );
+    if (encryptedSecret != null && encryptedSecret != storedSecret) {
+      await (_db.update(_db.sshKeys)..where(
+            (k) =>
+                k.id.equals(keyId) &
+                (switch (column) {
+                  _KeySecretColumn.privateKey => k.privateKey.equals(
+                    storedSecret,
+                  ),
+                  _KeySecretColumn.passphrase => k.passphrase.equals(
+                    storedSecret,
+                  ),
+                }),
+          ))
+          .write(switch (column) {
+            _KeySecretColumn.privateKey => SshKeysCompanion(
+              privateKey: Value(encryptedSecret),
+            ),
+            _KeySecretColumn.passphrase => SshKeysCompanion(
+              passphrase: Value(encryptedSecret),
+            ),
+          });
+      _rememberDecrypted(encryptedSecret, storedSecret);
+    }
+    return storedSecret;
+  }
 
   Future<({String? passphrase, String privateKey})?> _storedSecretsForKey(
     int id,
