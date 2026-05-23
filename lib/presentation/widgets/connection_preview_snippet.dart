@@ -17,6 +17,7 @@ const _stackPreviewMetadataHeight = 18.0;
 const _stackPreviewCardVerticalPadding = 14.0;
 const _stackPreviewTitleGap = 3.0;
 const _stackPreviewMetadataGap = 3.0;
+const _stackPreviewTextTopInset = 3.0;
 const _stackPreviewMinCardHeight = 72.0;
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
@@ -470,10 +471,17 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
               const SizedBox(height: 3),
             ],
             Expanded(
-              child: _AdaptiveTerminalPreviewText(
-                text: entry.body,
-                color: textColor,
-                maxLines: _previewMaxLines,
+              child: ClipRect(
+                child: Padding(
+                  padding: const EdgeInsets.only(
+                    top: _stackPreviewTextTopInset,
+                  ),
+                  child: _AdaptiveTerminalPreviewText(
+                    text: entry.body,
+                    color: textColor,
+                    maxLines: _previewMaxLines,
+                  ),
+                ),
               ),
             ),
           ],
@@ -511,6 +519,10 @@ double _stackPreviewCardHeightForEntry({
           ? 0.0
           : metadataHeight + _stackPreviewMetadataGap);
   final previewMaxHeight = math.max<double>(0, maxHeight - chromeHeight);
+  final previewTextMaxHeight = math.max<double>(
+    0,
+    previewMaxHeight - _stackPreviewTextTopInset,
+  );
   final baseStyle = FluttyTheme.monoStyle.copyWith(
     fontSize: _previewMaxFontSize,
     height: _previewLineHeight,
@@ -518,15 +530,17 @@ double _stackPreviewCardHeightForEntry({
   final fontSize = _fitPreviewFontSize(
     text: entry.body,
     maxLines: _previewMaxLines,
-    constraints: BoxConstraints(maxHeight: previewMaxHeight),
+    constraints: BoxConstraints(maxHeight: previewTextMaxHeight),
   );
-  final previewHeight = _previewTextHeight(
-    text: entry.body,
-    maxLines: _previewMaxLines,
-    style: baseStyle.copyWith(fontSize: fontSize),
-    textDirection: textDirection,
-    textScaler: textScaler,
-  );
+  final previewHeight =
+      _previewTextHeight(
+        text: entry.body,
+        maxLines: _previewMaxLines,
+        style: baseStyle.copyWith(fontSize: fontSize),
+        textDirection: textDirection,
+        textScaler: textScaler,
+      ) +
+      _stackPreviewTextTopInset;
   return (chromeHeight + math.min(previewHeight, previewMaxHeight)).clamp(
     _stackPreviewMinCardHeight,
     maxHeight,

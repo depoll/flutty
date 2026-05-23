@@ -208,6 +208,7 @@ void main() {
   testWidgets('sizes long non-wrapping previews to terminal rows', (
     tester,
   ) async {
+    const title = 'Connection #1 • Adjust Connection Preview Length';
     final preview = [
       'cd',
       '/Users/depoll/Code/flutty.worktrees/connection-preview-10-lines',
@@ -235,10 +236,7 @@ void main() {
             width: 710,
             child: ConnectionPreviewStack(
               entries: [
-                ConnectionPreviewStackEntry(
-                  title: 'Connection #1 • Adjust Connection Preview Length',
-                  body: preview,
-                ),
+                ConnectionPreviewStackEntry(title: title, body: preview),
               ],
             ),
           ),
@@ -253,6 +251,10 @@ void main() {
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.softWrap, isFalse);
     expect(previewText.overflow, TextOverflow.clip);
+    expect(
+      tester.getTopLeft(find.text(preview)).dy,
+      greaterThan(tester.getBottomLeft(find.text(title)).dy + 2),
+    );
   });
 
   testWidgets('renders stack metadata without consuming preview line budget', (
@@ -276,7 +278,7 @@ void main() {
       ),
     );
 
-    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 216);
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 208);
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 17);
     expect(find.text('~/Code/flutty • Running'), findsOneWidget);
