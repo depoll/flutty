@@ -344,6 +344,7 @@ class ConnectionPreviewStack extends StatelessWidget {
     this.cardHeight = _stackPreviewCardHeight,
     this.verticalOffset = 14,
     this.horizontalOffset = 10,
+    this.onTap,
     super.key,
   });
 
@@ -358,6 +359,9 @@ class ConnectionPreviewStack extends StatelessWidget {
 
   /// Horizontal offset applied between stacked cards.
   final double horizontalOffset;
+
+  /// Called when the preview stack is tapped.
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -386,7 +390,7 @@ class ConnectionPreviewStack extends StatelessWidget {
             cardHeights[index] + (index * verticalOffset),
         ].reduce(math.max);
 
-        return SizedBox(
+        final stack = SizedBox(
           width: double.infinity,
           height: stackHeight,
           child: Stack(
@@ -407,6 +411,16 @@ class ConnectionPreviewStack extends StatelessWidget {
                 ),
             ],
           ),
+        );
+        final handleTap = onTap;
+        if (handleTap == null) {
+          return stack;
+        }
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: handleTap,
+          child: stack,
         );
       },
     );
@@ -667,16 +681,22 @@ class _StyledTerminalPreviewText extends StatelessWidget {
     final height = maxHeight.isFinite
         ? maxHeight
         : painter.cellSize.height * lineCount;
+    final paint = CustomPaint(
+      painter: _TerminalPreviewPainter(
+        preview: preview,
+        maxLines: maxLines,
+        painter: painter,
+      ),
+    );
 
     return ClipRect(
-      child: CustomPaint(
-        size: Size(maxWidth.isFinite ? maxWidth : 0, height),
-        painter: _TerminalPreviewPainter(
-          preview: preview,
-          maxLines: maxLines,
-          painter: painter,
-        ),
-      ),
+      child: maxWidth.isFinite && maxHeight.isFinite
+          ? SizedBox.expand(child: paint)
+          : SizedBox(
+              width: maxWidth.isFinite ? maxWidth : null,
+              height: height,
+              child: paint,
+            ),
     );
   }
 }

@@ -31,6 +31,7 @@ import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
+import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
@@ -303,6 +304,11 @@ ActiveConnection _buildActiveConnection({
   remoteMuxBackend: remoteMuxBackend,
   remoteMuxSessionName: remoteMuxSessionName,
 );
+
+TerminalPreviewSnapshot _buildStyledPreviewSnapshot() {
+  final terminal = Terminal(maxLines: 100)..write('\x1b[31mready\x1b[0m');
+  return SshSession.buildTerminalPreviewSnapshot(terminal)!;
+}
 
 const _proMonetizationState = MonetizationState(
   billingAvailability: MonetizationBillingAvailability.available,
@@ -584,6 +590,7 @@ void main() {
             hostId: 1,
             state: SshConnectionState.connecting,
             preview: 'ready',
+            previewSnapshot: _buildStyledPreviewSnapshot(),
           ),
         ],
       );
@@ -635,7 +642,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      await tester.tap(find.byType(ConnectionPreviewStack));
+      await tester.tapAt(tester.getCenter(find.byType(ConnectionPreviewStack)));
       await tester.pumpAndSettle();
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
@@ -652,6 +659,7 @@ void main() {
             hostId: 1,
             state: SshConnectionState.connecting,
             preview: 'ready',
+            previewSnapshot: _buildStyledPreviewSnapshot(),
           ),
         ],
       );
@@ -699,7 +707,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      await tester.tap(find.byType(ConnectionPreviewStack));
+      await tester.tapAt(tester.getCenter(find.byType(ConnectionPreviewStack)));
       await tester.pumpAndSettle();
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
