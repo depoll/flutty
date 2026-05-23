@@ -19,6 +19,8 @@ const _previewLineHeight = 1.22;
 const _stackPreviewCardHeight = 198.0;
 const _stackPreviewMetadataHeight = 18.0;
 const _stackPreviewCardVerticalPadding = 14.0;
+// 10px padding + 1px border on each side.
+const _stackPreviewCardHorizontalPadding = 22.0;
 const _stackPreviewTitleGap = 3.0;
 const _stackPreviewMetadataGap = 3.0;
 const _stackPreviewTextTopInset = 3.0;
@@ -384,6 +386,7 @@ class ConnectionPreviewStack extends StatelessWidget {
             _stackPreviewCardHeightForEntry(
               context: context,
               entry: entry,
+              cardWidth: cardWidth,
               maxHeight:
                   cardHeight +
                   (entry.metadata != null ? _stackPreviewMetadataHeight : 0),
@@ -547,6 +550,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
 double _stackPreviewCardHeightForEntry({
   required BuildContext context,
   required ConnectionPreviewStackEntry entry,
+  required double cardWidth,
   required double maxHeight,
 }) {
   final textDirection = Directionality.of(context);
@@ -576,6 +580,10 @@ double _stackPreviewCardHeightForEntry({
     0,
     previewMaxHeight - _stackPreviewTextTopInset,
   );
+  final previewTextMaxWidth = math.max<double>(
+    0,
+    cardWidth - _stackPreviewCardHorizontalPadding,
+  );
 
   final styledSnapshot = entry.previewSnapshot;
   final styledTheme = entry.terminalTheme;
@@ -585,13 +593,17 @@ double _stackPreviewCardHeightForEntry({
       1,
       math.min(styledSnapshot.lines.length, _previewMaxLines),
     );
+    final columnCount = _styledContentColumns(styledSnapshot);
     final cellHeight = _styledPreviewCellHeight(
       terminalTheme: styledTheme,
-      lineCount: lineCount,
-      maxHeight: previewTextMaxHeight,
+      columnCount: columnCount,
+      maxWidth: previewTextMaxWidth,
       textScaler: textScaler,
     );
-    previewHeight = cellHeight * lineCount + _stackPreviewTextTopInset;
+    final naturalHeight = cellHeight * lineCount;
+    previewHeight =
+        math.min(naturalHeight, previewTextMaxHeight) +
+        _stackPreviewTextTopInset;
   } else {
     final baseStyle = FluttyTheme.monoStyle.copyWith(
       fontSize: _previewMaxFontSize,
@@ -703,10 +715,11 @@ class _StyledTerminalPreviewText extends StatelessWidget {
   Widget build(BuildContext context) {
     final textScaler = MediaQuery.textScalerOf(context);
     final lineCount = math.max(1, math.min(preview.lines.length, maxLines));
+    final columnCount = _styledContentColumns(preview);
     final fontSize = _fitStyledPreviewFontSize(
       terminalTheme: terminalTheme,
-      lineCount: lineCount,
-      maxHeight: maxHeight,
+      columnCount: columnCount,
+      maxWidth: maxWidth,
       textScaler: textScaler,
     );
     final painter = _buildStyledPreviewPainter(
@@ -714,9 +727,10 @@ class _StyledTerminalPreviewText extends StatelessWidget {
       fontSize: fontSize,
       textScaler: textScaler,
     );
+    final naturalHeight = painter.cellSize.height * lineCount;
     final height = maxHeight.isFinite
-        ? maxHeight
-        : painter.cellSize.height * lineCount;
+        ? math.min(maxHeight, naturalHeight)
+        : naturalHeight;
     final paint = CustomPaint(
       painter: _TerminalPreviewPainter(
         preview: preview,
@@ -726,39 +740,34 @@ class _StyledTerminalPreviewText extends StatelessWidget {
     );
 
     return ClipRect(
-      child: maxWidth.isFinite && maxHeight.isFinite
-          ? SizedBox.expand(child: paint)
-          : SizedBox(
-              width: maxWidth.isFinite ? maxWidth : null,
-              height: height,
-              child: paint,
-            ),
+      child: maxWidth.isFinite
+          ? SizedBox(width: maxWidth, height: height, child: paint)
+          : SizedBox(height: height, child: paint),
     );
   }
 }
 
 double _fitStyledPreviewFontSize({
   required TerminalThemeData terminalTheme,
-  required int lineCount,
-  required double maxHeight,
+  required int columnCount,
+  required double maxWidth,
   required TextScaler textScaler,
 }) {
-  if (!maxHeight.isFinite || maxHeight <= 0 || lineCount <= 0) {
-    return _previewMaxFontSize;
+  if (!maxWidth.isFinite || maxWidth <= 0 || columnCount <= 0) {
+    return _previewMinFontSize;
   }
-  // Pick the largest font size where painter.cellSize.height * lineCount fits
-  // inside maxHeight, using the actual terminal painter metrics so the card
-  // chrome and the painter agree.
+  // Pick the largest font size where columnCount * cellWidth(F) <= maxWidth,
+  // so the snapshot content fills the card horizontally without stretching.
   var low = _previewMinFontSize;
   var high = _styledPreviewMaxFontSize;
-  for (var index = 0; index < 12; index++) {
+  for (var index = 0; index < 14; index++) {
     final midpoint = (low + high) / 2;
     final painter = _buildStyledPreviewPainter(
       terminalTheme: terminalTheme,
       fontSize: midpoint,
       textScaler: textScaler,
     );
-    if (painter.cellSize.height * lineCount <= maxHeight) {
+    if (painter.cellSize.width * columnCount <= maxWidth) {
       low = midpoint;
     } else {
       high = midpoint;
@@ -784,14 +793,14 @@ MonkeyTerminalPainter _buildStyledPreviewPainter({
 
 double _styledPreviewCellHeight({
   required TerminalThemeData terminalTheme,
-  required int lineCount,
-  required double maxHeight,
+  required int columnCount,
+  required double maxWidth,
   required TextScaler textScaler,
 }) {
   final fontSize = _fitStyledPreviewFontSize(
     terminalTheme: terminalTheme,
-    lineCount: lineCount,
-    maxHeight: maxHeight,
+    columnCount: columnCount,
+    maxWidth: maxWidth,
     textScaler: textScaler,
   );
   return _buildStyledPreviewPainter(
@@ -799,6 +808,16 @@ double _styledPreviewCellHeight({
     fontSize: fontSize,
     textScaler: textScaler,
   ).cellSize.height;
+}
+
+int _styledContentColumns(TerminalPreviewSnapshot snapshot) {
+  var columns = 0;
+  for (final line in snapshot.lines) {
+    if (line.text.length > columns) {
+      columns = line.text.length;
+    }
+  }
+  return math.max(1, columns);
 }
 
 class _TerminalPreviewPainter extends CustomPainter {
@@ -817,11 +836,11 @@ class _TerminalPreviewPainter extends CustomPainter {
     final cellData = CellData.empty();
     final cellWidth = painter.cellSize.width;
     final lineHeight = painter.cellSize.height;
-    final visibleRows = math.max(1, size.height ~/ lineHeight);
-    final lineCount = math.min(
-      math.min(preview.lines.length, maxLines),
-      visibleRows,
-    );
+    final availableRows = math.max(1, size.height ~/ lineHeight);
+    final totalRows = math.min(preview.lines.length, maxLines);
+    final lineCount = math.min(totalRows, availableRows);
+    // Show the most recent rows when the snapshot exceeds the available height.
+    final startRow = math.max(0, totalRows - lineCount);
     final visibleColumns = math.max(1, (size.width / cellWidth).ceil());
 
     canvas
@@ -829,9 +848,10 @@ class _TerminalPreviewPainter extends CustomPainter {
       ..clipRect(Offset.zero & size)
       ..drawRect(Offset.zero & size, Paint()..color = painter.theme.background);
 
-    for (var row = 0; row < lineCount; row++) {
+    for (var visibleIndex = 0; visibleIndex < lineCount; visibleIndex++) {
+      final row = startRow + visibleIndex;
       final line = preview.lines[row].cells;
-      final y = row * lineHeight;
+      final y = visibleIndex * lineHeight;
       canvas
         ..save()
         ..clipRect(Rect.fromLTWH(0, y, size.width, lineHeight));

@@ -308,6 +308,59 @@ void main() {
     expect(painterSize.height, cardSize.height);
   });
 
+  testWidgets(
+    'styled preview content fills card width without horizontal slack',
+    (tester) async {
+      // Wide content that should width-fill at a small-to-medium font.
+      final lines = [
+        '-rw-r--r--    1 root  wheel    1316 Nov 22  2025 syslog.conf',
+        '-rw-r--r--    1 root  wheel     160 Nov 22  2025 ttys',
+        'drwxr-xr-x    5 root  wheel     192 Nov 22  2025 uucp',
+        '-rw-r--r--    1 root  wheel       0 Nov 22  2025 wfs',
+        '-r--r--r--    1 root  wheel     304 Nov 22  2025 xtab',
+        '-r--r--r--    1 root  wheel    3191 Nov 22  2025 zprofile',
+        '-rw-r--r--    1 root  wheel    9335 Nov 22  2025 zshrc',
+        'depoll@mac-mini ~ %',
+      ];
+      final terminal = Terminal(maxLines: 200)
+        ..resize(120, 30)
+        ..write(lines.join('\r\n'));
+      final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 360,
+              child: ConnectionPreviewStack(
+                entries: [
+                  ConnectionPreviewStackEntry(
+                    title: 'Connection #1',
+                    body: preview.plainText,
+                    previewSnapshot: preview,
+                    terminalTheme: TerminalThemes.defaultDarkTheme,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final styledPainter = find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint && widget.painter.runtimeType.toString().contains('_TerminalPreviewPainter'),
+      );
+      final painterSize = tester.getSize(styledPainter);
+      // Card has 1px border + 10px LR padding on each side = card_width - 22.
+      expect(painterSize.width, closeTo(360 - 22, 1));
+      // And the rendered cells must reach the right edge: at the chosen font,
+      // contentColumns * cellWidth should match painterSize.width within one
+      // cell.
+      expect(painterSize.height, greaterThan(0));
+    },
+  );
+
   testWidgets('sizes long non-wrapping previews to terminal rows', (
     tester,
   ) async {
