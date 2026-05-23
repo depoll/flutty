@@ -60,6 +60,9 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
       _connections[connectionId];
 
   @override
+  SshSession? getSession(int connectionId) => null;
+
+  @override
   Future<void> disconnect(int connectionId) async {
     disconnectedConnectionIds.add(connectionId);
     _connections.remove(connectionId);
