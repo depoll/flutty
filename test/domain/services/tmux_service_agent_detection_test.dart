@@ -91,7 +91,8 @@ void main() {
           '/b/copilot\n'
           '/b/codex\n'
           '/b/gemini\n'
-          '/b/opencode\n';
+          '/b/opencode\n'
+          '/b/antigravity\n';
       expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
     });
 
