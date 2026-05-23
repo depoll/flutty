@@ -103,6 +103,36 @@ void main() {
     expect(resizeEvents.last, initialEvent);
   });
 
+  testWidgets('remounting an already-sized terminal skips passive resize', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    expect(resizeEvents, isNotEmpty);
+    final initialCount = resizeEvents.length;
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    expect(resizeEvents, hasLength(initialCount));
+  });
+
   testWidgets('size refresh repairs stale terminal cell dimensions', (
     tester,
   ) async {
