@@ -975,11 +975,12 @@ class _HostRow extends ConsumerWidget {
     final connectionCount = rowData.connectionCount;
     final isPinnedToHomeScreen = rowData.isPinnedToHomeScreen;
     final previewEntries = rowData.previewEntries;
+    void openHostConnection() => unawaited(_openHostConnection(context, ref));
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => unawaited(_openHostConnection(context, ref)),
+        onTap: openHostConnection,
         onLongPress: () => unawaited(_showContextMenuAtCenter(context, ref)),
         onSecondaryTapDown: (details) =>
             unawaited(_showContextMenu(context, ref, details.globalPosition)),
@@ -1138,7 +1139,10 @@ class _HostRow extends ConsumerWidget {
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.only(left: 20),
-                  child: ConnectionPreviewStack(entries: previewEntries),
+                  child: ConnectionPreviewStack(
+                    entries: previewEntries,
+                    onTap: openHostConnection,
+                  ),
                 ),
               ],
             ],
@@ -1786,6 +1790,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                             ),
                             child: ConnectionPreviewStack(
                               entries: [previewEntry],
+                              onTap: openConnection,
                             ),
                           ),
                         ),
