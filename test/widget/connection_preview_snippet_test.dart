@@ -146,7 +146,7 @@ void main() {
     expect(previewText.style?.height, 1.22);
   });
 
-  testWidgets('scales narrow stack previews instead of wrapping terminal rows', (
+  testWidgets('clips narrow stack previews instead of wrapping terminal rows', (
     tester,
   ) async {
     final preview = [
@@ -174,13 +174,9 @@ void main() {
     );
 
     final previewText = tester.widget<Text>(find.text(preview));
-    expect(
-      tester.getSize(find.byType(ConnectionPreviewStack)).height,
-      lessThan(198),
-    );
+    expect(tester.getSize(find.byType(ConnectionPreviewStack)).height, 198);
     expect(previewText.softWrap, isFalse);
     expect(previewText.overflow, TextOverflow.clip);
-    expect(previewText.style?.fontSize, lessThan(10.5));
   });
 
   testWidgets('sizes stack previews to rendered rows', (tester) async {
@@ -207,6 +203,56 @@ void main() {
     );
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 17);
+  });
+
+  testWidgets('sizes long non-wrapping previews to terminal rows', (
+    tester,
+  ) async {
+    final preview = [
+      'cd',
+      '/Users/depoll/Code/flutty.worktrees/connection-preview-10-lines',
+      'git --no-pager diff --check',
+      'git add lib/presentation/widgets/connection_preview_snippet.dart',
+      '74 lines...',
+      'Pushed a guard to PR #500:',
+      'https://github.com/depollsoft/MonkeySSH/pull/500',
+      'Repeated taps on an active connection now go through a single',
+      'debounced terminal-route opener, so they cannot stack duplicate',
+      'instances of the same terminal page.',
+      'Added a regression test that double-taps a connection and verifies',
+      'only one terminal route is pushed.',
+      '~/Code/flutty [main*%]',
+      '────────────────────────────────────────────────────────',
+      '›',
+      '────────────────────────────────────────────────────────',
+      '/ commands · ? helpGPT-5.5 · xhigh (25%)',
+    ].join('\n');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 710,
+            child: ConnectionPreviewStack(
+              entries: [
+                ConnectionPreviewStackEntry(
+                  title: 'Connection #1 • Adjust Connection Preview Length',
+                  body: preview,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final stackHeight = tester
+        .getSize(find.byType(ConnectionPreviewStack))
+        .height;
+    expect(stackHeight, 198);
+    final previewText = tester.widget<Text>(find.text(preview));
+    expect(previewText.softWrap, isFalse);
+    expect(previewText.overflow, TextOverflow.clip);
   });
 
   testWidgets('renders stack metadata without consuming preview line budget', (
