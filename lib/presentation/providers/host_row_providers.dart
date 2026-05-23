@@ -168,6 +168,7 @@ final hostRowDataProvider = Provider.autoDispose
               themeSettings: themeSettings,
               availableThemes: themes,
               preview: connection?.preview,
+              previewSnapshot: connection?.previewSnapshot,
               sessionTitle: connection?.sessionTitle,
               windowTitle: connection?.windowTitle,
               iconName: connection?.iconName,

@@ -1,12 +1,15 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/theme.dart';
+import '../../domain/models/terminal_preview.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import 'monkey_terminal_view.dart';
 
 const _previewMaxLines = 17;
 const _previewMinFontSize = 6.5;
@@ -72,6 +75,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required TerminalThemeSettings themeSettings,
   required Iterable<TerminalThemeData> availableThemes,
   String? preview,
+  TerminalPreviewSnapshot? previewSnapshot,
   String? sessionTitle,
   String? windowTitle,
   String? iconName,
@@ -114,6 +118,7 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   return ConnectionPreviewStackEntry(
     title: titleSegments.join(' • '),
     body: body,
+    previewSnapshot: previewSnapshot,
     metadata: metadataSegments.isEmpty ? null : metadataSegments.join(' • '),
     terminalTheme: resolveConnectionPreviewTheme(
       brightness: brightness,
@@ -131,6 +136,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   const ConnectionPreviewSnippet({
     required this.endpoint,
     this.preview,
+    this.previewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -149,6 +155,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 
   /// Latest terminal preview text, when available.
   final String? preview;
+
+  /// Latest styled terminal preview snapshot, when available.
+  final TerminalPreviewSnapshot? previewSnapshot;
 
   /// Active coding-agent session title, when available.
   final String? sessionTitle;
@@ -273,6 +282,8 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             ),
             child: _AdaptiveTerminalPreviewText(
               text: previewText,
+              previewSnapshot: previewSnapshot,
+              terminalTheme: terminalTheme,
               color: previewTextColor,
               maxLines: previewMaxLines,
             ),
@@ -290,6 +301,7 @@ class ConnectionPreviewStackEntry {
   const ConnectionPreviewStackEntry({
     required this.title,
     required this.body,
+    this.previewSnapshot,
     this.metadata,
     this.terminalTheme,
   });
@@ -299,6 +311,9 @@ class ConnectionPreviewStackEntry {
 
   /// Main preview or status text shown inside the card.
   final String body;
+
+  /// Styled preview cell data shown inside the card, when available.
+  final TerminalPreviewSnapshot? previewSnapshot;
 
   /// Connection metadata shown separately from the terminal preview.
   final String? metadata;
@@ -312,11 +327,13 @@ class ConnectionPreviewStackEntry {
       other is ConnectionPreviewStackEntry &&
           other.title == title &&
           other.body == body &&
+          other.previewSnapshot == previewSnapshot &&
           other.metadata == metadata &&
           other.terminalTheme == terminalTheme;
 
   @override
-  int get hashCode => Object.hash(title, body, metadata, terminalTheme);
+  int get hashCode =>
+      Object.hash(title, body, previewSnapshot, metadata, terminalTheme);
 }
 
 /// Renders one or more connection preview cards in a visibly offset stack.
@@ -478,6 +495,8 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
                   ),
                   child: _AdaptiveTerminalPreviewText(
                     text: entry.body,
+                    previewSnapshot: entry.previewSnapshot,
+                    terminalTheme: entry.terminalTheme,
                     color: textColor,
                     maxLines: _previewMaxLines,
                   ),
@@ -564,11 +583,15 @@ double _singleLineTextHeight({
 class _AdaptiveTerminalPreviewText extends StatelessWidget {
   const _AdaptiveTerminalPreviewText({
     required this.text,
+    required this.previewSnapshot,
+    required this.terminalTheme,
     required this.color,
     required this.maxLines,
   });
 
   final String text;
+  final TerminalPreviewSnapshot? previewSnapshot;
+  final TerminalThemeData? terminalTheme;
   final Color color;
   final int maxLines;
 
@@ -586,6 +609,19 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
         constraints: constraints,
       );
 
+      final styledPreview = previewSnapshot;
+      final resolvedTerminalTheme = terminalTheme;
+      if (styledPreview != null && resolvedTerminalTheme != null) {
+        return _StyledTerminalPreviewText(
+          preview: styledPreview,
+          terminalTheme: resolvedTerminalTheme,
+          fontSize: fontSize,
+          maxLines: maxLines,
+          maxWidth: constraints.maxWidth,
+          maxHeight: constraints.maxHeight,
+        );
+      }
+
       return Text(
         text,
         maxLines: maxLines,
@@ -595,6 +631,107 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
       );
     },
   );
+}
+
+class _StyledTerminalPreviewText extends StatelessWidget {
+  const _StyledTerminalPreviewText({
+    required this.preview,
+    required this.terminalTheme,
+    required this.fontSize,
+    required this.maxLines,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
+
+  final TerminalPreviewSnapshot preview;
+  final TerminalThemeData terminalTheme;
+  final double fontSize;
+  final int maxLines;
+  final double maxWidth;
+  final double maxHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    final textStyle = TerminalStyle.fromTextStyle(
+      FluttyTheme.monoStyle.copyWith(
+        fontSize: fontSize,
+        height: _previewLineHeight,
+      ),
+    );
+    final painter = MonkeyTerminalPainter(
+      theme: terminalTheme.toXtermTheme(),
+      textStyle: textStyle,
+      textScaler: MediaQuery.textScalerOf(context),
+    );
+    final lineCount = math.min(preview.lines.length, maxLines);
+    final height = maxHeight.isFinite
+        ? maxHeight
+        : painter.cellSize.height * lineCount;
+
+    return ClipRect(
+      child: CustomPaint(
+        size: Size(maxWidth.isFinite ? maxWidth : 0, height),
+        painter: _TerminalPreviewPainter(
+          preview: preview,
+          maxLines: maxLines,
+          painter: painter,
+        ),
+      ),
+    );
+  }
+}
+
+class _TerminalPreviewPainter extends CustomPainter {
+  const _TerminalPreviewPainter({
+    required this.preview,
+    required this.maxLines,
+    required this.painter,
+  });
+
+  final TerminalPreviewSnapshot preview;
+  final int maxLines;
+  final MonkeyTerminalPainter painter;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cellData = CellData.empty();
+    final cellWidth = painter.cellSize.width;
+    final lineHeight = painter.cellSize.height;
+    final lineCount = math.min(preview.lines.length, maxLines);
+
+    for (var row = 0; row < lineCount; row++) {
+      final line = preview.lines[row].cells;
+      final y = row * lineHeight;
+      if (y >= size.height) {
+        break;
+      }
+      canvas
+        ..save()
+        ..clipRect(Rect.fromLTWH(0, y, size.width, lineHeight));
+      painter.paintLineTrailingBackgroundFill(canvas, Offset(0, y), line);
+      for (var column = 0; column < line.length; column++) {
+        line.getCellData(column, cellData);
+        final width = cellData.content >> CellContent.widthShift;
+        final x = column * cellWidth;
+        if (x >= size.width) {
+          break;
+        }
+        painter.paintCell(canvas, Offset(x, y), cellData);
+        if (width == 2) {
+          column++;
+        }
+      }
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TerminalPreviewPainter oldDelegate) =>
+      oldDelegate.preview != preview ||
+      oldDelegate.maxLines != maxLines ||
+      oldDelegate.painter.theme != painter.theme ||
+      oldDelegate.painter.textStyle != painter.textStyle ||
+      oldDelegate.painter.textScaler != painter.textScaler;
 }
 
 double _fitPreviewFontSize({

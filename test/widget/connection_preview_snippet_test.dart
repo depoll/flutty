@@ -7,6 +7,7 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
+import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 void main() {
   Widget buildSnippet({
@@ -203,6 +204,33 @@ void main() {
     );
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 17);
+  });
+
+  testWidgets('renders styled preview snapshots with terminal painter', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 100)..write('\x1b[31mred\x1b[0m');
+    final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewStack(
+            entries: [
+              ConnectionPreviewStackEntry(
+                title: 'Connection #1',
+                body: preview.plainText,
+                previewSnapshot: preview,
+                terminalTheme: TerminalThemes.defaultDarkTheme,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byType(CustomPaint), findsWidgets);
+    expect(find.text(preview.plainText), findsNothing);
   });
 
   testWidgets('sizes long non-wrapping previews to terminal rows', (
