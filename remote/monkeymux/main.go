@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.43"
+	monkeyMuxVersion         = "0.1.44"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -307,6 +307,7 @@ type muxWindow struct {
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
 	focusModeProcessID         int
+	themeRefreshModeProcessID  int
 	themeColorQueryPid         int
 	themeColorQueryKeys        map[string]bool
 	alert                      bool
@@ -3123,24 +3124,36 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 // brightness change, every app-resume) surfaces as literal `]11;rgb:...`
 // text in their input composer (observed with Nous Hermes, Codex, and
 // Claude Code). Synthetic focus-out/focus-in transitions can cause the
-// same kind of prompt/composer pollution. OpenCode is the exception we
-// intentionally support here: its system theme mode relies on refreshed
-// replies for previously observed color queries and a repaint nudge when
-// the client theme changes.
+// same kind of prompt/composer pollution.
+//
+// DEC private mode 2031 is the opt-in signal for color-scheme update
+// reports. Only windows that currently have that mode enabled get
+// refreshed replies for previously observed color queries, or a repaint
+// nudge when the client theme changes.
 //
 // The contractually-correct live-query response path in
 // handleWindowOutput still answers OSC 10/11/4/17/19 queries the
 // foreground process actually emits. Other programs that truly need the
 // latest theme can re-query on SIGWINCH or real focus changes.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
-	if w == nil || w.agentToolLocked() != "opencode" {
+	if !w.themeRefreshModeActiveLocked() {
 		return nil
 	}
 	return w.activeThemeColorQueryKeysLocked()
 }
 
 func (w *muxWindow) themeHintFocusTransitionLocked() bool {
-	return w != nil && w.agentToolLocked() == "opencode" && w.focusModeActiveLocked()
+	return w.themeRefreshModeActiveLocked() && w.focusModeActiveLocked()
+}
+
+func (w *muxWindow) themeRefreshModeActiveLocked() bool {
+	if w == nil || !w.privateModes["2031"] {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.themeRefreshModeProcessID <= 0 ||
+		activePid <= 0 ||
+		w.themeRefreshModeProcessID == activePid
 }
 
 func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
@@ -3582,6 +3595,13 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 			w.focusModeProcessID = w.activeForegroundPidLocked()
 		} else {
 			w.focusModeProcessID = 0
+		}
+	}
+	if mode == "2031" {
+		if enabled {
+			w.themeRefreshModeProcessID = w.activeForegroundPidLocked()
+		} else {
+			w.themeRefreshModeProcessID = 0
 		}
 	}
 	if _, ok := trackedPrivateModes[mode]; !ok {

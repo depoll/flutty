@@ -1900,28 +1900,38 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 }
 
 func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
-	focusWindow := &muxWindow{foregroundCommand: "opencode"}
+	focusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
+	focusWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	colorQueryWindow := &muxWindow{
-		foregroundCommand: "opencode",
+		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
 	}
+	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	colorQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
 	plainWindow := &muxWindow{foregroundCommand: "codex"}
 	plainFocusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
 	plainFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	plainQueryWindow := &muxWindow{
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+	}
+	plainQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
 
 	if !focusWindow.supportsThemeHintLocked() {
-		t.Fatal("OpenCode focus-aware window did not support theme hints")
+		t.Fatal("DEC 2031 + focus-aware window did not support theme hints")
 	}
 	if !colorQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("OpenCode OSC 11 query window did not support theme hints")
+		t.Fatal("DEC 2031 + OSC 11 query window did not support theme hints")
 	}
 	if plainWindow.supportsThemeHintLocked() {
 		t.Fatal("window without focus mode or OSC 11 query supported theme hints")
 	}
 	if plainFocusWindow.supportsThemeHintLocked() {
-		t.Fatal("non-OpenCode focus-aware window supported theme hints")
+		t.Fatal("focus-aware window without DEC 2031 supported theme hints")
+	}
+	if plainQueryWindow.supportsThemeHintLocked() {
+		t.Fatal("OSC 11 query window without DEC 2031 supported theme hints")
 	}
 
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
@@ -1932,6 +1942,12 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	colorQueryWindow.foregroundPid = 43
 	if colorQueryWindow.supportsThemeHintLocked() {
 		t.Fatal("stale OSC 11 query supported theme hints after foreground pid changed")
+	}
+
+	colorQueryWindow.foregroundPid = 42
+	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031l"))
+	if colorQueryWindow.supportsThemeHintLocked() {
+		t.Fatal("window supported theme hints after DEC 2031 disabled")
 	}
 }
 
@@ -2235,7 +2251,7 @@ func TestSendThemeHintIgnoresOversizedPayload(t *testing.T) {
 	}
 }
 
-func TestThemeHintReSendsObservedPaletteReportsToOpenCode(t *testing.T) {
+func TestThemeHintReSendsObservedPaletteReportsToColorSchemeUpdatesTui(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2247,7 +2263,7 @@ func TestThemeHintReSendsObservedPaletteReportsToOpenCode(t *testing.T) {
 
 	window := &muxWindow{
 		id:                "@1",
-		foregroundCommand: "opencode",
+		foregroundCommand: "unknown-tui",
 		pty:               inputWriter,
 	}
 	foregroundProcessGroup := 42
@@ -2262,6 +2278,7 @@ func TestThemeHintReSendsObservedPaletteReportsToOpenCode(t *testing.T) {
 		return 0
 	}
 	window.observeTerminalMetadataLocked([]byte("\x1b]4;0;?\x1b\\"))
+	window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
