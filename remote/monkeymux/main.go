@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.42"
+	monkeyMuxVersion         = "0.1.43"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2719,7 +2719,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 			window.themeHintRefreshKeysLocked(),
 		)
 	}
-	sendFocusTransition := window.focusModeActiveLocked()
+	sendFocusTransition := window.themeHintFocusTransitionLocked()
 	if len(themeHintData) == 0 && !sendFocusTransition {
 		s.mu.Unlock()
 		return false
@@ -3111,7 +3111,7 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeActiveLocked() || len(w.activeThemeColorQueryKeysLocked()) > 0
+	return w.themeHintFocusTransitionLocked() || len(w.themeHintRefreshKeysLocked()) > 0
 }
 
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
@@ -3122,21 +3122,25 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 // never expect another one. Any follow-up push (every reconnect, every
 // brightness change, every app-resume) surfaces as literal `]11;rgb:...`
 // text in their input composer (observed with Nous Hermes, Codex, and
-// Claude Code). OpenCode is the exception we intentionally support here:
-// its system theme mode relies on refreshed replies for previously
-// observed color queries when the client theme changes.
+// Claude Code). Synthetic focus-out/focus-in transitions can cause the
+// same kind of prompt/composer pollution. OpenCode is the exception we
+// intentionally support here: its system theme mode relies on refreshed
+// replies for previously observed color queries and a repaint nudge when
+// the client theme changes.
 //
 // The contractually-correct live-query response path in
 // handleWindowOutput still answers OSC 10/11/4/17/19 queries the
-// foreground process actually emits, and the focus-transition emitted
-// by sendThemeHint nudges focus-aware TUIs to repaint. Programs that
-// truly need the latest theme can re-query on SIGWINCH or on the focus
-// transition.
+// foreground process actually emits. Other programs that truly need the
+// latest theme can re-query on SIGWINCH or real focus changes.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
 	if w == nil || w.agentToolLocked() != "opencode" {
 		return nil
 	}
 	return w.activeThemeColorQueryKeysLocked()
+}
+
+func (w *muxWindow) themeHintFocusTransitionLocked() bool {
+	return w != nil && w.agentToolLocked() == "opencode" && w.focusModeActiveLocked()
 }
 
 func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
