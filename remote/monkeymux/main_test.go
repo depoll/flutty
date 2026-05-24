@@ -1970,7 +1970,14 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 	}
 }
 
-func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
+// TestThemeHintDoesNotReSendObservedBackgroundReport guards the
+// "hermes spew on every resume" regression. Even when a TUI has
+// previously issued an OSC 11 query (and the daemon answered it via
+// the live-query path), sendThemeHint must NOT proactively re-push the
+// cached response on subsequent theme refreshes. Many TUIs (Nous Hermes,
+// Codex, Claude Code) only handle the first response; later unsolicited
+// pushes surface as literal "]11;rgb:..." text in their input composer.
+func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2010,8 +2017,11 @@ func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if !strings.HasPrefix(got, backgroundReport) {
-		t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, did not expect proactive re-push of previously-observed background report",
+			got,
+		)
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)
@@ -2270,7 +2280,7 @@ func TestSendThemeHintIgnoresOversizedPayload(t *testing.T) {
 	}
 }
 
-func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
+func TestThemeHintDoesNotReSendObservedPaletteReports(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2315,21 +2325,14 @@ func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if !strings.HasPrefix(got, paletteReport0) {
+	if strings.Contains(got, foregroundReport) ||
+		strings.Contains(got, backgroundReport) ||
+		strings.Contains(got, paletteReport0) ||
+		strings.Contains(got, paletteReport1) {
 		t.Fatalf(
-			"theme hint = %q, want queried palette report prefix %q",
-			got,
-			paletteReport0,
-		)
-	}
-	if strings.Contains(got, foregroundReport) || strings.Contains(got, backgroundReport) {
-		t.Fatalf(
-			"theme hint = %q, did not expect unqueried default color reports",
+			"theme hint = %q, did not expect any proactive OSC color reports",
 			got,
 		)
-	}
-	if strings.Contains(got, paletteReport1) {
-		t.Fatalf("theme hint = %q, did not expect unqueried palette report", got)
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)
