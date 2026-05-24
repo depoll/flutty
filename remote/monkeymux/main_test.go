@@ -870,6 +870,61 @@ func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
 	}
 }
 
+func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	attach := &recordingConn{}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	server.themeHint = []byte(backgroundReport)
+
+	server.handleWindowOutput("@1", []byte("hello\x1b]11;?"))
+	if got := attach.String(); got != "hello" {
+		t.Fatalf("active attach output after partial query = %q, want prefix only", got)
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b\\world"))
+
+	if got := attach.String(); got != "helloworld" {
+		t.Fatalf("active attach output = %q, want split OSC 11 query stripped", got)
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("window pty got = %q, want background report %q", got, backgroundReport)
+	}
+}
+
 // TestActiveOutputKeepsUnansweredPaletteQueryInAttach verifies that when the
 // theme hint cannot answer every key in a multi-key OSC 4 palette query, the
 // query is left intact so the SSH client can still reply.
@@ -919,6 +974,48 @@ func TestStripLocallyAnsweredThemeQueriesStripsAnsweredQuery(t *testing.T) {
 	got := stripLocallyAnsweredThemeQueries(chunk, hint)
 	if string(got) != "beforemiddleafter" {
 		t.Fatalf("got = %q, want %q", got, "beforemiddleafter")
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesBuffersSplitAnsweredQuery(t *testing.T) {
+	window := &muxWindow{}
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("before\x1b]11;?"),
+		hint,
+	)
+	if string(first) != "before" {
+		t.Fatalf("first chunk = %q, want prefix only", first)
+	}
+	if string(window.attachOscBuffer) != "\x1b]11;?" {
+		t.Fatalf("attach OSC buffer = %q, want split query", window.attachOscBuffer)
+	}
+
+	second := window.stripLocallyAnsweredThemeQueriesLocked([]byte("\x1b\\after"), hint)
+	if string(second) != "after" {
+		t.Fatalf("second chunk = %q, want answered query stripped", second)
+	}
+	if len(window.attachOscBuffer) != 0 {
+		t.Fatalf("attach OSC buffer = %q, want empty", window.attachOscBuffer)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesForwardsSplitUnansweredQuery(t *testing.T) {
+	window := &muxWindow{}
+	hint := []byte("\x1b]10;rgb:1111/2222/3333\x1b\\")
+
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("before\x1b]11;?"),
+		hint,
+	)
+	if string(first) != "before" {
+		t.Fatalf("first chunk = %q, want prefix only", first)
+	}
+
+	second := window.stripLocallyAnsweredThemeQueriesLocked([]byte("\x1b\\after"), hint)
+	if string(second) != "\x1b]11;?\x1b\\after" {
+		t.Fatalf("second chunk = %q, want unanswered query forwarded", second)
 	}
 }
 
