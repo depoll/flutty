@@ -97,7 +97,13 @@ ThemeData buildTerminalAppTheme({
     themeId: themeId,
     additionalThemes: terminalThemes,
   );
-  return FluttyTheme.fromTerminalTheme(terminalTheme, brightness: brightness);
+  final resolvedBrightness = terminalTheme.isDark
+      ? Brightness.dark
+      : Brightness.light;
+  return FluttyTheme.fromTerminalTheme(
+    terminalTheme,
+    brightness: resolvedBrightness,
+  );
 }
 
 class _BackgroundLifecycleBridge extends ConsumerStatefulWidget {
