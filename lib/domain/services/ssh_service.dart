@@ -15,6 +15,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../models/remote_multiplexer.dart';
+import '../models/terminal_preview.dart';
 import '../models/terminal_theme.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
@@ -2616,6 +2617,7 @@ class SshSession {
       StreamController<_SshConnectionHealthFailure>.broadcast();
   bool _connectionHealthFailureReported = false;
   String? _terminalPreview;
+  TerminalPreviewSnapshot? _terminalPreviewSnapshot;
   String? _windowTitle;
   String? _iconName;
   Uri? _workingDirectory;
@@ -2627,6 +2629,10 @@ class SshSession {
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
+
+  /// A styled preview of the latest terminal content.
+  TerminalPreviewSnapshot? get terminalPreviewSnapshot =>
+      _terminalPreviewSnapshot;
 
   Stream<_SshConnectionHealthFailure> get _connectionHealthFailureStream =>
       _connectionHealthFailures.stream;
@@ -2747,6 +2753,7 @@ class SshSession {
     _shellStatus = null;
     _lastExitCode = null;
     _terminalPreview = null;
+    _terminalPreviewSnapshot = null;
     _windowTitle = null;
   }
 
@@ -2959,6 +2966,47 @@ class SshSession {
       preview = '…${preview.substring(preview.length - effectiveMaxChars + 1)}';
     }
     return preview;
+  }
+
+  /// Builds a styled preview from the latest terminal display rows.
+  static TerminalPreviewSnapshot? buildTerminalPreviewSnapshot(
+    Terminal terminal, {
+    int maxLines = _previewLineCount,
+  }) {
+    final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
+    final previewLines = <TerminalPreviewLine>[];
+
+    for (
+      var index = terminal.lines.length - 1;
+      index >= 0 && previewLines.length < effectiveMaxLines;
+      index--
+    ) {
+      final sourceLine = terminal.lines[index];
+      final rawLine = sourceLine.getText();
+      final cleanedLine = _sanitizePreviewFragment(rawLine);
+
+      if (cleanedLine.isEmpty) {
+        continue;
+      }
+
+      final cells = BufferLine(
+        sourceLine.length,
+        isWrapped: sourceLine.isWrapped,
+      )..copyFrom(sourceLine, 0, 0, sourceLine.length);
+      previewLines.insert(
+        0,
+        TerminalPreviewLine(text: cleanedLine, cells: cells),
+      );
+    }
+
+    if (previewLines.isEmpty) {
+      return null;
+    }
+
+    return TerminalPreviewSnapshot(
+      lines: List.unmodifiable(previewLines),
+      plainText: previewLines.map((line) => line.text).join('\n'),
+    );
   }
 
   static String _sanitizePreviewFragment(String text) =>
@@ -3374,6 +3422,8 @@ class ActiveConnection {
     required this.createdAt,
     required this.config,
     this.preview,
+    this.previewSnapshot,
+    this.terminalTheme,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -3403,6 +3453,12 @@ class ActiveConnection {
 
   /// The latest terminal preview snippet, when available.
   final String? preview;
+
+  /// The latest styled terminal preview snippet, when available.
+  final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// The active terminal theme resolved for this connection.
+  final TerminalThemeData? terminalTheme;
 
   /// The active coding-agent session title, when available.
   final String? sessionTitle;
@@ -3678,6 +3734,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       createdAt: session.createdAt,
       config: session.config,
       preview: session.terminalPreview,
+      previewSnapshot: session.terminalPreviewSnapshot,
+      terminalTheme: session.terminalTheme,
       sessionTitle: _connectionSessionTitles[connectionId],
       windowTitle: session.windowTitle,
       iconName: session.iconName,
@@ -3748,6 +3806,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           createdAt: session.createdAt,
           config: session.config,
           preview: session.terminalPreview,
+          previewSnapshot: session.terminalPreviewSnapshot,
+          terminalTheme: session.terminalTheme,
           sessionTitle: _connectionSessionTitles[connectionId],
           windowTitle: session.windowTitle,
           iconName: session.iconName,

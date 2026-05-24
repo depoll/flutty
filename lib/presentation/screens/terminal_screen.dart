@@ -8744,6 +8744,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _collapseTmuxBarIfExpanded();
       },
       child: Scaffold(
+        backgroundColor: theme.colorScheme.surface,
         appBar: AppBar(
           titleSpacing: 8,
           title: Row(

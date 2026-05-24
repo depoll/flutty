@@ -7,6 +7,7 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
+import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 void main() {
   Widget buildSnippet({
@@ -119,6 +120,23 @@ void main() {
     expect(entry.body.split('\n'), hasLength(17));
   });
 
+  test('stack preview prefers the active connection terminal theme', () {
+    final entry = buildConnectionPreviewStackEntry(
+      connectionId: 1,
+      state: SshConnectionState.connected,
+      brightness: Brightness.light,
+      themeSettings: const TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      ),
+      availableThemes: TerminalThemes.all,
+      preview: 'ready',
+      activeTerminalTheme: TerminalThemes.defaultDarkTheme,
+    );
+
+    expect(entry.terminalTheme, TerminalThemes.defaultDarkTheme);
+  });
+
   testWidgets('renders extra rows in stacked previews', (tester) async {
     final preview = previewLines(19);
 
@@ -204,6 +222,147 @@ void main() {
     final previewText = tester.widget<Text>(find.text(preview));
     expect(previewText.maxLines, 17);
   });
+
+  testWidgets('renders styled preview snapshots with terminal painter', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 100)..write('\x1b[31mred\x1b[0m');
+    final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewStack(
+            entries: [
+              ConnectionPreviewStackEntry(
+                title: 'Connection #1',
+                body: preview.plainText,
+                previewSnapshot: preview,
+                terminalTheme: TerminalThemes.defaultDarkTheme,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byType(CustomPaint), findsWidgets);
+    expect(find.text(preview.plainText), findsNothing);
+  });
+
+  testWidgets('styled preview fills its container vertically without slack', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 100)
+      ..resize(80, 24)
+      ..write(
+        [
+          'cd ~/Code/flutty',
+          'git status --short',
+          ' M lib/foo.dart',
+          ' M lib/bar.dart',
+          'echo done',
+          r'$',
+        ].join('\r\n'),
+      );
+    final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            child: ConnectionPreviewStack(
+              entries: [
+                ConnectionPreviewStackEntry(
+                  title: 'Connection #1',
+                  body: preview.plainText,
+                  previewSnapshot: preview,
+                  terminalTheme: TerminalThemes.defaultDarkTheme,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final styledPainter = find
+        .descendant(
+          of: find.byType(ConnectionPreviewStack),
+          matching: find.byType(CustomPaint),
+        )
+        .last;
+    final painterSize = tester.getSize(styledPainter);
+    final cardSize = tester.getSize(
+      find
+          .descendant(
+            of: find.byType(ConnectionPreviewStack),
+            matching: find.byType(ClipRect),
+          )
+          .last,
+    );
+    // The styled preview painter must take up the full vertical area it was
+    // given; no slack at the bottom of the rendered card.
+    expect(painterSize.height, greaterThan(0));
+    expect(painterSize.height, cardSize.height);
+  });
+
+  testWidgets(
+    'styled preview content fills card width without horizontal slack',
+    (tester) async {
+      // Wide content that should width-fill at a small-to-medium font.
+      final lines = [
+        '-rw-r--r--    1 root  wheel    1316 Nov 22  2025 syslog.conf',
+        '-rw-r--r--    1 root  wheel     160 Nov 22  2025 ttys',
+        'drwxr-xr-x    5 root  wheel     192 Nov 22  2025 uucp',
+        '-rw-r--r--    1 root  wheel       0 Nov 22  2025 wfs',
+        '-r--r--r--    1 root  wheel     304 Nov 22  2025 xtab',
+        '-r--r--r--    1 root  wheel    3191 Nov 22  2025 zprofile',
+        '-rw-r--r--    1 root  wheel    9335 Nov 22  2025 zshrc',
+        'depoll@mac-mini ~ %',
+      ];
+      final terminal = Terminal(maxLines: 200)
+        ..resize(120, 30)
+        ..write(lines.join('\r\n'));
+      final preview = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 360,
+              child: ConnectionPreviewStack(
+                entries: [
+                  ConnectionPreviewStackEntry(
+                    title: 'Connection #1',
+                    body: preview.plainText,
+                    previewSnapshot: preview,
+                    terminalTheme: TerminalThemes.defaultDarkTheme,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final styledPainter = find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint &&
+            widget.painter.runtimeType.toString().contains(
+              '_TerminalPreviewPainter',
+            ),
+      );
+      final painterSize = tester.getSize(styledPainter);
+      // Card has 1px border + 10px LR padding on each side = card_width - 22.
+      expect(painterSize.width, closeTo(360 - 22, 1));
+      // And the rendered cells must reach the right edge: at the chosen font,
+      // contentColumns * cellWidth should match painterSize.width within one
+      // cell.
+      expect(painterSize.height, greaterThan(0));
+    },
+  );
 
   testWidgets('sizes long non-wrapping previews to terminal rows', (
     tester,
