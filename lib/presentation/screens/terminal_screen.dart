@@ -7549,8 +7549,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TerminalThemeData terminalTheme,
     bool isMobile,
     ThemeData theme,
-    SshConnectionState connectionState,
-  ) {
+    SshConnectionState connectionState, {
+    required bool isTransitioning,
+  }) {
     final showTmux =
         _isTmuxActive &&
         _showTmuxBar &&
@@ -7589,7 +7590,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     child: Column(
                       children: [
                         Expanded(
-                          child: _buildTerminalView(terminalTheme, isMobile),
+                          child: _buildTerminalView(
+                            terminalTheme,
+                            isMobile,
+                            isTransitioning: isTransitioning,
+                          ),
                         ),
                         SizedBox(height: animatedBottomPadding),
                       ],
@@ -8949,11 +8954,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 _showKeyboardToolbar &&
                 !showsDisconnectedOverlay &&
                 (!_isNativeSelectionMode || _isMobilePlatform);
+            final route = ModalRoute.of(bodyContext);
+            final isTransitioning =
+                route != null &&
+                route.animation != null &&
+                (route.animation!.status == AnimationStatus.forward ||
+                    route.animation!.status == AnimationStatus.reverse);
             final terminalArea = _buildTerminalWithTmuxBar(
               terminalTheme,
               isMobile,
               theme,
               connectionState,
+              isTransitioning: isTransitioning,
             );
             return Column(
               children: [
@@ -9500,7 +9512,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ],
   );
 
-  Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
+  Widget _buildTerminalView(
+    TerminalThemeData terminalTheme,
+    bool isMobile, {
+    required bool isTransitioning,
+  }) {
     final theme = Theme.of(context);
     final connectionStates = ref.watch(activeSessionsProvider);
     final connectionAttempt = ref
@@ -9624,6 +9640,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
+      autoResize: !isTransitioning,
       // Let alt-buffer apps keep raw wheel events when they explicitly enable
       // mouse reporting, but fall back to synthetic arrows when they do not.
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
