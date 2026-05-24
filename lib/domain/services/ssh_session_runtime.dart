@@ -39,6 +39,16 @@ class _SshSessionRuntime {
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
 
+  /// UTF-8 decoder that tolerates malformed bytes by emitting U+FFFD instead
+  /// of throwing a [FormatException]. The shell stream carries raw terminal
+  /// bytes, including replay history from MonkeyMux that can be truncated at
+  /// the byte cap mid-character, so a strict decoder would drop the entire
+  /// chunk (and any redraw bytes inside it) when the chunk happens to start
+  /// mid-sequence. See https://github.com/depollsoft/MonkeySSH/issues for
+  /// the symptom where window switches lose composer borders until the next
+  /// resize redraw.
+  static const _shellStreamDecoder = Utf8Decoder(allowMalformed: true);
+
   SSHSession? get shell => _shell;
 
   bool get hasShell => _shell != null;
@@ -225,7 +235,7 @@ class _SshSessionRuntime {
 
     _shellStdoutSubscription = shell.stdout
         .cast<List<int>>()
-        .transform(utf8.decoder)
+        .transform(_shellStreamDecoder)
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
@@ -267,7 +277,7 @@ class _SshSessionRuntime {
         );
     _shellStderrSubscription = shell.stderr
         .cast<List<int>>()
-        .transform(utf8.decoder)
+        .transform(_shellStreamDecoder)
         .listen(
           (data) {
             _recordShellIo(stderrChars: data.length);
