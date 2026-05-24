@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.39"
+	monkeyMuxVersion         = "0.1.40"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3114,35 +3114,14 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 	return w.focusModeActiveLocked() || len(w.activeThemeColorQueryKeysLocked()) > 0
 }
 
+// themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
+// should re-answer when refreshing the cached theme hint. Only keys the
+// current foreground process has actively queried are returned: pushing OSC
+// responses for keys a TUI never asked about is unsafe because many modern
+// agent CLIs (Codex, Claude Code, Hermes, etc.) treat unsolicited stdin bytes
+// as keyboard input and render them as literal text in their input composer.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
-	keys := w.activeThemeColorQueryKeysLocked()
-	if w.shouldSendFocusThemeReportsLocked() {
-		keys = appendThemeQueryKeys(keys, []string{"10", "11"})
-		keys = appendThemeQueryKeys(keys, w.observedPaletteThemeColorQueryKeysLocked())
-	}
-	return keys
-}
-
-func (w *muxWindow) shouldSendFocusThemeReportsLocked() bool {
-	if w == nil || !w.focusModeActiveLocked() {
-		return false
-	}
-	command := w.currentCommandLocked()
-	return command != "" && !isShellCommandName(command)
-}
-
-func (w *muxWindow) observedPaletteThemeColorQueryKeysLocked() []string {
-	if w == nil || len(w.themeColorQueryKeys) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(w.themeColorQueryKeys))
-	for key := range w.themeColorQueryKeys {
-		if strings.HasPrefix(key, "4;") {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	return keys
+	return w.activeThemeColorQueryKeysLocked()
 }
 
 func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
