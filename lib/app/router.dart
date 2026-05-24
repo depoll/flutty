@@ -62,7 +62,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/terminal/:hostId',
         name: Routes.terminal,
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
@@ -74,28 +74,36 @@ final routerProvider = Provider<GoRouter>((ref) {
           );
           final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           if (hostId == null) {
-            return const Scaffold(body: Center(child: Text('Invalid host ID')));
-          }
-          return TerminalScreen(
-            key: ValueKey<Object>(
-              Object.hash(
-                hostId,
-                connectionId,
-                initialTmuxSessionName,
-                initialTmuxWindowIndex,
-                initialTmuxWindowId,
-                state.uri.queryParameters['notificationTap'],
+            return _buildTerminalTransitionPage<void>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid host ID')),
               ),
+            );
+          }
+          return _buildTerminalTransitionPage<void>(
+            key: state.pageKey,
+            child: TerminalScreen(
+              key: ValueKey<Object>(
+                Object.hash(
+                  hostId,
+                  connectionId,
+                  initialTmuxSessionName,
+                  initialTmuxWindowIndex,
+                  initialTmuxWindowId,
+                  state.uri.queryParameters['notificationTap'],
+                ),
+              ),
+              hostId: hostId,
+              connectionId: connectionId,
+              initialTmuxSessionName: initialTmuxSessionName,
+              initialTmuxWindowIndex: initialTmuxWindowIndex,
+              initialTmuxWindowId: initialTmuxWindowId,
+              initialTmuxWindowRequiresVisibleSession:
+                  state.uri.queryParameters['notificationTap'] != null,
+              initiallyExpandTmuxWindows:
+                  state.uri.queryParameters['expandTmux'] == '1',
             ),
-            hostId: hostId,
-            connectionId: connectionId,
-            initialTmuxSessionName: initialTmuxSessionName,
-            initialTmuxWindowIndex: initialTmuxWindowIndex,
-            initialTmuxWindowId: initialTmuxWindowId,
-            initialTmuxWindowRequiresVisibleSession:
-                state.uri.queryParameters['notificationTap'] != null,
-            initiallyExpandTmuxWindows:
-                state.uri.queryParameters['expandTmux'] == '1',
           );
         },
       ),
@@ -255,6 +263,25 @@ CustomTransitionPage<T> _buildSlideUpPage<T>({
           ).chain(CurveTween(curve: Curves.easeOutCubic)),
         ),
         child: child,
+      ),
+  child: child,
+);
+
+CustomTransitionPage<T> _buildTerminalTransitionPage<T>({
+  required LocalKey key,
+  required Widget child,
+}) => CustomTransitionPage<T>(
+  key: key,
+  reverseTransitionDuration: const Duration(milliseconds: 250),
+  transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+      ScaleTransition(
+        scale: animation.drive(
+          Tween<double>(
+            begin: 0.96,
+            end: 1,
+          ).chain(CurveTween(curve: Curves.easeOutCubic)),
+        ),
+        child: FadeTransition(opacity: animation, child: child),
       ),
   child: child,
 );
