@@ -814,6 +814,212 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	}
 }
 
+// TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach guards against the
+// "hermes spew" regression: when MonkeyMux can answer an OSC theme query from
+// its cached theme hint, the query bytes must be removed from the chunk
+// forwarded to the attach (SSH client) side. Otherwise the client would also
+// answer the query, and that duplicate response would round-trip back through
+// the attach input pipe into the active window's PTY, where the TUI renders
+// it as literal text.
+func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	attach := &recordingConn{}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	server.themeHint = []byte(backgroundReport)
+
+	server.handleWindowOutput("@1", []byte("hello\x1b]11;?\x1b\\world"))
+
+	if got := attach.String(); got != "helloworld" {
+		t.Fatalf("active attach output = %q, want OSC 11 query stripped", got)
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("window pty got = %q, want background report %q", got, backgroundReport)
+	}
+}
+
+func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               inputWriter,
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	attach := &recordingConn{}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	server.themeHint = []byte(backgroundReport)
+
+	server.handleWindowOutput("@1", []byte("hello\x1b]11;?"))
+	if got := attach.String(); got != "hello" {
+		t.Fatalf("active attach output after partial query = %q, want prefix only", got)
+	}
+
+	server.handleWindowOutput("@1", []byte("\x1b\\world"))
+
+	if got := attach.String(); got != "helloworld" {
+		t.Fatalf("active attach output = %q, want split OSC 11 query stripped", got)
+	}
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("window pty got = %q, want background report %q", got, backgroundReport)
+	}
+}
+
+// TestActiveOutputKeepsUnansweredPaletteQueryInAttach verifies that when the
+// theme hint cannot answer every key in a multi-key OSC 4 palette query, the
+// query is left intact so the SSH client can still reply.
+func TestActiveOutputKeepsUnansweredPaletteQueryInAttach(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+	server.themeHint = []byte("\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\")
+
+	server.handleWindowOutput("@1", []byte("\x1b]4;0;?;7;?\x1b\\"))
+
+	if got := attach.String(); got != "\x1b]4;0;?;7;?\x1b\\" {
+		t.Fatalf("active attach output = %q, want palette query preserved", got)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesLeavesNormalOutput(t *testing.T) {
+	chunk := []byte("plain text without queries\x1b]2;Title\x07")
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	got := stripLocallyAnsweredThemeQueries(chunk, hint)
+	if string(got) != string(chunk) {
+		t.Fatalf("got = %q, want unchanged %q", got, chunk)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesIsNoopWithoutHint(t *testing.T) {
+	chunk := []byte("\x1b]11;?\x1b\\")
+
+	got := stripLocallyAnsweredThemeQueries(chunk, nil)
+	if string(got) != string(chunk) {
+		t.Fatalf("got = %q, want unchanged %q", got, chunk)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesStripsAnsweredQuery(t *testing.T) {
+	chunk := []byte("before\x1b]11;?\x07middle\x1b]4;5;?\x1b\\after")
+	hint := []byte(
+		"\x1b]11;rgb:1111/2222/3333\x1b\\" +
+			"\x1b]4;5;rgb:aaaa/bbbb/cccc\x1b\\",
+	)
+
+	got := stripLocallyAnsweredThemeQueries(chunk, hint)
+	if string(got) != "beforemiddleafter" {
+		t.Fatalf("got = %q, want %q", got, "beforemiddleafter")
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesBuffersSplitAnsweredQuery(t *testing.T) {
+	window := &muxWindow{}
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("before\x1b]11;?"),
+		hint,
+	)
+	if string(first) != "before" {
+		t.Fatalf("first chunk = %q, want prefix only", first)
+	}
+	if string(window.attachOscBuffer) != "\x1b]11;?" {
+		t.Fatalf("attach OSC buffer = %q, want split query", window.attachOscBuffer)
+	}
+
+	second := window.stripLocallyAnsweredThemeQueriesLocked([]byte("\x1b\\after"), hint)
+	if string(second) != "after" {
+		t.Fatalf("second chunk = %q, want answered query stripped", second)
+	}
+	if len(window.attachOscBuffer) != 0 {
+		t.Fatalf("attach OSC buffer = %q, want empty", window.attachOscBuffer)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesForwardsSplitUnansweredQuery(t *testing.T) {
+	window := &muxWindow{}
+	hint := []byte("\x1b]10;rgb:1111/2222/3333\x1b\\")
+
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("before\x1b]11;?"),
+		hint,
+	)
+	if string(first) != "before" {
+		t.Fatalf("first chunk = %q, want prefix only", first)
+	}
+
+	second := window.stripLocallyAnsweredThemeQueriesLocked([]byte("\x1b\\after"), hint)
+	if string(second) != "\x1b]11;?\x1b\\after" {
+		t.Fatalf("second chunk = %q, want unanswered query forwarded", second)
+	}
+}
+
 func TestCreateWindowClearsAttachBeforePromptOutput(t *testing.T) {
 	server := newMuxServer("test")
 	t.Cleanup(server.close)
@@ -1849,24 +2055,39 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 	}
 }
 
-func TestThemeHintUsesTerminalCapabilities(t *testing.T) {
+func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	focusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
+	focusWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	colorQueryWindow := &muxWindow{
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
 	}
+	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	colorQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
 	plainWindow := &muxWindow{foregroundCommand: "codex"}
+	plainFocusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
+	plainFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	plainQueryWindow := &muxWindow{
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+	}
+	plainQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
 
 	if !focusWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware window did not support theme hints")
+		t.Fatal("DEC 2031 + focus-aware window did not support theme hints")
 	}
 	if !colorQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("OSC 11 query window did not support theme hints")
+		t.Fatal("DEC 2031 + OSC 11 query window did not support theme hints")
 	}
 	if plainWindow.supportsThemeHintLocked() {
 		t.Fatal("window without focus mode or OSC 11 query supported theme hints")
+	}
+	if plainFocusWindow.supportsThemeHintLocked() {
+		t.Fatal("focus-aware window without DEC 2031 supported theme hints")
+	}
+	if plainQueryWindow.supportsThemeHintLocked() {
+		t.Fatal("OSC 11 query window without DEC 2031 supported theme hints")
 	}
 
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
@@ -1877,6 +2098,12 @@ func TestThemeHintUsesTerminalCapabilities(t *testing.T) {
 	colorQueryWindow.foregroundPid = 43
 	if colorQueryWindow.supportsThemeHintLocked() {
 		t.Fatal("stale OSC 11 query supported theme hints after foreground pid changed")
+	}
+
+	colorQueryWindow.foregroundPid = 42
+	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031l"))
+	if colorQueryWindow.supportsThemeHintLocked() {
+		t.Fatal("window supported theme hints after DEC 2031 disabled")
 	}
 }
 
@@ -1920,7 +2147,14 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 	}
 }
 
-func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
+// TestThemeHintDoesNotReSendObservedBackgroundReport guards the
+// "hermes spew on every resume" regression. Even when a TUI has
+// previously issued an OSC 11 query (and the daemon answered it via
+// the live-query path), sendThemeHint must NOT proactively re-push the
+// cached response on subsequent theme refreshes. Many TUIs (Nous Hermes,
+// Codex, Claude Code) only handle the first response; later unsolicited
+// pushes surface as literal "]11;rgb:..." text in their input composer.
+func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -1953,18 +2187,8 @@ func TestThemeHintSendsObservedBackgroundReport(t *testing.T) {
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-	if !server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was not sent")
-	}
-
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
-	})
-	if !strings.HasPrefix(got, backgroundReport) {
-		t.Fatalf("theme hint = %q, want background report prefix %q", got, backgroundReport)
-	}
-	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
-		t.Fatalf("theme hint = %q, want focus transition", got)
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent")
 	}
 }
 
@@ -2077,22 +2301,20 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-	if !server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was not sent")
-	}
-
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
-	})
-	if strings.Contains(got, backgroundReport) {
-		t.Fatalf("theme hint = %q, did not expect background report", got)
-	}
-	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
-		t.Fatalf("theme hint = %q, want focus transition", got)
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent")
 	}
 }
 
-func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
+// TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui guards the
+// "hermes spew" regression. When a focus-aware TUI (Codex, Claude Code,
+// Nous Hermes, etc.) has never issued an OSC 10/11/4 query, the daemon
+// must NOT push synthetic OSC color responses to it on theme refresh.
+// Modern agent CLIs treat unsolicited stdin bytes as keyboard input, so a
+// proactive response surfaces as literal "]11;rgb:..." text inside their
+// input composer. The synthetic focus transition must not be emitted either:
+// Hermes renders that as a growing prompt marker on each re-enter.
+func TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2115,25 +2337,8 @@ func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
 	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
 	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
 	const paletteReport = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
-	if !server.sendThemeHint(foregroundReport + backgroundReport + paletteReport) {
-		t.Fatal("theme hint was not sent")
-	}
-
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
-	})
-	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
-		t.Fatalf(
-			"theme hint = %q, want default color reports prefix %q",
-			got,
-			foregroundReport+backgroundReport,
-		)
-	}
-	if strings.Contains(got, paletteReport) {
-		t.Fatalf("theme hint = %q, did not expect unsolicited palette report", got)
-	}
-	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
-		t.Fatalf("theme hint = %q, want focus transition", got)
+	if server.sendThemeHint(foregroundReport + backgroundReport + paletteReport) {
+		t.Fatal("theme hint was sent")
 	}
 }
 
@@ -2177,22 +2382,12 @@ func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 
 	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
 	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
-	if !server.sendThemeHint(foregroundReport + backgroundReport) {
-		t.Fatal("theme hint was not sent")
+	if server.sendThemeHint(foregroundReport + backgroundReport) {
+		t.Fatal("theme hint was sent")
 	}
 
 	if len(signaled) != 0 {
 		t.Fatalf("signaled process groups = %#v, want none", signaled)
-	}
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return strings.Contains(output, "\x1b[I")
-	})
-	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
-		t.Fatalf(
-			"theme hint = %q, want default color reports prefix %q",
-			got,
-			foregroundReport+backgroundReport,
-		)
 	}
 }
 
@@ -2212,7 +2407,7 @@ func TestSendThemeHintIgnoresOversizedPayload(t *testing.T) {
 	}
 }
 
-func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
+func TestThemeHintReSendsObservedPaletteReportsToColorSchemeUpdatesTui(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2224,7 +2419,7 @@ func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
 
 	window := &muxWindow{
 		id:                "@1",
-		foregroundCommand: "opencode",
+		foregroundCommand: "unknown-tui",
 		pty:               inputWriter,
 	}
 	foregroundProcessGroup := 42
@@ -2239,8 +2434,8 @@ func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
 		return 0
 	}
 	window.observeTerminalMetadataLocked([]byte("\x1b]4;0;?\x1b\\"))
+	window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	foregroundProcessGroup = 0
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
@@ -2258,11 +2453,17 @@ func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if !strings.HasPrefix(got, foregroundReport+backgroundReport+paletteReport0) {
+	if !strings.HasPrefix(got, paletteReport0) {
 		t.Fatalf(
-			"theme hint = %q, want observed color reports prefix %q",
+			"theme hint = %q, want queried palette report prefix %q",
 			got,
-			foregroundReport+backgroundReport+paletteReport0,
+			paletteReport0,
+		)
+	}
+	if strings.Contains(got, foregroundReport) || strings.Contains(got, backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, did not expect unqueried default color reports",
+			got,
 		)
 	}
 	if strings.Contains(got, paletteReport1) {

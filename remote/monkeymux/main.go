@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.39"
+	monkeyMuxVersion         = "0.1.46"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -294,6 +294,7 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	oscBuffer                  []byte
+	attachOscBuffer            []byte
 	csiBuffer                  []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
@@ -307,6 +308,7 @@ type muxWindow struct {
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
 	focusModeProcessID         int
+	themeRefreshModeProcessID  int
 	themeColorQueryPid         int
 	themeColorQueryKeys        map[string]bool
 	alert                      bool
@@ -1595,6 +1597,8 @@ func (s *muxServer) readWindow(window *muxWindow) {
 
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
+	var forwarded []byte
+	var themeHint []byte
 	var themeHintData []byte
 	var shouldWrite bool
 	var snapshot *windowSnapshot
@@ -1612,7 +1616,8 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.refreshProcessMetadataLocked(now)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
-		themeHintData = themeHintResponsesForKeys(s.themeHint, queryKeys)
+		themeHint = append([]byte(nil), s.themeHint...)
+		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
@@ -1631,6 +1636,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		snapshot = &snap
 		window.lastBroadcast = now
 	}
+	if shouldWrite {
+		forwarded = window.stripLocallyAnsweredThemeQueriesLocked(chunk, themeHint)
+	}
 	s.mu.Unlock()
 
 	if len(themeHintData) > 0 {
@@ -1638,7 +1646,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 
 	if shouldWrite {
-		s.writeAttachIfActive(windowID, attach, chunk)
+		if len(forwarded) > 0 {
+			s.writeAttachIfActive(windowID, attach, forwarded)
+		}
 	}
 
 	if snapshot != nil {
@@ -2716,7 +2726,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 			window.themeHintRefreshKeysLocked(),
 		)
 	}
-	sendFocusTransition := window.focusModeActiveLocked()
+	sendFocusTransition := window.themeHintFocusTransitionLocked()
 	if len(themeHintData) == 0 && !sendFocusTransition {
 		s.mu.Unlock()
 		return false
@@ -2897,6 +2907,120 @@ func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
 }
 
+// stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
+// queries and OSC 4 palette queries from chunk when MonkeyMux can answer them
+// locally from hint. The daemon already writes the cached responses directly
+// to the window PTY in handleWindowOutput, so forwarding the same queries to
+// the SSH client would produce a duplicate reply. That duplicate would travel
+// back through the attach socket as keyboard input and surface inside the
+// active TUI as literal text (the user-visible "spew" bug). Queries we cannot
+// answer (no cached response for every queried key) are left in place so the
+// client can still reply.
+func stripLocallyAnsweredThemeQueries(chunk []byte, hint []byte) []byte {
+	window := &muxWindow{}
+	output := window.stripLocallyAnsweredThemeQueriesLocked(chunk, hint)
+	if len(window.attachOscBuffer) == 0 {
+		return output
+	}
+	output = append(output, window.attachOscBuffer...)
+	return output
+}
+
+func (w *muxWindow) stripLocallyAnsweredThemeQueriesLocked(chunk []byte, hint []byte) []byte {
+	if len(chunk) == 0 && len(w.attachOscBuffer) == 0 {
+		return chunk
+	}
+	data := chunk
+	if len(w.attachOscBuffer) > 0 {
+		combined := make([]byte, 0, len(w.attachOscBuffer)+len(chunk))
+		combined = append(combined, w.attachOscBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.attachOscBuffer = nil
+	}
+
+	var responses map[string][]byte
+	answerable := func(queryKeys []string) bool {
+		if len(queryKeys) == 0 || len(hint) == 0 {
+			return false
+		}
+		if responses == nil {
+			responses = themeHintResponseMap(hint)
+			if len(responses) == 0 {
+				return false
+			}
+		}
+		for _, key := range queryKeys {
+			if len(responses[key]) == 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	var output []byte
+	copyStart := 0
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' {
+			i++
+			continue
+		}
+		if i+1 >= len(data) {
+			if w.storeAttachPartialOscLocked(data[i:]) {
+				if output == nil {
+					return data[:i]
+				}
+				output = append(output, data[copyStart:i]...)
+				return output
+			}
+			break
+		}
+		if data[i+1] != ']' {
+			i++
+			continue
+		}
+		payloadStart := i + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			if w.storeAttachPartialOscLocked(data[i:]) {
+				if output == nil {
+					return data[:i]
+				}
+				output = append(output, data[copyStart:i]...)
+				return output
+			}
+			break
+		}
+		sequenceEnd := payloadStart + payloadEnd + terminatorLength
+		payload := data[payloadStart : payloadStart+payloadEnd]
+		queryKeys := themeQueryKeysFromOscPayload(string(payload))
+		if !answerable(queryKeys) {
+			i = sequenceEnd
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-(sequenceEnd-i))
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = sequenceEnd
+		i = sequenceEnd
+	}
+	if output == nil {
+		return data
+	}
+	output = append(output, data[copyStart:]...)
+	return output
+}
+
+func (w *muxWindow) storeAttachPartialOscLocked(data []byte) bool {
+	if len(data) > oscBufferLimitBytes {
+		w.attachOscBuffer = nil
+		return false
+	}
+	w.attachOscBuffer = append(w.attachOscBuffer[:0], data...)
+	return true
+}
+
 func stripTerminalQueriesFromReplay(data []byte) []byte {
 	if len(data) == 0 {
 		return data
@@ -3058,38 +3182,48 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeActiveLocked() || len(w.activeThemeColorQueryKeysLocked()) > 0
+	return w.themeHintFocusTransitionLocked() || len(w.themeHintRefreshKeysLocked()) > 0
 }
 
+// themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
+// should re-answer when refreshing the cached theme hint.
+//
+// Do not infer safety from a previous OSC color query alone: many TUIs
+// query OSC 10/11 once at startup, react to the first response, and then
+// never expect another one. Any follow-up push (every reconnect, every
+// brightness change, every app-resume) surfaces as literal `]11;rgb:...`
+// text in their input composer (observed with Nous Hermes, Codex, and
+// Claude Code). Synthetic focus-out/focus-in transitions can cause the
+// same kind of prompt/composer pollution.
+//
+// DEC private mode 2031 is the opt-in signal for color-scheme update
+// reports. Only windows that currently have that mode enabled get
+// refreshed replies for previously observed color queries, or a repaint
+// nudge when the client theme changes.
+//
+// The contractually-correct live-query response path in
+// handleWindowOutput still answers OSC 10/11/4/17/19 queries the
+// foreground process actually emits. Other programs that truly need the
+// latest theme can re-query on SIGWINCH or real focus changes.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
-	keys := w.activeThemeColorQueryKeysLocked()
-	if w.shouldSendFocusThemeReportsLocked() {
-		keys = appendThemeQueryKeys(keys, []string{"10", "11"})
-		keys = appendThemeQueryKeys(keys, w.observedPaletteThemeColorQueryKeysLocked())
-	}
-	return keys
-}
-
-func (w *muxWindow) shouldSendFocusThemeReportsLocked() bool {
-	if w == nil || !w.focusModeActiveLocked() {
-		return false
-	}
-	command := w.currentCommandLocked()
-	return command != "" && !isShellCommandName(command)
-}
-
-func (w *muxWindow) observedPaletteThemeColorQueryKeysLocked() []string {
-	if w == nil || len(w.themeColorQueryKeys) == 0 {
+	if !w.themeRefreshModeActiveLocked() {
 		return nil
 	}
-	keys := make([]string, 0, len(w.themeColorQueryKeys))
-	for key := range w.themeColorQueryKeys {
-		if strings.HasPrefix(key, "4;") {
-			keys = append(keys, key)
-		}
+	return w.activeThemeColorQueryKeysLocked()
+}
+
+func (w *muxWindow) themeHintFocusTransitionLocked() bool {
+	return w.themeRefreshModeActiveLocked() && w.focusModeActiveLocked()
+}
+
+func (w *muxWindow) themeRefreshModeActiveLocked() bool {
+	if w == nil || !w.privateModes["2031"] {
+		return false
 	}
-	sort.Strings(keys)
-	return keys
+	activePid := w.activeForegroundPidLocked()
+	return w.themeRefreshModeProcessID <= 0 ||
+		activePid <= 0 ||
+		w.themeRefreshModeProcessID == activePid
 }
 
 func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
@@ -3531,6 +3665,13 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 			w.focusModeProcessID = w.activeForegroundPidLocked()
 		} else {
 			w.focusModeProcessID = 0
+		}
+	}
+	if mode == "2031" {
+		if enabled {
+			w.themeRefreshModeProcessID = w.activeForegroundPidLocked()
+		} else {
+			w.themeRefreshModeProcessID = 0
 		}
 	}
 	if _, ok := trackedPrivateModes[mode]; !ok {
