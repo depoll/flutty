@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.40"
+	monkeyMuxVersion         = "0.1.41"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3115,13 +3115,24 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 }
 
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
-// should re-answer when refreshing the cached theme hint. Only keys the
-// current foreground process has actively queried are returned: pushing OSC
-// responses for keys a TUI never asked about is unsafe because many modern
-// agent CLIs (Codex, Claude Code, Hermes, etc.) treat unsolicited stdin bytes
-// as keyboard input and render them as literal text in their input composer.
+// should re-answer when refreshing the cached theme hint.
+//
+// We deliberately return nil: pushing OSC color responses on theme
+// refresh / attach is unsafe even for processes that previously issued
+// an OSC color query. Many TUIs query OSC 10/11 once at startup, react
+// to the first response, and then never expect another one — so any
+// follow-up push (every reconnect, every brightness change, every
+// app-resume) surfaces as literal `]11;rgb:...` text in their input
+// composer (observed with Nous Hermes, Codex, and Claude Code).
+//
+// The contractually-correct live-query response path in
+// handleWindowOutput still answers OSC 10/11/4/17/19 queries the
+// foreground process actually emits, and the focus-transition emitted
+// by sendThemeHint nudges focus-aware TUIs to repaint. Programs that
+// truly need the latest theme can re-query on SIGWINCH or on the focus
+// transition.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
-	return w.activeThemeColorQueryKeysLocked()
+	return nil
 }
 
 func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
