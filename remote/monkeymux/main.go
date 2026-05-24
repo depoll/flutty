@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.44"
+	monkeyMuxVersion         = "0.1.45"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -294,6 +294,7 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	oscBuffer                  []byte
+	attachOscBuffer            []byte
 	csiBuffer                  []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
@@ -1596,6 +1597,8 @@ func (s *muxServer) readWindow(window *muxWindow) {
 
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
+	var forwarded []byte
+	var themeHint []byte
 	var themeHintData []byte
 	var shouldWrite bool
 	var snapshot *windowSnapshot
@@ -1613,7 +1616,8 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.refreshProcessMetadataLocked(now)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
-		themeHintData = themeHintResponsesForKeys(s.themeHint, queryKeys)
+		themeHint = append([]byte(nil), s.themeHint...)
+		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
@@ -1632,6 +1636,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		snapshot = &snap
 		window.lastBroadcast = now
 	}
+	if shouldWrite {
+		forwarded = window.stripLocallyAnsweredThemeQueriesLocked(chunk, themeHint)
+	}
 	s.mu.Unlock()
 
 	if len(themeHintData) > 0 {
@@ -1639,7 +1646,6 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 
 	if shouldWrite {
-		forwarded := stripLocallyAnsweredThemeQueries(chunk, s.themeHintSnapshot())
 		if len(forwarded) > 0 {
 			s.writeAttachIfActive(windowID, attach, forwarded)
 		}
@@ -2878,18 +2884,6 @@ func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
 }
 
-// themeHintSnapshot returns a copy of the cached theme-hint bytes, taken under
-// the server mutex. Used to inspect the hint outside the lock without racing
-// concurrent updates.
-func (s *muxServer) themeHintSnapshot() []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.themeHint) == 0 {
-		return nil
-	}
-	return append([]byte(nil), s.themeHint...)
-}
-
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
 // queries and OSC 4 palette queries from chunk when MonkeyMux can answer them
 // locally from hint. The daemon already writes the cached responses directly
@@ -2900,55 +2894,108 @@ func (s *muxServer) themeHintSnapshot() []byte {
 // answer (no cached response for every queried key) are left in place so the
 // client can still reply.
 func stripLocallyAnsweredThemeQueries(chunk []byte, hint []byte) []byte {
-	if len(chunk) == 0 || len(hint) == 0 {
+	window := &muxWindow{}
+	output := window.stripLocallyAnsweredThemeQueriesLocked(chunk, hint)
+	if len(window.attachOscBuffer) == 0 {
+		return output
+	}
+	output = append(output, window.attachOscBuffer...)
+	return output
+}
+
+func (w *muxWindow) stripLocallyAnsweredThemeQueriesLocked(chunk []byte, hint []byte) []byte {
+	if len(chunk) == 0 && len(w.attachOscBuffer) == 0 {
 		return chunk
 	}
-	responses := themeHintResponseMap(hint)
-	if len(responses) == 0 {
-		return chunk
+	data := chunk
+	if len(w.attachOscBuffer) > 0 {
+		combined := make([]byte, 0, len(w.attachOscBuffer)+len(chunk))
+		combined = append(combined, w.attachOscBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.attachOscBuffer = nil
 	}
+
+	var responses map[string][]byte
+	answerable := func(queryKeys []string) bool {
+		if len(queryKeys) == 0 || len(hint) == 0 {
+			return false
+		}
+		if responses == nil {
+			responses = themeHintResponseMap(hint)
+			if len(responses) == 0 {
+				return false
+			}
+		}
+		for _, key := range queryKeys {
+			if len(responses[key]) == 0 {
+				return false
+			}
+		}
+		return true
+	}
+
 	var output []byte
 	copyStart := 0
-	for i := 0; i < len(chunk); {
-		if chunk[i] != '\x1b' || i+1 >= len(chunk) || chunk[i+1] != ']' {
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' {
+			i++
+			continue
+		}
+		if i+1 >= len(data) {
+			if w.storeAttachPartialOscLocked(data[i:]) {
+				if output == nil {
+					return data[:i]
+				}
+				output = append(output, data[copyStart:i]...)
+				return output
+			}
+			break
+		}
+		if data[i+1] != ']' {
 			i++
 			continue
 		}
 		payloadStart := i + 2
-		payloadEnd, terminatorLength, ok := findOscTerminator(chunk[payloadStart:])
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 		if !ok {
+			if w.storeAttachPartialOscLocked(data[i:]) {
+				if output == nil {
+					return data[:i]
+				}
+				output = append(output, data[copyStart:i]...)
+				return output
+			}
 			break
 		}
 		sequenceEnd := payloadStart + payloadEnd + terminatorLength
-		payload := chunk[payloadStart : payloadStart+payloadEnd]
+		payload := data[payloadStart : payloadStart+payloadEnd]
 		queryKeys := themeQueryKeysFromOscPayload(string(payload))
-		if len(queryKeys) == 0 {
-			i = sequenceEnd
-			continue
-		}
-		answerable := true
-		for _, key := range queryKeys {
-			if len(responses[key]) == 0 {
-				answerable = false
-				break
-			}
-		}
-		if !answerable {
+		if !answerable(queryKeys) {
 			i = sequenceEnd
 			continue
 		}
 		if output == nil {
-			output = make([]byte, 0, len(chunk)-(sequenceEnd-i))
+			output = make([]byte, 0, len(data)-(sequenceEnd-i))
 		}
-		output = append(output, chunk[copyStart:i]...)
+		output = append(output, data[copyStart:i]...)
 		copyStart = sequenceEnd
 		i = sequenceEnd
 	}
 	if output == nil {
-		return chunk
+		return data
 	}
-	output = append(output, chunk[copyStart:]...)
+	output = append(output, data[copyStart:]...)
 	return output
+}
+
+func (w *muxWindow) storeAttachPartialOscLocked(data []byte) bool {
+	if len(data) > oscBufferLimitBytes {
+		w.attachOscBuffer = nil
+		return false
+	}
+	w.attachOscBuffer = append(w.attachOscBuffer[:0], data...)
+	return true
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {
