@@ -16,6 +16,8 @@ import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/terminal_preview.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
@@ -29,6 +31,8 @@ import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
+import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
+import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
@@ -128,6 +132,8 @@ class _MutableActiveSessionsNotifier extends ActiveSessionsNotifier {
       createdAt: existing.createdAt,
       config: existing.config,
       preview: existing.preview,
+      previewSnapshot: existing.previewSnapshot,
+      terminalTheme: existing.terminalTheme,
       sessionTitle: nextSessionTitle,
       windowTitle: existing.windowTitle,
       iconName: existing.iconName,
@@ -276,6 +282,8 @@ ActiveConnection _buildActiveConnection({
   required int hostId,
   SshConnectionState state = SshConnectionState.connected,
   String? preview,
+  TerminalPreviewSnapshot? previewSnapshot,
+  TerminalThemeData? terminalTheme,
   String? sessionTitle,
   String? windowTitle,
   String? iconName,
@@ -292,12 +300,19 @@ ActiveConnection _buildActiveConnection({
     username: 'root',
   ),
   preview: preview,
+  previewSnapshot: previewSnapshot,
+  terminalTheme: terminalTheme,
   sessionTitle: sessionTitle,
   windowTitle: windowTitle,
   iconName: iconName,
   remoteMuxBackend: remoteMuxBackend,
   remoteMuxSessionName: remoteMuxSessionName,
 );
+
+TerminalPreviewSnapshot _buildStyledPreviewSnapshot() {
+  final terminal = Terminal(maxLines: 100)..write('\x1b[31mready\x1b[0m');
+  return SshSession.buildTerminalPreviewSnapshot(terminal)!;
+}
 
 const _proMonetizationState = MonetizationState(
   billingAvailability: MonetizationBillingAvailability.available,
@@ -566,6 +581,154 @@ void main() {
 
       expect(find.text('Alpha'), findsOneWidget);
       expect(find.text('Terminal /terminal/1?connectionId=7'), findsNothing);
+    });
+
+    testWidgets('connections preview tap opens terminal route', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final openedRoutes = <String>[];
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            state: SshConnectionState.connecting,
+            preview: 'ready',
+            previewSnapshot: _buildStyledPreviewSnapshot(),
+          ),
+        ],
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const HomeScreen(initialTab: HomeScreenTab.connections),
+          ),
+          GoRoute(
+            path: '/terminal/:hostId',
+            builder: (context, state) => _RecordingTerminalPage(
+              route: state.uri.toString(),
+              openedRoutes: openedRoutes,
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            transferIntentServiceProvider.overrideWith(
+              (ref) => _TestTransferIntentService(),
+            ),
+            homeScreenShortcutServiceProvider.overrideWith(
+              (ref) => _TestHomeScreenShortcutService(),
+            ),
+            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+              (ref) => Stream<Set<int>>.value(const <int>{}),
+            ),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+          child: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(ConnectionPreviewStack),
+              matching: find.byType(CustomPaint),
+            )
+            .last,
+      );
+      await tester.pumpAndSettle();
+
+      expect(openedRoutes, ['/terminal/1?connectionId=7']);
+    });
+
+    testWidgets('hosts preview tap opens terminal route', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final openedRoutes = <String>[];
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            state: SshConnectionState.connecting,
+            preview: 'ready',
+            previewSnapshot: _buildStyledPreviewSnapshot(),
+          ),
+        ],
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(path: '/', builder: (context, state) => const HomeScreen()),
+          GoRoute(
+            path: '/terminal/:hostId',
+            builder: (context, state) => _RecordingTerminalPage(
+              route: state.uri.toString(),
+              openedRoutes: openedRoutes,
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            transferIntentServiceProvider.overrideWith(
+              (ref) => _TestTransferIntentService(),
+            ),
+            homeScreenShortcutServiceProvider.overrideWith(
+              (ref) => _TestHomeScreenShortcutService(),
+            ),
+            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+              (ref) => Stream<Set<int>>.value(const <int>{}),
+            ),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+          child: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(ConnectionPreviewStack),
+              matching: find.byType(CustomPaint),
+            )
+            .last,
+      );
+      await tester.pumpAndSettle();
+
+      expect(openedRoutes, ['/terminal/1?connectionId=7']);
     });
   });
 

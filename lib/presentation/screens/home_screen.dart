@@ -15,6 +15,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
+import '../../domain/models/terminal_preview.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -974,11 +975,12 @@ class _HostRow extends ConsumerWidget {
     final connectionCount = rowData.connectionCount;
     final isPinnedToHomeScreen = rowData.isPinnedToHomeScreen;
     final previewEntries = rowData.previewEntries;
+    void openHostConnection() => unawaited(_openHostConnection(context, ref));
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => unawaited(_openHostConnection(context, ref)),
+        onTap: openHostConnection,
         onLongPress: () => unawaited(_showContextMenuAtCenter(context, ref)),
         onSecondaryTapDown: (details) =>
             unawaited(_showContextMenu(context, ref, details.globalPosition)),
@@ -1137,7 +1139,10 @@ class _HostRow extends ConsumerWidget {
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.only(left: 20),
-                  child: ConnectionPreviewStack(entries: previewEntries),
+                  child: ConnectionPreviewStack(
+                    entries: previewEntries,
+                    onTap: openHostConnection,
+                  ),
                 ),
               ],
             ],
@@ -1197,23 +1202,26 @@ class _HostRow extends ConsumerWidget {
                         SshConnectionState.disconnected,
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
+                    previewSnapshot: connection?.previewSnapshot,
+                    terminalTheme:
+                        connection?.terminalTheme ??
+                        resolveConnectionPreviewTheme(
+                          brightness: Theme.of(context).brightness,
+                          themeSettings: terminalThemeSettings,
+                          availableThemes: terminalThemes,
+                          lightThemeId:
+                              connection?.terminalThemeLightId ??
+                              host.terminalThemeLightId,
+                          darkThemeId:
+                              connection?.terminalThemeDarkId ??
+                              host.terminalThemeDarkId,
+                        ),
                     sessionTitle: connection?.sessionTitle,
                     windowTitle: connection?.windowTitle,
                     iconName: connection?.iconName,
                     workingDirectory: connection?.workingDirectory,
                     shellStatus: connection?.shellStatus,
                     lastExitCode: connection?.lastExitCode,
-                    terminalTheme: resolveConnectionPreviewTheme(
-                      brightness: Theme.of(context).brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection?.terminalThemeLightId ??
-                          host.terminalThemeLightId,
-                      darkThemeId:
-                          connection?.terminalThemeDarkId ??
-                          host.terminalThemeDarkId,
-                    ),
                     createdAt: sessionsNotifier
                         .getSession(connectionId)
                         ?.createdAt,
@@ -1575,6 +1583,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.endpoint,
     required this.onTap,
     this.preview,
+    this.previewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -1589,6 +1598,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final SshConnectionState state;
   final String endpoint;
   final String? preview;
+  final TerminalPreviewSnapshot? previewSnapshot;
   final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
@@ -1613,6 +1623,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
+        previewSnapshot: previewSnapshot,
         sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
@@ -1714,6 +1725,8 @@ class _ConnectionsPanel extends ConsumerWidget {
                       themeSettings: terminalThemeSettings,
                       availableThemes: terminalThemes,
                       preview: connection.preview,
+                      previewSnapshot: connection.previewSnapshot,
+                      activeTerminalTheme: connection.terminalTheme,
                       sessionTitle: connection.sessionTitle,
                       windowTitle: connection.windowTitle,
                       iconName: connection.iconName,
@@ -1780,6 +1793,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                             ),
                             child: ConnectionPreviewStack(
                               entries: [previewEntry],
+                              onTap: openConnection,
                             ),
                           ),
                         ),
@@ -1824,6 +1838,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   const _ConnectionPreviewText({
     required this.endpoint,
     this.preview,
+    this.previewSnapshot,
     this.sessionTitle,
     this.windowTitle,
     this.iconName,
@@ -1835,6 +1850,7 @@ class _ConnectionPreviewText extends StatelessWidget {
 
   final String endpoint;
   final String? preview;
+  final TerminalPreviewSnapshot? previewSnapshot;
   final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
@@ -1847,6 +1863,7 @@ class _ConnectionPreviewText extends StatelessWidget {
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
     preview: preview,
+    previewSnapshot: previewSnapshot,
     sessionTitle: sessionTitle,
     windowTitle: windowTitle,
     iconName: iconName,
