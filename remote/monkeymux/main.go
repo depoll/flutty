@@ -2542,7 +2542,11 @@ func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
 	if w == nil {
 		return false
 	}
-	return w.privateModes["1049"] || w.agentToolLocked() == "antigravity"
+	if w.privateModes["1049"] || w.agentToolLocked() != "" {
+		return true
+	}
+	command := strings.TrimSpace(w.currentCommandLocked())
+	return command != "" && !isShellCommandName(command)
 }
 
 func (w *muxWindow) reportsMouseWheelLocked() bool {

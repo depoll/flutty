@@ -638,7 +638,13 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 	history := bytes.Repeat([]byte("a"), windowReplayLimitBytes+4096)
 	copy(history[len(history)-6:], []byte("suffix"))
 	server.windows = []*muxWindow{
-		{id: "@1", index: 0, history: history, lastActivity: time.Now()},
+		{
+			id:                "@1",
+			index:             0,
+			foregroundCommand: "zsh",
+			history:           history,
+			lastActivity:      time.Now(),
+		},
 	}
 	server.activeID = "@1"
 
@@ -693,17 +699,17 @@ func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
 	}
 }
 
-func TestActiveReplayKeepsFullAntigravityHistory(t *testing.T) {
+func TestActiveReplayKeepsFullAgentHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
-		"antigravity-main-screen-start" +
+		"agent-main-screen-start" +
 			strings.Repeat("conversation-history", windowReplayLimitBytes/8) +
-			"antigravity-main-screen-end",
+			"agent-main-screen-end",
 	)
 	window := &muxWindow{
 		id:           "@1",
 		index:        0,
-		agentTool:    "antigravity",
+		agentTool:    "codex",
 		history:      history,
 		lastActivity: time.Now(),
 	}
@@ -712,11 +718,41 @@ func TestActiveReplayKeepsFullAntigravityHistory(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 
-	if !strings.Contains(replay, "antigravity-main-screen-start") {
-		t.Fatalf("antigravity replay was capped before history start")
+	if !strings.Contains(replay, "agent-main-screen-start") {
+		t.Fatalf("agent replay was capped before history start")
 	}
-	if !strings.Contains(replay, "antigravity-main-screen-end") {
-		t.Fatalf("antigravity replay lost history end")
+	if !strings.Contains(replay, "agent-main-screen-end") {
+		t.Fatalf("agent replay lost history end")
+	}
+	if got, want := len(window.history), len(history); got != want {
+		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayKeepsFullNonShellForegroundHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"interactive-main-screen-start" +
+			strings.Repeat("tui-history", windowReplayLimitBytes/8) +
+			"interactive-main-screen-end",
+	)
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "vim",
+		history:           history,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, "interactive-main-screen-start") {
+		t.Fatalf("interactive replay was capped before history start")
+	}
+	if !strings.Contains(replay, "interactive-main-screen-end") {
+		t.Fatalf("interactive replay lost history end")
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
