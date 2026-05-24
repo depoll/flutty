@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 )
@@ -881,6 +882,64 @@ func TestWindowHistoryAmortizedTrim(t *testing.T) {
 	}
 	if got := len(window.historyTailLocked()); got != windowHistoryLimitBytes {
 		t.Fatalf("history tail length = %d, want %d", got, windowHistoryLimitBytes)
+	}
+}
+
+func TestHistoryTailAlignsToUtf8Boundary(t *testing.T) {
+	// Place a "│" (U+2502, 0xE2 0x94 0x82) so the history-tail cut lands on
+	// one of its continuation bytes, reproducing the malformed-UTF-8 replay
+	// that breaks strict decoders on the client (composer border missing
+	// until next resize).
+	box := []byte{0xE2, 0x94, 0x82}
+	window := &muxWindow{}
+	window.appendHistoryLocked(bytes.Repeat([]byte{'a'}, windowHistoryLimitBytes-1))
+	window.appendHistoryLocked(box)
+	window.appendHistoryLocked(bytes.Repeat([]byte{'b'}, windowHistoryLimitBytes-2))
+
+	if len(window.history) != 2*windowHistoryLimitBytes {
+		t.Fatalf("history length = %d, want %d", len(window.history), 2*windowHistoryLimitBytes)
+	}
+	if window.history[windowHistoryLimitBytes]&0xC0 != 0x80 {
+		t.Fatalf("setup error: byte at cut is not a continuation byte (0x%02x)", window.history[windowHistoryLimitBytes])
+	}
+
+	tail := window.historyTailLocked()
+	if !utf8.Valid(tail) {
+		t.Fatalf("history tail is not valid UTF-8: % x", tail[:min(len(tail), 32)])
+	}
+	if len(tail) >= windowHistoryLimitBytes {
+		t.Fatalf("aligned tail length = %d, want < %d", len(tail), windowHistoryLimitBytes)
+	}
+}
+
+func TestTrimReplayHistoryAlignsToUtf8WhenNoControlChars(t *testing.T) {
+	// 32 KiB of "│" repeated, with no ESC/LF/CR available for the existing
+	// scan-forward heuristic. The byte-exact cut would land on a UTF-8
+	// continuation byte, so the function must advance to the next starter.
+	box := []byte{0xE2, 0x94, 0x82}
+	history := bytes.Repeat(box, (windowReplayLimitBytes*2)/len(box))
+
+	trimmed := trimReplayHistoryForAttach(history)
+	if !utf8.Valid(trimmed) {
+		t.Fatalf("trimmed replay is not valid UTF-8: % x", trimmed[:min(len(trimmed), 32)])
+	}
+	if len(trimmed) > windowReplayLimitBytes {
+		t.Fatalf("trimmed length = %d, want <= %d", len(trimmed), windowReplayLimitBytes)
+	}
+}
+
+func TestAdvanceToUtf8BoundarySkipsContinuationBytes(t *testing.T) {
+	// 0xE2 0x94 0x82 is "│". Starting in the middle should advance past the
+	// continuation bytes to the next valid starter.
+	data := []byte{'a', 0xE2, 0x94, 0x82, 'b'}
+	if got := advanceToUtf8Boundary(data, 2); got != 4 {
+		t.Fatalf("advanceToUtf8Boundary middle = %d, want 4", got)
+	}
+	if got := advanceToUtf8Boundary(data, 1); got != 1 {
+		t.Fatalf("advanceToUtf8Boundary starter = %d, want 1", got)
+	}
+	if got := advanceToUtf8Boundary(data, 0); got != 0 {
+		t.Fatalf("advanceToUtf8Boundary ascii = %d, want 0", got)
 	}
 }
 
