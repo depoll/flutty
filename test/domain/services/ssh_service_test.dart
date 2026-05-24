@@ -1117,6 +1117,82 @@ void main() {
       ).called(1);
     });
 
+    test('opens interactive shells with a truecolor login bootstrap', () async {
+      final client = _MockSshClient();
+      final shell = _MockExecSession();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      const pty = SSHPtyConfig(width: 120, height: 30);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shell);
+      when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+      when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+      when(() => shell.done).thenAnswer((_) => Future<void>.value());
+
+      final result = await session.getShell(pty: pty);
+
+      expect(result, same(shell));
+      verify(
+        () => client.execute(
+          r'exec env COLORTERM=truecolor "$SHELL" -l',
+          pty: pty,
+        ),
+      ).called(1);
+      verifyNever(() => client.shell(pty: any(named: 'pty')));
+      await session.closeShell(waitForStreams: false);
+    });
+
+    test(
+      'falls back to shell request when truecolor bootstrap is rejected',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenThrow(SSHChannelRequestError('Failed to execute'));
+        when(
+          () => client.shell(pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => shell.done).thenAnswer((_) => Future<void>.value());
+
+        final result = await session.getShell(pty: pty);
+
+        expect(result, same(shell));
+        verify(
+          () => client.execute(
+            r'exec env COLORTERM=truecolor "$SHELL" -l',
+            pty: pty,
+          ),
+        ).called(1);
+        verify(() => client.shell(pty: pty)).called(1);
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
     test('retries transient SFTP channel open failures', () async {
       final client = _MockSshClient();
       final sftp = _MockSftpClient();
@@ -1305,7 +1381,7 @@ void main() {
       );
 
       when(
-        () => client.shell(pty: any(named: 'pty')),
+        () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => shell);
       when(() => shell.stdout).thenAnswer((_) => stdout.stream);
       when(() => shell.stderr).thenAnswer((_) => stderr.stream);
