@@ -2280,7 +2280,7 @@ func TestSendThemeHintIgnoresOversizedPayload(t *testing.T) {
 	}
 }
 
-func TestThemeHintDoesNotReSendObservedPaletteReports(t *testing.T) {
+func TestThemeHintReSendsObservedPaletteReportsToOpenCode(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2325,14 +2325,21 @@ func TestThemeHintDoesNotReSendObservedPaletteReports(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if strings.Contains(got, foregroundReport) ||
-		strings.Contains(got, backgroundReport) ||
-		strings.Contains(got, paletteReport0) ||
-		strings.Contains(got, paletteReport1) {
+	if !strings.HasPrefix(got, paletteReport0) {
 		t.Fatalf(
-			"theme hint = %q, did not expect any proactive OSC color reports",
+			"theme hint = %q, want queried palette report prefix %q",
+			got,
+			paletteReport0,
+		)
+	}
+	if strings.Contains(got, foregroundReport) || strings.Contains(got, backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, did not expect unqueried default color reports",
 			got,
 		)
+	}
+	if strings.Contains(got, paletteReport1) {
+		t.Fatalf("theme hint = %q, did not expect unqueried palette report", got)
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)
