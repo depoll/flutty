@@ -264,6 +264,26 @@ class ThemeModeNotifier extends _AsyncSettingsNotifier<ThemeMode> {
 final themeModeNotifierProvider =
     NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
 
+/// Notifier to manage active terminal theme state.
+class ActiveTerminalThemeNotifier extends Notifier<TerminalThemeData?> {
+  @override
+  TerminalThemeData? build() => null;
+
+  /// Gets the active terminal theme.
+  TerminalThemeData? get theme => state;
+
+  /// Updates the active terminal theme.
+  set theme(TerminalThemeData? value) {
+    state = value;
+  }
+}
+
+/// Provider to track the active terminal theme for page transition brightness.
+final activeTerminalThemeProvider =
+    NotifierProvider<ActiveTerminalThemeNotifier, TerminalThemeData?>(
+      ActiveTerminalThemeNotifier.new,
+    );
+
 /// Provider for terminal themes applying to app chrome.
 final terminalThemesApplyToAppProvider = FutureProvider<bool>((ref) async {
   final settings = ref.watch(settingsServiceProvider);

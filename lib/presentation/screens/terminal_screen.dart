@@ -2683,6 +2683,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
+  ActiveTerminalThemeNotifier? _terminalThemeNotifier;
 
   late Terminal _terminal;
   late final TerminalController _terminalController;
@@ -3270,6 +3271,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
     _tmuxService = ref.read(tmuxServiceProvider);
+    _terminalThemeNotifier = ref.read(activeTerminalThemeProvider.notifier);
     _tmuxMultiplexerService = TmuxRemoteMultiplexerService(_tmuxService);
     _monkeyMuxService = ref.read(monkeyMuxServiceProvider);
     _monkeyMuxInstallerService = ref.read(monkeyMuxInstallerServiceProvider);
@@ -3503,6 +3505,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool forceRemoteRefresh = false,
     String reason = 'unspecified',
   }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        final currentActive = ref.read(activeTerminalThemeProvider);
+        if (currentActive != theme) {
+          ref.read(activeTerminalThemeProvider.notifier).theme = theme;
+        }
+      }
+    });
     final targetSession = _sessionController.resolveTargetSession(
       session: session,
     );
@@ -8499,6 +8509,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Clear the active terminal theme when leaving the screen
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        _terminalThemeNotifier?.theme = null;
+      } on Object catch (_) {
+        // Ignored. This can occur in widget tests if the ProviderScope is
+        // torn down at the end of the test before the callback runs.
+      }
+    });
     _clearAppThemeOverride();
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
@@ -8694,6 +8713,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // Use session override, or loaded theme, or fallback.
     final terminalTheme = _resolveEffectiveTerminalTheme();
+
     // Only push the theme to the session when it differs from what was last
     // applied via this path.  Explicit callers (_openShell, _loadTheme, etc.)
     // use their own call sites and do not update _lastBuildAppliedTheme, so
@@ -8957,9 +8977,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             final route = ModalRoute.of(bodyContext);
             final isTransitioning =
                 route != null &&
-                route.animation != null &&
-                (route.animation!.status == AnimationStatus.forward ||
-                    route.animation!.status == AnimationStatus.reverse);
+                ((route.animation != null &&
+                        (route.animation!.status == AnimationStatus.forward ||
+                            route.animation!.status ==
+                                AnimationStatus.reverse)) ||
+                    route.popGestureInProgress ||
+                    !route.isCurrent);
             final terminalArea = _buildTerminalWithTmuxBar(
               terminalTheme,
               isMobile,

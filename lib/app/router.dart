@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
+import '../domain/services/settings_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
@@ -62,7 +63,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/terminal/:hostId',
         name: Routes.terminal,
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
@@ -74,28 +75,33 @@ final routerProvider = Provider<GoRouter>((ref) {
           );
           final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           if (hostId == null) {
-            return const Scaffold(body: Center(child: Text('Invalid host ID')));
+            return const MaterialPage(
+              child: Scaffold(body: Center(child: Text('Invalid host ID'))),
+            );
           }
-          return TerminalScreen(
-            key: ValueKey<Object>(
-              Object.hash(
-                hostId,
-                connectionId,
-                initialTmuxSessionName,
-                initialTmuxWindowIndex,
-                initialTmuxWindowId,
-                state.uri.queryParameters['notificationTap'],
+          return TerminalPage<void>(
+            key: state.pageKey,
+            child: TerminalScreen(
+              key: ValueKey<Object>(
+                Object.hash(
+                  hostId,
+                  connectionId,
+                  initialTmuxSessionName,
+                  initialTmuxWindowIndex,
+                  initialTmuxWindowId,
+                  state.uri.queryParameters['notificationTap'],
+                ),
               ),
+              hostId: hostId,
+              connectionId: connectionId,
+              initialTmuxSessionName: initialTmuxSessionName,
+              initialTmuxWindowIndex: initialTmuxWindowIndex,
+              initialTmuxWindowId: initialTmuxWindowId,
+              initialTmuxWindowRequiresVisibleSession:
+                  state.uri.queryParameters['notificationTap'] != null,
+              initiallyExpandTmuxWindows:
+                  state.uri.queryParameters['expandTmux'] == '1',
             ),
-            hostId: hostId,
-            connectionId: connectionId,
-            initialTmuxSessionName: initialTmuxSessionName,
-            initialTmuxWindowIndex: initialTmuxWindowIndex,
-            initialTmuxWindowId: initialTmuxWindowId,
-            initialTmuxWindowRequiresVisibleSession:
-                state.uri.queryParameters['notificationTap'] != null,
-            initiallyExpandTmuxWindows:
-                state.uri.queryParameters['expandTmux'] == '1',
           );
         },
       ),
@@ -283,4 +289,74 @@ String? redirectForAuthState({
   }
 
   return null;
+}
+
+/// A custom [Page] that forces transition animations to use the active
+/// terminal theme's brightness and background color, preserving a seamless
+/// visual style during Android predictive back gestures and transition overlays.
+class TerminalPage<T> extends Page<T> {
+  /// Creates a new [TerminalPage].
+  const TerminalPage({
+    required this.child,
+    super.key,
+    super.name,
+    super.arguments,
+    super.restorationId,
+  });
+
+  /// The child widget.
+  final Widget child;
+
+  @override
+  Route<T> createRoute(BuildContext context) =>
+      _TerminalPageRoute<T>(page: this);
+}
+
+class _TerminalPageRoute<T> extends MaterialPageRoute<T> {
+  _TerminalPageRoute({required TerminalPage<T> page})
+    : super(builder: (context) => page.child, settings: page);
+
+  TerminalPage<T> get page => settings as TerminalPage<T>;
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final theme = Theme.of(context);
+    final container = ProviderScope.containerOf(context);
+    final terminalTheme = container.read(activeTerminalThemeProvider);
+
+    final isDark = terminalTheme?.isDark ?? true;
+    final backgroundColor =
+        terminalTheme?.background ?? const Color(0xFF0D0D12);
+    final resolvedBrightness = isDark ? Brightness.dark : Brightness.light;
+    final pageTransitionsTheme = theme.pageTransitionsTheme;
+
+    Widget buildTransitionsWithContext(BuildContext targetContext) =>
+        pageTransitionsTheme.buildTransitions<T>(
+          this,
+          targetContext,
+          animation,
+          secondaryAnimation,
+          child,
+        );
+
+    if (theme.brightness == resolvedBrightness) {
+      return buildTransitionsWithContext(context);
+    }
+
+    final themedData = theme.copyWith(
+      brightness: resolvedBrightness,
+      canvasColor: backgroundColor,
+      scaffoldBackgroundColor: backgroundColor,
+    );
+
+    return Theme(
+      data: themedData,
+      child: Builder(builder: buildTransitionsWithContext),
+    );
+  }
 }
