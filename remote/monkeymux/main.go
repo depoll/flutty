@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.41"
+	monkeyMuxVersion         = "0.1.42"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -3117,13 +3117,14 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
 // should re-answer when refreshing the cached theme hint.
 //
-// We deliberately return nil: pushing OSC color responses on theme
-// refresh / attach is unsafe even for processes that previously issued
-// an OSC color query. Many TUIs query OSC 10/11 once at startup, react
-// to the first response, and then never expect another one — so any
-// follow-up push (every reconnect, every brightness change, every
-// app-resume) surfaces as literal `]11;rgb:...` text in their input
-// composer (observed with Nous Hermes, Codex, and Claude Code).
+// Do not infer safety from a previous OSC color query alone: many TUIs
+// query OSC 10/11 once at startup, react to the first response, and then
+// never expect another one. Any follow-up push (every reconnect, every
+// brightness change, every app-resume) surfaces as literal `]11;rgb:...`
+// text in their input composer (observed with Nous Hermes, Codex, and
+// Claude Code). OpenCode is the exception we intentionally support here:
+// its system theme mode relies on refreshed replies for previously
+// observed color queries when the client theme changes.
 //
 // The contractually-correct live-query response path in
 // handleWindowOutput still answers OSC 10/11/4/17/19 queries the
@@ -3132,7 +3133,10 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 // truly need the latest theme can re-query on SIGWINCH or on the focus
 // transition.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
-	return nil
+	if w == nil || w.agentToolLocked() != "opencode" {
+		return nil
+	}
+	return w.activeThemeColorQueryKeysLocked()
 }
 
 func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
