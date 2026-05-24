@@ -1505,6 +1505,43 @@ void main() {
 
       expect(await lineWhenDone.future, 'final prompt');
     });
+
+    test(
+      'tolerates malformed UTF-8 mid-chunk without dropping subsequent output',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        final terminal = session.terminal!;
+        final stdoutEvents = <String>[];
+        final stdoutErrors = <Object>[];
+        final stdoutSubscription = session.shellStdoutStream.listen(
+          stdoutEvents.add,
+          onError: stdoutErrors.add,
+        );
+        addTearDown(stdoutSubscription.cancel);
+
+        // Simulate a MonkeyMux replay history that was cut mid-character:
+        // the chunk begins with the trailing continuation bytes of "│"
+        // (U+2502, 0xE2 0x94 0x82) and is followed by a valid composer
+        // border draw. A strict UTF-8 decoder would throw and drop the
+        // entire chunk, leaving the border missing until the next resize.
+        shell.stdout.add(
+          Uint8List.fromList([0x94, 0x82, ...utf8.encode('border')]),
+        );
+        // Subsequent chunk should still be delivered even after the
+        // malformed bytes above.
+        shell.stdout.add(Uint8List.fromList(utf8.encode(' ok')));
+
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(stdoutErrors, isEmpty);
+        final joined = stdoutEvents.join();
+        expect(joined, contains('border'));
+        expect(joined, contains(' ok'));
+        expect(firstLineText(terminal), contains('border'));
+        expect(firstLineText(terminal), contains(' ok'));
+      },
+    );
   });
 
   group('ActiveSessionsNotifier', () {

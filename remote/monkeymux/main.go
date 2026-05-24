@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.46"
+	monkeyMuxVersion         = "0.1.47"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2834,7 +2834,9 @@ func (w *muxWindow) historyTailLocked() []byte {
 	if len(w.history) <= windowHistoryLimitBytes {
 		return w.history
 	}
-	return w.history[len(w.history)-windowHistoryLimitBytes:]
+	start := len(w.history) - windowHistoryLimitBytes
+	start = advanceToUtf8Boundary(w.history, start)
+	return w.history[start:]
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
@@ -2852,7 +2854,28 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 			return history[i:]
 		}
 	}
+	start = advanceToUtf8Boundary(history, start)
 	return history[start:]
+}
+
+// advanceToUtf8Boundary moves start forward past any UTF-8 continuation bytes
+// (0b10xxxxxx) so the returned slice begins on a valid UTF-8 starter. This
+// prevents replay payloads from beginning in the middle of a multi-byte
+// character, which would force strict UTF-8 decoders (such as Dart's
+// default Utf8Decoder) to throw and drop the chunk that contained the next
+// redraw frame.
+func advanceToUtf8Boundary(data []byte, start int) int {
+	if start < 0 {
+		start = 0
+	}
+	limit := start + 4
+	if limit > len(data) {
+		limit = len(data)
+	}
+	for start < limit && data[start]&0xC0 == 0x80 {
+		start++
+	}
+	return start
 }
 
 func stripFocusReportsFromAttachInput(data []byte) []byte {
