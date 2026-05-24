@@ -88,6 +88,47 @@ func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
 	}
 }
 
+func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
+	base := []string{"USER=test"}
+
+	env := terminalEnvironment(base)
+
+	if !containsEnv(env, "TERM=xterm-256color") {
+		t.Fatalf("terminal environment = %#v, want TERM=xterm-256color", env)
+	}
+	if !containsEnv(env, "COLORTERM=truecolor") {
+		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
+	}
+	if !reflect.DeepEqual(base, []string{"USER=test"}) {
+		t.Fatalf("terminal environment mutated base = %#v", base)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
+	base := []string{
+		"TERM=screen-256color",
+		"COLORTERM=24bit",
+		"USER=test",
+	}
+
+	env := terminalEnvironment(base)
+
+	if !reflect.DeepEqual(env, base) {
+		t.Fatalf("terminal environment = %#v, want existing hints preserved", env)
+	}
+}
+
+func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
+	env := terminalEnvironment([]string{"TERM=dumb", "COLORTERM=color", "USER=test"})
+
+	if got := lastEnvValue(env, "TERM"); got != "xterm-256color" {
+		t.Fatalf("TERM = %q in %#v, want xterm-256color", got, env)
+	}
+	if got := lastEnvValue(env, "COLORTERM"); got != "truecolor" {
+		t.Fatalf("COLORTERM = %q in %#v, want truecolor", got, env)
+	}
+}
+
 func TestExpandHomePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -140,6 +181,26 @@ func TestShellCommandForScriptUsesInteractiveLoginShellWithoutTypingCommand(t *t
 	if got := cmd.Args[3]; got != "codex --yolo" {
 		t.Fatalf("script = %q, want launch command", got)
 	}
+}
+
+func containsEnv(env []string, entry string) bool {
+	for _, candidate := range env {
+		if candidate == entry {
+			return true
+		}
+	}
+	return false
+}
+
+func lastEnvValue(env []string, key string) string {
+	prefix := key + "="
+	value := ""
+	for _, candidate := range env {
+		if strings.HasPrefix(candidate, prefix) {
+			value = strings.TrimPrefix(candidate, prefix)
+		}
+	}
+	return value
 }
 
 func TestDefaultShellPathFallsBackToSh(t *testing.T) {
