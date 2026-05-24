@@ -2142,7 +2142,15 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 	}
 }
 
-func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
+// TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui guards the
+// "hermes spew" regression. When a focus-aware TUI (Codex, Claude Code,
+// Nous Hermes, etc.) has never issued an OSC 10/11/4 query, the daemon
+// must NOT push synthetic OSC color responses to it on theme refresh.
+// Modern agent CLIs treat unsolicited stdin bytes as keyboard input, so a
+// proactive response surfaces as literal "]11;rgb:..." text inside their
+// input composer. The focus transition is still emitted so the agent can
+// repaint after the theme change.
+func TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2172,15 +2180,13 @@ func TestThemeHintSendsDefaultReportsToFocusAwareTui(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
+	if strings.Contains(got, foregroundReport) ||
+		strings.Contains(got, backgroundReport) ||
+		strings.Contains(got, paletteReport) {
 		t.Fatalf(
-			"theme hint = %q, want default color reports prefix %q",
+			"theme hint = %q, did not expect any unsolicited OSC reports",
 			got,
-			foregroundReport+backgroundReport,
 		)
-	}
-	if strings.Contains(got, paletteReport) {
-		t.Fatalf("theme hint = %q, did not expect unsolicited palette report", got)
 	}
 	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
 		t.Fatalf("theme hint = %q, want focus transition", got)
@@ -2237,12 +2243,14 @@ func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if !strings.HasPrefix(got, foregroundReport+backgroundReport) {
+	if strings.Contains(got, foregroundReport) || strings.Contains(got, backgroundReport) {
 		t.Fatalf(
-			"theme hint = %q, want default color reports prefix %q",
+			"theme hint = %q, did not expect unsolicited color reports",
 			got,
-			foregroundReport+backgroundReport,
 		)
+	}
+	if !strings.Contains(got, "\x1b[O") || !strings.Contains(got, "\x1b[I") {
+		t.Fatalf("theme hint = %q, want focus transition", got)
 	}
 }
 
@@ -2290,7 +2298,6 @@ func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
 	}
 	window.observeTerminalMetadataLocked([]byte("\x1b]4;0;?\x1b\\"))
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	foregroundProcessGroup = 0
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
@@ -2308,11 +2315,17 @@ func TestThemeHintSendsObservedPaletteReportsToFocusAwareTui(t *testing.T) {
 	got := readPipeUntil(t, inputReader, func(output string) bool {
 		return strings.Contains(output, "\x1b[I")
 	})
-	if !strings.HasPrefix(got, foregroundReport+backgroundReport+paletteReport0) {
+	if !strings.HasPrefix(got, paletteReport0) {
 		t.Fatalf(
-			"theme hint = %q, want observed color reports prefix %q",
+			"theme hint = %q, want queried palette report prefix %q",
 			got,
-			foregroundReport+backgroundReport+paletteReport0,
+			paletteReport0,
+		)
+	}
+	if strings.Contains(got, foregroundReport) || strings.Contains(got, backgroundReport) {
+		t.Fatalf(
+			"theme hint = %q, did not expect unqueried default color reports",
+			got,
 		)
 	}
 	if strings.Contains(got, paletteReport1) {
