@@ -1237,6 +1237,20 @@ void main() {
       expect(preview?.split('\n'), hasLength(3));
     });
 
+    test('builds styled preview cell colors', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write('\x1b[31mred\x1b[0m normal');
+
+      final preview = SshSession.buildTerminalPreviewSnapshot(terminal);
+
+      expect(preview, isNotNull);
+      expect(preview!.plainText, contains('red normal'));
+      expect(
+        preview.lines.single.cells.getForeground(0) & CellColor.typeMask,
+        CellColor.named,
+      );
+    });
+
     test('sanitizes control characters and truncates long previews', () {
       final terminal = Terminal(maxLines: 100)
         ..write('prompt> \u0007hello world\r\n')

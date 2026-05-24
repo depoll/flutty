@@ -613,10 +613,15 @@ class _SshSessionRuntime {
     final nextPreview = _terminal == null
         ? null
         : SshSession.buildTerminalPreview(_terminal!);
-    if (nextPreview == _session._terminalPreview) {
+    final nextPreviewSnapshot = _terminal == null
+        ? null
+        : SshSession.buildTerminalPreviewSnapshot(_terminal!);
+    if (nextPreview == _session._terminalPreview &&
+        nextPreviewSnapshot == _session._terminalPreviewSnapshot) {
       return;
     }
     _session._terminalPreview = nextPreview;
+    _session._terminalPreviewSnapshot = nextPreviewSnapshot;
     DiagnosticsLogService.instance.debug(
       'ssh.preview',
       'changed',
