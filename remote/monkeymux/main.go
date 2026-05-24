@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.46"
+	monkeyMuxVersion         = "0.1.47"
 	defaultColumns           = 80
 	defaultRows              = 24
 	maxTitleBytes            = 160
@@ -2509,7 +2509,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
-	if !window.usesAlternateScreenForReplayLocked() {
+	if !window.usesFullHistoryForReplayLocked() {
 		history = trimReplayHistoryForAttach(history)
 	}
 	title := terminalTitleReplaySequence(window)
@@ -2538,11 +2538,11 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	return replay
 }
 
-func (w *muxWindow) usesAlternateScreenForReplayLocked() bool {
+func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
 	if w == nil {
 		return false
 	}
-	return w.privateModes["1049"]
+	return w.privateModes["1049"] || w.agentToolLocked() == "antigravity"
 }
 
 func (w *muxWindow) reportsMouseWheelLocked() bool {
