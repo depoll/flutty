@@ -349,7 +349,10 @@ void main() {
 
       final styledPainter = find.byWidgetPredicate(
         (widget) =>
-            widget is CustomPaint && widget.painter.runtimeType.toString().contains('_TerminalPreviewPainter'),
+            widget is CustomPaint &&
+            widget.painter.runtimeType.toString().contains(
+              '_TerminalPreviewPainter',
+            ),
       );
       final painterSize = tester.getSize(styledPainter);
       // Card has 1px border + 10px LR padding on each side = card_width - 22.
