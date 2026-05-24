@@ -693,6 +693,36 @@ func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
 	}
 }
 
+func TestActiveReplayKeepsFullAntigravityHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"antigravity-main-screen-start" +
+			strings.Repeat("conversation-history", windowReplayLimitBytes/8) +
+			"antigravity-main-screen-end",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "antigravity",
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, "antigravity-main-screen-start") {
+		t.Fatalf("antigravity replay was capped before history start")
+	}
+	if !strings.Contains(replay, "antigravity-main-screen-end") {
+		t.Fatalf("antigravity replay lost history end")
+	}
+	if got, want := len(window.history), len(history); got != want {
+		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
 func TestActiveReplayPrefixClearsMainAndAlternateScreens(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
