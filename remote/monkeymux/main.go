@@ -2474,46 +2474,17 @@ func (s *muxServer) resize(width int, height int) {
 	if width <= 0 || height <= 0 {
 		return
 	}
-	s.attachMu.Lock()
-	defer s.attachMu.Unlock()
-
-	var attach net.Conn
-	var activeWindow *muxWindow
-	var replay []byte
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	oldWidth, oldHeight := s.width, s.height
 	s.width = width
 	s.height = height
 	if width == oldWidth && height == oldHeight {
 		s.resizeAllLocked(width, height)
-		s.mu.Unlock()
 		return
 	}
-
-	activeWindow = s.windowByIDLocked(s.activeID)
-	if activeWindow != nil && activeWindow.replayBeforeResizeLocked() {
-		attach = s.attachConn
-		replay = s.replayBytesLocked(activeWindow)
-	}
-	for _, window := range s.windows {
-		if window == activeWindow && len(replay) > 0 {
-			continue
-		}
-		s.resizeWindowLocked(window, width, height)
-	}
-	s.mu.Unlock()
-
-	if len(replay) == 0 {
-		return
-	}
-	s.writeAttachLocked(attach, replay)
-
-	s.mu.Lock()
-	if s.activeID == activeWindow.id {
-		s.resizeWindowLocked(activeWindow, width, height)
-	}
-	s.mu.Unlock()
+	s.resizeAllLocked(width, height)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -2601,10 +2572,6 @@ func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
 	}
 	command := strings.TrimSpace(w.currentCommandLocked())
 	return command != "" && !isShellCommandName(command)
-}
-
-func (w *muxWindow) replayBeforeResizeLocked() bool {
-	return w.usesFullHistoryForReplayLocked() || w.focusModeActiveLocked()
 }
 
 func (w *muxWindow) reportsMouseWheelLocked() bool {

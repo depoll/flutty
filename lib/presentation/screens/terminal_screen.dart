@@ -6968,6 +6968,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     void apply() {
       _activeMuxBackend = command.backend;
       _remoteMuxStartupTool = command.tool;
+      _lastRequestedMonkeyMuxTerminalSize = null;
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
@@ -7393,6 +7394,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isTmuxActive = true;
           _tmuxSessionName = sessionName;
           _activeMuxBackend = muxBackend;
+          _lastRequestedMonkeyMuxTerminalSize = null;
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;

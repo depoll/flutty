@@ -517,54 +517,6 @@ func TestResizeSkipsSameSizeWindowPtys(t *testing.T) {
 	}
 }
 
-func TestResizeReplaysFocusAwareTuiBeforeActivePtyResize(t *testing.T) {
-	server := newMuxServerWithSize("test", 120, 40)
-	attach := &recordingConn{}
-	activePty := openTestPty(t)
-	window := &muxWindow{
-		id:                "@1",
-		index:             0,
-		foregroundCommand: "hermes",
-		focusModeEnabled:  true,
-		pty:               activePty,
-		ptyWidth:          120,
-		ptyHeight:         40,
-		history:           []byte("hermes frame\ncomposer prompt"),
-		lastActivity:      time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-	server.attachConn = attach
-
-	originalResizePty := resizePty
-	defer func() {
-		resizePty = originalResizePty
-	}()
-	activeAttachAtResize := ""
-	resizePty = func(file *os.File, _ *pty.Winsize) error {
-		if file == activePty {
-			activeAttachAtResize = attach.String()
-		}
-		return nil
-	}
-
-	server.resize(132, 43)
-
-	if !strings.Contains(activeAttachAtResize, "hermes frame\ncomposer prompt") {
-		t.Fatalf(
-			"active pty resized before replay reached attach: got %q",
-			activeAttachAtResize,
-		)
-	}
-	if window.ptyWidth != 132 || window.ptyHeight != 43 {
-		t.Fatalf(
-			"tracked pty size = %dx%d, want 132x43",
-			window.ptyWidth,
-			window.ptyHeight,
-		)
-	}
-}
-
 func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
 	server := newMuxServer("test")
 	activePty := openTestPty(t)
