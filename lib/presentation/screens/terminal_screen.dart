@@ -1119,13 +1119,15 @@ Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) =>
   bool allowMultiple,
   String failureContext,
 })
-resolveTerminalUploadPickerRequest({required bool images}) => (
-  dialogTitle: images ? 'Select images to upload' : 'Select files to upload',
-  pickerType: images ? FileType.image : FileType.any,
-  itemLabelSingular: images ? 'image' : 'file',
-  itemLabelPlural: images ? 'images' : 'files',
+resolveTerminalUploadPickerRequest({required bool media}) => (
+  dialogTitle: media
+      ? 'Select images or videos to upload'
+      : 'Select files to upload',
+  pickerType: media ? FileType.media : FileType.any,
+  itemLabelSingular: media ? 'image or video' : 'file',
+  itemLabelPlural: media ? 'images or videos' : 'files',
   allowMultiple: true,
-  failureContext: images ? 'Image picker upload' : 'File picker upload',
+  failureContext: media ? 'Media picker upload' : 'File picker upload',
 );
 
 /// Trims punctuation that terminals commonly render immediately after a link.
@@ -3109,9 +3111,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ),
     _terminalOverflowMenuItem(
       context: context,
-      icon: Icons.image_outlined,
-      label: 'Paste Images',
-      action: 'paste_image',
+      icon: Icons.perm_media_outlined,
+      label: 'Paste Media',
+      action: 'paste_media',
     ),
     _terminalOverflowMenuItem(
       context: context,
@@ -4839,6 +4841,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalOutputForShellCompletion(String output) {
+    if (output.contains('\r') || output.contains('\n')) {
+      _hideShellCompletionPopup();
+      return;
+    }
     if (!ref.read(shellCompletionsNotifierProvider)) {
       _hideShellCompletionPopup();
       return;
@@ -9002,7 +9008,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     onPasteRequested: _pasteClipboard,
                     onPasteMenuOpened: _refreshKeyboardToolbarSnippetMenu,
                     onSnippetPasteRequested: _pasteKeyboardToolbarSnippet,
-                    onPasteImageRequested: _pastePickedImage,
+                    onPasteMediaRequested: _pastePickedMedia,
                     onPasteFilesRequested: _pastePickedFiles,
                     snippets: _keyboardToolbarSnippets,
                     snippetFolders: _keyboardToolbarSnippetFolders,
@@ -10020,8 +10026,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'paste':
         await _pasteClipboard();
         break;
-      case 'paste_image':
-        await _pastePickedImage();
+      case 'paste_media':
+        await _pastePickedMedia();
         break;
       case 'paste_file':
         await _pastePickedFiles();
@@ -12261,8 +12267,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _pastePickedImage() async {
-    final pickerRequest = resolveTerminalUploadPickerRequest(images: true);
+  Future<void> _pastePickedMedia() async {
+    final pickerRequest = resolveTerminalUploadPickerRequest(media: true);
     await _pickAndPasteFiles(
       dialogTitle: pickerRequest.dialogTitle,
       pickerType: pickerRequest.pickerType,
@@ -12274,7 +12280,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pastePickedFiles() async {
-    final pickerRequest = resolveTerminalUploadPickerRequest(images: false);
+    final pickerRequest = resolveTerminalUploadPickerRequest(media: false);
     await _pickAndPasteFiles(
       dialogTitle: pickerRequest.dialogTitle,
       pickerType: pickerRequest.pickerType,

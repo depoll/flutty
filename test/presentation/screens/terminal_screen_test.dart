@@ -1515,7 +1515,7 @@ void main() {
       expect(terminalMenuItemButton('Snippets'), findsOneWidget);
       expect(terminalSubmenuButton('Paste'), findsOneWidget);
       expect(terminalMenuItemButton('Paste'), findsOneWidget);
-      expect(terminalMenuItemButton('Paste Images'), findsOneWidget);
+      expect(terminalMenuItemButton('Paste Media'), findsOneWidget);
       expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
     });
 
@@ -3321,6 +3321,99 @@ void main() {
 
         expect(find.text('checkout'), findsOneWidget);
         expect(completionService.completeInvocations, isEmpty);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'dismisses shell completion popup when Return/Enter is pressed',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(
+            index: 0,
+            id: '@8',
+            name: 'shell',
+            isActive: true,
+            currentCommand: 'zsh',
+          ),
+        ];
+        final completionService = _TestShellCompletionService(
+          cachedSuggestions: const <ShellCompletionSuggestion>[
+            ShellCompletionSuggestion(
+              label: 'checkout',
+              replacement: 'checkout',
+              replacementStart: 4,
+              replacementEnd: 6,
+              kind: ShellCompletionSuggestionKind.history,
+              commitSuffix: ' ',
+            ),
+          ],
+        );
+
+        addTearDown(windowEvents.close);
+        session.terminal!
+          ..write('\x1b[?1004h')
+          ..write('root@host ~ % git c');
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
+        when(
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            tmuxSessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenThrow(Exception('tmux context unavailable'));
+
+        await pumpScreen(
+          tester,
+          tmuxService: tmuxService,
+          shellCompletionService: completionService,
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        session.terminal!.textInput('h');
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('checkout'), findsOneWidget);
+
+        // Hitting Return/Enter should dismiss the completion popup immediately
+        session.terminal!.keyInput(TerminalKey.enter);
+        await tester.pump();
+
+        expect(find.text('checkout'), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
