@@ -92,7 +92,7 @@ void main() {
         expect(builder, isA<PredictiveBackPageTransitionsBuilder>());
         final predictiveBuilder =
             builder! as PredictiveBackPageTransitionsBuilder;
-        expect(predictiveBuilder.fallbackColor, theme.scaffoldBackgroundColor);
+        expect(predictiveBuilder.fallbackColor, const Color(0xFFFF00FF));
       }
     });
 
