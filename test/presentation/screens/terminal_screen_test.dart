@@ -2487,7 +2487,7 @@ void main() {
     );
 
     testWidgets(
-      'MonkeyMux active-window events refresh despite paused touch follow',
+      'MonkeyMux active-window events refresh without duplicate resize sync',
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
@@ -2611,12 +2611,10 @@ void main() {
         await tester.pump(const Duration(milliseconds: 120));
         await tester.pump();
 
+        expect(monkeyMuxService.resizeTerminalCalls.length, greaterThan(0));
         expect(
           monkeyMuxService.resizeTerminalCalls.length,
-          anyOf(
-            resizeCountBeforeWindowEvent + 2,
-            resizeCountBeforeWindowEvent + 3,
-          ),
+          resizeCountBeforeWindowEvent,
         );
         final resizeCall = monkeyMuxService.resizeTerminalCalls.last;
         expect(resizeCall.sessionName, sessionName);

@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.48"
+	monkeyMuxVersion                  = "0.1.49"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -140,6 +140,10 @@ var signalForegroundResize = func(processGroup int) {
 		return
 	}
 	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+var resizePty = func(file *os.File, size *pty.Winsize) error {
+	return pty.Setsize(file, size)
 }
 
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
@@ -292,6 +296,8 @@ type muxWindow struct {
 	foregroundCommand          string
 	paneTitle                  string
 	pty                        *os.File
+	ptyWidth                   int
+	ptyHeight                  int
 	cmd                        *exec.Cmd
 	history                    []byte
 	oscBuffer                  []byte
@@ -1538,6 +1544,8 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		foregroundCommand:        filepath.Base(cmd.Path),
 		paneTitle:                paneTitle,
 		pty:                      file,
+		ptyWidth:                 int(size.Cols),
+		ptyHeight:                int(size.Rows),
 		cmd:                      cmd,
 		history:                  append([]byte(nil), options.history...),
 		lastActivity:             time.Now(),
@@ -2463,11 +2471,49 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	s.attachMu.Lock()
+	defer s.attachMu.Unlock()
+
+	var attach net.Conn
+	var activeWindow *muxWindow
+	var replay []byte
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	oldWidth, oldHeight := s.width, s.height
 	s.width = width
 	s.height = height
-	s.resizeAllLocked(width, height)
+	if width == oldWidth && height == oldHeight {
+		s.resizeAllLocked(width, height)
+		s.mu.Unlock()
+		return
+	}
+
+	activeWindow = s.windowByIDLocked(s.activeID)
+	if activeWindow != nil && activeWindow.replayBeforeResizeLocked() {
+		attach = s.attachConn
+		replay = s.replayBytesLocked(activeWindow)
+	}
+	for _, window := range s.windows {
+		if window == activeWindow && len(replay) > 0 {
+			continue
+		}
+		s.resizeWindowLocked(window, width, height)
+	}
+	s.mu.Unlock()
+
+	if len(replay) == 0 {
+		return
+	}
+	s.writeAttachLocked(attach, replay)
+
+	s.mu.Lock()
+	if s.activeID == activeWindow.id {
+		s.resizeWindowLocked(activeWindow, width, height)
+	}
+	s.mu.Unlock()
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -2485,10 +2531,17 @@ func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int)
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
+	if window.ptyWidth == width && window.ptyHeight == height {
+		return
+	}
+	if err := resizePty(window.pty, &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
-	})
+	}); err != nil {
+		return
+	}
+	window.ptyWidth = width
+	window.ptyHeight = height
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -2548,6 +2601,10 @@ func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
 	}
 	command := strings.TrimSpace(w.currentCommandLocked())
 	return command != "" && !isShellCommandName(command)
+}
+
+func (w *muxWindow) replayBeforeResizeLocked() bool {
+	return w.usesFullHistoryForReplayLocked() || w.focusModeActiveLocked()
 }
 
 func (w *muxWindow) reportsMouseWheelLocked() bool {

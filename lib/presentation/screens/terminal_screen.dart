@@ -72,6 +72,13 @@ import 'snippet_edit_screen.dart';
 
 part '../widgets/tmux_expandable_bar.dart';
 
+typedef _MonkeyMuxTerminalSizeSync = ({
+  int connectionId,
+  String sessionName,
+  int columns,
+  int rows,
+});
+
 bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x20 ||
     codeUnit == 0x09 ||
@@ -2700,6 +2707,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
+  _MonkeyMuxTerminalSizeSync? _lastRequestedMonkeyMuxTerminalSize;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -6188,7 +6196,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (terminalColumns <= 0 || terminalRows <= 0) {
       return;
     }
+    final requestedSize = (
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+      columns: terminalColumns,
+      rows: terminalRows,
+    );
+    if (_lastRequestedMonkeyMuxTerminalSize == requestedSize) {
+      return;
+    }
 
+    final previousRequestedSize = _lastRequestedMonkeyMuxTerminalSize;
+    _lastRequestedMonkeyMuxTerminalSize = requestedSize;
     try {
       await _monkeyMuxService.resizeTerminal(
         session,
@@ -6205,6 +6224,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
+      if (_lastRequestedMonkeyMuxTerminalSize == requestedSize) {
+        _lastRequestedMonkeyMuxTerminalSize = previousRequestedSize;
+      }
     }
   }
 
@@ -7019,6 +7041,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isTmuxActive = false;
     _tmuxSessionName = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
+    _lastRequestedMonkeyMuxTerminalSize = null;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _remoteMuxStartupTool = null;

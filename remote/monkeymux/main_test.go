@@ -476,6 +476,95 @@ func TestResizeUpdatesInactiveWindowPtys(t *testing.T) {
 	assertPtySize(t, inactivePty, 132, 43)
 }
 
+func TestResizeSkipsSameSizeWindowPtys(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	server.windows = []*muxWindow{
+		{
+			id:           "@1",
+			index:        0,
+			pty:          activePty,
+			ptyWidth:     120,
+			ptyHeight:    40,
+			lastActivity: time.Now(),
+		},
+		{
+			id:           "@2",
+			index:        1,
+			pty:          inactivePty,
+			ptyWidth:     120,
+			ptyHeight:    40,
+			lastActivity: time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	originalResizePty := resizePty
+	defer func() {
+		resizePty = originalResizePty
+	}()
+	var calls int
+	resizePty = func(_ *os.File, _ *pty.Winsize) error {
+		calls++
+		return nil
+	}
+
+	server.resize(120, 40)
+
+	if calls != 0 {
+		t.Fatalf("resize pty calls = %d, want 0", calls)
+	}
+}
+
+func TestResizeReplaysFocusAwareTuiBeforeActivePtyResize(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	attach := &recordingConn{}
+	activePty := openTestPty(t)
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "hermes",
+		focusModeEnabled:  true,
+		pty:               activePty,
+		ptyWidth:          120,
+		ptyHeight:         40,
+		history:           []byte("hermes frame\ncomposer prompt"),
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalResizePty := resizePty
+	defer func() {
+		resizePty = originalResizePty
+	}()
+	activeAttachAtResize := ""
+	resizePty = func(file *os.File, _ *pty.Winsize) error {
+		if file == activePty {
+			activeAttachAtResize = attach.String()
+		}
+		return nil
+	}
+
+	server.resize(132, 43)
+
+	if !strings.Contains(activeAttachAtResize, "hermes frame\ncomposer prompt") {
+		t.Fatalf(
+			"active pty resized before replay reached attach: got %q",
+			activeAttachAtResize,
+		)
+	}
+	if window.ptyWidth != 132 || window.ptyHeight != 43 {
+		t.Fatalf(
+			"tracked pty size = %dx%d, want 132x43",
+			window.ptyWidth,
+			window.ptyHeight,
+		)
+	}
+}
+
 func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
 	server := newMuxServer("test")
 	activePty := openTestPty(t)
@@ -494,6 +583,51 @@ func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
 
 	assertPtySize(t, activePty, 132, 43)
 	assertPtySize(t, inactivePty, 132, 43)
+}
+
+func TestAttachSkipsSameSizeWindowPtys(t *testing.T) {
+	server := newMuxServerWithSize("test", 120, 40)
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	server.windows = []*muxWindow{
+		{
+			id:           "@1",
+			index:        0,
+			pty:          activePty,
+			ptyWidth:     120,
+			ptyHeight:    40,
+			lastActivity: time.Now(),
+		},
+		{
+			id:           "@2",
+			index:        1,
+			pty:          inactivePty,
+			ptyWidth:     120,
+			ptyHeight:    40,
+			lastActivity: time.Now(),
+		},
+	}
+	server.activeID = "@1"
+
+	originalResizePty := resizePty
+	defer func() {
+		resizePty = originalResizePty
+	}()
+	var calls int
+	resizePty = func(_ *os.File, _ *pty.Winsize) error {
+		calls++
+		return nil
+	}
+
+	server.handleAttach(
+		&recordingConn{},
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Width: 120, Height: 40},
+	)
+
+	if calls != 0 {
+		t.Fatalf("resize pty calls = %d, want 0", calls)
+	}
 }
 
 func TestAttachIgnoresOversizedThemeHint(t *testing.T) {
