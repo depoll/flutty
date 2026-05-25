@@ -214,21 +214,17 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     );
     final colorScheme = theme.colorScheme;
     final previewTheme = terminalTheme;
-    final previewBackgroundBase = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
+    final previewBackgroundBase = _previewSurfaceColor(
+      previewTheme,
+      colorScheme,
+    );
     final previewTextColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
-    final borderColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(18),
-      colorScheme.outlineVariant,
-    );
-    final shadowColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(12),
-      theme.shadowColor.withAlpha(16),
+    final borderColor = _previewBorderColor(previewTheme, colorScheme);
+    final shadowColor = _previewShadowColor(
+      previewTheme,
+      theme.shadowColor,
+      16,
     );
 
     return Column(
@@ -453,19 +449,12 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final previewTheme = entry.terminalTheme;
-    final backgroundColor = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
-    final borderColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(28),
-      colorScheme.outlineVariant,
-    );
-    final shadowColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(14),
-      theme.shadowColor.withAlpha(20),
+    final backgroundColor = _previewSurfaceColor(previewTheme, colorScheme);
+    final borderColor = _previewBorderColor(previewTheme, colorScheme);
+    final shadowColor = _previewShadowColor(
+      previewTheme,
+      theme.shadowColor,
+      20,
     );
     final textColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
@@ -536,6 +525,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     if (handleTap == null) {
       return card;
     }
+
     return Material(
       type: MaterialType.transparency,
       child: InkWell(
@@ -545,6 +535,38 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       ),
     );
   }
+}
+
+Color _previewSurfaceColor(
+  TerminalThemeData? previewTheme,
+  ColorScheme colorScheme,
+) => previewTheme?.background ?? colorScheme.surfaceContainerHighest;
+
+Color _previewBorderColor(
+  TerminalThemeData? previewTheme,
+  ColorScheme colorScheme,
+) {
+  if (previewTheme == null) {
+    return Color.alphaBlend(
+      colorScheme.primary.withAlpha(18),
+      colorScheme.outlineVariant,
+    );
+  }
+  return Color.alphaBlend(
+    previewTheme.foreground.withAlpha(previewTheme.isDark ? 46 : 64),
+    previewTheme.background,
+  );
+}
+
+Color _previewShadowColor(
+  TerminalThemeData? previewTheme,
+  Color fallbackShadowColor,
+  int fallbackAlpha,
+) {
+  if (previewTheme == null) {
+    return fallbackShadowColor.withAlpha(fallbackAlpha);
+  }
+  return Colors.black.withAlpha(previewTheme.isDark ? 72 : 36);
 }
 
 double _stackPreviewCardHeightForEntry({

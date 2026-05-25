@@ -1085,6 +1085,29 @@ void main() {
   group('SshSession terminal previews', () {
     tearDown(resetQueuedSshExecsForTesting);
 
+    test('notifies preview listeners when the terminal theme changes', () {
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      var notificationCount = 0;
+
+      session
+        ..addPreviewListener(() => notificationCount++)
+        ..terminalTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        ..terminalTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        ..terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme
+        ..terminalTheme = null;
+
+      expect(notificationCount, 3);
+    });
+
     test('forwards execute requests with an optional PTY config', () async {
       final client = _MockSshClient();
       final execSession = _MockExecSession();
@@ -1602,6 +1625,34 @@ void main() {
         'connectedCount': 1,
       });
     });
+
+    test(
+      'publishes active connection metadata when terminal theme changes',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+        final providerUpdates = <Map<int, SshConnectionState>>[];
+        final subscription = container.listen<Map<int, SshConnectionState>>(
+          activeSessionsProvider,
+          (_, next) => providerUpdates.add(next),
+        );
+        addTearDown(subscription.close);
+
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        final connectionId = result.connectionId!;
+        providerUpdates.clear();
+
+        fakeSshService.getSession(connectionId)!.terminalTheme =
+            monkey_themes.TerminalThemes.defaultDarkTheme;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(providerUpdates, isNotEmpty);
+        expect(
+          notifier.getActiveConnections().single.terminalTheme,
+          monkey_themes.TerminalThemes.defaultDarkTheme,
+        );
+      },
+    );
 
     test('syncBackgroundStatus serializes queued updates', () async {
       final notifier = container.read(activeSessionsProvider.notifier);
