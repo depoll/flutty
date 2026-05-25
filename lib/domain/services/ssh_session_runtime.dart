@@ -38,6 +38,12 @@ class _SshSessionRuntime {
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  // SSH pty negotiation sets TERM but cannot advertise COLORTERM. Launch the
+  // user's login shell with the hint instead of relying on server-gated env
+  // requests that OpenSSH commonly rejects by default. Keep the outer command
+  // parseable by common non-POSIX login shells; /bin/sh handles the fallback.
+  static const _trueColorLoginShellCommand =
+      r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
   /// UTF-8 decoder that tolerates malformed bytes by emitting U+FFFD instead
   /// of throwing a [FormatException]. The shell stream carries raw terminal
@@ -119,12 +125,7 @@ class _SshSessionRuntime {
         },
       );
       try {
-        _shell = command == null
-            ? await _session.client.shell(pty: pty ?? const SSHPtyConfig())
-            : await _session.client.execute(
-                command,
-                pty: pty ?? const SSHPtyConfig(),
-              );
+        _shell = await _openShell(pty: pty, command: command);
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'open_success',
@@ -160,6 +161,30 @@ class _SshSessionRuntime {
     }
     _ensureShellStreamPipes();
     return _shell!;
+  }
+
+  Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
+    final ptyConfig = pty ?? const SSHPtyConfig();
+    if (command != null) {
+      return _session.client.execute(command, pty: ptyConfig);
+    }
+
+    try {
+      return await _session.client.execute(
+        _trueColorLoginShellCommand,
+        pty: ptyConfig,
+      );
+    } on SSHChannelRequestError {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'truecolor_bootstrap_rejected',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+      return _session.client.shell(pty: ptyConfig);
+    }
   }
 
   /// Close only the interactive shell channel while keeping the SSH client.
