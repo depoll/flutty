@@ -4831,6 +4831,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalOutputForShellCompletion(String output) {
+    if (output.contains('\r') || output.contains('\n')) {
+      _hideShellCompletionPopup();
+      return;
+    }
     if (!ref.read(shellCompletionsNotifierProvider)) {
       _hideShellCompletionPopup();
       return;
