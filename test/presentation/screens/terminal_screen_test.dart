@@ -1515,7 +1515,7 @@ void main() {
       expect(terminalMenuItemButton('Snippets'), findsOneWidget);
       expect(terminalSubmenuButton('Paste'), findsOneWidget);
       expect(terminalMenuItemButton('Paste'), findsOneWidget);
-      expect(terminalMenuItemButton('Paste Images'), findsOneWidget);
+      expect(terminalMenuItemButton('Paste Media'), findsOneWidget);
       expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
     });
 
