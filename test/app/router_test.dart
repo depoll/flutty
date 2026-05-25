@@ -248,7 +248,7 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
-    test('terminal route animates the live page during transitions', () {
+    test('terminal route reveals the previous route during transitions', () {
       final router = container.read(routerProvider);
       final terminalRoute = router.configuration.routes
           .whereType<GoRoute>()
@@ -269,8 +269,11 @@ void main() {
         ),
       );
 
-      expect(page, isA<MaterialPage<void>>());
-      expect((page as MaterialPage<void>).allowSnapshotting, isFalse);
+      final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
+
+      expect(route, isA<PageRoute<void>>());
+      expect(route.opaque, isFalse);
+      expect(route.allowSnapshotting, isFalse);
     });
 
     test('intentionally returns a new GoRouter instance when authState changes '
