@@ -2919,6 +2919,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
+  String? _lastAndroidPredictiveBackDiagnosticsKey;
+  bool _androidPredictiveBackPostFrameDiagnosticsQueued = false;
 
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
@@ -2926,6 +2928,79 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool get _isAndroidPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  void _queueAndroidPredictiveBackPostFrameDiagnostics(BuildContext context) {
+    if (!_isAndroidPlatform ||
+        _androidPredictiveBackPostFrameDiagnosticsQueued) {
+      return;
+    }
+    _androidPredictiveBackPostFrameDiagnosticsQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _androidPredictiveBackPostFrameDiagnosticsQueued = false;
+      if (!mounted || !context.mounted) {
+        return;
+      }
+      _logAndroidPredictiveBackDiagnostics(
+        context,
+        phase: 'post_frame',
+        includeGestureEnabled: true,
+      );
+    });
+  }
+
+  void _logAndroidPredictiveBackDiagnostics(
+    BuildContext context, {
+    required String phase,
+    bool? didPop,
+    bool includeGestureEnabled = false,
+  }) {
+    if (!_isAndroidPlatform) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    final navigator = Navigator.maybeOf(context);
+    final animation = route?.animation;
+    final terminalViewWidget = _terminalViewKey.currentWidget;
+    final terminalUseRepaintBoundary = terminalViewWidget is MonkeyTerminalView
+        ? terminalViewWidget.useRepaintBoundary
+        : null;
+    final animationValue = animation?.value;
+    final fields = <String, Object?>{
+      'phase': phase,
+      'routePopGestureInProgress': route?.popGestureInProgress,
+      if (includeGestureEnabled)
+        'routePopGestureEnabled': route?.popGestureEnabled,
+      'routeIsCurrent': route?.isCurrent,
+      'routeCanPop': route?.canPop,
+      'routePopDisposition': route?.popDisposition,
+      'navigatorUserGestureInProgress': navigator?.userGestureInProgress,
+      'navigatorCanPop': navigator?.canPop(),
+      'animationStatus': animation?.status,
+      if (animationValue case final animationValue?)
+        'animationPermille': (animationValue * 1000).round(),
+      if (animationValue case final animationValue?)
+        'animationBucket': (animationValue * 20).round(),
+      'tmuxBarExpanded': _isTmuxBarExpanded,
+      'keyboardVisible': MediaQuery.viewInsetsOf(context).bottom > 0,
+      'terminalViewMounted': _terminalViewKey.currentState != null,
+      'terminalUseRepaintBoundary': terminalUseRepaintBoundary,
+    };
+    if (didPop != null) {
+      fields['didPop'] = didPop;
+    }
+    final key = fields.entries
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join('|');
+    if (key == _lastAndroidPredictiveBackDiagnosticsKey) {
+      return;
+    }
+    _lastAndroidPredictiveBackDiagnosticsKey = key;
+    DiagnosticsLogService.instance.debug(
+      'android.back',
+      'terminal_route_state',
+      fields: fields,
+    );
+  }
 
   bool get _hasExpandedNativeOverlaySelection =>
       _isNativeSelectionMode &&
@@ -8682,6 +8757,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    if (_isAndroidPlatform) {
+      _logAndroidPredictiveBackDiagnostics(context, phase: 'build');
+      _queueAndroidPredictiveBackPostFrameDiagnostics(context);
+    }
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
@@ -8738,6 +8817,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return PopScope(
       canPop: !_isTmuxBarExpanded,
       onPopInvokedWithResult: (didPop, _) {
+        _logAndroidPredictiveBackDiagnostics(
+          context,
+          phase: 'pop_invoked',
+          didPop: didPop,
+        );
         if (didPop) {
           return;
         }
