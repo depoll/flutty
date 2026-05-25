@@ -137,6 +137,37 @@ void main() {
     expect(entry.terminalTheme, TerminalThemes.defaultDarkTheme);
   });
 
+  testWidgets('inline previews use the terminal theme background', (
+    tester,
+  ) async {
+    const terminalTheme = TerminalThemes.defaultDarkTheme;
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewSnippet(
+            endpoint: 'depoll@mac-mini.home:22 - Connection #1',
+            preview: 'ready',
+            terminalTheme: terminalTheme,
+          ),
+        ),
+      ),
+    );
+
+    final decorations = _boxDecorationsWithColor(
+      tester,
+      terminalTheme.background,
+    );
+    expect(decorations, hasLength(1));
+    expect(
+      (decorations.single.border! as Border).top.color,
+      Color.alphaBlend(
+        terminalTheme.foreground.withAlpha(46),
+        terminalTheme.background,
+      ),
+    );
+  });
+
   testWidgets('renders extra rows in stacked previews', (tester) async {
     final preview = previewLines(19);
 
@@ -248,6 +279,41 @@ void main() {
 
     expect(find.byType(CustomPaint), findsWidgets);
     expect(find.text(preview.plainText), findsNothing);
+  });
+
+  testWidgets('stacked previews use the terminal theme background', (
+    tester,
+  ) async {
+    const terminalTheme = TerminalThemes.defaultDarkTheme;
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ConnectionPreviewStack(
+            entries: [
+              ConnectionPreviewStackEntry(
+                title: 'Connection #1',
+                body: 'ready',
+                terminalTheme: terminalTheme,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final decorations = _boxDecorationsWithColor(
+      tester,
+      terminalTheme.background,
+    );
+    expect(decorations, hasLength(1));
+    expect(
+      (decorations.single.border! as Border).top.color,
+      Color.alphaBlend(
+        terminalTheme.foreground.withAlpha(46),
+        terminalTheme.background,
+      ),
+    );
   });
 
   testWidgets('styled preview fills its container vertically without slack', (
@@ -443,3 +509,13 @@ void main() {
     expect(find.text('~/Code/flutty • Running'), findsOneWidget);
   });
 }
+
+List<BoxDecoration> _boxDecorationsWithColor(
+  WidgetTester tester,
+  Color color,
+) => tester
+    .widgetList<Container>(find.byType(Container))
+    .map((container) => container.decoration)
+    .whereType<BoxDecoration>()
+    .where((decoration) => decoration.color == color)
+    .toList(growable: false);
