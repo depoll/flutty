@@ -718,6 +718,9 @@ class PersistentPredictiveBackPageTransitionsBuilder
   );
 
   @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 120);
+
+  @override
   Widget buildTransitions<T>(
     PageRoute<T> route,
     BuildContext context,
@@ -727,8 +730,7 @@ class PersistentPredictiveBackPageTransitionsBuilder
   ) => _AndroidBackGestureDetector(
     route: route,
     builder: (context, phase, startBackEvent, currentBackEvent) {
-      if (route.popGestureInProgress ||
-          animation.status == AnimationStatus.reverse) {
+      if (phase != _AndroidBackPhase.idle) {
         return _PersistentPredictiveBackTransition(
           animation: animation,
           phase: phase,
@@ -773,6 +775,7 @@ class _AndroidBackGestureDetectorState
   _AndroidBackPhase _phase = _AndroidBackPhase.idle;
   PredictiveBackEvent? _startBackEvent;
   PredictiveBackEvent? _currentBackEvent;
+  bool _predictiveBackActive = false;
 
   bool get _isEnabled =>
       widget.route.isCurrent && widget.route.popGestureEnabled;
@@ -803,6 +806,7 @@ class _AndroidBackGestureDetectorState
       return false;
     }
 
+    _predictiveBackActive = true;
     widget.route.handleStartBackGesture(progress: 1 - backEvent.progress);
     _setStartEvent(backEvent);
     _setCurrentEvent(backEvent);
@@ -834,23 +838,36 @@ class _AndroidBackGestureDetectorState
     _setCurrentEvent(null);
   }
 
+  void _handleAnimationStatus(AnimationStatus status) {
+    if (!_predictiveBackActive) {
+      return;
+    }
+    if (status == AnimationStatus.completed ||
+        status == AnimationStatus.dismissed) {
+      _predictiveBackActive = false;
+      _setPhase(_AndroidBackPhase.idle);
+      _setStartEvent(null);
+      _setCurrentEvent(null);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.route.animation?.addStatusListener(_handleAnimationStatus);
   }
 
   @override
   void dispose() {
+    widget.route.animation?.removeStatusListener(_handleAnimationStatus);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final phase = widget.route.popGestureInProgress
-        ? _phase
-        : _AndroidBackPhase.idle;
+    final phase = _predictiveBackActive ? _phase : _AndroidBackPhase.idle;
     return widget.builder(context, phase, _startBackEvent, _currentBackEvent);
   }
 }
