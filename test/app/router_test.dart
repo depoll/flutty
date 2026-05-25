@@ -248,7 +248,7 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
-    test('terminal route reveals the previous route during transitions', () {
+    test('terminal route animates the live page during transitions', () {
       final router = container.read(routerProvider);
       final terminalRoute = router.configuration.routes
           .whereType<GoRoute>()
@@ -272,7 +272,7 @@ void main() {
       final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
 
       expect(route, isA<PageRoute<void>>());
-      expect(route.opaque, isFalse);
+      expect(route.opaque, isTrue);
       expect(route.allowSnapshotting, isFalse);
     });
 
