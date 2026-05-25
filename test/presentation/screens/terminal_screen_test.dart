@@ -6439,6 +6439,91 @@ void main() {
     );
 
     testWidgets(
+      'background path verification closes late SFTP clients after open timeout',
+      (tester) async {
+        const relativePath = 'lib/presentation/screens/terminal_screen.dart';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+        final sftpOpenCompleter = Completer<SftpClient>();
+
+        when(
+          () => sshClient.sftp(),
+        ).thenAnswer((_) => sftpOpenCompleter.future);
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('git add $relativePath');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        verify(() => sshClient.sftp()).called(1);
+
+        await tester.pump(const Duration(seconds: 5, milliseconds: 1));
+        verifyNever(sftp.close);
+
+        sftpOpenCompleter.complete(sftp);
+        await tester.pump();
+
+        verify(sftp.close).called(1);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 11));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'background path verification discards cached SFTP clients after stat timeout',
+      (tester) async {
+        const relativePath = 'lib/presentation/screens/terminal_screen.dart';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+        final statStarted = Completer<void>();
+        final statCompleter = Completer<SftpFileAttrs>();
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(() => sftp.stat('$workingDirectory/$relativePath')).thenAnswer((
+          _,
+        ) {
+          if (!statStarted.isCompleted) {
+            statStarted.complete();
+          }
+          return statCompleter.future;
+        });
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('git add $relativePath');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        await statStarted.future.timeout(const Duration(seconds: 1));
+
+        await tester.pump(const Duration(seconds: 5, milliseconds: 1));
+
+        verify(sftp.close).called(1);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 11));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'mobile path underline taps open SFTP while system selection is enabled',
       (tester) async {
         const remotePath = '/var/log/app.log';
