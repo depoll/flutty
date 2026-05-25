@@ -72,6 +72,30 @@ void main() {
       expect(theme.colorScheme.onSurface, overrideTheme.foreground);
     });
 
+    test('uses fullscreen predictive back transitions on Android', () {
+      const terminalThemeSettings = TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      );
+      final themes = [
+        FluttyTheme.dark,
+        buildTerminalAppTheme(
+          brightness: Brightness.dark,
+          terminalThemeSettings: terminalThemeSettings,
+          terminalThemes: TerminalThemes.all,
+        ),
+      ];
+
+      for (final theme in themes) {
+        final builder =
+            theme.pageTransitionsTheme.builders[TargetPlatform.android];
+        expect(builder, isA<PredictiveBackFullscreenPageTransitionsBuilder>());
+        final fullscreenBuilder =
+            builder! as PredictiveBackFullscreenPageTransitionsBuilder;
+        expect(fullscreenBuilder.fallbackColor, theme.scaffoldBackgroundColor);
+      }
+    });
+
     test('falls back to global theme when override omits brightness', () {
       const terminalThemeSettings = TerminalThemeSettings(
         lightThemeId: TerminalThemes.defaultLightThemeId,
