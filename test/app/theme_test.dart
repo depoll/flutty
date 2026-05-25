@@ -72,7 +72,7 @@ void main() {
       expect(theme.colorScheme.onSurface, overrideTheme.foreground);
     });
 
-    test('uses shared-element predictive back transitions on Android', () {
+    test('uses persistent predictive back transitions on Android', () {
       const terminalThemeSettings = TerminalThemeSettings(
         lightThemeId: TerminalThemes.defaultLightThemeId,
         darkThemeId: TerminalThemes.defaultDarkThemeId,
@@ -89,10 +89,10 @@ void main() {
       for (final theme in themes) {
         final builder =
             theme.pageTransitionsTheme.builders[TargetPlatform.android];
-        expect(builder, isA<PredictiveBackPageTransitionsBuilder>());
+        expect(builder, isA<PersistentPredictiveBackPageTransitionsBuilder>());
         final predictiveBuilder =
-            builder! as PredictiveBackPageTransitionsBuilder;
-        expect(predictiveBuilder.fallbackColor, const Color(0xFFFF00FF));
+            builder! as PersistentPredictiveBackPageTransitionsBuilder;
+        expect(predictiveBuilder.fallbackColor, theme.scaffoldBackgroundColor);
       }
     });
 

@@ -1,5 +1,8 @@
+import 'dart:ui' show clampDouble;
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../domain/models/terminal_theme.dart';
@@ -18,7 +21,6 @@ abstract final class FluttyTheme {
   static const _textSecondary = Color(0xFF8A8A9A);
   static const _errorColor = Color(0xFFFF4757);
   static const _warningColor = Color(0xFFFFBE00);
-  static const _androidPredictiveBackFallbackProbeColor = Color(0xFFFF00FF);
 
   // Light theme equivalents
   static const _backgroundLight = Color(0xFFF8F9FC);
@@ -498,9 +500,10 @@ abstract final class FluttyTheme {
   static PageTransitionsTheme _buildPageTransitionsTheme(Color background) =>
       PageTransitionsTheme(
         builders: <TargetPlatform, PageTransitionsBuilder>{
-          TargetPlatform.android: const PredictiveBackPageTransitionsBuilder(
-            fallbackColor: _androidPredictiveBackFallbackProbeColor,
-          ),
+          TargetPlatform.android:
+              PersistentPredictiveBackPageTransitionsBuilder(
+                fallbackColor: background,
+              ),
           TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: const CupertinoPageTransitionsBuilder(),
           TargetPlatform.windows: ZoomPageTransitionsBuilder(
@@ -692,4 +695,256 @@ abstract final class FluttyTheme {
 
     return child;
   }
+}
+
+/// Android predictive-back transition that keeps the outgoing page painted.
+///
+/// Flutter's default shared-element predictive-back transition fades the
+/// outgoing route after the commit threshold. Full-screen terminal surfaces make
+/// that look like the terminal itself turns into a grey box, so this transition
+/// follows the back gesture with the same shrinking motion but does not fade the
+/// outgoing child before the route is removed.
+class PersistentPredictiveBackPageTransitionsBuilder
+    extends PageTransitionsBuilder {
+  /// Creates a persistent Android predictive-back transition.
+  const PersistentPredictiveBackPageTransitionsBuilder({this.fallbackColor});
+
+  /// Background used by the non-predictive fallback transition.
+  final Color? fallbackColor;
+
+  @override
+  Duration get transitionDuration => const Duration(
+    milliseconds: FadeForwardsPageTransitionsBuilder.kTransitionMilliseconds,
+  );
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) => _AndroidBackGestureDetector(
+    route: route,
+    builder: (context, phase, startBackEvent, currentBackEvent) {
+      if (route.popGestureInProgress) {
+        return _PersistentPredictiveBackTransition(
+          animation: animation,
+          phase: phase,
+          startBackEvent: startBackEvent,
+          currentBackEvent: currentBackEvent,
+          child: child,
+        );
+      }
+
+      return FadeForwardsPageTransitionsBuilder(
+        backgroundColor: fallbackColor,
+      ).buildTransitions(route, context, animation, secondaryAnimation, child);
+    },
+  );
+}
+
+enum _AndroidBackPhase { idle, start, update, commit, cancel }
+
+class _AndroidBackGestureDetector extends StatefulWidget {
+  const _AndroidBackGestureDetector({
+    required this.route,
+    required this.builder,
+  });
+
+  final PageRoute<dynamic> route;
+  final Widget Function(
+    BuildContext context,
+    _AndroidBackPhase phase,
+    PredictiveBackEvent? startBackEvent,
+    PredictiveBackEvent? currentBackEvent,
+  )
+  builder;
+
+  @override
+  State<_AndroidBackGestureDetector> createState() =>
+      _AndroidBackGestureDetectorState();
+}
+
+class _AndroidBackGestureDetectorState
+    extends State<_AndroidBackGestureDetector>
+    with WidgetsBindingObserver {
+  _AndroidBackPhase _phase = _AndroidBackPhase.idle;
+  PredictiveBackEvent? _startBackEvent;
+  PredictiveBackEvent? _currentBackEvent;
+
+  bool get _isEnabled =>
+      widget.route.isCurrent && widget.route.popGestureEnabled;
+
+  void _setPhase(_AndroidBackPhase phase) {
+    if (_phase != phase && mounted) {
+      setState(() => _phase = phase);
+    }
+  }
+
+  void _setStartEvent(PredictiveBackEvent? event) {
+    if (_startBackEvent != event && mounted) {
+      setState(() => _startBackEvent = event);
+    }
+  }
+
+  void _setCurrentEvent(PredictiveBackEvent? event) {
+    if (_currentBackEvent != event && mounted) {
+      setState(() => _currentBackEvent = event);
+    }
+  }
+
+  @override
+  bool handleStartBackGesture(PredictiveBackEvent backEvent) {
+    _setPhase(_AndroidBackPhase.start);
+    final gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
+    if (!gestureInProgress) {
+      return false;
+    }
+
+    widget.route.handleStartBackGesture(progress: 1 - backEvent.progress);
+    _setStartEvent(backEvent);
+    _setCurrentEvent(backEvent);
+    return true;
+  }
+
+  @override
+  void handleUpdateBackGestureProgress(PredictiveBackEvent backEvent) {
+    _setPhase(_AndroidBackPhase.update);
+    widget.route.handleUpdateBackGestureProgress(
+      progress: 1 - backEvent.progress,
+    );
+    _setCurrentEvent(backEvent);
+  }
+
+  @override
+  void handleCancelBackGesture() {
+    _setPhase(_AndroidBackPhase.cancel);
+    widget.route.handleCancelBackGesture();
+    _setStartEvent(null);
+    _setCurrentEvent(null);
+  }
+
+  @override
+  void handleCommitBackGesture() {
+    _setPhase(_AndroidBackPhase.commit);
+    widget.route.handleCommitBackGesture();
+    _setStartEvent(null);
+    _setCurrentEvent(null);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final phase = widget.route.popGestureInProgress
+        ? _phase
+        : _AndroidBackPhase.idle;
+    return widget.builder(context, phase, _startBackEvent, _currentBackEvent);
+  }
+}
+
+class _PersistentPredictiveBackTransition extends StatefulWidget {
+  const _PersistentPredictiveBackTransition({
+    required this.animation,
+    required this.phase,
+    required this.startBackEvent,
+    required this.currentBackEvent,
+    required this.child,
+  });
+
+  final Animation<double> animation;
+  final _AndroidBackPhase phase;
+  final PredictiveBackEvent? startBackEvent;
+  final PredictiveBackEvent? currentBackEvent;
+  final Widget child;
+
+  @override
+  State<_PersistentPredictiveBackTransition> createState() =>
+      _PersistentPredictiveBackTransitionState();
+}
+
+class _PersistentPredictiveBackTransitionState
+    extends State<_PersistentPredictiveBackTransition> {
+  static const double _minScale = 0.90;
+  static const double _screenWidthDivisionFactor = 20;
+  static const double _xShiftAdjustment = 8;
+  static const double _maxVerticalDragFraction = 0.1;
+  static const double _fallbackDeviceBorderRadius = 32;
+
+  double _lastProgress = 0;
+  double _lastVerticalDrag = 0;
+
+  double _progress() {
+    final currentProgress = widget.currentBackEvent?.progress;
+    if (currentProgress != null) {
+      return _lastProgress = clampDouble(currentProgress, 0, 1);
+    }
+
+    if (widget.phase == _AndroidBackPhase.commit) {
+      return _lastProgress;
+    }
+
+    return _lastProgress = clampDouble(1 - widget.animation.value, 0, 1);
+  }
+
+  double _verticalDrag(Size size, double progress) {
+    final startTouchY = widget.startBackEvent?.touchOffset?.dy;
+    final currentTouchY = widget.currentBackEvent?.touchOffset?.dy;
+    if (startTouchY == null || currentTouchY == null || size.height <= 0) {
+      return _lastVerticalDrag;
+    }
+
+    final maxShift = size.height * _maxVerticalDragFraction;
+    final rawDrag = currentTouchY - startTouchY;
+    return _lastVerticalDrag = clampDouble(
+      rawDrag * Curves.easeOut.transform(progress),
+      -maxShift,
+      maxShift,
+    );
+  }
+
+  Offset _offset(Size size, double progress) {
+    final xShift =
+        ((size.width / _screenWidthDivisionFactor) - _xShiftAdjustment) *
+        Curves.easeOut.transform(progress);
+    final direction = switch (widget.currentBackEvent?.swipeEdge) {
+      SwipeEdge.right => -1.0,
+      _ => 1.0,
+    };
+    return Offset(direction * xShift, _verticalDrag(size, progress));
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.animation,
+    builder: (context, child) {
+      final size = MediaQuery.sizeOf(context);
+      final progress = _progress();
+      final scale = 1 - ((1 - _minScale) * Curves.easeOut.transform(progress));
+      return Transform.translate(
+        offset: _offset(size, progress),
+        child: Transform.scale(
+          scale: scale,
+          child: ClipRRect(
+            borderRadius:
+                MediaQuery.displayCornerRadiiOf(context) ??
+                BorderRadius.circular(_fallbackDeviceBorderRadius),
+            child: child,
+          ),
+        ),
+      );
+    },
+    child: widget.child,
+  );
 }

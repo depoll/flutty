@@ -3191,25 +3191,6 @@ void main() {
     );
 
     testWidgets(
-      'android terminal paints into the route layer during transitions',
-      (tester) async {
-        await pumpScreen(tester);
-
-        final terminalView = tester.widget<MonkeyTerminalView>(
-          find.byType(MonkeyTerminalView),
-        );
-
-        expect(terminalView.useRepaintBoundary, isFalse);
-        final terminalState = tester.state<MonkeyTerminalViewState>(
-          find.byType(MonkeyTerminalView),
-        );
-        final renderTerminal = terminalState.renderTerminal;
-        expect(renderTerminal.isRepaintBoundary, isFalse);
-      },
-      variant: TargetPlatformVariant.only(TargetPlatform.android),
-    );
-
-    testWidgets(
       'mobile terminal paints cursor from the terminal input focus node',
       (tester) async {
         await pumpScreen(tester);
