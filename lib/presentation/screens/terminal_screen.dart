@@ -2710,6 +2710,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void Function(int, int, int, int)? _terminalResizeHandler;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
   _MonkeyMuxTerminalSizeSync? _lastRequestedMonkeyMuxTerminalSize;
+  bool _deferredMonkeyMuxResizeDuringPinch = false;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -6046,6 +6047,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelWidth: pixelWidth,
         pixelHeight: pixelHeight,
       );
+      if (_isPinchZooming && _isMonkeyMuxSession(session)) {
+        _deferredMonkeyMuxResizeDuringPinch = true;
+        return;
+      }
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
         unawaited(
@@ -6082,6 +6087,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalResizeHandler = null;
     _terminalWithOwnedCallbacks = null;
   }
+
+  bool _isMonkeyMuxSession(SshSession session) =>
+      _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+      session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
 
   void _scheduleTerminalSizeRefresh({
     bool forceDisplayRefresh = false,
@@ -6177,10 +6186,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     int? rows,
     bool refreshVisibleTerminal = false,
   }) async {
-    final isMonkeyMuxSession =
-        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
-        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
-    if (!isMonkeyMuxSession) {
+    if (!_isMonkeyMuxSession(session)) {
       return;
     }
     final sessionName = _tmuxSessionName ?? session.remoteMuxSessionName;
@@ -6975,6 +6981,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _activeMuxBackend = command.backend;
       _remoteMuxStartupTool = command.tool;
       _lastRequestedMonkeyMuxTerminalSize = null;
+      _deferredMonkeyMuxResizeDuringPinch = false;
       session
         ..remoteMuxBackend = command.backend
         ..remoteMuxSessionName = command.sessionName;
@@ -7049,6 +7056,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxSessionName = null;
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _lastRequestedMonkeyMuxTerminalSize = null;
+    _deferredMonkeyMuxResizeDuringPinch = false;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _remoteMuxStartupTool = null;
@@ -7401,6 +7409,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxSessionName = sessionName;
           _activeMuxBackend = muxBackend;
           _lastRequestedMonkeyMuxTerminalSize = null;
+          _deferredMonkeyMuxResizeDuringPinch = false;
           _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
@@ -9094,6 +9103,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _pinchFontSize = currentFontSize;
     _lastPinchScale = 1;
     _isPinchZooming = false;
+    _deferredMonkeyMuxResizeDuringPinch = false;
   }
 
   void _handleTerminalScaleUpdate(double scale, double currentFontSize) {
@@ -9120,6 +9130,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final connectionId = _connectionId;
     final shouldPersist =
         _isPinchZooming && nextFontSize != null && connectionId != null;
+    final shouldFlushDeferredMonkeyMuxResize =
+        _deferredMonkeyMuxResizeDuringPinch && connectionId != null;
     setState(() {
       if (shouldPersist) {
         _sessionFontSizeOverride = nextFontSize;
@@ -9127,7 +9139,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isPinchZooming = false;
       _lastPinchScale = null;
       _pinchFontSize = null;
+      _deferredMonkeyMuxResizeDuringPinch = false;
     });
+
+    if (shouldFlushDeferredMonkeyMuxResize) {
+      _scheduleTerminalSizeRefresh();
+    }
 
     if (!shouldPersist) {
       return;

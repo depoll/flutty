@@ -36,6 +36,7 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_pinch_zoom_gesture_handler.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
@@ -390,6 +391,16 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 
   @override
   Future<void> syncBackgroundStatus() async {}
+
+  @override
+  void updateSessionFontSize(int connectionId, double fontSize) {
+    final session = getSession(connectionId);
+    if (session == null) {
+      return;
+    }
+    session.terminalFontSize = fontSize;
+    state = {...state};
+  }
 }
 
 class _TestThemeModeNotifier extends ThemeModeNotifier {
@@ -2628,6 +2639,132 @@ void main() {
           isTrue,
         );
         await gesture.up();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'pinch zoom defers MonkeyMux resize sync until gesture ends',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
+
+        final resizeCountBeforePinch =
+            monkeyMuxService.resizeTerminalCalls.length;
+        final target = find.byType(TerminalPinchZoomGestureHandler);
+        expect(target, findsOneWidget);
+        final center = tester.getCenter(target);
+        final firstGesture = await tester.createGesture(pointer: 21);
+        final secondGesture = await tester.createGesture(pointer: 22);
+
+        await firstGesture.down(center - const Offset(80, 0));
+        await tester.pump();
+        await secondGesture.down(center + const Offset(80, 0));
+        await tester.pump();
+        await firstGesture.moveBy(const Offset(-80, 0));
+        await secondGesture.moveBy(const Offset(80, 0));
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          monkeyMuxService.resizeTerminalCalls.length,
+          resizeCountBeforePinch,
+        );
+
+        await firstGesture.up();
+        await secondGesture.up();
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          monkeyMuxService.resizeTerminalCalls.length,
+          resizeCountBeforePinch + 1,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
