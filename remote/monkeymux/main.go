@@ -33,23 +33,24 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.47"
-	defaultColumns           = 80
-	defaultRows              = 24
-	maxTitleBytes            = 160
-	oscBufferLimitBytes      = 4096
-	processMetadataTimeout   = 500 * time.Millisecond
-	processMetadataInterval  = 500 * time.Millisecond
-	runCommandOutputMaxBytes = 8 * 1024 * 1024
-	runCommandTimeout        = 20 * time.Second
-	socketTimeout            = 2 * time.Second
-	windowUpdateMinInterval  = 750 * time.Millisecond
-	windowHistoryLimitBytes  = 128 * 1024
-	windowReplayLimitBytes   = 32 * 1024
-	csiBufferLimitBytes      = 64
-	themeHintLimitBytes      = 1024
-	restoreFileMode          = 0o600
-	restoreSchemaVersion     = 1
+	monkeyMuxVersion                  = "0.1.47"
+	defaultColumns                    = 80
+	defaultRows                       = 24
+	maxTitleBytes                     = 160
+	oscBufferLimitBytes               = 4096
+	processMetadataTimeout            = 500 * time.Millisecond
+	processMetadataInterval           = 500 * time.Millisecond
+	runCommandOutputMaxBytes          = 8 * 1024 * 1024
+	runCommandTimeout                 = 20 * time.Second
+	socketTimeout                     = 2 * time.Second
+	windowUpdateMinInterval           = 750 * time.Millisecond
+	windowHistoryLimitBytes           = 128 * 1024
+	windowFullReplayHistoryLimitBytes = 4 * 1024 * 1024
+	windowReplayLimitBytes            = 32 * 1024
+	csiBufferLimitBytes               = 64
+	themeHintLimitBytes               = 1024
+	restoreFileMode                   = 0o600
+	restoreSchemaVersion              = 1
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -2812,35 +2813,44 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
-	if len(chunk) >= windowHistoryLimitBytes {
+	limit := w.historyLimitLocked()
+	if len(chunk) >= limit {
 		w.history = append(
 			w.history[:0],
-			chunk[len(chunk)-windowHistoryLimitBytes:]...,
+			chunk[len(chunk)-limit:]...,
 		)
 		return
 	}
 	// Grow the underlying buffer to 2x the limit so trims are amortized:
 	// each byte gets shifted at most once before falling out of history.
-	if cap(w.history) < 2*windowHistoryLimitBytes {
-		grown := make([]byte, len(w.history), 2*windowHistoryLimitBytes)
+	if cap(w.history) < 2*limit {
+		grown := make([]byte, len(w.history), 2*limit)
 		copy(grown, w.history)
 		w.history = grown
 	}
 	w.history = append(w.history, chunk...)
-	if len(w.history) > 2*windowHistoryLimitBytes {
+	if len(w.history) > 2*limit {
 		// copy() handles the overlap correctly because src is after dst.
-		n := copy(w.history, w.history[len(w.history)-windowHistoryLimitBytes:])
+		n := copy(w.history, w.history[len(w.history)-limit:])
 		w.history = w.history[:n]
 	}
 }
 
 func (w *muxWindow) historyTailLocked() []byte {
-	if len(w.history) <= windowHistoryLimitBytes {
+	limit := w.historyLimitLocked()
+	if len(w.history) <= limit {
 		return w.history
 	}
-	start := len(w.history) - windowHistoryLimitBytes
+	start := len(w.history) - limit
 	start = advanceToUtf8Boundary(w.history, start)
 	return w.history[start:]
+}
+
+func (w *muxWindow) historyLimitLocked() int {
+	if w.usesFullHistoryForReplayLocked() {
+		return windowFullReplayHistoryLimitBytes
+	}
+	return windowHistoryLimitBytes
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {

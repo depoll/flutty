@@ -703,7 +703,7 @@ func TestActiveReplayKeepsFullAgentHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"agent-main-screen-start" +
-			strings.Repeat("conversation-history", windowReplayLimitBytes/8) +
+			strings.Repeat("conversation-history", windowHistoryLimitBytes/8) +
 			"agent-main-screen-end",
 	)
 	window := &muxWindow{
@@ -1139,6 +1139,25 @@ func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	}
 	if got := string(window.history[len(window.history)-5:]); got != "bcdef" {
 		t.Fatalf("history suffix = %q, want bcdef", got)
+	}
+}
+
+func TestWindowHistoryKeepsLargerTailForFullReplayWindows(t *testing.T) {
+	window := &muxWindow{agentTool: "codex"}
+	history := []byte(
+		"agent-history-start" +
+			strings.Repeat("conversation-history", windowHistoryLimitBytes/8) +
+			"agent-history-end",
+	)
+
+	window.appendHistoryLocked(history)
+
+	tail := string(window.historyTailLocked())
+	if !strings.Contains(tail, "agent-history-start") {
+		t.Fatalf("agent history tail was trimmed at the shell limit")
+	}
+	if !strings.Contains(tail, "agent-history-end") {
+		t.Fatalf("agent history tail lost suffix")
 	}
 }
 
