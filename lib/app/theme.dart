@@ -730,19 +730,19 @@ class PersistentPredictiveBackPageTransitionsBuilder
   ) => _AndroidBackGestureDetector(
     route: route,
     builder: (context, phase, startBackEvent, currentBackEvent) {
-      if (phase != _AndroidBackPhase.idle) {
+      final isPredictiveTransition = phase != _AndroidBackPhase.idle;
+      final isAtRest =
+          animation.status == AnimationStatus.completed &&
+          secondaryAnimation.status == AnimationStatus.dismissed;
+      if (isPredictiveTransition || isAtRest) {
         return _PersistentPredictiveBackTransition(
+          active: isPredictiveTransition,
           animation: animation,
           phase: phase,
           startBackEvent: startBackEvent,
           currentBackEvent: currentBackEvent,
           child: child,
         );
-      }
-
-      if (animation.status == AnimationStatus.completed &&
-          secondaryAnimation.status == AnimationStatus.dismissed) {
-        return child;
       }
 
       return FadeForwardsPageTransitionsBuilder(
@@ -879,6 +879,7 @@ class _AndroidBackGestureDetectorState
 
 class _PersistentPredictiveBackTransition extends StatefulWidget {
   const _PersistentPredictiveBackTransition({
+    required this.active,
     required this.animation,
     required this.phase,
     required this.startBackEvent,
@@ -886,6 +887,7 @@ class _PersistentPredictiveBackTransition extends StatefulWidget {
     required this.child,
   });
 
+  final bool active;
   final Animation<double> animation;
   final _AndroidBackPhase phase;
   final PredictiveBackEvent? startBackEvent;
@@ -909,6 +911,12 @@ class _PersistentPredictiveBackTransitionState
   double _lastVerticalDrag = 0;
 
   double _progress() {
+    if (!widget.active) {
+      _lastProgress = 0;
+      _lastVerticalDrag = 0;
+      return 0;
+    }
+
     final currentProgress = widget.currentBackEvent?.progress;
     if (currentProgress != null) {
       return _lastProgress = clampDouble(currentProgress, 0, 1);
