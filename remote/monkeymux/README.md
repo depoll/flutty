@@ -21,7 +21,7 @@ synthesized by MonkeyMux.
 Window switching and reconnect repaint from raw byte history for the selected
 window. Main-screen shell history is capped for responsive switching; active
 alternate-screen, agent, and non-shell foreground program windows replay the
-full retained history so scrollback is restored before the next resize/redraw.
+larger retained history so scrollback is restored before the next resize/redraw.
 MonkeyMux still does not parse terminal state; the history is
 only a best-effort direct replay so the foreground terminal visibly moves to
 the selected PTY. Replay strips old terminal response queries, such as device
