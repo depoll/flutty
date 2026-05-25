@@ -243,19 +243,19 @@ void main() {
   });
 
   group('resolveTerminalUploadPickerRequest', () {
-    test('allows selecting multiple images for terminal uploads', () {
-      final request = resolveTerminalUploadPickerRequest(images: true);
+    test('allows selecting multiple images or videos for terminal uploads', () {
+      final request = resolveTerminalUploadPickerRequest(media: true);
 
-      expect(request.dialogTitle, 'Select images to upload');
-      expect(request.pickerType, FileType.image);
-      expect(request.itemLabelSingular, 'image');
-      expect(request.itemLabelPlural, 'images');
+      expect(request.dialogTitle, 'Select images or videos to upload');
+      expect(request.pickerType, FileType.media);
+      expect(request.itemLabelSingular, 'image or video');
+      expect(request.itemLabelPlural, 'images or videos');
       expect(request.allowMultiple, isTrue);
-      expect(request.failureContext, 'Image picker upload');
+      expect(request.failureContext, 'Media picker upload');
     });
 
     test('allows selecting multiple files for terminal uploads', () {
-      final request = resolveTerminalUploadPickerRequest(images: false);
+      final request = resolveTerminalUploadPickerRequest(media: false);
 
       expect(request.dialogTitle, 'Select files to upload');
       expect(request.pickerType, FileType.any);

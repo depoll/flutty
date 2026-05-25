@@ -233,7 +233,7 @@ class KeyboardToolbar extends StatefulWidget {
     this.onPasteRequested,
     this.onPasteMenuOpened,
     this.onSnippetPasteRequested,
-    this.onPasteImageRequested,
+    this.onPasteMediaRequested,
     this.onPasteFilesRequested,
     this.snippets = const <KeyboardToolbarSnippet>[],
     this.snippetFolders = const <KeyboardToolbarSnippetFolder>[],
@@ -260,8 +260,8 @@ class KeyboardToolbar extends StatefulWidget {
   final FutureOr<void> Function(KeyboardToolbarSnippet snippet)?
   onSnippetPasteRequested;
 
-  /// Optional callback when the Paste key's long-press image option is tapped.
-  final FutureOr<void> Function()? onPasteImageRequested;
+  /// Optional callback when the Paste key's long-press media option is tapped.
+  final FutureOr<void> Function()? onPasteMediaRequested;
 
   /// Optional callback when the Paste key's long-press file option is tapped.
   final FutureOr<void> Function()? onPasteFilesRequested;
@@ -644,7 +644,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
           child: _PasteOptionsMenu(
             highlightedAction: _highlightedPasteAction,
             snippetsEnabled: _areSnippetsEnabled,
-            imageEnabled: widget.onPasteImageRequested != null,
+            mediaEnabled: widget.onPasteMediaRequested != null,
             filesEnabled: widget.onPasteFilesRequested != null,
             snippetsTrailingIcon: layout.snippetMenuOpensLeft
                 ? Icons.chevron_left_rounded
@@ -836,7 +836,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   bool _isPasteActionEnabled(_PasteToolbarAction action) => switch (action) {
     _PasteToolbarAction.snippets => _areSnippetsEnabled,
-    _PasteToolbarAction.images => widget.onPasteImageRequested != null,
+    _PasteToolbarAction.media => widget.onPasteMediaRequested != null,
     _PasteToolbarAction.files => widget.onPasteFilesRequested != null,
   };
 
@@ -926,8 +926,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     switch (action) {
       case _PasteToolbarAction.snippets:
         _refocusTerminal();
-      case _PasteToolbarAction.images:
-        unawaited(_runToolbarAction(widget.onPasteImageRequested));
+      case _PasteToolbarAction.media:
+        unawaited(_runToolbarAction(widget.onPasteMediaRequested));
       case _PasteToolbarAction.files:
         unawaited(_runToolbarAction(widget.onPasteFilesRequested));
       case null:
@@ -1080,7 +1080,7 @@ enum _Modifier { ctrl, alt, shift }
 
 enum _Arrow { up, down, left, right }
 
-enum _PasteToolbarAction { snippets, images, files }
+enum _PasteToolbarAction { snippets, media, files }
 
 class _PasteMenuHit {
   const _PasteMenuHit({required this.action, this.folder, this.snippet});
@@ -1124,14 +1124,14 @@ class _PasteOptionsMenu extends StatelessWidget {
   const _PasteOptionsMenu({
     required this.highlightedAction,
     required this.snippetsEnabled,
-    required this.imageEnabled,
+    required this.mediaEnabled,
     required this.filesEnabled,
     required this.snippetsTrailingIcon,
   });
 
   final _PasteToolbarAction? highlightedAction;
   final bool snippetsEnabled;
-  final bool imageEnabled;
+  final bool mediaEnabled;
   final bool filesEnabled;
   final IconData snippetsTrailingIcon;
 
@@ -1149,10 +1149,10 @@ class _PasteOptionsMenu extends StatelessWidget {
           trailingIcon: snippetsTrailingIcon,
         ),
         _PasteOptionsMenuItem(
-          icon: Icons.image_outlined,
-          label: 'Paste Images',
-          enabled: imageEnabled,
-          highlighted: highlightedAction == _PasteToolbarAction.images,
+          icon: Icons.perm_media_outlined,
+          label: 'Paste Media',
+          enabled: mediaEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.media,
         ),
         _PasteOptionsMenuItem(
           icon: Icons.attach_file_rounded,
