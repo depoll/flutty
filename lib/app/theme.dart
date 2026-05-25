@@ -18,6 +18,7 @@ abstract final class FluttyTheme {
   static const _textSecondary = Color(0xFF8A8A9A);
   static const _errorColor = Color(0xFFFF4757);
   static const _warningColor = Color(0xFFFFBE00);
+  static const _androidPredictiveBackFallbackProbeColor = Color(0xFFFF00FF);
 
   // Light theme equivalents
   static const _backgroundLight = Color(0xFFF8F9FC);
@@ -497,8 +498,8 @@ abstract final class FluttyTheme {
   static PageTransitionsTheme _buildPageTransitionsTheme(Color background) =>
       PageTransitionsTheme(
         builders: <TargetPlatform, PageTransitionsBuilder>{
-          TargetPlatform.android: PredictiveBackPageTransitionsBuilder(
-            fallbackColor: background,
+          TargetPlatform.android: const PredictiveBackPageTransitionsBuilder(
+            fallbackColor: _androidPredictiveBackFallbackProbeColor,
           ),
           TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: const CupertinoPageTransitionsBuilder(),
