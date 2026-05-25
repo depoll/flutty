@@ -214,12 +214,8 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     );
     final colorScheme = theme.colorScheme;
     final previewTheme = terminalTheme;
-    final previewBackgroundBase = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
+    final previewBackgroundBase =
+        previewTheme?.background ?? colorScheme.surfaceContainerHighest;
     final previewTextColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
     final borderColor = Color.alphaBlend(
@@ -453,12 +449,8 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final previewTheme = entry.terminalTheme;
-    final backgroundColor = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
+    final backgroundColor =
+        previewTheme?.background ?? colorScheme.surfaceContainerHighest;
     final borderColor = Color.alphaBlend(
       (previewTheme?.cursor ?? colorScheme.primary).withAlpha(28),
       colorScheme.outlineVariant,
