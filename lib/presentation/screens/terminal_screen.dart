@@ -6608,7 +6608,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           installation,
           sessionName,
         );
-        final terminalThemeReports = buildTerminalThemeRefreshReports(
+        final terminalThemeReports = buildTerminalThemeHintReports(
           session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
         );
         if (!mounted) {
@@ -6883,7 +6883,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         installation,
         sessionName,
       );
-      final terminalThemeReports = buildTerminalThemeRefreshReports(
+      final terminalThemeReports = buildTerminalThemeHintReports(
         session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
       );
       attachCommand = buildMonkeyMuxAttachCommand(

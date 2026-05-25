@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.48"
+	monkeyMuxVersion                  = "0.1.49"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -1753,6 +1753,8 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var foregroundProcessGroup int
 	var themeHintData []byte
 	var themeHintWindowID string
+	var sendFocusTransition bool
+	var sendFocusRefresh bool
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
@@ -1770,17 +1772,21 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if window := s.windowByIDLocked(s.activeID); window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		if len(s.themeHint) > 0 {
-			themeHintData = themeHintResponsesForKeys(
-				s.themeHint,
-				window.themeHintRefreshKeysLocked(),
-			)
+			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
+			sendFocusTransition = window.themeHintFocusTransitionLocked()
+			sendFocusRefresh = !sendFocusTransition && window.themeHintFocusRefreshLocked()
 		}
 	}
 	s.mu.Unlock()
 	s.writeAttach(conn, replay)
 	if len(themeHintData) > 0 {
 		_ = s.writeWindow(themeHintWindowID, themeHintData)
+	}
+	if sendFocusTransition {
+		s.sendFocusTransition(themeHintWindowID)
+	} else if sendFocusRefresh {
+		s.sendFocusRefresh(themeHintWindowID)
 	}
 	s.broadcastWindowList("active_window_changed")
 	signalForegroundResize(foregroundProcessGroup)
@@ -2725,14 +2731,13 @@ func (s *muxServer) sendThemeHint(data string) bool {
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	if len(themeHint) > 0 {
-		themeHintData = themeHintResponsesForKeys(
-			themeHint,
-			window.themeHintRefreshKeysLocked(),
-		)
-	}
 	sendFocusTransition := window.themeHintFocusTransitionLocked()
-	if len(themeHintData) == 0 && !sendFocusTransition {
+	sendFocusRefresh := false
+	if len(themeHint) > 0 {
+		themeHintData = window.themeHintRefreshDataLocked(themeHint)
+		sendFocusRefresh = !sendFocusTransition && window.themeHintFocusRefreshLocked()
+	}
+	if len(themeHintData) == 0 && !sendFocusTransition && !sendFocusRefresh {
 		s.mu.Unlock()
 		return false
 	}
@@ -2746,6 +2751,8 @@ func (s *muxServer) sendThemeHint(data string) bool {
 	}
 	if sendFocusTransition {
 		s.sendFocusTransition(windowID)
+	} else if sendFocusRefresh {
+		s.sendFocusRefresh(windowID)
 	}
 	return true
 }
@@ -2764,6 +2771,10 @@ func (s *muxServer) sendFocusTransition(windowID string) {
 		time.Sleep(50 * time.Millisecond)
 		_ = s.writeWindow(windowID, []byte("\x1b[I"))
 	}()
+}
+
+func (s *muxServer) sendFocusRefresh(windowID string) {
+	_ = s.writeWindow(windowID, []byte("\x1b[I"))
 }
 
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
@@ -3196,7 +3207,9 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.themeHintFocusTransitionLocked() || len(w.themeHintRefreshKeysLocked()) > 0
+	return w.themeHintFocusTransitionLocked() ||
+		w.themeHintFocusRefreshLocked() ||
+		len(w.themeHintRefreshKeysLocked()) > 0
 }
 
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
@@ -3212,13 +3225,15 @@ func (w *muxWindow) supportsThemeHintLocked() bool {
 //
 // DEC private mode 2031 is the opt-in signal for color-scheme update
 // reports. Only windows that currently have that mode enabled get
-// refreshed replies for previously observed color queries, or a repaint
-// nudge when the client theme changes.
+// refreshed replies for previously observed color queries. Focus-aware TUIs
+// get a FocusIn nudge so they can re-query colors through the normal path.
+// Known agent TUIs also get the default background response they already
+// tolerate through the tmux refresh path.
 //
 // The contractually-correct live-query response path in
 // handleWindowOutput still answers OSC 10/11/4/17/19 queries the
-// foreground process actually emits. Other programs that truly need the
-// latest theme can re-query on SIGWINCH or real focus changes.
+// foreground process actually emits. Other focus-aware programs can re-query
+// after the FocusIn nudge instead of receiving unsolicited OSC bytes.
 func (w *muxWindow) themeHintRefreshKeysLocked() []string {
 	if !w.themeRefreshModeActiveLocked() {
 		return nil
@@ -3227,7 +3242,50 @@ func (w *muxWindow) themeHintRefreshKeysLocked() []string {
 }
 
 func (w *muxWindow) themeHintFocusTransitionLocked() bool {
-	return w.themeRefreshModeActiveLocked() && w.focusModeActiveLocked()
+	return (w.themeRefreshModeActiveLocked() && w.focusModeActiveLocked()) ||
+		w.agentThemeHintFocusTransitionLocked()
+}
+
+func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
+	var refreshKeys []string
+	refreshKeys = appendThemeQueryKeys(refreshKeys, w.themeHintRefreshKeysLocked())
+	refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
+	themeHintData := themeHintResponsesForKeys(themeHint, refreshKeys)
+	if w.agentThemeHintModeReportLocked() {
+		themeHintData = append(terminalThemeModeReportFromHint(themeHint), themeHintData...)
+	}
+	return themeHintData
+}
+
+func (w *muxWindow) themeHintFocusRefreshLocked() bool {
+	return w.focusModeActiveLocked()
+}
+
+func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
+	if !w.agentThemeHintRefreshLocked() {
+		return false
+	}
+	switch w.agentToolLocked() {
+	case "claude", "gemini", "opencode", "antigravity":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *muxWindow) agentThemeHintRefreshKeysLocked() []string {
+	if !w.agentThemeHintRefreshLocked() {
+		return nil
+	}
+	return []string{"11"}
+}
+
+func (w *muxWindow) agentThemeHintModeReportLocked() bool {
+	return w.agentThemeHintRefreshLocked() && w.agentToolLocked() == "copilot"
+}
+
+func (w *muxWindow) agentThemeHintRefreshLocked() bool {
+	return w.focusModeActiveLocked() && w.agentToolLocked() != ""
 }
 
 func (w *muxWindow) themeRefreshModeActiveLocked() bool {
@@ -3908,6 +3966,20 @@ func themeHintResponsesForKeys(hint []byte, keys []string) []byte {
 		output = append(output, response...)
 	}
 	return output
+}
+
+func terminalThemeModeReportFromHint(hint []byte) []byte {
+	const darkReport = "\x1b[?997;1n"
+	const lightReport = "\x1b[?997;2n"
+	darkIndex := bytes.Index(hint, []byte(darkReport))
+	lightIndex := bytes.Index(hint, []byte(lightReport))
+	if darkIndex < 0 && lightIndex < 0 {
+		return nil
+	}
+	if lightIndex < 0 || (darkIndex >= 0 && darkIndex < lightIndex) {
+		return []byte(darkReport)
+	}
+	return []byte(lightReport)
 }
 
 func themeHintResponseMap(hint []byte) map[string][]byte {
