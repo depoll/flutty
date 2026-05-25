@@ -89,6 +89,73 @@ func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
 	}
 }
 
+func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
+	base := []string{"USER=test"}
+
+	env := terminalEnvironment(base)
+
+	if !containsEnv(env, "TERM=xterm-256color") {
+		t.Fatalf("terminal environment = %#v, want TERM=xterm-256color", env)
+	}
+	if !containsEnv(env, "COLORTERM=truecolor") {
+		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
+	}
+	if !reflect.DeepEqual(base, []string{"USER=test"}) {
+		t.Fatalf("terminal environment mutated base = %#v", base)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
+	base := []string{
+		"TERM=screen-256color",
+		"COLORTERM=24bit",
+		"USER=test",
+	}
+
+	env := terminalEnvironment(base)
+
+	if !reflect.DeepEqual(env, base) {
+		t.Fatalf("terminal environment = %#v, want existing hints preserved", env)
+	}
+}
+
+func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
+	env := terminalEnvironment([]string{
+		"TERM=dumb",
+		"COLORTERM=color",
+		"USER=test",
+		"TERM=",
+		"COLORTERM=maybe",
+	})
+
+	if got := envValues(env, "TERM"); !reflect.DeepEqual(got, []string{"xterm-256color"}) {
+		t.Fatalf("TERM values = %#v in %#v, want only xterm-256color", got, env)
+	}
+	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"truecolor"}) {
+		t.Fatalf("COLORTERM values = %#v in %#v, want only truecolor", got, env)
+	}
+	if !containsEnv(env, "USER=test") {
+		t.Fatalf("terminal environment = %#v, want USER preserved", env)
+	}
+}
+
+func TestTerminalEnvironmentKeepsExistingUsableTerminalHints(t *testing.T) {
+	env := terminalEnvironment([]string{
+		"TERM=dumb",
+		"TERM=xterm-ghostty",
+		"COLORTERM=color",
+		"COLORTERM=24bit",
+		"USER=test",
+	})
+
+	if got := envValues(env, "TERM"); !reflect.DeepEqual(got, []string{"xterm-ghostty"}) {
+		t.Fatalf("TERM values = %#v in %#v, want only xterm-ghostty", got, env)
+	}
+	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"24bit"}) {
+		t.Fatalf("COLORTERM values = %#v in %#v, want only 24bit", got, env)
+	}
+}
+
 func TestExpandHomePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -141,6 +208,26 @@ func TestShellCommandForScriptUsesInteractiveLoginShellWithoutTypingCommand(t *t
 	if got := cmd.Args[3]; got != "codex --yolo" {
 		t.Fatalf("script = %q, want launch command", got)
 	}
+}
+
+func containsEnv(env []string, entry string) bool {
+	for _, candidate := range env {
+		if candidate == entry {
+			return true
+		}
+	}
+	return false
+}
+
+func envValues(env []string, key string) []string {
+	prefix := key + "="
+	values := []string{}
+	for _, candidate := range env {
+		if strings.HasPrefix(candidate, prefix) {
+			values = append(values, strings.TrimPrefix(candidate, prefix))
+		}
+	}
+	return values
 }
 
 func TestDefaultShellPathFallsBackToSh(t *testing.T) {
