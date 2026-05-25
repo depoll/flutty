@@ -2960,10 +2960,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final route = ModalRoute.of(context);
     final navigator = Navigator.maybeOf(context);
     final animation = route?.animation;
-    final terminalViewWidget = _terminalViewKey.currentWidget;
-    final terminalUseRepaintBoundary = terminalViewWidget is MonkeyTerminalView
-        ? terminalViewWidget.useRepaintBoundary
-        : null;
     final animationValue = animation?.value;
     final fields = <String, Object?>{
       'phase': phase,
@@ -2983,7 +2979,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       'tmuxBarExpanded': _isTmuxBarExpanded,
       'keyboardVisible': MediaQuery.viewInsetsOf(context).bottom > 0,
       'terminalViewMounted': _terminalViewKey.currentState != null,
-      'terminalUseRepaintBoundary': terminalUseRepaintBoundary,
     };
     if (didPop != null) {
       fields['didPop'] = didPop;
@@ -9708,7 +9703,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      useRepaintBoundary: !_isAndroidPlatform,
       // Let alt-buffer apps keep raw wheel events when they explicitly enable
       // mouse reporting, but fall back to synthetic arrows when they do not.
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
