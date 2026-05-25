@@ -4237,12 +4237,31 @@ func appendEnvironmentDefault(
 	valid func(string) bool,
 ) []string {
 	prefix := key + "="
+	defaultEntry := prefix + value
+	replacement := defaultEntry
 	for _, entry := range env {
 		if strings.HasPrefix(entry, prefix) && valid(strings.TrimPrefix(entry, prefix)) {
-			return env
+			replacement = entry
+			break
 		}
 	}
-	return append(env, prefix+value)
+
+	result := make([]string, 0, len(env)+1)
+	inserted := false
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+			continue
+		}
+		if !inserted {
+			result = append(result, replacement)
+			inserted = true
+		}
+	}
+	if !inserted {
+		result = append(result, defaultEntry)
+	}
+	return result
 }
 
 func terminalColorTermIsTrueColor(value string) bool {

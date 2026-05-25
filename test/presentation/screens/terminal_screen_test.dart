@@ -42,7 +42,8 @@ import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interfac
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-const _trueColorLoginShellCommand = r'exec env COLORTERM=truecolor "$SHELL" -l';
+const _trueColorLoginShellCommand =
+    r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
 void _stubTrueColorLoginShell(
   SSHClient client,

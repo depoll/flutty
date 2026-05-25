@@ -1144,7 +1144,7 @@ void main() {
       expect(result, same(shell));
       verify(
         () => client.execute(
-          r'exec env COLORTERM=truecolor "$SHELL" -l',
+          r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
           pty: pty,
         ),
       ).called(1);
@@ -1171,7 +1171,7 @@ void main() {
 
         when(
           () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenThrow(SSHChannelRequestError('Failed to execute'));
+        ).thenThrow(SSHChannelRequestError('exec request rejected'));
         when(
           () => client.shell(pty: any(named: 'pty')),
         ).thenAnswer((_) async => shell);
@@ -1184,7 +1184,7 @@ void main() {
         expect(result, same(shell));
         verify(
           () => client.execute(
-            r'exec env COLORTERM=truecolor "$SHELL" -l',
+            r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
             pty: pty,
           ),
         ).called(1);

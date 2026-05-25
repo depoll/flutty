@@ -40,9 +40,10 @@ class _SshSessionRuntime {
   static const _maxTerminalOutputFlushChars = 64 * 1024;
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM. Launch the
   // user's login shell with the hint instead of relying on server-gated env
-  // requests that OpenSSH commonly rejects by default.
+  // requests that OpenSSH commonly rejects by default. Keep the outer command
+  // parseable by common non-POSIX login shells; /bin/sh handles the fallback.
   static const _trueColorLoginShellCommand =
-      r'exec env COLORTERM=truecolor "$SHELL" -l';
+      r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
   /// UTF-8 decoder that tolerates malformed bytes by emitting U+FFFD instead
   /// of throwing a [FormatException]. The shell stream carries raw terminal
@@ -173,10 +174,7 @@ class _SshSessionRuntime {
         _trueColorLoginShellCommand,
         pty: ptyConfig,
       );
-    } on SSHChannelRequestError catch (error) {
-      if (error.message != 'Failed to execute') {
-        rethrow;
-      }
+    } on SSHChannelRequestError {
       DiagnosticsLogService.instance.warning(
         'ssh.shell',
         'truecolor_bootstrap_rejected',
