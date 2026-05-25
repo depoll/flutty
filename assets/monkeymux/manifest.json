@@ -1,9 +1,9 @@
 {
-  "version": "0.1.46",
+  "version": "0.1.47",
   "entries": [
-    {"platform":"darwin-amd64","asset":"assets/monkeymux/bin/darwin-amd64/monkeymux.gz","encoding":"gzip","sha256":"041167e49219cfd0fcbcced7e1b37d9f21c94af6bc4c3d247ce06f2556007129","size":3693664},
-    {"platform":"darwin-arm64","asset":"assets/monkeymux/bin/darwin-arm64/monkeymux.gz","encoding":"gzip","sha256":"33287c4daab0e4ea87bbac0a6605ce95d03da4ca75579b71006e0c5a9f5689e8","size":3487282},
-    {"platform":"linux-amd64","asset":"assets/monkeymux/bin/linux-amd64/monkeymux.gz","encoding":"gzip","sha256":"0c484fcaf3fd581292272bbf1b47481bb56b3154cb7bada3f5284138aba9d71d","size":3637410},
-    {"platform":"linux-arm64","asset":"assets/monkeymux/bin/linux-arm64/monkeymux.gz","encoding":"gzip","sha256":"68f21e6f70ac7fb622e6f55b148f1c75d432ab7239299b98d18a1a3c7d3b3f0f","size":3473570}
+    {"platform":"darwin-amd64","asset":"assets/monkeymux/bin/darwin-amd64/monkeymux.gz","encoding":"gzip","sha256":"b022c225b892c098984e2a8b19bdb05176ba752deb64f46a7a249a0e10599112","size":3693680},
+    {"platform":"darwin-arm64","asset":"assets/monkeymux/bin/darwin-arm64/monkeymux.gz","encoding":"gzip","sha256":"1d7bd7cae73844a0aacf90c0ce6bbbd0d40c04adf3a009b1f964b082f2d2cca5","size":3503794},
+    {"platform":"linux-amd64","asset":"assets/monkeymux/bin/linux-amd64/monkeymux.gz","encoding":"gzip","sha256":"7ceeca4de91d17491b48e25981b69a427ac2f258e641bdac6ac7458fdb06c5d2","size":3637410},
+    {"platform":"linux-arm64","asset":"assets/monkeymux/bin/linux-arm64/monkeymux.gz","encoding":"gzip","sha256":"1b378d00cb36e195e9602e35e33f0f227cd3e13fd30e2f3aac80b754148bb71a","size":3473570}
   ]
 }

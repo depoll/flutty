@@ -13,10 +13,12 @@ structured state and commands belong on the control backchannel.
 `attach` is the only command that starts a session server. Optional `--cwd`,
 `--name`, and `--command` flags seed the initial window only when a new server
 is created, so MonkeySSH can launch a coding agent without creating a duplicate
-window on reconnect. The server and its windows inherit the environment from
-the shell that launched `attach` exactly, so profile-managed values such as
-`PATH`, `TERM`, and tool-specific variables remain user-owned instead of being
-synthesized by MonkeyMux.
+window on reconnect. The server inherits the environment from the shell that
+launched `attach` exactly, so profile-managed values such as `PATH` and
+tool-specific variables remain user-owned. PTY windows inherit that environment
+and add terminal defaults such as `TERM=xterm-256color` and
+`COLORTERM=truecolor` only when the launch environment does not already provide
+usable terminal hints.
 
 Window switching and reconnect repaint from a bounded raw byte history for the
 selected window. MonkeyMux still does not parse terminal state; the history is
