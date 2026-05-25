@@ -532,6 +532,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.onInsertText,
     this.onPasteText,
     this.inlineUnderlines = const <TerminalTextUnderline>[],
+    this.useRepaintBoundary = true,
   });
 
   /// The underlying terminal that this widget renders.
@@ -684,6 +685,13 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// Cell ranges that should be painted with inline text underlines.
   final List<TerminalTextUnderline> inlineUnderlines;
+
+  /// Whether to isolate the terminal viewport in its own repaint boundary.
+  ///
+  /// Android predictive-back route transforms need the terminal to paint into
+  /// the route layer; an isolated changing layer can be replaced by a blank
+  /// surface while the route is being scaled.
+  final bool useRepaintBoundary;
 
   @override
   State<MonkeyTerminalView> createState() => MonkeyTerminalViewState();
@@ -941,6 +949,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           onEditableRect: _onEditableRect,
           composingText: _composingText,
           selectionRegistrar: SelectionContainer.maybeOf(context),
+          useRepaintBoundary: widget.useRepaintBoundary,
         );
         return Builder(builder: buildTerminalLeaf);
       },
@@ -1450,6 +1459,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     this.onEditableRect,
     this.composingText,
     this.selectionRegistrar,
+    required this.useRepaintBoundary,
   });
 
   final Terminal terminal;
@@ -1488,6 +1498,8 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final SelectionRegistrar? selectionRegistrar;
 
+  final bool useRepaintBoundary;
+
   @override
   MonkeyRenderTerminal createRenderObject(BuildContext context) {
     return MonkeyRenderTerminal(
@@ -1509,6 +1521,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       onEditableRect: onEditableRect,
       composingText: composingText,
       selectionRegistrar: selectionRegistrar,
+      useRepaintBoundary: useRepaintBoundary,
     );
   }
 
@@ -1535,7 +1548,8 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..alwaysShowCursor = alwaysShowCursor
       ..onEditableRect = onEditableRect
       ..composingText = composingText
-      ..selectionRegistrar = selectionRegistrar;
+      ..selectionRegistrar = selectionRegistrar
+      ..useRepaintBoundary = useRepaintBoundary;
   }
 }
 
@@ -2143,6 +2157,7 @@ class MonkeyRenderTerminal extends RenderBox
     EditableRectCallback? onEditableRect,
     String? composingText,
     SelectionRegistrar? selectionRegistrar,
+    required bool useRepaintBoundary,
   }) : _terminal = terminal,
        _controller = controller,
        _offset = offset,
@@ -2157,6 +2172,7 @@ class MonkeyRenderTerminal extends RenderBox
        _alwaysShowCursor = alwaysShowCursor,
        _onEditableRect = onEditableRect,
        _composingText = composingText,
+       _useRepaintBoundary = useRepaintBoundary,
        _selectionGeometry = SelectionGeometry(
          status: SelectionStatus.none,
          hasContent: terminal.buffer.lines.length > 0,
@@ -2395,8 +2411,19 @@ class MonkeyRenderTerminal extends RenderBox
     markNeedsLayout();
   }
 
+  bool _useRepaintBoundary;
+
+  set useRepaintBoundary(bool value) {
+    if (value == _useRepaintBoundary) {
+      return;
+    }
+    _useRepaintBoundary = value;
+    markNeedsCompositingBitsUpdate();
+    markNeedsPaint();
+  }
+
   @override
-  final isRepaintBoundary = true;
+  bool get isRepaintBoundary => _useRepaintBoundary;
 
   @override
   void attach(PipelineOwner owner) {
@@ -3349,7 +3376,9 @@ class MonkeyRenderTerminal extends RenderBox
   @override
   void paint(PaintingContext context, Offset offset) {
     _paint(context, offset);
-    context.setWillChangeHint();
+    if (_useRepaintBoundary) {
+      context.setWillChangeHint();
+    }
   }
 
   void _paint(PaintingContext context, Offset offset) {

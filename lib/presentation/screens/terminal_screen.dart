@@ -9624,6 +9624,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
+      useRepaintBoundary: !_isAndroidPlatform,
       // Let alt-buffer apps keep raw wheel events when they explicitly enable
       // mouse reporting, but fall back to synthetic arrows when they do not.
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(

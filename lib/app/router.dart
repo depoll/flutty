@@ -246,10 +246,10 @@ HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   _ => HomeScreenTab.hosts,
 };
 
-_LiveMaterialPage<void> _buildTerminalPage({
+MaterialPage<void> _buildTerminalPage({
   required GoRouterState state,
   required Widget child,
-}) => _LiveMaterialPage<void>(
+}) => MaterialPage<void>(
   key: state.pageKey,
   name: state.name ?? state.path,
   arguments: <String, String>{
@@ -257,52 +257,9 @@ _LiveMaterialPage<void> _buildTerminalPage({
     ...state.uri.queryParameters,
   },
   restorationId: state.pageKey.value,
+  allowSnapshotting: false,
   child: child,
 );
-
-class _LiveMaterialPage<T> extends Page<T> {
-  const _LiveMaterialPage({
-    required this.child,
-    this.maintainState = true,
-    this.fullscreenDialog = false,
-    super.key,
-    super.name,
-    super.arguments,
-    super.restorationId,
-  });
-
-  final Widget child;
-  final bool maintainState;
-  final bool fullscreenDialog;
-
-  @override
-  Route<T> createRoute(BuildContext context) =>
-      _LiveMaterialPageRoute<T>(page: this);
-}
-
-class _LiveMaterialPageRoute<T> extends PageRoute<T>
-    with MaterialRouteTransitionMixin<T> {
-  _LiveMaterialPageRoute({required _LiveMaterialPage<T> page})
-    : super(
-        settings: page,
-        fullscreenDialog: page.fullscreenDialog,
-        allowSnapshotting: false,
-      );
-
-  _LiveMaterialPage<T> get _page => settings as _LiveMaterialPage<T>;
-
-  @override
-  bool get opaque => false;
-
-  @override
-  bool get maintainState => _page.maintainState;
-
-  @override
-  Widget buildContent(BuildContext context) => _page.child;
-
-  @override
-  String get debugLabel => '${super.debugLabel}(${settings.name})';
-}
 
 CustomTransitionPage<T> _buildSlideUpPage<T>({
   required LocalKey key,
