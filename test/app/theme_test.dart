@@ -72,7 +72,7 @@ void main() {
       expect(theme.colorScheme.onSurface, overrideTheme.foreground);
     });
 
-    test('uses fullscreen predictive back transitions on Android', () {
+    test('uses shared-element predictive back transitions on Android', () {
       const terminalThemeSettings = TerminalThemeSettings(
         lightThemeId: TerminalThemes.defaultLightThemeId,
         darkThemeId: TerminalThemes.defaultDarkThemeId,
@@ -89,10 +89,10 @@ void main() {
       for (final theme in themes) {
         final builder =
             theme.pageTransitionsTheme.builders[TargetPlatform.android];
-        expect(builder, isA<PredictiveBackFullscreenPageTransitionsBuilder>());
-        final fullscreenBuilder =
-            builder! as PredictiveBackFullscreenPageTransitionsBuilder;
-        expect(fullscreenBuilder.fallbackColor, theme.scaffoldBackgroundColor);
+        expect(builder, isA<PredictiveBackPageTransitionsBuilder>());
+        final predictiveBuilder =
+            builder! as PredictiveBackPageTransitionsBuilder;
+        expect(predictiveBuilder.fallbackColor, theme.scaffoldBackgroundColor);
       }
     });
 

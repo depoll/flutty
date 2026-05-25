@@ -497,10 +497,9 @@ abstract final class FluttyTheme {
   static PageTransitionsTheme _buildPageTransitionsTheme(Color background) =>
       PageTransitionsTheme(
         builders: <TargetPlatform, PageTransitionsBuilder>{
-          TargetPlatform.android:
-              PredictiveBackFullscreenPageTransitionsBuilder(
-                fallbackColor: background,
-              ),
+          TargetPlatform.android: PredictiveBackPageTransitionsBuilder(
+            fallbackColor: background,
+          ),
           TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: const CupertinoPageTransitionsBuilder(),
           TargetPlatform.windows: ZoomPageTransitionsBuilder(
