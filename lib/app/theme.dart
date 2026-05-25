@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -199,6 +200,7 @@ abstract final class FluttyTheme {
       colorScheme: colorScheme,
       textTheme: textTheme,
       scaffoldBackgroundColor: background,
+      pageTransitionsTheme: _buildPageTransitionsTheme(background),
 
       // App bar with subtle blur effect vibe
       appBarTheme: AppBarTheme(
@@ -491,6 +493,24 @@ abstract final class FluttyTheme {
       ),
     );
   }
+
+  static PageTransitionsTheme _buildPageTransitionsTheme(Color background) =>
+      PageTransitionsTheme(
+        builders: <TargetPlatform, PageTransitionsBuilder>{
+          TargetPlatform.android:
+              PredictiveBackFullscreenPageTransitionsBuilder(
+                fallbackColor: background,
+              ),
+          TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: const CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(
+            backgroundColor: background,
+          ),
+          TargetPlatform.linux: ZoomPageTransitionsBuilder(
+            backgroundColor: background,
+          ),
+        },
+      );
 
   static TextTheme _interTextTheme(TextTheme textTheme) =>
       debugUseSystemFonts ? textTheme : GoogleFonts.interTextTheme(textTheme);
