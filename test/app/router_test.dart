@@ -272,7 +272,7 @@ void main() {
       final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
 
       expect(route, isA<PageRoute<void>>());
-      expect(route.opaque, isTrue);
+      expect(route.opaque, isFalse);
       expect(route.allowSnapshotting, isFalse);
     });
 
