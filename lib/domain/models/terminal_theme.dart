@@ -21,6 +21,11 @@ String buildTerminalThemeModeReport({required bool isDark}) =>
 String buildTerminalThemeRefreshReports(TerminalThemeData theme) =>
     buildTerminalThemeRefreshReportList(theme).join();
 
+/// Builds terminal theme hints sent to MonkeyMux attach/control channels.
+String buildTerminalThemeHintReports(TerminalThemeData theme) =>
+    buildTerminalThemeModeReport(isDark: theme.isDark) +
+    buildTerminalThemeRefreshReports(theme);
+
 /// Builds safe unsolicited color reports as individual escape sequences.
 ///
 /// These entries are useful for tests and call sites that need to inspect or
