@@ -8745,6 +8745,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       canPop: !_isTmuxBarExpanded,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
+          _clearAppThemeOverride();
           return;
         }
         _collapseTmuxBarIfExpanded();
