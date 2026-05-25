@@ -727,7 +727,8 @@ class PersistentPredictiveBackPageTransitionsBuilder
   ) => _AndroidBackGestureDetector(
     route: route,
     builder: (context, phase, startBackEvent, currentBackEvent) {
-      if (route.popGestureInProgress) {
+      if (route.popGestureInProgress ||
+          animation.status == AnimationStatus.reverse) {
         return _PersistentPredictiveBackTransition(
           animation: animation,
           phase: phase,
@@ -891,11 +892,15 @@ class _PersistentPredictiveBackTransitionState
       return _lastProgress = clampDouble(currentProgress, 0, 1);
     }
 
+    final animationProgress = clampDouble(1 - widget.animation.value, 0, 1);
     if (widget.phase == _AndroidBackPhase.commit) {
+      if (animationProgress > _lastProgress) {
+        _lastProgress = animationProgress;
+      }
       return _lastProgress;
     }
 
-    return _lastProgress = clampDouble(1 - widget.animation.value, 0, 1);
+    return _lastProgress = animationProgress;
   }
 
   double _verticalDrag(Size size, double progress) {
