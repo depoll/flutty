@@ -329,7 +329,7 @@ void main() {
     testWidgets('Paste long press opens an anchored drag-release menu', (
       tester,
     ) async {
-      var imagePasteCount = 0;
+      var mediaPasteCount = 0;
       var filePasteCount = 0;
 
       await tester.pumpWidget(
@@ -340,7 +340,7 @@ void main() {
                 const Spacer(),
                 KeyboardToolbar(
                   terminal: terminal,
-                  onPasteImageRequested: () async => imagePasteCount++,
+                  onPasteMediaRequested: () async => mediaPasteCount++,
                   onPasteFilesRequested: () async => filePasteCount++,
                 ),
               ],
@@ -354,21 +354,21 @@ void main() {
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump();
 
-      expect(find.text('Paste Images'), findsOneWidget);
+      expect(find.text('Paste Media'), findsOneWidget);
       expect(find.text('Paste Files'), findsOneWidget);
       expect(
-        tester.getCenter(find.text('Paste Images')).dy,
+        tester.getCenter(find.text('Paste Media')).dy,
         lessThan(pasteCenter.dy),
       );
 
-      await gesture.moveTo(tester.getCenter(find.text('Paste Images')));
+      await gesture.moveTo(tester.getCenter(find.text('Paste Media')));
       await tester.pump();
       await gesture.up();
       await tester.pump();
 
-      expect(imagePasteCount, 1);
+      expect(mediaPasteCount, 1);
       expect(filePasteCount, 0);
-      expect(find.text('Paste Images'), findsNothing);
+      expect(find.text('Paste Media'), findsNothing);
       expect(find.text('Paste Files'), findsNothing);
     });
 
@@ -381,7 +381,7 @@ void main() {
                 const Spacer(),
                 KeyboardToolbar(
                   terminal: terminal,
-                  onPasteImageRequested: () async {},
+                  onPasteMediaRequested: () async {},
                   onPasteFilesRequested: () async {},
                 ),
               ],
@@ -395,11 +395,11 @@ void main() {
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump();
 
-      final pasteImages = find.text('Paste Images');
+      final pasteMedia = find.text('Paste Media');
       final menuMaterial = tester.widget<Material>(
-        find.ancestor(of: pasteImages, matching: find.byType(Material)).first,
+        find.ancestor(of: pasteMedia, matching: find.byType(Material)).first,
       );
-      final menuContext = tester.element(pasteImages);
+      final menuContext = tester.element(pasteMedia);
 
       expect(menuMaterial.color, TerminalMenuStyles.surfaceColor(menuContext));
       expect(menuMaterial.elevation, TerminalMenuStyles.elevation);
