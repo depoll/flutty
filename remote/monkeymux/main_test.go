@@ -120,13 +120,39 @@ func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
 }
 
 func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
-	env := terminalEnvironment([]string{"TERM=dumb", "COLORTERM=color", "USER=test"})
+	env := terminalEnvironment([]string{
+		"TERM=dumb",
+		"COLORTERM=color",
+		"USER=test",
+		"TERM=",
+		"COLORTERM=maybe",
+	})
 
-	if got := lastEnvValue(env, "TERM"); got != "xterm-256color" {
-		t.Fatalf("TERM = %q in %#v, want xterm-256color", got, env)
+	if got := envValues(env, "TERM"); !reflect.DeepEqual(got, []string{"xterm-256color"}) {
+		t.Fatalf("TERM values = %#v in %#v, want only xterm-256color", got, env)
 	}
-	if got := lastEnvValue(env, "COLORTERM"); got != "truecolor" {
-		t.Fatalf("COLORTERM = %q in %#v, want truecolor", got, env)
+	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"truecolor"}) {
+		t.Fatalf("COLORTERM values = %#v in %#v, want only truecolor", got, env)
+	}
+	if !containsEnv(env, "USER=test") {
+		t.Fatalf("terminal environment = %#v, want USER preserved", env)
+	}
+}
+
+func TestTerminalEnvironmentKeepsExistingUsableTerminalHints(t *testing.T) {
+	env := terminalEnvironment([]string{
+		"TERM=dumb",
+		"TERM=xterm-ghostty",
+		"COLORTERM=color",
+		"COLORTERM=24bit",
+		"USER=test",
+	})
+
+	if got := envValues(env, "TERM"); !reflect.DeepEqual(got, []string{"xterm-ghostty"}) {
+		t.Fatalf("TERM values = %#v in %#v, want only xterm-ghostty", got, env)
+	}
+	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"24bit"}) {
+		t.Fatalf("COLORTERM values = %#v in %#v, want only 24bit", got, env)
 	}
 }
 
@@ -193,15 +219,15 @@ func containsEnv(env []string, entry string) bool {
 	return false
 }
 
-func lastEnvValue(env []string, key string) string {
+func envValues(env []string, key string) []string {
 	prefix := key + "="
-	value := ""
+	values := []string{}
 	for _, candidate := range env {
 		if strings.HasPrefix(candidate, prefix) {
-			value = strings.TrimPrefix(candidate, prefix)
+			values = append(values, strings.TrimPrefix(candidate, prefix))
 		}
 	}
-	return value
+	return values
 }
 
 func TestDefaultShellPathFallsBackToSh(t *testing.T) {
