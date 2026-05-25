@@ -1136,9 +1136,6 @@ void main() {
       when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
       _stubTrueColorLoginShell(sshClient, shellChannel);
       when(
-        () => sshClient.shell(pty: any(named: 'pty')),
-      ).thenAnswer((_) async => shellChannel);
-      when(
         () => shellChannel.stdout,
       ).thenAnswer((_) => shellStdoutController.stream);
       when(
