@@ -64,6 +64,13 @@ class TerminalAppThemeOverrideNotifier
       state = null;
     }
   }
+
+  /// Clears any active terminal app-theme override.
+  void clear() {
+    if (state != null) {
+      state = null;
+    }
+  }
 }
 
 /// Service for managing terminal themes.

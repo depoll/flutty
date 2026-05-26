@@ -114,7 +114,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     try {
       await router.push(route);
     } finally {
-      _isOpeningTerminalRoute = false;
+      if (mounted) {
+        ref.read(terminalAppThemeOverrideProvider.notifier).clear();
+        setState(() => _isOpeningTerminalRoute = false);
+      } else {
+        _isOpeningTerminalRoute = false;
+      }
     }
   }
 
