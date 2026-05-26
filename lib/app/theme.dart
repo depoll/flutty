@@ -805,13 +805,13 @@ class _AndroidBackGestureDetectorState
 
   @override
   bool handleStartBackGesture(PredictiveBackEvent backEvent) {
+    _setPhase(_AndroidBackPhase.start);
     final gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
     if (!gestureInProgress) {
       return false;
     }
 
     _predictiveBackActive = true;
-    _setPhase(_AndroidBackPhase.start);
     widget.route.handleStartBackGesture(progress: 1 - backEvent.progress);
     _setStartEvent(backEvent);
     _setCurrentEvent(backEvent);
