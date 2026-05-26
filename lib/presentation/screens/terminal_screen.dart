@@ -2921,6 +2921,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
+  String? _lastAndroidPredictiveBackDiagnosticsKey;
+  String? _lastAndroidTerminalContentDiagnosticsKey;
+  bool _androidPredictiveBackPostFrameDiagnosticsQueued = false;
 
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
@@ -2928,6 +2931,121 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool get _isAndroidPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  void _queueAndroidPredictiveBackPostFrameDiagnostics(BuildContext context) {
+    if (!_isAndroidPlatform ||
+        _androidPredictiveBackPostFrameDiagnosticsQueued) {
+      return;
+    }
+    _androidPredictiveBackPostFrameDiagnosticsQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _androidPredictiveBackPostFrameDiagnosticsQueued = false;
+      if (!mounted || !context.mounted) {
+        return;
+      }
+      _logAndroidPredictiveBackDiagnostics(
+        context,
+        phase: 'post_frame',
+        includeGestureEnabled: true,
+      );
+    });
+  }
+
+  void _logAndroidPredictiveBackDiagnostics(
+    BuildContext context, {
+    required String phase,
+    bool? didPop,
+    bool includeGestureEnabled = false,
+  }) {
+    if (!_isAndroidPlatform) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    final navigator = Navigator.maybeOf(context);
+    final animation = route?.animation;
+    final animationValue = animation?.value;
+    final fields = <String, Object?>{
+      'phase': phase,
+      'routePopGestureInProgress': route?.popGestureInProgress,
+      if (includeGestureEnabled)
+        'routePopGestureEnabled': route?.popGestureEnabled,
+      'routeIsCurrent': route?.isCurrent,
+      'routeCanPop': route?.canPop,
+      'routePopDisposition': route?.popDisposition,
+      'navigatorUserGestureInProgress': navigator?.userGestureInProgress,
+      'navigatorCanPop': navigator?.canPop(),
+      'animationStatus': animation?.status,
+      if (animationValue case final animationValue?)
+        'animationPermille': (animationValue * 1000).round(),
+      if (animationValue case final animationValue?)
+        'animationBucket': (animationValue * 20).round(),
+      'tmuxBarExpanded': _isTmuxBarExpanded,
+      'keyboardVisible': MediaQuery.viewInsetsOf(context).bottom > 0,
+      'terminalViewMounted': _terminalViewKey.currentState != null,
+    };
+    if (didPop != null) {
+      fields['didPop'] = didPop;
+    }
+    final key = fields.entries
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join('|');
+    if (key == _lastAndroidPredictiveBackDiagnosticsKey) {
+      return;
+    }
+    _lastAndroidPredictiveBackDiagnosticsKey = key;
+    DiagnosticsLogService.instance.debug(
+      'android.back',
+      'terminal_route_state',
+      fields: fields,
+    );
+  }
+
+  void _logAndroidTerminalContentDiagnostics(
+    BuildContext context, {
+    required String branch,
+    required SshConnectionState connectionState,
+    required bool showsDisconnectedOverlay,
+    required bool hasOverlayMessage,
+    required bool isMobile,
+  }) {
+    if (!_isAndroidPlatform) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    final navigator = Navigator.maybeOf(context);
+    final animation = route?.animation;
+    final animationValue = animation?.value;
+    final fields = <String, Object?>{
+      'branch': branch,
+      'isConnecting': _isConnecting,
+      'hasConnectionId': _connectionId != null,
+      'connectionState': connectionState,
+      'hasOverlayMessage': hasOverlayMessage,
+      'showsDisconnectedOverlay': showsDisconnectedOverlay,
+      'hasShell': _shell != null,
+      'isTmuxActive': _isTmuxActive,
+      'isMobile': isMobile,
+      'routePopGestureInProgress': route?.popGestureInProgress,
+      'routeIsCurrent': route?.isCurrent,
+      'navigatorUserGestureInProgress': navigator?.userGestureInProgress,
+      'animationStatus': animation?.status,
+      if (animationValue case final animationValue?)
+        'animationBucket': (animationValue * 20).round(),
+      'terminalViewMounted': _terminalViewKey.currentState != null,
+    };
+    final key = fields.entries
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join('|');
+    if (key == _lastAndroidTerminalContentDiagnosticsKey) {
+      return;
+    }
+    _lastAndroidTerminalContentDiagnosticsKey = key;
+    DiagnosticsLogService.instance.debug(
+      'android.back',
+      'terminal_content_state',
+      fields: fields,
+    );
+  }
 
   bool get _hasExpandedNativeOverlaySelection =>
       _isNativeSelectionMode &&
@@ -8666,6 +8784,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    if (_isAndroidPlatform) {
+      _logAndroidPredictiveBackDiagnostics(context, phase: 'build');
+      _queueAndroidPredictiveBackPostFrameDiagnostics(context);
+    }
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
@@ -8722,6 +8844,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return PopScope(
       canPop: !_isTmuxBarExpanded,
       onPopInvokedWithResult: (didPop, _) {
+        _logAndroidPredictiveBackDiagnostics(
+          context,
+          phase: 'pop_invoked',
+          didPop: didPop,
+        );
         if (didPop) {
           _clearAppThemeOverride();
           return;
@@ -9501,6 +9628,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : _error;
 
     if (_isConnecting) {
+      _logAndroidTerminalContentDiagnostics(
+        context,
+        branch: 'connecting',
+        connectionState: connectionState,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+        hasOverlayMessage: overlayMessage != null,
+        isMobile: isMobile,
+      );
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -9514,6 +9649,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (overlayMessage != null && _connectionId == null) {
+      _logAndroidTerminalContentDiagnostics(
+        context,
+        branch: 'initial_error',
+        connectionState: connectionState,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+        hasOverlayMessage: true,
+        isMobile: isMobile,
+      );
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -9694,6 +9837,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (!isMobile) {
+      _logAndroidTerminalContentDiagnostics(
+        context,
+        branch: overlayMessage == null ? 'terminal' : 'terminal_with_overlay',
+        connectionState: connectionState,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+        hasOverlayMessage: overlayMessage != null,
+        isMobile: isMobile,
+      );
       return overlayMessage == null
           ? terminalView
           : _buildConnectionIssueOverlay(
@@ -9769,6 +9920,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
+    _logAndroidTerminalContentDiagnostics(
+      context,
+      branch: overlayMessage == null
+          ? 'mobile_terminal'
+          : 'mobile_terminal_with_overlay',
+      connectionState: connectionState,
+      showsDisconnectedOverlay: showsDisconnectedOverlay,
+      hasOverlayMessage: overlayMessage != null,
+      isMobile: isMobile,
+    );
     return terminalViewWithInput;
   }
 

@@ -1,14 +1,18 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/app/router.dart';
+import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 
 class _MockAuthService extends Mock implements AuthService {}
+
+class _MockBuildContext extends Mock implements BuildContext {}
 
 void main() {
   group('redirectForAuthState', () {
@@ -242,6 +246,34 @@ void main() {
     test('returns a GoRouter instance', () {
       final router = container.read(routerProvider);
       expect(router, isA<GoRouter>());
+    });
+
+    test('terminal route animates the live page during transitions', () {
+      final router = container.read(routerProvider);
+      final terminalRoute = router.configuration.routes
+          .whereType<GoRoute>()
+          .singleWhere((route) => route.name == Routes.terminal);
+
+      final page = terminalRoute.pageBuilder!(
+        _MockBuildContext(),
+        GoRouterState(
+          router.configuration,
+          uri: Uri.parse('/terminal/1?connectionId=7'),
+          matchedLocation: '/terminal/1',
+          name: Routes.terminal,
+          path: '/terminal/:hostId',
+          fullPath: '/terminal/:hostId',
+          pathParameters: const {'hostId': '1'},
+          pageKey: const ValueKey<String>('/terminal/:hostId'),
+          topRoute: terminalRoute,
+        ),
+      );
+
+      final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
+
+      expect(route, isA<PageRoute<void>>());
+      expect(route.opaque, isFalse);
+      expect(route.allowSnapshotting, isFalse);
     });
 
     test('intentionally returns a new GoRouter instance when authState changes '
