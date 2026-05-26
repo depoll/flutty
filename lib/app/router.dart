@@ -62,7 +62,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/terminal/:hostId',
         name: Routes.terminal,
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
@@ -74,28 +74,36 @@ final routerProvider = Provider<GoRouter>((ref) {
           );
           final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           if (hostId == null) {
-            return const Scaffold(body: Center(child: Text('Invalid host ID')));
-          }
-          return TerminalScreen(
-            key: ValueKey<Object>(
-              Object.hash(
-                hostId,
-                connectionId,
-                initialTmuxSessionName,
-                initialTmuxWindowIndex,
-                initialTmuxWindowId,
-                state.uri.queryParameters['notificationTap'],
+            return _buildTerminalPage(
+              state: state,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid host ID')),
               ),
+            );
+          }
+          return _buildTerminalPage(
+            state: state,
+            child: TerminalScreen(
+              key: ValueKey<Object>(
+                Object.hash(
+                  hostId,
+                  connectionId,
+                  initialTmuxSessionName,
+                  initialTmuxWindowIndex,
+                  initialTmuxWindowId,
+                  state.uri.queryParameters['notificationTap'],
+                ),
+              ),
+              hostId: hostId,
+              connectionId: connectionId,
+              initialTmuxSessionName: initialTmuxSessionName,
+              initialTmuxWindowIndex: initialTmuxWindowIndex,
+              initialTmuxWindowId: initialTmuxWindowId,
+              initialTmuxWindowRequiresVisibleSession:
+                  state.uri.queryParameters['notificationTap'] != null,
+              initiallyExpandTmuxWindows:
+                  state.uri.queryParameters['expandTmux'] == '1',
             ),
-            hostId: hostId,
-            connectionId: connectionId,
-            initialTmuxSessionName: initialTmuxSessionName,
-            initialTmuxWindowIndex: initialTmuxWindowIndex,
-            initialTmuxWindowId: initialTmuxWindowId,
-            initialTmuxWindowRequiresVisibleSession:
-                state.uri.queryParameters['notificationTap'] != null,
-            initiallyExpandTmuxWindows:
-                state.uri.queryParameters['expandTmux'] == '1',
           );
         },
       ),
@@ -237,6 +245,64 @@ HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   'connections' => HomeScreenTab.connections,
   _ => HomeScreenTab.hosts,
 };
+
+_LiveMaterialPage<void> _buildTerminalPage({
+  required GoRouterState state,
+  required Widget child,
+}) => _LiveMaterialPage<void>(
+  key: state.pageKey,
+  name: state.name ?? state.path,
+  arguments: <String, String>{
+    ...state.pathParameters,
+    ...state.uri.queryParameters,
+  },
+  restorationId: state.pageKey.value,
+  child: child,
+);
+
+class _LiveMaterialPage<T> extends Page<T> {
+  const _LiveMaterialPage({
+    required this.child,
+    this.maintainState = true,
+    this.fullscreenDialog = false,
+    super.key,
+    super.name,
+    super.arguments,
+    super.restorationId,
+  });
+
+  final Widget child;
+  final bool maintainState;
+  final bool fullscreenDialog;
+
+  @override
+  Route<T> createRoute(BuildContext context) =>
+      _LiveMaterialPageRoute<T>(page: this);
+}
+
+class _LiveMaterialPageRoute<T> extends PageRoute<T>
+    with MaterialRouteTransitionMixin<T> {
+  _LiveMaterialPageRoute({required _LiveMaterialPage<T> page})
+    : super(
+        settings: page,
+        fullscreenDialog: page.fullscreenDialog,
+        allowSnapshotting: false,
+      );
+
+  _LiveMaterialPage<T> get _page => settings as _LiveMaterialPage<T>;
+
+  @override
+  bool get opaque => false;
+
+  @override
+  bool get maintainState => _page.maintainState;
+
+  @override
+  Widget buildContent(BuildContext context) => _page.child;
+
+  @override
+  String get debugLabel => '${super.debugLabel}(${settings.name})';
+}
 
 CustomTransitionPage<T> _buildSlideUpPage<T>({
   required LocalKey key,
