@@ -516,6 +516,46 @@ func TestAttachIgnoresOversizedThemeHint(t *testing.T) {
 	}
 }
 
+func TestAttachRefreshesFocusAwareThemeHint(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "unknown-tui",
+		pty:               inputWriter,
+		lastActivity:      time.Now(),
+	}
+	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	server.handleAttach(
+		&recordingConn{},
+		bufio.NewReader(strings.NewReader("")),
+		controlMessage{Data: backgroundReport},
+	)
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, did not expect background report", got)
+	}
+	if strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+	}
+}
+
 func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
 	server := newMuxServerWithSize("test", 132, 43)
 	t.Cleanup(server.close)
@@ -2245,6 +2285,9 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 		foregroundPid:     42,
 	}
 	plainQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
+	copilotFocusWindow := &muxWindow{foregroundCommand: "copilot"}
+	copilotFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+	copilotPlainWindow := &muxWindow{foregroundCommand: "copilot"}
 
 	if !focusWindow.supportsThemeHintLocked() {
 		t.Fatal("DEC 2031 + focus-aware window did not support theme hints")
@@ -2252,11 +2295,17 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	if !colorQueryWindow.supportsThemeHintLocked() {
 		t.Fatal("DEC 2031 + OSC 11 query window did not support theme hints")
 	}
+	if !copilotFocusWindow.supportsThemeHintLocked() {
+		t.Fatal("Copilot focus-aware window did not support theme hints")
+	}
+	if copilotPlainWindow.supportsThemeHintLocked() {
+		t.Fatal("Copilot window without focus mode supported theme hints")
+	}
 	if plainWindow.supportsThemeHintLocked() {
 		t.Fatal("window without focus mode or OSC 11 query supported theme hints")
 	}
-	if plainFocusWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware window without DEC 2031 supported theme hints")
+	if !plainFocusWindow.supportsThemeHintLocked() {
+		t.Fatal("focus-aware window did not support focus refresh")
 	}
 	if plainQueryWindow.supportsThemeHintLocked() {
 		t.Fatal("OSC 11 query window without DEC 2031 supported theme hints")
@@ -2265,6 +2314,10 @@ func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
 	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
 	if focusWindow.supportsThemeHintLocked() {
 		t.Fatal("window supported theme hints after focus mode disabled")
+	}
+	plainFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
+	if plainFocusWindow.supportsThemeHintLocked() {
+		t.Fatal("plain focus-aware window supported theme hints after focus mode disabled")
 	}
 
 	colorQueryWindow.foregroundPid = 43
@@ -2323,9 +2376,10 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 // "hermes spew on every resume" regression. Even when a TUI has
 // previously issued an OSC 11 query (and the daemon answered it via
 // the live-query path), sendThemeHint must NOT proactively re-push the
-// cached response on subsequent theme refreshes. Many TUIs (Nous Hermes,
-// Codex, Claude Code) only handle the first response; later unsolicited
-// pushes surface as literal "]11;rgb:..." text in their input composer.
+// cached response on subsequent theme refreshes unless the foreground
+// tool is known to tolerate it. Many TUIs only handle the first response;
+// later unsolicited pushes surface as literal "]11;rgb:..." text in their
+// input composer.
 func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
@@ -2359,8 +2413,17 @@ func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-	if server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was sent")
+	if !server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, did not expect unsolicited background report", got)
+	}
+	if strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
 	}
 }
 
@@ -2473,20 +2536,26 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
-	if server.sendThemeHint(backgroundReport) {
-		t.Fatal("theme hint was sent")
+	if !server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was not sent")
+	}
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, did not expect background report", got)
+	}
+	if strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
 	}
 }
 
-// TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui guards the
-// "hermes spew" regression. When a focus-aware TUI (Codex, Claude Code,
-// Nous Hermes, etc.) has never issued an OSC 10/11/4 query, the daemon
-// must NOT push synthetic OSC color responses to it on theme refresh.
-// Modern agent CLIs treat unsolicited stdin bytes as keyboard input, so a
-// proactive response surfaces as literal "]11;rgb:..." text inside their
-// input composer. The synthetic focus transition must not be emitted either:
-// Hermes renders that as a growing prompt marker on each re-enter.
-func TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui(t *testing.T) {
+// TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui guards the
+// "hermes spew" regression. When an unknown focus-aware TUI has never issued
+// an OSC 10/11/4 query, the daemon must NOT push synthetic OSC color
+// responses to it on theme refresh. It may send a FocusIn nudge so the TUI
+// can re-query through the normal live-query path.
+func TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -2498,7 +2567,7 @@ func TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui(t *testing.T) {
 
 	window := &muxWindow{
 		id:                "@1",
-		foregroundCommand: "codex",
+		foregroundCommand: "unknown-tui",
 		pty:               inputWriter,
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
@@ -2509,8 +2578,98 @@ func TestThemeHintDoesNotPushUnsolicitedReportsToFocusAwareTui(t *testing.T) {
 	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
 	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
 	const paletteReport = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
-	if server.sendThemeHint(foregroundReport + backgroundReport + paletteReport) {
-		t.Fatal("theme hint was sent")
+	if !server.sendThemeHint(foregroundReport + backgroundReport + paletteReport) {
+		t.Fatal("theme hint was not sent")
+	}
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, "\x1b[I")
+	})
+	if strings.Contains(got, foregroundReport) {
+		t.Fatalf("theme hint = %q, did not expect foreground report", got)
+	}
+	if strings.Contains(got, backgroundReport) {
+		t.Fatalf("theme hint = %q, did not expect background report", got)
+	}
+	if strings.Contains(got, paletteReport) {
+		t.Fatalf("theme hint = %q, did not expect palette report", got)
+	}
+	if strings.Contains(got, "\x1b[O") {
+		t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+	}
+}
+
+func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T) {
+	for _, tt := range []struct {
+		name                string
+		command             string
+		wantModeReport      bool
+		wantFocusTransition bool
+	}{
+		{name: "copilot", command: "copilot", wantModeReport: true},
+		{name: "codex", command: "codex"},
+		{name: "claude", command: "claude", wantFocusTransition: true},
+		{name: "gemini", command: "gemini", wantFocusTransition: true},
+		{name: "opencode", command: "opencode", wantFocusTransition: true},
+		{name: "antigravity", command: "antigravity", wantFocusTransition: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			inputReader, inputWriter, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = inputReader.Close()
+				_ = inputWriter.Close()
+			})
+
+			window := &muxWindow{
+				id:                "@1",
+				foregroundCommand: tt.command,
+				pty:               inputWriter,
+			}
+			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
+
+			const modeReport = "\x1b[?997;1n"
+			const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
+			const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+			const paletteReport = "\x1b]4;0;rgb:aaaa/bbbb/cccc\x1b\\"
+			if !server.sendThemeHint(
+				modeReport + foregroundReport + backgroundReport + paletteReport,
+			) {
+				t.Fatal("theme hint was not sent")
+			}
+
+			got := readPipeUntil(t, inputReader, func(output string) bool {
+				return strings.Contains(output, backgroundReport) &&
+					strings.Contains(output, "\x1b[I")
+			})
+			if tt.wantModeReport {
+				if !strings.Contains(got, modeReport+backgroundReport) {
+					t.Fatalf(
+						"theme hint = %q, expected mode report before background report",
+						got,
+					)
+				}
+			} else if strings.Contains(got, modeReport) {
+				t.Fatalf("theme hint = %q, did not expect theme mode report", got)
+			}
+			if strings.Contains(got, foregroundReport) {
+				t.Fatalf("theme hint = %q, did not expect foreground report", got)
+			}
+			if strings.Contains(got, paletteReport) {
+				t.Fatalf("theme hint = %q, did not expect palette report", got)
+			}
+			if tt.wantFocusTransition {
+				if !strings.Contains(got, "\x1b[O") {
+					t.Fatalf("theme hint = %q, expected focus-lost report", got)
+				}
+			} else if strings.Contains(got, "\x1b[O") {
+				t.Fatalf("theme hint = %q, did not expect focus-lost report", got)
+			}
+		})
 	}
 }
 
@@ -2554,8 +2713,8 @@ func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 
 	const foregroundReport = "\x1b]10;rgb:1111/2222/3333\x1b\\"
 	const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
-	if server.sendThemeHint(foregroundReport + backgroundReport) {
-		t.Fatal("theme hint was sent")
+	if !server.sendThemeHint(foregroundReport + backgroundReport) {
+		t.Fatal("theme hint was not sent")
 	}
 
 	if len(signaled) != 0 {
