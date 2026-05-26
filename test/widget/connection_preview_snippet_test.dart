@@ -508,6 +508,33 @@ void main() {
     expect(previewText.maxLines, 17);
     expect(find.text('~/Code/flutty • Running'), findsOneWidget);
   });
+
+  testWidgets(
+    'ConnectionPreviewSnippet uses terminal theme background color directly',
+    (tester) async {
+      const testTheme = TerminalThemes.dracula;
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: ConnectionPreviewSnippet(
+              endpoint: 'depoll@mac-mini.home:22 - Connection #1',
+              preview: 'ready',
+              terminalTheme: testTheme,
+            ),
+          ),
+        ),
+      );
+
+      final containerFinder = find
+          .ancestor(of: find.text('ready'), matching: find.byType(Container))
+          .first;
+
+      final container = tester.widget<Container>(containerFinder);
+      final decoration = container.decoration as BoxDecoration?;
+      expect(decoration?.color, testTheme.background);
+    },
+  );
 }
 
 List<BoxDecoration> _boxDecorationsWithColor(
