@@ -2920,6 +2920,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
   String? _lastAndroidPredictiveBackDiagnosticsKey;
+  String? _lastAndroidTerminalContentDiagnosticsKey;
   bool _androidPredictiveBackPostFrameDiagnosticsQueued = false;
 
   bool get _isMobilePlatform =>
@@ -2993,6 +2994,53 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     DiagnosticsLogService.instance.debug(
       'android.back',
       'terminal_route_state',
+      fields: fields,
+    );
+  }
+
+  void _logAndroidTerminalContentDiagnostics(
+    BuildContext context, {
+    required String branch,
+    required SshConnectionState connectionState,
+    required bool showsDisconnectedOverlay,
+    required bool hasOverlayMessage,
+    required bool isMobile,
+  }) {
+    if (!_isAndroidPlatform) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    final navigator = Navigator.maybeOf(context);
+    final animation = route?.animation;
+    final animationValue = animation?.value;
+    final fields = <String, Object?>{
+      'branch': branch,
+      'isConnecting': _isConnecting,
+      'hasConnectionId': _connectionId != null,
+      'connectionState': connectionState,
+      'hasOverlayMessage': hasOverlayMessage,
+      'showsDisconnectedOverlay': showsDisconnectedOverlay,
+      'hasShell': _shell != null,
+      'isTmuxActive': _isTmuxActive,
+      'isMobile': isMobile,
+      'routePopGestureInProgress': route?.popGestureInProgress,
+      'routeIsCurrent': route?.isCurrent,
+      'navigatorUserGestureInProgress': navigator?.userGestureInProgress,
+      'animationStatus': animation?.status,
+      if (animationValue case final animationValue?)
+        'animationBucket': (animationValue * 20).round(),
+      'terminalViewMounted': _terminalViewKey.currentState != null,
+    };
+    final key = fields.entries
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join('|');
+    if (key == _lastAndroidTerminalContentDiagnosticsKey) {
+      return;
+    }
+    _lastAndroidTerminalContentDiagnosticsKey = key;
+    DiagnosticsLogService.instance.debug(
+      'android.back',
+      'terminal_content_state',
       fields: fields,
     );
   }
@@ -9595,6 +9643,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : _error;
 
     if (_isConnecting) {
+      _logAndroidTerminalContentDiagnostics(
+        context,
+        branch: 'connecting',
+        connectionState: connectionState,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+        hasOverlayMessage: overlayMessage != null,
+        isMobile: isMobile,
+      );
       return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -9608,6 +9664,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (overlayMessage != null && _connectionId == null) {
+      _logAndroidTerminalContentDiagnostics(
+        context,
+        branch: 'initial_error',
+        connectionState: connectionState,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+        hasOverlayMessage: true,
+        isMobile: isMobile,
+      );
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -9788,6 +9852,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (!isMobile) {
+      _logAndroidTerminalContentDiagnostics(
+        context,
+        branch: overlayMessage == null ? 'terminal' : 'terminal_with_overlay',
+        connectionState: connectionState,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+        hasOverlayMessage: overlayMessage != null,
+        isMobile: isMobile,
+      );
       return overlayMessage == null
           ? terminalView
           : _buildConnectionIssueOverlay(
@@ -9863,6 +9935,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
+    _logAndroidTerminalContentDiagnostics(
+      context,
+      branch: overlayMessage == null
+          ? 'mobile_terminal'
+          : 'mobile_terminal_with_overlay',
+      connectionState: connectionState,
+      showsDisconnectedOverlay: showsDisconnectedOverlay,
+      hasOverlayMessage: overlayMessage != null,
+      isMobile: isMobile,
+    );
     return terminalViewWithInput;
   }
 
