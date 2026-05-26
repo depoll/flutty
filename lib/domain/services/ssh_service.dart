@@ -2601,8 +2601,15 @@ class SshSession {
 
   late final _SshSessionRuntime _runtime = _SshSessionRuntime(this);
 
+  TerminalThemeData? _terminalTheme;
+
   /// The active terminal theme used to answer remote OSC color queries.
-  TerminalThemeData? terminalTheme;
+  TerminalThemeData? get terminalTheme => _terminalTheme;
+
+  /// Updates the active terminal theme and notifies preview listeners.
+  set terminalTheme(TerminalThemeData? theme) {
+    setTerminalTheme(theme);
+  }
 
   /// Whether the foreground app requested xterm color-scheme update reports.
   bool get terminalColorSchemeUpdatesMode =>
@@ -2700,6 +2707,19 @@ class SshSession {
       return false;
     }
     terminalThemeLightId = themeId;
+    return true;
+  }
+
+  /// Updates the active terminal theme.
+  ///
+  /// Returns `true` when the theme changed enough to repaint previews.
+  bool setTerminalTheme(TerminalThemeData? theme) {
+    if (_sameTerminalTheme(_terminalTheme, theme)) {
+      _terminalTheme = theme;
+      return false;
+    }
+    _terminalTheme = theme;
+    _notifyPreviewChanged();
     return true;
   }
 
@@ -3015,6 +3035,16 @@ class SshSession {
   static String? _sanitizeWindowTitle(String text) {
     final sanitized = text.replaceAll(_windowTitleSanitizerPattern, '').trim();
     return sanitized.isEmpty ? null : sanitized;
+  }
+
+  static bool _sameTerminalTheme(
+    TerminalThemeData? previous,
+    TerminalThemeData? next,
+  ) {
+    if (previous == null || next == null) {
+      return previous == next;
+    }
+    return terminalThemesMatchForColors(previous, next);
   }
 
   void _notifyPreviewChanged() {

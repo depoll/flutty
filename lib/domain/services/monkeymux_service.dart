@@ -407,7 +407,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
-      'data': buildTerminalThemeRefreshReports(theme),
+      'data': buildTerminalThemeHintReports(theme),
     }, priority: SshExecPriority.low);
   }
 
