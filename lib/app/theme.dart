@@ -1,7 +1,14 @@
+import 'dart:ui' show clampDouble;
+
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../domain/models/terminal_theme.dart';
+import '../domain/services/diagnostics_log_service.dart';
 
 /// Theme configuration for the Flutty app.
 /// Inspired by Termius with a modern hacker aesthetic.
@@ -199,6 +206,7 @@ abstract final class FluttyTheme {
       colorScheme: colorScheme,
       textTheme: textTheme,
       scaffoldBackgroundColor: background,
+      pageTransitionsTheme: _buildPageTransitionsTheme(background),
 
       // App bar with subtle blur effect vibe
       appBarTheme: AppBarTheme(
@@ -492,6 +500,24 @@ abstract final class FluttyTheme {
     );
   }
 
+  static PageTransitionsTheme _buildPageTransitionsTheme(Color background) =>
+      PageTransitionsTheme(
+        builders: <TargetPlatform, PageTransitionsBuilder>{
+          TargetPlatform.android:
+              PersistentPredictiveBackPageTransitionsBuilder(
+                fallbackColor: background,
+              ),
+          TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: const CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(
+            backgroundColor: background,
+          ),
+          TargetPlatform.linux: ZoomPageTransitionsBuilder(
+            backgroundColor: background,
+          ),
+        },
+      );
+
   static TextTheme _interTextTheme(TextTheme textTheme) =>
       debugUseSystemFonts ? textTheme : GoogleFonts.interTextTheme(textTheme);
 
@@ -672,4 +698,391 @@ abstract final class FluttyTheme {
 
     return child;
   }
+}
+
+/// Android predictive-back transition that keeps the outgoing page painted.
+///
+/// Flutter's default shared-element predictive-back transition fades the
+/// outgoing route after the commit threshold. Full-screen terminal surfaces make
+/// that look like the terminal itself turns into a grey box, so this transition
+/// follows the back gesture with the same shrinking motion but does not fade the
+/// outgoing child before the route is removed.
+class PersistentPredictiveBackPageTransitionsBuilder
+    extends PageTransitionsBuilder {
+  /// Creates a persistent Android predictive-back transition.
+  const PersistentPredictiveBackPageTransitionsBuilder({this.fallbackColor});
+
+  /// Background used by the non-predictive fallback transition.
+  final Color? fallbackColor;
+
+  @override
+  Duration get transitionDuration => const Duration(
+    milliseconds: FadeForwardsPageTransitionsBuilder.kTransitionMilliseconds,
+  );
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 120);
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    Widget buildPredictiveTransition(
+      BuildContext context,
+      _AndroidBackPhase phase,
+      PredictiveBackEvent? startBackEvent,
+      PredictiveBackEvent? currentBackEvent, {
+      required bool passThrough,
+    }) {
+      final ownsPredictiveGesture = phase != _AndroidBackPhase.idle;
+      final suppressFallbackMotion = ownsPredictiveGesture || passThrough;
+      final persistentChild = _PersistentPredictiveBackTransition(
+        active: ownsPredictiveGesture,
+        animation: animation,
+        phase: phase,
+        startBackEvent: startBackEvent,
+        currentBackEvent: currentBackEvent,
+        child: child,
+      );
+      // Keep the same wrapper stack mounted before and during predictive back.
+      // Swapping route transition widgets at gesture start can transiently
+      // detach GlobalKey-heavy descendants such as the terminal renderer.
+      return FadeForwardsPageTransitionsBuilder(
+        backgroundColor: fallbackColor,
+      ).buildTransitions(
+        route,
+        context,
+        suppressFallbackMotion ? kAlwaysCompleteAnimation : animation,
+        suppressFallbackMotion ? kAlwaysDismissedAnimation : secondaryAnimation,
+        persistentChild,
+      );
+    }
+
+    return _AndroidBackGestureDetector(
+      route: route,
+      animation: animation,
+      secondaryAnimation: secondaryAnimation,
+      builder: buildPredictiveTransition,
+    );
+  }
+}
+
+enum _AndroidBackPhase { idle, start, update, commit, cancel }
+
+class _AndroidBackGestureDetector extends StatefulWidget {
+  const _AndroidBackGestureDetector({
+    required this.route,
+    required this.animation,
+    required this.secondaryAnimation,
+    required this.builder,
+  });
+
+  final PageRoute<dynamic> route;
+  final Animation<double> animation;
+  final Animation<double> secondaryAnimation;
+  final Widget Function(
+    BuildContext context,
+    _AndroidBackPhase phase,
+    PredictiveBackEvent? startBackEvent,
+    PredictiveBackEvent? currentBackEvent, {
+    required bool passThrough,
+  })
+  builder;
+
+  @override
+  State<_AndroidBackGestureDetector> createState() =>
+      _AndroidBackGestureDetectorState();
+}
+
+class _AndroidBackGestureDetectorState
+    extends State<_AndroidBackGestureDetector>
+    with WidgetsBindingObserver {
+  _AndroidBackPhase _phase = _AndroidBackPhase.idle;
+  PredictiveBackEvent? _startBackEvent;
+  PredictiveBackEvent? _currentBackEvent;
+  bool _gestureAccepted = false;
+  String? _lastTransitionDiagnosticsKey;
+
+  bool get _isEnabled =>
+      widget.route.isCurrent && widget.route.popGestureEnabled;
+
+  void _setGestureState({
+    required bool accepted,
+    required _AndroidBackPhase phase,
+    PredictiveBackEvent? startBackEvent,
+    PredictiveBackEvent? currentBackEvent,
+  }) {
+    void apply() {
+      _gestureAccepted = accepted;
+      _phase = phase;
+      _startBackEvent = startBackEvent;
+      _currentBackEvent = currentBackEvent;
+    }
+
+    if (!mounted) {
+      apply();
+      return;
+    }
+
+    setState(apply);
+  }
+
+  @override
+  bool handleStartBackGesture(PredictiveBackEvent backEvent) {
+    final gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
+    if (!gestureInProgress) {
+      _setGestureState(accepted: false, phase: _AndroidBackPhase.idle);
+      _logTransitionState(
+        event: 'start',
+        backEvent: backEvent,
+        accepted: false,
+      );
+      return false;
+    }
+
+    _setGestureState(
+      accepted: true,
+      phase: _AndroidBackPhase.start,
+      startBackEvent: backEvent,
+      currentBackEvent: backEvent,
+    );
+    widget.route.handleStartBackGesture(progress: 1 - backEvent.progress);
+    _logTransitionState(event: 'start', backEvent: backEvent, accepted: true);
+    return true;
+  }
+
+  @override
+  void handleUpdateBackGestureProgress(PredictiveBackEvent backEvent) {
+    if (!_gestureAccepted) {
+      _logTransitionState(event: 'update_ignored', backEvent: backEvent);
+      return;
+    }
+    _setGestureState(
+      accepted: true,
+      phase: _AndroidBackPhase.update,
+      startBackEvent: _startBackEvent,
+      currentBackEvent: backEvent,
+    );
+    widget.route.handleUpdateBackGestureProgress(
+      progress: 1 - backEvent.progress,
+    );
+    _logTransitionState(event: 'update', backEvent: backEvent);
+  }
+
+  @override
+  void handleCancelBackGesture() {
+    if (!_gestureAccepted) {
+      _logTransitionState(event: 'cancel_ignored');
+      return;
+    }
+    _setGestureState(accepted: true, phase: _AndroidBackPhase.cancel);
+    widget.route.handleCancelBackGesture();
+    _logTransitionState(event: 'cancel');
+  }
+
+  @override
+  void handleCommitBackGesture() {
+    if (!_gestureAccepted) {
+      _logTransitionState(event: 'commit_ignored');
+      return;
+    }
+    _setGestureState(accepted: true, phase: _AndroidBackPhase.commit);
+    widget.route.handleCommitBackGesture();
+    _logTransitionState(event: 'commit');
+  }
+
+  void _logTransitionState({
+    required String event,
+    _AndroidBackPhase? effectivePhase,
+    String? branch,
+    PredictiveBackEvent? backEvent,
+    bool? accepted,
+  }) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled ||
+        kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    final fields = <String, Object?>{
+      'event': event,
+      'phase': effectivePhase ?? _phase,
+      'branch': branch,
+      'accepted': accepted,
+      'gestureAccepted': _gestureAccepted,
+      'routeType': widget.route.runtimeType.toString(),
+      'routePopGestureInProgress': widget.route.popGestureInProgress,
+      'routePopGestureEnabled': widget.route.popGestureEnabled,
+      'routeIsCurrent': widget.route.isCurrent,
+      'routeCanPop': widget.route.canPop,
+      'animationStatus': widget.animation.status,
+      'animationBucket': _animationBucket(widget.animation),
+      'secondaryAnimationStatus': widget.secondaryAnimation.status,
+      'secondaryAnimationBucket': _animationBucket(widget.secondaryAnimation),
+      'isButtonEvent': backEvent?.isButtonEvent,
+      'eventProgressPermille': backEvent == null
+          ? null
+          : (backEvent.progress * 1000).round(),
+      'swipeEdge': backEvent?.swipeEdge,
+    };
+    final key = fields.entries
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join('|');
+    if (key == _lastTransitionDiagnosticsKey) {
+      return;
+    }
+    _lastTransitionDiagnosticsKey = key;
+    diagnostics.debug('android.back', 'transition_state', fields: fields);
+  }
+
+  int? _animationBucket(Animation<double> animation) {
+    final value = animation.value;
+    return (clampDouble(value, 0, 1) * 20).round();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final routeGestureInProgress = widget.route.popGestureInProgress;
+    final phase = routeGestureInProgress && _gestureAccepted
+        ? _phase
+        : _AndroidBackPhase.idle;
+    final passThrough = routeGestureInProgress && !_gestureAccepted;
+    final branch = switch ((phase, passThrough)) {
+      (_AndroidBackPhase.idle, true) => 'pass_through',
+      (_AndroidBackPhase.idle, false) => 'fallback',
+      _ => 'persistent',
+    };
+    _logTransitionState(event: 'build', effectivePhase: phase, branch: branch);
+    return widget.builder(
+      context,
+      phase,
+      _startBackEvent,
+      _currentBackEvent,
+      passThrough: passThrough,
+    );
+  }
+}
+
+class _PersistentPredictiveBackTransition extends StatefulWidget {
+  const _PersistentPredictiveBackTransition({
+    required this.active,
+    required this.animation,
+    required this.phase,
+    required this.startBackEvent,
+    required this.currentBackEvent,
+    required this.child,
+  });
+
+  final bool active;
+  final Animation<double> animation;
+  final _AndroidBackPhase phase;
+  final PredictiveBackEvent? startBackEvent;
+  final PredictiveBackEvent? currentBackEvent;
+  final Widget child;
+
+  @override
+  State<_PersistentPredictiveBackTransition> createState() =>
+      _PersistentPredictiveBackTransitionState();
+}
+
+class _PersistentPredictiveBackTransitionState
+    extends State<_PersistentPredictiveBackTransition> {
+  static const double _minScale = 0.90;
+  static const double _screenWidthDivisionFactor = 20;
+  static const double _xShiftAdjustment = 8;
+  static const double _maxVerticalDragFraction = 0.1;
+  static const double _fallbackDeviceBorderRadius = 32;
+
+  double _lastProgress = 0;
+  double _lastVerticalDrag = 0;
+
+  double _progress() {
+    if (!widget.active) {
+      _lastProgress = 0;
+      _lastVerticalDrag = 0;
+      return 0;
+    }
+
+    final currentProgress = widget.currentBackEvent?.progress;
+    if (currentProgress != null) {
+      return _lastProgress = clampDouble(currentProgress, 0, 1);
+    }
+
+    final animationProgress = clampDouble(1 - widget.animation.value, 0, 1);
+    if (widget.phase == _AndroidBackPhase.commit) {
+      if (animationProgress > _lastProgress) {
+        _lastProgress = animationProgress;
+      }
+      return _lastProgress;
+    }
+
+    return _lastProgress = animationProgress;
+  }
+
+  double _verticalDrag(Size size, double progress) {
+    final startTouchY = widget.startBackEvent?.touchOffset?.dy;
+    final currentTouchY = widget.currentBackEvent?.touchOffset?.dy;
+    if (startTouchY == null || currentTouchY == null || size.height <= 0) {
+      return _lastVerticalDrag;
+    }
+
+    final maxShift = size.height * _maxVerticalDragFraction;
+    final rawDrag = currentTouchY - startTouchY;
+    return _lastVerticalDrag = clampDouble(
+      rawDrag * Curves.easeOut.transform(progress),
+      -maxShift,
+      maxShift,
+    );
+  }
+
+  Offset _offset(Size size, double progress) {
+    final xShift =
+        ((size.width / _screenWidthDivisionFactor) - _xShiftAdjustment) *
+        Curves.easeOut.transform(progress);
+    final direction = switch (widget.currentBackEvent?.swipeEdge) {
+      SwipeEdge.right => -1.0,
+      _ => 1.0,
+    };
+    return Offset(direction * xShift, _verticalDrag(size, progress));
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.animation,
+    builder: (context, child) {
+      final size = MediaQuery.sizeOf(context);
+      final progress = _progress();
+      final scale = 1 - ((1 - _minScale) * Curves.easeOut.transform(progress));
+      return Transform.translate(
+        offset: _offset(size, progress),
+        child: Transform.scale(
+          scale: scale,
+          child: ClipRRect(
+            borderRadius: widget.active
+                ? MediaQuery.displayCornerRadiiOf(context) ??
+                      BorderRadius.circular(_fallbackDeviceBorderRadius)
+                : BorderRadius.zero,
+            child: child,
+          ),
+        ),
+      );
+    },
+    child: widget.child,
+  );
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/app/theme.dart';
@@ -71,6 +72,80 @@ void main() {
       expect(theme.scaffoldBackgroundColor, overrideTheme.background);
       expect(theme.colorScheme.onSurface, overrideTheme.foreground);
     });
+
+    test('uses persistent predictive back transitions on Android', () {
+      const terminalThemeSettings = TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      );
+      final themes = [
+        FluttyTheme.dark,
+        buildTerminalAppTheme(
+          brightness: Brightness.dark,
+          terminalThemeSettings: terminalThemeSettings,
+          terminalThemes: TerminalThemes.all,
+        ),
+      ];
+
+      for (final theme in themes) {
+        final builder =
+            theme.pageTransitionsTheme.builders[TargetPlatform.android];
+        expect(builder, isA<PersistentPredictiveBackPageTransitionsBuilder>());
+        final predictiveBuilder =
+            builder! as PersistentPredictiveBackPageTransitionsBuilder;
+        expect(predictiveBuilder.fallbackColor, theme.scaffoldBackgroundColor);
+      }
+    });
+
+    testWidgets(
+      'keeps persistent transition mounted when Android gesture starts at zero',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData(
+              pageTransitionsTheme: PageTransitionsTheme(
+                builders: <TargetPlatform, PageTransitionsBuilder>{
+                  for (final platform in TargetPlatform.values)
+                    platform:
+                        const PersistentPredictiveBackPageTransitionsBuilder(),
+                },
+              ),
+            ),
+            routes: {
+              '/': (context) => Material(
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).pushNamed('/terminal'),
+                  child: const Text('push'),
+                ),
+              ),
+              '/terminal': (context) => const Material(child: Text('terminal')),
+            },
+          ),
+        );
+
+        await tester.tap(find.text('push'));
+        await tester.pumpAndSettle();
+
+        expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
+        expect(_findFadeForwardsPageTransition(), findsOneWidget);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[5, 300],
+            'progress': 0.0,
+            'swipeEdge': 0,
+          }),
+        );
+        await tester.pump();
+
+        expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
+        expect(_findFadeForwardsPageTransition(), findsOneWidget);
+
+        await _sendBackGesture(const MethodCall('cancelBackGesture'));
+        await tester.pumpAndSettle();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
 
     test('falls back to global theme when override omits brightness', () {
       const terminalThemeSettings = TerminalThemeSettings(
@@ -146,3 +221,24 @@ Set<Color> _terminalAccentCandidates(TerminalThemeData theme) => {
   theme.yellow,
   theme.red,
 };
+
+Finder _findPersistentPredictiveBackTransition() => find.descendant(
+  of: find.byType(MaterialApp),
+  matching: find.byWidgetPredicate(
+    (widget) =>
+        '${widget.runtimeType}' == '_PersistentPredictiveBackTransition',
+  ),
+);
+
+Finder _findFadeForwardsPageTransition() => find.descendant(
+  of: find.byType(MaterialApp),
+  matching: find.byWidgetPredicate(
+    (widget) => '${widget.runtimeType}' == '_FadeForwardsPageTransition',
+  ),
+);
+
+Future<void> _sendBackGesture(MethodCall methodCall) async {
+  final message = const StandardMethodCodec().encodeMethodCall(methodCall);
+  await TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage('flutter/backgesture', message, (_) {});
+}
