@@ -325,13 +325,17 @@ String? formatRemoteModifiedTime(int? modifyTime) {
 
 /// Resolves the picker request used for local SFTP uploads.
 @visibleForTesting
-({bool allowMultiple, bool withReadStream}) resolveSftpUploadPickerRequest() =>
-    (allowMultiple: true, withReadStream: true);
+({bool allowMultiple}) resolveSftpUploadPickerRequest() =>
+    (allowMultiple: true);
 
 /// Resolves a readable stream for a picked SFTP upload file when available.
 @visibleForTesting
-Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) =>
-    file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
+Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) {
+  if (file.path == null) {
+    return null;
+  }
+  return file.readAsByteStream().cast<List<int>>();
+}
 
 /// Resolves the error message shown when selected SFTP upload files are unreadable.
 @visibleForTesting
@@ -1802,11 +1806,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final pickerRequest = resolveSftpUploadPickerRequest();
-    final result = await FilePicker.pickFiles(
-      allowMultiple: pickerRequest.allowMultiple,
-      withReadStream: pickerRequest.withReadStream,
-    );
+    final result = await FilePicker.pickFiles();
     if (result == null || result.files.isEmpty) {
       return;
     }
