@@ -738,24 +738,28 @@ class PersistentPredictiveBackPageTransitionsBuilder
       PredictiveBackEvent? currentBackEvent, {
       required bool passThrough,
     }) {
-      if (phase != _AndroidBackPhase.idle) {
-        return _PersistentPredictiveBackTransition(
-          animation: animation,
-          phase: phase,
-          startBackEvent: startBackEvent,
-          currentBackEvent: currentBackEvent,
-          child: child,
-        );
-      }
-
-      if (passThrough) {
-        // Another route accepted the gesture; keep this route visually stable.
-        return child;
-      }
-
+      final ownsPredictiveGesture = phase != _AndroidBackPhase.idle;
+      final suppressFallbackMotion = ownsPredictiveGesture || passThrough;
+      final persistentChild = _PersistentPredictiveBackTransition(
+        active: ownsPredictiveGesture,
+        animation: animation,
+        phase: phase,
+        startBackEvent: startBackEvent,
+        currentBackEvent: currentBackEvent,
+        child: child,
+      );
+      // Keep the same wrapper stack mounted before and during predictive back.
+      // Swapping route transition widgets at gesture start can transiently
+      // detach GlobalKey-heavy descendants such as the terminal renderer.
       return FadeForwardsPageTransitionsBuilder(
         backgroundColor: fallbackColor,
-      ).buildTransitions(route, context, animation, secondaryAnimation, child);
+      ).buildTransitions(
+        route,
+        context,
+        suppressFallbackMotion ? kAlwaysCompleteAnimation : animation,
+        suppressFallbackMotion ? kAlwaysDismissedAnimation : secondaryAnimation,
+        persistentChild,
+      );
     }
 
     return _AndroidBackGestureDetector(
@@ -977,6 +981,7 @@ class _AndroidBackGestureDetectorState
 
 class _PersistentPredictiveBackTransition extends StatefulWidget {
   const _PersistentPredictiveBackTransition({
+    required this.active,
     required this.animation,
     required this.phase,
     required this.startBackEvent,
@@ -984,6 +989,7 @@ class _PersistentPredictiveBackTransition extends StatefulWidget {
     required this.child,
   });
 
+  final bool active;
   final Animation<double> animation;
   final _AndroidBackPhase phase;
   final PredictiveBackEvent? startBackEvent;
@@ -1007,6 +1013,12 @@ class _PersistentPredictiveBackTransitionState
   double _lastVerticalDrag = 0;
 
   double _progress() {
+    if (!widget.active) {
+      _lastProgress = 0;
+      _lastVerticalDrag = 0;
+      return 0;
+    }
+
     final currentProgress = widget.currentBackEvent?.progress;
     if (currentProgress != null) {
       return _lastProgress = clampDouble(currentProgress, 0, 1);
@@ -1062,9 +1074,10 @@ class _PersistentPredictiveBackTransitionState
         child: Transform.scale(
           scale: scale,
           child: ClipRRect(
-            borderRadius:
-                MediaQuery.displayCornerRadiiOf(context) ??
-                BorderRadius.circular(_fallbackDeviceBorderRadius),
+            borderRadius: widget.active
+                ? MediaQuery.displayCornerRadiiOf(context) ??
+                      BorderRadius.circular(_fallbackDeviceBorderRadius)
+                : BorderRadius.zero,
             child: child,
           ),
         ),
