@@ -740,11 +740,6 @@ class PersistentPredictiveBackPageTransitionsBuilder
         );
       }
 
-      if (animation.status == AnimationStatus.completed &&
-          secondaryAnimation.status == AnimationStatus.dismissed) {
-        return child;
-      }
-
       return FadeForwardsPageTransitionsBuilder(
         backgroundColor: fallbackColor,
       ).buildTransitions(route, context, animation, secondaryAnimation, child);
