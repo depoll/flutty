@@ -1767,6 +1767,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save ${file.filename}',
       fileName: file.filename,
+      bytes: Uint8List(0),
     );
     if (savePath == null) {
       return;
@@ -3044,6 +3045,7 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save ${widget.fileName}',
       fileName: widget.fileName,
+      bytes: await widget.localFile.readAsBytes(),
     );
     if (savePath == null) {
       return;
