@@ -98,7 +98,7 @@ void main() {
     });
 
     testWidgets(
-      'keeps persistent transition active when Android gesture starts at zero',
+      'keeps persistent transition mounted when Android gesture starts at zero',
       (tester) async {
         await tester.pumpWidget(
           MaterialApp(
@@ -126,7 +126,7 @@ void main() {
         await tester.tap(find.text('push'));
         await tester.pumpAndSettle();
 
-        expect(_findPersistentPredictiveBackTransition(), findsNothing);
+        expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
         expect(_findFadeForwardsPageTransition(), findsOneWidget);
 
         await _sendBackGesture(
@@ -139,7 +139,7 @@ void main() {
         await tester.pump();
 
         expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
-        expect(_findFadeForwardsPageTransition(), findsNothing);
+        expect(_findFadeForwardsPageTransition(), findsOneWidget);
 
         await _sendBackGesture(const MethodCall('cancelBackGesture'));
         await tester.pumpAndSettle();
