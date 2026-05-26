@@ -1,11 +1,14 @@
 import 'dart:ui' show clampDouble;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../domain/models/terminal_theme.dart';
+import '../domain/services/diagnostics_log_service.dart';
 
 /// Theme configuration for the Flutty app.
 /// Inspired by Termius with a modern hacker aesthetic.
@@ -729,6 +732,8 @@ class PersistentPredictiveBackPageTransitionsBuilder
     Widget child,
   ) => _AndroidBackGestureDetector(
     route: route,
+    animation: animation,
+    secondaryAnimation: secondaryAnimation,
     builder: (context, phase, startBackEvent, currentBackEvent) {
       if (phase != _AndroidBackPhase.idle) {
         return _PersistentPredictiveBackTransition(
@@ -752,10 +757,14 @@ enum _AndroidBackPhase { idle, start, update, commit, cancel }
 class _AndroidBackGestureDetector extends StatefulWidget {
   const _AndroidBackGestureDetector({
     required this.route,
+    required this.animation,
+    required this.secondaryAnimation,
     required this.builder,
   });
 
   final PageRoute<dynamic> route;
+  final Animation<double> animation;
+  final Animation<double> secondaryAnimation;
   final Widget Function(
     BuildContext context,
     _AndroidBackPhase phase,
@@ -775,7 +784,7 @@ class _AndroidBackGestureDetectorState
   _AndroidBackPhase _phase = _AndroidBackPhase.idle;
   PredictiveBackEvent? _startBackEvent;
   PredictiveBackEvent? _currentBackEvent;
-  bool _predictiveBackActive = false;
+  String? _lastTransitionDiagnosticsKey;
 
   bool get _isEnabled =>
       widget.route.isCurrent && widget.route.popGestureEnabled;
@@ -803,13 +812,18 @@ class _AndroidBackGestureDetectorState
     _setPhase(_AndroidBackPhase.start);
     final gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
     if (!gestureInProgress) {
+      _logTransitionState(
+        event: 'start',
+        backEvent: backEvent,
+        accepted: false,
+      );
       return false;
     }
 
-    _predictiveBackActive = true;
     widget.route.handleStartBackGesture(progress: 1 - backEvent.progress);
     _setStartEvent(backEvent);
     _setCurrentEvent(backEvent);
+    _logTransitionState(event: 'start', backEvent: backEvent, accepted: true);
     return true;
   }
 
@@ -820,6 +834,7 @@ class _AndroidBackGestureDetectorState
       progress: 1 - backEvent.progress,
     );
     _setCurrentEvent(backEvent);
+    _logTransitionState(event: 'update', backEvent: backEvent);
   }
 
   @override
@@ -828,6 +843,7 @@ class _AndroidBackGestureDetectorState
     widget.route.handleCancelBackGesture();
     _setStartEvent(null);
     _setCurrentEvent(null);
+    _logTransitionState(event: 'cancel');
   }
 
   @override
@@ -836,38 +852,79 @@ class _AndroidBackGestureDetectorState
     widget.route.handleCommitBackGesture();
     _setStartEvent(null);
     _setCurrentEvent(null);
+    _logTransitionState(event: 'commit');
   }
 
-  void _handleAnimationStatus(AnimationStatus status) {
-    if (!_predictiveBackActive) {
+  void _logTransitionState({
+    required String event,
+    _AndroidBackPhase? effectivePhase,
+    String? branch,
+    PredictiveBackEvent? backEvent,
+    bool? accepted,
+  }) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled ||
+        kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android) {
       return;
     }
-    if (status == AnimationStatus.completed ||
-        status == AnimationStatus.dismissed) {
-      _predictiveBackActive = false;
-      _setPhase(_AndroidBackPhase.idle);
-      _setStartEvent(null);
-      _setCurrentEvent(null);
+    final fields = <String, Object?>{
+      'event': event,
+      'phase': effectivePhase ?? _phase,
+      'branch': branch,
+      'accepted': accepted,
+      'routeType': widget.route.runtimeType.toString(),
+      'routePopGestureInProgress': widget.route.popGestureInProgress,
+      'routePopGestureEnabled': widget.route.popGestureEnabled,
+      'routeIsCurrent': widget.route.isCurrent,
+      'routeCanPop': widget.route.canPop,
+      'animationStatus': widget.animation.status,
+      'animationBucket': _animationBucket(widget.animation),
+      'secondaryAnimationStatus': widget.secondaryAnimation.status,
+      'secondaryAnimationBucket': _animationBucket(widget.secondaryAnimation),
+      'isButtonEvent': backEvent?.isButtonEvent,
+      'eventProgressPermille': backEvent == null
+          ? null
+          : (backEvent.progress * 1000).round(),
+      'swipeEdge': backEvent?.swipeEdge,
+    };
+    final key = fields.entries
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join('|');
+    if (key == _lastTransitionDiagnosticsKey) {
+      return;
     }
+    _lastTransitionDiagnosticsKey = key;
+    diagnostics.debug('android.back', 'transition_state', fields: fields);
+  }
+
+  int? _animationBucket(Animation<double> animation) {
+    final value = animation.value;
+    return (clampDouble(value, 0, 1) * 20).round();
   }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    widget.route.animation?.addStatusListener(_handleAnimationStatus);
   }
 
   @override
   void dispose() {
-    widget.route.animation?.removeStatusListener(_handleAnimationStatus);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final phase = _predictiveBackActive ? _phase : _AndroidBackPhase.idle;
+    final phase = widget.route.popGestureInProgress
+        ? _phase
+        : _AndroidBackPhase.idle;
+    _logTransitionState(
+      event: 'build',
+      effectivePhase: phase,
+      branch: phase == _AndroidBackPhase.idle ? 'fallback' : 'persistent',
+    );
     return widget.builder(context, phase, _startBackEvent, _currentBackEvent);
   }
 }
