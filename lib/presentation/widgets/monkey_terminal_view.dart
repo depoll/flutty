@@ -7,13 +7,20 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show
+        TargetPlatform,
+        defaultTargetPlatform,
+        kIsWeb,
+        listEquals,
+        visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
+import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/cell_flags.dart';
 import 'package:xterm/src/core/buffer/line.dart';
@@ -747,6 +754,18 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   @override
+  void activate() {
+    super.activate();
+    _logAndroidBackLifecycle('activate');
+  }
+
+  @override
+  void deactivate() {
+    _logAndroidBackLifecycle('deactivate');
+    super.deactivate();
+  }
+
+  @override
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
     if (oldWidget.terminal != widget.terminal) {
       oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
@@ -791,6 +810,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   @override
   void dispose() {
+    _logAndroidBackLifecycle('dispose');
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
@@ -806,6 +826,27 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     _shortcutManager.dispose();
     super.dispose();
+  }
+
+  void _logAndroidBackLifecycle(String event) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'android.back',
+      'terminal_view_lifecycle',
+      fields: <String, Object?>{
+        'event': event,
+        'mounted': mounted,
+        'terminalViewWidth': widget.terminal.viewWidth,
+        'terminalViewHeight': widget.terminal.viewHeight,
+        'hasFocus': _focusNode.hasFocus,
+        'usesExternalFocusNode': widget.focusNode != null,
+        'autoResize': widget.autoResize,
+        'simulateScroll': widget.simulateScroll,
+        'touchScrollToTerminal': widget.touchScrollToTerminal,
+      },
+    );
   }
 
   void _handleTerminalMetricsChanged() {
