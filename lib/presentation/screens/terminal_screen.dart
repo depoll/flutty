@@ -3524,7 +3524,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final previousTheme = targetSession.terminalTheme;
-    targetSession.terminalTheme = theme;
+    targetSession.setTerminalTheme(theme);
     if (targetSession.terminal != _terminal) {
       if (reason != 'build') {
         DiagnosticsLogService.instance.info(
@@ -4478,29 +4478,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _terminalThemesMatchForRemoteRefresh(
     TerminalThemeData previous,
     TerminalThemeData next,
-  ) =>
-      previous.id == next.id &&
-      previous.isDark == next.isDark &&
-      previous.foreground == next.foreground &&
-      previous.background == next.background &&
-      previous.cursor == next.cursor &&
-      previous.selection == next.selection &&
-      previous.black == next.black &&
-      previous.red == next.red &&
-      previous.green == next.green &&
-      previous.yellow == next.yellow &&
-      previous.blue == next.blue &&
-      previous.magenta == next.magenta &&
-      previous.cyan == next.cyan &&
-      previous.white == next.white &&
-      previous.brightBlack == next.brightBlack &&
-      previous.brightRed == next.brightRed &&
-      previous.brightGreen == next.brightGreen &&
-      previous.brightYellow == next.brightYellow &&
-      previous.brightBlue == next.brightBlue &&
-      previous.brightMagenta == next.brightMagenta &&
-      previous.brightCyan == next.brightCyan &&
-      previous.brightWhite == next.brightWhite;
+  ) => terminalThemesMatchForColors(previous, next);
 
   bool _sameTerminalTheme(
     TerminalThemeData? previous,
@@ -6608,7 +6586,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           installation,
           sessionName,
         );
-        final terminalThemeReports = buildTerminalThemeRefreshReports(
+        final terminalThemeReports = buildTerminalThemeHintReports(
           session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
         );
         if (!mounted) {
@@ -6883,7 +6861,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         installation,
         sessionName,
       );
-      final terminalThemeReports = buildTerminalThemeRefreshReports(
+      final terminalThemeReports = buildTerminalThemeHintReports(
         session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
       );
       attachCommand = buildMonkeyMuxAttachCommand(
