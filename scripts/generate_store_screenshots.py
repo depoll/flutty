@@ -48,6 +48,13 @@ CLEAR_SCREEN_SEQUENCES = (
     '\x1b[3J',
     '\x0c',
 )
+COPILOT_READY_MARKER_GROUPS = (
+    ('GitHub Copilot',),
+    ('/ commands', '? help'),
+)
+COPILOT_PRIVACY_STRIP_MARKERS = tuple(
+    marker for marker_group in COPILOT_READY_MARKER_GROUPS for marker in marker_group
+)
 
 
 @dataclass(frozen=True)
@@ -671,9 +678,9 @@ class StoreDemoEnvironment:
         deadline = time.time() + 30
         while time.time() < deadline:
             text = self._capture_visible_pane('copilot')
-            if _visible_text_contains_marker(text, 'GitHub Copilot') or (
-                _visible_text_contains_marker(text, '/ commands')
-                and _visible_text_contains_marker(text, '? help')
+            if _visible_text_contains_marker_group(
+                text,
+                COPILOT_READY_MARKER_GROUPS,
             ):
                 return
             time.sleep(1)
@@ -740,7 +747,10 @@ class StoreDemoEnvironment:
     ) -> None:
         text = self._capture_visible_pane(window)
         if window == 'copilot':
-            text = _text_after_last_visible_marker(text, 'GitHub Copilot')
+            text = _text_after_last_visible_markers(
+                text,
+                COPILOT_PRIVACY_STRIP_MARKERS,
+            )
         elif window == 'claude':
             text = _text_after_last_visible_marker(text, 'Claude Code')
         private_patterns = [
@@ -1169,6 +1179,16 @@ def _visible_text_contains_marker(text: str, marker: str) -> bool:
     return compact_marker in compact_text
 
 
+def _visible_text_contains_marker_group(
+    text: str,
+    marker_groups: tuple[tuple[str, ...], ...],
+) -> bool:
+    return any(
+        all(_visible_text_contains_marker(text, marker) for marker in marker_group)
+        for marker_group in marker_groups
+    )
+
+
 def _text_after_last_visible_marker(text: str, marker: str) -> str:
     index = text.rfind(marker)
     if index >= 0:
@@ -1179,6 +1199,17 @@ def _text_after_last_visible_marker(text: str, marker: str) -> str:
     if compact_index >= 0:
         return compact_text[compact_index:]
     return text
+
+
+def _text_after_last_visible_markers(text: str, markers: tuple[str, ...]) -> str:
+    matches = [
+        candidate
+        for marker in markers
+        if (candidate := _text_after_last_visible_marker(text, marker)) != text
+    ]
+    if not matches:
+        return text
+    return min(matches, key=len)
 
 
 def _terminate_process(
