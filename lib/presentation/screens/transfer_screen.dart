@@ -203,7 +203,6 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
       defaultTargetPlatform,
       const [monkeySshTransferFileExtension],
     ),
-    withData: kIsWeb,
   );
 
   if (result == null || result.files.isEmpty) {
@@ -223,8 +222,30 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
-  final bytes = selectedFile.bytes;
-  if (bytes != null && bytes.isNotEmpty) {
+  if (kIsWeb) {
+    final Uint8List bytes;
+    try {
+      bytes = await selectedFile.readAsBytes();
+    } on Exception {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not read selected transfer file'),
+          ),
+        );
+      }
+      return null;
+    }
+    if (bytes.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not read selected transfer file'),
+          ),
+        );
+      }
+      return null;
+    }
     if (bytes.length > _maxTransferPayloadBytes) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
