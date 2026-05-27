@@ -664,8 +664,20 @@ class StoreDemoEnvironment:
         self._ensure_copilot_streamer_mode()
         self._monkeymux_send_keys('copilot', 'C-l')
         time.sleep(2)
-        self._wait_for_visible_text('copilot', ['GitHub Copilot'])
+        self._wait_for_copilot_ready()
         self._assert_copilot_pane_streamer_safe()
+
+    def _wait_for_copilot_ready(self) -> None:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            text = self._capture_visible_pane('copilot')
+            if _visible_text_contains_marker(text, 'GitHub Copilot') or (
+                _visible_text_contains_marker(text, '/ commands')
+                and _visible_text_contains_marker(text, '? help')
+            ):
+                return
+            time.sleep(1)
+        raise RuntimeError('copilot pane did not show the Copilot prompt.')
 
     def _drive_claude_full_screen(self) -> None:
         self._wait_for_visible_text('claude', ['Choose the text style'])
@@ -687,7 +699,7 @@ class StoreDemoEnvironment:
         self._assert_claude_pane_streamer_safe()
 
     def _ensure_copilot_streamer_mode(self) -> None:
-        self._wait_for_visible_text('copilot', ['GitHub Copilot'])
+        self._wait_for_copilot_ready()
         self._monkeymux_send_literal('copilot', '/streamer')
         self._monkeymux_send_keys('copilot', 'Enter')
         time.sleep(4)
