@@ -2687,6 +2687,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
     milliseconds: 150,
   );
+  static const _initialViewportReadyTimeout = Duration(seconds: 1);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -2706,6 +2707,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void Function(String)? _terminalOutputHandler;
   void Function(int, int, int, int)? _terminalResizeHandler;
   bool _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
+  Completer<void> _initialViewportReady = Completer<void>();
+  int? _initialViewportReadyConnectionId;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
@@ -2844,6 +2847,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
   bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
+  int? _monkeyMuxInitialAttachRefreshConnectionId;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -2921,7 +2925,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
   int? _suppressNextAutomaticReconnectConnectionId;
-  int? _suppressAutoConnectAfterStartupConnectionId;
   int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
@@ -5778,6 +5781,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _hideShellCompletionPopup();
     _clearOwnedTerminalCallbacks();
     _shell = null;
+    _resetInitialViewportReady();
+    _monkeyMuxInitialAttachRefreshConnectionId = null;
     // Allow the build-path safety-net call to fire once for the new session.
     _lastBuildAppliedTheme = null;
 
@@ -5946,15 +5951,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         reason: 'open_new_terminal',
       );
 
-      final startupCommand = await _buildNewShellStartupCommand(session);
-      if (!mounted) return;
-
       _shell = await session.getShell(
         pty: SSHPtyConfig(
           width: _terminal.viewWidth,
           height: _terminal.viewHeight,
         ),
-        command: startupCommand?.command,
       );
       DiagnosticsLogService.instance.info(
         'terminal',
@@ -5962,7 +5963,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fields: {
           'connectionId': session.connectionId,
           'reusedTerminal': false,
-          'hasStartupCommand': startupCommand != null,
+          'hasStartupCommand': false,
         },
       );
 
@@ -5995,33 +5996,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
-      final suppressAutoConnect =
-          _suppressAutoConnectAfterStartupConnectionId == session.connectionId;
-      if (suppressAutoConnect) {
-        _suppressAutoConnectAfterStartupConnectionId = null;
-      }
-      if (startupCommand == null) {
-        if (suppressAutoConnect) {
-          DiagnosticsLogService.instance.info(
-            'terminal',
-            'auto_connect_suppressed',
-            fields: {'connectionId': session.connectionId},
-          );
-        } else {
-          await _runAutoConnectCommand(session);
-        }
-      } else {
-        DiagnosticsLogService.instance.info(
-          'terminal.agent_launch',
-          'foreground_command_opened',
-          fields: {
-            'connectionId': session.connectionId,
-            'backend': startupCommand.backend.storageValue,
-            'hasTool': startupCommand.tool != null,
-            if (startupCommand.tool case final tool?) 'tool': tool.name,
-          },
-        );
-      }
+      await _runAutoConnectCommand(session);
 
       // Detect tmux after the auto-connect command has had time to start.
       // A small delay ensures tmux has initialized if the auto-connect
@@ -6132,6 +6107,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       int pixelWidth,
       int pixelHeight,
     ) {
+      _markInitialViewportReady(
+        session,
+        columns: width,
+        rows: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      );
       session.updateTerminalWindowMetrics(
         columns: width,
         rows: height,
@@ -6153,6 +6135,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalResizeHandler = handleTerminalResize;
     _terminal.onResize = handleTerminalResize;
     _terminalWithOwnedCallbacks = _terminal;
+  }
+
+  void _resetInitialViewportReady() {
+    if (!_initialViewportReady.isCompleted) {
+      _initialViewportReady.complete();
+    }
+    _initialViewportReady = Completer<void>();
+    _initialViewportReadyConnectionId = null;
+  }
+
+  void _markInitialViewportReady(
+    SshSession session, {
+    required int columns,
+    required int rows,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    if (columns <= 0 ||
+        rows <= 0 ||
+        pixelWidth <= 0 ||
+        pixelHeight <= 0 ||
+        _connectionId != session.connectionId) {
+      return;
+    }
+    _initialViewportReadyConnectionId = session.connectionId;
+    if (!_initialViewportReady.isCompleted) {
+      _initialViewportReady.complete();
+    }
+  }
+
+  Future<void> _awaitInitialViewportReadyForMonkeyMux(
+    SshSession session,
+    _PreparedRemoteMuxCommand command,
+  ) async {
+    if (command.backend != RemoteMuxBackend.monkeyMux ||
+        _initialViewportReadyConnectionId == session.connectionId) {
+      return;
+    }
+    WidgetsBinding.instance.ensureVisualUpdate();
+    try {
+      await _initialViewportReady.future.timeout(_initialViewportReadyTimeout);
+    } on TimeoutException {
+      DiagnosticsLogService.instance.warning(
+        'terminal.viewport',
+        'initial_resize_timeout',
+        fields: {'connectionId': session.connectionId},
+      );
+    }
   }
 
   void _clearOwnedTerminalCallbacks() {
@@ -6261,6 +6291,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       },
     );
+  }
+
+  void _refreshTerminalAfterInitialMonkeyMuxAttach(SshSession session) {
+    if (_monkeyMuxInitialAttachRefreshConnectionId == session.connectionId) {
+      return;
+    }
+    _monkeyMuxInitialAttachRefreshConnectionId = session.connectionId;
+    _refreshTerminalAfterMonkeyMuxWindowChange(session);
   }
 
   Future<void> _syncActiveMonkeyMuxTerminalSize(
@@ -6483,6 +6521,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       if (attachCommand == null) return;
       _applyPreparedRemoteMuxCommand(session, attachCommand);
+      await _awaitInitialViewportReadyForMonkeyMux(session, attachCommand);
+      if (!mounted ||
+          _connectionId != session.connectionId ||
+          !identical(_shell, shell)) {
+        return;
+      }
       shell.write(
         utf8.encode(formatAutoConnectCommandForShell(attachCommand.command)),
       );
@@ -6594,50 +6638,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref.read(snippetRepositoryProvider).incrementUsage(resolvedSnippetId),
       );
     }
-  }
-
-  Future<_PreparedRemoteMuxCommand?> _buildNewShellStartupCommand(
-    SshSession session,
-  ) async {
-    final host = _host;
-    final agentPreset = _autoConnectAgentPreset;
-    if (host == null) {
-      return null;
-    }
-
-    final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
-    if (tmuxSession != null &&
-        tmuxSession.isNotEmpty &&
-        !host.autoConnectRequiresConfirmation &&
-        _configuredRemoteMuxBackend(host) == RemoteMuxBackend.monkeyMux) {
-      final command = await _prepareRemoteMuxAttachCommand(
-        session,
-        host,
-        tmuxSession,
-      );
-      if (command != null) {
-        _applyPreparedRemoteMuxCommand(session, command);
-        return command;
-      }
-      _suppressAutoConnectAfterStartupConnectionId = session.connectionId;
-      return null;
-    }
-
-    if (agentPreset == null ||
-        !agentPreset.usesMonkeyMuxSession ||
-        host.autoConnectRequiresConfirmation) {
-      return null;
-    }
-
-    final command = await _prepareMonkeyMuxAgentLaunchCommand(
-      session,
-      host,
-      agentPreset,
-    );
-    if (command != null) {
-      _applyPreparedRemoteMuxCommand(session, command);
-    }
-    return command;
   }
 
   String? get _initialTmuxSessionName {
@@ -6921,6 +6921,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _applyPreparedRemoteMuxCommand(session, command);
+    await _awaitInitialViewportReadyForMonkeyMux(session, command);
+    if (!mounted ||
+        _connectionId != session.connectionId ||
+        !identical(_shell, shell)) {
+      return;
+    }
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command.command)));
     DiagnosticsLogService.instance.info(
       'terminal.agent_launch',
@@ -7252,8 +7258,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
-    final wasMuxActive = _isTmuxActive;
-    final previousMuxBackend = _activeMuxBackend;
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final configuredBackend = _configuredRemoteMuxBackend(host);
@@ -7506,10 +7510,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _primeTmuxTerminalTheme(session);
         }
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
-        if (muxBackend == RemoteMuxBackend.monkeyMux &&
-            (!wasMuxActive ||
-                previousMuxBackend != RemoteMuxBackend.monkeyMux)) {
-          _refreshTerminalAfterMonkeyMuxWindowChange(session);
+        if (muxBackend == RemoteMuxBackend.monkeyMux) {
+          _refreshTerminalAfterInitialMonkeyMuxAttach(session);
         }
         return true;
       }
@@ -8472,6 +8474,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _disposeTerminalPathVerificationSftp();
     _sessionController.clearObservedSession(session: session);
     _clearTmuxState();
+    _resetInitialViewportReady();
+    _monkeyMuxInitialAttachRefreshConnectionId = null;
     _detectedSensitiveKeyboardPrompt = false;
   }
 
@@ -8539,6 +8543,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sessionController.clearObservedSession();
     _disposeTerminalPathVerificationSftp();
     _suppressNextAutomaticReconnectConnectionId = null;
+    _resetInitialViewportReady();
+    _monkeyMuxInitialAttachRefreshConnectionId = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
@@ -8575,6 +8581,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sessionController.clearObservedSession();
     _disposeTerminalPathVerificationSftp();
     _suppressNextAutomaticReconnectConnectionId = null;
+    _resetInitialViewportReady();
+    _monkeyMuxInitialAttachRefreshConnectionId = null;
     _syncTerminalWakeLock(SshConnectionState.disconnected);
     _connectionLostWhileBackgrounded = false;
     try {
@@ -8614,6 +8622,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
+    if (!_initialViewportReady.isCompleted) {
+      _initialViewportReady.complete();
+    }
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
