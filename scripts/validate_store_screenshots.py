@@ -173,7 +173,7 @@ def _validate_ocr_content(paths: list[Path]) -> None:
     for path, text in texts.items():
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
-            _require_ocr_markers(path, text, ['GitHub Copilot'])
+            _require_ocr_markers(path, text, ['Copilot', '/ commands'])
         elif filename in {'02_iphone_6_9.png', '02_ipad_13.png', '2.png'}:
             _require_ocr_markers(path, text, ['Hosts', 'New Host'])
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:

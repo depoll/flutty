@@ -44,6 +44,9 @@ const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _videoPreviewCacheDirectoryName = 'monkeyssh-sftp-video-preview';
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
 
 /// Identifies a remembered SFTP browser location.
 typedef SftpBrowserLocationKey = ({int hostId, int? connectionId});
@@ -1320,16 +1323,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   Widget _buildLocationShortcutChip(String shortcutPath, ThemeData theme) {
     final isCurrent = shortcutPath == _currentPath;
+    final displayPath = _displaySftpPath(shortcutPath);
     if (isCurrent) {
       return Tooltip(
-        message: 'Current folder: $shortcutPath',
+        message: 'Current folder: $displayPath',
         child: Chip(
           avatar: Icon(
             Icons.check_circle_rounded,
             color: theme.colorScheme.onPrimaryContainer,
             size: 18,
           ),
-          label: Text(shortcutPath),
+          label: Text(displayPath),
           labelStyle: theme.textTheme.labelLarge?.copyWith(
             color: theme.colorScheme.onPrimaryContainer,
             fontWeight: FontWeight.w700,
@@ -1341,19 +1345,21 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     return ActionChip(
-      label: Text(shortcutPath),
+      label: Text(displayPath),
       labelStyle: theme.textTheme.labelLarge?.copyWith(
         color: theme.colorScheme.onSurfaceVariant,
       ),
       backgroundColor: theme.colorScheme.surface,
       side: BorderSide(color: theme.colorScheme.outlineVariant),
       onPressed: () => unawaited(_navigateTo(shortcutPath)),
-      tooltip: 'Go to $shortcutPath',
+      tooltip: 'Go to $displayPath',
     );
   }
 
   Widget _buildBreadcrumbs() {
-    final parts = _currentPath.split('/').where((p) => p.isNotEmpty).toList();
+    final parts = _displaySftpPath(
+      _currentPath,
+    ).split('/').where((p) => p.isNotEmpty).toList();
     final theme = Theme.of(context);
 
     return Container(
@@ -1403,7 +1409,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                     ),
                     InkWell(
                       onTap: () {
-                        final path = '/${parts.sublist(0, i + 1).join('/')}';
+                        final path = _redactStoreScreenshotIdentities
+                            ? _currentPath
+                            : '/${parts.sublist(0, i + 1).join('/')}';
                         unawaited(_navigateTo(path));
                       },
                       child: Padding(
@@ -1430,6 +1438,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         ],
       ),
     );
+  }
+
+  String _displaySftpPath(String remotePath) {
+    if (!_redactStoreScreenshotIdentities || remotePath == '/') {
+      return remotePath;
+    }
+    return '/release-workspace';
   }
 
   Widget _buildFileList() {
