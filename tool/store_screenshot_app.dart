@@ -54,6 +54,7 @@ const _terminalThemeDarkId = String.fromEnvironment(
   'STORE_SCREENSHOT_TERMINAL_THEME_DARK_ID',
   defaultValue: 'velvet',
 );
+const _postReadyCaptureDelay = Duration(seconds: 6);
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
   productId: 'store-screenshot-fallback',
@@ -620,7 +621,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       'paths': widget.target.pathsByScene[index],
     };
     debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await Future<void>.delayed(_postReadyCaptureDelay);
   }
 
   void _go(String location) {
