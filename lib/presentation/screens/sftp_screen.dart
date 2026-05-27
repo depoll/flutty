@@ -3045,7 +3045,7 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save ${widget.fileName}',
       fileName: widget.fileName,
-      bytes: await widget.localFile.readAsBytes(),
+      bytes: Uint8List(0),
     );
     if (savePath == null) {
       return;
