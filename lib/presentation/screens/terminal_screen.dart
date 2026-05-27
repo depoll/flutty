@@ -1099,8 +1099,12 @@ String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
 
 /// Resolves a readable stream for a picked upload file when available.
 @visibleForTesting
-Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) =>
-    file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
+Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) {
+  if (file.path == null) {
+    return null;
+  }
+  return file.readAsByteStream().cast<List<int>>();
+}
 
 /// Resolves the picker request used for terminal uploads.
 @visibleForTesting
@@ -12489,9 +12493,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final result = await FilePicker.pickFiles(
         dialogTitle: dialogTitle,
         type: pickerType,
-        allowMultiple: allowMultiple,
-        withData: kIsWeb,
-        withReadStream: !kIsWeb,
       );
       if (!mounted) {
         return;
@@ -12808,8 +12809,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             stream: readStream,
           );
         } else {
-          final bytes = file.bytes;
-          if (bytes == null) {
+          final Uint8List bytes;
+          try {
+            bytes = await file.readAsBytes();
+          } on Exception {
             throw const FileSystemException('Unable to read selected file');
           }
           await remoteFileService.uploadBytes(

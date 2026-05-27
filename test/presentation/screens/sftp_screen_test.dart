@@ -284,7 +284,6 @@ void main() {
       final request = resolveSftpUploadPickerRequest();
 
       expect(request.allowMultiple, isTrue);
-      expect(request.withReadStream, isTrue);
     });
 
     test(
