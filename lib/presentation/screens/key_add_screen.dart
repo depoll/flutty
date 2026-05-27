@@ -587,12 +587,24 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     if (_isImporting) {
       return;
     }
-    final file = await FilePicker.pickFile();
+    // file_picker 12 removed a single-file picker that loads bytes on web:
+    // `pickFile()` hardcodes `withData: false`, which makes `readAsBytes()`
+    // crash on web (xFile.fromData(bytes!, ...) null-asserts). Stay on
+    // `pickFiles` with the deprecated `withData`/`allowMultiple` overrides
+    // so web continues to work; the deprecations will be re-evaluated once
+    // file_picker exposes a non-deprecated web-capable single-file API.
+    final result = await FilePicker.pickFiles(
+      // ignore: deprecated_member_use
+      allowMultiple: false,
+      // ignore: deprecated_member_use
+      withData: true,
+    );
 
-    if (!mounted || file == null) {
+    if (!mounted || result == null || result.files.isEmpty) {
       return;
     }
 
+    final file = result.files.single;
     final Uint8List bytes;
     try {
       bytes = await file.readAsBytes();
