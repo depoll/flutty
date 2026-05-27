@@ -856,6 +856,36 @@ func TestActiveReplayKeepsFullAgentHistory(t *testing.T) {
 	}
 }
 
+func TestActiveReplayCapsRunawayAgentHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte(
+		"agent-main-screen-start" +
+			strings.Repeat("conversation-history", windowFullReplayHistoryLimitBytes/4) +
+			"agent-main-screen-end",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "copilot",
+		history:      history,
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := server.activeReplayLocked()
+
+	if len(replay) > len(replayPrefixForTest(window))+windowFullReplayHistoryLimitBytes+2048 {
+		t.Fatalf("replay length = %d, want capped near %d", len(replay), len(replayPrefixForTest(window))+windowFullReplayHistoryLimitBytes)
+	}
+	if !strings.HasSuffix(
+		strings.TrimSuffix(string(replay), replayPostHistorySuffixForTest(true)),
+		"agent-main-screen-end",
+	) {
+		t.Fatalf("replay did not preserve recent agent output suffix")
+	}
+}
+
 func TestActiveReplayKeepsFullNonShellForegroundHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
