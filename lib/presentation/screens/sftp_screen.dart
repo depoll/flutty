@@ -1357,7 +1357,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Widget _buildBreadcrumbs() {
-    final parts = _displaySftpPath(
+    final realParts = _currentPath
+        .split('/')
+        .where((part) => part.isNotEmpty)
+        .toList();
+    final displayParts = _displaySftpPath(
       _currentPath,
     ).split('/').where((p) => p.isNotEmpty).toList();
     final theme = Theme.of(context);
@@ -1401,7 +1405,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                       child: Text('/'),
                     ),
                   ),
-                  for (var i = 0; i < parts.length; i++) ...[
+                  for (var i = 0; i < realParts.length; i++) ...[
                     Icon(
                       Icons.chevron_right,
                       size: 16,
@@ -1409,9 +1413,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                     ),
                     InkWell(
                       onTap: () {
-                        final path = _redactStoreScreenshotIdentities
-                            ? _currentPath
-                            : '/${parts.sublist(0, i + 1).join('/')}';
+                        final path =
+                            '/${realParts.sublist(0, i + 1).join('/')}';
                         unawaited(_navigateTo(path));
                       },
                       child: Padding(
@@ -1420,8 +1423,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                           vertical: 8,
                         ),
                         child: Text(
-                          parts[i],
-                          style: i == parts.length - 1
+                          _displaySftpBreadcrumbPart(
+                            realParts[i],
+                            displayParts: displayParts,
+                            index: i,
+                            isLast: i == realParts.length - 1,
+                          ),
+                          style: i == realParts.length - 1
                               ? TextStyle(
                                   fontWeight: FontWeight.bold,
                                   color: theme.colorScheme.primary,
@@ -1445,6 +1453,21 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return remotePath;
     }
     return '/release-workspace';
+  }
+
+  String _displaySftpBreadcrumbPart(
+    String realPart, {
+    required List<String> displayParts,
+    required int index,
+    required bool isLast,
+  }) {
+    if (!_redactStoreScreenshotIdentities) {
+      return realPart;
+    }
+    if (isLast && displayParts.isNotEmpty) {
+      return displayParts.last;
+    }
+    return '...';
   }
 
   Widget _buildFileList() {
