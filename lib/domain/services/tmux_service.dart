@@ -2544,8 +2544,8 @@ String buildTmuxRefreshForegroundClientsCommand(
       'done';
 }
 
-/// Builds a command that updates tmux's pane palette, notifies theme-aware TUI
-/// panes, and redraws foreground clients.
+/// Builds a command that updates tmux's pane palette, refreshes tmux's theme
+/// report cache, nudges theme-aware TUI panes, and redraws foreground clients.
 @visibleForTesting
 String buildTmuxRefreshTerminalThemeCommand(
   String sessionName,
@@ -2626,31 +2626,13 @@ String buildTmuxRefreshTerminalThemeCommand(
       'fi; '
       r'if [ -n "$current_agent_tool" ]; then '
       r'case "$agent_tool" in '
-      'copilot) '
+      'copilot|codex) '
       'injected=1; '
-      '( ${_buildTmuxSendPaneThemeModeReportCommand(theme, extraFlags: extraFlags)} '
-      '2>/dev/null || true; sleep 0.05; '
-      '${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
-      '2>/dev/null || true; sleep 0.05; '
-      '${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
-      'codex) '
+      'gemini|opencode|claude|antigravity) '
       'injected=1; '
-      '( ${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
-      '2>/dev/null || true; sleep 0.05; '
-      '${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
-      '2>/dev/null || true ) & ;; '
-      'gemini) '
-      'injected=1; '
-      '( ${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
-      '2>/dev/null || true; sleep 0.05; '
-      '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
-      '2>/dev/null || true ) & ;; '
-      'opencode|claude|antigravity) '
-      'injected=1; '
-      '( ${_buildTmuxSendPaneBackgroundColorReportCommand(theme, extraFlags: extraFlags)} '
-      '2>/dev/null || true; sleep 0.05; '
-      '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
+      '( ${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
       '2>/dev/null || true ) & ;; '
       'esac; '
       'fi; '
@@ -2795,22 +2777,6 @@ String _buildTmuxSendPaneFocusTransitionCommand({String? extraFlags}) =>
     '${_buildTmuxSendPaneFocusReportCommand('\x1b[O', extraFlags: extraFlags)} '
     '2>/dev/null || true; sleep 0.12; '
     '${_buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags)}';
-
-String _buildTmuxSendPaneThemeModeReportCommand(
-  TerminalThemeData theme, {
-  String? extraFlags,
-}) => _buildTmuxSendPaneReportCommand(
-  buildTerminalThemeModeReport(isDark: theme.isDark),
-  extraFlags: extraFlags,
-);
-
-String _buildTmuxSendPaneBackgroundColorReportCommand(
-  TerminalThemeData theme, {
-  String? extraFlags,
-}) => _buildTmuxSendPaneReportCommand(
-  buildTerminalThemeBackgroundColorReport(theme),
-  extraFlags: extraFlags,
-);
 
 String _buildTmuxSendPaneFocusReportCommand(
   String report, {
