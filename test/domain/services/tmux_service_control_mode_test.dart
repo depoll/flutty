@@ -205,10 +205,8 @@ void main() {
       expect(command, contains('done; wait; };'));
       expect(command, contains(r'if [ -n "$current_agent_tool" ]; then'));
       expect(command, contains(r'case "$agent_tool" in'));
-      expect(command, contains('copilot)'));
-      expect(command, contains('codex)'));
-      expect(command, contains('gemini)'));
-      expect(command, contains('opencode|claude|antigravity)'));
+      expect(command, contains('copilot|codex)'));
+      expect(command, contains('gemini|opencode|claude|antigravity)'));
       final directBranchStart = command.indexOf(
         r'if [ -n "$current_agent_tool" ]; then',
       );
@@ -248,59 +246,29 @@ void main() {
       );
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
-      final copilotBranchStart = directBranch.indexOf('copilot)');
-      final codexBranchStart = directBranch.indexOf('codex)');
-      final geminiBranchStart = directBranch.indexOf('gemini)');
-      final opencodeBranchStart = directBranch.indexOf(
-        'opencode|claude|antigravity)',
+      final copilotCodexBranchStart = directBranch.indexOf('copilot|codex)');
+      final otherAgentBranchStart = directBranch.indexOf(
+        'gemini|opencode|claude|antigravity)',
       );
-      final backgroundReportHex = _tmuxSendKeysHex(
-        buildTerminalThemeBackgroundColorReport(TerminalThemes.dracula),
+      final focusOutHex = _tmuxSendKeysHex('\x1b[O');
+      final focusInHex = _tmuxSendKeysHex('\x1b[I');
+      final themeModeHexPrefix = _tmuxSendKeysHex('\x1b[?997;');
+      final oscHexPrefix = _tmuxSendKeysHex('\x1b]');
+      expect(copilotCodexBranchStart, isNonNegative);
+      expect(otherAgentBranchStart, greaterThan(copilotCodexBranchStart));
+      final copilotCodexBranch = directBranch.substring(
+        copilotCodexBranchStart,
+        otherAgentBranchStart,
       );
-      expect(copilotBranchStart, isNonNegative);
-      expect(codexBranchStart, greaterThan(copilotBranchStart));
-      expect(geminiBranchStart, greaterThan(codexBranchStart));
-      expect(opencodeBranchStart, greaterThan(geminiBranchStart));
-      expect(
-        directBranch.substring(copilotBranchStart, codexBranchStart),
-        contains('1b 5b 3f 39 39 37 3b 31 6e'),
-      );
-      expect(
-        directBranch.substring(copilotBranchStart, codexBranchStart),
-        contains(backgroundReportHex),
-      );
-      expect(
-        directBranch.substring(codexBranchStart, geminiBranchStart),
-        isNot(contains('1b 5b 3f 39 39 37')),
-      );
-      expect(
-        directBranch.substring(codexBranchStart, geminiBranchStart),
-        contains(backgroundReportHex),
-      );
-      expect(
-        directBranch.substring(geminiBranchStart, opencodeBranchStart),
-        isNot(contains('1b 5b 3f 39 39 37')),
-      );
-      expect(
-        directBranch.substring(codexBranchStart, geminiBranchStart),
-        isNot(contains('1b 5b 4f')),
-      );
-      expect(
-        directBranch.substring(geminiBranchStart, opencodeBranchStart),
-        contains(backgroundReportHex),
-      );
-      expect(
-        directBranch.substring(opencodeBranchStart),
-        contains(backgroundReportHex),
-      );
-      expect(
-        directBranch.indexOf('1b 5b 4f', geminiBranchStart),
-        greaterThan(geminiBranchStart),
-      );
-      expect(
-        directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
-        greaterThan(opencodeBranchStart),
-      );
+      final otherAgentBranch = directBranch.substring(otherAgentBranchStart);
+      expect(copilotCodexBranch, contains(focusInHex));
+      expect(copilotCodexBranch, isNot(contains(focusOutHex)));
+      expect(copilotCodexBranch, isNot(contains(themeModeHexPrefix)));
+      expect(copilotCodexBranch, isNot(contains(oscHexPrefix)));
+      expect(otherAgentBranch, contains(focusOutHex));
+      expect(otherAgentBranch, contains(focusInHex));
+      expect(otherAgentBranch, isNot(contains(themeModeHexPrefix)));
+      expect(otherAgentBranch, isNot(contains(oscHexPrefix)));
       expect(command, isNot(contains('sleep 0.25')));
       final tmuxCacheReports = [
         buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
@@ -321,15 +289,13 @@ void main() {
           buildTerminalThemeRefreshReportList(TerminalThemes.dracula).join(),
         ),
       );
+      expect(command, contains(r'send-keys -t "$pane" -H 1b 5b 49'));
+      expect(command, contains(r'send-keys -t "$pane" -H 1b 5b 4f'));
       expect(
         command,
-        contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),
+        isNot(contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37')),
       );
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
-      expect(command, contains(r'send-keys -t "$pane" -H 1b 5d 31 31'));
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(4));
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d')));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),

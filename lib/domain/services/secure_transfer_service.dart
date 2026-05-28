@@ -272,7 +272,20 @@ class SecureTransferService {
               (snippet) => OrderingTerm.asc(snippet.id),
             ]))
             .get();
-    final portForwards = await _db.select(_db.portForwards).get();
+    final rawPortForwards = await _db.select(_db.portForwards).get();
+    final exportedHostIds = hosts.map((host) => host.id).toSet();
+    final portForwards = rawPortForwards
+        .where((portForward) => exportedHostIds.contains(portForward.hostId))
+        .toList(growable: false);
+    final skippedPortForwardCount =
+        rawPortForwards.length - portForwards.length;
+    if (skippedPortForwardCount > 0) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'migration_export_port_forwards_skipped',
+        fields: {'skippedCount': skippedPortForwardCount},
+      );
+    }
     final knownHosts = includeKnownHosts
         ? await _db.select(_db.knownHosts).get()
         : const <KnownHost>[];
@@ -1105,18 +1118,17 @@ class SecureTransferService {
     List<Map<String, dynamic>> rawPortForwards, {
     required Map<int, int> hostMapping,
   }) async {
+    var skippedPortForwardCount = 0;
     for (final item in rawPortForwards) {
       final oldHostId = _optionalInt(item['hostId']);
       if (oldHostId == null) {
-        throw const FormatException(
-          'Missing host reference in migration payload',
-        );
+        skippedPortForwardCount += 1;
+        continue;
       }
       final mappedHostId = hostMapping[oldHostId];
       if (mappedHostId == null) {
-        throw const FormatException(
-          'Invalid host reference in migration payload',
-        );
+        skippedPortForwardCount += 1;
+        continue;
       }
 
       await _db
@@ -1138,6 +1150,13 @@ class SecureTransferService {
               ),
             ),
           );
+    }
+    if (skippedPortForwardCount > 0) {
+      _diagnosticsLogger.warning(
+        'secure_transfer',
+        'migration_import_port_forwards_skipped',
+        fields: {'skippedCount': skippedPortForwardCount},
+      );
     }
   }
 

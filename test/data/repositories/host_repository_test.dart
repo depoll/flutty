@@ -632,6 +632,34 @@ void main() {
       expect(host, isNull);
     });
 
+    test('delete removes host port forwards', () async {
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Test Server',
+          hostname: '192.168.1.1',
+          username: 'admin',
+        ),
+      );
+      await db
+          .into(db.portForwards)
+          .insert(
+            PortForwardsCompanion.insert(
+              name: 'Tunnel',
+              hostId: id,
+              forwardType: 'local',
+              localPort: 10022,
+              remoteHost: '127.0.0.1',
+              remotePort: 22,
+            ),
+          );
+
+      final deleted = await repository.delete(id);
+
+      final portForwards = await db.select(db.portForwards).get();
+      expect(deleted, 1);
+      expect(portForwards, isEmpty);
+    });
+
     test('delete returns 0 when host not exists', () async {
       final deleted = await repository.delete(999);
       expect(deleted, 0);

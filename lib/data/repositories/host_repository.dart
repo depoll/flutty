@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
+import 'like_query.dart';
 
 /// Repository for managing host entities.
 class HostRepository {
@@ -103,13 +104,16 @@ class HostRepository {
   /// The query is treated as a literal string: `%` and `_` are matched
   /// exactly rather than acting as SQL LIKE wildcards.
   Future<List<Host>> search(String query) {
-    final escaped = _escapeLike(query);
+    final escaped = escapeSqlLikeQuery(query);
     return (_db.select(_db.hosts)
           ..where(
             (h) =>
-                h.label.like('%$escaped%', escapeChar: r'\') |
-                h.hostname.like('%$escaped%', escapeChar: r'\') |
-                h.tags.like('%$escaped%', escapeChar: r'\'),
+                h.label.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
+                h.hostname.like(
+                  '%$escaped%',
+                  escapeChar: sqlLikeEscapeCharacter,
+                ) |
+                h.tags.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
           )
           ..orderBy([
             (h) => OrderingTerm.asc(h.sortOrder),
@@ -118,13 +122,6 @@ class HostRepository {
         .get()
         .then(_decryptHosts);
   }
-
-  /// Escapes SQLite LIKE metacharacters so that `%`, `_`, and `\` in the
-  /// [query] are matched literally rather than as pattern characters.
-  static String _escapeLike(String query) => query
-      .replaceAll(r'\', r'\\')
-      .replaceAll('%', r'\%')
-      .replaceAll('_', r'\_');
 
   /// Insert a new host.
   Future<int> insert(HostsCompanion host) async {
@@ -227,10 +224,19 @@ class HostRepository {
 
   /// Delete a host.
   Future<int> delete(int id) async {
-    final previousStoredPassword = await _storedPasswordForHost(id);
-    final deleted = await (_db.delete(
+    final host = await (_db.select(
       _db.hosts,
-    )..where((h) => h.id.equals(id))).go();
+    )..where((h) => h.id.equals(id))).getSingleOrNull();
+    if (host == null) {
+      return 0;
+    }
+    final previousStoredPassword = host.password;
+    final deleted = await _db.transaction(() async {
+      await (_db.delete(
+        _db.portForwards,
+      )..where((portForward) => portForward.hostId.equals(id))).go();
+      return (_db.delete(_db.hosts)..where((h) => h.id.equals(id))).go();
+    });
     if (deleted > 0) {
       _evictDecrypted(previousStoredPassword);
     }
