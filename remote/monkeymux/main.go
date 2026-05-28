@@ -61,10 +61,11 @@ const terminalScreenClearSequence = "\x1b[H\x1b[2J\x1b[3J"
 
 const terminalAllScreensClearSequence = terminalScreenClearSequence + "\x1b[?1049h" + terminalScreenClearSequence + "\x1b[?1049l" + terminalScreenClearSequence
 
-const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?1007l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m" + terminalAllScreensClearSequence
+const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?1007l\x1b[?2004l\x1b[?2031l\x1b[?1047l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m" + terminalAllScreensClearSequence
 
 var (
 	preReplayPrivateModes = []string{
+		"1047",
 		"1049",
 		"6",
 		"7",
@@ -100,6 +101,7 @@ var (
 		"1004": {},
 		"1006": {},
 		"1007": {},
+		"1047": {},
 		"1049": {},
 		"2004": {},
 		"2031": {},
@@ -2549,11 +2551,15 @@ func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
 	if w == nil {
 		return false
 	}
-	if w.privateModes["1049"] || w.agentToolLocked() != "" {
+	if w.alternateScreenModeActiveLocked() || w.agentToolLocked() != "" {
 		return true
 	}
 	command := strings.TrimSpace(w.currentCommandLocked())
 	return command != "" && !isShellCommandName(command)
+}
+
+func (w *muxWindow) alternateScreenModeActiveLocked() bool {
+	return w.privateModes["1047"] || w.privateModes["1049"]
 }
 
 func (w *muxWindow) reportsMouseWheelLocked() bool {
@@ -2607,7 +2613,7 @@ func terminalModePreReplaySequence(window *muxWindow) []byte {
 }
 
 func terminalPreHistoryClearSequence(window *muxWindow) []byte {
-	if window == nil || !window.privateModes["1049"] {
+	if window == nil || !window.alternateScreenModeActiveLocked() {
 		return nil
 	}
 	return []byte(terminalScreenClearSequence)

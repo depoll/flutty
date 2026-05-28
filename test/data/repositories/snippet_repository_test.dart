@@ -196,6 +196,38 @@ void main() {
       expect(results.first.name, 'Cleanup');
     });
 
+    test(
+      'search treats percent as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          SnippetsCompanion.insert(name: 'Disk 100%', command: 'df -h'),
+        );
+        await repository.insert(
+          SnippetsCompanion.insert(name: 'List files', command: 'ls -la'),
+        );
+
+        final results = await repository.search('%');
+        expect(results, hasLength(1));
+        expect(results.first.name, 'Disk 100%');
+      },
+    );
+
+    test(
+      'search treats underscore as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          SnippetsCompanion.insert(name: 'deploy_app', command: 'deploy app'),
+        );
+        await repository.insert(
+          SnippetsCompanion.insert(name: 'deploy app', command: 'deploy app'),
+        );
+
+        final results = await repository.search('deploy_');
+        expect(results, hasLength(1));
+        expect(results.first.name, 'deploy_app');
+      },
+    );
+
     test('getFrequent returns snippets ordered by usage count', () async {
       final id1 = await repository.insert(
         SnippetsCompanion.insert(name: 'Snippet 1', command: 'cmd1'),
