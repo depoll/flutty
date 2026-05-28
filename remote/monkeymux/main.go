@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.54"
+	monkeyMuxVersion                  = "0.1.55"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -224,6 +224,7 @@ type controlMessage struct {
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
+	Redraw      bool     `json:"redraw,omitempty"`
 }
 
 type controlResponse struct {
@@ -1967,7 +1968,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("invalid terminal size"))
 			return
 		}
-		s.resize(request.Width, request.Height)
+		s.resizeWithRedraw(request.Width, request.Height, request.Redraw)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
 	case "query_active_context":
 		s.mu.Lock()
@@ -2519,11 +2520,30 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	s.resizeWithRedraw(width, height, false)
+}
+
+func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+	var foregroundProcessGroup int
+	var shouldSignal bool
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	sizeChanged := s.width != width || s.height != height
 	s.width = width
 	s.height = height
-	s.resizeActiveLocked(width, height)
+	window := s.windowByIDLocked(s.activeID)
+	s.resizeWindowLocked(window, width, height)
+	if window != nil &&
+		!window.closed &&
+		window.usesForegroundRedrawReplayLocked() &&
+		(forceRedraw || sizeChanged) {
+		simulateForegroundResize(window, width, height)
+		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+		shouldSignal = true
+	}
+	s.mu.Unlock()
+	if shouldSignal {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {

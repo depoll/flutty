@@ -6215,6 +6215,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName,
         columns: terminalColumns,
         rows: terminalRows,
+        redraw: refreshVisibleTerminal,
+      );
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.resize',
+        'sync_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'columns': terminalColumns,
+          'rows': terminalRows,
+          'redraw': refreshVisibleTerminal,
+          'refreshedVisibleTerminal': refreshVisibleTerminal,
+        },
       );
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
