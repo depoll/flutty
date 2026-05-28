@@ -519,7 +519,7 @@ func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
 	}
 }
 
-func TestSelectWindowClearsFullHistoryViewportBeforeResizeRedraw(t *testing.T) {
+func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
 	inactiveWindow := &muxWindow{
@@ -543,7 +543,7 @@ func TestSelectWindowClearsFullHistoryViewportBeforeResizeRedraw(t *testing.T) {
 		simulateForegroundResize = originalSimulateForegroundResize
 	}()
 
-	wantReplay := replayPrefixForTest(inactiveWindow) + "stale tui screen" +
+	wantReplay := replayPrefixForTest(inactiveWindow) +
 		replayPostHistorySuffixForTest(true)
 	simulateForegroundResize = func(window *muxWindow, width int, height int) {
 		if got := attach.String(); got != wantReplay {
@@ -551,14 +551,16 @@ func TestSelectWindowClearsFullHistoryViewportBeforeResizeRedraw(t *testing.T) {
 		}
 	}
 	signalForegroundResize = func(processGroup int) {
-		want := wantReplay + terminalViewportClearSequence
-		if got := attach.String(); got != want {
-			t.Fatalf("viewport was not cleared before resize redraw: got %q, want %q", got, want)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize signaled before redraw replay was written: got %q, want %q", got, wantReplay)
 		}
 	}
 
 	if err := server.selectWindow("@2"); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(attach.String(), "stale tui screen") {
+		t.Fatalf("redraw replay retained stale TUI history: %q", attach.String())
 	}
 }
 
@@ -984,7 +986,7 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 	}
 }
 
-func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForAlternateScreenHistory(t *testing.T) {
 	for _, mode := range []string{"1047", "1049"} {
 		t.Run(mode, func(t *testing.T) {
 			server := newMuxServer("test")
@@ -1007,18 +1009,15 @@ func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
 			window.observeTerminalModesLocked(history)
 			replay := string(server.activeReplayLocked())
 
-			if !strings.Contains(replay, "alternate-screen-start") {
-				t.Fatalf("alternate-screen replay was capped before screen start")
+			if strings.Contains(replay, "alternate-screen-start") ||
+				strings.Contains(replay, "alternate-screen-end") {
+				t.Fatalf("alternate-screen redraw replay retained stale history: %q", replay)
 			}
 			if !strings.Contains(
 				replay,
-				enterAlternateScreen+terminalScreenClearSequence+
-					enterAlternateScreen+"alternate-screen-start",
+				enterAlternateScreen+terminalScreenClearSequence,
 			) {
-				t.Fatalf("alternate-screen replay did not clear stale alternate buffer before history: %q", replay)
-			}
-			if !strings.Contains(replay, "alternate-screen-end") {
-				t.Fatalf("alternate-screen replay lost screen end")
+				t.Fatalf("alternate-screen redraw replay did not clear stale alternate buffer: %q", replay)
 			}
 			if got, want := len(window.history), len(history); got != want {
 				t.Fatalf("history length = %d, want %d", got, want)
@@ -1027,7 +1026,7 @@ func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
 	}
 }
 
-func TestActiveReplayKeepsFullAgentHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForAgentHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"agent-main-screen-start" +
@@ -1046,18 +1045,16 @@ func TestActiveReplayKeepsFullAgentHistory(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 
-	if !strings.Contains(replay, "agent-main-screen-start") {
-		t.Fatalf("agent replay was capped before history start")
-	}
-	if !strings.Contains(replay, "agent-main-screen-end") {
-		t.Fatalf("agent replay lost history end")
+	if strings.Contains(replay, "agent-main-screen-start") ||
+		strings.Contains(replay, "agent-main-screen-end") {
+		t.Fatalf("agent redraw replay retained stale history: %q", replay)
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
 	}
 }
 
-func TestActiveReplayCapsRunawayAgentHistory(t *testing.T) {
+func TestActiveReplaySkipsRunawayAgentHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"agent-main-screen-start" +
@@ -1076,18 +1073,15 @@ func TestActiveReplayCapsRunawayAgentHistory(t *testing.T) {
 
 	replay := server.activeReplayLocked()
 
-	if len(replay) > len(replayPrefixForTest(window))+windowFullReplayHistoryLimitBytes+2048 {
-		t.Fatalf("replay length = %d, want capped near %d", len(replay), len(replayPrefixForTest(window))+windowFullReplayHistoryLimitBytes)
+	if len(replay) > len(replayPrefixForTest(window))+2048 {
+		t.Fatalf("redraw replay length = %d, want no retained history", len(replay))
 	}
-	if !strings.HasSuffix(
-		strings.TrimSuffix(string(replay), replayPostHistorySuffixForTest(true)),
-		"agent-main-screen-end",
-	) {
-		t.Fatalf("replay did not preserve recent agent output suffix")
+	if strings.Contains(string(replay), "agent-main-screen") {
+		t.Fatalf("agent redraw replay retained runaway history: %q", replay)
 	}
 }
 
-func TestActiveReplayKeepsFullNonShellForegroundHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"interactive-main-screen-start" +
@@ -1106,11 +1100,9 @@ func TestActiveReplayKeepsFullNonShellForegroundHistory(t *testing.T) {
 
 	replay := string(server.activeReplayLocked())
 
-	if !strings.Contains(replay, "interactive-main-screen-start") {
-		t.Fatalf("interactive replay was capped before history start")
-	}
-	if !strings.Contains(replay, "interactive-main-screen-end") {
-		t.Fatalf("interactive replay lost history end")
+	if strings.Contains(replay, "interactive-main-screen-start") ||
+		strings.Contains(replay, "interactive-main-screen-end") {
+		t.Fatalf("interactive redraw replay retained stale history: %q", replay)
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
@@ -1506,7 +1498,7 @@ func TestWindowHistoryTrimsToLimit(t *testing.T) {
 	}
 }
 
-func TestWindowHistoryKeepsLargerTailForFullReplayWindows(t *testing.T) {
+func TestWindowHistoryKeepsLargerTailForForegroundRedrawWindows(t *testing.T) {
 	window := &muxWindow{agentTool: "codex"}
 	history := []byte(
 		"agent-history-start" +
@@ -1911,11 +1903,14 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	preModes := string(terminalModePreReplaySequence(window))
 	preHistoryClear := string(terminalPreHistoryClearSequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
-	want := replayPrefixForTest(window) + preModes + preHistoryClear + "nano screen" +
+	want := replayPrefixForTest(window) + preModes + preHistoryClear +
 		terminalParserResetSequence + postModes +
 		terminalCharacterSetResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
+	}
+	if strings.Contains(replay, "nano screen") {
+		t.Fatalf("editor redraw replay retained stale history: %q", replay)
 	}
 	for _, sequence := range []string{
 		"\x1b[?1049h",

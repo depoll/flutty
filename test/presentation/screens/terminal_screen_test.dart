@@ -2482,6 +2482,10 @@ void main() {
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
           TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
         ];
+        const activeAgentWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: true, id: '@1'),
+        ];
         host = _buildHost(
           id: host.id,
           tmuxSessionName: sessionName,
@@ -2593,6 +2597,8 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
         await tester.tap(find.text('agent'));
+        await tester.pump();
+        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
         await tester.pump();
         await tester.pump();
         await tester.pump();
