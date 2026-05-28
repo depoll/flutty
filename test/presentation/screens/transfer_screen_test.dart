@@ -53,6 +53,17 @@ void main() {
     });
   });
 
+  group('export destination', () {
+    test('uses the share sheet only for native iOS exports', () {
+      expect(useShareSheetForPlatform(TargetPlatform.iOS), isTrue);
+      expect(useShareSheetForPlatform(TargetPlatform.android), isFalse);
+      expect(
+        useShareSheetForPlatform(TargetPlatform.iOS, isWeb: true),
+        isFalse,
+      );
+    });
+  });
+
   group('picker helpers', () {
     test('uses the native unfiltered picker on iOS', () {
       expect(

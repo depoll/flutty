@@ -227,10 +227,19 @@ class HostRepository {
 
   /// Delete a host.
   Future<int> delete(int id) async {
-    final previousStoredPassword = await _storedPasswordForHost(id);
-    final deleted = await (_db.delete(
+    final host = await (_db.select(
       _db.hosts,
-    )..where((h) => h.id.equals(id))).go();
+    )..where((h) => h.id.equals(id))).getSingleOrNull();
+    if (host == null) {
+      return 0;
+    }
+    final previousStoredPassword = host.password;
+    final deleted = await _db.transaction(() async {
+      await (_db.delete(
+        _db.portForwards,
+      )..where((portForward) => portForward.hostId.equals(id))).go();
+      return (_db.delete(_db.hosts)..where((h) => h.id.equals(id))).go();
+    });
     if (deleted > 0) {
       _evictDecrypted(previousStoredPassword);
     }

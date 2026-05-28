@@ -185,6 +185,75 @@ void main() {
     );
 
     test(
+      'createMigrationData excludes port forwards for missing hosts',
+      () async {
+        final hostId = await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Production',
+            hostname: 'prod.example.com',
+            username: 'root',
+          ),
+        );
+        await db
+            .into(db.portForwards)
+            .insert(
+              PortForwardsCompanion.insert(
+                name: 'valid',
+                hostId: hostId,
+                forwardType: 'local',
+                localPort: 10022,
+                remoteHost: '127.0.0.1',
+                remotePort: 22,
+              ),
+            );
+        await db.customStatement('PRAGMA foreign_keys = OFF');
+        await db
+            .into(db.portForwards)
+            .insert(
+              PortForwardsCompanion.insert(
+                name: 'orphaned',
+                hostId: 999,
+                forwardType: 'local',
+                localPort: 10023,
+                remoteHost: '127.0.0.1',
+                remotePort: 22,
+              ),
+            );
+
+        final migrationData = await transferService.createMigrationData(
+          includeKnownHosts: false,
+        );
+        final portForwards = migrationData['portForwards'] as List;
+        final portForwardData = Map<String, dynamic>.from(
+          portForwards.single as Map,
+        );
+
+        expect(portForwardData['name'], 'valid');
+        expect(portForwardData['hostId'], hostId);
+
+        final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(importedDb.close);
+        final importedEncryptionService = SecretEncryptionService.forTesting();
+        final importedTransferService = SecureTransferService(
+          importedDb,
+          KeyRepository(importedDb, importedEncryptionService),
+          HostRepository(importedDb, importedEncryptionService),
+        );
+
+        await importedTransferService.importMigrationData(
+          data: migrationData,
+          mode: MigrationImportMode.replace,
+          includeKnownHosts: false,
+        );
+
+        final importedPortForwards = await importedDb
+            .select(importedDb.portForwards)
+            .get();
+        expect(importedPortForwards, hasLength(1));
+      },
+    );
+
+    test(
       'includes referenced key data when requested for host export',
       () async {
         final keyId = await keyRepository.insert(
@@ -626,7 +695,7 @@ void main() {
     });
 
     test(
-      'fails migration when port forward references missing host mapping',
+      'skips migration port forwards that reference missing hosts',
       () async {
         final payload = TransferPayload(
           type: TransferPayloadType.fullMigration,
@@ -647,13 +716,13 @@ void main() {
           },
         );
 
-        await expectLater(
-          transferService.importFullMigrationPayload(
-            payload: payload,
-            mode: MigrationImportMode.merge,
-          ),
-          throwsFormatException,
+        await transferService.importFullMigrationPayload(
+          payload: payload,
+          mode: MigrationImportMode.merge,
         );
+
+        final portForwards = await db.select(db.portForwards).get();
+        expect(portForwards, isEmpty);
       },
     );
 
