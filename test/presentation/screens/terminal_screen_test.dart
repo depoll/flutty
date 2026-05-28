@@ -5405,7 +5405,7 @@ void main() {
         expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
         expect(executedCommands, isEmpty);
 
-        await tester.tap(find.widgetWithText(TextButton, 'Use tmux'));
+        await tester.tap(find.widgetWithText(TextButton, 'Open shell'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 

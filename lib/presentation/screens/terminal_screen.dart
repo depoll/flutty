@@ -6797,7 +6797,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Use tmux'),
+            child: const Text('Open shell'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
