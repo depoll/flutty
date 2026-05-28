@@ -430,6 +430,85 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
+func TestSelectWindowSkipsSimulatedResizeWithoutAttach(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		history:      []byte("background output"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+
+	var simulated []string
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(simulated) != 0 {
+		t.Fatalf("simulated resizes = %#v, want none without attach", simulated)
+	}
+}
+
+func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	attach := &writeHookConn{
+		recordingConn: &recordingConn{},
+		onWrite: func() {
+			server.resize(100, 30)
+		},
+	}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		history:      []byte("background output"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+
+	var simulated []string
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(simulated, []string{"@2:100x30"}) {
+		t.Fatalf("simulated resizes = %#v, want [@2:100x30]", simulated)
+	}
+}
+
 func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -3221,6 +3300,11 @@ type recordingConn struct {
 	buf bytes.Buffer
 }
 
+type writeHookConn struct {
+	*recordingConn
+	onWrite func()
+}
+
 type errReader struct{}
 
 type discardConn struct{}
@@ -3269,6 +3353,14 @@ func (c *recordingConn) Write(data []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.buf.Write(data)
+}
+
+func (c *writeHookConn) Write(data []byte) (int, error) {
+	n, err := c.recordingConn.Write(data)
+	if c.onWrite != nil {
+		c.onWrite()
+	}
+	return n, err
 }
 
 func (c *recordingConn) Close() error {
