@@ -806,6 +806,106 @@ func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	}
 }
 
+func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	var simulated []string
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resize(120, 55)
+
+	if !reflect.DeepEqual(simulated, []string{"@1:120x55"}) {
+		t.Fatalf("simulated resizes = %#v, want [@1:120x55]", simulated)
+	}
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	var simulated []string
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resizeWithRedraw(120, 40, true)
+
+	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
+		t.Fatalf("simulated resizes = %#v, want [@1:120x40]", simulated)
+	}
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
 func TestSameSizeResizeDoesNotSignalShell(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{

@@ -417,12 +417,14 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     required int columns,
     required int rows,
+    bool redraw = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'resize',
       'width': columns,
       'height': rows,
+      if (redraw) 'redraw': true,
     }, priority: priority);
   }
 
