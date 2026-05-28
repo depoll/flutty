@@ -121,6 +121,70 @@ void main() {
     },
   );
 
+  testWidgets('forced SGR touch scroll uses reported-wheel drag threshold', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            hardwareKeyboardOnly: true,
+            touchScrollToTerminal: true,
+            simulateScroll: false,
+            forceSgrTouchScroll: true,
+          ),
+        ),
+      ),
+    );
+
+    final terminalState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = terminalState.renderTerminal.lineHeight;
+    expect(lineHeight, greaterThan(0));
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 2),
+        localPosition: Offset(150, 100 - lineHeight * 2),
+        delta: Offset(0, -lineHeight * 2),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, isEmpty);
+
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - lineHeight * 3),
+        localPosition: Offset(150, 100 - lineHeight * 3),
+        delta: Offset(0, -lineHeight),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, hasLength(1));
+    expect(output.single, startsWith('\u001b[<65;'));
+  });
+
   testWidgets(
     'mouse-reporting apps require more drag distance per touch scroll step',
     (tester) async {
