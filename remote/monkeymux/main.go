@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.49"
+	monkeyMuxVersion                  = "0.1.50"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -45,7 +45,7 @@ const (
 	socketTimeout                     = 2 * time.Second
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
-	windowFullReplayHistoryLimitBytes = 4 * 1024 * 1024
+	windowFullReplayHistoryLimitBytes = 512 * 1024
 	windowReplayLimitBytes            = 32 * 1024
 	csiBufferLimitBytes               = 64
 	themeHintLimitBytes               = 1024
