@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -383,20 +384,32 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	inactiveWindow.history = []byte("background output")
 
 	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
 	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
 		replayPostHistorySuffixForTest(true)
 	var signaled []int
+	var simulated []string
 	foregroundProcessGroupForWindow = func(window *muxWindow) int {
 		if window == inactiveWindow {
 			return 4242
 		}
 		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize simulated before replay was written: got %q, want %q", got, wantReplay)
+		}
 	}
 	signalForegroundResize = func(processGroup int) {
 		signaled = append(signaled, processGroup)
@@ -411,6 +424,9 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 
 	if !reflect.DeepEqual(signaled, []int{4242}) {
 		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@2:80x24"}) {
+		t.Fatalf("simulated resizes = %#v, want [@2:80x24]", simulated)
 	}
 }
 
@@ -427,20 +443,32 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server.activeID = "@1"
 
 	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
 	wantReplay := replayPrefixForTest(window) + "foreground output" +
 		replayPostHistorySuffixForTest(true)
 	var signaled []int
+	var simulated []string
 	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
 		if candidate == window {
 			return 4343
 		}
 		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize simulated before replay was written: got %q, want %q", got, wantReplay)
+		}
 	}
 	signalForegroundResize = func(processGroup int) {
 		signaled = append(signaled, processGroup)
@@ -457,6 +485,9 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 
 	if !reflect.DeepEqual(signaled, []int{4343}) {
 		t.Fatalf("signaled process groups = %#v, want [4343]", signaled)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
+		t.Fatalf("simulated resizes = %#v, want [@1:120x40]", simulated)
 	}
 }
 

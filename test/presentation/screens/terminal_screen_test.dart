@@ -2186,13 +2186,13 @@ void main() {
     );
 
     testWidgets(
-      'MonkeyMux attach waits for the initial terminal viewport',
+      'MonkeyMux attach opens as the shell startup command',
       (tester) async {
         const sessionName = 'work';
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
-        final shellEvents = <String>[];
+        final executedCommands = <String>[];
 
         host = _buildHost(
           id: host.id,
@@ -2211,19 +2211,12 @@ void main() {
         );
         when(
           () => shellChannel.resizeTerminal(any(), any(), any(), any()),
-        ).thenAnswer((_) {
-          shellEvents.add('resize');
-        });
-        when(() => shellChannel.write(any())).thenAnswer((invocation) {
-          final value = invocation.positionalArguments.single;
-          if (value is List<int>) {
-            final bytes = List<int>.from(value);
-            shellWrites.add(bytes);
-            final text = utf8.decode(bytes, allowMalformed: true);
-            if (text.contains('/tmp/monkeymux')) {
-              shellEvents.add('attach-write');
-            }
-          }
+        ).thenAnswer((_) {});
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
         });
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
@@ -2320,12 +2313,13 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.pump();
 
-        expect(shellEvents, containsAllInOrder(['resize', 'attach-write']));
-        verifyNever(
-          () => sshClient.execute(
-            any(that: contains('/tmp/monkeymux')),
-            pty: any(named: 'pty'),
-          ),
+        expect(executedCommands, hasLength(1));
+        expect(executedCommands.single, contains("'/tmp/monkeymux' attach"));
+        expect(executedCommands.single, contains('--update-policy never'));
+        expect(executedCommands.single, contains("'$sessionName'"));
+        expect(
+          shellWrites.map(utf8.decode).join(),
+          isNot(contains('/tmp/monkeymux')),
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
@@ -5077,16 +5071,18 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
-        final writtenShellText = utf8.decode(
-          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        expect(executedCommands, hasLength(1));
+        final startupCommand = executedCommands.single;
+        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('--update-policy never'));
+        expect(startupCommand, contains("--cwd '/work/project'"));
+        expect(startupCommand, contains("--name 'Copilot CLI'"));
+        expect(startupCommand, contains("--command 'copilot --yolo'"));
+        expect(startupCommand, contains('agents'));
+        expect(
+          shellWrites.map(utf8.decode).join(),
+          isNot(contains('/tmp/monkeymux')),
         );
-        expect(writtenShellText, contains("'/tmp/monkeymux' attach"));
-        expect(writtenShellText, contains('--update-policy never'));
-        expect(writtenShellText, contains("--cwd '/work/project'"));
-        expect(writtenShellText, contains("--name 'Copilot CLI'"));
-        expect(writtenShellText, contains("--command 'copilot --yolo'"));
-        expect(writtenShellText, contains('agents'));
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, 'agents');
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
@@ -5204,18 +5200,18 @@ void main() {
         expect(find.text('Bundled version: 0.1.14'), findsOneWidget);
         expect(find.text('Platform: darwin-arm64'), findsOneWidget);
         expect(find.text('Size: 1.5 KB'), findsOneWidget);
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, isEmpty);
 
         await tester.tap(find.widgetWithText(FilledButton, 'Install'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        final writtenShellText = utf8.decode(
-          shellWrites.expand((chunk) => chunk).toList(growable: false),
-        );
-        expect(writtenShellText, contains("'/tmp/monkeymux' attach"));
-        expect(writtenShellText, contains('--update-policy never'));
-        expect(writtenShellText, contains("'$sessionName'"));
+        expect(executedCommands, hasLength(1));
+        final startupCommand = executedCommands.single;
+        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('--update-policy never'));
+        expect(startupCommand, contains("'$sessionName'"));
+        expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(session.remoteMuxBackend, RemoteMuxBackend.monkeyMux);
         expect(session.remoteMuxSessionName, sessionName);
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
@@ -5325,7 +5321,7 @@ void main() {
         expect(find.text('Update MonkeyMux helper?'), findsOneWidget);
         expect(find.text('Running version: 0.1.13'), findsOneWidget);
         expect(find.text('Update MonkeyMux?'), findsNothing);
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, isEmpty);
 
         await tester.tap(find.widgetWithText(FilledButton, 'Update'));
         await tester.pump();
@@ -5333,11 +5329,11 @@ void main() {
 
         expect(find.text('Update MonkeyMux helper?'), findsNothing);
         expect(find.text('Update MonkeyMux?'), findsNothing);
-        final writtenShellText = utf8.decode(
-          shellWrites.expand((chunk) => chunk).toList(growable: false),
-        );
-        expect(writtenShellText, contains("'/tmp/monkeymux' attach"));
-        expect(writtenShellText, contains('--update-policy always'));
+        expect(executedCommands, hasLength(1));
+        final startupCommand = executedCommands.single;
+        expect(startupCommand, contains("'/tmp/monkeymux' attach"));
+        expect(startupCommand, contains('--update-policy always'));
+        expect(shellWrites.map(utf8.decode).join(), isEmpty);
         expect(monkeyMuxInstallerService.acceptedConfirmations, <bool>[true]);
         expect(
           monkeyMuxService.runningServerStatusFromInstalledHelpersCalls,
@@ -5423,7 +5419,7 @@ void main() {
         await tester.pump();
 
         expect(find.text('Install MonkeyMux helper?'), findsOneWidget);
-        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(executedCommands, isEmpty);
 
         await tester.tap(find.widgetWithText(TextButton, 'Use tmux'));
         await tester.pump();
