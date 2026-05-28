@@ -6,6 +6,8 @@ import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_menu_style.dart';
 import 'package:xterm/xterm.dart';
 
+const _terminalAlternateEnterInput = '\x1b\r';
+
 String _terminalKeyOutput(
   TerminalKey key, {
   bool shift = false,
@@ -617,11 +619,27 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
-      expect(
-        output,
-        contains(_terminalKeyOutput(TerminalKey.enter, shift: true)),
-      );
+      expect(output, contains(_terminalAlternateEnterInput));
     });
+
+    testWidgets('toolbar Alt applies to Enter', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Alt'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Enter'));
+      await tester.pump();
+
+      expect(output, contains(_terminalAlternateEnterInput));
+    });
+
     test('keeps bottom safe-area padding when keyboard is closed', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 
