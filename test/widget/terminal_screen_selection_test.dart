@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
 
@@ -263,6 +264,72 @@ void main() {
       expect(request.itemLabelPlural, 'files');
       expect(request.allowMultiple, isTrue);
       expect(request.failureContext, 'File picker upload');
+    });
+  });
+
+  group('shouldUsePhotoLibraryPickerForTerminalMedia', () {
+    test('uses the photo library picker on native mobile platforms', () {
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.android,
+          isWeb: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.iOS,
+          isWeb: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('keeps the file picker on web and desktop platforms', () {
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.android,
+          isWeb: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.macOS,
+          isWeb: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.windows,
+          isWeb: false,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('platformFileFromPickedTerminalMedia', () {
+    test('wraps photo-library media for terminal uploads', () async {
+      final directory = Directory.systemTemp.createTempSync(
+        'terminal-media-picker-',
+      );
+      addTearDown(() {
+        if (directory.existsSync()) {
+          directory.deleteSync(recursive: true);
+        }
+      });
+      final mediaFile = File('${directory.path}/photo.jpg')
+        ..writeAsBytesSync([1, 2, 3]);
+
+      final file = await platformFileFromPickedTerminalMedia(
+        XFile(mediaFile.path),
+      );
+
+      expect(file.name, 'photo.jpg');
+      expect(file.path, mediaFile.path);
+      expect(file.size, 3);
     });
   });
 
