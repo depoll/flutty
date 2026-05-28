@@ -14,6 +14,7 @@ import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart'
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
+const _terminalAlternateEnterInput = '\x1b\r';
 
 typedef _LoggedEditingState = ({
   String text,
@@ -4794,12 +4795,32 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        _terminalKeyOutput(TerminalKey.enter, shift: true) +
-            _terminalKeyOutput(TerminalKey.enter),
+        _terminalAlternateEnterInput + _terminalKeyOutput(TerminalKey.enter),
       );
 
       await _disposeTerminalHarness(tester, harness);
     });
+
+    for (final scenario in [
+      (name: 'Shift+Enter', modifier: LogicalKeyboardKey.shiftLeft),
+      (name: 'Alt+Enter', modifier: LogicalKeyboardKey.altLeft),
+    ]) {
+      testWidgets('hardware ${scenario.name} sends alternate enter', (
+        tester,
+      ) async {
+        final harness = await _pumpTerminalHarness(tester);
+
+        await tester.sendKeyDownEvent(scenario.modifier);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(scenario.modifier);
+        await tester.pump();
+
+        expect(harness.terminalOutput.join(), _terminalAlternateEnterInput);
+
+        await _disposeTerminalHarness(tester, harness);
+      });
+    }
 
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
