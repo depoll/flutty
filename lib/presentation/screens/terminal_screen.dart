@@ -6195,7 +6195,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (refreshVisibleTerminal) {
       _suppressMonkeyMuxResizeSyncFromTerminalRefresh = true;
       try {
-        _terminalViewKey.currentState?.refreshTerminalSize();
+        _terminalViewKey.currentState?.refreshTerminalSize(
+          flushKeyboardResize: true,
+        );
       } finally {
         _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
       }
@@ -6213,6 +6215,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionName,
         columns: terminalColumns,
         rows: terminalRows,
+        redraw: refreshVisibleTerminal,
+      );
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.resize',
+        'sync_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'columns': terminalColumns,
+          'rows': terminalRows,
+          'redraw': refreshVisibleTerminal,
+          'refreshedVisibleTerminal': refreshVisibleTerminal,
+        },
       );
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -7932,19 +7946,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } else {
       await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
-    _prepareTerminalForMuxWindowChange();
-    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
-      await _reattachTmuxIfNeeded(
-        session,
-        sessionName,
-        forceVisibleTmux: forceVisibleTmux,
-      );
-    }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange(session);
-    } else {
-      _scheduleTerminalSizeRefresh();
+      return;
     }
+    _prepareTerminalForMuxWindowChange();
+    await _reattachTmuxIfNeeded(
+      session,
+      sessionName,
+      forceVisibleTmux: forceVisibleTmux,
+    );
+    _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,

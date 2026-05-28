@@ -917,10 +917,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   /// Re-sends the current viewport dimensions to the attached terminal.
-  void refreshTerminalSize() {
+  ///
+  /// When [flushKeyboardResize] is true, any debounced keyboard-inset resize is
+  /// applied immediately before reporting the dimensions.
+  void refreshTerminalSize({bool flushKeyboardResize = false}) {
     final renderObject = _viewportKey.currentContext?.findRenderObject();
     if (renderObject is MonkeyRenderTerminal) {
-      renderObject._refreshTerminalSize();
+      renderObject._refreshTerminalSize(
+        flushKeyboardResize: flushKeyboardResize,
+      );
     }
   }
 
@@ -3227,10 +3232,13 @@ class MonkeyRenderTerminal extends RenderBox
     }
   }
 
-  void _refreshTerminalSize() {
+  void _refreshTerminalSize({bool flushKeyboardResize = false}) {
     if (!hasSize) {
       markNeedsLayout();
       return;
+    }
+    if (flushKeyboardResize) {
+      _cancelPendingTerminalResize();
     }
     _updateViewportSize(notifyIfUnchanged: true);
     markNeedsPaint();
