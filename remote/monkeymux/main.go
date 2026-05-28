@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.53"
+	monkeyMuxVersion                  = "0.1.54"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -57,9 +57,7 @@ const terminalParserResetSequence = "\x1b\\"
 
 const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
 
-const terminalViewportClearSequence = "\x1b[H\x1b[2J"
-
-const terminalScreenClearSequence = terminalViewportClearSequence + "\x1b[3J"
+const terminalScreenClearSequence = "\x1b[H\x1b[2J\x1b[3J"
 
 const terminalAllScreensClearSequence = terminalScreenClearSequence + "\x1b[?1049h" + terminalScreenClearSequence + "\x1b[?1049l" + terminalScreenClearSequence
 
@@ -2549,25 +2547,20 @@ func (s *muxServer) writeAttachReplayAndResizeLocked(
 	window *muxWindow,
 ) bool {
 	s.writeAttachLocked(conn, replay)
-	redrew, clearViewport := s.simulateForegroundResizeIfAttached(conn, window)
-	if redrew && clearViewport {
-		s.writeAttachLocked(conn, []byte(terminalViewportClearSequence))
-	}
-	return redrew
+	return s.simulateForegroundResizeIfAttached(conn, window)
 }
 
 func (s *muxServer) simulateForegroundResizeIfAttached(
 	conn net.Conn,
 	window *muxWindow,
-) (bool, bool) {
+) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if conn == nil || s.attachConn != conn || window == nil || window.closed {
-		return false, false
+		return false
 	}
-	clearViewport := window.usesFullHistoryForReplayLocked()
 	simulateForegroundResize(window, s.width, s.height)
-	return true, clearViewport
+	return true
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -2589,7 +2582,9 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
-	if !window.usesFullHistoryForReplayLocked() {
+	if window.usesForegroundRedrawReplayLocked() {
+		history = nil
+	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
 	title := terminalTitleReplaySequence(window)
@@ -2618,7 +2613,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	return replay
 }
 
-func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
+func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 	if w == nil {
 		return false
 	}
@@ -2935,7 +2930,7 @@ func (w *muxWindow) historyTailLocked() []byte {
 }
 
 func (w *muxWindow) historyLimitLocked() int {
-	if w.usesFullHistoryForReplayLocked() {
+	if w.usesForegroundRedrawReplayLocked() {
 		return windowFullReplayHistoryLimitBytes
 	}
 	return windowHistoryLimitBytes

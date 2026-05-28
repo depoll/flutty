@@ -7934,19 +7934,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } else {
       await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
-    _prepareTerminalForMuxWindowChange();
-    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
-      await _reattachTmuxIfNeeded(
-        session,
-        sessionName,
-        forceVisibleTmux: forceVisibleTmux,
-      );
-    }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      _refreshTerminalAfterMonkeyMuxWindowChange(session);
-    } else {
-      _scheduleTerminalSizeRefresh();
+      return;
     }
+    _prepareTerminalForMuxWindowChange();
+    await _reattachTmuxIfNeeded(
+      session,
+      sessionName,
+      forceVisibleTmux: forceVisibleTmux,
+    );
+    _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
