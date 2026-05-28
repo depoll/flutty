@@ -98,12 +98,7 @@ class _UnsavedChangesGuardState extends State<UnsavedChangesGuard> {
       if (!mounted) {
         return;
       }
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) {
-          return;
-        }
-        unawaited(_popGuardedRoute());
-      });
+      unawaited(_popGuardedRoute());
     });
   }
 

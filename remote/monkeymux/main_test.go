@@ -790,39 +790,45 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 }
 
 func TestActiveReplayKeepsFullAlternateScreenHistory(t *testing.T) {
-	server := newMuxServer("test")
-	history := []byte(
-		"\x1b[?1049h" +
-			"alternate-screen-start" +
-			strings.Repeat("\x1b]66;semantic\a", windowReplayLimitBytes/8) +
-			"alternate-screen-end",
-	)
-	window := &muxWindow{
-		id:           "@1",
-		index:        0,
-		history:      history,
-		lastActivity: time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
+	for _, mode := range []string{"1047", "1049"} {
+		t.Run(mode, func(t *testing.T) {
+			server := newMuxServer("test")
+			enterAlternateScreen := "\x1b[?" + mode + "h"
+			history := []byte(
+				enterAlternateScreen +
+					"alternate-screen-start" +
+					strings.Repeat("\x1b]66;semantic\a", windowReplayLimitBytes/8) +
+					"alternate-screen-end",
+			)
+			window := &muxWindow{
+				id:           "@1",
+				index:        0,
+				history:      history,
+				lastActivity: time.Now(),
+			}
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
 
-	window.observeTerminalModesLocked(history)
-	replay := string(server.activeReplayLocked())
+			window.observeTerminalModesLocked(history)
+			replay := string(server.activeReplayLocked())
 
-	if !strings.Contains(replay, "alternate-screen-start") {
-		t.Fatalf("alternate-screen replay was capped before screen start")
-	}
-	if !strings.Contains(
-		replay,
-		"\x1b[?1049h"+terminalScreenClearSequence+"\x1b[?1049halternate-screen-start",
-	) {
-		t.Fatalf("alternate-screen replay did not clear stale alternate buffer before history: %q", replay)
-	}
-	if !strings.Contains(replay, "alternate-screen-end") {
-		t.Fatalf("alternate-screen replay lost screen end")
-	}
-	if got, want := len(window.history), len(history); got != want {
-		t.Fatalf("history length = %d, want %d", got, want)
+			if !strings.Contains(replay, "alternate-screen-start") {
+				t.Fatalf("alternate-screen replay was capped before screen start")
+			}
+			if !strings.Contains(
+				replay,
+				enterAlternateScreen+terminalScreenClearSequence+
+					enterAlternateScreen+"alternate-screen-start",
+			) {
+				t.Fatalf("alternate-screen replay did not clear stale alternate buffer before history: %q", replay)
+			}
+			if !strings.Contains(replay, "alternate-screen-end") {
+				t.Fatalf("alternate-screen replay lost screen end")
+			}
+			if got, want := len(window.history), len(history); got != want {
+				t.Fatalf("history length = %d, want %d", got, want)
+			}
+		})
 	}
 }
 
@@ -940,30 +946,36 @@ func TestActiveReplayPrefixClearsMainAndAlternateScreens(t *testing.T) {
 }
 
 func TestActiveReplayCapsExitedAlternateScreenHistory(t *testing.T) {
-	server := newMuxServer("test")
-	history := []byte(
-		"\x1b[?1049h" +
-			"stale-alt-screen-start" +
-			strings.Repeat("main-screen-output", windowReplayLimitBytes/8) +
-			"main-screen-suffix",
-	)
-	window := &muxWindow{
-		id:           "@1",
-		index:        0,
-		history:      history,
-		lastActivity: time.Now(),
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
+	for _, mode := range []string{"1047", "1049"} {
+		t.Run(mode, func(t *testing.T) {
+			server := newMuxServer("test")
+			history := []byte(
+				"\x1b[?" + mode + "h" +
+					"stale-alt-screen-start" +
+					strings.Repeat("main-screen-output", windowReplayLimitBytes/8) +
+					"main-screen-suffix",
+			)
+			window := &muxWindow{
+				id:           "@1",
+				index:        0,
+				history:      history,
+				lastActivity: time.Now(),
+			}
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
 
-	window.observeTerminalModesLocked([]byte("\x1b[?1049h\x1b[?1049l"))
-	replay := string(server.activeReplayLocked())
+			window.observeTerminalModesLocked(
+				[]byte("\x1b[?" + mode + "h" + "\x1b[?" + mode + "l"),
+			)
+			replay := string(server.activeReplayLocked())
 
-	if strings.Contains(replay, "stale-alt-screen-start") {
-		t.Fatalf("main-screen replay retained stale alternate-screen prefix")
-	}
-	if !strings.Contains(replay, "main-screen-suffix") {
-		t.Fatalf("main-screen replay lost recent suffix")
+			if strings.Contains(replay, "stale-alt-screen-start") {
+				t.Fatalf("main-screen replay retained stale alternate-screen prefix")
+			}
+			if !strings.Contains(replay, "main-screen-suffix") {
+				t.Fatalf("main-screen replay lost recent suffix")
+			}
+		})
 	}
 }
 
@@ -1621,6 +1633,7 @@ func TestReplayPrefixResetsStaleInputModes(t *testing.T) {
 		"\x1b[?1004l",
 		"\x1b[?1007l",
 		"\x1b[?2004l",
+		"\x1b[?1047l",
 		"\x1b[?1l",
 		"\x1b[?6l",
 		"\x1b[?7h",

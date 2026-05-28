@@ -426,6 +426,58 @@ void main() {
       expect(results, hasLength(1));
     });
 
+    test(
+      'search treats percent as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: '100% Production Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA1...',
+            privateKey: 'fixture-open-ssh-material-1...',
+          ),
+        );
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'Development Key',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa AAAA2...',
+            privateKey: 'fixture-rsa-material-2...',
+          ),
+        );
+
+        final results = await repository.search('%');
+        expect(results, hasLength(1));
+        expect(results.first.name, '100% Production Key');
+      },
+    );
+
+    test(
+      'search treats underscore as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'deploy_key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA1...',
+            privateKey: 'fixture-open-ssh-material-1...',
+          ),
+        );
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'deploy key',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa AAAA2...',
+            privateKey: 'fixture-rsa-material-2...',
+          ),
+        );
+
+        final results = await repository.search('deploy_');
+        expect(results, hasLength(1));
+        expect(results.first.name, 'deploy_key');
+      },
+    );
+
     test('watchAll emits updates when keys change', () async {
       await repository.insert(
         SshKeysCompanion.insert(
