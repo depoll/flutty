@@ -625,12 +625,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     required bool shift,
     required bool hasShortcutModifier,
   }) {
-    final handled = widget.terminal.keyInput(
-      key,
-      ctrl: ctrl,
-      alt: alt,
-      shift: shift,
-    );
+    final handled = key == TerminalKey.enter
+        ? sendTerminalEnterInput(
+            widget.terminal,
+            shiftActive: shift,
+            altActive: alt,
+            ctrlActive: ctrl,
+          )
+        : widget.terminal.keyInput(key, ctrl: ctrl, alt: alt, shift: shift);
 
     if (handled) {
       _notifyUserInput();
