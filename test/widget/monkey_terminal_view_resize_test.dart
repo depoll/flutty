@@ -360,6 +360,57 @@ void main() {
     expect(resizeEvents.last.pixelHeight, initialEvent.pixelHeight);
   });
 
+  testWidgets('size refresh can flush a pending keyboard resize', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 400),
+      ),
+    );
+
+    final initialCount = resizeEvents.length;
+    final initialEvent = resizeEvents.last;
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+        keyboardInset: 160,
+      ),
+    );
+
+    expect(resizeEvents, hasLength(initialCount));
+
+    terminalKey.currentState!.refreshTerminalSize(flushKeyboardResize: true);
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(resizeEvents.last.width, initialEvent.width);
+    expect(resizeEvents.last.height, lessThan(initialEvent.height));
+    expect(resizeEvents.last.pixelWidth, 320);
+    expect(resizeEvents.last.pixelHeight, 240);
+
+    await tester.pump(terminalKeyboardResizeDebounceDuration);
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+  });
+
   testWidgets('emits focus reports when focus reporting mode is enabled', (
     tester,
   ) async {

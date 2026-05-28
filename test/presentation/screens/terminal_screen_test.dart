@@ -78,7 +78,8 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   MonkeyMuxServerStatus? installedHelpersStatus;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
-  final resizeTerminalCalls = <({String sessionName, int columns, int rows})>[];
+  final resizeTerminalCalls =
+      <({String sessionName, int columns, int rows, bool redraw})>[];
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
@@ -110,12 +111,14 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
     String sessionName, {
     required int columns,
     required int rows,
+    bool redraw = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
     resizeTerminalCalls.add((
       sessionName: sessionName,
       columns: columns,
       rows: rows,
+      redraw: redraw,
     ));
   }
 }
@@ -2482,6 +2485,10 @@ void main() {
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
           TmuxWindow(index: 1, name: 'agent', isActive: false, id: '@1'),
         ];
+        const activeAgentWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
+          TmuxWindow(index: 1, name: 'agent', isActive: true, id: '@1'),
+        ];
         host = _buildHost(
           id: host.id,
           tmuxSessionName: sessionName,
@@ -2594,6 +2601,8 @@ void main() {
         await tester.pump(const Duration(milliseconds: 350));
         await tester.tap(find.text('agent'));
         await tester.pump();
+        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        await tester.pump();
         await tester.pump();
         await tester.pump();
 
@@ -2605,6 +2614,7 @@ void main() {
             extraFlags: any(named: 'extraFlags'),
           ),
         ).called(1);
+        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
         expect(position.pixels, position.maxScrollExtent);
         final client =
             tester.state(find.byType(TerminalTextInputHandler))
@@ -2762,6 +2772,7 @@ void main() {
         expect(resizeCall.sessionName, sessionName);
         expect(resizeCall.columns, greaterThan(0));
         expect(resizeCall.rows, greaterThan(0));
+        expect(resizeCall.redraw, isTrue);
         expect(position.pixels, position.maxScrollExtent);
         expect(
           tester

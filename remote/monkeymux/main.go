@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.52"
+	monkeyMuxVersion                  = "0.1.55"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -224,6 +224,7 @@ type controlMessage struct {
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
+	Redraw      bool     `json:"redraw,omitempty"`
 }
 
 type controlResponse struct {
@@ -1583,8 +1584,10 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	addedSnapshot = snapshotByID(snapshots, window.id)
 	s.mu.Unlock()
 
-	s.writeAttach(attach, replay)
-	if s.simulateForegroundResizeIfAttached(window) {
+	s.attachMu.Lock()
+	redrew := s.writeAttachReplayAndResizeLocked(attach, replay, window)
+	s.attachMu.Unlock()
+	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
 	go s.readWindow(window)
@@ -1695,6 +1698,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var activeChanged bool
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
+	var redrew bool
 	var shouldShutdown bool
 
 	s.attachMu.Lock()
@@ -1729,8 +1733,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	shouldShutdown = len(snapshots) == 0
 	s.mu.Unlock()
 	if activeChanged {
-		s.writeAttachLocked(attach, replay)
-		s.simulateForegroundResizeIfAttached(redrawWindow)
+		redrew = s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
 	}
 	s.attachMu.Unlock()
 
@@ -1750,7 +1753,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
+		if redrew {
+			signalForegroundResize(foregroundProcessGroup)
+		}
 	}
 	if shouldShutdown {
 		go s.close()
@@ -1812,8 +1817,9 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		}
 	}
 	s.mu.Unlock()
-	s.writeAttach(conn, replay)
-	s.simulateForegroundResizeIfAttached(redrawWindow)
+	s.attachMu.Lock()
+	redrew := s.writeAttachReplayAndResizeLocked(conn, replay, redrawWindow)
+	s.attachMu.Unlock()
 	if len(themeHintData) > 0 {
 		_ = s.writeWindow(themeHintWindowID, themeHintData)
 	}
@@ -1823,7 +1829,9 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.sendFocusRefresh(themeHintWindowID)
 	}
 	s.broadcastWindowList("active_window_changed")
-	signalForegroundResize(foregroundProcessGroup)
+	if redrew {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 
 	defer func() {
 		s.mu.Lock()
@@ -1960,7 +1968,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("invalid terminal size"))
 			return
 		}
-		s.resize(request.Width, request.Height)
+		s.resizeWithRedraw(request.Width, request.Height, request.Redraw)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
 	case "query_active_context":
 		s.mu.Lock()
@@ -2404,11 +2412,12 @@ func (s *muxServer) selectWindow(windowID string) error {
 	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	redrawWindow = window
 	s.mu.Unlock()
-	s.writeAttachLocked(attach, replay)
-	s.simulateForegroundResizeIfAttached(redrawWindow)
+	redrew := s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
-	signalForegroundResize(foregroundProcessGroup)
+	if redrew {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 	return nil
 }
 
@@ -2418,6 +2427,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var activeChanged bool
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
+	var redrew bool
 	var shouldShutdown bool
 	var command *exec.Cmd
 	var windowPty *os.File
@@ -2461,8 +2471,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
 	s.mu.Unlock()
 	if activeChanged {
-		s.writeAttachLocked(attach, replay)
-		s.simulateForegroundResizeIfAttached(redrawWindow)
+		redrew = s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
 	}
 	s.attachMu.Unlock()
 
@@ -2482,7 +2491,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		signalForegroundResize(foregroundProcessGroup)
+		if redrew {
+			signalForegroundResize(foregroundProcessGroup)
+		}
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
 	if windowPty != nil {
@@ -2509,11 +2520,30 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	s.resizeWithRedraw(width, height, false)
+}
+
+func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+	var foregroundProcessGroup int
+	var shouldSignal bool
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	sizeChanged := s.width != width || s.height != height
 	s.width = width
 	s.height = height
-	s.resizeActiveLocked(width, height)
+	window := s.windowByIDLocked(s.activeID)
+	s.resizeWindowLocked(window, width, height)
+	if window != nil &&
+		!window.closed &&
+		window.usesForegroundRedrawReplayLocked() &&
+		(forceRedraw || sizeChanged) {
+		simulateForegroundResize(window, width, height)
+		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+		shouldSignal = true
+	}
+	s.mu.Unlock()
+	if shouldSignal {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
@@ -2531,10 +2561,22 @@ func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int)
 	})
 }
 
-func (s *muxServer) simulateForegroundResizeIfAttached(window *muxWindow) bool {
+func (s *muxServer) writeAttachReplayAndResizeLocked(
+	conn net.Conn,
+	replay []byte,
+	window *muxWindow,
+) bool {
+	s.writeAttachLocked(conn, replay)
+	return s.simulateForegroundResizeIfAttached(conn, window)
+}
+
+func (s *muxServer) simulateForegroundResizeIfAttached(
+	conn net.Conn,
+	window *muxWindow,
+) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.attachConn == nil || window == nil || window.closed {
+	if conn == nil || s.attachConn != conn || window == nil || window.closed {
 		return false
 	}
 	simulateForegroundResize(window, s.width, s.height)
@@ -2560,7 +2602,9 @@ func (s *muxServer) activeReplayLocked() []byte {
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
-	if !window.usesFullHistoryForReplayLocked() {
+	if window.usesForegroundRedrawReplayLocked() {
+		history = nil
+	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
 	title := terminalTitleReplaySequence(window)
@@ -2589,7 +2633,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	return replay
 }
 
-func (w *muxWindow) usesFullHistoryForReplayLocked() bool {
+func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 	if w == nil {
 		return false
 	}
@@ -2906,7 +2950,7 @@ func (w *muxWindow) historyTailLocked() []byte {
 }
 
 func (w *muxWindow) historyLimitLocked() int {
-	if w.usesFullHistoryForReplayLocked() {
+	if w.usesForegroundRedrawReplayLocked() {
 		return windowFullReplayHistoryLimitBytes
 	}
 	return windowHistoryLimitBytes
