@@ -111,6 +111,18 @@ void main() {
         expect(value, isNull);
       });
 
+      test('getJson returns null for JSON arrays', () async {
+        await service.setString('json_array', '[]');
+        final value = await service.getJson('json_array');
+        expect(value, isNull);
+      });
+
+      test('getJson returns null for JSON strings', () async {
+        await service.setString('json_string', '"not an object"');
+        final value = await service.getJson('json_string');
+        expect(value, isNull);
+      });
+
       test('setJson handles nested objects', () async {
         await service.setJson('nested', {
           'level1': {

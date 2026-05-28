@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
+import 'like_query.dart';
 
 enum _KeySecretColumn { privateKey, passphrase }
 
@@ -79,10 +80,14 @@ class KeyRepository {
   }
 
   /// Search keys by name.
-  Future<List<SshKey>> search(String query) =>
-      (_db.select(_db.sshKeys)..where((k) => k.name.like('%$query%')))
-          .get()
-          .then((keys) async => (await _loadDecryptable(keys)).keys);
+  Future<List<SshKey>> search(String query) {
+    final escaped = escapeSqlLikeQuery(query);
+    return (_db.select(_db.sshKeys)..where(
+          (k) => k.name.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
+        ))
+        .get()
+        .then((keys) async => (await _loadDecryptable(keys)).keys);
+  }
 
   /// Insert a new key.
   Future<int> insert(SshKeysCompanion key) async {
