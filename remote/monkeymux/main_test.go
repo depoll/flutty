@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -393,20 +394,32 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 	inactiveWindow.history = []byte("background output")
 
 	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
 	wantReplay := replayPrefixForTest(inactiveWindow) + "background output" +
 		replayPostHistorySuffixForTest(true)
 	var signaled []int
+	var simulated []string
 	foregroundProcessGroupForWindow = func(window *muxWindow) int {
 		if window == inactiveWindow {
 			return 4242
 		}
 		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize simulated before replay was written: got %q, want %q", got, wantReplay)
+		}
 	}
 	signalForegroundResize = func(processGroup int) {
 		signaled = append(signaled, processGroup)
@@ -421,6 +434,88 @@ func TestSelectWindowSignalsResizeAfterReplay(t *testing.T) {
 
 	if !reflect.DeepEqual(signaled, []int{4242}) {
 		t.Fatalf("signaled process groups = %#v, want [4242]", signaled)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@2:80x24"}) {
+		t.Fatalf("simulated resizes = %#v, want [@2:80x24]", simulated)
+	}
+}
+
+func TestSelectWindowSkipsSimulatedResizeWithoutAttach(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		history:      []byte("background output"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+
+	var simulated []string
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(simulated) != 0 {
+		t.Fatalf("simulated resizes = %#v, want none without attach", simulated)
+	}
+}
+
+func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
+	server := newMuxServerWithSize("test", 80, 24)
+	attach := &writeHookConn{
+		recordingConn: &recordingConn{},
+		onWrite: func() {
+			server.resize(100, 30)
+		},
+	}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		history:      []byte("background output"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+
+	var simulated []string
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(simulated, []string{"@2:100x30"}) {
+		t.Fatalf("simulated resizes = %#v, want [@2:100x30]", simulated)
 	}
 }
 
@@ -437,20 +532,32 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server.activeID = "@1"
 
 	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
 		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
 		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
 	}()
 
 	wantReplay := replayPrefixForTest(window) + "foreground output" +
 		replayPostHistorySuffixForTest(true)
 	var signaled []int
+	var simulated []string
 	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
 		if candidate == window {
 			return 4343
 		}
 		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize simulated before replay was written: got %q, want %q", got, wantReplay)
+		}
 	}
 	signalForegroundResize = func(processGroup int) {
 		signaled = append(signaled, processGroup)
@@ -467,6 +574,9 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 
 	if !reflect.DeepEqual(signaled, []int{4343}) {
 		t.Fatalf("signaled process groups = %#v, want [4343]", signaled)
+	}
+	if !reflect.DeepEqual(simulated, []string{"@1:120x40"}) {
+		t.Fatalf("simulated resizes = %#v, want [@1:120x40]", simulated)
 	}
 }
 
@@ -3232,6 +3342,11 @@ type recordingConn struct {
 	buf bytes.Buffer
 }
 
+type writeHookConn struct {
+	*recordingConn
+	onWrite func()
+}
+
 type errReader struct{}
 
 type discardConn struct{}
@@ -3280,6 +3395,14 @@ func (c *recordingConn) Write(data []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.buf.Write(data)
+}
+
+func (c *writeHookConn) Write(data []byte) (int, error) {
+	n, err := c.recordingConn.Write(data)
+	if c.onWrite != nil {
+		c.onWrite()
+	}
+	return n, err
 }
 
 func (c *recordingConn) Close() error {
