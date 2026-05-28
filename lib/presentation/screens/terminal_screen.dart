@@ -6608,7 +6608,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null &&
         tmuxSession.isNotEmpty &&
-        !host.autoConnectRequiresConfirmation &&
         _configuredRemoteMuxBackend(host) == RemoteMuxBackend.monkeyMux) {
       final command = await _prepareRemoteMuxAttachCommand(
         session,
@@ -6623,9 +6622,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    if (agentPreset == null ||
-        !agentPreset.usesMonkeyMuxSession ||
-        host.autoConnectRequiresConfirmation) {
+    if (agentPreset == null || !agentPreset.usesMonkeyMuxSession) {
       return null;
     }
 
@@ -6636,8 +6633,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     if (command != null) {
       _applyPreparedRemoteMuxCommand(session, command);
+      return command;
     }
-    return command;
+    _suppressAutoConnectAfterStartupConnectionId = session.connectionId;
+    return null;
   }
 
   String? get _initialTmuxSessionName {
