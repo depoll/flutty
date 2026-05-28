@@ -52,6 +52,7 @@ import 'package:xterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
+import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
@@ -1380,12 +1381,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return KeyEventResult.ignored;
     }
 
-    final handled = widget.terminal.keyInput(
-      key,
-      ctrl: HardwareKeyboard.instance.isControlPressed,
-      alt: HardwareKeyboard.instance.isAltPressed,
-      shift: HardwareKeyboard.instance.isShiftPressed,
-    );
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    final alt = HardwareKeyboard.instance.isAltPressed;
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final handled = key == TerminalKey.enter
+        ? sendTerminalEnterInput(
+            widget.terminal,
+            shiftActive: shift,
+            altActive: alt,
+            ctrlActive: ctrl,
+          )
+        : widget.terminal.keyInput(key, ctrl: ctrl, alt: alt, shift: shift);
 
     if (handled) {
       _scrollToBottom();
