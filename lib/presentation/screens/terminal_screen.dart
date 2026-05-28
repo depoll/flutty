@@ -13,6 +13,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
@@ -1126,6 +1129,35 @@ resolveTerminalUploadPickerRequest({required bool media}) => (
   allowMultiple: true,
   failureContext: media ? 'Media picker upload' : 'File picker upload',
 );
+
+/// Whether terminal media paste should use a native photo-library picker.
+@visibleForTesting
+bool shouldUsePhotoLibraryPickerForTerminalMedia({
+  required TargetPlatform platform,
+  required bool isWeb,
+}) =>
+    !isWeb &&
+    (platform == TargetPlatform.android || platform == TargetPlatform.iOS);
+
+/// Builds a file-picker upload file from native photo-library media.
+@visibleForTesting
+Future<PlatformFile> platformFileFromPickedTerminalMedia(
+  XFile file, {
+  int index = 0,
+}) async {
+  final filePath = file.path;
+  if (filePath.isEmpty) {
+    throw FileSystemException('Unable to read selected media', file.name);
+  }
+  final name = file.name.trim().isNotEmpty
+      ? file.name.trim()
+      : path.basename(filePath);
+  return PlatformFile(
+    name: name.isEmpty ? 'selected-media-${index + 1}' : name,
+    path: filePath,
+    size: await file.length(),
+  );
+}
 
 /// Trims punctuation that terminals commonly render immediately after a link.
 @visibleForTesting
@@ -12366,6 +12398,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _pastePickedMedia() async {
     final pickerRequest = resolveTerminalUploadPickerRequest(media: true);
+    if (shouldUsePhotoLibraryPickerForTerminalMedia(
+      platform: defaultTargetPlatform,
+      isWeb: kIsWeb,
+    )) {
+      await _pickAndPastePhotoLibraryMedia(
+        itemLabelSingular: pickerRequest.itemLabelSingular,
+        itemLabelPlural: pickerRequest.itemLabelPlural,
+        failureContext: pickerRequest.failureContext,
+      );
+      return;
+    }
+
     await _pickAndPasteFiles(
       dialogTitle: pickerRequest.dialogTitle,
       pickerType: pickerRequest.pickerType,
@@ -12386,6 +12430,89 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       allowMultiple: pickerRequest.allowMultiple,
       failureContext: pickerRequest.failureContext,
     );
+  }
+
+  void _enableAndroidPhotoPickerIfAvailable() {
+    if (!_isAndroidPlatform) {
+      return;
+    }
+    final imagePickerImplementation = ImagePickerPlatform.instance;
+    if (imagePickerImplementation is ImagePickerAndroid) {
+      imagePickerImplementation.useAndroidPhotoPicker = true;
+    }
+  }
+
+  Future<void> _pickAndPastePhotoLibraryMedia({
+    required String itemLabelSingular,
+    required String itemLabelPlural,
+    required String failureContext,
+  }) async {
+    try {
+      _enableAndroidPhotoPickerIfAvailable();
+      final selectedMedia = await ImagePicker().pickMultipleMedia(
+        requestFullMetadata: false,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (selectedMedia.isEmpty) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+
+      final selectedFiles = <PlatformFile>[];
+      for (var index = 0; index < selectedMedia.length; index++) {
+        selectedFiles.add(
+          await platformFileFromPickedTerminalMedia(
+            selectedMedia[index],
+            index: index,
+          ),
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+
+      await _pasteSelectedFiles(
+        selectedFiles,
+        itemLabelSingular: itemLabelSingular,
+        itemLabelPlural: itemLabelPlural,
+      );
+    } on PlatformException catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picker_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed. Try again.');
+    } on FileSystemException catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picked_file_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed. Try again.');
+    } on SftpError catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picked_remote_upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        'Remote upload failed. Check permissions and try again.',
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picked_upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed. Try again.');
+    }
   }
 
   Future<void> _pickAndPasteFiles({
