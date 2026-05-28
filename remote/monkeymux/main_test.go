@@ -519,6 +519,49 @@ func TestSelectWindowSimulatedResizeUsesLatestServerSize(t *testing.T) {
 	}
 }
 
+func TestSelectWindowClearsFullHistoryViewportBeforeResizeRedraw(t *testing.T) {
+	server := newMuxServer("test")
+	attach := &recordingConn{}
+	inactiveWindow := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("stale tui screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+	server.attachConn = attach
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+
+	wantReplay := replayPrefixForTest(inactiveWindow) + "stale tui screen" +
+		replayPostHistorySuffixForTest(true)
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		if got := attach.String(); got != wantReplay {
+			t.Fatalf("resize simulated before replay was written: got %q, want %q", got, wantReplay)
+		}
+	}
+	signalForegroundResize = func(processGroup int) {
+		want := wantReplay + terminalViewportClearSequence
+		if got := attach.String(); got != want {
+			t.Fatalf("viewport was not cleared before resize redraw: got %q, want %q", got, want)
+		}
+	}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
