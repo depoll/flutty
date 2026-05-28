@@ -5872,9 +5872,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         reason: 'open_new_terminal',
       );
-      final startupCommand = await _buildNewShellStartupCommand(session);
+      final initialAutoConnect = await _prepareNewShellInitialAutoConnect(
+        session,
+      );
+      final startupCommand =
+          initialAutoConnect.command?.backend == RemoteMuxBackend.monkeyMux
+          ? initialAutoConnect.command
+          : null;
       final handledInitialAutoConnect =
-          startupCommand != null ||
+          initialAutoConnect.handled ||
           _suppressRemoteMuxDetectionConnectionId == session.connectionId;
 
       _shell = await session.getShell(
@@ -6370,46 +6376,46 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<_PreparedRemoteMuxCommand?> _buildNewShellStartupCommand(
-    SshSession session,
-  ) async {
+  Future<({_PreparedRemoteMuxCommand? command, bool handled})>
+  _prepareNewShellInitialAutoConnect(SshSession session) async {
     final host = _host;
     if (host == null) {
-      return null;
+      return (command: null, handled: false);
     }
 
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
       if (_configuredRemoteMuxBackend(host) == RemoteMuxBackend.tmux) {
-        return null;
+        return (command: null, handled: false);
       }
       final attachCommand = await _prepareRemoteMuxAttachCommand(
         session,
         host,
         tmuxSession,
       );
-      if (attachCommand == null ||
-          attachCommand.backend != RemoteMuxBackend.monkeyMux) {
-        return null;
+      if (attachCommand == null) {
+        _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+        return (command: null, handled: true);
       }
       _applyPreparedRemoteMuxCommand(session, attachCommand);
-      return attachCommand;
+      return (command: attachCommand, handled: true);
     }
 
     final agentPreset = _autoConnectAgentPreset;
     if (agentPreset == null || !agentPreset.usesMonkeyMuxSession) {
-      return null;
+      return (command: null, handled: false);
     }
     final command = await _prepareMonkeyMuxAgentLaunchCommand(
       session,
       host,
       agentPreset,
     );
-    if (command == null || command.backend != RemoteMuxBackend.monkeyMux) {
-      return null;
+    if (command == null) {
+      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+      return (command: null, handled: true);
     }
     _applyPreparedRemoteMuxCommand(session, command);
-    return command;
+    return (command: command, handled: true);
   }
 
   Future<void> _runAutoConnectCommand(SshSession session) async {
@@ -6656,22 +6662,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         return null;
       } on Exception catch (error) {
+        _suppressRemoteMuxDetectionConnectionId = session.connectionId;
         DiagnosticsLogService.instance.warning(
           'monkeymux.install',
-          'attach_fallback',
+          'attach_unavailable',
           fields: {
             'connectionId': session.connectionId,
             'configuredBackend': configuredBackend.storageValue,
             'errorType': error.runtimeType,
           },
         );
-        if (configuredBackend == RemoteMuxBackend.monkeyMux && mounted) {
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('MonkeyMux is unavailable; using tmux instead.'),
-            ),
+            const SnackBar(content: Text('MonkeyMux is unavailable.')),
           );
         }
+        return null;
       }
     }
     return (
@@ -6871,7 +6877,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'hasWorkingDirectory': preset.hasWorkingDirectory,
       },
     );
-    var muxBackend = RemoteMuxBackend.monkeyMux;
     late String attachCommand;
     try {
       final installation = await _monkeyMuxInstallerService.ensureInstalled(
@@ -6911,9 +6916,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         startInYoloMode: _startClisInYoloMode,
       );
     } on Exception catch (error) {
+      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
       DiagnosticsLogService.instance.warning(
         'monkeymux.install',
-        'agent_launch_fallback',
+        'agent_launch_unavailable',
         fields: {
           'connectionId': session.connectionId,
           'errorType': error.runtimeType,
@@ -6921,16 +6927,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('MonkeyMux is unavailable; using tmux instead.'),
-          ),
+          const SnackBar(content: Text('MonkeyMux is unavailable.')),
         );
       }
-      muxBackend = RemoteMuxBackend.tmux;
-      attachCommand = buildAgentLaunchCommand(
-        preset.copyWith(remoteMuxBackend: RemoteMuxBackend.tmux),
-        startInYoloMode: _startClisInYoloMode,
-      );
+      return null;
     }
 
     final review = assessAutoConnectCommandExecution(
@@ -6952,7 +6952,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     return (
-      backend: muxBackend,
+      backend: RemoteMuxBackend.monkeyMux,
       command: attachCommand,
       sessionName: sessionName,
       tool: preset.tool,

@@ -5430,6 +5430,96 @@ void main() {
     );
 
     testWidgets(
+      'does not fall back to tmux when MonkeyMux startup preparation fails',
+      (tester) async {
+        final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final tmuxService = _MockTmuxService();
+        const sessionName = 'work';
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        final executedCommands = <String>[];
+        when(
+          () => sshClient.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((invocation) async {
+          executedCommands.add(invocation.positionalArguments.single as String);
+          return shellChannel;
+        });
+        when(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: any(named: 'priority'),
+            confirmInstall: any(named: 'confirmInstall'),
+          ),
+        ).thenThrow(Exception('install failed'));
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              monkeyMuxInstallerServiceProvider.overrideWithValue(
+                monkeyMuxInstallerService,
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(executedCommands, <String>[_trueColorLoginShellCommand]);
+        expect(shellWrites.map(utf8.decode).join(), isEmpty);
+        expect(find.text('MonkeyMux is unavailable.'), findsOneWidget);
+        verify(
+          () => monkeyMuxInstallerService.ensureInstalled(
+            session,
+            priority: SshExecPriority.normal,
+            confirmInstall: any(named: 'confirmInstall'),
+          ),
+        ).called(1);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'skips Pro auto-connect gate when the host has no auto-connect workflow',
       (tester) async {
         when(
