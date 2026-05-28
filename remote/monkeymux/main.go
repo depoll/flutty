@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.51"
+	monkeyMuxVersion                  = "0.1.52"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -1798,7 +1798,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if hello.Width > 0 && hello.Height > 0 {
 		s.width = hello.Width
 		s.height = hello.Height
-		s.resizeAllLocked(hello.Width, hello.Height)
+		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
 	if window := s.windowByIDLocked(s.activeID); window != nil {
@@ -2513,18 +2513,12 @@ func (s *muxServer) resize(width int, height int) {
 	defer s.mu.Unlock()
 	s.width = width
 	s.height = height
-	s.resizeAllLocked(width, height)
+	s.resizeActiveLocked(width, height)
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
 	s.resizeWindowLocked(window, width, height)
-}
-
-func (s *muxServer) resizeAllLocked(width int, height int) {
-	for _, window := range s.windows {
-		s.resizeWindowLocked(window, width, height)
-	}
 }
 
 func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int) {

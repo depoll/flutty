@@ -61,6 +61,16 @@ func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
 	}
 }
 
+func setPtySize(t *testing.T, file *os.File, columns int, rows int) {
+	t.Helper()
+	if err := pty.Setsize(file, &pty.Winsize{
+		Rows: uint16(rows),
+		Cols: uint16(columns),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInheritedEnvironmentPassesThroughLaunchEnvironment(t *testing.T) {
 	base := []string{
 		"PATH=/custom/bin:/usr/bin",
@@ -570,10 +580,11 @@ func TestAttachSignalsResizeAfterReplay(t *testing.T) {
 	}
 }
 
-func TestResizeUpdatesInactiveWindowPtys(t *testing.T) {
+func TestResizeOnlyUpdatesActiveWindowPty(t *testing.T) {
 	server := newMuxServer("test")
 	activePty := openTestPty(t)
 	inactivePty := openTestPty(t)
+	setPtySize(t, inactivePty, 80, 24)
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
 		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
@@ -583,13 +594,44 @@ func TestResizeUpdatesInactiveWindowPtys(t *testing.T) {
 	server.resize(132, 43)
 
 	assertPtySize(t, activePty, 132, 43)
-	assertPtySize(t, inactivePty, 132, 43)
+	assertPtySize(t, inactivePty, 80, 24)
 }
 
-func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
+func TestSelectWindowResizesSelectedWindowToLatestTerminalSize(t *testing.T) {
 	server := newMuxServer("test")
 	activePty := openTestPty(t)
 	inactivePty := openTestPty(t)
+	setPtySize(t, inactivePty, 80, 24)
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
+		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(_ *muxWindow) int {
+		return 0
+	}
+	signalForegroundResize = func(_ int) {}
+
+	server.resize(132, 43)
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertPtySize(t, inactivePty, 132, 43)
+}
+
+func TestAttachOnlyUpdatesActiveWindowPty(t *testing.T) {
+	server := newMuxServer("test")
+	activePty := openTestPty(t)
+	inactivePty := openTestPty(t)
+	setPtySize(t, inactivePty, 80, 24)
 	server.windows = []*muxWindow{
 		{id: "@1", index: 0, pty: activePty, lastActivity: time.Now()},
 		{id: "@2", index: 1, pty: inactivePty, lastActivity: time.Now()},
@@ -603,7 +645,7 @@ func TestAttachUpdatesInactiveWindowPtys(t *testing.T) {
 	)
 
 	assertPtySize(t, activePty, 132, 43)
-	assertPtySize(t, inactivePty, 132, 43)
+	assertPtySize(t, inactivePty, 80, 24)
 }
 
 func TestAttachIgnoresOversizedThemeHint(t *testing.T) {
