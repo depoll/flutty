@@ -6195,7 +6195,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (refreshVisibleTerminal) {
       _suppressMonkeyMuxResizeSyncFromTerminalRefresh = true;
       try {
-        _terminalViewKey.currentState?.refreshTerminalSize();
+        _terminalViewKey.currentState?.refreshTerminalSize(
+          flushKeyboardResize: true,
+        );
       } finally {
         _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
       }
