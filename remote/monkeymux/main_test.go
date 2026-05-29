@@ -1748,7 +1748,7 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 		id:           "@1",
 		index:        0,
 		name:         "Mouse app",
-		privateModes: map[string]bool{"1000": true, "1006": true},
+		privateModes: map[string]bool{"1002": true, "1006": true},
 		lastActivity: time.Now(),
 	}
 
@@ -1759,6 +1759,59 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	}
 	if !snapshot.TerminalMouseReportSgr {
 		t.Fatal("snapshot did not report SGR mouse mode")
+	}
+	if !snapshot.PrivateModes["1002"] {
+		t.Fatalf("snapshot private modes = %#v, want SGR drag mode", snapshot.PrivateModes)
+	}
+	if !snapshot.PrivateModes["1006"] {
+		t.Fatalf("snapshot private modes = %#v, want SGR report mode", snapshot.PrivateModes)
+	}
+}
+
+func TestRestoreFromSnapshotPreservesMouseDragMode(t *testing.T) {
+	restore := restoreFromWindowSnapshots([]windowSnapshot{
+		{
+			ID:                        "@1",
+			Index:                     0,
+			Name:                      "Mouse app",
+			PrivateModes:              map[string]bool{"1002": true, "1006": true},
+			TerminalReportsMouseWheel: true,
+			TerminalMouseReportSgr:    true,
+		},
+	})
+
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	modes := restore.Windows[0].PrivateModes
+	if !modes["1002"] {
+		t.Fatalf("restore private modes = %#v, want SGR drag mode", modes)
+	}
+	if !modes["1006"] {
+		t.Fatalf("restore private modes = %#v, want SGR report mode", modes)
+	}
+}
+
+func TestRestoreFromLegacySnapshotPrefersSgrMouseDrag(t *testing.T) {
+	restore := restoreFromWindowSnapshots([]windowSnapshot{
+		{
+			ID:                        "@1",
+			Index:                     0,
+			Name:                      "Mouse app",
+			TerminalReportsMouseWheel: true,
+			TerminalMouseReportSgr:    true,
+		},
+	})
+
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	modes := restore.Windows[0].PrivateModes
+	if !modes["1002"] {
+		t.Fatalf("restore private modes = %#v, want legacy SGR drag mode", modes)
+	}
+	if !modes["1006"] {
+		t.Fatalf("restore private modes = %#v, want SGR report mode", modes)
 	}
 }
 
