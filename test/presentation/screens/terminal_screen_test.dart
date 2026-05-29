@@ -2725,6 +2725,21 @@ void main() {
         await tester.pump(const Duration(milliseconds: 500));
         await tester.pump(const Duration(milliseconds: 300));
         await tester.pump();
+        for (var row = 0; row < 120; row += 1) {
+          session.terminal!.write('row $row\r\n');
+        }
+        await tester.pump();
+        await tester.pump();
+        final scrollableState = tester.state<ScrollableState>(
+          find.descendant(
+            of: find.byType(MonkeyTerminalView),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final position = scrollableState.position;
+        expect(position.maxScrollExtent, greaterThan(0));
+        position.jumpTo(0);
+        await tester.pump();
         monkeyMuxService.resizeTerminalCalls.clear();
 
         final width = session.terminal!.viewWidth;
@@ -2745,6 +2760,9 @@ void main() {
         await tester.pump();
 
         expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pump();
+        expect(position.pixels, position.maxScrollExtent);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

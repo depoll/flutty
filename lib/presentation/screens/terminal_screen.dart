@@ -219,6 +219,7 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -2588,6 +2589,31 @@ String? _describeMouseMode(
   MouseMode.upDownScrollMove => 'Mouse motion (${mouseReportMode.name})',
 };
 
+/// Describes local mouse mode, falling back to mux metadata when local terminal
+/// state is stale immediately after a replay/redraw.
+@visibleForTesting
+String? describeEffectiveMouseMode({
+  required MouseMode localMouseMode,
+  required MouseReportMode localMouseReportMode,
+  bool? activeWindowReportsMouseWheel,
+  bool? activeWindowMouseReportSgr,
+}) {
+  final localDescription = _describeMouseMode(
+    localMouseMode,
+    localMouseReportMode,
+  );
+  if (localDescription != null) {
+    return localDescription;
+  }
+  if (activeWindowReportsMouseWheel != true) {
+    return null;
+  }
+  if (activeWindowMouseReportSgr ?? false) {
+    return 'Mouse drag (sgr)';
+  }
+  return 'Mouse scroll';
+}
+
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
 bool shouldFollowTerminalOutput({
@@ -2874,6 +2900,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   Timer? _monkeyMuxResizeRedrawFollowUpTimer;
+  Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -6236,6 +6263,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _scheduleMonkeyMuxPostRedrawDisplayRefresh(int connectionId) {
+    _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
+    _monkeyMuxPostRedrawDisplayRefreshTimer = Timer(
+      _monkeyMuxPostRedrawDisplayRefreshDelay,
+      () {
+        _monkeyMuxPostRedrawDisplayRefreshTimer = null;
+        if (!mounted || _connectionId != connectionId) {
+          return;
+        }
+        _followLiveOutput();
+        _scheduleTerminalSizeRefresh(
+          forceDisplayRefresh: true,
+          revealLatestOutput: true,
+          suppressMonkeyMuxResizeSync: true,
+        );
+      },
+    );
+  }
+
   Future<void> _syncActiveMonkeyMuxTerminalSize(
     SshSession session, {
     int? columns,
@@ -6289,6 +6335,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'refreshedVisibleTerminal': refreshVisibleTerminal,
         },
       );
+      if (refreshVisibleTerminal) {
+        _scheduleMonkeyMuxPostRedrawDisplayRefresh(session.connectionId);
+      }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'monkeymux.resize',
@@ -8594,6 +8643,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
@@ -8718,7 +8768,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           tooltip:
               'A full-screen terminal app is using the alternate screen buffer.',
         ),
-      if (_describeMouseMode(_terminal.mouseMode, _terminal.mouseReportMode)
+      if (describeEffectiveMouseMode(
+            localMouseMode: _terminal.mouseMode,
+            localMouseReportMode: _terminal.mouseReportMode,
+            activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
+            activeWindowMouseReportSgr: _activeWindowMouseReportSgr,
+          )
           case final mouseModeLabel? when mouseModeLabel.isNotEmpty)
         (
           icon: Icons.mouse_outlined,
