@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.57"
+	monkeyMuxVersion                  = "0.1.58"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -90,6 +90,10 @@ var (
 		"1007",
 		"2004",
 		"2031",
+	}
+	groupedReplayPrivateModes = [][]string{
+		{"1047", "1049"},
+		{"1000", "1002", "1003"},
 	}
 	trackedPrivateModes = map[string]struct{}{
 		"1":    {},
@@ -2745,6 +2749,9 @@ func terminalModeReplaySequence(
 ) []byte {
 	var replay []byte
 	for _, mode := range privateModes {
+		if groupedReplayPrivateMode(mode) {
+			continue
+		}
 		enabled, ok := window.privateModes[mode]
 		if !ok {
 			continue
@@ -2752,13 +2759,10 @@ func terminalModeReplaySequence(
 		if mode == "1004" && enabled && !window.focusModeActiveLocked() {
 			continue
 		}
-		final := byte('l')
-		if enabled {
-			final = 'h'
-		}
-		replay = append(replay, "\x1b[?"...)
-		replay = append(replay, mode...)
-		replay = append(replay, final)
+		replay = appendPrivateModeReplay(replay, mode, enabled)
+	}
+	for _, group := range groupedReplayPrivateModes {
+		replay = appendGroupedPrivateModeReplay(replay, window, privateModes, group)
 	}
 	if window.insertModeKnown {
 		if window.insertModeEnabled {
@@ -2775,6 +2779,60 @@ func terminalModeReplaySequence(
 		}
 	}
 	return replay
+}
+
+func appendGroupedPrivateModeReplay(
+	replay []byte,
+	window *muxWindow,
+	privateModes []string,
+	group []string,
+) []byte {
+	for _, mode := range group {
+		if !containsString(privateModes, mode) {
+			continue
+		}
+		if enabled, ok := window.privateModes[mode]; ok && !enabled {
+			replay = appendPrivateModeReplay(replay, mode, false)
+		}
+	}
+	for _, mode := range group {
+		if !containsString(privateModes, mode) {
+			continue
+		}
+		if enabled, ok := window.privateModes[mode]; ok && enabled {
+			replay = appendPrivateModeReplay(replay, mode, true)
+		}
+	}
+	return replay
+}
+
+func appendPrivateModeReplay(replay []byte, mode string, enabled bool) []byte {
+	final := byte('l')
+	if enabled {
+		final = 'h'
+	}
+	replay = append(replay, "\x1b[?"...)
+	replay = append(replay, mode...)
+	replay = append(replay, final)
+	return replay
+}
+
+func groupedReplayPrivateMode(mode string) bool {
+	for _, group := range groupedReplayPrivateModes {
+		if containsString(group, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
