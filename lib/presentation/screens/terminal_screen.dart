@@ -218,6 +218,7 @@ double resolveTmuxBarMaxContentHeight(
 }
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
+const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -2872,6 +2873,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
   bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
+  Timer? _monkeyMuxResizeRedrawFollowUpTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -6091,6 +6093,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             rows: height,
           ),
         );
+        _scheduleMonkeyMuxResizeRedrawFollowUp(session);
       }
     }
 
@@ -6197,6 +6200,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           revealLatestOutput: true,
           suppressMonkeyMuxResizeSync: true,
         );
+        unawaited(
+          _syncActiveMonkeyMuxTerminalSize(
+            session,
+            refreshVisibleTerminal: true,
+          ),
+        );
+      },
+    );
+  }
+
+  void _scheduleMonkeyMuxResizeRedrawFollowUp(SshSession session) {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    final connectionId = session.connectionId;
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer = Timer(
+      _monkeyMuxResizeRedrawFollowUpDelay,
+      () {
+        _monkeyMuxResizeRedrawFollowUpTimer = null;
+        if (!mounted || _connectionId != connectionId) {
+          return;
+        }
         unawaited(
           _syncActiveMonkeyMuxTerminalSize(
             session,
@@ -8564,6 +8593,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
