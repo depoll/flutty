@@ -2463,6 +2463,48 @@ func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 	}
 }
 
+func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project")
+	historyDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(historyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	history := strings.Join([]string{
+		`{"conversationId":"old-session","workspace":"` + project + `","display":"Old"}`,
+		`{"conversationId":"new-session","workspace":"` + project + `","display":"New"}`,
+		`{"conversationId":"other-session","workspace":"/tmp/other","display":"Other"}`,
+	}, "\n")
+	if err := os.WriteFile(
+		filepath.Join(historyDir, "history.jsonl"),
+		[]byte(history+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	restore := &serverRestore{
+		Windows: []restoreWindowState{
+			{
+				Name:           "Antigravity",
+				Cwd:            project,
+				CurrentCommand: "agy",
+				AgentTool:      "antigravity",
+			},
+		},
+	}
+
+	enrichRestoreWithAgentSessionIDs(restore)
+
+	if got := restore.Windows[0].AgentSessionID; got != "new-session" {
+		t.Fatalf("agent session ID = %q, want new-session", got)
+	}
+	options := createWindowOptionsForRestore(restore.Windows[0], true)
+	if got := options.command; got != "agy --dangerously-skip-permissions --conversation 'new-session'" {
+		t.Fatalf("command = %q, want Antigravity resume command", got)
+	}
+}
+
 func TestReadRestoreFileKeepsCallerOwnedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "caller-restore.json")
 	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
