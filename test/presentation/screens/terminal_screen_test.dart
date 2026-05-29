@@ -2911,6 +2911,15 @@ void main() {
               .liveOutputAutoScroll,
           isTrue,
         );
+        final resizeCountAfterWindowRefresh =
+            monkeyMuxService.resizeTerminalCalls.length;
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+        expect(
+          monkeyMuxService.resizeTerminalCalls.length,
+          greaterThan(resizeCountAfterWindowRefresh),
+        );
+        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
         await gesture.up();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),

@@ -61,6 +61,35 @@ func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
 	}
 }
 
+func assertPtySizeEventually(t *testing.T, file *os.File, columns int, rows int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	var lastSize *pty.Winsize
+	var lastErr error
+	for time.Now().Before(deadline) {
+		size, err := pty.GetsizeFull(file)
+		if err == nil && int(size.Cols) == columns && int(size.Rows) == rows {
+			return
+		}
+		lastSize = size
+		lastErr = err
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatal(lastErr)
+	}
+	if lastSize == nil {
+		t.Fatalf("pty size unavailable, want %dx%d", columns, rows)
+	}
+	t.Fatalf(
+		"pty size = %dx%d, want %dx%d",
+		lastSize.Cols,
+		lastSize.Rows,
+		columns,
+		rows,
+	)
+}
+
 func setPtySize(t *testing.T, file *os.File, columns int, rows int) {
 	t.Helper()
 	if err := pty.Setsize(file, &pty.Winsize{
@@ -669,7 +698,7 @@ func TestSelectWindowResizesSelectedWindowToLatestTerminalSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertPtySize(t, inactivePty, 132, 43)
+	assertPtySizeEventually(t, inactivePty, 132, 43)
 }
 
 func TestAttachOnlyUpdatesActiveWindowPty(t *testing.T) {
@@ -689,7 +718,7 @@ func TestAttachOnlyUpdatesActiveWindowPty(t *testing.T) {
 		controlMessage{Width: 132, Height: 43},
 	)
 
-	assertPtySize(t, activePty, 132, 43)
+	assertPtySizeEventually(t, activePty, 132, 43)
 	assertPtySize(t, inactivePty, 80, 24)
 }
 
@@ -912,6 +941,65 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestForegroundRedrawTemporarySize(t *testing.T) {
+	tests := []struct {
+		name       string
+		width      int
+		height     int
+		wantWidth  int
+		wantHeight int
+		wantOK     bool
+	}{
+		{
+			name:       "uses narrower width",
+			width:      120,
+			height:     40,
+			wantWidth:  119,
+			wantHeight: 40,
+			wantOK:     true,
+		},
+		{
+			name:       "falls back to shorter height",
+			width:      1,
+			height:     40,
+			wantWidth:  1,
+			wantHeight: 39,
+			wantOK:     true,
+		},
+		{
+			name:       "cannot shrink single cell",
+			width:      1,
+			height:     1,
+			wantWidth:  1,
+			wantHeight: 1,
+			wantOK:     false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotWidth, gotHeight, gotOK := foregroundRedrawTemporarySize(
+				test.width,
+				test.height,
+			)
+			if gotWidth != test.wantWidth ||
+				gotHeight != test.wantHeight ||
+				gotOK != test.wantOK {
+				t.Fatalf(
+					"foregroundRedrawTemporarySize(%d, %d) = (%d, %d, %t), want (%d, %d, %t)",
+					test.width,
+					test.height,
+					gotWidth,
+					gotHeight,
+					gotOK,
+					test.wantWidth,
+					test.wantHeight,
+					test.wantOK,
+				)
+			}
+		})
 	}
 }
 
