@@ -61,6 +61,35 @@ func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
 	}
 }
 
+func assertPtySizeEventually(t *testing.T, file *os.File, columns int, rows int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	var lastSize *pty.Winsize
+	var lastErr error
+	for time.Now().Before(deadline) {
+		size, err := pty.GetsizeFull(file)
+		if err == nil && int(size.Cols) == columns && int(size.Rows) == rows {
+			return
+		}
+		lastSize = size
+		lastErr = err
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatal(lastErr)
+	}
+	if lastSize == nil {
+		t.Fatalf("pty size unavailable, want %dx%d", columns, rows)
+	}
+	t.Fatalf(
+		"pty size = %dx%d, want %dx%d",
+		lastSize.Cols,
+		lastSize.Rows,
+		columns,
+		rows,
+	)
+}
+
 func setPtySize(t *testing.T, file *os.File, columns int, rows int) {
 	t.Helper()
 	if err := pty.Setsize(file, &pty.Winsize{
@@ -669,7 +698,7 @@ func TestSelectWindowResizesSelectedWindowToLatestTerminalSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertPtySize(t, inactivePty, 132, 43)
+	assertPtySizeEventually(t, inactivePty, 132, 43)
 }
 
 func TestAttachOnlyUpdatesActiveWindowPty(t *testing.T) {
@@ -689,7 +718,7 @@ func TestAttachOnlyUpdatesActiveWindowPty(t *testing.T) {
 		controlMessage{Width: 132, Height: 43},
 	)
 
-	assertPtySize(t, activePty, 132, 43)
+	assertPtySizeEventually(t, activePty, 132, 43)
 	assertPtySize(t, inactivePty, 80, 24)
 }
 
@@ -812,12 +841,15 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 		id:                "@1",
 		index:             0,
 		foregroundCommand: "codex",
+		privateModes:      map[string]bool{"1002": true, "1006": true, "2004": true},
 		lastActivity:      time.Now(),
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
+	attach := &recordingConn{}
+	server.attachConn = attach
 
 	originalSignalForegroundResize := signalForegroundResize
 	originalSimulateForegroundResize := simulateForegroundResize
@@ -853,6 +885,12 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+	modeReplay := attach.String()
+	for _, sequence := range []string{"\x1b[?1002h", "\x1b[?1006h", "\x1b[?2004h"} {
+		if !strings.Contains(modeReplay, sequence) {
+			t.Fatalf("mode replay %q does not contain %q", modeReplay, sequence)
+		}
 	}
 }
 
@@ -903,6 +941,159 @@ func TestForcedSameSizeResizeRedrawsForegroundTui(t *testing.T) {
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestForegroundRedrawTemporarySize(t *testing.T) {
+	tests := []struct {
+		name       string
+		width      int
+		height     int
+		wantWidth  int
+		wantHeight int
+		wantOK     bool
+	}{
+		{
+			name:       "uses narrower width",
+			width:      120,
+			height:     40,
+			wantWidth:  119,
+			wantHeight: 40,
+			wantOK:     true,
+		},
+		{
+			name:       "falls back to shorter height",
+			width:      1,
+			height:     40,
+			wantWidth:  1,
+			wantHeight: 39,
+			wantOK:     true,
+		},
+		{
+			name:       "cannot shrink single cell",
+			width:      1,
+			height:     1,
+			wantWidth:  1,
+			wantHeight: 1,
+			wantOK:     false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotWidth, gotHeight, gotOK := foregroundRedrawTemporarySize(
+				test.width,
+				test.height,
+			)
+			if gotWidth != test.wantWidth ||
+				gotHeight != test.wantHeight ||
+				gotOK != test.wantOK {
+				t.Fatalf(
+					"foregroundRedrawTemporarySize(%d, %d) = (%d, %d, %t), want (%d, %d, %t)",
+					test.width,
+					test.height,
+					gotWidth,
+					gotHeight,
+					gotOK,
+					test.wantWidth,
+					test.wantHeight,
+					test.wantOK,
+				)
+			}
+		})
+	}
+}
+
+func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.handleWindowOutput("@1", []byte("temporary layout"))
+	server.handleWindowOutput("@1", []byte("final layout"))
+	if got := conn.String(); got != "" {
+		t.Fatalf("attach output before redraw settled = %q, want empty", got)
+	}
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "temporary layoutfinal layout" {
+		t.Fatalf("attach output after redraw settled = %q, want buffered output", got)
+	}
+}
+
+func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("old intermediate layout"))
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("new settled layout"))
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "new settled layout" {
+		t.Fatalf("attach output after superseded redraw = %q, want latest output", got)
+	}
+}
+
+func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{
+		window,
+		{id: "@2", index: 1, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.handleWindowOutput("@1", []byte("old active redraw"))
+	server.mu.Lock()
+	server.activeID = "@2"
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "" {
+		t.Fatalf("inactive buffered output = %q, want empty", got)
 	}
 }
 
@@ -1086,7 +1277,7 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 	}
 }
 
-func TestActiveReplayUsesForegroundRedrawForAlternateScreenHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForTrackedAlternateScreenHistory(t *testing.T) {
 	for _, mode := range []string{"1047", "1049"} {
 		t.Run(mode, func(t *testing.T) {
 			server := newMuxServer("test")
@@ -1181,7 +1372,7 @@ func TestActiveReplaySkipsRunawayAgentHistory(t *testing.T) {
 	}
 }
 
-func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForVimAlternateScreenHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"interactive-main-screen-start" +
@@ -1193,6 +1384,7 @@ func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing
 		index:             0,
 		foregroundCommand: "vim",
 		history:           history,
+		privateModes:      map[string]bool{"1049": true},
 		lastActivity:      time.Now(),
 	}
 	server.windows = []*muxWindow{window}
@@ -1206,6 +1398,26 @@ func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayPreservesNonRedrawForegroundHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte("tail output\nlatest line\n")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "tail",
+		history:           history,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, string(history)) {
+		t.Fatalf("line-oriented foreground replay = %q, want history", replay)
 	}
 }
 
@@ -1748,7 +1960,7 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 		id:           "@1",
 		index:        0,
 		name:         "Mouse app",
-		privateModes: map[string]bool{"1000": true, "1006": true},
+		privateModes: map[string]bool{"1002": true, "1006": true},
 		lastActivity: time.Now(),
 	}
 
@@ -1759,6 +1971,59 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	}
 	if !snapshot.TerminalMouseReportSgr {
 		t.Fatal("snapshot did not report SGR mouse mode")
+	}
+	if !snapshot.PrivateModes["1002"] {
+		t.Fatalf("snapshot private modes = %#v, want SGR drag mode", snapshot.PrivateModes)
+	}
+	if !snapshot.PrivateModes["1006"] {
+		t.Fatalf("snapshot private modes = %#v, want SGR report mode", snapshot.PrivateModes)
+	}
+}
+
+func TestRestoreFromSnapshotPreservesMouseDragMode(t *testing.T) {
+	restore := restoreFromWindowSnapshots([]windowSnapshot{
+		{
+			ID:                        "@1",
+			Index:                     0,
+			Name:                      "Mouse app",
+			PrivateModes:              map[string]bool{"1002": true, "1006": true},
+			TerminalReportsMouseWheel: true,
+			TerminalMouseReportSgr:    true,
+		},
+	})
+
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	modes := restore.Windows[0].PrivateModes
+	if !modes["1002"] {
+		t.Fatalf("restore private modes = %#v, want SGR drag mode", modes)
+	}
+	if !modes["1006"] {
+		t.Fatalf("restore private modes = %#v, want SGR report mode", modes)
+	}
+}
+
+func TestRestoreFromLegacySnapshotPrefersSgrMouseDrag(t *testing.T) {
+	restore := restoreFromWindowSnapshots([]windowSnapshot{
+		{
+			ID:                        "@1",
+			Index:                     0,
+			Name:                      "Mouse app",
+			TerminalReportsMouseWheel: true,
+			TerminalMouseReportSgr:    true,
+		},
+	})
+
+	if restore == nil || len(restore.Windows) != 1 {
+		t.Fatalf("restore windows = %#v, want one window", restore)
+	}
+	modes := restore.Windows[0].PrivateModes
+	if !modes["1002"] {
+		t.Fatalf("restore private modes = %#v, want legacy SGR drag mode", modes)
+	}
+	if !modes["1006"] {
+		t.Fatalf("restore private modes = %#v, want SGR report mode", modes)
 	}
 }
 
@@ -2053,6 +2318,65 @@ func TestTerminalModeTrackingHandlesSplitSequences(t *testing.T) {
 			t.Fatalf("pre-history modes = %q, want %q", preModes, sequence)
 		}
 	}
+}
+
+func TestTerminalModeReplayRestoresMouseTrackingAfterDisabledModes(t *testing.T) {
+	window := &muxWindow{
+		privateModes: map[string]bool{
+			"1000": false,
+			"1002": true,
+			"1003": false,
+			"1006": true,
+		},
+	}
+
+	postModes := string(terminalModePostReplaySequence(window))
+	if !strings.Contains(postModes, "\x1b[?1006h") {
+		t.Fatalf("post-history modes = %q, want SGR mouse mode restored", postModes)
+	}
+	if got := lastSequence(
+		postModes,
+		"\x1b[?1000l",
+		"\x1b[?1000h",
+		"\x1b[?1002l",
+		"\x1b[?1002h",
+		"\x1b[?1003l",
+		"\x1b[?1003h",
+	); got != "\x1b[?1002h" {
+		t.Fatalf("last mouse tracking replay = %q in %q, want ?1002h", got, postModes)
+	}
+}
+
+func TestTerminalModePreReplayRestoresAltBufferAfterDisabledAltMode(t *testing.T) {
+	window := &muxWindow{
+		privateModes: map[string]bool{
+			"1047": true,
+			"1049": false,
+		},
+	}
+
+	preModes := string(terminalModePreReplaySequence(window))
+	if got := lastSequence(
+		preModes,
+		"\x1b[?1047l",
+		"\x1b[?1047h",
+		"\x1b[?1049l",
+		"\x1b[?1049h",
+	); got != "\x1b[?1047h" {
+		t.Fatalf("last alternate-buffer replay = %q in %q, want ?1047h", got, preModes)
+	}
+}
+
+func lastSequence(value string, candidates ...string) string {
+	lastIndex := -1
+	lastValue := ""
+	for _, candidate := range candidates {
+		if index := strings.LastIndex(value, candidate); index > lastIndex {
+			lastIndex = index
+			lastValue = candidate
+		}
+	}
+	return lastValue
 }
 
 func TestActiveReplayRestoresResetEditorModesAfterHistory(t *testing.T) {
