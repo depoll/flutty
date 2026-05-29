@@ -1003,6 +1003,69 @@ func TestForegroundRedrawTemporarySize(t *testing.T) {
 	}
 }
 
+func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.handleWindowOutput("@1", []byte("temporary layout"))
+	server.handleWindowOutput("@1", []byte("final layout"))
+	if got := conn.String(); got != "" {
+		t.Fatalf("attach output before redraw settled = %q, want empty", got)
+	}
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "temporary layoutfinal layout" {
+		t.Fatalf("attach output after redraw settled = %q, want buffered output", got)
+	}
+}
+
+func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{
+		window,
+		{id: "@2", index: 1, lastActivity: time.Now()},
+	}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+
+	server.handleWindowOutput("@1", []byte("old active redraw"))
+	server.mu.Lock()
+	server.activeID = "@2"
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "" {
+		t.Fatalf("inactive buffered output = %q, want empty", got)
+	}
+}
+
 func TestSameSizeResizeDoesNotSignalShell(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{

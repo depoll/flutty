@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.59"
+	monkeyMuxVersion                  = "0.1.60"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -44,6 +44,7 @@ const (
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
+	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -367,6 +368,9 @@ type muxWindow struct {
 	themeColorQueryKeys        map[string]bool
 	alert                      bool
 	closed                     bool
+	redrawForwardingPaused     bool
+	redrawForwardingGeneration int
+	redrawForwardingBuffer     []byte
 }
 
 type windowBroadcastIdentity struct {
@@ -1706,6 +1710,14 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 	if shouldWrite {
 		forwarded = window.stripLocallyAnsweredThemeQueriesLocked(chunk, themeHint)
+		if len(forwarded) > 0 && window.redrawForwardingPaused {
+			window.redrawForwardingBuffer = append(
+				window.redrawForwardingBuffer,
+				forwarded...,
+			)
+			shouldWrite = false
+			forwarded = nil
+		}
 	}
 	s.mu.Unlock()
 
@@ -2575,6 +2587,7 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
+		s.pauseAttachForwardingForRedrawLocked(window, width, height)
 		simulateForegroundResize(window, width, height)
 		attach = s.attachConn
 		modeReplay = window.modeReplayForAttachedTerminalLocked()
@@ -2621,8 +2634,62 @@ func (s *muxServer) simulateForegroundResizeIfAttached(
 	if conn == nil || s.attachConn != conn || window == nil || window.closed {
 		return false
 	}
+	s.pauseAttachForwardingForRedrawLocked(window, s.width, s.height)
 	simulateForegroundResize(window, s.width, s.height)
 	return true
+}
+
+func (s *muxServer) pauseAttachForwardingForRedrawLocked(
+	window *muxWindow,
+	width int,
+	height int,
+) {
+	if window == nil ||
+		window.closed ||
+		s.attachConn == nil ||
+		!window.usesForegroundRedrawReplayLocked() {
+		return
+	}
+	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
+		return
+	}
+	if !window.redrawForwardingPaused {
+		window.redrawForwardingBuffer = nil
+	}
+	window.redrawForwardingPaused = true
+	window.redrawForwardingGeneration += 1
+	windowID := window.id
+	generation := window.redrawForwardingGeneration
+	time.AfterFunc(foregroundRedrawForwardingPause, func() {
+		s.resumePausedAttachForwarding(windowID, generation)
+	})
+}
+
+func (s *muxServer) resumePausedAttachForwarding(
+	windowID string,
+	generation int,
+) {
+	var attach net.Conn
+	var buffered []byte
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil ||
+		window.closed ||
+		!window.redrawForwardingPaused ||
+		window.redrawForwardingGeneration != generation {
+		s.mu.Unlock()
+		return
+	}
+	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
+	window.redrawForwardingBuffer = nil
+	window.redrawForwardingPaused = false
+	if s.activeID == windowID {
+		attach = s.attachConn
+	}
+	s.mu.Unlock()
+	if len(buffered) > 0 {
+		s.writeAttachIfActive(windowID, attach, buffered)
+	}
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
