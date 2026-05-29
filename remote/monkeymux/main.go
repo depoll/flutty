@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.56"
+	monkeyMuxVersion                  = "0.1.57"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -2533,6 +2533,8 @@ func (s *muxServer) resize(width int, height int) {
 }
 
 func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+	var attach net.Conn
+	var modeReplay []byte
 	var foregroundProcessGroup int
 	var shouldSignal bool
 	s.mu.Lock()
@@ -2546,10 +2548,13 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
 		simulateForegroundResize(window, width, height)
+		attach = s.attachConn
+		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		shouldSignal = true
 	}
 	s.mu.Unlock()
+	s.writeAttach(attach, modeReplay)
 	if shouldSignal {
 		signalForegroundResize(foregroundProcessGroup)
 	}
@@ -2599,6 +2604,18 @@ func (w *muxWindow) foregroundProcessGroupLocked() int {
 	}
 	w.foregroundPid = pgrp
 	return pgrp
+}
+
+func (w *muxWindow) modeReplayForAttachedTerminalLocked() []byte {
+	if w == nil || w.closed {
+		return nil
+	}
+	modes := terminalModePostReplaySequence(w)
+	cursor := cursorVisibilityReplaySequence(w.cursorVisibleForReplayLocked())
+	replay := make([]byte, 0, len(modes)+len(cursor))
+	replay = append(replay, modes...)
+	replay = append(replay, cursor...)
+	return replay
 }
 
 func (s *muxServer) activeReplayLocked() []byte {

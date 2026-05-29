@@ -2589,31 +2589,6 @@ String? _describeMouseMode(
   MouseMode.upDownScrollMove => 'Mouse motion (${mouseReportMode.name})',
 };
 
-/// Describes local mouse mode, falling back to mux metadata when local terminal
-/// state is stale immediately after a replay/redraw.
-@visibleForTesting
-String? describeEffectiveMouseMode({
-  required MouseMode localMouseMode,
-  required MouseReportMode localMouseReportMode,
-  bool? activeWindowReportsMouseWheel,
-  bool? activeWindowMouseReportSgr,
-}) {
-  final localDescription = _describeMouseMode(
-    localMouseMode,
-    localMouseReportMode,
-  );
-  if (localDescription != null) {
-    return localDescription;
-  }
-  if (activeWindowReportsMouseWheel != true) {
-    return null;
-  }
-  if (activeWindowMouseReportSgr ?? false) {
-    return 'Mouse drag (sgr)';
-  }
-  return 'Mouse scroll';
-}
-
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
 bool shouldFollowTerminalOutput({
@@ -8768,12 +8743,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           tooltip:
               'A full-screen terminal app is using the alternate screen buffer.',
         ),
-      if (describeEffectiveMouseMode(
-            localMouseMode: _terminal.mouseMode,
-            localMouseReportMode: _terminal.mouseReportMode,
-            activeWindowReportsMouseWheel: _activeWindowReportsMouseWheel,
-            activeWindowMouseReportSgr: _activeWindowMouseReportSgr,
-          )
+      if (_describeMouseMode(_terminal.mouseMode, _terminal.mouseReportMode)
           case final mouseModeLabel? when mouseModeLabel.isNotEmpty)
         (
           icon: Icons.mouse_outlined,
