@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.56"
+	monkeyMuxVersion                  = "0.1.63"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -43,6 +43,8 @@ const (
 	runCommandOutputMaxBytes          = 8 * 1024 * 1024
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
+	foregroundRedrawResizeDelay       = 40 * time.Millisecond
+	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -90,6 +92,10 @@ var (
 		"1007",
 		"2004",
 		"2031",
+	}
+	groupedReplayPrivateModes = [][]string{
+		{"1047", "1049"},
+		{"1000", "1002", "1003"},
 	}
 	trackedPrivateModes = map[string]struct{}{
 		"1":    {},
@@ -148,18 +154,41 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
 		return
 	}
-	if width > 1 {
-		_ = pty.Setsize(window.pty, &pty.Winsize{
-			Rows: uint16(height),
-			Cols: uint16(width - 1),
+	ptyFile := window.pty
+	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(
+		width,
+		height,
+	)
+	if ok {
+		applyPtySize(ptyFile, temporaryWidth, temporaryHeight)
+		// Leave the PTY at a temporary size long enough for TUIs that ignore
+		// same-size SIGWINCH events to observe a real resize before restoring.
+		time.AfterFunc(foregroundRedrawResizeDelay, func() {
+			applyPtySize(ptyFile, width, height)
 		})
-	} else if height > 1 {
-		_ = pty.Setsize(window.pty, &pty.Winsize{
-			Rows: uint16(height - 1),
-			Cols: uint16(width),
-		})
+		return
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
+	applyPtySize(ptyFile, width, height)
+}
+
+func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	if width > 1 {
+		return width - 1, height, true
+	}
+	if height > 1 {
+		return width, height - 1, true
+	}
+	return width, height, false
+}
+
+func applyPtySize(ptyFile *os.File, width int, height int) {
+	if ptyFile == nil || width <= 0 || height <= 0 {
+		return
+	}
+	_ = pty.Setsize(ptyFile, &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
@@ -246,19 +275,20 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                        string `json:"id"`
-	Index                     int    `json:"index"`
-	Name                      string `json:"name"`
-	Active                    bool   `json:"active"`
-	CurrentCommand            string `json:"currentCommand,omitempty"`
-	CurrentPath               string `json:"currentPath,omitempty"`
-	PanePid                   int    `json:"panePid,omitempty"`
-	Flags                     string `json:"flags,omitempty"`
-	PaneTitle                 string `json:"paneTitle,omitempty"`
-	AgentTool                 string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds  int64  `json:"lastActivityEpochSeconds,omitempty"`
-	TerminalReportsMouseWheel bool   `json:"terminalReportsMouseWheel,omitempty"`
-	TerminalMouseReportSgr    bool   `json:"terminalMouseReportSgr,omitempty"`
+	ID                        string          `json:"id"`
+	Index                     int             `json:"index"`
+	Name                      string          `json:"name"`
+	Active                    bool            `json:"active"`
+	CurrentCommand            string          `json:"currentCommand,omitempty"`
+	CurrentPath               string          `json:"currentPath,omitempty"`
+	PanePid                   int             `json:"panePid,omitempty"`
+	Flags                     string          `json:"flags,omitempty"`
+	PaneTitle                 string          `json:"paneTitle,omitempty"`
+	AgentTool                 string          `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds  int64           `json:"lastActivityEpochSeconds,omitempty"`
+	TerminalReportsMouseWheel bool            `json:"terminalReportsMouseWheel,omitempty"`
+	TerminalMouseReportSgr    bool            `json:"terminalMouseReportSgr,omitempty"`
+	PrivateModes              map[string]bool `json:"privateModes,omitempty"`
 }
 
 type serverRestore struct {
@@ -338,6 +368,9 @@ type muxWindow struct {
 	themeColorQueryKeys        map[string]bool
 	alert                      bool
 	closed                     bool
+	redrawForwardingPaused     bool
+	redrawForwardingGeneration int
+	redrawForwardingBuffer     []byte
 }
 
 type windowBroadcastIdentity struct {
@@ -813,9 +846,16 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 }
 
 func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
+	if modes := copyPrivateModes(window.PrivateModes); len(modes) > 0 {
+		return modes
+	}
 	modes := map[string]bool{}
 	if window.TerminalReportsMouseWheel {
-		modes["1000"] = true
+		if window.TerminalMouseReportSgr {
+			modes["1002"] = true
+		} else {
+			modes["1000"] = true
+		}
 	}
 	if window.TerminalMouseReportSgr {
 		modes["1006"] = true
@@ -1808,6 +1848,14 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 	if shouldWrite {
 		forwarded = window.stripLocallyAnsweredThemeQueriesLocked(chunk, themeHint)
+		if len(forwarded) > 0 && window.redrawForwardingPaused {
+			window.redrawForwardingBuffer = append(
+				window.redrawForwardingBuffer,
+				forwarded...,
+			)
+			shouldWrite = false
+			forwarded = nil
+		}
 	}
 	s.mu.Unlock()
 
@@ -2384,6 +2432,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.privateModes["1006"],
+		PrivateModes:              copyPrivateModes(window.privateModes),
 	}
 }
 
@@ -2662,6 +2711,8 @@ func (s *muxServer) resize(width int, height int) {
 }
 
 func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+	var attach net.Conn
+	var modeReplay []byte
 	var foregroundProcessGroup int
 	var shouldSignal bool
 	s.mu.Lock()
@@ -2674,11 +2725,15 @@ func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
 		!window.closed &&
 		window.usesForegroundRedrawReplayLocked() &&
 		(forceRedraw || sizeChanged) {
+		s.pauseAttachForwardingForRedrawLocked(window, width, height)
 		simulateForegroundResize(window, width, height)
+		attach = s.attachConn
+		modeReplay = window.modeReplayForAttachedTerminalLocked()
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		shouldSignal = true
 	}
 	s.mu.Unlock()
+	s.writeAttach(attach, modeReplay)
 	if shouldSignal {
 		signalForegroundResize(foregroundProcessGroup)
 	}
@@ -2717,8 +2772,67 @@ func (s *muxServer) simulateForegroundResizeIfAttached(
 	if conn == nil || s.attachConn != conn || window == nil || window.closed {
 		return false
 	}
+	s.pauseAttachForwardingForRedrawLocked(window, s.width, s.height)
 	simulateForegroundResize(window, s.width, s.height)
 	return true
+}
+
+func (s *muxServer) pauseAttachForwardingForRedrawLocked(
+	window *muxWindow,
+	width int,
+	height int,
+) {
+	if window == nil ||
+		window.closed ||
+		s.attachConn == nil ||
+		!window.usesForegroundRedrawReplayLocked() {
+		return
+	}
+	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
+		return
+	}
+	window.redrawForwardingBuffer = nil
+	window.redrawForwardingPaused = true
+	window.redrawForwardingGeneration += 1
+	windowID := window.id
+	generation := window.redrawForwardingGeneration
+	time.AfterFunc(foregroundRedrawForwardingPause, func() {
+		s.resumePausedAttachForwarding(windowID, generation)
+	})
+}
+
+func (s *muxServer) resumePausedAttachForwarding(
+	windowID string,
+	generation int,
+) {
+	var attach net.Conn
+	var buffered []byte
+	s.attachMu.Lock()
+	defer s.attachMu.Unlock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil ||
+		window.closed ||
+		!window.redrawForwardingPaused ||
+		window.redrawForwardingGeneration != generation {
+		s.mu.Unlock()
+		return
+	}
+	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
+	window.redrawForwardingBuffer = nil
+	window.redrawForwardingPaused = false
+	if s.activeID == windowID {
+		attach = s.attachConn
+	}
+	s.mu.Unlock()
+	if len(buffered) > 0 {
+		s.mu.Lock()
+		shouldWrite := s.activeID == windowID && s.attachConn == attach
+		s.mu.Unlock()
+		if shouldWrite {
+			s.writeAttachLocked(attach, buffered)
+		}
+	}
 }
 
 func (w *muxWindow) foregroundProcessGroupLocked() int {
@@ -2728,6 +2842,18 @@ func (w *muxWindow) foregroundProcessGroupLocked() int {
 	}
 	w.foregroundPid = pgrp
 	return pgrp
+}
+
+func (w *muxWindow) modeReplayForAttachedTerminalLocked() []byte {
+	if w == nil || w.closed {
+		return nil
+	}
+	modes := terminalModePostReplaySequence(w)
+	cursor := cursorVisibilityReplaySequence(w.cursorVisibleForReplayLocked())
+	replay := make([]byte, 0, len(modes)+len(cursor))
+	replay = append(replay, modes...)
+	replay = append(replay, cursor...)
+	return replay
 }
 
 func (s *muxServer) activeReplayLocked() []byte {
@@ -2775,11 +2901,7 @@ func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 	if w == nil {
 		return false
 	}
-	if w.alternateScreenModeActiveLocked() || w.agentToolLocked() != "" {
-		return true
-	}
-	command := strings.TrimSpace(w.currentCommandLocked())
-	return command != "" && !isShellCommandName(command)
+	return w.alternateScreenModeActiveLocked() || w.agentToolLocked() != ""
 }
 
 func (w *muxWindow) alternateScreenModeActiveLocked() bool {
@@ -2857,6 +2979,9 @@ func terminalModeReplaySequence(
 ) []byte {
 	var replay []byte
 	for _, mode := range privateModes {
+		if groupedReplayPrivateMode(mode) {
+			continue
+		}
 		enabled, ok := window.privateModes[mode]
 		if !ok {
 			continue
@@ -2864,13 +2989,10 @@ func terminalModeReplaySequence(
 		if mode == "1004" && enabled && !window.focusModeActiveLocked() {
 			continue
 		}
-		final := byte('l')
-		if enabled {
-			final = 'h'
-		}
-		replay = append(replay, "\x1b[?"...)
-		replay = append(replay, mode...)
-		replay = append(replay, final)
+		replay = appendPrivateModeReplay(replay, mode, enabled)
+	}
+	for _, group := range groupedReplayPrivateModes {
+		replay = appendGroupedPrivateModeReplay(replay, window, privateModes, group)
 	}
 	if window.insertModeKnown {
 		if window.insertModeEnabled {
@@ -2887,6 +3009,60 @@ func terminalModeReplaySequence(
 		}
 	}
 	return replay
+}
+
+func appendGroupedPrivateModeReplay(
+	replay []byte,
+	window *muxWindow,
+	privateModes []string,
+	group []string,
+) []byte {
+	for _, mode := range group {
+		if !containsString(privateModes, mode) {
+			continue
+		}
+		if enabled, ok := window.privateModes[mode]; ok && !enabled {
+			replay = appendPrivateModeReplay(replay, mode, false)
+		}
+	}
+	for _, mode := range group {
+		if !containsString(privateModes, mode) {
+			continue
+		}
+		if enabled, ok := window.privateModes[mode]; ok && enabled {
+			replay = appendPrivateModeReplay(replay, mode, true)
+		}
+	}
+	return replay
+}
+
+func appendPrivateModeReplay(replay []byte, mode string, enabled bool) []byte {
+	final := byte('l')
+	if enabled {
+		final = 'h'
+	}
+	replay = append(replay, "\x1b[?"...)
+	replay = append(replay, mode...)
+	replay = append(replay, final)
+	return replay
+}
+
+func groupedReplayPrivateMode(mode string) bool {
+	for _, group := range groupedReplayPrivateModes {
+		if containsString(group, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
