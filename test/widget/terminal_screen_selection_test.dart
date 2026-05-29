@@ -3,9 +3,12 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
+
+class _FakeImagePickerPlatform extends ImagePickerPlatform {}
 
 void main() {
   group('trimTerminalSelectionText', () {
@@ -308,6 +311,31 @@ void main() {
         isFalse,
       );
     });
+  });
+
+  group('enableAndroidPhotoPickerForTerminalMedia', () {
+    test('enables the existing Android image picker implementation', () {
+      final imagePicker = ImagePickerAndroid();
+
+      final configuredPicker = enableAndroidPhotoPickerForTerminalMedia(
+        imagePicker,
+      );
+
+      expect(identical(configuredPicker, imagePicker), isTrue);
+      expect(configuredPicker.useAndroidPhotoPicker, isTrue);
+    });
+
+    test(
+      'replaces fallback implementations with the Android implementation',
+      () {
+        final configuredPicker = enableAndroidPhotoPickerForTerminalMedia(
+          _FakeImagePickerPlatform(),
+        );
+
+        expect(configuredPicker, isA<ImagePickerAndroid>());
+        expect(configuredPicker.useAndroidPhotoPicker, isTrue);
+      },
+    );
   });
 
   group('platformFileFromPickedTerminalMedia', () {
