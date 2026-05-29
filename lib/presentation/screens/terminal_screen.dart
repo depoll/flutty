@@ -1139,6 +1139,17 @@ bool shouldUsePhotoLibraryPickerForTerminalMedia({
     !isWeb &&
     (platform == TargetPlatform.android || platform == TargetPlatform.iOS);
 
+/// Returns an Android image picker implementation configured for Photo Picker.
+@visibleForTesting
+ImagePickerAndroid enableAndroidPhotoPickerForTerminalMedia(
+  ImagePickerPlatform imagePickerImplementation,
+) {
+  final androidImagePicker = imagePickerImplementation is ImagePickerAndroid
+      ? imagePickerImplementation
+      : ImagePickerAndroid();
+  return androidImagePicker..useAndroidPhotoPicker = true;
+}
+
 /// Builds a file-picker upload file from native photo-library media.
 @visibleForTesting
 Future<PlatformFile> platformFileFromPickedTerminalMedia(
@@ -12447,9 +12458,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!_isAndroidPlatform) {
       return;
     }
-    final imagePickerImplementation = ImagePickerPlatform.instance;
-    if (imagePickerImplementation is ImagePickerAndroid) {
-      imagePickerImplementation.useAndroidPhotoPicker = true;
+    final currentImagePicker = ImagePickerPlatform.instance;
+    final androidImagePicker = enableAndroidPhotoPickerForTerminalMedia(
+      currentImagePicker,
+    );
+    if (!identical(currentImagePicker, androidImagePicker)) {
+      ImagePickerPlatform.instance = androidImagePicker;
     }
   }
 
