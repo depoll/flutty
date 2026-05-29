@@ -146,6 +146,20 @@ void main() {
       expect(window!.terminalReportsMouseWheel, isTrue);
       expect(window.terminalMouseReportSgr, isTrue);
     });
+
+    test('maps helper private mode metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Mouse app',
+        'active': true,
+        'privateModes': {'1002': true, '1006': true},
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalReportsMouseWheel, isTrue);
+      expect(window.terminalMouseReportSgr, isTrue);
+    });
   });
 
   group('MonkeyMux agent metadata', () {
