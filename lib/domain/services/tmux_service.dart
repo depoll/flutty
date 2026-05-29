@@ -4350,14 +4350,14 @@ flutty_antigravity_session_title() {
   session_id=\$1
   [ -n "\$session_id" ] || return 0
   title=
-  annotation_file="\$home/.gemini/antigravity-cli/annotations/\${session_id}.pbtxt"
-  if [ -r "\$annotation_file" ]; then
-    title=\$(grep -E '^[[:space:]]*title[[:space:]]*:[[:space:]]*' "\$annotation_file" 2>/dev/null |
-      sed -E 's/^[[:space:]]*title[[:space:]]*:[[:space:]]*"([^"]*)".*/\\1/' | head -n 1)
-  fi
-  if [ -z "\$title" ] && [ -r "\$home/.gemini/antigravity-cli/history.jsonl" ]; then
+  if [ -r "\$home/.gemini/antigravity-cli/history.jsonl" ]; then
     title=\$(grep -F "\$session_id" "\$home/.gemini/antigravity-cli/history.jsonl" 2>/dev/null |
       grep '"display"' | tail -n 1 | flutty_json_string_field_from_stdin display)
+  fi
+  annotation_file="\$home/.gemini/antigravity-cli/annotations/\${session_id}.pbtxt"
+  if [ -z "\$title" ] && [ -r "\$annotation_file" ]; then
+    title=\$(grep -E '^[[:space:]]*title[[:space:]]*:[[:space:]]*' "\$annotation_file" 2>/dev/null |
+      sed -E 's/^[[:space:]]*title[[:space:]]*:[[:space:]]*"([^"]*)".*/\\1/' | head -n 1)
   fi
   if [ -z "\$title" ]; then
     title="\$session_id"

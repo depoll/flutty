@@ -641,7 +641,9 @@ parseAntigravitySessionMetadata(String raw) {
   final sessionId =
       _readStringField(decoded, 'id') ?? _readStringField(decoded, 'sessionId');
   final summary =
-      _readStringField(decoded, 'summary') ?? _readStringField(decoded, 'name');
+      _readStringField(decoded, 'display') ??
+      _readStringField(decoded, 'summary') ??
+      _readStringField(decoded, 'name');
 
   var workingDirectory =
       _readStringField(decoded, 'workingDirectory') ??
@@ -707,6 +709,7 @@ _parsePartialAntigravitySessionMetadata(String raw) {
       _readJsonStringFromRaw(raw, 'id') ??
       _readJsonStringFromRaw(raw, 'sessionId');
   final summary =
+      _readJsonStringFromRaw(raw, 'display') ??
       _readJsonStringFromRaw(raw, 'summary') ??
       _readJsonStringFromRaw(raw, 'name');
 
@@ -2529,7 +2532,7 @@ for d in legacy_dirs:
                     continue
                 visited_session_ids.add(session_id)
                 
-                summary = metadata.get("summary") or metadata.get("name") or session_id[:8]
+                summary = metadata.get("display") or metadata.get("summary") or metadata.get("name") or session_id[:8]
                 cwd = metadata.get("workingDirectory") or metadata.get("cwd")
                 
                 if not cwd:
@@ -2601,7 +2604,7 @@ for d in conv_dirs:
                             title = m.group(1)
                 
                 history_entry = history_by_id.get(conv_id, {})
-                summary = title or history_entry.get("display") or conv_id[:8]
+                summary = history_entry.get("display") or title or conv_id[:8]
                 cwd = history_entry.get("workspace")
                 
                 timestamp = history_entry.get("timestamp")
