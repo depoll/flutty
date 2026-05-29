@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.61"
+	monkeyMuxVersion                  = "0.1.60"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -370,6 +370,7 @@ type muxWindow struct {
 	closed                     bool
 	redrawForwardingPaused     bool
 	redrawForwardingGeneration int
+	redrawForwardingBuffer     []byte
 }
 
 type windowBroadcastIdentity struct {
@@ -1710,6 +1711,10 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	if shouldWrite {
 		forwarded = window.stripLocallyAnsweredThemeQueriesLocked(chunk, themeHint)
 		if len(forwarded) > 0 && window.redrawForwardingPaused {
+			window.redrawForwardingBuffer = append(
+				window.redrawForwardingBuffer,
+				forwarded...,
+			)
 			shouldWrite = false
 			forwarded = nil
 		}
@@ -2648,6 +2653,9 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
 		return
 	}
+	if !window.redrawForwardingPaused {
+		window.redrawForwardingBuffer = nil
+	}
 	window.redrawForwardingPaused = true
 	window.redrawForwardingGeneration += 1
 	windowID := window.id
@@ -2661,7 +2669,8 @@ func (s *muxServer) resumePausedAttachForwarding(
 	windowID string,
 	generation int,
 ) {
-	var foregroundProcessGroup int
+	var attach net.Conn
+	var buffered []byte
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil ||
@@ -2671,13 +2680,15 @@ func (s *muxServer) resumePausedAttachForwarding(
 		s.mu.Unlock()
 		return
 	}
+	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
+	window.redrawForwardingBuffer = nil
 	window.redrawForwardingPaused = false
 	if s.activeID == windowID {
-		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+		attach = s.attachConn
 	}
 	s.mu.Unlock()
-	if foregroundProcessGroup > 0 {
-		signalForegroundResize(foregroundProcessGroup)
+	if len(buffered) > 0 {
+		s.writeAttachIfActive(windowID, attach, buffered)
 	}
 }
 
