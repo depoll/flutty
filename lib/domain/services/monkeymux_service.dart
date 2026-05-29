@@ -1296,6 +1296,15 @@ TmuxWindow? _windowFromJson(Object? value) {
   if (value is! Map<String, Object?>) return null;
   final index = value['index'];
   final active = value['active'];
+  final privateModes = _privateModesFromJson(value['privateModes']);
+  final terminalReportsMouseWheel =
+      (value['terminalReportsMouseWheel'] as bool? ?? false) ||
+      _privateModeEnabled(privateModes, '1000') ||
+      _privateModeEnabled(privateModes, '1002') ||
+      _privateModeEnabled(privateModes, '1003');
+  final terminalMouseReportSgr =
+      (value['terminalMouseReportSgr'] as bool? ?? false) ||
+      _privateModeEnabled(privateModes, '1006');
   // MonkeyMux activity is tracked via idle metadata; tmux alert flags would
   // turn ordinary background output into noisy system notifications.
   return TmuxWindow(
@@ -1308,11 +1317,28 @@ TmuxWindow? _windowFromJson(Object? value) {
     panePid: value['panePid'] as int?,
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
-    terminalReportsMouseWheel: value['terminalReportsMouseWheel'] as bool?,
-    terminalMouseReportSgr: value['terminalMouseReportSgr'] as bool?,
+    terminalReportsMouseWheel: terminalReportsMouseWheel,
+    terminalMouseReportSgr: terminalMouseReportSgr,
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }
+
+Map<String, bool> _privateModesFromJson(Object? value) {
+  if (value is! Map<String, Object?>) {
+    return const <String, bool>{};
+  }
+  final privateModes = <String, bool>{};
+  for (final entry in value.entries) {
+    final modeValue = entry.value;
+    if (modeValue is bool) {
+      privateModes[entry.key] = modeValue;
+    }
+  }
+  return privateModes;
+}
+
+bool _privateModeEnabled(Map<String, bool> privateModes, String mode) =>
+    privateModes[mode] ?? false;
 
 Set<int> _monkeyMuxAgentPanePids(Iterable<TmuxWindow> windows) => windows
     .where(
