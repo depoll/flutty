@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.62"
+	monkeyMuxVersion                  = "0.1.63"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -1038,42 +1038,180 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		return
 	}
 	panePids := map[int]struct{}{}
+	hasAntigravityWindows := false
 	for _, window := range restore.Windows {
 		if strings.TrimSpace(window.AgentSessionID) != "" {
 			continue
 		}
-		if agentToolForRestore(window) == "" || window.PanePid <= 0 {
+		tool := agentToolForRestore(window)
+		if tool == "antigravity" {
+			hasAntigravityWindows = true
+		}
+		if tool == "" || window.PanePid <= 0 {
 			continue
 		}
 		panePids[window.PanePid] = struct{}{}
 	}
+	antigravitySessions := map[int]string{}
+	if hasAntigravityWindows {
+		antigravitySessions = discoverAntigravitySessionIDs(restore)
+	}
 	if len(panePids) == 0 {
+		for i, sessionID := range antigravitySessions {
+			restore.Windows[i].AgentSessionID = sessionID
+		}
 		return
 	}
 	processes := readProcessTable()
-	if len(processes) == 0 {
-		return
+	copilotSessions := map[int]string{}
+	if len(processes) > 0 {
+		copilotSessions = discoverCopilotSessionIDs(processes, panePids)
 	}
-	copilotSessions := discoverCopilotSessionIDs(processes, panePids)
 	for i := range restore.Windows {
 		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
 			continue
 		}
 		tool := agentToolForRestore(restore.Windows[i])
 		panePid := restore.Windows[i].PanePid
-		if panePid <= 0 || tool == "" {
+		if tool == "" {
 			continue
 		}
-		if tool == "copilot" {
+		if panePid > 0 && tool == "copilot" {
 			if sessionID := copilotSessions[panePid]; sessionID != "" {
 				restore.Windows[i].AgentSessionID = sessionID
 				continue
 			}
 		}
-		if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
-			restore.Windows[i].AgentSessionID = sessionID
+		if panePid > 0 && len(processes) > 0 {
+			if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+				continue
+			}
+		}
+		if tool == "antigravity" {
+			if sessionID := antigravitySessions[i]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+			}
 		}
 	}
+}
+
+type antigravityHistoryEntry struct {
+	conversationID string
+	workspace      string
+}
+
+func discoverAntigravitySessionIDs(restore *serverRestore) map[int]string {
+	entries := readAntigravityHistoryEntries()
+	if len(entries) == 0 {
+		return nil
+	}
+	latestSessionID := latestAntigravitySessionID(entries)
+	needsFallback := antigravityRestoreWindowCount(restore) == 1
+	sessions := map[int]string{}
+	for i, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) != "" ||
+			agentToolForRestore(window) != "antigravity" {
+			continue
+		}
+		if sessionID := antigravitySessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+			sessions[i] = sessionID
+			continue
+		}
+		if needsFallback && latestSessionID != "" {
+			sessions[i] = latestSessionID
+		}
+	}
+	return sessions
+}
+
+func antigravityRestoreWindowCount(restore *serverRestore) int {
+	if restore == nil {
+		return 0
+	}
+	count := 0
+	for _, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) == "" &&
+			agentToolForRestore(window) == "antigravity" {
+			count++
+		}
+	}
+	return count
+}
+
+func readAntigravityHistoryEntries() []antigravityHistoryEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	file, err := os.Open(filepath.Join(home, ".gemini", "antigravity-cli", "history.jsonl"))
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	entries := []antigravityHistoryEntry{}
+	for scanner.Scan() {
+		var raw struct {
+			ConversationID string `json:"conversationId"`
+			Workspace      string `json:"workspace"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(raw.ConversationID)
+		if sessionID == "" {
+			continue
+		}
+		entries = append(entries, antigravityHistoryEntry{
+			conversationID: sessionID,
+			workspace:      normalizedAntigravityWorkspacePath(raw.Workspace),
+		})
+	}
+	return entries
+}
+
+func latestAntigravitySessionID(entries []antigravityHistoryEntry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if sessionID := strings.TrimSpace(entries[i].conversationID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func antigravitySessionIDForWorkspace(
+	entries []antigravityHistoryEntry,
+	workspace string,
+) string {
+	normalizedWorkspace := normalizedAntigravityWorkspacePath(workspace)
+	if normalizedWorkspace == "" {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].workspace == normalizedWorkspace {
+			return entries[i].conversationID
+		}
+	}
+	return ""
+}
+
+func normalizedAntigravityWorkspacePath(value string) string {
+	workspace := strings.TrimSpace(value)
+	if workspace == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(workspace), "file://") {
+		if path := pathFromOsc7(workspace); path != "" {
+			workspace = path
+		}
+	}
+	if expanded, err := expandHomePath(workspace); err == nil {
+		workspace = expanded
+	}
+	return filepath.Clean(workspace)
 }
 
 func agentToolForRestore(window restoreWindowState) string {

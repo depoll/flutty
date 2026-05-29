@@ -174,6 +174,21 @@ void main() {
       },
     );
 
+    test('command prefers Antigravity history title before annotation title', () {
+      final command = buildAgentActiveSessionMetadataCommand(const {42});
+
+      expect(
+        command.indexOf(
+          r'title=$(grep -F "$session_id" "$home/.gemini/antigravity-cli/history.jsonl"',
+        ),
+        lessThan(
+          command.indexOf(
+            r'annotation_file="$home/.gemini/antigravity-cli/annotations/${session_id}.pbtxt"',
+          ),
+        ),
+      );
+    });
+
     test('parses live session titles by matched pane PID', () {
       const sep = tmuxWindowFieldSeparator;
 
