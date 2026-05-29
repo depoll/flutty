@@ -218,6 +218,8 @@ double resolveTmuxBarMaxContentHeight(
 }
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
+const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -2883,6 +2885,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
   bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
+  Timer? _monkeyMuxResizeRedrawFollowUpTimer;
+  Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -6102,6 +6106,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             rows: height,
           ),
         );
+        _scheduleMonkeyMuxResizeRedrawFollowUp(session);
       }
     }
 
@@ -6192,6 +6197,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     unawaited(
       _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
     );
+    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
       const Duration(milliseconds: 50),
@@ -6213,6 +6219,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             session,
             refreshVisibleTerminal: true,
           ),
+        );
+      },
+    );
+  }
+
+  void _scheduleMonkeyMuxResizeRedrawFollowUp(SshSession session) {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    final connectionId = session.connectionId;
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer = Timer(
+      _monkeyMuxResizeRedrawFollowUpDelay,
+      () {
+        _monkeyMuxResizeRedrawFollowUpTimer = null;
+        if (!mounted || _connectionId != connectionId) {
+          return;
+        }
+        unawaited(
+          _syncActiveMonkeyMuxTerminalSize(
+            session,
+            refreshVisibleTerminal: true,
+          ),
+        );
+      },
+    );
+  }
+
+  void _scheduleMonkeyMuxPostRedrawDisplayRefresh(int connectionId) {
+    _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
+    _monkeyMuxPostRedrawDisplayRefreshTimer = Timer(
+      _monkeyMuxPostRedrawDisplayRefreshDelay,
+      () {
+        _monkeyMuxPostRedrawDisplayRefreshTimer = null;
+        if (!mounted || _connectionId != connectionId) {
+          return;
+        }
+        _followLiveOutput();
+        _scheduleTerminalSizeRefresh(
+          forceDisplayRefresh: true,
+          revealLatestOutput: true,
+          suppressMonkeyMuxResizeSync: true,
         );
       },
     );
@@ -6271,6 +6322,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'refreshedVisibleTerminal': refreshVisibleTerminal,
         },
       );
+      if (refreshVisibleTerminal) {
+        _scheduleMonkeyMuxPostRedrawDisplayRefresh(session.connectionId);
+      }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'monkeymux.resize',
@@ -8575,6 +8629,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
