@@ -1003,7 +1003,7 @@ func TestForegroundRedrawTemporarySize(t *testing.T) {
 	}
 }
 
-func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
+func TestRedrawResizeSuppressesIntermediateAttachOutput(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
 	window := &muxWindow{
@@ -1015,6 +1015,23 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	server.attachConn = conn
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
 
 	server.mu.Lock()
 	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
@@ -1028,13 +1045,17 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	}
 
 	server.resumePausedAttachForwarding("@1", generation)
+	server.handleWindowOutput("@1", []byte("final layout"))
 
-	if got := conn.String(); got != "temporary layoutfinal layout" {
-		t.Fatalf("attach output after redraw settled = %q, want buffered output", got)
+	if got := conn.String(); got != "final layout" {
+		t.Fatalf("attach output after redraw settled = %q, want final output", got)
+	}
+	if !reflect.DeepEqual(signaled, []int{5151}) {
+		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
 	}
 }
 
-func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
+func TestRedrawResizeDoesNotRepaintWhenInactive(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
 	window := &muxWindow{
@@ -1050,6 +1071,23 @@ func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
 	server.activeID = "@1"
 	server.attachConn = conn
 
+	originalSignalForegroundResize := signalForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	var signaled []int
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
 	server.mu.Lock()
 	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
 	generation := window.redrawForwardingGeneration
@@ -1063,6 +1101,9 @@ func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
 
 	if got := conn.String(); got != "" {
 		t.Fatalf("inactive buffered output = %q, want empty", got)
+	}
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
 	}
 }
 
