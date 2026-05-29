@@ -860,6 +860,19 @@ cwd: /tmp/demo
       expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
     });
 
+    test('prefers history display names over stale summaries', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "display": "Updated session name",
+  "summary": "Original summary"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.summary, 'Updated session name');
+    });
+
     test('extracts working directory from nested folderUri', () {
       final metadata = parseAntigravitySessionMetadata('''
 {
@@ -1186,6 +1199,13 @@ branch refs/heads/main
       expect(
         result.sessions.single.lastActive,
         DateTime.parse('2026-05-22T21:45:35Z'),
+      );
+      final pythonCommand = commands.singleWhere(
+        (command) => command.contains('python3 -c'),
+      );
+      expect(
+        pythonCommand,
+        contains('summary = history_entry.get("display") or title'),
       );
 
       expect(
