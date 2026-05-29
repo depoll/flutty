@@ -2117,6 +2117,65 @@ func TestTerminalModeTrackingHandlesSplitSequences(t *testing.T) {
 	}
 }
 
+func TestTerminalModeReplayRestoresMouseTrackingAfterDisabledModes(t *testing.T) {
+	window := &muxWindow{
+		privateModes: map[string]bool{
+			"1000": false,
+			"1002": true,
+			"1003": false,
+			"1006": true,
+		},
+	}
+
+	postModes := string(terminalModePostReplaySequence(window))
+	if !strings.Contains(postModes, "\x1b[?1006h") {
+		t.Fatalf("post-history modes = %q, want SGR mouse mode restored", postModes)
+	}
+	if got := lastSequence(
+		postModes,
+		"\x1b[?1000l",
+		"\x1b[?1000h",
+		"\x1b[?1002l",
+		"\x1b[?1002h",
+		"\x1b[?1003l",
+		"\x1b[?1003h",
+	); got != "\x1b[?1002h" {
+		t.Fatalf("last mouse tracking replay = %q in %q, want ?1002h", got, postModes)
+	}
+}
+
+func TestTerminalModePreReplayRestoresAltBufferAfterDisabledAltMode(t *testing.T) {
+	window := &muxWindow{
+		privateModes: map[string]bool{
+			"1047": true,
+			"1049": false,
+		},
+	}
+
+	preModes := string(terminalModePreReplaySequence(window))
+	if got := lastSequence(
+		preModes,
+		"\x1b[?1047l",
+		"\x1b[?1047h",
+		"\x1b[?1049l",
+		"\x1b[?1049h",
+	); got != "\x1b[?1047h" {
+		t.Fatalf("last alternate-buffer replay = %q in %q, want ?1047h", got, preModes)
+	}
+}
+
+func lastSequence(value string, candidates ...string) string {
+	lastIndex := -1
+	lastValue := ""
+	for _, candidate := range candidates {
+		if index := strings.LastIndex(value, candidate); index > lastIndex {
+			lastIndex = index
+			lastValue = candidate
+		}
+	}
+	return lastValue
+}
+
 func TestActiveReplayRestoresResetEditorModesAfterHistory(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{id: "@1", history: []byte("stale\x1b[4h")}
