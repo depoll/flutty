@@ -1034,6 +1034,37 @@ func TestRedrawResizeBuffersIntermediateAttachOutput(t *testing.T) {
 	}
 }
 
+func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "codex",
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 40)
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("old intermediate layout"))
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@1", []byte("new settled layout"))
+
+	server.resumePausedAttachForwarding("@1", generation)
+
+	if got := conn.String(); got != "new settled layout" {
+		t.Fatalf("attach output after superseded redraw = %q, want latest output", got)
+	}
+}
+
 func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
@@ -1246,7 +1277,7 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 	}
 }
 
-func TestActiveReplayUsesForegroundRedrawForAlternateScreenHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForTrackedAlternateScreenHistory(t *testing.T) {
 	for _, mode := range []string{"1047", "1049"} {
 		t.Run(mode, func(t *testing.T) {
 			server := newMuxServer("test")
@@ -1341,7 +1372,7 @@ func TestActiveReplaySkipsRunawayAgentHistory(t *testing.T) {
 	}
 }
 
-func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing.T) {
+func TestActiveReplayUsesForegroundRedrawForVimAlternateScreenHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"interactive-main-screen-start" +
@@ -1353,6 +1384,7 @@ func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing
 		index:             0,
 		foregroundCommand: "vim",
 		history:           history,
+		privateModes:      map[string]bool{"1049": true},
 		lastActivity:      time.Now(),
 	}
 	server.windows = []*muxWindow{window}
@@ -1366,6 +1398,26 @@ func TestActiveReplayUsesForegroundRedrawForNonShellForegroundHistory(t *testing
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayPreservesNonRedrawForegroundHistory(t *testing.T) {
+	server := newMuxServer("test")
+	history := []byte("tail output\nlatest line\n")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "tail",
+		history:           history,
+		lastActivity:      time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if !strings.Contains(replay, string(history)) {
+		t.Fatalf("line-oriented foreground replay = %q, want history", replay)
 	}
 }
 

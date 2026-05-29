@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.60"
+	monkeyMuxVersion                  = "0.1.62"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -2653,9 +2653,7 @@ func (s *muxServer) pauseAttachForwardingForRedrawLocked(
 	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
 		return
 	}
-	if !window.redrawForwardingPaused {
-		window.redrawForwardingBuffer = nil
-	}
+	window.redrawForwardingBuffer = nil
 	window.redrawForwardingPaused = true
 	window.redrawForwardingGeneration += 1
 	windowID := window.id
@@ -2671,6 +2669,8 @@ func (s *muxServer) resumePausedAttachForwarding(
 ) {
 	var attach net.Conn
 	var buffered []byte
+	s.attachMu.Lock()
+	defer s.attachMu.Unlock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil ||
@@ -2688,7 +2688,12 @@ func (s *muxServer) resumePausedAttachForwarding(
 	}
 	s.mu.Unlock()
 	if len(buffered) > 0 {
-		s.writeAttachIfActive(windowID, attach, buffered)
+		s.mu.Lock()
+		shouldWrite := s.activeID == windowID && s.attachConn == attach
+		s.mu.Unlock()
+		if shouldWrite {
+			s.writeAttachLocked(attach, buffered)
+		}
 	}
 }
 
@@ -2758,11 +2763,7 @@ func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 	if w == nil {
 		return false
 	}
-	if w.alternateScreenModeActiveLocked() || w.agentToolLocked() != "" {
-		return true
-	}
-	command := strings.TrimSpace(w.currentCommandLocked())
-	return command != "" && !isShellCommandName(command)
+	return w.alternateScreenModeActiveLocked() || w.agentToolLocked() != ""
 }
 
 func (w *muxWindow) alternateScreenModeActiveLocked() bool {
