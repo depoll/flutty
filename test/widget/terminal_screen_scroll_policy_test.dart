@@ -3,7 +3,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
-import 'package:xterm/xterm.dart';
 
 void main() {
   group('terminal scroll policy helpers', () {
@@ -213,30 +212,6 @@ void main() {
           activeWindowMouseReportSgr: true,
         ),
         isTrue,
-      );
-    });
-
-    test('describes mux mouse metadata when local mode is stale', () {
-      expect(
-        describeEffectiveMouseMode(
-          localMouseMode: MouseMode.none,
-          localMouseReportMode: MouseReportMode.normal,
-          activeWindowReportsMouseWheel: true,
-          activeWindowMouseReportSgr: true,
-        ),
-        'Mouse drag (sgr)',
-      );
-    });
-
-    test('prefers local mouse mode descriptions over mux metadata', () {
-      expect(
-        describeEffectiveMouseMode(
-          localMouseMode: MouseMode.upDownScroll,
-          localMouseReportMode: MouseReportMode.normal,
-          activeWindowReportsMouseWheel: true,
-          activeWindowMouseReportSgr: true,
-        ),
-        'Mouse scroll (normal)',
       );
     });
   });

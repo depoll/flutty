@@ -812,12 +812,15 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 		id:                "@1",
 		index:             0,
 		foregroundCommand: "codex",
+		privateModes:      map[string]bool{"1002": true, "1006": true, "2004": true},
 		lastActivity:      time.Now(),
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	server.width = 120
 	server.height = 40
+	attach := &recordingConn{}
+	server.attachConn = attach
 
 	originalSignalForegroundResize := signalForegroundResize
 	originalSimulateForegroundResize := simulateForegroundResize
@@ -853,6 +856,12 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+	modeReplay := attach.String()
+	for _, sequence := range []string{"\x1b[?1002h", "\x1b[?1006h", "\x1b[?2004h"} {
+		if !strings.Contains(modeReplay, sequence) {
+			t.Fatalf("mode replay %q does not contain %q", modeReplay, sequence)
+		}
 	}
 }
 
