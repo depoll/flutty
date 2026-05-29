@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.55"
+	monkeyMuxVersion                  = "0.1.56"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -246,19 +246,20 @@ type controlResponse struct {
 }
 
 type windowSnapshot struct {
-	ID                        string `json:"id"`
-	Index                     int    `json:"index"`
-	Name                      string `json:"name"`
-	Active                    bool   `json:"active"`
-	CurrentCommand            string `json:"currentCommand,omitempty"`
-	CurrentPath               string `json:"currentPath,omitempty"`
-	PanePid                   int    `json:"panePid,omitempty"`
-	Flags                     string `json:"flags,omitempty"`
-	PaneTitle                 string `json:"paneTitle,omitempty"`
-	AgentTool                 string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds  int64  `json:"lastActivityEpochSeconds,omitempty"`
-	TerminalReportsMouseWheel bool   `json:"terminalReportsMouseWheel,omitempty"`
-	TerminalMouseReportSgr    bool   `json:"terminalMouseReportSgr,omitempty"`
+	ID                        string          `json:"id"`
+	Index                     int             `json:"index"`
+	Name                      string          `json:"name"`
+	Active                    bool            `json:"active"`
+	CurrentCommand            string          `json:"currentCommand,omitempty"`
+	CurrentPath               string          `json:"currentPath,omitempty"`
+	PanePid                   int             `json:"panePid,omitempty"`
+	Flags                     string          `json:"flags,omitempty"`
+	PaneTitle                 string          `json:"paneTitle,omitempty"`
+	AgentTool                 string          `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds  int64           `json:"lastActivityEpochSeconds,omitempty"`
+	TerminalReportsMouseWheel bool            `json:"terminalReportsMouseWheel,omitempty"`
+	TerminalMouseReportSgr    bool            `json:"terminalMouseReportSgr,omitempty"`
+	PrivateModes              map[string]bool `json:"privateModes,omitempty"`
 }
 
 type serverRestore struct {
@@ -813,9 +814,16 @@ func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
 }
 
 func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
+	if modes := copyPrivateModes(window.PrivateModes); len(modes) > 0 {
+		return modes
+	}
 	modes := map[string]bool{}
 	if window.TerminalReportsMouseWheel {
-		modes["1000"] = true
+		if window.TerminalMouseReportSgr {
+			modes["1002"] = true
+		} else {
+			modes["1000"] = true
+		}
 	}
 	if window.TerminalMouseReportSgr {
 		modes["1006"] = true
@@ -2246,6 +2254,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.privateModes["1006"],
+		PrivateModes:              copyPrivateModes(window.privateModes),
 	}
 }
 
