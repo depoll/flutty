@@ -744,6 +744,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                               defaultLabel: 'Use default',
                               onTap: () =>
                                   _handleThemeSelectionTap(isLight: true),
+                              onClear: () {
+                                setState(() {
+                                  _selectedLightThemeId = null;
+                                });
+                                _updateDirtyState();
+                              },
                             ),
                             const SizedBox(height: 8),
                             // Dark mode theme
@@ -754,6 +760,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                               defaultLabel: 'Use default',
                               onTap: () =>
                                   _handleThemeSelectionTap(isLight: false),
+                              onClear: () {
+                                setState(() {
+                                  _selectedDarkThemeId = null;
+                                });
+                                _updateDirtyState();
+                              },
                             ),
                             const SizedBox(height: 16),
                             // Terminal font section
@@ -2186,6 +2198,7 @@ class _ThemeSelectionTile extends StatelessWidget {
     required this.themes,
     required this.defaultLabel,
     required this.onTap,
+    this.onClear,
   });
 
   final String label;
@@ -2193,6 +2206,7 @@ class _ThemeSelectionTile extends StatelessWidget {
   final Iterable<TerminalThemeData> themes;
   final String defaultLabel;
   final VoidCallback onTap;
+  final VoidCallback? onClear;
 
   @override
   Widget build(BuildContext context) {
@@ -2234,9 +2248,7 @@ class _ThemeSelectionTile extends StatelessWidget {
           if (themeId != null)
             IconButton(
               icon: const Icon(Icons.clear, size: 18),
-              onPressed: () {
-                // Clear theme selection - handled via callback
-              },
+              onPressed: onClear,
               tooltip: 'Reset to default',
             ),
           const Icon(Icons.chevron_right),
