@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.58"
+	monkeyMuxVersion                  = "0.1.59"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -43,6 +43,7 @@ const (
 	runCommandOutputMaxBytes          = 8 * 1024 * 1024
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
+	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -152,18 +153,41 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
 		return
 	}
-	if width > 1 {
-		_ = pty.Setsize(window.pty, &pty.Winsize{
-			Rows: uint16(height),
-			Cols: uint16(width - 1),
+	ptyFile := window.pty
+	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(
+		width,
+		height,
+	)
+	if ok {
+		applyPtySize(ptyFile, temporaryWidth, temporaryHeight)
+		// Leave the PTY at a temporary size long enough for TUIs that ignore
+		// same-size SIGWINCH events to observe a real resize before restoring.
+		time.AfterFunc(foregroundRedrawResizeDelay, func() {
+			applyPtySize(ptyFile, width, height)
 		})
-	} else if height > 1 {
-		_ = pty.Setsize(window.pty, &pty.Winsize{
-			Rows: uint16(height - 1),
-			Cols: uint16(width),
-		})
+		return
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
+	applyPtySize(ptyFile, width, height)
+}
+
+func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	if width > 1 {
+		return width - 1, height, true
+	}
+	if height > 1 {
+		return width, height - 1, true
+	}
+	return width, height, false
+}
+
+func applyPtySize(ptyFile *os.File, width int, height int) {
+	if ptyFile == nil || width <= 0 || height <= 0 {
+		return
+	}
+	_ = pty.Setsize(ptyFile, &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})

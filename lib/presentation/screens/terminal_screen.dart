@@ -6186,6 +6186,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     unawaited(
       _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
     );
+    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
       const Duration(milliseconds: 50),
