@@ -110,6 +110,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _disableTmuxStatusBar = false;
   bool _disableAgentTmuxStatusBar = false;
   bool _startClisInYoloMode = false;
+  bool _hasTriedSubmit = false;
 
   List<PortForward> _portForwards = [];
 
@@ -426,6 +427,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               ? const Center(child: CircularProgressIndicator())
               : Form(
                   key: _formKey,
+                  autovalidateMode: _hasTriedSubmit
+                      ? AutovalidateMode.onUserInteraction
+                      : AutovalidateMode.disabled,
                   child: SingleChildScrollView(
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16),
@@ -1414,6 +1418,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   );
 
   Future<void> _saveHost() async {
+    if (!_hasTriedSubmit) {
+      setState(() => _hasTriedSubmit = true);
+    }
     final formIsValid = _formKey.currentState!.validate();
     final invalidTarget = _firstInvalidHostField();
     if (!formIsValid || invalidTarget != null) {
@@ -1600,6 +1607,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _testConnection() async {
+    if (!_hasTriedSubmit) {
+      setState(() => _hasTriedSubmit = true);
+    }
     if (!_formKey.currentState!.validate()) return;
 
     final messenger = ScaffoldMessenger.of(context)

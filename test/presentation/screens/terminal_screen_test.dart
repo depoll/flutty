@@ -1573,70 +1573,74 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
-    testWidgets('browse files ignores duplicate taps while SFTP is opening', (
-      tester,
-    ) async {
-      var sftpOpenCount = 0;
-      final router = GoRouter(
-        initialLocation:
-            '/terminal/${host.id}?connectionId=${session.connectionId}',
-        routes: [
-          GoRoute(
-            path: '/terminal/:hostId',
-            name: Routes.terminal,
-            builder: (context, state) => TerminalScreen(
-              hostId: host.id,
-              connectionId: session.connectionId,
+    testWidgets(
+      'browse files ignores duplicate taps while SFTP is opening',
+      (tester) async {
+        var sftpOpenCount = 0;
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
             ),
-          ),
-          GoRoute(
-            path: '/sftp/:hostId',
-            name: Routes.sftp,
-            builder: (context, state) =>
-                _RecordingSftpPage(onOpened: () => sftpOpenCount += 1),
-          ),
-        ],
-      );
-      addTearDown(router.dispose);
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            hostRepositoryProvider.overrideWithValue(hostRepository),
-            monetizationServiceProvider.overrideWithValue(monetizationService),
-            monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
-            ),
-            sharedClipboardProvider.overrideWith((ref) async => false),
-            activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
+            GoRoute(
+              path: '/sftp/:hostId',
+              name: Routes.sftp,
+              builder: (context, state) =>
+                  _RecordingSftpPage(onOpened: () => sftpOpenCount += 1),
             ),
           ],
-          child: MaterialApp.router(routerConfig: router),
-        ),
-      );
-      await tester.pump();
-      await tester.pump();
+        );
+        addTearDown(router.dispose);
 
-      final browseFilesButton = find.byTooltip('Browse files');
-      expect(browseFilesButton, findsOneWidget);
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
 
-      await tester.tap(browseFilesButton);
-      await tester.tap(browseFilesButton);
-      await tester.pumpAndSettle();
+        final browseFilesButton = find.byTooltip('Browse files');
+        expect(browseFilesButton, findsOneWidget);
 
-      expect(sftpOpenCount, 1);
-      expect(find.text('SFTP opened'), findsOneWidget);
+        await tester.tap(browseFilesButton);
+        await tester.tap(browseFilesButton);
+        await tester.pumpAndSettle();
 
-      router.pop();
-      await tester.pumpAndSettle();
+        expect(sftpOpenCount, 1);
+        expect(find.text('SFTP opened'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('Browse files'));
-      await tester.pumpAndSettle();
+        router.pop();
+        await tester.pumpAndSettle();
 
-      expect(sftpOpenCount, 2);
-    });
+        await tester.tap(find.byTooltip('Browse files'));
+        await tester.pumpAndSettle();
+
+        expect(sftpOpenCount, 2);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
 
     testWidgets('shows jump host indicator for tunneled sessions', (
       tester,
@@ -5903,7 +5907,8 @@ void main() {
         expect(tester.testTextInput.isVisible, isTrue);
         tester.testTextInput.log.clear();
 
-        await tester.tap(find.byTooltip('Browse files'));
+        await openTerminalOverflowMenu(tester);
+        await tester.tap(terminalMenuItemButton('Browse Files'));
         await tester.pumpAndSettle();
 
         expect(openedPaths, ['']);

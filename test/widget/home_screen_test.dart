@@ -6,6 +6,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
@@ -542,6 +543,54 @@ void main() {
       expect(find.text('Import config'), findsNothing);
       expect(find.text('Paste SSH URL'), findsOneWidget);
       expect(find.text('Try local test host'), findsNothing);
+    });
+
+    testWidgets('paste SSH URL reports clipboard read failures', (
+      tester,
+    ) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            throw PlatformException(code: 'clipboard-unavailable');
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Paste SSH URL'));
+      await tester.pump();
+
+      expect(
+        find.text(
+          'Could not read the clipboard. Copy an ssh:// URL and try again.',
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('connections empty state explains where sessions appear', (

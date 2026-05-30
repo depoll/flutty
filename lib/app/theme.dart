@@ -655,14 +655,14 @@ abstract final class FluttyTheme {
           child: Icon(
             icon,
             size: emptyStateIconSize,
-            color: colorScheme.onSurface.withAlpha(80),
+            color: colorScheme.onSurface.withAlpha(130),
           ),
         ),
         const SizedBox(height: spacingMd),
         Text(
           title,
           style: theme.textTheme.titleMedium?.copyWith(
-            color: colorScheme.onSurface.withAlpha(180),
+            color: colorScheme.onSurface.withAlpha(220),
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -671,7 +671,7 @@ abstract final class FluttyTheme {
           subtitle,
           textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall?.copyWith(
-            color: colorScheme.onSurface.withAlpha(100),
+            color: colorScheme.onSurface.withAlpha(150),
           ),
         ),
         if (onAction != null && actionLabel != null) ...[

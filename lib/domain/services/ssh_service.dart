@@ -1142,7 +1142,29 @@ class SshConnectionConfig {
 
   /// Connection timeout.
   final Duration connectionTimeout;
+
+  /// Whether this config has a password or at least one key candidate.
+  bool get hasConfiguredCredentials =>
+      (password?.isNotEmpty ?? false) ||
+      (privateKey?.isNotEmpty ?? false) ||
+      (identityKeys?.isNotEmpty ?? false);
 }
+
+/// Formats unexpected SSH disconnects into user-facing text.
+@visibleForTesting
+String formatUnexpectedSshDisconnectMessage(
+  Object error, {
+  required SshConnectionConfig config,
+}) {
+  if (!config.hasConfiguredCredentials && _isBrokenPipeError(error)) {
+    return 'Connection lost before the shell opened. Add a password or SSH key, '
+        'or verify that this server supports no-auth SSH connections.';
+  }
+  return 'Connection lost: $error';
+}
+
+bool _isBrokenPipeError(Object error) =>
+    error.toString().toLowerCase().contains('broken pipe');
 
 /// Result of an SSH connection attempt.
 class SshConnectionResult {
@@ -3889,7 +3911,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           onError: (Object error, StackTrace _) => unawaited(
             handleUnexpectedDisconnect(
               session.connectionId,
-              message: 'Connection lost: $error',
+              message: formatUnexpectedSshDisconnectMessage(
+                error,
+                config: session.config,
+              ),
             ),
           ),
         );

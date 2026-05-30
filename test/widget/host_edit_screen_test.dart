@@ -336,6 +336,25 @@ void main() {
       },
     );
 
+    testWidgets(
+      'clears submitted validation errors while fields are corrected',
+      (tester) async {
+        await _pumpHostCreateScreen(tester);
+
+        await _tapBottomSave(tester);
+        expect(find.text('Please enter a label'), findsOneWidget);
+
+        await tester.enterText(
+          find.byKey(const Key('host-label-field')),
+          'QA Host',
+        );
+        await tester.pump();
+
+        expect(find.text('Please enter a label'), findsNothing);
+        expect(find.text('Please enter a hostname'), findsOneWidget);
+      },
+    );
+
     testWidgets('warns before leaving with unsaved host changes', (
       tester,
     ) async {

@@ -262,6 +262,39 @@ void main() {
     });
   });
 
+  group('formatUnexpectedSshDisconnectMessage', () {
+    test('explains broken pipe disconnects without credentials', () {
+      const config = SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'qa',
+      );
+
+      expect(
+        formatUnexpectedSshDisconnectMessage(
+          'SSHSocketError(SocketException: Write failed (OS Error: Broken pipe))',
+          config: config,
+        ),
+        'Connection lost before the shell opened. Add a password or SSH key, '
+        'or verify that this server supports no-auth SSH connections.',
+      );
+    });
+
+    test('keeps raw error detail when credentials are configured', () {
+      const config = SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'qa',
+        password: 'secret',
+      );
+
+      expect(
+        formatUnexpectedSshDisconnectMessage('closed', config: config),
+        'Connection lost: closed',
+      );
+    });
+  });
+
   group('terminal metadata helpers', () {
     test('parses and formats working directory metadata', () {
       final uri = parseTerminalWorkingDirectoryUri([

@@ -124,7 +124,9 @@ class _BackgroundLifecycleBridgeState
   bool _hasLoadedHomeScreenShortcutHosts = false;
   bool _hasLoadedPinnedHomeScreenShortcutHostIds = false;
   TmuxAlertNotificationPayload? _pendingTmuxAlertNavigation;
+  String? _pendingSshUrlNavigation;
   bool _isTmuxAlertNavigationQueued = false;
+  bool _isSshUrlNavigationQueued = false;
 
   @override
   void initState() {
@@ -160,6 +162,50 @@ class _BackgroundLifecycleBridgeState
     super.dispose();
   }
 
+  @override
+  Future<bool> didPushRoute(String route) async =>
+      _handleIncomingRoute(Uri.tryParse(route));
+
+  @override
+  Future<bool> didPushRouteInformation(
+    RouteInformation routeInformation,
+  ) async => _handleIncomingRoute(routeInformation.uri);
+
+  Future<bool> _handleIncomingRoute(Uri? uri) async {
+    final sshUrl = resolveIncomingSshUrl(uri);
+    if (sshUrl == null) {
+      return false;
+    }
+    _pendingSshUrlNavigation = sshUrl;
+    _queuePendingSshUrlNavigation();
+    return true;
+  }
+
+  void _queuePendingSshUrlNavigation() {
+    if (_isSshUrlNavigationQueued ||
+        _pendingSshUrlNavigation == null ||
+        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+      return;
+    }
+    _isSshUrlNavigationQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isSshUrlNavigationQueued = false;
+      if (!mounted ||
+          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+        return;
+      }
+      final sshUrl = _pendingSshUrlNavigation;
+      if (sshUrl == null) {
+        return;
+      }
+      _pendingSshUrlNavigation = null;
+      ref
+          .read(routerProvider)
+          .push('/hosts/add?sshUrl=${Uri.encodeQueryComponent(sshUrl)}');
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _startTmuxAlertNotificationRouting() {
     final notificationService = ref.read(localNotificationServiceProvider);
     _tmuxAlertTapSubscription = notificationService.tmuxAlertTaps.listen(
@@ -171,6 +217,7 @@ class _BackgroundLifecycleBridgeState
     ) {
       if (_canOpenTmuxAlertNotification(next)) {
         _queuePendingTmuxAlertNavigation();
+        _queuePendingSshUrlNavigation();
       }
     });
   }
@@ -322,4 +369,37 @@ class _BackgroundLifecycleBridgeState
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// Resolves an incoming app route/deep link into a host draft SSH URL.
+@visibleForTesting
+String? resolveIncomingSshUrl(Uri? uri) {
+  if (uri == null) {
+    return null;
+  }
+
+  if (uri.scheme == 'ssh' && uri.host.isNotEmpty) {
+    return uri.toString();
+  }
+
+  if (uri.scheme != 'monkeyssh') {
+    return null;
+  }
+
+  final action = uri.host.toLowerCase();
+  if (action != 'host' && action != 'add-host') {
+    return null;
+  }
+  final hostname = uri.queryParameters['hostname']?.trim();
+  if (hostname == null || hostname.isEmpty) {
+    return null;
+  }
+  final username = uri.queryParameters['username']?.trim();
+  final port = int.tryParse(uri.queryParameters['port'] ?? '');
+  return Uri(
+    scheme: 'ssh',
+    userInfo: username == null || username.isEmpty ? '' : username,
+    host: hostname,
+    port: port,
+  ).toString();
 }

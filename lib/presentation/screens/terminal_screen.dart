@@ -3216,10 +3216,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required IconData icon,
     required String label,
     required String action,
+    bool enabled = true,
   }) => MenuItemButton(
     style: TerminalMenuStyles.itemButtonStyle(context),
     leadingIcon: Icon(icon, size: TerminalMenuStyles.iconSize),
-    onPressed: () => unawaited(_handleMenuAction(action)),
+    onPressed: enabled ? () => unawaited(_handleMenuAction(action)) : null,
     child: _terminalOverflowMenuLabel(label),
   );
 
@@ -8862,8 +8863,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _TerminalExclusiveAction.tmuxNavigator,
     );
 
+    final handlesTerminalBack = _isTmuxBarExpanded || systemKeyboardVisible;
+
     return PopScope(
-      canPop: !_isTmuxBarExpanded,
+      canPop: !handlesTerminalBack,
       onPopInvokedWithResult: (didPop, _) {
         _logAndroidPredictiveBackDiagnostics(
           context,
@@ -8874,7 +8877,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _clearAppThemeOverride();
           return;
         }
-        _collapseTmuxBarIfExpanded();
+        if (_collapseTmuxBarIfExpanded()) {
+          return;
+        }
+        if (systemKeyboardVisible) {
+          _toggleSystemKeyboard(true);
+          return;
+        }
       },
       child: Scaffold(
         backgroundColor: theme.colorScheme.surface,
@@ -8950,16 +8959,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     : _openTmuxNavigator,
                 tooltip: 'tmux windows',
               ),
-            IconButton(
-              icon: const Icon(Icons.folder_outlined),
-              onPressed:
-                  _connectionId == null ||
-                      isOpeningSftpBrowser ||
-                      connectionState != SshConnectionState.connected
-                  ? null
-                  : () => unawaited(_openConnectionFileBrowser()),
-              tooltip: 'Browse files',
-            ),
+            if (!isMobile)
+              IconButton(
+                icon: const Icon(Icons.folder_outlined),
+                onPressed:
+                    _connectionId == null ||
+                        isOpeningSftpBrowser ||
+                        connectionState != SshConnectionState.connected
+                    ? null
+                    : () => unawaited(_openConnectionFileBrowser()),
+                tooltip: 'Browse files',
+              ),
             if (isMobile)
               IconButton(
                 icon: Icon(
@@ -8998,6 +9008,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 isMobilePlatform: isMobile,
               ),
               menuChildren: [
+                _terminalOverflowMenuItem(
+                  context: context,
+                  icon: Icons.folder_outlined,
+                  label: 'Browse Files',
+                  action: 'browse_files',
+                  enabled:
+                      _connectionId != null &&
+                      !isOpeningSftpBrowser &&
+                      connectionState == SshConnectionState.connected,
+                ),
                 _terminalOverflowMenuItem(
                   context: context,
                   icon: Icons.code_rounded,
@@ -9130,6 +9150,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
       _terminalFocusNode.unfocus();
     } else {
+      if (_isMobilePlatform && _showKeyboardToolbar) {
+        setState(() => _showKeyboardToolbar = false);
+      }
       // Explicit user action — always show the keyboard regardless of the
       // tap-to-show setting.
       _restoreTerminalFocus(forceShowSystemKeyboard: true);
@@ -10021,6 +10044,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     () async {
       final connectionId = _connectionId;
       if (connectionId == null) {
+        _showTerminalLinkMessage('Connect before browsing files.');
         return;
       }
 
@@ -10050,6 +10074,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             tmuxPaneDirectory: tmuxPaneDirectory,
           ),
         );
+      } on Exception catch (error) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            library: 'terminal',
+            context: ErrorDescription('while opening the SFTP browser'),
+          ),
+        );
+        if (mounted) {
+          _showTerminalLinkMessage(
+            'Could not open the file browser. Check the connection and try again.',
+          );
+        }
       } finally {
         _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
       }
@@ -10122,6 +10159,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     switch (action) {
       case 'snippets':
         await _showSnippetPicker();
+        break;
+      case 'browse_files':
+        unawaited(_openConnectionFileBrowser());
         break;
       case 'change_theme':
         unawaited(_showThemePicker());

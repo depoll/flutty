@@ -843,23 +843,31 @@ class HostsPanel extends ConsumerWidget {
   );
 
   Future<void> _openPastedSshUrl(BuildContext context) async {
-    final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    ClipboardData? clipboard;
+    try {
+      clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    } on PlatformException {
+      if (context.mounted) {
+        _showHostPasteSnackBar(
+          context,
+          'Could not read the clipboard. Copy an ssh:// URL and try again.',
+        );
+      }
+      return;
+    }
     final sshUrl = clipboard?.text?.trim();
     if (sshUrl == null || sshUrl.isEmpty) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Copy an ssh:// URL first.')),
-        );
+        _showHostPasteSnackBar(context, 'Copy an ssh:// URL first.');
       }
       return;
     }
     final uri = Uri.tryParse(sshUrl);
     if (uri == null || uri.scheme != 'ssh' || uri.host.isEmpty) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Clipboard does not contain an ssh:// URL.'),
-          ),
+        _showHostPasteSnackBar(
+          context,
+          'Clipboard does not contain an ssh:// URL.',
         );
       }
       return;
@@ -869,6 +877,12 @@ class HostsPanel extends ConsumerWidget {
         context.push('/hosts/add?sshUrl=${Uri.encodeQueryComponent(sshUrl)}'),
       );
     }
+  }
+
+  void _showHostPasteSnackBar(BuildContext context, String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _buildCenteredHostsState({required Widget child}) => CustomScrollView(

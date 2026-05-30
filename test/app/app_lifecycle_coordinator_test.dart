@@ -5,9 +5,35 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/app/app_lifecycle_coordinator.dart';
 
 void main() {
+  group('resolveIncomingSshUrl', () {
+    test('accepts direct ssh URLs', () {
+      expect(
+        resolveIncomingSshUrl(Uri.parse('ssh://qa@example.com:2222')),
+        'ssh://qa@example.com:2222',
+      );
+    });
+
+    test('builds ssh URLs from monkeyssh host links', () {
+      expect(
+        resolveIncomingSshUrl(
+          Uri.parse(
+            'monkeyssh://host?hostname=127.0.0.1&port=2226&username=qa',
+          ),
+        ),
+        'ssh://qa@127.0.0.1:2226',
+      );
+    });
+
+    test('ignores unrelated routes', () {
+      expect(resolveIncomingSshUrl(Uri.parse('/settings')), isNull);
+      expect(resolveIncomingSshUrl(Uri.parse('monkeyssh://settings')), isNull);
+    });
+  });
+
   group('AppBootstrapController', () {
     test('starts startup tasks in app bootstrap order', () async {
       final calls = <String>[];
