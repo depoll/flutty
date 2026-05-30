@@ -894,15 +894,15 @@ func TestChangedSizeResizeRedrawsForegroundTui(t *testing.T) {
 	}
 }
 
-func TestChangedSizeResizeRedrawsHermesAgentChatFromTitle(t *testing.T) {
+func TestChangedSizeResizeRedrawsForegroundScreenRewriter(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
 		id:                "@1",
 		index:             0,
-		foregroundCommand: "zsh",
-		paneTitle:         "Hermes Agent Chat",
+		foregroundCommand: "unknown-tui",
 		lastActivity:      time.Now(),
 	}
+	window.observeTerminalModesLocked([]byte("\x1b[2J\x1b[Hchat layout"))
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	server.width = 120
@@ -942,6 +942,57 @@ func TestChangedSizeResizeRedrawsHermesAgentChatFromTitle(t *testing.T) {
 	}
 	if !reflect.DeepEqual(signaled, []int{5151}) {
 		t.Fatalf("signaled process groups = %#v, want [5151]", signaled)
+	}
+}
+
+func TestChangedSizeResizeDoesNotRedrawShellControlSequences(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:                "@1",
+		index:             0,
+		foregroundCommand: "zsh",
+		lastActivity:      time.Now(),
+	}
+	window.observeTerminalModesLocked([]byte("\x1b[2J\x1b[Hprompt"))
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+	server.width = 120
+	server.height = 40
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+
+	var signaled []int
+	var simulated []string
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 5151
+		}
+		return 0
+	}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {
+		simulated = append(
+			simulated,
+			fmt.Sprintf("%s:%dx%d", window.id, width, height),
+		)
+	}
+	signalForegroundResize = func(processGroup int) {
+		signaled = append(signaled, processGroup)
+	}
+
+	server.resize(120, 55)
+
+	if len(simulated) != 0 {
+		t.Fatalf("simulated resizes = %#v, want none", simulated)
+	}
+	if len(signaled) != 0 {
+		t.Fatalf("signaled process groups = %#v, want none", signaled)
 	}
 }
 
@@ -2560,12 +2611,6 @@ func TestCommandNameFromProcessFieldsDetectsNodeBackedAgents(t *testing.T) {
 			want:    "codex",
 		},
 		{
-			name:    "hermes node shim",
-			command: "node",
-			args:    "node /usr/local/lib/node_modules/hermes/bin/hermes.js",
-			want:    "hermes",
-		},
-		{
 			name:    "plain node script",
 			command: "node",
 			args:    "node /tmp/build.js",
@@ -2607,7 +2652,6 @@ func TestAgentToolFromCommandTextDetectsWrappedNodeAgents(t *testing.T) {
 	}{
 		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
 		{command: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js", want: "codex"},
-		{command: "cd ~/repo && hermes agent-chat", want: "hermes"},
 	}
 
 	for _, tt := range tests {
@@ -2988,16 +3032,6 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			agentTool: "opencode",
 		},
 		{
-			name: "hermes launch",
-			state: restoreWindowState{
-				Name:           "Hermes Agent Chat",
-				CurrentCommand: "hermes",
-				AgentTool:      "hermes",
-			},
-			want:      "hermes",
-			agentTool: "hermes",
-		},
-		{
 			name: "antigravity resume",
 			state: restoreWindowState{
 				Name:           "Antigravity",
@@ -3376,7 +3410,6 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 		{name: "codex", command: "codex"},
 		{name: "claude", command: "claude", wantFocusTransition: true},
 		{name: "gemini", command: "gemini", wantFocusTransition: true},
-		{name: "hermes", command: "hermes", wantFocusTransition: true},
 		{name: "opencode", command: "opencode", wantFocusTransition: true},
 		{name: "antigravity", command: "antigravity", wantFocusTransition: true},
 	} {

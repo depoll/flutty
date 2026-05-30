@@ -45,6 +45,8 @@ const (
 	socketTimeout                     = 2 * time.Second
 	foregroundRedrawResizeDelay       = 40 * time.Millisecond
 	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
+	foregroundRedrawSignalThreshold   = 2
+	foregroundRedrawSignalMax         = 32
 	windowUpdateMinInterval           = 750 * time.Millisecond
 	windowHistoryLimitBytes           = 128 * 1024
 	windowFullReplayHistoryLimitBytes = 512 * 1024
@@ -368,6 +370,8 @@ type muxWindow struct {
 	themeColorQueryKeys        map[string]bool
 	alert                      bool
 	closed                     bool
+	foregroundRedrawProcessID  int
+	foregroundRedrawSignals    int
 	redrawForwardingPaused     bool
 	redrawForwardingGeneration int
 	redrawForwardingBuffer     []byte
@@ -2901,7 +2905,22 @@ func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
 	if w == nil {
 		return false
 	}
-	return w.alternateScreenModeActiveLocked() || w.agentToolLocked() != ""
+	return w.alternateScreenModeActiveLocked() ||
+		w.agentToolLocked() != "" ||
+		w.foregroundRedrawSignalsActiveLocked()
+}
+
+func (w *muxWindow) foregroundRedrawSignalsActiveLocked() bool {
+	if w == nil || w.foregroundRedrawSignals < foregroundRedrawSignalThreshold {
+		return false
+	}
+	if isShellCommandName(w.currentCommandLocked()) {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.foregroundRedrawProcessID <= 0 ||
+		activePid <= 0 ||
+		w.foregroundRedrawProcessID == activePid
 }
 
 func (w *muxWindow) alternateScreenModeActiveLocked() bool {
@@ -3672,7 +3691,7 @@ func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
 		return false
 	}
 	switch w.agentToolLocked() {
-	case "claude", "gemini", "hermes", "opencode", "antigravity":
+	case "claude", "gemini", "opencode", "antigravity":
 		return true
 	default:
 		return false
@@ -3856,10 +3875,6 @@ func agentCommandNameFromProcessArgs(args string) string {
 	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
 		strings.Contains(lowered, "/claude-code/"):
 		return "claude"
-	case (strings.Contains(lowered, "/node_modules/") && strings.Contains(lowered, "/hermes/")) ||
-		strings.Contains(lowered, "/hermes-cli/") ||
-		strings.Contains(lowered, "/hermes.js"):
-		return "hermes"
 	default:
 		return ""
 	}
@@ -3885,8 +3900,6 @@ func agentToolFromCommandName(command string) string {
 		return "opencode"
 	case "gemini", "gemini-cli":
 		return "gemini"
-	case "hermes", "hermes-cli":
-		return "hermes"
 	case "agy", "antigravity", "antigravity-cli":
 		return "antigravity"
 	default:
@@ -3921,8 +3934,6 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "gemini --yolo"
 		}
 		return "gemini"
-	case "hermes":
-		return "hermes"
 	case "antigravity":
 		if startInYoloMode {
 			return "agy --dangerously-skip-permissions"
@@ -3965,8 +3976,6 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return "gemini --yolo --resume " + quotedSessionID
 		}
 		return "gemini --resume " + quotedSessionID
-	case "hermes":
-		return "hermes"
 	case "antigravity":
 		commandPrefix := ""
 		if startInYoloMode {
@@ -4005,10 +4014,6 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "gemini" || normalized == "gemini cli" ||
 		strings.HasPrefix(normalized, "gemini cli "):
 		return "gemini"
-	case normalized == "hermes" || normalized == "hermes cli" ||
-		strings.HasPrefix(normalized, "hermes ") ||
-		strings.HasPrefix(normalized, "hermes cli "):
-		return "hermes"
 	case normalized == "agy" || normalized == "antigravity" ||
 		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
 		return "antigravity"
@@ -4076,6 +4081,10 @@ func (w *muxWindow) observeTerminalModesLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
+	foregroundRedrawSignals := 0
+	defer func() {
+		w.addForegroundRedrawSignalsLocked(foregroundRedrawSignals)
+	}()
 	data := chunk
 	if len(w.csiBuffer) > 0 {
 		combined := make([]byte, 0, len(w.csiBuffer)+len(chunk))
@@ -4117,6 +4126,9 @@ func (w *muxWindow) observeTerminalModesLocked(chunk []byte) {
 			return
 		}
 		final := data[end]
+		if csiSequenceSignalsForegroundRedraw(data[escapeIndex+2:end], final) {
+			foregroundRedrawSignals++
+		}
 		if final == 'h' || final == 'l' {
 			params := string(data[escapeIndex+2 : end])
 			enabled := final == 'h'
@@ -4135,6 +4147,43 @@ func (w *muxWindow) observeTerminalModesLocked(chunk []byte) {
 		}
 		data = data[end+1:]
 	}
+}
+
+func (w *muxWindow) addForegroundRedrawSignalsLocked(count int) {
+	if count <= 0 || isShellCommandName(w.currentCommandLocked()) {
+		return
+	}
+	activePid := w.activeForegroundPidLocked()
+	if activePid > 0 && w.foregroundRedrawProcessID != activePid {
+		w.foregroundRedrawProcessID = activePid
+		w.foregroundRedrawSignals = 0
+	}
+	w.foregroundRedrawSignals += count
+	if w.foregroundRedrawSignals > foregroundRedrawSignalMax {
+		w.foregroundRedrawSignals = foregroundRedrawSignalMax
+	}
+}
+
+func csiSequenceSignalsForegroundRedraw(params []byte, final byte) bool {
+	switch final {
+	case 'H', 'f', 'J', 'K':
+		return true
+	case 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'd', 'e':
+		return len(params) > 0
+	case 'l':
+		return csiModeParamsInclude(params, "?25")
+	default:
+		return false
+	}
+}
+
+func csiModeParamsInclude(params []byte, want string) bool {
+	for _, mode := range csiModeParams(string(params)) {
+		if mode == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *muxWindow) storePartialCsiLocked(data []byte) {
