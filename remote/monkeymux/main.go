@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.63"
+	monkeyMuxVersion                  = "0.1.64"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3672,7 +3672,7 @@ func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
 		return false
 	}
 	switch w.agentToolLocked() {
-	case "claude", "gemini", "opencode", "antigravity":
+	case "claude", "gemini", "hermes", "opencode", "antigravity":
 		return true
 	default:
 		return false
@@ -3856,6 +3856,10 @@ func agentCommandNameFromProcessArgs(args string) string {
 	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
 		strings.Contains(lowered, "/claude-code/"):
 		return "claude"
+	case (strings.Contains(lowered, "/node_modules/") && strings.Contains(lowered, "/hermes/")) ||
+		strings.Contains(lowered, "/hermes-cli/") ||
+		strings.Contains(lowered, "/hermes.js"):
+		return "hermes"
 	default:
 		return ""
 	}
@@ -3881,6 +3885,8 @@ func agentToolFromCommandName(command string) string {
 		return "opencode"
 	case "gemini", "gemini-cli":
 		return "gemini"
+	case "hermes", "hermes-cli":
+		return "hermes"
 	case "agy", "antigravity", "antigravity-cli":
 		return "antigravity"
 	default:
@@ -3915,6 +3921,8 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "gemini --yolo"
 		}
 		return "gemini"
+	case "hermes":
+		return "hermes"
 	case "antigravity":
 		if startInYoloMode {
 			return "agy --dangerously-skip-permissions"
@@ -3957,6 +3965,8 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return "gemini --yolo --resume " + quotedSessionID
 		}
 		return "gemini --resume " + quotedSessionID
+	case "hermes":
+		return "hermes"
 	case "antigravity":
 		commandPrefix := ""
 		if startInYoloMode {
@@ -3995,6 +4005,10 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "gemini" || normalized == "gemini cli" ||
 		strings.HasPrefix(normalized, "gemini cli "):
 		return "gemini"
+	case normalized == "hermes" || normalized == "hermes cli" ||
+		strings.HasPrefix(normalized, "hermes ") ||
+		strings.HasPrefix(normalized, "hermes cli "):
+		return "hermes"
 	case normalized == "agy" || normalized == "antigravity" ||
 		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
 		return "antigravity"
