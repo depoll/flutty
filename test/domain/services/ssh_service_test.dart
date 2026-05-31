@@ -1245,9 +1245,8 @@ void main() {
       expect(openAttempts, 2);
     });
 
-    test('opens SFTP over an auxiliary connection when available', () async {
+    test('reuses the session SFTP client', () async {
       final client = _MockSshClient();
-      final auxiliaryClient = _MockSshClient();
       final sftp = _MockSftpClient();
       final session = SshSession(
         connectionId: 11,
@@ -1258,23 +1257,21 @@ void main() {
           port: 22,
           username: 'tester',
         ),
-        auxiliaryClientFactory: (_) async =>
-            SshConnectionResult(success: true, client: auxiliaryClient),
       );
 
-      when(auxiliaryClient.sftp).thenAnswer((_) async => sftp);
+      when(client.sftp).thenAnswer((_) async => sftp);
       when(sftp.close).thenReturn(null);
-      when(auxiliaryClient.close).thenReturn(null);
 
-      final managedSftp = await session.sftp();
+      final first = await session.sftp();
+      final second = await session.sftp();
 
-      verifyNever(client.sftp);
-      verify(auxiliaryClient.sftp).called(1);
+      expect(first, same(sftp));
+      expect(second, same(sftp));
+      verify(client.sftp).called(1);
 
-      managedSftp.close();
+      session.discardSftpClient(first);
 
       verify(sftp.close).called(1);
-      verify(auxiliaryClient.close).called(1);
     });
 
     test('does not retry non-transient SFTP channel open failures', () async {

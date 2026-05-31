@@ -537,7 +537,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   void dispose() {
     _breadcrumbScrollController.dispose();
     _fileListScrollController.dispose();
-    _sftp?.close();
     _sftp = null;
     super.dispose();
   }
@@ -549,13 +548,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     });
 
     SftpClient? pendingSftp;
+    SshSession? session;
     try {
       final remoteFileService = ref.read(remoteFileServiceProvider);
       final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
       var connectionId =
           widget.connectionId ??
           sessionsNotifier.getPreferredConnectionForHost(widget.hostId);
-      var session = connectionId == null
+      session = connectionId == null
           ? null
           : sessionsNotifier.getSession(connectionId);
       final monetizationState =
@@ -605,7 +605,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
       final sftp = await _openSftpClient(session);
       if (!mounted) {
-        sftp.close();
         return;
       }
       pendingSftp = sftp;
@@ -613,10 +612,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         remoteFileService.resolveInitialDirectory(sftp),
       );
       if (!mounted) {
-        sftp.close();
         return;
       }
-      _sftp?.close();
       _sftp = sftp;
       pendingSftp = null;
       _hostLabel = session.config.hostname;
@@ -639,9 +636,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
     } on SSHError catch (e) {
-      _handleConnectFailure(e, pendingSftp);
+      _handleConnectFailure(e, pendingSftp, session);
     } on Exception catch (e) {
-      _handleConnectFailure(e, pendingSftp);
+      _handleConnectFailure(e, pendingSftp, session);
     }
   }
 
@@ -650,18 +647,24 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     try {
       return await withSftpOperationTimeout(sftpOpenFuture);
     } on TimeoutException {
-      sftpOpenFuture.then((sftp) => sftp.close()).ignore();
+      sftpOpenFuture.then(session.discardSftpClient).ignore();
       rethrow;
     }
   }
 
-  void _handleConnectFailure(Object error, SftpClient? pendingSftp) {
+  void _handleConnectFailure(
+    Object error,
+    SftpClient? pendingSftp,
+    SshSession? session,
+  ) {
     DiagnosticsLogService.instance.warning(
       'sftp',
       'connect_failed',
       fields: {'errorType': error.runtimeType},
     );
-    pendingSftp?.close();
+    if (_shouldReconnectSftpAfterDirectoryError(error)) {
+      session?.discardSftpClient(pendingSftp);
+    }
     if (!mounted) {
       return;
     }
@@ -885,13 +888,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       'reconnect_start',
       fields: {'connectionId': connectionId},
     );
-    _sftp?.close();
+    session.discardSftpClient(_sftp);
     _sftp = null;
 
     try {
       final sftp = await _openSftpClient(session);
       if (!mounted) {
-        sftp.close();
         return false;
       }
       _sftp = sftp;

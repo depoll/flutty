@@ -6,8 +6,6 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
-// ignore: implementation_imports
-import 'package:dartssh2/src/sftp/sftp_statvfs.dart' show SftpStatVfs;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
@@ -1185,10 +1183,6 @@ class SshConnectionResult {
   }
 }
 
-/// Creates a short-lived auxiliary SSH connection for side-channel work.
-typedef SshAuxiliaryClientFactory =
-    Future<SshConnectionResult> Function(SshConnectionConfig config);
-
 /// Progress callback for long-running SSH connection attempts.
 typedef ConnectionProgressCallback =
     void Function(ConnectionProgressUpdate update);
@@ -1499,7 +1493,6 @@ class SshService {
           client: result.client!,
           config: config,
           dependentClients: result.dependentClients,
-          auxiliaryClientFactory: connect,
           terminalThemeLightId: useHostThemeOverrides
               ? host.terminalThemeLightId
               : null,
@@ -2546,14 +2539,12 @@ class SshSession {
     required this.client,
     required this.config,
     this.dependentClients = const <SSHClient>[],
-    SshAuxiliaryClientFactory? auxiliaryClientFactory,
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
     this.terminalFontSize,
     this.clipboardSharingEnabled = false,
     this.localClipboardReadEnabled = false,
-  }) : _auxiliaryClientFactory = auxiliaryClientFactory,
-       createdAt = DateTime.now();
+  }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
@@ -2580,8 +2571,6 @@ class SshSession {
 
   /// Additional clients that should be closed with the session client.
   final List<SSHClient> dependentClients;
-
-  final SshAuxiliaryClientFactory? _auxiliaryClientFactory;
 
   /// Session-specific light theme override.
   String? terminalThemeLightId;
@@ -2641,6 +2630,8 @@ class SshSession {
   Uri? _workingDirectory;
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
+  SftpClient? _sftpClient;
+  Future<SftpClient>? _sftpClientFuture;
 
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _runtime.terminal;
@@ -3123,16 +3114,70 @@ class SshSession {
 
   /// Start an SFTP session.
   Future<SftpClient> sftp() async {
+    final cachedSftp = _sftpClient;
+    if (cachedSftp != null) {
+      DiagnosticsLogService.instance.debug(
+        'ssh.sftp',
+        'reuse_client',
+        fields: {'connectionId': connectionId, 'hostId': hostId},
+      );
+      return cachedSftp;
+    }
+
+    final inFlight = _sftpClientFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _openSftpClient();
+    _sftpClientFuture = future;
+    try {
+      final sftpClient = await future;
+      if (identical(_sftpClientFuture, future)) {
+        _sftpClient = sftpClient;
+      }
+      return sftpClient;
+    } finally {
+      if (identical(_sftpClientFuture, future)) {
+        _sftpClientFuture = null;
+      }
+    }
+  }
+
+  /// Open a one-off SFTP client without using the session cache.
+  ///
+  /// Prefer [sftp] for normal app SFTP work. This exists for flows that must
+  /// bypass an in-flight shared SFTP open, such as a prompt-capable MonkeyMux
+  /// install superseding a probe-only install.
+  Future<SftpClient> openStandaloneSftp() => _openSftpClient();
+
+  /// Discard the cached SFTP client for this session.
+  ///
+  /// Use this only when an SFTP operation timed out or failed in a way that may
+  /// have left pending requests behind. Normal consumers should leave the
+  /// session-owned client open so future SFTP work can reuse the same channel.
+  void discardSftpClient(SftpClient? sftpClient) {
+    final cachedSftp = _sftpClient;
+    if (sftpClient != null) {
+      if (cachedSftp == null) {
+        sftpClient.close();
+        return;
+      }
+      if (!identical(sftpClient, cachedSftp)) {
+        return;
+      }
+    }
+    _sftpClient = null;
+    _sftpClientFuture = null;
+    cachedSftp?.close();
+  }
+
+  Future<SftpClient> _openSftpClient() async {
     DiagnosticsLogService.instance.info(
       'ssh.sftp',
       'open_start',
       fields: {'connectionId': connectionId, 'hostId': hostId},
     );
-
-    final auxiliarySftp = await _openAuxiliarySftpClient();
-    if (auxiliarySftp != null) {
-      return auxiliarySftp;
-    }
 
     for (var attempt = 0; ; attempt += 1) {
       try {
@@ -3144,7 +3189,6 @@ class SshSession {
             'connectionId': connectionId,
             'hostId': hostId,
             'attempt': attempt + 1,
-            'connectionKind': 'primary',
           },
         );
         return sftpClient;
@@ -3195,62 +3239,6 @@ class SshSession {
       return false;
     }
     return error.code == 2 || error.code == 4;
-  }
-
-  Future<SftpClient?> _openAuxiliarySftpClient() async {
-    final auxiliaryClientFactory = _auxiliaryClientFactory;
-    if (auxiliaryClientFactory == null) {
-      return null;
-    }
-
-    DiagnosticsLogService.instance.debug(
-      'ssh.sftp',
-      'auxiliary_open_start',
-      fields: {'connectionId': connectionId, 'hostId': hostId},
-    );
-    SshConnectionResult? result;
-    try {
-      result = await auxiliaryClientFactory(config);
-      final auxiliaryClient = result.client;
-      if (!result.success || auxiliaryClient == null) {
-        DiagnosticsLogService.instance.warning(
-          'ssh.sftp',
-          'auxiliary_connect_failed',
-          fields: {
-            'connectionId': connectionId,
-            'hostId': hostId,
-            'errorType': _diagnosticSshResultErrorKind(result.error),
-          },
-        );
-        await result.closeAll();
-        return null;
-      }
-
-      final sftpClient = await auxiliaryClient.sftp();
-      DiagnosticsLogService.instance.info(
-        'ssh.sftp',
-        'open_success',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          'attempt': 1,
-          'connectionKind': 'auxiliary',
-        },
-      );
-      return _ManagedSftpClient(delegate: sftpClient, connectionResult: result);
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.sftp',
-        'auxiliary_open_failed',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          ..._diagnosticSshExecErrorFields(error),
-        },
-      );
-      await result?.closeAll();
-      return null;
-    }
   }
 
   /// Start a local port forward tunnel.
@@ -3467,6 +3455,7 @@ class SshSession {
   Future<void> close() async {
     await stopAllForwards();
     await closeShell();
+    discardSftpClient(null);
     await _connectionHealthFailures.close();
     client.close();
     for (final dependentClient in dependentClients) {
@@ -3503,108 +3492,6 @@ class SshSession {
       ),
     );
   }
-}
-
-class _ManagedSftpClient implements SftpClient {
-  _ManagedSftpClient({
-    required SftpClient delegate,
-    required SshConnectionResult connectionResult,
-  }) : _delegate = delegate,
-       _connectionResult = connectionResult;
-
-  final SftpClient _delegate;
-  final SshConnectionResult _connectionResult;
-  bool _closed = false;
-
-  @override
-  Future<SftpHandsake> get handshake => _delegate.handshake;
-
-  @override
-  SSHPrintHandler? get printDebug => _delegate.printDebug;
-
-  @override
-  SSHPrintHandler? get printTrace => _delegate.printTrace;
-
-  @override
-  Future<String> absolute(String path) => _delegate.absolute(path);
-
-  @override
-  void close() {
-    if (_closed) {
-      return;
-    }
-    _closed = true;
-    try {
-      _delegate.close();
-    } finally {
-      unawaited(_connectionResult.closeAll());
-    }
-  }
-
-  @override
-  Future<int> download(
-    String path,
-    StreamSink<List<int>> destination, {
-    int? length,
-    int offset = 0,
-    void Function(int bytesRead)? onProgress,
-    int chunkSize = 64 * 1024,
-    int maxPendingRequests = 128,
-    bool closeDestination = false,
-  }) => _delegate.download(
-    path,
-    destination,
-    length: length,
-    offset: offset,
-    onProgress: onProgress,
-    chunkSize: chunkSize,
-    maxPendingRequests: maxPendingRequests,
-    closeDestination: closeDestination,
-  );
-
-  @override
-  Future<void> link(String linkPath, String targetPath) =>
-      _delegate.link(linkPath, targetPath);
-
-  @override
-  Future<List<SftpName>> listdir(String path) => _delegate.listdir(path);
-
-  @override
-  Future<void> mkdir(String path, [SftpFileAttrs? attrs]) =>
-      _delegate.mkdir(path, attrs);
-
-  @override
-  Future<SftpFile> open(
-    String path, {
-    SftpFileOpenMode mode = SftpFileOpenMode.read,
-  }) => _delegate.open(path, mode: mode);
-
-  @override
-  Future<void> remove(String filename) => _delegate.remove(filename);
-
-  @override
-  Future<void> rename(String oldPath, String newPath) =>
-      _delegate.rename(oldPath, newPath);
-
-  @override
-  Stream<List<SftpName>> readdir(String path) => _delegate.readdir(path);
-
-  @override
-  Future<String> readlink(String path) => _delegate.readlink(path);
-
-  @override
-  Future<void> rmdir(String dirname) => _delegate.rmdir(dirname);
-
-  @override
-  Future<void> setStat(String path, SftpFileAttrs attrs) =>
-      _delegate.setStat(path, attrs);
-
-  @override
-  Future<SftpFileAttrs> stat(String path, {bool followLink = true}) =>
-      _delegate.stat(path, followLink: followLink);
-
-  @override
-  Future<SftpStatVfs> statvfs(String path) => _delegate.statvfs(path);
 }
 
 class _SshConnectionHealthFailure {
