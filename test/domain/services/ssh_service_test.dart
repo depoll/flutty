@@ -1245,6 +1245,38 @@ void main() {
       expect(openAttempts, 2);
     });
 
+    test('opens SFTP over an auxiliary connection when available', () async {
+      final client = _MockSshClient();
+      final auxiliaryClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final session = SshSession(
+        connectionId: 11,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+        auxiliaryClientFactory: (_) async =>
+            SshConnectionResult(success: true, client: auxiliaryClient),
+      );
+
+      when(auxiliaryClient.sftp).thenAnswer((_) async => sftp);
+      when(sftp.close).thenReturn(null);
+      when(auxiliaryClient.close).thenReturn(null);
+
+      final managedSftp = await session.sftp();
+
+      verifyNever(client.sftp);
+      verify(auxiliaryClient.sftp).called(1);
+
+      managedSftp.close();
+
+      verify(sftp.close).called(1);
+      verify(auxiliaryClient.close).called(1);
+    });
+
     test('does not retry non-transient SFTP channel open failures', () async {
       final client = _MockSshClient();
       final session = SshSession(
