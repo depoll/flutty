@@ -11895,7 +11895,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _disposeTerminalPathVerificationSftp() {
-    _terminalPathVerificationSftp?.close();
     _terminalPathVerificationSftp = null;
     _terminalPathVerificationSftpFuture = null;
     _terminalPathVerificationSession = null;
@@ -11912,7 +11911,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     try {
       return await sftpOpenFuture.timeout(_terminalPathVerificationTimeout);
     } on TimeoutException {
-      sftpOpenFuture.then((sftp) => sftp.close()).ignore();
+      sftpOpenFuture.then(session.discardSftpClient).ignore();
       rethrow;
     }
   }
@@ -11948,7 +11947,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final future = _openTerminalPathVerificationSftp(session).then<SftpClient?>(
       (sftp) {
         if (!identical(_terminalPathVerificationSession, session)) {
-          sftp.close();
           return null;
         }
         _terminalPathVerificationBackoffUntil = null;
@@ -12033,7 +12031,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'errorType': error.runtimeType.toString(),
       },
     );
-    sftp.close();
+    session?.discardSftpClient(sftp);
     _terminalPathVerificationSftp = null;
     _terminalPathVerificationHomeDirectory = null;
   }
@@ -12695,8 +12693,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         mode: remoteUploadDirectoryMode,
       );
       return await action(sftp, remoteFileService, uploadDirectory);
-    } finally {
-      sftp.close();
+    } on TimeoutException {
+      session.discardSftpClient(sftp);
+      rethrow;
+    } on SSHError {
+      session.discardSftpClient(sftp);
+      rethrow;
+    } on SftpError catch (error) {
+      if (error is! SftpStatusError) {
+        session.discardSftpClient(sftp);
+      }
+      rethrow;
     }
   }
 
