@@ -298,7 +298,7 @@ class MonkeyMuxInstallerService {
       );
     }
 
-    final sftp = await session.sftp();
+    final sftp = await session.openStandaloneSftp();
     try {
       final homeDirectory = await _remoteFileService.resolveInitialDirectory(
         sftp,

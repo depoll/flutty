@@ -2630,6 +2630,8 @@ class SshSession {
   Uri? _workingDirectory;
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
+  SftpClient? _sftpClient;
+  Future<SftpClient>? _sftpClientFuture;
 
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _runtime.terminal;
@@ -3112,6 +3114,65 @@ class SshSession {
 
   /// Start an SFTP session.
   Future<SftpClient> sftp() async {
+    final cachedSftp = _sftpClient;
+    if (cachedSftp != null) {
+      DiagnosticsLogService.instance.debug(
+        'ssh.sftp',
+        'reuse_client',
+        fields: {'connectionId': connectionId, 'hostId': hostId},
+      );
+      return cachedSftp;
+    }
+
+    final inFlight = _sftpClientFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _openSftpClient();
+    _sftpClientFuture = future;
+    try {
+      final sftpClient = await future;
+      if (identical(_sftpClientFuture, future)) {
+        _sftpClient = sftpClient;
+      }
+      return sftpClient;
+    } finally {
+      if (identical(_sftpClientFuture, future)) {
+        _sftpClientFuture = null;
+      }
+    }
+  }
+
+  /// Open a one-off SFTP client without using the session cache.
+  ///
+  /// Prefer [sftp] for normal app SFTP work. This exists for flows that must
+  /// bypass an in-flight shared SFTP open, such as a prompt-capable MonkeyMux
+  /// install superseding a probe-only install.
+  Future<SftpClient> openStandaloneSftp() => _openSftpClient();
+
+  /// Discard the cached SFTP client for this session.
+  ///
+  /// Use this only when an SFTP operation timed out or failed in a way that may
+  /// have left pending requests behind. Normal consumers should leave the
+  /// session-owned client open so future SFTP work can reuse the same channel.
+  void discardSftpClient(SftpClient? sftpClient) {
+    final cachedSftp = _sftpClient;
+    if (sftpClient != null) {
+      if (cachedSftp == null) {
+        sftpClient.close();
+        return;
+      }
+      if (!identical(sftpClient, cachedSftp)) {
+        return;
+      }
+    }
+    _sftpClient = null;
+    _sftpClientFuture = null;
+    cachedSftp?.close();
+  }
+
+  Future<SftpClient> _openSftpClient() async {
     DiagnosticsLogService.instance.info(
       'ssh.sftp',
       'open_start',
@@ -3394,6 +3455,7 @@ class SshSession {
   Future<void> close() async {
     await stopAllForwards();
     await closeShell();
+    discardSftpClient(null);
     await _connectionHealthFailures.close();
     client.close();
     for (final dependentClient in dependentClients) {
