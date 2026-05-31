@@ -3593,6 +3593,15 @@ final activeSessionsProvider =
       ActiveSessionsNotifier.new,
     );
 
+/// Provider for host-level connection attempt progress.
+final connectionAttemptProvider =
+    Provider.family<ConnectionAttemptStatus?, int>((ref, hostId) {
+      ref.watch(activeSessionsProvider);
+      return ref
+          .read(activeSessionsProvider.notifier)
+          .getConnectionAttempt(hostId);
+    });
+
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   static const _previewStateRefreshInterval = Duration(milliseconds: 150);
