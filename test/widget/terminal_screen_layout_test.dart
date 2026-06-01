@@ -40,6 +40,21 @@ void main() {
       expect(tmuxHandleMinTouchExtent, greaterThanOrEqualTo(44));
     });
 
+    test('moves tmux controls to a sidebar only when width allows it', () {
+      const breakpoint = tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth;
+
+      expect(
+        resolveTmuxBarPlacement(breakpoint - 1),
+        TmuxBarPlacement.bottomOverlay,
+      );
+      expect(resolveTmuxBarPlacement(breakpoint), TmuxBarPlacement.sidebar);
+      expect(
+        resolveTmuxBarPlacement(double.infinity),
+        TmuxBarPlacement.bottomOverlay,
+      );
+      expect(tmuxSidebarCollapsedWidth, lessThan(tmuxSidebarExpandedWidth));
+    });
+
     test('terminal connection labels distinguish connection states', () {
       expect(
         describeTerminalConnectionState(

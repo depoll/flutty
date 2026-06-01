@@ -663,6 +663,39 @@ EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
   );
 }
 
+/// Placement used for the inline tmux window controls.
+enum TmuxBarPlacement {
+  /// A bottom bar over reserved terminal padding on narrow layouts.
+  bottomOverlay,
+
+  /// A side panel next to the terminal on wide layouts.
+  sidebar,
+}
+
+/// Width of the collapsed large-screen tmux sidebar.
+@visibleForTesting
+const double tmuxSidebarCollapsedWidth = 56;
+
+/// Width of the expanded large-screen tmux sidebar.
+@visibleForTesting
+const double tmuxSidebarExpandedWidth = 320;
+
+/// Minimum terminal width to preserve before switching to a sidebar.
+@visibleForTesting
+const double tmuxSidebarMinTerminalWidth = 520;
+
+/// Chooses whether tmux controls should sit below or beside the terminal.
+@visibleForTesting
+TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
+  if (!availableWidth.isFinite) {
+    return TmuxBarPlacement.bottomOverlay;
+  }
+  return availableWidth >=
+          tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth
+      ? TmuxBarPlacement.sidebar
+      : TmuxBarPlacement.bottomOverlay;
+}
+
 /// Resolves the tmux bar's vertical offset from the animated bottom padding.
 @visibleForTesting
 double resolveTmuxBarRevealBottomOffset(
@@ -3438,6 +3471,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalBackendService = ref.read(
       terminalConnectionBackendServiceProvider,
     );
+    _isTmuxBarExpanded = widget.initiallyExpandTmuxWindows;
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -7659,12 +7693,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  /// Wraps the terminal view in a Stack with the tmux bar overlaid.
+  /// Wraps the terminal view with the inline tmux window controls.
   ///
-  /// When tmux is active, the terminal gets bottom padding equal to the
-  /// handle bar height so the collapsed handle sits over empty space.
-  /// When expanded, the bar slides up over the terminal content.
-  /// When tmux is not active, the terminal fills the entire space.
+  /// Wide layouts use a collapsible side panel. Narrow layouts keep the
+  /// bottom bar: when tmux is active, the terminal gets bottom padding equal
+  /// to the handle height so the collapsed handle sits over empty space; when
+  /// expanded, the bar slides up over the terminal content. When tmux is not
+  /// active, the terminal fills the entire space.
   Widget _buildTerminalWithTmuxBar(
     TerminalThemeData terminalTheme,
     bool isMobile,
@@ -7681,23 +7716,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final tmuxBarSafeInsets = resolveTmuxBarSafeInsets(
           MediaQuery.of(context),
         );
-        final targetBottomPadding = showTmux
-            ? _TmuxExpandableBar.handleHeight + tmuxBarSafeInsets.bottom
-            : 0.0;
+        final tmuxBarPlacement = showTmux
+            ? resolveTmuxBarPlacement(constraints.maxWidth)
+            : TmuxBarPlacement.bottomOverlay;
         final availableHeight = max(
           0,
           constraints.maxHeight - tmuxBarSafeInsets.bottom,
         ).toDouble();
 
+        if (tmuxBarPlacement == TmuxBarPlacement.sidebar) {
+          return _buildTerminalWithTmuxSidebar(
+            terminalTheme,
+            isMobile,
+            theme,
+            connectionState,
+            availableHeight: availableHeight,
+          );
+        }
+
+        final targetBottomPadding = showTmux
+            ? _TmuxExpandableBar.handleHeight + tmuxBarSafeInsets.bottom
+            : 0.0;
+
         return TweenAnimationBuilder<double>(
           tween: Tween<double>(end: targetBottomPadding),
           duration: _tmuxBarRevealDuration,
           curve: Curves.easeOutCubic,
-          child: _buildTmuxExpandableBar(theme, availableHeight),
+          child: _buildTmuxExpandableBar(
+            theme,
+            availableHeight,
+            placement: TmuxBarPlacement.bottomOverlay,
+          ),
           builder: (context, animatedBottomPadding, child) {
             final barOpacity = resolveTmuxBarRevealOpacity(
               animatedBottomPadding,
             );
+            final reservedBottomPadding = showTmux
+                ? targetBottomPadding
+                : animatedBottomPadding;
 
             return Stack(
               children: [
@@ -7715,7 +7771,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                             connectionState,
                           ),
                         ),
-                        SizedBox(height: animatedBottomPadding),
+                        SizedBox(height: reservedBottomPadding),
                       ],
                     ),
                   ),
@@ -7752,8 +7808,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  Widget _buildTerminalWithTmuxSidebar(
+    TerminalThemeData terminalTheme,
+    bool isMobile,
+    ThemeData theme,
+    SshConnectionState connectionState, {
+    required double availableHeight,
+  }) {
+    final sidebarWidth = _isTmuxBarExpanded
+        ? tmuxSidebarExpandedWidth
+        : tmuxSidebarCollapsedWidth;
+
+    return ColoredBox(
+      color: terminalTheme.background,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _buildTerminalView(terminalTheme, isMobile, connectionState),
+          ),
+          SizedBox(
+            width: sidebarWidth,
+            child: _buildTmuxExpandableBar(
+              theme,
+              availableHeight,
+              placement: TmuxBarPlacement.sidebar,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Builds the tmux expandable bar overlaid at the bottom of the terminal.
-  Widget _buildTmuxExpandableBar(ThemeData theme, double availableHeight) {
+  Widget _buildTmuxExpandableBar(
+    ThemeData theme,
+    double availableHeight, {
+    required TmuxBarPlacement placement,
+  }) {
     final connectionId = _connectionId;
     if (connectionId == null || _tmuxSessionName == null) {
       return const SizedBox.shrink();
@@ -7777,6 +7869,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       activeMuxBackend: _activeMuxBackend,
       tmuxExtraFlags: _activeTmuxExtraFlags,
       availableHeight: availableHeight,
+      placement: placement,
       recoveryGeneration: _tmuxBarRecoveryGeneration,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,

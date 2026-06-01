@@ -4849,6 +4849,37 @@ void main() {
     );
 
     testWidgets(
+      'uses a collapsible tmux sidebar on wide terminal layouts',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        final handleFinder = find.byKey(const ValueKey('tmux-handle-bar'));
+        expect(handleFinder, findsOneWidget);
+        expect(tester.getSize(handleFinder).width, tmuxSidebarCollapsedWidth);
+        expect(
+          tester.getRect(handleFinder).left,
+          closeTo(1100 - tmuxSidebarCollapsedWidth, 0.1),
+        );
+        expect(
+          find.byKey(const ValueKey('tmux-terminal-dismiss-region')),
+          findsNothing,
+        );
+
+        await tester.tap(handleFinder);
+        await tester.pump();
+
+        expect(tester.getSize(handleFinder).width, tmuxSidebarExpandedWidth);
+        expect(find.text('shell'), findsOneWidget);
+        expect(find.text('agent'), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
       'touching the terminal dismisses the expanded tmux bar',
       (tester) async {
         final tmuxService = _MockTmuxService();
