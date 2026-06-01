@@ -2755,6 +2755,22 @@ void main() {
 
         expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
         expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isFalse);
+        final nonRedrawResizeCount = monkeyMuxService.resizeTerminalCalls
+            .where((call) => !call.redraw)
+            .length;
+        session.terminal!.onResize?.call(
+          width,
+          nextHeight,
+          width * 10,
+          nextHeight * 20,
+        );
+        await tester.pump();
+        expect(
+          monkeyMuxService.resizeTerminalCalls
+              .where((call) => !call.redraw)
+              .length,
+          nonRedrawResizeCount,
+        );
 
         await tester.pump(const Duration(milliseconds: 300));
         await tester.pump();
