@@ -2967,7 +2967,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
-  String? _lastAndroidPredictiveBackDiagnosticsKey;
+  final Map<String, String> _lastAndroidPredictiveBackDiagnosticsKeys =
+      <String, String>{};
   String? _lastAndroidTerminalContentDiagnosticsKey;
   bool _androidPredictiveBackPostFrameDiagnosticsQueued = false;
 
@@ -2980,6 +2981,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _queueAndroidPredictiveBackPostFrameDiagnostics(BuildContext context) {
     if (!_isAndroidPlatform ||
+        !DiagnosticsLogService.instance.enabled ||
         _androidPredictiveBackPostFrameDiagnosticsQueued) {
       return;
     }
@@ -3003,7 +3005,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool? didPop,
     bool includeGestureEnabled = false,
   }) {
-    if (!_isAndroidPlatform) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!_isAndroidPlatform || !diagnostics.enabled) {
       return;
     }
     final route = ModalRoute.of(context);
@@ -3035,15 +3038,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final key = fields.entries
         .map((entry) => '${entry.key}:${entry.value}')
         .join('|');
-    if (key == _lastAndroidPredictiveBackDiagnosticsKey) {
+    if (key == _lastAndroidPredictiveBackDiagnosticsKeys[phase]) {
       return;
     }
-    _lastAndroidPredictiveBackDiagnosticsKey = key;
-    DiagnosticsLogService.instance.debug(
-      'android.back',
-      'terminal_route_state',
-      fields: fields,
-    );
+    _lastAndroidPredictiveBackDiagnosticsKeys[phase] = key;
+    diagnostics.debug('android.back', 'terminal_route_state', fields: fields);
   }
 
   void _logAndroidTerminalContentDiagnostics(
@@ -3054,7 +3053,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool hasOverlayMessage,
     required bool isMobile,
   }) {
-    if (!_isAndroidPlatform) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!_isAndroidPlatform || !diagnostics.enabled) {
       return;
     }
     final route = ModalRoute.of(context);
@@ -3086,11 +3086,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _lastAndroidTerminalContentDiagnosticsKey = key;
-    DiagnosticsLogService.instance.debug(
-      'android.back',
-      'terminal_content_state',
-      fields: fields,
-    );
+    diagnostics.debug('android.back', 'terminal_content_state', fields: fields);
   }
 
   bool get _hasExpandedNativeOverlaySelection =>
@@ -7713,7 +7709,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     child: Column(
                       children: [
                         Expanded(
-                          child: _buildTerminalView(terminalTheme, isMobile),
+                          child: _buildTerminalView(
+                            terminalTheme,
+                            isMobile,
+                            connectionState,
+                          ),
                         ),
                         SizedBox(height: animatedBottomPadding),
                       ],
@@ -9633,13 +9633,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ],
   );
 
-  Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
+  Widget _buildTerminalView(
+    TerminalThemeData terminalTheme,
+    bool isMobile,
+    SshConnectionState connectionState,
+  ) {
     final theme = Theme.of(context);
-    final connectionStates = ref.watch(activeSessionsProvider);
-    final connectionAttempt = ref
-        .read(activeSessionsProvider.notifier)
-        .getConnectionAttempt(widget.hostId);
-    final connectionState = _selectTrackedConnectionState(connectionStates);
+    final connectionAttempt = ref.watch(
+      connectionAttemptProvider(widget.hostId),
+    );
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
@@ -11895,7 +11897,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _disposeTerminalPathVerificationSftp() {
-    _terminalPathVerificationSftp?.close();
     _terminalPathVerificationSftp = null;
     _terminalPathVerificationSftpFuture = null;
     _terminalPathVerificationSession = null;
@@ -11912,7 +11913,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     try {
       return await sftpOpenFuture.timeout(_terminalPathVerificationTimeout);
     } on TimeoutException {
-      sftpOpenFuture.then((sftp) => sftp.close()).ignore();
+      sftpOpenFuture.then(session.discardSftpClient).ignore();
       rethrow;
     }
   }
@@ -11948,7 +11949,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final future = _openTerminalPathVerificationSftp(session).then<SftpClient?>(
       (sftp) {
         if (!identical(_terminalPathVerificationSession, session)) {
-          sftp.close();
           return null;
         }
         _terminalPathVerificationBackoffUntil = null;
@@ -12033,7 +12033,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'errorType': error.runtimeType.toString(),
       },
     );
-    sftp.close();
+    session?.discardSftpClient(sftp);
     _terminalPathVerificationSftp = null;
     _terminalPathVerificationHomeDirectory = null;
   }
@@ -12695,8 +12695,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         mode: remoteUploadDirectoryMode,
       );
       return await action(sftp, remoteFileService, uploadDirectory);
-    } finally {
-      sftp.close();
+    } on TimeoutException {
+      session.discardSftpClient(sftp);
+      rethrow;
+    } on SSHError {
+      session.discardSftpClient(sftp);
+      rethrow;
+    } on SftpError catch (error) {
+      if (error is! SftpStatusError) {
+        session.discardSftpClient(sftp);
+      }
+      rethrow;
     }
   }
 

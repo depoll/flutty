@@ -1245,6 +1245,35 @@ void main() {
       expect(openAttempts, 2);
     });
 
+    test('reuses the session SFTP client', () async {
+      final client = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final session = SshSession(
+        connectionId: 11,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      when(client.sftp).thenAnswer((_) async => sftp);
+      when(sftp.close).thenReturn(null);
+
+      final first = await session.sftp();
+      final second = await session.sftp();
+
+      expect(first, same(sftp));
+      expect(second, same(sftp));
+      verify(client.sftp).called(1);
+
+      session.discardSftpClient(first);
+
+      verify(sftp.close).called(1);
+    });
+
     test('does not retry non-transient SFTP channel open failures', () async {
       final client = _MockSshClient();
       final session = SshSession(

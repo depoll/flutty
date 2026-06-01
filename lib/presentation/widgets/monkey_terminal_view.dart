@@ -830,10 +830,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   void _logAndroidBackLifecycle(String event) {
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android ||
+        !diagnostics.enabled) {
       return;
     }
-    DiagnosticsLogService.instance.debug(
+    diagnostics.debug(
       'android.back',
       'terminal_view_lifecycle',
       fields: <String, Object?>{
