@@ -11,6 +11,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.session,
     required this.tmuxSessionName,
     required this.availableHeight,
+    required this.placement,
     required this.recoveryGeneration,
     required this.isProUser,
     required this.startClisInYoloMode,
@@ -39,6 +40,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// The available terminal height the bar can expand into.
   final double availableHeight;
+
+  /// Where the bar is rendered in the terminal layout.
+  final TmuxBarPlacement placement;
 
   /// Forces state recovery when tmux window loading stalls.
   final int recoveryGeneration;
@@ -126,6 +130,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   late LocalNotificationService _localNotifications;
 
   RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
+
+  bool get _isSidebar => widget.placement == TmuxBarPlacement.sidebar;
 
   List<TmuxWindow>? get currentWindowsSnapshot => _windows;
 
@@ -941,6 +947,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
+    if (_isSidebar) {
+      return;
+    }
     setState(() {
       _dragOffset += _expanded ? details.delta.dy : -details.delta.dy;
       _dragOffset = _dragOffset.clamp(0.0, 300.0);
@@ -948,6 +957,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
+    if (_isSidebar) {
+      return;
+    }
     final velocity = details.primaryVelocity ?? 0;
     final shouldExpand = !_expanded && (velocity < -200 || _dragOffset > 60);
     final shouldCollapse = _expanded && (velocity > 200 || _dragOffset > 60);
@@ -969,6 +981,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   @override
   Widget build(BuildContext context) {
+    if (_isSidebar) {
+      return _buildSidebar(context);
+    }
+
     final theme = Theme.of(context);
     final availableHeight = widget.availableHeight.isFinite
         ? widget.availableHeight
@@ -1031,6 +1047,42 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
+  Widget _buildSidebar(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(
+              color: theme.colorScheme.outlineVariant,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Column(
+          children: [
+            _buildSidebarHandle(theme),
+            if (_expanded)
+              Expanded(child: _buildWindowList(theme))
+            else
+              const Expanded(child: SizedBox.shrink()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _toggleExpanded() {
+    final wasExpanded = _expanded;
+    setState(() => _expanded = !_expanded);
+    widget.onExpandedChanged(!wasExpanded);
+    // Refresh window list when expanding to get current active state.
+    if (!wasExpanded) {
+      _loadWindows();
+    }
+  }
+
   Widget _buildHandleBar(ThemeData theme) {
     final displayedWindows = _displayedWindows;
     final handleLabel = resolveTmuxBarHandleLabel(
@@ -1054,15 +1106,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         child: GestureDetector(
           key: const ValueKey('tmux-handle-bar'),
           behavior: HitTestBehavior.opaque,
-          onTap: () {
-            final wasExpanded = _expanded;
-            setState(() => _expanded = !_expanded);
-            widget.onExpandedChanged(!wasExpanded);
-            // Refresh window list when expanding to get current active state.
-            if (!wasExpanded) {
-              _loadWindows();
-            }
-          },
+          onTap: _toggleExpanded,
           child: SizedBox(
             height: _TmuxExpandableBar.handleHeight,
             child: Padding(
@@ -1103,6 +1147,67 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 ],
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSidebarHandle(ThemeData theme) {
+    final displayedWindows = _displayedWindows;
+    final handleLabel = resolveTmuxBarHandleLabel(
+      widget.tmuxSessionName,
+      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
+    );
+    final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
+    final tooltip = _expanded
+        ? 'Collapse tmux windows'
+        : 'Show tmux windows: $handleLabel';
+    final icon = _buildHandleIcon(theme, activeWindowTool);
+
+    return Semantics(
+      button: true,
+      toggled: _expanded,
+      label: 'tmux windows: $handleLabel',
+      hint: _expanded
+          ? 'Double tap to collapse the tmux window sidebar'
+          : 'Double tap to show tmux windows',
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          key: const ValueKey('tmux-handle-bar'),
+          onTap: _toggleExpanded,
+          child: SizedBox(
+            height: 56,
+            width: double.infinity,
+            child: _expanded
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      children: [
+                        icon,
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            handleLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Icon(
+                          Icons.chevron_right,
+                          size: 20,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ],
+                    ),
+                  )
+                : Center(child: icon),
           ),
         ),
       ),
