@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.64"
+	monkeyMuxVersion                  = "0.1.65"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -177,11 +177,11 @@ func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, false
 	}
-	if width > 1 {
-		return width - 1, height, true
-	}
 	if height > 1 {
 		return width, height - 1, true
+	}
+	if width > 1 {
+		return width - 1, height, true
 	}
 	return width, height, false
 }
@@ -4169,7 +4169,7 @@ func csiSequenceSignalsForegroundRedraw(params []byte, final byte) bool {
 	case 'H', 'f', 'J', 'K':
 		return true
 	case 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'd', 'e':
-		return len(params) > 0
+		return true
 	case 'l':
 		return csiModeParamsInclude(params, "?25")
 	default:

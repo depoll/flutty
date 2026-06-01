@@ -902,7 +902,7 @@ func TestChangedSizeResizeRedrawsForegroundScreenRewriter(t *testing.T) {
 		foregroundCommand: "unknown-tui",
 		lastActivity:      time.Now(),
 	}
-	window.observeTerminalModesLocked([]byte("\x1b[2J\x1b[Hchat layout"))
+	window.observeTerminalModesLocked([]byte("\x1b[G\x1b[Achat layout"))
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	server.width = 120
@@ -1056,19 +1056,27 @@ func TestForegroundRedrawTemporarySize(t *testing.T) {
 		wantOK     bool
 	}{
 		{
-			name:       "uses narrower width",
+			name:       "uses shorter height",
 			width:      120,
 			height:     40,
-			wantWidth:  119,
-			wantHeight: 40,
+			wantWidth:  120,
+			wantHeight: 39,
 			wantOK:     true,
 		},
 		{
-			name:       "falls back to shorter height",
+			name:       "keeps single-column width",
 			width:      1,
 			height:     40,
 			wantWidth:  1,
 			wantHeight: 39,
+			wantOK:     true,
+		},
+		{
+			name:       "falls back to narrower width",
+			width:      120,
+			height:     1,
+			wantWidth:  119,
+			wantHeight: 1,
 			wantOK:     true,
 		},
 		{
