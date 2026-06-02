@@ -6,10 +6,20 @@ bool canOpenPortForwardInBrowser(PortForward portForward) =>
     isPortForwardBrowserHost(portForward.localHost);
 
 /// Builds the local URL used to browse a local port forward.
-Uri buildPortForwardBrowserUri(PortForward portForward) => Uri(
+Uri buildPortForwardBrowserUri(PortForward portForward) =>
+    buildPortForwardBrowserUriForBind(
+      localHost: portForward.localHost,
+      localPort: portForward.localPort,
+    );
+
+/// Builds the local URL used to browse a local bind address and port.
+Uri buildPortForwardBrowserUriForBind({
+  required String localHost,
+  required int localPort,
+}) => Uri(
   scheme: 'http',
-  host: _browserHostForBindAddress(portForward.localHost),
-  port: portForward.localPort,
+  host: _browserHostForBindAddress(localHost),
+  port: localPort,
 );
 
 /// Returns whether [uri] should stay inside the embedded browser.

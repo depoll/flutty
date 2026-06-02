@@ -2737,6 +2737,7 @@ class SshSession {
       .map(
         (e) => ActiveTunnelInfo(
           portForwardId: e.key,
+          localHost: e.value.localHost,
           localPort: e.value.localPort,
           remoteHost: e.value.remoteHost,
           remotePort: e.value.remotePort,
@@ -3260,6 +3261,7 @@ class SshSession {
       final serverSocket = await ServerSocket.bind(localHost, localPort);
       final tunnel = _ActiveTunnel.local(
         serverSocket: serverSocket,
+        localHost: localHost,
         localPort: serverSocket.port,
         remoteHost: remoteHost,
         remotePort: remotePort,
@@ -3354,6 +3356,7 @@ class SshSession {
 
       final tunnel = _ActiveTunnel.remote(
         remoteForward: remoteForward,
+        localHost: localHost,
         localPort: localPort,
         remoteHost: remoteForward.host,
         remotePort: remoteForward.port,
@@ -3588,6 +3591,7 @@ class ActiveTunnelInfo {
   /// Creates tunnel info.
   const ActiveTunnelInfo({
     required this.portForwardId,
+    required this.localHost,
     required this.localPort,
     required this.remoteHost,
     required this.remotePort,
@@ -3596,6 +3600,9 @@ class ActiveTunnelInfo {
 
   /// The port forward database ID.
   final int portForwardId;
+
+  /// The local host configured for the tunnel.
+  final String localHost;
 
   /// The local port being listened on.
   final int localPort;
@@ -3613,6 +3620,7 @@ class ActiveTunnelInfo {
 class _ActiveTunnel {
   _ActiveTunnel.local({
     required this.serverSocket,
+    required this.localHost,
     required this.localPort,
     required this.remoteHost,
     required this.remotePort,
@@ -3621,6 +3629,7 @@ class _ActiveTunnel {
 
   _ActiveTunnel.remote({
     required this.remoteForward,
+    required this.localHost,
     required this.localPort,
     required this.remoteHost,
     required this.remotePort,
@@ -3629,6 +3638,7 @@ class _ActiveTunnel {
 
   final ServerSocket? serverSocket;
   final SSHRemoteForward? remoteForward;
+  final String localHost;
   final int localPort;
   final String remoteHost;
   final int remotePort;
