@@ -169,6 +169,21 @@ class _PromptingMonkeyMuxInstallerService implements MonkeyMuxInstallerService {
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
 
+class _ActiveTunnelsSshSession extends SshSession {
+  _ActiveTunnelsSshSession({
+    required super.connectionId,
+    required super.hostId,
+    required super.client,
+    required super.config,
+    required List<ActiveTunnelInfo> activeTunnels,
+  }) : _activeTunnels = activeTunnels;
+
+  final List<ActiveTunnelInfo> _activeTunnels;
+
+  @override
+  List<ActiveTunnelInfo> get activeTunnels => _activeTunnels;
+}
+
 class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
   final toggleCalls = <bool>[];
   bool _enabled = false;
@@ -202,6 +217,33 @@ class _RecordingSftpPageState extends State<_RecordingSftpPage> {
   @override
   Widget build(BuildContext context) =>
       const Scaffold(body: Text('SFTP opened'));
+}
+
+class _RecordingPortForwardBrowserPage extends StatefulWidget {
+  const _RecordingPortForwardBrowserPage({
+    required this.queryParameters,
+    required this.onOpened,
+  });
+
+  final Map<String, String> queryParameters;
+  final ValueChanged<Map<String, String>> onOpened;
+
+  @override
+  State<_RecordingPortForwardBrowserPage> createState() =>
+      _RecordingPortForwardBrowserPageState();
+}
+
+class _RecordingPortForwardBrowserPageState
+    extends State<_RecordingPortForwardBrowserPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onOpened(widget.queryParameters);
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const Scaffold(body: Text('Forward browser opened'));
 }
 
 class _RecordingLocalNotificationService extends LocalNotificationService {
@@ -1520,6 +1562,94 @@ void main() {
       expect(terminalMenuItemButton('Paste'), findsOneWidget);
       expect(terminalMenuItemButton('Paste Media'), findsOneWidget);
       expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
+    });
+
+    testWidgets('terminal overflow opens active local forward in app browser', (
+      tester,
+    ) async {
+      session = _ActiveTunnelsSshSession(
+        connectionId: session.connectionId,
+        hostId: host.id,
+        client: sshClient,
+        config: session.config,
+        activeTunnels: const [
+          ActiveTunnelInfo(
+            portForwardId: 42,
+            localHost: '127.0.0.1',
+            localPort: 49152,
+            remoteHost: 'example.com',
+            remotePort: 80,
+            isLocal: true,
+          ),
+        ],
+      )..getOrCreateTerminal();
+      final activeTunnel = session.activeTunnels.single;
+      final openedQueries = <Map<String, String>>[];
+      final router = GoRouter(
+        initialLocation:
+            '/terminal/${host.id}?connectionId=${session.connectionId}',
+        routes: [
+          GoRoute(
+            path: '/terminal/:hostId',
+            name: Routes.terminal,
+            builder: (context, state) => TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+          GoRoute(
+            path: '/port-forwards/browser',
+            name: Routes.portForwardBrowser,
+            builder: (context, state) => _RecordingPortForwardBrowserPage(
+              queryParameters: Map<String, String>.from(
+                state.uri.queryParameters,
+              ),
+              onOpened: openedQueries.add,
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+            sharedClipboardProvider.overrideWith((ref) async => false),
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final browserItem = terminalMenuItemButton('Open Forwarded Browser');
+      expect(browserItem, findsOneWidget);
+
+      await tester.tap(find.text('Open Forwarded Browser'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Forward browser opened'), findsOneWidget);
+      expect(openedQueries.last, {
+        'url': 'http://127.0.0.1:${activeTunnel.localPort}',
+        'port': activeTunnel.localPort.toString(),
+        'title': '127.0.0.1:${activeTunnel.localPort}',
+      });
+
+      router.pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
     });
 
     testWidgets(
