@@ -703,7 +703,14 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       widget.fontFamily,
       platform: theme.platform,
       fontSize: _fontSize,
-    ).copyWith(color: colors.foreground, height: 1.35);
+    ).copyWith(
+      inherit: false,
+      color: colors.foreground,
+      height: 1.35,
+      letterSpacing: 0,
+      textBaseline: TextBaseline.alphabetic,
+      wordSpacing: 0,
+    );
   }
 
   InlineSpan _buildMeasuredTextSpan(BuildContext context, TextStyle style) =>
