@@ -506,6 +506,7 @@ branch refs/heads/fix/session-resumption
         'Codex',
         'Gemini CLI',
         'OpenCode',
+        'Antigravity',
       ]);
     });
 
@@ -522,6 +523,7 @@ branch refs/heads/fix/session-resumption
         'Copilot CLI',
         'Gemini CLI',
         'OpenCode',
+        'Antigravity',
         'Custom Tool',
       ]);
     });
@@ -840,6 +842,100 @@ cwd: /tmp/demo
     );
   });
 
+  group('parseAntigravitySessionMetadata', () {
+    test('uses stored summary, sessionId, workingDirectory, and updatedAt', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "summary": "Fix some bugs",
+  "workingDirectory": "/Users/depoll/Code/flutty",
+  "updatedAt": "2026-04-12T21:29:53.292Z"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.sessionId, 'e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3');
+      expect(metadata.summary, 'Fix some bugs');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:29:53.292Z'));
+    });
+
+    test('prefers history display names over stale summaries', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "display": "Updated session name",
+  "summary": "Original summary"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.summary, 'Updated session name');
+    });
+
+    test('extracts working directory from nested folderUri', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "Untitled",
+  "projectResources": {
+    "resources": [
+      {
+        "gitFolder": {
+          "folderUri": "file:///Users/depoll/Code/flutty",
+          "allowWrite": true
+        }
+      }
+    ]
+  }
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+    });
+
+    test('falls back to name when it is an absolute path', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "/Users/depoll/Code/flutty"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+    });
+
+    test(
+      'extracts metadata from a truncated JSON prefix (partial parsing)',
+      () {
+        final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "/Users/depoll/Code/flutty",
+  "folderUri": "file:///Users/depoll/Code/flutty",
+  "updatedAt": "2026-04-12T21:29:53.2
+''');
+
+        expect(metadata.parsedAny, isTrue);
+        expect(metadata.sessionId, 'e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3');
+        expect(metadata.summary, '/Users/depoll/Code/flutty');
+        expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      },
+    );
+
+    test('sets parsedAny to false when no recognized fields are present', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "unknownField": "value"
+}
+''');
+
+      expect(metadata.parsedAny, isFalse);
+    });
+  });
+
   group('parseGeminiSessionMetadata', () {
     test('uses stored summary and lastUpdated for main sessions', () {
       final metadata = parseGeminiSessionMetadata('''
@@ -1045,6 +1141,76 @@ branch refs/heads/main
           (command) => command.contains('opencode session list --format json'),
         ),
         isEmpty,
+      );
+    });
+
+    test('Antigravity discovery uses unified Python script', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('worktree list --porcelain')) {
+          return _buildExecSession(
+            stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+          );
+        }
+        if (command.contains('python3 -c')) {
+          return _buildExecSession(
+            stdout: '''
+[
+  {
+    "sessionId": "7b9feba4-ca71-4c6f-8b31-478231f7154d",
+    "summary": "Implement antigravity",
+    "workingDirectory": "/Users/depoll/Code/flutty",
+    "lastActive": "2026-05-22T21:45:35Z"
+  }
+]
+''',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: '/Users/depoll/Code/flutty',
+        toolName: 'Antigravity',
+      );
+
+      expect(result.sessions, hasLength(1));
+      expect(result.sessions.single.toolName, 'Antigravity');
+      expect(
+        result.sessions.single.sessionId,
+        '7b9feba4-ca71-4c6f-8b31-478231f7154d',
+      );
+      expect(result.sessions.single.summary, 'Implement antigravity');
+      expect(
+        result.sessions.single.workingDirectory,
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        result.sessions.single.lastActive,
+        DateTime.parse('2026-05-22T21:45:35Z'),
+      );
+      final pythonCommand = commands.singleWhere(
+        (command) => command.contains('python3 -c'),
+      );
+      expect(
+        pythonCommand,
+        contains('summary = history_entry.get("display") or title'),
+      );
+
+      expect(
+        commands.where((command) => command.contains('python3 -c')),
+        hasLength(1),
       );
     });
 

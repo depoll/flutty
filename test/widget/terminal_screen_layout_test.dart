@@ -845,6 +845,54 @@ void main() {
       },
     );
 
+    test(
+      'keeps visible command completions as typing reaches the suggestion',
+      () {
+        const originalInvocation = ShellCompletionInvocation(
+          commandLine: 'br',
+          cursorOffset: 2,
+          token: 'br',
+          tokenStart: 0,
+          mode: ShellCompletionMode.command,
+          workingDirectory: '/repo',
+        );
+        const brewSuggestion = ShellCompletionSuggestion(
+          label: 'brew',
+          replacement: 'brew',
+          replacementStart: 0,
+          replacementEnd: 2,
+          kind: ShellCompletionSuggestionKind.command,
+          commitSuffix: ' ',
+        );
+        const brootSuggestion = ShellCompletionSuggestion(
+          label: 'broot',
+          replacement: 'broot',
+          replacementStart: 0,
+          replacementEnd: 2,
+          kind: ShellCompletionSuggestionKind.command,
+          commitSuffix: ' ',
+        );
+
+        final filtered = filterShellCompletionSuggestionsForCurrentInput(
+          originalInvocation: originalInvocation,
+          currentInvocation: const ShellCompletionInvocation(
+            commandLine: 'brew',
+            cursorOffset: 4,
+            token: 'brew',
+            tokenStart: 0,
+            mode: ShellCompletionMode.command,
+            workingDirectory: '/repo',
+          ),
+          suggestions: const <ShellCompletionSuggestion>[
+            brewSuggestion,
+            brootSuggestion,
+          ],
+        );
+
+        expect(filtered, [brewSuggestion]);
+      },
+    );
+
     test('accepts and filters empty-token argument suggestions', () {
       const originalInvocation = ShellCompletionInvocation(
         commandLine: 'tmux ',

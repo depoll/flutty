@@ -120,6 +120,7 @@ class MonkeyMuxInstallation {
     required this.executablePath,
     required this.platform,
     required this.version,
+    this.installedDuringCall = false,
   });
 
   /// Absolute remote executable path.
@@ -130,7 +131,33 @@ class MonkeyMuxInstallation {
 
   /// Installed MonkeyMux version.
   final String version;
+
+  /// Whether this call uploaded the helper instead of reusing an existing copy.
+  final bool installedDuringCall;
 }
+
+/// Details for a pending MonkeyMux helper install.
+class MonkeyMuxInstallRequest {
+  /// Creates pending MonkeyMux install details.
+  const MonkeyMuxInstallRequest({
+    required this.platform,
+    required this.version,
+    required this.size,
+  });
+
+  /// Remote platform key for the helper, for example `linux-amd64`.
+  final String platform;
+
+  /// MonkeyMux helper version that would be installed.
+  final String version;
+
+  /// Helper binary size in bytes.
+  final int size;
+}
+
+/// Confirms whether MonkeyMux may install its helper on the connected host.
+typedef MonkeyMuxInstallConfirmation =
+    Future<bool> Function(MonkeyMuxInstallRequest request);
 
 /// Error thrown when MonkeyMux cannot be installed or used.
 class MonkeyMuxInstallException implements Exception {
@@ -142,6 +169,21 @@ class MonkeyMuxInstallException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// Error thrown when MonkeyMux needs app-level install confirmation.
+class MonkeyMuxInstallConfirmationRequiredException
+    extends MonkeyMuxInstallException {
+  /// Creates a confirmation-required install error.
+  const MonkeyMuxInstallConfirmationRequiredException()
+    : super('MonkeyMux install requires confirmation.');
+}
+
+/// Error thrown when the user declines a MonkeyMux helper install.
+class MonkeyMuxInstallDeclinedException extends MonkeyMuxInstallException {
+  /// Creates a declined install error.
+  const MonkeyMuxInstallDeclinedException()
+    : super('MonkeyMux install was canceled.');
 }
 
 /// Installs and verifies the bundled MonkeyMux helper on a remote host.
@@ -159,12 +201,13 @@ class MonkeyMuxInstallerService {
   final RemoteFileService _remoteFileService;
   final AssetBundle? _assetBundle;
   static final _installCache = <int, MonkeyMuxInstallation>{};
-  static final _installRequests = <int, Future<MonkeyMuxInstallation>>{};
+  static final _installRequests = <int, _MonkeyMuxInstallInFlight>{};
 
   /// Installs the helper if needed and returns its executable path.
   Future<MonkeyMuxInstallation> ensureInstalled(
     SshSession session, {
     SshExecPriority priority = SshExecPriority.low,
+    MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     final connectionId = session.connectionId;
     final cachedInstallation = _installCache[connectionId];
@@ -181,28 +224,51 @@ class MonkeyMuxInstallerService {
     }
 
     final existingRequest = _installRequests[connectionId];
-    if (existingRequest != null) {
+    if (existingRequest != null &&
+        (existingRequest.canPrompt || confirmInstall == null)) {
       DiagnosticsLogService.instance.debug(
         'monkeymux.install',
         'join_inflight',
+        fields: {
+          'connectionId': connectionId,
+          'canPrompt': existingRequest.canPrompt,
+        },
+      );
+      return existingRequest.future;
+    }
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.install',
+        'replace_probe_with_confirmable',
         fields: {'connectionId': connectionId},
       );
-      return existingRequest;
     }
 
-    final request = _ensureInstalled(session, priority: priority);
+    final request = _MonkeyMuxInstallInFlight(
+      canPrompt: confirmInstall != null,
+    );
     _installRequests[connectionId] = request;
-    request.then((installation) {
+    // A prompt-capable install supersedes a probe-only install, but callers
+    // already waiting on the probe should receive the prompt-capable result.
+    existingRequest?.supersedeWith(request.future);
+    request.bind(
+      _ensureInstalled(
+        session,
+        priority: priority,
+        confirmInstall: confirmInstall,
+      ),
+    );
+    request.future.then((installation) {
       if (identical(_installRequests[connectionId], request)) {
         _installCache[connectionId] = installation;
       }
     }, onError: (_) {}).ignore();
-    request.whenComplete(() {
+    request.future.whenComplete(() {
       if (identical(_installRequests[connectionId], request)) {
         _installRequests.remove(connectionId);
       }
     }).ignore();
-    return request;
+    return request.future;
   }
 
   /// Clears cached install state for a disconnected SSH connection.
@@ -214,6 +280,7 @@ class MonkeyMuxInstallerService {
   Future<MonkeyMuxInstallation> _ensureInstalled(
     SshSession session, {
     required SshExecPriority priority,
+    required MonkeyMuxInstallConfirmation? confirmInstall,
   }) async {
     final platform = await probePlatform(session, priority: priority);
     final manifest = await _manifestFuture;
@@ -231,7 +298,7 @@ class MonkeyMuxInstallerService {
       );
     }
 
-    final sftp = await session.sftp();
+    final sftp = await session.openStandaloneSftp();
     try {
       final homeDirectory = await _remoteFileService.resolveInitialDirectory(
         sftp,
@@ -258,6 +325,43 @@ class MonkeyMuxInstallerService {
           version: manifest.version,
         );
       }
+
+      final installRequest = MonkeyMuxInstallRequest(
+        platform: platform,
+        version: manifest.version,
+        size: entry.size,
+      );
+      if (confirmInstall == null) {
+        DiagnosticsLogService.instance.warning(
+          'monkeymux.install',
+          'confirmation_required',
+          fields: {'connectionId': session.connectionId, 'platform': platform},
+        );
+        throw const MonkeyMuxInstallConfirmationRequiredException();
+      }
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'confirmation_requested',
+        fields: {
+          'connectionId': session.connectionId,
+          'platform': platform,
+          'size': entry.size,
+        },
+      );
+      final confirmed = await confirmInstall(installRequest);
+      if (!confirmed) {
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'confirmation_declined',
+          fields: {'connectionId': session.connectionId, 'platform': platform},
+        );
+        throw const MonkeyMuxInstallDeclinedException();
+      }
+      DiagnosticsLogService.instance.info(
+        'monkeymux.install',
+        'confirmation_accepted',
+        fields: {'connectionId': session.connectionId, 'platform': platform},
+      );
 
       DiagnosticsLogService.instance.info(
         'monkeymux.install',
@@ -332,6 +436,7 @@ class MonkeyMuxInstallerService {
         executablePath: executablePath,
         platform: platform,
         version: manifest.version,
+        installedDuringCall: true,
       );
     } finally {
       sftp.close();
@@ -439,6 +544,54 @@ class MonkeyMuxInstallerService {
         },
       );
     }
+  }
+}
+
+class _MonkeyMuxInstallInFlight {
+  _MonkeyMuxInstallInFlight({required this.canPrompt});
+
+  final bool canPrompt;
+  final _completer = Completer<MonkeyMuxInstallation>();
+  bool _superseded = false;
+
+  Future<MonkeyMuxInstallation> get future => _completer.future;
+
+  void bind(Future<MonkeyMuxInstallation> operation) {
+    operation
+        .then(
+          (installation) {
+            if (!_superseded && !_completer.isCompleted) {
+              _completer.complete(installation);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!_superseded && !_completer.isCompleted) {
+              _completer.completeError(error, stackTrace);
+            }
+          },
+        )
+        .ignore();
+  }
+
+  void supersedeWith(Future<MonkeyMuxInstallation> replacement) {
+    if (_completer.isCompleted) {
+      return;
+    }
+    _superseded = true;
+    replacement
+        .then(
+          (installation) {
+            if (!_completer.isCompleted) {
+              _completer.complete(installation);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!_completer.isCompleted) {
+              _completer.completeError(error, stackTrace);
+            }
+          },
+        )
+        .ignore();
   }
 }
 

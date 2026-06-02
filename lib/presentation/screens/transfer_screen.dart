@@ -22,10 +22,15 @@ const _maxTransferPayloadBytes = 10 * 1024 * 1024;
 
 /// Whether the current platform uses the system share sheet for exports.
 ///
-/// On iOS and Android the share sheet provides AirDrop, Quick Share, Messages,
-/// email, Save to Files, and other targets. Desktop platforms keep the
-/// file-save dialog.
-bool get useShareSheet => !kIsWeb && (Platform.isIOS || Platform.isAndroid);
+/// iOS uses the share sheet because Save to Files is exposed as a share target.
+///
+/// Android uses the system create-document picker instead so users can choose a
+/// local Files destination directly.
+bool get useShareSheet => useShareSheetForPlatform(defaultTargetPlatform);
+
+/// Returns whether transfer exports should use the share sheet on [platform].
+bool useShareSheetForPlatform(TargetPlatform platform, {bool isWeb = kIsWeb}) =>
+    !isWeb && platform == TargetPlatform.iOS;
 
 /// Computes the share sheet anchor rect from a widget's [BuildContext].
 ///
@@ -40,9 +45,9 @@ Rect? shareOriginFromContext(BuildContext context) {
 
 /// Exports an encrypted transfer payload.
 ///
-/// On mobile (iOS/Android) this opens the system share sheet so the user can
-/// AirDrop, Quick Share, save to Files, or send via any installed app.
-/// On desktop and web it falls back to a file-save dialog.
+/// On iOS this opens the system share sheet so the user can AirDrop, save to
+/// Files, or send via any installed app. Android, desktop, and web use a
+/// file-save dialog/create-document picker.
 Future<void> saveTransferPayloadToFile({
   required BuildContext context,
   required String payload,
@@ -143,7 +148,7 @@ Future<void> _sharePayloadViaNativeSheet({
   }
 }
 
-/// Saves the transfer payload via a native file-save dialog (desktop / web).
+/// Saves the transfer payload via a native file-save dialog.
 Future<void> _savePayloadToFileDialog({
   required BuildContext context,
   required Uint8List bytes,
@@ -203,7 +208,6 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
       defaultTargetPlatform,
       const [monkeySshTransferFileExtension],
     ),
-    withData: kIsWeb,
   );
 
   if (result == null || result.files.isEmpty) {
@@ -223,8 +227,30 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
-  final bytes = selectedFile.bytes;
-  if (bytes != null && bytes.isNotEmpty) {
+  if (kIsWeb) {
+    final Uint8List bytes;
+    try {
+      bytes = await selectedFile.readAsBytes();
+    } on Exception {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not read selected transfer file'),
+          ),
+        );
+      }
+      return null;
+    }
+    if (bytes.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not read selected transfer file'),
+          ),
+        );
+      }
+      return null;
+    }
     if (bytes.length > _maxTransferPayloadBytes) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

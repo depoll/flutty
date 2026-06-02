@@ -20,13 +20,14 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/services/host_key_prompt_handler_provider.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
-import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
 const _sshPort = int.fromEnvironment('STORE_SCREENSHOT_SSH_PORT');
@@ -40,9 +41,7 @@ const _sshHostKeyB64 = String.fromEnvironment(
 const _sshHostKeyFingerprint = String.fromEnvironment(
   'STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT',
 );
-const _tmuxSessionName = String.fromEnvironment(
-  'STORE_SCREENSHOT_TMUX_SESSION',
-);
+const _muxSessionName = String.fromEnvironment('STORE_SCREENSHOT_MUX_SESSION');
 const _themeMode = String.fromEnvironment(
   'STORE_SCREENSHOT_THEME_MODE',
   defaultValue: 'dark',
@@ -55,6 +54,7 @@ const _terminalThemeDarkId = String.fromEnvironment(
   'STORE_SCREENSHOT_TERMINAL_THEME_DARK_ID',
   defaultValue: 'velvet',
 );
+const _postReadyCaptureDelay = Duration(seconds: 6);
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
   productId: 'store-screenshot-fallback',
@@ -96,7 +96,7 @@ const _sceneNames = <String>[
   'terminal_copilot',
   'hosts',
   'snippets',
-  'tmux_windows',
+  'monkeymux_windows',
   'sftp',
   'terminal_claude',
 ];
@@ -175,8 +175,9 @@ Future<void> main() async {
     );
     exit(64);
   }
-  if (_tmuxSessionName.isEmpty) {
-    stderr.writeln('STORE_SCREENSHOT_TMUX_SESSION is required.');
+  const muxSessionName = _muxSessionName;
+  if (muxSessionName.isEmpty) {
+    stderr.writeln('STORE_SCREENSHOT_MUX_SESSION is required.');
     exit(64);
   }
   registerFallbackValue(MonetizationFeature.agentLaunchPresets);
@@ -186,7 +187,12 @@ Future<void> main() async {
 
   final database = AppDatabase.forTesting(NativeDatabase.memory());
   final secrets = SecretEncryptionService.forTesting();
-  final terminalHostId = await _seedDatabase(database, secrets, target);
+  final terminalHostId = await _seedDatabase(
+    database,
+    secrets,
+    target,
+    muxSessionName,
+  );
   final monetizationService = _createMonetizationService();
 
   runApp(
@@ -252,6 +258,7 @@ Future<int> _seedDatabase(
   AppDatabase database,
   SecretEncryptionService secrets,
   _ScreenshotTarget target,
+  String muxSessionName,
 ) async {
   final keyRepository = KeyRepository(database, secrets);
   final hostRepository = HostRepository(database, secrets);
@@ -322,7 +329,7 @@ Future<int> _seedDatabase(
 
   final terminalHostId = await hostRepository.insert(
     HostsCompanion.insert(
-      label: 'Agent tmux',
+      label: 'Agent MonkeyMux',
       hostname: hostname,
       port: const Value(_sshPort),
       username: _sshUsername,
@@ -330,15 +337,16 @@ Future<int> _seedDatabase(
       groupId: Value(groupId),
       isFavorite: const Value(true),
       color: const Value('#00C9FF'),
-      tags: const Value('agent,tmux,release'),
+      tags: const Value('agent,monkeymux,release'),
       notes: const Value('Local release-demo workspace for store captures.'),
       terminalThemeLightId: const Value(_terminalThemeLightId),
       terminalThemeDarkId: const Value(_terminalThemeDarkId),
       terminalFontFamily: const Value('monospace'),
-      tmuxSessionName: const Value(_tmuxSessionName),
+      tmuxSessionName: Value(muxSessionName),
       tmuxWorkingDirectory: const Value(
         '/Users/Shared/monkeyssh-release-workspace',
       ),
+      remoteMuxBackend: Value(RemoteMuxBackend.monkeyMux.storageValue),
       sortOrder: const Value(0),
     ),
   );
@@ -435,16 +443,16 @@ Future<int> _seedDatabase(
       usageCount: 12,
     ),
     (
-      name: 'Attach tmux workspace',
-      command: 'tmux new-session -A -s $_tmuxSessionName',
+      name: 'Attach MonkeyMux workspace',
+      command: 'monkeymux attach $muxSessionName',
       description: 'Attach to the persistent remote agent workspace.',
       autoExecute: true,
       usageCount: 9,
     ),
     (
       name: 'List agent windows',
-      command: 'tmux list-windows -t $_tmuxSessionName',
-      description: 'Check active Copilot, Gemini, Claude, and Codex panes.',
+      command: 'monkeymux control --json $muxSessionName',
+      description: 'Inspect active Copilot, Gemini, Claude, and Codex windows.',
       autoExecute: false,
       usageCount: 7,
     ),
@@ -581,18 +589,18 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
         throw StateError('SSH session not available for Claude screenshot.');
       }
       await ref
-          .read(tmuxServiceProvider)
-          .selectWindow(session, _tmuxSessionName, 2);
+          .read(monkeyMuxServiceProvider)
+          .selectWindow(session, _muxSessionName, 2);
       _go('/terminal/$terminalHostId?connectionId=$_connectionId');
       await Future<void>.delayed(const Duration(seconds: 4));
       await _announceScene(5);
 
-      debugPrint('STORE_SCREENSHOT_DONE');
+      debugPrintSynchronously('STORE_SCREENSHOT_DONE');
       await ref.read(databaseProvider).close();
       exit(0);
     } on Object catch (error, stackTrace) {
-      debugPrint('STORE_SCREENSHOT_ERROR $error');
-      debugPrint('$stackTrace');
+      debugPrintSynchronously('STORE_SCREENSHOT_ERROR $error');
+      debugPrintSynchronously('$stackTrace');
       await ref.read(databaseProvider).close();
       exit(1);
     }
@@ -612,8 +620,8 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       'index': index + 1,
       'paths': widget.target.pathsByScene[index],
     };
-    debugPrint('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
-    await Future<void>.delayed(const Duration(seconds: 2));
+    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+    await Future<void>.delayed(_postReadyCaptureDelay);
   }
 
   void _go(String location) {

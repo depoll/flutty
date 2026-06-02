@@ -17,6 +17,15 @@ import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
+void _callReorderItemCallback(
+  ReorderCallback? callback,
+  int oldIndex,
+  int newIndex,
+) {
+  expect(callback, isNotNull);
+  callback?.call(oldIndex, newIndex);
+}
+
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier({
     List<ActiveConnection> initialConnections = const <ActiveConnection>[],
@@ -207,7 +216,7 @@ void main() {
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
     );
-    list.onReorder(0, 2);
+    _callReorderItemCallback(list.onReorderItem, 0, 1);
     await tester.pumpAndSettle();
 
     verify(() => hostRepository.reorderByIds([2, 1])).called(1);

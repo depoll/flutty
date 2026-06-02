@@ -14,6 +14,7 @@ class MonkeyTerminalScrollGestureHandler extends StatefulWidget {
     required this.getCellOffset,
     required this.getLineHeight,
     this.simulateScroll = true,
+    this.forceSgr = false,
     required this.child,
   });
 
@@ -29,6 +30,10 @@ class MonkeyTerminalScrollGestureHandler extends StatefulWidget {
   /// doesn't declare it supports mouse wheel events. true by default as it
   /// is the default behavior of most terminals.
   final bool simulateScroll;
+
+  /// Whether to send SGR wheel reports even if xterm has not observed mouse
+  /// reporting mode yet.
+  final bool forceSgr;
 
   final Widget child;
 
@@ -99,6 +104,7 @@ class _MonkeyTerminalScrollGestureHandlerState
       terminal: widget.terminal,
       button: button,
       position: position,
+      forceSgr: widget.forceSgr,
     );
 
     if (!handled && widget.simulateScroll) {

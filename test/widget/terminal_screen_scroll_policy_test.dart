@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
@@ -45,6 +46,21 @@ void main() {
     );
 
     test(
+      'does not synthesize arrows for agent tools without wheel reporting',
+      () {
+        expect(
+          shouldUseSyntheticAltBufferScrollFallback(
+            isUsingAltBuffer: true,
+            preferExplicitMouseReporting: true,
+            terminalReportsMouseWheel: false,
+            isAgentToolActive: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test(
       'falls back when explicit reporting is preferred but not active yet',
       () {
         expect(
@@ -82,6 +98,33 @@ void main() {
       );
     });
 
+    test(
+      'keeps mobile agent drags in the viewport when wheel reporting is off',
+      () {
+        expect(
+          shouldRouteTouchScrollToTerminal(
+            isMobile: true,
+            isUsingAltBuffer: true,
+            terminalReportsMouseWheel: false,
+            isAgentToolActive: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('routes mobile agent drags when wheel reporting is active', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: true,
+          terminalReportsMouseWheel: true,
+          isAgentToolActive: true,
+        ),
+        isTrue,
+      );
+    });
+
     test('routes mobile mouse-reporting apps into terminal scroll input', () {
       expect(
         shouldRouteTouchScrollToTerminal(
@@ -101,6 +144,74 @@ void main() {
           terminalReportsMouseWheel: false,
         ),
         isFalse,
+      );
+    });
+  });
+
+  group('terminal agent scroll context helper', () {
+    test('uses startup tool before window metadata is loaded', () {
+      expect(
+        isAgentToolActiveForTerminalScroll(
+          activeWindowTool: null,
+          startupTool: AgentLaunchTool.copilotCli,
+          hasWindowSnapshot: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('prefers loaded window metadata over stale startup tool', () {
+      expect(
+        isAgentToolActiveForTerminalScroll(
+          activeWindowTool: null,
+          startupTool: AgentLaunchTool.copilotCli,
+          hasWindowSnapshot: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('detects current command while metadata catches up', () {
+      expect(
+        isAgentToolActiveForTerminalScroll(
+          activeWindowTool: null,
+          startupTool: null,
+          hasWindowSnapshot: true,
+          currentCommand: 'codex',
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('terminal mux mouse mode scroll helpers', () {
+    test('uses mux window mouse reporting when local mode is stale', () {
+      expect(
+        terminalReportsMouseWheelForScroll(
+          localTerminalReportsMouseWheel: false,
+          activeWindowReportsMouseWheel: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not force SGR without mux SGR mode metadata', () {
+      expect(
+        shouldForceSgrTouchScroll(
+          activeWindowReportsMouseWheel: true,
+          activeWindowMouseReportSgr: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('forces SGR when mux reports wheel and SGR modes', () {
+      expect(
+        shouldForceSgrTouchScroll(
+          activeWindowReportsMouseWheel: true,
+          activeWindowMouseReportSgr: true,
+        ),
+        isTrue,
       );
     });
   });

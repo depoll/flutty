@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +9,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+
+class _PausingSecretEncryptionService extends SecretEncryptionService {
+  _PausingSecretEncryptionService({required this.pausePlaintext})
+    : super.forTesting();
+
+  final String pausePlaintext;
+  final _paused = Completer<void>();
+  final _resume = Completer<void>();
+
+  Future<void> get paused => _paused.future;
+
+  void resume() {
+    if (!_resume.isCompleted) {
+      _resume.complete();
+    }
+  }
+
+  @override
+  Future<String?> encryptNullable(String? plaintext) async {
+    if (plaintext == pausePlaintext && !_paused.isCompleted) {
+      _paused.complete();
+      await _resume.future;
+    }
+    return super.encryptNullable(plaintext);
+  }
+}
 
 void main() {
   late AppDatabase db;
@@ -71,6 +99,112 @@ void main() {
       final key = await repository.getById(id);
       expect(key!.privateKey, privateKey);
       expect(key.passphrase, passphrase);
+    });
+
+    test('getById migrates legacy plaintext key secrets', () async {
+      const privateKey = 'legacy-open-ssh-material...';
+      const passphrase = 'legacy-passphrase';
+      final id = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Legacy Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: privateKey,
+              passphrase: const Value(passphrase),
+            ),
+          );
+
+      final key = await repository.getById(id);
+      expect(key!.privateKey, privateKey);
+      expect(key.passphrase, passphrase);
+
+      final storedKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(storedKey.privateKey, startsWith('ENCv1:'));
+      expect(storedKey.privateKey, isNot(privateKey));
+      expect(storedKey.passphrase, startsWith('ENCv1:'));
+      expect(storedKey.passphrase, isNot(passphrase));
+
+      final migratedKey = await repository.getById(id);
+      expect(migratedKey!.privateKey, privateKey);
+      expect(migratedKey.passphrase, passphrase);
+    });
+
+    test('getById migrates malformed ENCv1-prefixed key secrets', () async {
+      const privateKey = 'ENCv1:not-a-valid-key-envelope';
+      const passphrase = 'ENCv1:not-a-valid-passphrase-envelope';
+      final id = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Legacy Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: privateKey,
+              passphrase: const Value(passphrase),
+            ),
+          );
+
+      final key = await repository.getById(id);
+      expect(key!.privateKey, privateKey);
+      expect(key.passphrase, passphrase);
+
+      final storedKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(storedKey.privateKey, startsWith('ENCv1:'));
+      expect(storedKey.privateKey, isNot(privateKey));
+      expect(storedKey.passphrase, startsWith('ENCv1:'));
+      expect(storedKey.passphrase, isNot(passphrase));
+      await expectLater(
+        encryptionService.decryptNullable(storedKey.privateKey),
+        completion(privateKey),
+      );
+      await expectLater(
+        encryptionService.decryptNullable(storedKey.passphrase),
+        completion(passphrase),
+      );
+    });
+
+    test('legacy key migration does not overwrite newer writes', () async {
+      final encryptionService = _PausingSecretEncryptionService(
+        pausePlaintext: 'legacy-open-ssh-material...',
+      );
+      repository = KeyRepository(db, encryptionService);
+      final id = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Legacy Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: 'legacy-open-ssh-material...',
+            ),
+          );
+
+      final pendingRead = repository.getById(id);
+      await encryptionService.paused;
+      final newerEncryptedPrivateKey = await encryptionService.encryptNullable(
+        'newer-open-ssh-material...',
+      );
+      await (db.update(db.sshKeys)..where((k) => k.id.equals(id))).write(
+        SshKeysCompanion(privateKey: Value(newerEncryptedPrivateKey!)),
+      );
+      encryptionService.resume();
+
+      final key = await pendingRead;
+      expect(key!.privateKey, 'legacy-open-ssh-material...');
+
+      final storedKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      await expectLater(
+        encryptionService.decryptNullable(storedKey.privateKey),
+        completion('newer-open-ssh-material...'),
+      );
     });
 
     test('getById returns key when exists', () async {
@@ -292,6 +426,58 @@ void main() {
       expect(results, hasLength(1));
     });
 
+    test(
+      'search treats percent as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: '100% Production Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA1...',
+            privateKey: 'fixture-open-ssh-material-1...',
+          ),
+        );
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'Development Key',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa AAAA2...',
+            privateKey: 'fixture-rsa-material-2...',
+          ),
+        );
+
+        final results = await repository.search('%');
+        expect(results, hasLength(1));
+        expect(results.first.name, '100% Production Key');
+      },
+    );
+
+    test(
+      'search treats underscore as a literal character, not a wildcard',
+      () async {
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'deploy_key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA1...',
+            privateKey: 'fixture-open-ssh-material-1...',
+          ),
+        );
+        await repository.insert(
+          SshKeysCompanion.insert(
+            name: 'deploy key',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa AAAA2...',
+            privateKey: 'fixture-rsa-material-2...',
+          ),
+        );
+
+        final results = await repository.search('deploy_');
+        expect(results, hasLength(1));
+        expect(results.first.name, 'deploy_key');
+      },
+    );
+
     test('watchAll emits updates when keys change', () async {
       await repository.insert(
         SshKeysCompanion.insert(
@@ -305,6 +491,72 @@ void main() {
       final stream = repository.watchAll();
       final firstValue = await stream.first;
       expect(firstValue, hasLength(1));
+    });
+
+    test('watchAll skips unreadable stored keys', () async {
+      await repository.insert(
+        SshKeysCompanion.insert(
+          name: 'Readable Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: 'fixture-open-ssh-material...',
+        ),
+      );
+      final otherEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.generate(32, (index) => 255 - index),
+      );
+      final unreadablePrivateKey = await otherEncryptionService.encryptRequired(
+        'unreadable-open-ssh-material...',
+      );
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unreadable Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 BBBB...',
+              privateKey: unreadablePrivateKey,
+            ),
+          );
+
+      final firstValue = await repository.watchAll().first;
+
+      expect(firstValue, hasLength(1));
+      expect(firstValue.single.name, 'Readable Key');
+    });
+
+    test('getAllDecryptable reports unreadable stored keys', () async {
+      await repository.insert(
+        SshKeysCompanion.insert(
+          name: 'Readable Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: 'fixture-open-ssh-material...',
+        ),
+      );
+      final otherEncryptionService = SecretEncryptionService.forTesting(
+        masterKey: List<int>.generate(32, (index) => 255 - index),
+      );
+      final unreadablePrivateKey = await otherEncryptionService.encryptRequired(
+        'unreadable-open-ssh-material...',
+      );
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unreadable Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 BBBB...',
+              privateKey: unreadablePrivateKey,
+            ),
+          );
+
+      final result = await repository.getAllDecryptable();
+
+      expect(result.keys, hasLength(1));
+      expect(result.keys.single.name, 'Readable Key');
+      expect(result.unreadableCount, 1);
+      expect(result.firstUnreadableErrorType, 'FormatException');
     });
 
     test('insert multiple keys', () async {

@@ -149,7 +149,11 @@ class SettingsService {
     final value = await getString(key);
     if (value == null) return null;
     try {
-      return jsonDecode(value) as Map<String, dynamic>;
+      final decoded = jsonDecode(value);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+      return null;
     } on FormatException {
       return null;
     }

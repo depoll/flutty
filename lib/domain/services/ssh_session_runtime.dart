@@ -30,12 +30,30 @@ class _SshSessionRuntime {
   String _terminalWindowQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
+  String _terminalInsertModePendingInput = '';
   bool _terminalColorSchemeUpdatesMode = false;
+  bool _terminalInsertMode = false;
 
   Terminal? _terminal;
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  // SSH pty negotiation sets TERM but cannot advertise COLORTERM. Launch the
+  // user's login shell with the hint instead of relying on server-gated env
+  // requests that OpenSSH commonly rejects by default. Keep the outer command
+  // parseable by common non-POSIX login shells; /bin/sh handles the fallback.
+  static const _trueColorLoginShellCommand =
+      r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+
+  /// UTF-8 decoder that tolerates malformed bytes by emitting U+FFFD instead
+  /// of throwing a [FormatException]. The shell stream carries raw terminal
+  /// bytes, including replay history from MonkeyMux that can be truncated at
+  /// the byte cap mid-character, so a strict decoder would drop the entire
+  /// chunk (and any redraw bytes inside it) when the chunk happens to start
+  /// mid-sequence. See https://github.com/depollsoft/MonkeySSH/issues for
+  /// the symptom where window switches lose composer borders until the next
+  /// resize redraw.
+  static const _shellStreamDecoder = Utf8Decoder(allowMalformed: true);
 
   SSHSession? get shell => _shell;
 
@@ -107,12 +125,7 @@ class _SshSessionRuntime {
         },
       );
       try {
-        _shell = command == null
-            ? await _session.client.shell(pty: pty ?? const SSHPtyConfig())
-            : await _session.client.execute(
-                command,
-                pty: pty ?? const SSHPtyConfig(),
-              );
+        _shell = await _openShell(pty: pty, command: command);
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'open_success',
@@ -133,6 +146,10 @@ class _SshSessionRuntime {
             'commandKind': commandKind,
           },
         );
+        _session._reportConnectionHealthFailureIfClosed(
+          error,
+          operation: 'shell',
+        );
         rethrow;
       }
     } else {
@@ -144,6 +161,30 @@ class _SshSessionRuntime {
     }
     _ensureShellStreamPipes();
     return _shell!;
+  }
+
+  Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
+    final ptyConfig = pty ?? const SSHPtyConfig();
+    if (command != null) {
+      return _session.client.execute(command, pty: ptyConfig);
+    }
+
+    try {
+      return await _session.client.execute(
+        _trueColorLoginShellCommand,
+        pty: ptyConfig,
+      );
+    } on SSHChannelRequestError {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'truecolor_bootstrap_rejected',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+      return _session.client.shell(pty: ptyConfig);
+    }
   }
 
   /// Close only the interactive shell channel while keeping the SSH client.
@@ -195,7 +236,9 @@ class _SshSessionRuntime {
     _terminalWindowQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
+    _terminalInsertModePendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
+    _terminalInsertMode = false;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -217,7 +260,7 @@ class _SshSessionRuntime {
 
     _shellStdoutSubscription = shell.stdout
         .cast<List<int>>()
-        .transform(utf8.decoder)
+        .transform(_shellStreamDecoder)
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
@@ -245,6 +288,10 @@ class _SshSessionRuntime {
                 'errorType': error.runtimeType,
               },
             );
+            _session._reportConnectionHealthFailureIfClosed(
+              error,
+              operation: 'shell_stdout',
+            );
             final stdoutController = _shellStdoutController;
             if (identical(_shell, shell) &&
                 stdoutController != null &&
@@ -255,7 +302,7 @@ class _SshSessionRuntime {
         );
     _shellStderrSubscription = shell.stderr
         .cast<List<int>>()
-        .transform(utf8.decoder)
+        .transform(_shellStreamDecoder)
         .listen(
           (data) {
             _recordShellIo(stderrChars: data.length);
@@ -277,6 +324,10 @@ class _SshSessionRuntime {
                 'connectionId': _session.connectionId,
                 'errorType': error.runtimeType,
               },
+            );
+            _session._reportConnectionHealthFailureIfClosed(
+              error,
+              operation: 'shell_stderr',
             );
             final stderrController = _shellStderrController;
             if (identical(_shell, shell) &&
@@ -309,6 +360,10 @@ class _SshSessionRuntime {
             'connectionId': _session.connectionId,
             'errorType': error.runtimeType,
           },
+        );
+        _session._reportConnectionHealthFailureIfClosed(
+          error,
+          operation: 'shell_done',
         );
         final doneController = _shellDoneController;
         if (identical(_shell, shell) &&
@@ -434,9 +489,27 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      terminal.write(output.terminalData);
+      final terminalOutput = adaptTerminalInsertModeOutputForXterm(
+        input: output.terminalData,
+        pendingInput: _terminalInsertModePendingInput,
+        insertMode: _terminalInsertMode,
+        terminalColumns: terminal.viewWidth,
+        terminalRows: terminal.viewHeight,
+        cursorColumn: terminal.buffer.cursorX,
+        cursorRow: terminal.buffer.cursorY,
+        marginTop: terminal.buffer.marginTop,
+        marginBottom: terminal.buffer.marginBottom,
+        originMode: terminal.originMode,
+      );
+      _terminalInsertModePendingInput = terminalOutput.pendingInput;
+      _terminalInsertMode = terminalOutput.insertMode;
+      if (terminalOutput.output.isNotEmpty) {
+        terminal.write(terminalOutput.output);
+      }
       _respondToTerminalWindowControlQueries(output.terminalData, terminal);
-      _scheduleTerminalPreviewRefresh();
+      if (terminalOutput.output.isNotEmpty) {
+        _scheduleTerminalPreviewRefresh();
+      }
     }
 
     if (output.stdoutData.isNotEmpty) {
@@ -575,10 +648,15 @@ class _SshSessionRuntime {
     final nextPreview = _terminal == null
         ? null
         : SshSession.buildTerminalPreview(_terminal!);
-    if (nextPreview == _session._terminalPreview) {
+    final nextPreviewSnapshot = _terminal == null
+        ? null
+        : SshSession.buildTerminalPreviewSnapshot(_terminal!);
+    if (nextPreview == _session._terminalPreview &&
+        nextPreviewSnapshot == _session._terminalPreviewSnapshot) {
       return;
     }
     _session._terminalPreview = nextPreview;
+    _session._terminalPreviewSnapshot = nextPreviewSnapshot;
     DiagnosticsLogService.instance.debug(
       'ssh.preview',
       'changed',

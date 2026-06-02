@@ -103,6 +103,111 @@ void main() {
     expect(resizeEvents.last, initialEvent);
   });
 
+  testWidgets('display refresh re-sends the current viewport dimensions', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+      ),
+    );
+
+    expect(resizeEvents, isNotEmpty);
+    final initialEvent = resizeEvents.last;
+    final initialCount = resizeEvents.length;
+
+    terminalKey.currentState!.refreshTerminalDisplay(revealLatestOutput: true);
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(resizeEvents.last, initialEvent);
+  });
+
+  testWidgets('remounting an already-sized terminal skips passive resize', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    expect(resizeEvents, isNotEmpty);
+    final initialCount = resizeEvents.length;
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    expect(resizeEvents, hasLength(initialCount));
+  });
+
+  testWidgets('size refresh repairs stale terminal cell dimensions', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+      ),
+    );
+
+    final viewportColumns = terminal.viewWidth;
+    final viewportRows = terminal.viewHeight;
+    expect(viewportColumns, greaterThan(1));
+    expect(viewportRows, greaterThan(1));
+
+    terminal.resize(viewportColumns - 1, viewportRows - 1);
+    expect(terminal.viewWidth, viewportColumns - 1);
+    expect(terminal.viewHeight, viewportRows - 1);
+
+    terminalKey.currentState!.refreshTerminalSize();
+
+    expect(terminal.viewWidth, viewportColumns);
+    expect(terminal.viewHeight, viewportRows);
+    expect(resizeEvents.last.width, viewportColumns);
+    expect(resizeEvents.last.height, viewportRows);
+  });
+
   testWidgets('same-size refresh preserves terminal scroll margins', (
     tester,
   ) async {
@@ -255,6 +360,57 @@ void main() {
     expect(resizeEvents.last.pixelHeight, initialEvent.pixelHeight);
   });
 
+  testWidgets('size refresh can flush a pending keyboard resize', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 400),
+      ),
+    );
+
+    final initialCount = resizeEvents.length;
+    final initialEvent = resizeEvents.last;
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+        keyboardInset: 160,
+      ),
+    );
+
+    expect(resizeEvents, hasLength(initialCount));
+
+    terminalKey.currentState!.refreshTerminalSize(flushKeyboardResize: true);
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(resizeEvents.last.width, initialEvent.width);
+    expect(resizeEvents.last.height, lessThan(initialEvent.height));
+    expect(resizeEvents.last.pixelWidth, 320);
+    expect(resizeEvents.last.pixelHeight, 240);
+
+    await tester.pump(terminalKeyboardResizeDebounceDuration);
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+  });
+
   testWidgets('emits focus reports when focus reporting mode is enabled', (
     tester,
   ) async {
@@ -385,6 +541,72 @@ void main() {
     expect(output.single, isNot(contains('\x1b]4;16;')));
   });
 
+  testWidgets('focused block cursor repaints the covered glyph', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final focusNode = FocusNode();
+    addTearDown(focusNode.dispose);
+
+    const hiddenColor = Color(0xFFE53935);
+    const backgroundColor = Color(0xFF0D1A20);
+    final hiddenTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .copyWith(
+          foreground: hiddenColor,
+          background: backgroundColor,
+          cursor: hiddenColor,
+        )
+        .toXtermTheme();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 320,
+          height: 240,
+          child: MonkeyTerminalView(
+            key: terminalKey,
+            terminal,
+            theme: hiddenTheme,
+            focusNode: focusNode,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    terminal.write('A\x1b[1D');
+    await tester.pump();
+
+    expect(focusNode.hasFocus, isTrue);
+    final renderTerminal = terminalKey.currentState!.renderTerminal;
+    final paintPattern = paints;
+    for (var row = 0; row < terminal.viewHeight; row += 1) {
+      paintPattern.rect(color: backgroundColor, style: PaintingStyle.fill);
+      if (row == 0) {
+        paintPattern.paragraph();
+      }
+    }
+    expect(
+      renderTerminal,
+      paintPattern
+        ..rect(color: hiddenColor, style: PaintingStyle.fill)
+        ..save()
+        ..clipRect()
+        ..paragraph()
+        ..restore(),
+    );
+    expect(
+      resolveMonkeyTerminalCursorForegroundColor(
+        cursor: hiddenColor,
+        background: hiddenColor,
+        foreground: hiddenColor,
+      ),
+      isNot(hiddenColor),
+    );
+  });
+
   test('explicit xterm palette grayscale colors stay standard', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
@@ -493,5 +715,23 @@ void main() {
       greaterThanOrEqualTo(4.5),
     );
     expect(readableFaint, isNot(theme.foreground));
+  });
+
+  test('cursor text stays readable against built-in cursor colors', () {
+    for (final theme in monkey_themes.TerminalThemes.all) {
+      final cursorForeground = resolveMonkeyTerminalCursorForegroundColor(
+        cursor: theme.cursor,
+        background: theme.background,
+        foreground: theme.foreground,
+      );
+
+      expect(
+        _contrastRatio(cursorForeground, theme.cursor),
+        greaterThanOrEqualTo(4.5),
+        reason:
+            'Theme ${theme.name} should keep text under the block cursor '
+            'readable.',
+      );
+    }
   });
 }

@@ -21,6 +21,11 @@ String buildTerminalThemeModeReport({required bool isDark}) =>
 String buildTerminalThemeRefreshReports(TerminalThemeData theme) =>
     buildTerminalThemeRefreshReportList(theme).join();
 
+/// Builds terminal theme hints sent to MonkeyMux attach/control channels.
+String buildTerminalThemeHintReports(TerminalThemeData theme) =>
+    buildTerminalThemeModeReport(isDark: theme.isDark) +
+    buildTerminalThemeRefreshReports(theme);
+
 /// Builds safe unsolicited color reports as individual escape sequences.
 ///
 /// These entries are useful for tests and call sites that need to inspect or
@@ -47,6 +52,13 @@ String buildTerminalThemeDefaultColorReports(TerminalThemeData theme) => [
   buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
   buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
 ].whereType<String>().join();
+
+/// Builds an unsolicited default background color report.
+///
+/// Theme-aware TUIs listen for OSC 11 responses when deciding whether their
+/// default theme should switch between light and dark.
+String buildTerminalThemeBackgroundColorReport(TerminalThemeData theme) =>
+    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?'])!;
 
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///
@@ -204,6 +216,37 @@ String _formatOscRgbComponent(int value) {
 }
 
 String _formatTwoDigitHex(int value) => value.toRadixString(16).padLeft(2, '0');
+
+/// Returns whether two terminal themes resolve to the same rendered colors.
+bool terminalThemesMatchForColors(
+  TerminalThemeData previous,
+  TerminalThemeData next,
+) =>
+    previous.id == next.id &&
+    previous.isDark == next.isDark &&
+    previous.foreground == next.foreground &&
+    previous.background == next.background &&
+    previous.cursor == next.cursor &&
+    previous.selection == next.selection &&
+    previous.black == next.black &&
+    previous.red == next.red &&
+    previous.green == next.green &&
+    previous.yellow == next.yellow &&
+    previous.blue == next.blue &&
+    previous.magenta == next.magenta &&
+    previous.cyan == next.cyan &&
+    previous.white == next.white &&
+    previous.brightBlack == next.brightBlack &&
+    previous.brightRed == next.brightRed &&
+    previous.brightGreen == next.brightGreen &&
+    previous.brightYellow == next.brightYellow &&
+    previous.brightBlue == next.brightBlue &&
+    previous.brightMagenta == next.brightMagenta &&
+    previous.brightCyan == next.brightCyan &&
+    previous.brightWhite == next.brightWhite &&
+    previous.searchHitBackground == next.searchHitBackground &&
+    previous.searchHitBackgroundCurrent == next.searchHitBackgroundCurrent &&
+    previous.searchHitForeground == next.searchHitForeground;
 
 const _minimumSelectionBackgroundContrast = 1.04;
 const _minimumSelectionTextContrast = 3.5;
