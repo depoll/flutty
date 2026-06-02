@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,23 +33,86 @@ import (
 )
 
 const (
-	monkeyMuxVersion         = "0.1.17"
-	defaultColumns           = 80
-	defaultRows              = 24
-	maxTitleBytes            = 160
-	oscBufferLimitBytes      = 4096
-	processMetadataTimeout   = 500 * time.Millisecond
-	processMetadataInterval  = 500 * time.Millisecond
-	runCommandOutputMaxBytes = 256 * 1024
-	runCommandTimeout        = 8 * time.Second
-	socketTimeout            = 2 * time.Second
-	windowUpdateMinInterval  = 750 * time.Millisecond
-	windowHistoryLimitBytes  = 128 * 1024
-	windowReplayLimitBytes   = 32 * 1024
-	csiBufferLimitBytes      = 64
+	monkeyMuxVersion                  = "0.1.64"
+	defaultColumns                    = 80
+	defaultRows                       = 24
+	maxTitleBytes                     = 160
+	oscBufferLimitBytes               = 4096
+	processMetadataTimeout            = 500 * time.Millisecond
+	processMetadataInterval           = 500 * time.Millisecond
+	runCommandOutputMaxBytes          = 8 * 1024 * 1024
+	runCommandTimeout                 = 20 * time.Second
+	socketTimeout                     = 2 * time.Second
+	foregroundRedrawResizeDelay       = 40 * time.Millisecond
+	foregroundRedrawForwardingPause   = foregroundRedrawResizeDelay + 80*time.Millisecond
+	windowUpdateMinInterval           = 750 * time.Millisecond
+	windowHistoryLimitBytes           = 128 * 1024
+	windowFullReplayHistoryLimitBytes = 512 * 1024
+	windowReplayLimitBytes            = 32 * 1024
+	csiBufferLimitBytes               = 64
+	themeHintLimitBytes               = 1024
+	restoreFileMode                   = 0o600
+	restoreSchemaVersion              = 1
 )
 
-const activeWindowReplayPrefix = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[r\x1b(B\x1b[0m\x1b[H\x1b[2J\x1b[3J"
+const terminalParserResetSequence = "\x1b\\"
+
+const terminalCharacterSetResetSequence = "\x0f\x1b(B\x1b)B"
+
+const terminalScreenClearSequence = "\x1b[H\x1b[2J\x1b[3J"
+
+const terminalAllScreensClearSequence = terminalScreenClearSequence + "\x1b[?1049h" + terminalScreenClearSequence + "\x1b[?1049l" + terminalScreenClearSequence
+
+const activeWindowReplayPrefix = terminalParserResetSequence + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?1007l\x1b[?2004l\x1b[?2031l\x1b[?1047l\x1b[?1049l\x1b[?1l\x1b[?6l\x1b[?7h\x1b[4l\x1b>\x1b[r" + terminalCharacterSetResetSequence + "\x1b[0m" + terminalAllScreensClearSequence
+
+var (
+	preReplayPrivateModes = []string{
+		"1047",
+		"1049",
+		"6",
+		"7",
+		"1",
+		"1000",
+		"1002",
+		"1003",
+		"1006",
+		"1004",
+		"1007",
+		"2004",
+		"2031",
+	}
+	postReplayPrivateModes = []string{
+		"7",
+		"1",
+		"1000",
+		"1002",
+		"1003",
+		"1006",
+		"1004",
+		"1007",
+		"2004",
+		"2031",
+	}
+	groupedReplayPrivateModes = [][]string{
+		{"1047", "1049"},
+		{"1000", "1002", "1003"},
+	}
+	trackedPrivateModes = map[string]struct{}{
+		"1":    {},
+		"6":    {},
+		"7":    {},
+		"1000": {},
+		"1002": {},
+		"1003": {},
+		"1004": {},
+		"1006": {},
+		"1007": {},
+		"1047": {},
+		"1049": {},
+		"2004": {},
+		"2031": {},
+	}
+)
 
 var capabilities = []string{
 	"attach",
@@ -68,6 +133,7 @@ var capabilities = []string{
 	"shutdown",
 	"attach-update-policy",
 	"attach-state",
+	"upgrade-restore-v1",
 }
 
 var (
@@ -77,6 +143,68 @@ var (
 	errRunCommandTimeout      = errors.New("command timed out")
 )
 
+var signalForegroundResize = func(processGroup int) {
+	if processGroup <= 0 {
+		return
+	}
+	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+var simulateForegroundResize = func(window *muxWindow, width int, height int) {
+	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
+		return
+	}
+	ptyFile := window.pty
+	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(
+		width,
+		height,
+	)
+	if ok {
+		applyPtySize(ptyFile, temporaryWidth, temporaryHeight)
+		// Leave the PTY at a temporary size long enough for TUIs that ignore
+		// same-size SIGWINCH events to observe a real resize before restoring.
+		time.AfterFunc(foregroundRedrawResizeDelay, func() {
+			applyPtySize(ptyFile, width, height)
+		})
+		return
+	}
+	applyPtySize(ptyFile, width, height)
+}
+
+func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	if width > 1 {
+		return width - 1, height, true
+	}
+	if height > 1 {
+		return width, height - 1, true
+	}
+	return width, height, false
+}
+
+func applyPtySize(ptyFile *os.File, width int, height int) {
+	if ptyFile == nil || width <= 0 || height <= 0 {
+		return
+	}
+	_ = pty.Setsize(ptyFile, &pty.Winsize{
+		Rows: uint16(height),
+		Cols: uint16(width),
+	})
+}
+
+var foregroundProcessGroupForWindow = func(window *muxWindow) int {
+	if window == nil || window.pty == nil {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
+}
+
 const (
 	serverUpdatePolicyPrompt = "prompt"
 	serverUpdatePolicyNever  = "never"
@@ -84,8 +212,30 @@ const (
 )
 
 var (
-	leadingCdCommandPattern = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
-	leadingEnvPattern       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
+	leadingCdCommandPattern       = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
+	leadingEnvPattern             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
+	restoreFileNamePattern        = regexp.MustCompile(`^monkeymux-restore-[a-f0-9]{24}-[0-9]+\.json$`)
+	codexSessionIDPattern         = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
+	agentSessionIDArgumentPattern = map[string][]*regexp.Regexp{
+		"claude": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"copilot": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"codex": {
+			regexp.MustCompile(`(?:^|\s)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"gemini": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"opencode": {
+			regexp.MustCompile(`(?:^|\s)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"antigravity": {
+			regexp.MustCompile(`(?:^|\s)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+	}
 )
 
 type controlMessage struct {
@@ -104,6 +254,7 @@ type controlMessage struct {
 	Height      int      `json:"height,omitempty"`
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
+	Redraw      bool     `json:"redraw,omitempty"`
 }
 
 type controlResponse struct {
@@ -121,20 +272,51 @@ type controlResponse struct {
 	Data           string           `json:"data,omitempty"`
 	ExitCode       int              `json:"exitCode,omitempty"`
 	HasAttach      bool             `json:"hasForegroundClient,omitempty"`
+	Restore        *serverRestore   `json:"restore,omitempty"`
 }
 
 type windowSnapshot struct {
-	ID                       string `json:"id"`
-	Index                    int    `json:"index"`
-	Name                     string `json:"name"`
-	Active                   bool   `json:"active"`
-	CurrentCommand           string `json:"currentCommand,omitempty"`
-	CurrentPath              string `json:"currentPath,omitempty"`
-	PanePid                  int    `json:"panePid,omitempty"`
-	Flags                    string `json:"flags,omitempty"`
-	PaneTitle                string `json:"paneTitle,omitempty"`
-	AgentTool                string `json:"agentTool,omitempty"`
-	LastActivityEpochSeconds int64  `json:"lastActivityEpochSeconds,omitempty"`
+	ID                        string          `json:"id"`
+	Index                     int             `json:"index"`
+	Name                      string          `json:"name"`
+	Active                    bool            `json:"active"`
+	CurrentCommand            string          `json:"currentCommand,omitempty"`
+	CurrentPath               string          `json:"currentPath,omitempty"`
+	PanePid                   int             `json:"panePid,omitempty"`
+	Flags                     string          `json:"flags,omitempty"`
+	PaneTitle                 string          `json:"paneTitle,omitempty"`
+	AgentTool                 string          `json:"agentTool,omitempty"`
+	LastActivityEpochSeconds  int64           `json:"lastActivityEpochSeconds,omitempty"`
+	TerminalReportsMouseWheel bool            `json:"terminalReportsMouseWheel,omitempty"`
+	TerminalMouseReportSgr    bool            `json:"terminalMouseReportSgr,omitempty"`
+	PrivateModes              map[string]bool `json:"privateModes,omitempty"`
+}
+
+type serverRestore struct {
+	SchemaVersion   int                  `json:"schemaVersion"`
+	Windows         []restoreWindowState `json:"windows,omitempty"`
+	StartInYoloMode bool                 `json:"startInYoloMode,omitempty"`
+}
+
+type restoreWindowState struct {
+	ID                       string          `json:"id,omitempty"`
+	Index                    int             `json:"index,omitempty"`
+	Name                     string          `json:"name,omitempty"`
+	Cwd                      string          `json:"cwd,omitempty"`
+	CurrentCommand           string          `json:"currentCommand,omitempty"`
+	PanePid                  int             `json:"panePid,omitempty"`
+	PaneTitle                string          `json:"paneTitle,omitempty"`
+	AgentTool                string          `json:"agentTool,omitempty"`
+	AgentSessionID           string          `json:"agentSessionId,omitempty"`
+	HistoryBase64            string          `json:"historyBase64,omitempty"`
+	CursorVisible            bool            `json:"cursorVisible,omitempty"`
+	CursorVisibilityKnown    bool            `json:"cursorVisibilityKnown,omitempty"`
+	PrivateModes             map[string]bool `json:"privateModes,omitempty"`
+	InsertModeEnabled        bool            `json:"insertModeEnabled,omitempty"`
+	InsertModeKnown          bool            `json:"insertModeKnown,omitempty"`
+	ApplicationKeypadEnabled bool            `json:"applicationKeypadEnabled,omitempty"`
+	ApplicationKeypadKnown   bool            `json:"applicationKeypadKnown,omitempty"`
+	Active                   bool            `json:"active,omitempty"`
 }
 
 type muxServer struct {
@@ -150,6 +332,7 @@ type muxServer struct {
 	attachConn net.Conn
 	attachMu   sync.Mutex
 	controls   map[*controlClient]struct{}
+	themeHint  []byte
 	closed     bool
 }
 
@@ -167,15 +350,28 @@ type muxWindow struct {
 	cmd                        *exec.Cmd
 	history                    []byte
 	oscBuffer                  []byte
+	attachOscBuffer            []byte
 	csiBuffer                  []byte
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
 	cursorVisible              bool
 	cursorVisibilityKnown      bool
+	privateModes               map[string]bool
+	insertModeEnabled          bool
+	insertModeKnown            bool
+	applicationKeypadEnabled   bool
+	applicationKeypadKnown     bool
 	focusModeEnabled           bool
+	focusModeProcessID         int
+	themeRefreshModeProcessID  int
+	themeColorQueryPid         int
+	themeColorQueryKeys        map[string]bool
 	alert                      bool
 	closed                     bool
+	redrawForwardingPaused     bool
+	redrawForwardingGeneration int
+	redrawForwardingBuffer     []byte
 }
 
 type windowBroadcastIdentity struct {
@@ -221,7 +417,7 @@ func main() {
 }
 
 func usageAndExit() {
-	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
+	fmt.Fprintln(os.Stderr, "usage: monkeymux attach [--cwd DIR] [--name NAME] [--command CMD] [--restore-yolo] [--theme-hint-base64 DATA] [--update-policy prompt|never|always] <session> | control <session> --json | gc | version")
 	os.Exit(2)
 }
 
@@ -230,6 +426,8 @@ func attachCommand(args []string) {
 	cwd := fs.String("cwd", "", "initial working directory")
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
+	restoreYolo := fs.Bool("restore-yolo", false, "restore agent windows in YOLO mode")
+	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	updatePolicy := fs.String("update-policy", serverUpdatePolicyPrompt, "running server update policy: prompt, never, or always")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
@@ -239,12 +437,25 @@ func attachCommand(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	themeHint, err := decodeThemeHintBase64(*themeHintBase64)
+	if err != nil {
+		fatal(err)
+	}
 	session := fs.Arg(0)
-	if err := ensureServer(session, createWindowOptions{
-		cwd:     *cwd,
-		name:    *name,
-		command: *command,
-	}, policy); err != nil {
+	width, height := terminalSize()
+	if err := ensureServer(
+		session,
+		createWindowOptions{
+			cwd:       *cwd,
+			name:      *name,
+			command:   *command,
+			themeHint: themeHint,
+		},
+		policy,
+		*restoreYolo,
+		width,
+		height,
+	); err != nil {
 		fatal(err)
 	}
 
@@ -254,12 +465,12 @@ func attachCommand(args []string) {
 	}
 	defer conn.Close()
 
-	width, height := terminalSize()
 	hello := controlMessage{
 		Role:    "attach",
 		Session: session,
 		Width:   width,
 		Height:  height,
+		Data:    string(themeHint),
 	}
 	if err := json.NewEncoder(conn).Encode(hello); err != nil {
 		fatal(err)
@@ -328,17 +539,45 @@ func serveCommand(args []string) {
 	cwd := fs.String("cwd", "", "initial working directory")
 	name := fs.String("name", "", "initial window name")
 	command := fs.String("command", "", "initial command")
+	restoreFile := fs.String("restore-file", "", "window restore snapshot")
+	width := fs.Int("width", defaultColumns, "initial terminal columns")
+	height := fs.Int("height", defaultRows, "initial terminal rows")
+	themeHintBase64 := fs.String("theme-hint-base64", "", "base64-encoded terminal theme reports")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*session) == "" {
 		usageAndExit()
 	}
-	if err := serveSession(*session, createWindowOptions{
-		cwd:     *cwd,
-		name:    *name,
-		command: *command,
-	}); err != nil {
+	themeHint, err := decodeThemeHintBase64(*themeHintBase64)
+	if err != nil {
 		fatal(err)
 	}
+	restore, err := readRestoreFile(*restoreFile)
+	if err != nil {
+		fatal(err)
+	}
+	if err := serveSession(*session, createWindowOptions{
+		cwd:       *cwd,
+		name:      *name,
+		command:   *command,
+		themeHint: themeHint,
+	}, restore, *width, *height); err != nil {
+		fatal(err)
+	}
+}
+
+func decodeThemeHintBase64(encoded string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("invalid theme hint: %w", err)
+	}
+	if len(decoded) > themeHintLimitBytes {
+		return nil, fmt.Errorf("theme hint is too large")
+	}
+	return decoded, nil
 }
 
 func gcCommand() {
@@ -367,7 +606,15 @@ func gcCommand() {
 	}
 }
 
-func ensureServer(session string, initialWindow createWindowOptions, updatePolicy string) error {
+func ensureServer(
+	session string,
+	initialWindow createWindowOptions,
+	updatePolicy string,
+	startInYoloMode bool,
+	width int,
+	height int,
+) error {
+	var restore *serverRestore
 	if status, err := queryRunningServerStatus(session); err == nil {
 		if status.version == monkeyMuxVersion {
 			return nil
@@ -380,6 +627,10 @@ func ensureServer(session string, initialWindow createWindowOptions, updatePolic
 			updatePolicy,
 		) {
 			return nil
+		}
+		restore = collectServerRestore(session, status)
+		if restore != nil {
+			restore.StartInYoloMode = startInYoloMode
 		}
 		if status.supportsCapability("shutdown") {
 			requestServerShutdown(session)
@@ -412,6 +663,22 @@ func ensureServer(session string, initialWindow createWindowOptions, updatePolic
 		return err
 	}
 	cmd := exec.Command(exe, "serve", "--session", session)
+	if width > 0 && height > 0 {
+		cmd.Args = append(
+			cmd.Args,
+			"--width",
+			strconv.Itoa(width),
+			"--height",
+			strconv.Itoa(height),
+		)
+	}
+	if restore != nil && len(restore.Windows) > 0 {
+		path, err := writeRestoreFile(session, restore)
+		if err == nil {
+			defer os.Remove(path)
+			cmd.Args = append(cmd.Args, "--restore-file", path)
+		}
+	}
 	if strings.TrimSpace(initialWindow.cwd) != "" {
 		cmd.Args = append(cmd.Args, "--cwd", initialWindow.cwd)
 	}
@@ -420,6 +687,9 @@ func ensureServer(session string, initialWindow createWindowOptions, updatePolic
 	}
 	if strings.TrimSpace(initialWindow.command) != "" {
 		cmd.Args = append(cmd.Args, "--command", initialWindow.command)
+	}
+	if len(initialWindow.themeHint) > 0 {
+		cmd.Args = append(cmd.Args, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
 	}
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -443,7 +713,991 @@ func ensureServer(session string, initialWindow createWindowOptions, updatePolic
 	return fmt.Errorf("monkeymux server did not start for session %q", session)
 }
 
-func serveSession(session string, initialWindow createWindowOptions) error {
+func collectServerRestore(session string, status runningServerStatus) *serverRestore {
+	var restore *serverRestore
+	if status.supportsCapability("upgrade-restore-v1") {
+		if snapshot, err := requestServerRestore(session); err == nil && len(snapshot.Windows) > 0 {
+			restore = snapshot
+		}
+	}
+	if restore == nil {
+		windows, err := queryServerWindows(session)
+		if err != nil || len(windows) == 0 {
+			return nil
+		}
+		restore = restoreFromWindowSnapshots(windows)
+		enrichRestoreWithCapturedShellHistory(session, restore)
+	}
+	enrichRestoreWithAgentSessionIDs(restore)
+	return restore
+}
+
+func requestServerRestore(session string) (*serverRestore, error) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return nil, err
+	}
+	if _, err := readControlHello(dec); err != nil {
+		return nil, err
+	}
+	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := enc.Encode(controlMessage{
+		ID:      requestID,
+		Type:    "upgrade_snapshot",
+		Session: session,
+	}); err != nil {
+		return nil, err
+	}
+	for {
+		var response controlResponse
+		if err := dec.Decode(&response); err != nil {
+			return nil, err
+		}
+		if response.ID != requestID {
+			continue
+		}
+		if response.Status == "error" || response.Type == "error" {
+			return nil, errors.New(response.Error)
+		}
+		if response.Restore == nil || len(response.Restore.Windows) == 0 {
+			return nil, errors.New("empty restore snapshot")
+		}
+		return response.Restore, nil
+	}
+}
+
+func queryServerWindows(session string) ([]windowSnapshot, error) {
+	conn, err := dialSession(session)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
+
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return nil, err
+	}
+	if _, err := readControlHello(dec); err != nil {
+		return nil, err
+	}
+	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := enc.Encode(controlMessage{
+		ID:      requestID,
+		Type:    "list_windows",
+		Session: session,
+	}); err != nil {
+		return nil, err
+	}
+	for {
+		var response controlResponse
+		if err := dec.Decode(&response); err != nil {
+			return nil, err
+		}
+		if response.Type == "window_list" && (response.ID == requestID || response.ID == "") {
+			return response.Windows, nil
+		}
+		if response.ID == requestID && (response.Status == "error" || response.Type == "error") {
+			return nil, errors.New(response.Error)
+		}
+	}
+}
+
+func readControlHello(dec *json.Decoder) (controlResponse, error) {
+	for {
+		var response controlResponse
+		if err := dec.Decode(&response); err != nil {
+			return controlResponse{}, err
+		}
+		if response.Type == "hello" {
+			return response, nil
+		}
+	}
+}
+
+func restoreFromWindowSnapshots(windows []windowSnapshot) *serverRestore {
+	restore := &serverRestore{
+		SchemaVersion: restoreSchemaVersion,
+		Windows:       make([]restoreWindowState, 0, len(windows)),
+	}
+	for _, window := range windows {
+		restore.Windows = append(restore.Windows, restoreWindowState{
+			ID:             window.ID,
+			Index:          window.Index,
+			Name:           window.Name,
+			Cwd:            window.CurrentPath,
+			CurrentCommand: window.CurrentCommand,
+			PanePid:        window.PanePid,
+			PaneTitle:      window.PaneTitle,
+			AgentTool:      window.AgentTool,
+			PrivateModes:   privateModesFromWindowSnapshot(window),
+			Active:         window.Active,
+		})
+	}
+	return restore
+}
+
+func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
+	if modes := copyPrivateModes(window.PrivateModes); len(modes) > 0 {
+		return modes
+	}
+	modes := map[string]bool{}
+	if window.TerminalReportsMouseWheel {
+		if window.TerminalMouseReportSgr {
+			modes["1002"] = true
+		} else {
+			modes["1000"] = true
+		}
+	}
+	if window.TerminalMouseReportSgr {
+		modes["1006"] = true
+	}
+	if len(modes) == 0 {
+		return nil
+	}
+	return modes
+}
+
+func enrichRestoreWithCapturedShellHistory(session string, restore *serverRestore) {
+	if restore == nil || !restoreNeedsShellHistory(restore) {
+		return
+	}
+	histories := captureShellWindowHistories(session, restore)
+	for i := range restore.Windows {
+		if !isShellRestoreWindow(restore.Windows[i]) ||
+			restore.Windows[i].HistoryBase64 != "" {
+			continue
+		}
+		history := histories[restore.Windows[i].ID]
+		if len(history) == 0 {
+			continue
+		}
+		restore.Windows[i].HistoryBase64 = base64.StdEncoding.EncodeToString(history)
+	}
+}
+
+func restoreNeedsShellHistory(restore *serverRestore) bool {
+	for _, window := range restore.Windows {
+		if isShellRestoreWindow(window) && window.HistoryBase64 == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func captureShellWindowHistories(
+	session string,
+	restore *serverRestore,
+) map[string][]byte {
+	targets := map[string]restoreWindowState{}
+	activeID := ""
+	for _, window := range restore.Windows {
+		if window.Active {
+			activeID = window.ID
+		}
+		if isShellRestoreWindow(window) && window.ID != "" {
+			targets[window.ID] = window
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	attachConn, err := dialSession(session)
+	if err != nil {
+		return nil
+	}
+	defer attachConn.Close()
+	controlConn, err := dialSession(session)
+	if err != nil {
+		return nil
+	}
+	defer controlConn.Close()
+	_ = attachConn.SetDeadline(time.Now().Add(socketTimeout))
+	_ = controlConn.SetDeadline(time.Now().Add(socketTimeout))
+
+	if err := json.NewEncoder(attachConn).Encode(controlMessage{
+		Role:    "attach",
+		Session: session,
+		Width:   defaultColumns,
+		Height:  defaultRows,
+	}); err != nil {
+		return nil
+	}
+	controlEnc := json.NewEncoder(controlConn)
+	controlDec := json.NewDecoder(controlConn)
+	if err := controlEnc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
+		return nil
+	}
+	if _, err := readControlHello(controlDec); err != nil {
+		return nil
+	}
+
+	histories := map[string][]byte{}
+	if _, ok := targets[activeID]; ok {
+		if history := readAttachReplayHistory(attachConn); len(history) > 0 {
+			histories[activeID] = history
+		}
+	}
+	for _, window := range restore.Windows {
+		if _, ok := targets[window.ID]; !ok || window.ID == activeID {
+			continue
+		}
+		if err := requestSelectWindow(controlEnc, controlDec, session, window.ID); err != nil {
+			continue
+		}
+		if history := readAttachReplayHistory(attachConn); len(history) > 0 {
+			histories[window.ID] = history
+		}
+	}
+	if activeID != "" {
+		_ = requestSelectWindow(controlEnc, controlDec, session, activeID)
+	}
+	return histories
+}
+
+func requestSelectWindow(
+	enc *json.Encoder,
+	dec *json.Decoder,
+	session string,
+	windowID string,
+) error {
+	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := enc.Encode(controlMessage{
+		ID:       requestID,
+		Type:     "select_window",
+		Session:  session,
+		WindowID: windowID,
+	}); err != nil {
+		return err
+	}
+	for {
+		var response controlResponse
+		if err := dec.Decode(&response); err != nil {
+			return err
+		}
+		if response.ID != requestID {
+			continue
+		}
+		if response.Status == "error" || response.Type == "error" {
+			return errors.New(response.Error)
+		}
+		return nil
+	}
+}
+
+func readAttachReplayHistory(conn net.Conn) []byte {
+	var output bytes.Buffer
+	buf := make([]byte, 32*1024)
+	deadline := time.Now().Add(150 * time.Millisecond)
+	_ = conn.SetReadDeadline(deadline)
+	for output.Len() < windowHistoryLimitBytes {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			remaining := windowHistoryLimitBytes - output.Len()
+			if n > remaining {
+				n = remaining
+			}
+			_, _ = output.Write(buf[:n])
+			deadline = time.Now().Add(50 * time.Millisecond)
+			_ = conn.SetReadDeadline(deadline)
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			break
+		}
+	}
+	return normalizeCapturedReplayHistory(output.Bytes())
+}
+
+func normalizeCapturedReplayHistory(history []byte) []byte {
+	if len(history) == 0 {
+		return nil
+	}
+	if bytes.HasPrefix(history, []byte(activeWindowReplayPrefix)) {
+		history = history[len(activeWindowReplayPrefix):]
+	}
+	if len(history) > windowHistoryLimitBytes {
+		history = history[len(history)-windowHistoryLimitBytes:]
+	}
+	return append([]byte(nil), history...)
+}
+
+func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
+	if restore == nil {
+		return
+	}
+	panePids := map[int]struct{}{}
+	hasAntigravityWindows := false
+	for _, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) != "" {
+			continue
+		}
+		tool := agentToolForRestore(window)
+		if tool == "antigravity" {
+			hasAntigravityWindows = true
+		}
+		if tool == "" || window.PanePid <= 0 {
+			continue
+		}
+		panePids[window.PanePid] = struct{}{}
+	}
+	antigravitySessions := map[int]string{}
+	if hasAntigravityWindows {
+		antigravitySessions = discoverAntigravitySessionIDs(restore)
+	}
+	if len(panePids) == 0 {
+		for i, sessionID := range antigravitySessions {
+			restore.Windows[i].AgentSessionID = sessionID
+		}
+		return
+	}
+	processes := readProcessTable()
+	copilotSessions := map[int]string{}
+	codexSessions := map[int]string{}
+	if len(processes) > 0 {
+		copilotSessions = discoverCopilotSessionIDs(processes, panePids)
+		codexSessions = discoverCodexSessionIDs(processes, panePids)
+	}
+	for i := range restore.Windows {
+		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
+			continue
+		}
+		tool := agentToolForRestore(restore.Windows[i])
+		panePid := restore.Windows[i].PanePid
+		if tool == "" {
+			continue
+		}
+		if panePid > 0 && tool == "copilot" {
+			if sessionID := copilotSessions[panePid]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+				continue
+			}
+		}
+		if panePid > 0 && tool == "codex" {
+			if sessionID := codexSessions[panePid]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+				continue
+			}
+		}
+		if panePid > 0 && len(processes) > 0 {
+			if sessionID := sessionIDFromDescendantProcessArgs(processes, panePid, tool); sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+				continue
+			}
+		}
+		if tool == "antigravity" {
+			if sessionID := antigravitySessions[i]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+			}
+		}
+	}
+}
+
+type antigravityHistoryEntry struct {
+	conversationID string
+	workspace      string
+}
+
+func discoverAntigravitySessionIDs(restore *serverRestore) map[int]string {
+	entries := readAntigravityHistoryEntries()
+	if len(entries) == 0 {
+		return nil
+	}
+	latestSessionID := latestAntigravitySessionID(entries)
+	needsFallback := antigravityRestoreWindowCount(restore) == 1
+	sessions := map[int]string{}
+	for i, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) != "" ||
+			agentToolForRestore(window) != "antigravity" {
+			continue
+		}
+		if sessionID := antigravitySessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+			sessions[i] = sessionID
+			continue
+		}
+		if needsFallback && latestSessionID != "" {
+			sessions[i] = latestSessionID
+		}
+	}
+	return sessions
+}
+
+func antigravityRestoreWindowCount(restore *serverRestore) int {
+	if restore == nil {
+		return 0
+	}
+	count := 0
+	for _, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) == "" &&
+			agentToolForRestore(window) == "antigravity" {
+			count++
+		}
+	}
+	return count
+}
+
+func readAntigravityHistoryEntries() []antigravityHistoryEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	file, err := os.Open(filepath.Join(home, ".gemini", "antigravity-cli", "history.jsonl"))
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	entries := []antigravityHistoryEntry{}
+	for scanner.Scan() {
+		var raw struct {
+			ConversationID string `json:"conversationId"`
+			Workspace      string `json:"workspace"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(raw.ConversationID)
+		if sessionID == "" {
+			continue
+		}
+		entries = append(entries, antigravityHistoryEntry{
+			conversationID: sessionID,
+			workspace:      normalizedAntigravityWorkspacePath(raw.Workspace),
+		})
+	}
+	return entries
+}
+
+func latestAntigravitySessionID(entries []antigravityHistoryEntry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if sessionID := strings.TrimSpace(entries[i].conversationID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func antigravitySessionIDForWorkspace(
+	entries []antigravityHistoryEntry,
+	workspace string,
+) string {
+	normalizedWorkspace := normalizedAntigravityWorkspacePath(workspace)
+	if normalizedWorkspace == "" {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].workspace == normalizedWorkspace {
+			return entries[i].conversationID
+		}
+	}
+	return ""
+}
+
+func normalizedAntigravityWorkspacePath(value string) string {
+	workspace := strings.TrimSpace(value)
+	if workspace == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(workspace), "file://") {
+		if path := pathFromOsc7(workspace); path != "" {
+			workspace = path
+		}
+	}
+	if expanded, err := expandHomePath(workspace); err == nil {
+		workspace = expanded
+	}
+	return filepath.Clean(workspace)
+}
+
+func agentToolForRestore(window restoreWindowState) string {
+	return firstNonEmptyString(
+		window.AgentTool,
+		agentToolFromCommandName(window.CurrentCommand),
+		agentToolFromTerminalTitle(window.PaneTitle),
+		agentToolFromCommandName(window.Name),
+	)
+}
+
+type processInfo struct {
+	pid  int
+	ppid int
+	pgid int
+	comm string
+	args string
+}
+
+type processTableCache struct {
+	mu        sync.Mutex
+	loadedAt  time.Time
+	processes map[int]processInfo
+}
+
+var commandProcessTableCache processTableCache
+
+var processOpenFilePathsForMetadata = defaultProcessOpenFilePathsForMetadata
+
+var processWorkingDirectoryForMetadata = defaultProcessWorkingDirectoryForMetadata
+
+func readProcessTable() map[int]processInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		"ps",
+		"-eo",
+		"pid=,ppid=,pgid=,comm=,args=",
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	processes := map[int]processInfo{}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		args := ""
+		if len(fields) > 4 {
+			args = strings.Join(fields[4:], " ")
+		}
+		processes[pid] = processInfo{
+			pid:  pid,
+			ppid: ppid,
+			pgid: pgid,
+			comm: fields[3],
+			args: args,
+		}
+	}
+	return processes
+}
+
+func cachedProcessTable(now time.Time) map[int]processInfo {
+	commandProcessTableCache.mu.Lock()
+	defer commandProcessTableCache.mu.Unlock()
+	if commandProcessTableCache.processes != nil &&
+		!commandProcessTableCache.loadedAt.IsZero() &&
+		now.Sub(commandProcessTableCache.loadedAt) < processMetadataInterval {
+		return commandProcessTableCache.processes
+	}
+	processes := readProcessTable()
+	commandProcessTableCache.processes = processes
+	commandProcessTableCache.loadedAt = now
+	return processes
+}
+
+func discoverCopilotSessionIDs(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	stateDir := filepath.Join(home, ".copilot", "session-state")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	sessions := map[int]string{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(stateDir, entry.Name())
+		locks, err := filepath.Glob(filepath.Join(dir, "inuse.*.lock"))
+		if err != nil {
+			continue
+		}
+		for _, lock := range locks {
+			pid := pidFromCopilotLockPath(lock)
+			if pid <= 0 {
+				continue
+			}
+			process, ok := processes[pid]
+			if !ok || !strings.Contains(strings.ToLower(process.comm+" "+process.args), "copilot") {
+				continue
+			}
+			if panePid := ancestorPanePID(processes, pid, panePids); panePid > 0 {
+				sessions[panePid] = entry.Name()
+			}
+		}
+	}
+	return sessions
+}
+
+func discoverCodexSessionIDs(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
+	type unresolvedCodexProcess struct {
+		panePid          int
+		workingDirectory string
+	}
+	sessions := map[int]string{}
+	unresolved := []unresolvedCodexProcess{}
+	unresolvedPanes := map[int]struct{}{}
+	workingDirectoryCounts := map[string]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 || sessions[panePid] != "" {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != "codex" {
+			continue
+		}
+		if sessionID := agentSessionIDFromArgs("codex", process.args); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		if sessionID := codexSessionIDFromOpenFiles(process.pid); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory == "" {
+			continue
+		}
+		if _, ok := unresolvedPanes[panePid]; ok {
+			continue
+		}
+		unresolvedPanes[panePid] = struct{}{}
+		unresolved = append(unresolved, unresolvedCodexProcess{
+			panePid:          panePid,
+			workingDirectory: workingDirectory,
+		})
+		workingDirectoryCounts[workingDirectory]++
+	}
+	for _, candidate := range unresolved {
+		if sessions[candidate.panePid] != "" ||
+			workingDirectoryCounts[candidate.workingDirectory] != 1 {
+			continue
+		}
+		if sessionID := codexRecentSessionIDForWorkingDirectory(candidate.workingDirectory); sessionID != "" {
+			sessions[candidate.panePid] = sessionID
+		}
+	}
+	return sessions
+}
+
+func codexSessionIDFromOpenFiles(pid int) string {
+	for _, path := range processOpenFilePathsForMetadata(pid) {
+		if sessionID := codexSessionIDFromRolloutFile(path); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func codexRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+	workingDirectory = normalizedMetadataPath(workingDirectory)
+	if workingDirectory == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	sessionsDir := filepath.Join(home, ".codex", "sessions")
+	for _, path := range recentCodexRolloutFiles(sessionsDir, 30) {
+		if normalizedMetadataPath(codexRolloutWorkingDirectory(path)) != workingDirectory {
+			continue
+		}
+		if sessionID := codexSessionIDFromRolloutFile(path); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func recentCodexRolloutFiles(root string, limit int) []string {
+	type recentFile struct {
+		path    string
+		modTime time.Time
+	}
+	files := []recentFile{}
+	if limit <= 0 {
+		return nil
+	}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil || entry.IsDir() {
+			return nil
+		}
+		if !isCodexRolloutPath(path) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		files = append(files, recentFile{path: path, modTime: info.ModTime()})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	if len(files) > limit {
+		files = files[:limit]
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths
+}
+
+func codexRolloutWorkingDirectory(path string) string {
+	if !isCodexRolloutPath(path) {
+		return ""
+	}
+	return jsonStringFieldFromFile(path, "cwd")
+}
+
+func codexSessionIDFromRolloutFile(path string) string {
+	if !isCodexRolloutPath(path) {
+		return ""
+	}
+	if sessionID := codexSessionIDFromRolloutName(filepath.Base(path)); sessionID != "" {
+		return sessionID
+	}
+	if sessionID := jsonStringFieldFromFile(path, "id"); sessionID != "" {
+		return sessionID
+	}
+	return ""
+}
+
+func isCodexRolloutPath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	if !strings.Contains(normalized, "/.codex/sessions/") {
+		return false
+	}
+	name := filepath.Base(path)
+	return strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, ".jsonl")
+}
+
+func codexSessionIDFromRolloutName(name string) string {
+	match := codexSessionIDPattern.FindStringSubmatch(name)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
+func jsonStringFieldFromFile(path string, field string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if value := jsonStringFieldFromLine(scanner.Text(), field); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func jsonStringFieldFromLine(line string, field string) string {
+	var parsed any
+	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+		return ""
+	}
+	return jsonStringField(parsed, field)
+}
+
+func jsonStringField(value any, field string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if raw, ok := typed[field]; ok {
+			if text, ok := raw.(string); ok {
+				return strings.TrimSpace(text)
+			}
+		}
+		for _, child := range typed {
+			if text := jsonStringField(child, field); text != "" {
+				return text
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if text := jsonStringField(child, field); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func defaultProcessOpenFilePathsForMetadata(pid int) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		"lsof",
+		"-nP",
+		"-p",
+		strconv.Itoa(pid),
+		"-Fn",
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	paths := []string{}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "n") && len(line) > 1 {
+			paths = append(paths, line[1:])
+		}
+	}
+	return paths
+}
+
+func defaultProcessWorkingDirectoryForMetadata(pid int) string {
+	if runtime.GOOS == "linux" {
+		if target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd")); err == nil {
+			return target
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		"lsof",
+		"-nP",
+		"-a",
+		"-p",
+		strconv.Itoa(pid),
+		"-d",
+		"cwd",
+		"-Fn",
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "n") && len(line) > 1 {
+			return line[1:]
+		}
+	}
+	return ""
+}
+
+func normalizedMetadataPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.Clean(trimmed)
+}
+
+func pidFromCopilotLockPath(path string) int {
+	name := filepath.Base(path)
+	if !strings.HasPrefix(name, "inuse.") || !strings.HasSuffix(name, ".lock") {
+		return 0
+	}
+	pidText := strings.TrimSuffix(strings.TrimPrefix(name, "inuse."), ".lock")
+	pid, err := strconv.Atoi(pidText)
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+func ancestorPanePID(
+	processes map[int]processInfo,
+	pid int,
+	panePids map[int]struct{},
+) int {
+	seen := map[int]struct{}{}
+	for current := pid; current > 0; {
+		if _, ok := panePids[current]; ok {
+			return current
+		}
+		if _, ok := seen[current]; ok {
+			return 0
+		}
+		seen[current] = struct{}{}
+		process, ok := processes[current]
+		if !ok {
+			return 0
+		}
+		current = process.ppid
+	}
+	return 0
+}
+
+func sessionIDFromDescendantProcessArgs(
+	processes map[int]processInfo,
+	panePid int,
+	tool string,
+) string {
+	targetPanePids := map[int]struct{}{panePid: struct{}{}}
+	for _, process := range processes {
+		if ancestorPanePID(processes, process.pid, targetPanePids) != panePid {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != tool {
+			continue
+		}
+		if sessionID := agentSessionIDFromArgs(tool, process.args); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func agentSessionIDFromArgs(tool string, args string) string {
+	for _, pattern := range agentSessionIDArgumentPattern[tool] {
+		match := pattern.FindStringSubmatch(args)
+		if match == nil {
+			continue
+		}
+		for _, group := range match[1:] {
+			if strings.TrimSpace(group) != "" {
+				return strings.TrimSpace(group)
+			}
+		}
+	}
+	return ""
+}
+
+func serveSession(
+	session string,
+	initialWindow createWindowOptions,
+	restore *serverRestore,
+	width int,
+	height int,
+) error {
 	socket, err := socketPath(session)
 	if err != nil {
 		return err
@@ -462,9 +1716,10 @@ func serveSession(session string, initialWindow createWindowOptions) error {
 	}()
 	_ = os.Chmod(socket, 0o600)
 
-	server := newMuxServer(session)
+	server := newMuxServerWithSize(session, width, height)
+	server.themeHint = append([]byte(nil), initialWindow.themeHint...)
 	server.listener = listener
-	if _, err := server.createWindow(initialWindow); err != nil {
+	if err := server.restoreOrCreateInitialWindow(restore, initialWindow); err != nil {
 		return err
 	}
 	defer server.close()
@@ -491,24 +1746,222 @@ func serveSession(session string, initialWindow createWindowOptions) error {
 }
 
 func newMuxServer(session string) *muxServer {
+	return newMuxServerWithSize(session, defaultColumns, defaultRows)
+}
+
+func newMuxServerWithSize(session string, width int, height int) *muxServer {
+	if width <= 0 {
+		width = defaultColumns
+	}
+	if height <= 0 {
+		height = defaultRows
+	}
 	return &muxServer{
 		session:  session,
-		width:    defaultColumns,
-		height:   defaultRows,
+		width:    width,
+		height:   height,
 		controls: map[*controlClient]struct{}{},
 	}
 }
 
+func readRestoreFile(path string) (*serverRestore, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var restore serverRestore
+	if err := json.Unmarshal(data, &restore); err != nil {
+		return nil, err
+	}
+	if restore.SchemaVersion != restoreSchemaVersion {
+		return nil, fmt.Errorf("unsupported MonkeyMux restore schema %d", restore.SchemaVersion)
+	}
+	if isManagedRestoreFile(path) {
+		_ = os.Remove(path)
+	}
+	return &restore, nil
+}
+
+func isManagedRestoreFile(path string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil || !restoreFileNamePattern.MatchString(filepath.Base(absPath)) {
+		return false
+	}
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		return false
+	}
+	absRunDir, err := filepath.Abs(runDir)
+	if err != nil {
+		return false
+	}
+	return filepath.Dir(absPath) == absRunDir
+}
+
+func writeRestoreFile(session string, restore *serverRestore) (string, error) {
+	runDir, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(
+		runDir,
+		fmt.Sprintf(
+			"monkeymux-restore-%s-%d.json",
+			restoreSessionToken(session),
+			time.Now().UnixNano(),
+		),
+	)
+	if err := os.WriteFile(path, data, restoreFileMode); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func restoreSessionToken(session string) string {
+	sum := sha256.Sum256([]byte(session))
+	return hex.EncodeToString(sum[:])[:24]
+}
+
+func (s *muxServer) restoreOrCreateInitialWindow(
+	restore *serverRestore,
+	initialWindow createWindowOptions,
+) error {
+	if restore == nil || len(restore.Windows) == 0 {
+		_, err := s.createWindow(initialWindow)
+		return err
+	}
+
+	var activeID string
+	var firstID string
+	restored := 0
+	for _, state := range restore.Windows {
+		window, err := s.createWindow(
+			createWindowOptionsForRestore(state, restore.StartInYoloMode),
+		)
+		if err != nil {
+			continue
+		}
+		if firstID == "" {
+			firstID = window.id
+		}
+		if state.Active {
+			activeID = window.id
+		}
+		restored++
+	}
+	if restored == 0 {
+		_, err := s.createWindow(initialWindow)
+		return err
+	}
+	if activeID == "" {
+		activeID = firstID
+	}
+	if activeID != "" {
+		_ = s.selectWindow(activeID)
+	}
+	return nil
+}
+
+func createWindowOptionsForRestore(
+	state restoreWindowState,
+	startInYoloMode bool,
+) createWindowOptions {
+	agentTool := firstNonEmptyString(
+		state.AgentTool,
+		agentToolFromCommandName(state.CurrentCommand),
+		agentToolFromTerminalTitle(state.PaneTitle),
+		agentToolFromCommandName(state.Name),
+	)
+	command := ""
+	if agentTool != "" {
+		command = agentLaunchCommand(agentTool, startInYoloMode)
+		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
+			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
+		}
+	}
+	history := []byte(nil)
+	if isShellRestoreWindow(state) {
+		history = decodeRestoreHistory(state.HistoryBase64)
+	}
+	return createWindowOptions{
+		name:                     firstNonEmptyString(state.Name, state.PaneTitle, state.CurrentCommand, "shell"),
+		cwd:                      state.Cwd,
+		command:                  command,
+		history:                  history,
+		paneTitle:                firstNonEmptyString(state.PaneTitle, state.Name),
+		agentTool:                agentTool,
+		cursorVisible:            state.CursorVisible,
+		cursorVisibilityKnown:    state.CursorVisibilityKnown,
+		privateModes:             copyPrivateModes(state.PrivateModes),
+		insertModeEnabled:        state.InsertModeEnabled,
+		insertModeKnown:          state.InsertModeKnown,
+		applicationKeypadEnabled: state.ApplicationKeypadEnabled,
+		applicationKeypadKnown:   state.ApplicationKeypadKnown,
+	}
+}
+
+func decodeRestoreHistory(encoded string) []byte {
+	if strings.TrimSpace(encoded) == "" {
+		return nil
+	}
+	history, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil
+	}
+	if len(history) > windowHistoryLimitBytes {
+		return append([]byte(nil), history[len(history)-windowHistoryLimitBytes:]...)
+	}
+	return history
+}
+
+func isShellRestoreWindow(state restoreWindowState) bool {
+	agentTool := firstNonEmptyString(
+		state.AgentTool,
+		agentToolFromCommandName(state.CurrentCommand),
+		agentToolFromTerminalTitle(state.PaneTitle),
+		agentToolFromCommandName(state.Name),
+	)
+	if agentTool != "" {
+		return false
+	}
+	command := cleanProcessCommandName(state.CurrentCommand)
+	return command == "" || isShellCommandName(command)
+}
+
 type createWindowOptions struct {
-	name    string
-	cwd     string
-	command string
-	args    []string
+	name                     string
+	cwd                      string
+	command                  string
+	args                     []string
+	history                  []byte
+	paneTitle                string
+	agentTool                string
+	cursorVisible            bool
+	cursorVisibilityKnown    bool
+	privateModes             map[string]bool
+	insertModeEnabled        bool
+	insertModeKnown          bool
+	applicationKeypadEnabled bool
+	applicationKeypadKnown   bool
+	themeHint                []byte
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
 	var attach net.Conn
 	var replay []byte
+	var snapshots []windowSnapshot
+	var addedSnapshot *windowSnapshot
+	var foregroundProcessGroup int
 	cwd := strings.TrimSpace(options.cwd)
 	if cwd == "" {
 		if current, err := os.Getwd(); err == nil {
@@ -533,13 +1986,19 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		name = firstShellWord(options.command)
 	}
 	agentTool := firstNonEmptyString(
+		options.agentTool,
 		agentToolFromCommandText(options.command),
 		agentToolFromCommandName(name),
 	)
+	paneTitle := firstNonEmptyString(options.paneTitle, name)
+	cursorVisible := true
+	if options.cursorVisibilityKnown {
+		cursorVisible = options.cursorVisible
+	}
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Env = inheritedEnvironment(os.Environ())
+	cmd.Env = terminalEnvironment(os.Environ())
 
 	s.mu.Lock()
 	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
@@ -553,28 +2012,43 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.mu.Lock()
 	s.nextID++
 	window := &muxWindow{
-		id:                fmt.Sprintf("@%d", s.nextID),
-		index:             len(s.windows),
-		name:              name,
-		cwd:               cwd,
-		command:           filepath.Base(cmd.Path),
-		agentTool:         agentTool,
-		foregroundPid:     cmd.Process.Pid,
-		foregroundCommand: filepath.Base(cmd.Path),
-		paneTitle:         name,
-		pty:               file,
-		cmd:               cmd,
-		lastActivity:      time.Now(),
-		cursorVisible:     true,
+		id:                       fmt.Sprintf("@%d", s.nextID),
+		index:                    len(s.windows),
+		name:                     name,
+		cwd:                      cwd,
+		command:                  filepath.Base(cmd.Path),
+		agentTool:                agentTool,
+		foregroundPid:            cmd.Process.Pid,
+		foregroundCommand:        filepath.Base(cmd.Path),
+		paneTitle:                paneTitle,
+		pty:                      file,
+		cmd:                      cmd,
+		history:                  append([]byte(nil), options.history...),
+		lastActivity:             time.Now(),
+		cursorVisible:            cursorVisible,
+		cursorVisibilityKnown:    options.cursorVisibilityKnown,
+		privateModes:             copyPrivateModes(options.privateModes),
+		insertModeEnabled:        options.insertModeEnabled,
+		insertModeKnown:          options.insertModeKnown,
+		applicationKeypadEnabled: options.applicationKeypadEnabled,
+		applicationKeypadKnown:   options.applicationKeypadKnown,
 	}
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
+	foregroundProcessGroup = window.foregroundProcessGroupLocked()
+	snapshots = s.snapshotsLocked()
+	addedSnapshot = snapshotByID(snapshots, window.id)
 	s.mu.Unlock()
 
-	s.writeAttach(attach, replay)
+	s.attachMu.Lock()
+	redrew := s.writeAttachReplayAndResizeLocked(attach, replay, window)
+	s.attachMu.Unlock()
+	if redrew {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 	go s.readWindow(window)
 	go func() {
 		_ = cmd.Wait()
@@ -584,10 +2058,18 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.broadcast(controlResponse{
 		Type:    "window_added",
 		Session: s.session,
-		Window:  ptrWindowSnapshot(s.snapshot(window)),
+		Window:  addedSnapshot,
 	})
-	s.broadcastWindowList("window_list")
-	s.broadcastWindowList("active_window_changed")
+	s.broadcast(controlResponse{
+		Type:    "window_list",
+		Session: s.session,
+		Windows: snapshots,
+	})
+	s.broadcast(controlResponse{
+		Type:    "active_window_changed",
+		Session: s.session,
+		Windows: snapshots,
+	})
 	return window, nil
 }
 
@@ -596,9 +2078,7 @@ func (s *muxServer) readWindow(window *muxWindow) {
 	for {
 		n, err := window.pty.Read(buf)
 		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			s.handleWindowOutput(window.id, chunk)
+			s.handleWindowOutput(window.id, buf[:n])
 		}
 		if err != nil {
 			return
@@ -608,6 +2088,9 @@ func (s *muxServer) readWindow(window *muxWindow) {
 
 func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	var attach net.Conn
+	var forwarded []byte
+	var themeHint []byte
+	var themeHintData []byte
 	var shouldWrite bool
 	var snapshot *windowSnapshot
 	now := time.Now()
@@ -621,10 +2104,14 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	before := window.broadcastIdentityLocked()
 	wasAlert := window.alert
 	window.lastActivity = now
-	window.observeTerminalMetadataLocked(chunk)
-	window.observeCursorVisibilityLocked(chunk)
-	window.appendHistoryLocked(chunk)
 	window.refreshProcessMetadataLocked(now)
+	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
+		themeHint = append([]byte(nil), s.themeHint...)
+		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
+	}
+	window.observeTerminalModesLocked(chunk)
+	window.appendHistoryLocked(chunk)
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
@@ -640,10 +2127,27 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		snapshot = &snap
 		window.lastBroadcast = now
 	}
+	if shouldWrite {
+		forwarded = window.stripLocallyAnsweredThemeQueriesLocked(chunk, themeHint)
+		if len(forwarded) > 0 && window.redrawForwardingPaused {
+			window.redrawForwardingBuffer = append(
+				window.redrawForwardingBuffer,
+				forwarded...,
+			)
+			shouldWrite = false
+			forwarded = nil
+		}
+	}
 	s.mu.Unlock()
 
+	if len(themeHintData) > 0 {
+		_ = s.writeWindow(windowID, themeHintData)
+	}
+
 	if shouldWrite {
-		s.writeAttach(attach, chunk)
+		if len(forwarded) > 0 {
+			s.writeAttachIfActive(windowID, attach, forwarded)
+		}
 	}
 
 	if snapshot != nil {
@@ -659,12 +2163,17 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
+	var foregroundProcessGroup int
+	var redrawWindow *muxWindow
+	var redrew bool
 	var shouldShutdown bool
 
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return
 	}
 	window.closed = true
@@ -680,6 +2189,8 @@ func (s *muxServer) markWindowClosed(windowID string) {
 				s.resizeActiveLocked(s.width, s.height)
 				attach = s.attachConn
 				replay = s.replayBytesLocked(candidate)
+				foregroundProcessGroup = candidate.foregroundProcessGroupLocked()
+				redrawWindow = candidate
 				activeChanged = true
 				break
 			}
@@ -688,6 +2199,10 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	snapshots := s.snapshotsLocked()
 	shouldShutdown = len(snapshots) == 0
 	s.mu.Unlock()
+	if activeChanged {
+		redrew = s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
+	}
+	s.attachMu.Unlock()
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -705,7 +2220,9 @@ func (s *muxServer) markWindowClosed(windowID string) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		s.writeAttach(attach, replay)
+		if redrew {
+			signalForegroundResize(foregroundProcessGroup)
+		}
 	}
 	if shouldShutdown {
 		go s.close()
@@ -736,20 +2253,52 @@ func (s *muxServer) handleConnection(conn net.Conn) {
 
 func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello controlMessage) {
 	var replay []byte
+	var foregroundProcessGroup int
+	var redrawWindow *muxWindow
+	var themeHintData []byte
+	var themeHintWindowID string
+	var sendFocusTransition bool
+	var sendFocusRefresh bool
 	s.mu.Lock()
 	if s.attachConn != nil {
 		_ = s.attachConn.Close()
 	}
 	s.attachConn = conn
+	if themeHint := themeHintDataFromString(hello.Data); len(themeHint) > 0 {
+		s.themeHint = append(s.themeHint[:0], themeHint...)
+	}
 	if hello.Width > 0 && hello.Height > 0 {
 		s.width = hello.Width
 		s.height = hello.Height
 		s.resizeActiveLocked(hello.Width, hello.Height)
 	}
 	replay = s.activeReplayLocked()
+	if window := s.windowByIDLocked(s.activeID); window != nil {
+		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+		redrawWindow = window
+		if len(s.themeHint) > 0 {
+			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
+			themeHintWindowID = window.id
+			sendFocusTransition = window.themeHintFocusTransitionLocked()
+			sendFocusRefresh = !sendFocusTransition && window.themeHintFocusRefreshLocked()
+		}
+	}
 	s.mu.Unlock()
-	s.writeAttach(conn, replay)
+	s.attachMu.Lock()
+	redrew := s.writeAttachReplayAndResizeLocked(conn, replay, redrawWindow)
+	s.attachMu.Unlock()
+	if len(themeHintData) > 0 {
+		_ = s.writeWindow(themeHintWindowID, themeHintData)
+	}
+	if sendFocusTransition {
+		s.sendFocusTransition(themeHintWindowID)
+	} else if sendFocusRefresh {
+		s.sendFocusRefresh(themeHintWindowID)
+	}
 	s.broadcastWindowList("active_window_changed")
+	if redrew {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 
 	defer func() {
 		s.mu.Lock()
@@ -764,7 +2313,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			s.writeActive(buf[:n])
+			s.writeActiveFromAttach(buf[:n])
 		}
 		if err != nil {
 			return
@@ -823,6 +2372,14 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			Session: s.session,
 			Windows: s.snapshots(),
 		})
+	case "upgrade_snapshot":
+		client.send(controlResponse{
+			ID:      request.ID,
+			Type:    "upgrade_snapshot",
+			Status:  "ok",
+			Session: s.session,
+			Restore: s.restoreSnapshot(),
+		})
 	case "create_window":
 		window, err := s.createWindow(createWindowOptions{
 			name:    request.Name,
@@ -878,7 +2435,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("invalid terminal size"))
 			return
 		}
-		s.resize(request.Width, request.Height)
+		s.resizeWithRedraw(request.Width, request.Height, request.Redraw)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
 	case "query_active_context":
 		s.mu.Lock()
@@ -1091,6 +2648,45 @@ func (s *muxServer) snapshotsLocked() []windowSnapshot {
 	return windows
 }
 
+func (s *muxServer) restoreSnapshot() *serverRestore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	restore := &serverRestore{
+		SchemaVersion: restoreSchemaVersion,
+		Windows:       make([]restoreWindowState, 0, len(s.windows)),
+	}
+	for _, window := range s.windows {
+		if window.closed {
+			continue
+		}
+		window.refreshProcessMetadataLocked(time.Now())
+		state := restoreWindowState{
+			ID:                       window.id,
+			Index:                    window.index,
+			Name:                     window.name,
+			Cwd:                      window.cwd,
+			CurrentCommand:           window.currentCommandLocked(),
+			PanePid:                  window.metadataProcessIDLocked(),
+			PaneTitle:                window.paneTitle,
+			AgentTool:                window.agentToolLocked(),
+			CursorVisible:            window.cursorVisible,
+			CursorVisibilityKnown:    window.cursorVisibilityKnown,
+			PrivateModes:             copyPrivateModes(window.privateModes),
+			InsertModeEnabled:        window.insertModeEnabled,
+			InsertModeKnown:          window.insertModeKnown,
+			ApplicationKeypadEnabled: window.applicationKeypadEnabled,
+			ApplicationKeypadKnown:   window.applicationKeypadKnown,
+			Active:                   s.activeID == window.id,
+		}
+		if isShellRestoreWindow(state) && len(window.history) > 0 {
+			state.HistoryBase64 = base64.StdEncoding.EncodeToString(window.historyTailLocked())
+		}
+		restore.Windows = append(restore.Windows, state)
+	}
+	return restore
+}
+
 func (s *muxServer) snapshot(window *muxWindow) windowSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1104,17 +2700,20 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		flags = "#"
 	}
 	return windowSnapshot{
-		ID:                       window.id,
-		Index:                    window.index,
-		Name:                     window.name,
-		Active:                   s.activeID == window.id,
-		CurrentCommand:           window.currentCommandLocked(),
-		CurrentPath:              window.cwd,
-		PanePid:                  window.metadataProcessIDLocked(),
-		Flags:                    flags,
-		PaneTitle:                window.paneTitle,
-		AgentTool:                window.agentToolLocked(),
-		LastActivityEpochSeconds: window.lastActivity.Unix(),
+		ID:                        window.id,
+		Index:                     window.index,
+		Name:                      window.name,
+		Active:                    s.activeID == window.id,
+		CurrentCommand:            window.currentCommandLocked(),
+		CurrentPath:               window.cwd,
+		PanePid:                   window.metadataProcessIDLocked(),
+		Flags:                     flags,
+		PaneTitle:                 window.paneTitle,
+		AgentTool:                 window.agentToolLocked(),
+		LastActivityEpochSeconds:  window.lastActivity.Unix(),
+		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
+		TerminalMouseReportSgr:    window.privateModes["1006"],
+		PrivateModes:              copyPrivateModes(window.privateModes),
 	}
 }
 
@@ -1263,10 +2862,14 @@ func (o *boundedCommandOutput) exceeded() bool {
 func (s *muxServer) selectWindow(windowID string) error {
 	var attach net.Conn
 	var replay []byte
+	var foregroundProcessGroup int
+	var redrawWindow *muxWindow
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return fmt.Errorf("window %q not found", windowID)
 	}
 	s.activeID = windowID
@@ -1274,9 +2877,15 @@ func (s *muxServer) selectWindow(windowID string) error {
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
+	foregroundProcessGroup = window.foregroundProcessGroupLocked()
+	redrawWindow = window
 	s.mu.Unlock()
+	redrew := s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
+	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
-	s.writeAttach(attach, replay)
+	if redrew {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 	return nil
 }
 
@@ -1284,15 +2893,20 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var attach net.Conn
 	var replay []byte
 	var activeChanged bool
+	var foregroundProcessGroup int
+	var redrawWindow *muxWindow
+	var redrew bool
 	var shouldShutdown bool
 	var command *exec.Cmd
 	var windowPty *os.File
 	var snapshots []windowSnapshot
 
+	s.attachMu.Lock()
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
+		s.attachMu.Unlock()
 		return false, fmt.Errorf("window %q not found", windowID)
 	}
 	openCount := 0
@@ -1309,6 +2923,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.resizeActiveLocked(s.width, s.height)
 			attach = s.attachConn
 			replay = s.replayBytesLocked(replacement)
+			foregroundProcessGroup = replacement.foregroundProcessGroupLocked()
+			redrawWindow = replacement
 			activeChanged = true
 		} else {
 			s.activeID = ""
@@ -1322,6 +2938,10 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	snapshots = s.snapshotsLocked()
 	shouldShutdown = openCount <= 1 || len(snapshots) == 0
 	s.mu.Unlock()
+	if activeChanged {
+		redrew = s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
+	}
+	s.attachMu.Unlock()
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -1339,7 +2959,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			Session: s.session,
 			Windows: snapshots,
 		})
-		s.writeAttach(attach, replay)
+		if redrew {
+			signalForegroundResize(foregroundProcessGroup)
+		}
 	}
 	signalCommandProcessGroup(command, syscall.SIGHUP)
 	if windowPty != nil {
@@ -1366,15 +2988,44 @@ func (s *muxServer) replacementWindowForClosedLocked(closing *muxWindow) *muxWin
 }
 
 func (s *muxServer) resize(width int, height int) {
+	s.resizeWithRedraw(width, height, false)
+}
+
+func (s *muxServer) resizeWithRedraw(width int, height int, forceRedraw bool) {
+	var attach net.Conn
+	var modeReplay []byte
+	var foregroundProcessGroup int
+	var shouldSignal bool
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	sizeChanged := s.width != width || s.height != height
 	s.width = width
 	s.height = height
-	s.resizeActiveLocked(width, height)
+	window := s.windowByIDLocked(s.activeID)
+	s.resizeWindowLocked(window, width, height)
+	if window != nil &&
+		!window.closed &&
+		window.usesForegroundRedrawReplayLocked() &&
+		(forceRedraw || sizeChanged) {
+		s.pauseAttachForwardingForRedrawLocked(window, width, height)
+		simulateForegroundResize(window, width, height)
+		attach = s.attachConn
+		modeReplay = window.modeReplayForAttachedTerminalLocked()
+		foregroundProcessGroup = window.foregroundProcessGroupLocked()
+		shouldSignal = true
+	}
+	s.mu.Unlock()
+	s.writeAttach(attach, modeReplay)
+	if shouldSignal {
+		signalForegroundResize(foregroundProcessGroup)
+	}
 }
 
 func (s *muxServer) resizeActiveLocked(width int, height int) {
 	window := s.windowByIDLocked(s.activeID)
+	s.resizeWindowLocked(window, width, height)
+}
+
+func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int) {
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
@@ -1382,6 +3033,108 @@ func (s *muxServer) resizeActiveLocked(width int, height int) {
 		Rows: uint16(height),
 		Cols: uint16(width),
 	})
+}
+
+func (s *muxServer) writeAttachReplayAndResizeLocked(
+	conn net.Conn,
+	replay []byte,
+	window *muxWindow,
+) bool {
+	s.writeAttachLocked(conn, replay)
+	return s.simulateForegroundResizeIfAttached(conn, window)
+}
+
+func (s *muxServer) simulateForegroundResizeIfAttached(
+	conn net.Conn,
+	window *muxWindow,
+) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if conn == nil || s.attachConn != conn || window == nil || window.closed {
+		return false
+	}
+	s.pauseAttachForwardingForRedrawLocked(window, s.width, s.height)
+	simulateForegroundResize(window, s.width, s.height)
+	return true
+}
+
+func (s *muxServer) pauseAttachForwardingForRedrawLocked(
+	window *muxWindow,
+	width int,
+	height int,
+) {
+	if window == nil ||
+		window.closed ||
+		s.attachConn == nil ||
+		!window.usesForegroundRedrawReplayLocked() {
+		return
+	}
+	if _, _, ok := foregroundRedrawTemporarySize(width, height); !ok {
+		return
+	}
+	window.redrawForwardingBuffer = nil
+	window.redrawForwardingPaused = true
+	window.redrawForwardingGeneration += 1
+	windowID := window.id
+	generation := window.redrawForwardingGeneration
+	time.AfterFunc(foregroundRedrawForwardingPause, func() {
+		s.resumePausedAttachForwarding(windowID, generation)
+	})
+}
+
+func (s *muxServer) resumePausedAttachForwarding(
+	windowID string,
+	generation int,
+) {
+	var attach net.Conn
+	var buffered []byte
+	s.attachMu.Lock()
+	defer s.attachMu.Unlock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	if window == nil ||
+		window.closed ||
+		!window.redrawForwardingPaused ||
+		window.redrawForwardingGeneration != generation {
+		s.mu.Unlock()
+		return
+	}
+	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
+	window.redrawForwardingBuffer = nil
+	window.redrawForwardingPaused = false
+	if s.activeID == windowID {
+		attach = s.attachConn
+	}
+	s.mu.Unlock()
+	if len(buffered) > 0 {
+		s.mu.Lock()
+		shouldWrite := s.activeID == windowID && s.attachConn == attach
+		s.mu.Unlock()
+		if shouldWrite {
+			s.writeAttachLocked(attach, buffered)
+		}
+	}
+}
+
+func (w *muxWindow) foregroundProcessGroupLocked() int {
+	pgrp := foregroundProcessGroupForWindow(w)
+	if pgrp <= 0 {
+		return 0
+	}
+	w.foregroundPid = pgrp
+	return pgrp
+}
+
+func (w *muxWindow) modeReplayForAttachedTerminalLocked() []byte {
+	if w == nil || w.closed {
+		return nil
+	}
+	modes := terminalModePostReplaySequence(w)
+	cursor := cursorVisibilityReplaySequence(w.cursorVisibleForReplayLocked())
+	replay := make([]byte, 0, len(modes)+len(cursor))
+	replay = append(replay, modes...)
+	replay = append(replay, cursor...)
+	return replay
 }
 
 func (s *muxServer) activeReplayLocked() []byte {
@@ -1393,20 +3146,72 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
-	history := stripTerminalQueriesFromReplay(window.history)
-	history = trimReplayHistoryForAttach(history)
+	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
+	if window.usesForegroundRedrawReplayLocked() {
+		history = nil
+	} else {
+		history = trimReplayHistoryForAttach(history)
+	}
 	title := terminalTitleReplaySequence(window)
+	preModes := terminalModePreReplaySequence(window)
+	preHistoryClear := terminalPreHistoryClearSequence(window)
+	postModes := terminalModePostReplaySequence(window)
+	postParser := []byte(terminalParserResetSequence)
+	postCharset := []byte(terminalCharacterSetResetSequence)
 	cursor := cursorVisibilityReplaySequence(window.cursorVisibleForReplayLocked())
 	replay := make(
 		[]byte,
 		0,
-		len(activeWindowReplayPrefix)+len(title)+len(history)+len(cursor),
+		len(activeWindowReplayPrefix)+len(title)+len(preModes)+
+			len(preHistoryClear)+len(history)+
+			len(postParser)+len(postModes)+len(postCharset)+len(cursor),
 	)
 	replay = append(replay, activeWindowReplayPrefix...)
 	replay = append(replay, title...)
+	replay = append(replay, preModes...)
+	replay = append(replay, preHistoryClear...)
 	replay = append(replay, history...)
+	replay = append(replay, postParser...)
+	replay = append(replay, postModes...)
+	replay = append(replay, postCharset...)
 	replay = append(replay, cursor...)
 	return replay
+}
+
+func (w *muxWindow) usesForegroundRedrawReplayLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.alternateScreenModeActiveLocked() || w.agentToolLocked() != ""
+}
+
+func (w *muxWindow) alternateScreenModeActiveLocked() bool {
+	return w.privateModes["1047"] || w.privateModes["1049"]
+}
+
+func (w *muxWindow) reportsMouseWheelLocked() bool {
+	if w == nil {
+		return false
+	}
+	return w.privateModes["1000"] ||
+		w.privateModes["1002"] ||
+		w.privateModes["1003"]
+}
+
+func copyPrivateModes(privateModes map[string]bool) map[string]bool {
+	if len(privateModes) == 0 {
+		return nil
+	}
+	copied := make(map[string]bool, len(privateModes))
+	for mode, enabled := range privateModes {
+		if _, ok := trackedPrivateModes[mode]; ok {
+			copied[mode] = enabled
+		}
+	}
+	if len(copied) == 0 {
+		return nil
+	}
+	return copied
 }
 
 func terminalTitleReplaySequence(window *muxWindow) []byte {
@@ -1427,13 +3232,134 @@ func sanitizeTerminalTitle(value string) string {
 	}, strings.TrimSpace(value))
 }
 
+func terminalModePreReplaySequence(window *muxWindow) []byte {
+	if window == nil {
+		return nil
+	}
+	return terminalModeReplaySequence(window, preReplayPrivateModes, true)
+}
+
+func terminalPreHistoryClearSequence(window *muxWindow) []byte {
+	if window == nil || !window.alternateScreenModeActiveLocked() {
+		return nil
+	}
+	return []byte(terminalScreenClearSequence)
+}
+
+func terminalModePostReplaySequence(window *muxWindow) []byte {
+	if window == nil {
+		return nil
+	}
+	return terminalModeReplaySequence(window, postReplayPrivateModes, true)
+}
+
+func terminalModeReplaySequence(
+	window *muxWindow,
+	privateModes []string,
+	includeApplicationKeypad bool,
+) []byte {
+	var replay []byte
+	for _, mode := range privateModes {
+		if groupedReplayPrivateMode(mode) {
+			continue
+		}
+		enabled, ok := window.privateModes[mode]
+		if !ok {
+			continue
+		}
+		if mode == "1004" && enabled && !window.focusModeActiveLocked() {
+			continue
+		}
+		replay = appendPrivateModeReplay(replay, mode, enabled)
+	}
+	for _, group := range groupedReplayPrivateModes {
+		replay = appendGroupedPrivateModeReplay(replay, window, privateModes, group)
+	}
+	if window.insertModeKnown {
+		if window.insertModeEnabled {
+			replay = append(replay, "\x1b[4h"...)
+		} else {
+			replay = append(replay, "\x1b[4l"...)
+		}
+	}
+	if includeApplicationKeypad && window.applicationKeypadKnown {
+		if window.applicationKeypadEnabled {
+			replay = append(replay, "\x1b="...)
+		} else {
+			replay = append(replay, "\x1b>"...)
+		}
+	}
+	return replay
+}
+
+func appendGroupedPrivateModeReplay(
+	replay []byte,
+	window *muxWindow,
+	privateModes []string,
+	group []string,
+) []byte {
+	for _, mode := range group {
+		if !containsString(privateModes, mode) {
+			continue
+		}
+		if enabled, ok := window.privateModes[mode]; ok && !enabled {
+			replay = appendPrivateModeReplay(replay, mode, false)
+		}
+	}
+	for _, mode := range group {
+		if !containsString(privateModes, mode) {
+			continue
+		}
+		if enabled, ok := window.privateModes[mode]; ok && enabled {
+			replay = appendPrivateModeReplay(replay, mode, true)
+		}
+	}
+	return replay
+}
+
+func appendPrivateModeReplay(replay []byte, mode string, enabled bool) []byte {
+	final := byte('l')
+	if enabled {
+		final = 'h'
+	}
+	replay = append(replay, "\x1b[?"...)
+	replay = append(replay, mode...)
+	replay = append(replay, final)
+	return replay
+}
+
+func groupedReplayPrivateMode(mode string) bool {
+	for _, group := range groupedReplayPrivateModes {
+		if containsString(group, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
 	if conn == nil || len(data) == 0 {
 		return
 	}
 	s.attachMu.Lock()
-	_, err := conn.Write(data)
+	s.writeAttachLocked(conn, data)
 	s.attachMu.Unlock()
+}
+
+func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) {
+	if conn == nil || len(data) == 0 {
+		return
+	}
+	_, err := conn.Write(data)
 	if err != nil {
 		s.mu.Lock()
 		if s.attachConn == conn {
@@ -1443,34 +3369,99 @@ func (s *muxServer) writeAttach(conn net.Conn, data []byte) {
 	}
 }
 
+func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
+	if conn == nil || len(data) == 0 {
+		return
+	}
+	s.attachMu.Lock()
+	s.mu.Lock()
+	shouldWrite := s.activeID == windowID && s.attachConn == conn
+	s.mu.Unlock()
+	if shouldWrite {
+		s.writeAttachLocked(conn, data)
+	}
+	s.attachMu.Unlock()
+}
+
 func (s *muxServer) writeActive(data []byte) {
 	_ = s.writeWindow(s.activeWindowID(), data)
 }
 
-func (s *muxServer) sendThemeHint(data string) bool {
+func (s *muxServer) writeActiveFromAttach(data []byte) {
+	if len(data) == 0 {
+		return
+	}
 	s.mu.Lock()
+	windowID := s.activeID
+	window := s.windowByIDLocked(windowID)
+	stripFocusReports := window == nil || !window.focusModeActiveLocked()
+	s.mu.Unlock()
+	if stripFocusReports {
+		data = stripFocusReportsFromAttachInput(data)
+		if len(data) == 0 {
+			return
+		}
+	}
+	_ = s.writeWindow(windowID, data)
+}
+
+func (s *muxServer) sendThemeHint(data string) bool {
+	themeHint := themeHintDataFromString(data)
+	var themeHintData []byte
+	s.mu.Lock()
+	if len(themeHint) > 0 {
+		s.themeHint = append(s.themeHint[:0], themeHint...)
+	}
 	window := s.windowByIDLocked(s.activeID)
 	if window == nil || window.closed {
 		s.mu.Unlock()
 		return false
 	}
 	window.refreshProcessMetadataLocked(time.Now())
-	if !window.supportsThemeHintLocked() {
+	sendFocusTransition := window.themeHintFocusTransitionLocked()
+	sendFocusRefresh := false
+	if len(themeHint) > 0 {
+		themeHintData = window.themeHintRefreshDataLocked(themeHint)
+		sendFocusRefresh = !sendFocusTransition && window.themeHintFocusRefreshLocked()
+	}
+	if len(themeHintData) == 0 && !sendFocusTransition && !sendFocusRefresh {
 		s.mu.Unlock()
 		return false
 	}
 	windowID := window.id
 	s.mu.Unlock()
 
-	if data != "" {
-		return s.writeWindow(windowID, []byte(data)) == nil
+	if len(themeHintData) > 0 {
+		if err := s.writeWindow(windowID, themeHintData); err != nil {
+			return false
+		}
 	}
+	if sendFocusTransition {
+		s.sendFocusTransition(windowID)
+	} else if sendFocusRefresh {
+		s.sendFocusRefresh(windowID)
+	}
+	return true
+}
+
+func themeHintDataFromString(data string) []byte {
+	data = strings.TrimSpace(data)
+	if data == "" || len(data) > themeHintLimitBytes {
+		return nil
+	}
+	return []byte(data)
+}
+
+func (s *muxServer) sendFocusTransition(windowID string) {
 	go func() {
 		_ = s.writeWindow(windowID, []byte("\x1b[O"))
 		time.Sleep(50 * time.Millisecond)
 		_ = s.writeWindow(windowID, []byte("\x1b[I"))
 	}()
-	return true
+}
+
+func (s *muxServer) sendFocusRefresh(windowID string) {
+	_ = s.writeWindow(windowID, []byte("\x1b[I"))
 }
 
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
@@ -1520,18 +3511,44 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
-	if len(chunk) >= windowHistoryLimitBytes {
+	limit := w.historyLimitLocked()
+	if len(chunk) >= limit {
 		w.history = append(
 			w.history[:0],
-			chunk[len(chunk)-windowHistoryLimitBytes:]...,
+			chunk[len(chunk)-limit:]...,
 		)
 		return
 	}
-	w.history = append(w.history, chunk...)
-	if overflow := len(w.history) - windowHistoryLimitBytes; overflow > 0 {
-		copy(w.history, w.history[overflow:])
-		w.history = w.history[:windowHistoryLimitBytes]
+	// Grow the underlying buffer to 2x the limit so trims are amortized:
+	// each byte gets shifted at most once before falling out of history.
+	if cap(w.history) < 2*limit {
+		grown := make([]byte, len(w.history), 2*limit)
+		copy(grown, w.history)
+		w.history = grown
 	}
+	w.history = append(w.history, chunk...)
+	if len(w.history) > 2*limit {
+		// copy() handles the overlap correctly because src is after dst.
+		n := copy(w.history, w.history[len(w.history)-limit:])
+		w.history = w.history[:n]
+	}
+}
+
+func (w *muxWindow) historyTailLocked() []byte {
+	limit := w.historyLimitLocked()
+	if len(w.history) <= limit {
+		return w.history
+	}
+	start := len(w.history) - limit
+	start = advanceToUtf8Boundary(w.history, start)
+	return w.history[start:]
+}
+
+func (w *muxWindow) historyLimitLocked() int {
+	if w.usesForegroundRedrawReplayLocked() {
+		return windowFullReplayHistoryLimitBytes
+	}
+	return windowHistoryLimitBytes
 }
 
 func trimReplayHistoryForAttach(history []byte) []byte {
@@ -1549,11 +3566,171 @@ func trimReplayHistoryForAttach(history []byte) []byte {
 			return history[i:]
 		}
 	}
+	start = advanceToUtf8Boundary(history, start)
 	return history[start:]
+}
+
+// advanceToUtf8Boundary moves start forward past any UTF-8 continuation bytes
+// (0b10xxxxxx) so the returned slice begins on a valid UTF-8 starter. This
+// prevents replay payloads from beginning in the middle of a multi-byte
+// character, which would force strict UTF-8 decoders (such as Dart's
+// default Utf8Decoder) to throw and drop the chunk that contained the next
+// redraw frame.
+func advanceToUtf8Boundary(data []byte, start int) int {
+	if start < 0 {
+		start = 0
+	}
+	limit := start + 4
+	if limit > len(data) {
+		limit = len(data)
+	}
+	for start < limit && data[start]&0xC0 == 0x80 {
+		start++
+	}
+	return start
+}
+
+func stripFocusReportsFromAttachInput(data []byte) []byte {
+	if len(data) < 3 || !bytes.Contains(data, []byte("\x1b[")) {
+		return data
+	}
+	var output []byte
+	copyStart := 0
+	for i := 0; i+2 < len(data); i++ {
+		if data[i] != '\x1b' || data[i+1] != '[' ||
+			(data[i+2] != 'I' && data[i+2] != 'O') {
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-3)
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = i + 3
+		i += 2
+	}
+	if output == nil {
+		return data
+	}
+	output = append(output, data[copyStart:]...)
+	return output
 }
 
 func containsTerminalBell(data []byte) bool {
 	return bytes.IndexByte(data, '\a') >= 0
+}
+
+// stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
+// queries and OSC 4 palette queries from chunk when MonkeyMux can answer them
+// locally from hint. The daemon already writes the cached responses directly
+// to the window PTY in handleWindowOutput, so forwarding the same queries to
+// the SSH client would produce a duplicate reply. That duplicate would travel
+// back through the attach socket as keyboard input and surface inside the
+// active TUI as literal text (the user-visible "spew" bug). Queries we cannot
+// answer (no cached response for every queried key) are left in place so the
+// client can still reply.
+func stripLocallyAnsweredThemeQueries(chunk []byte, hint []byte) []byte {
+	window := &muxWindow{}
+	output := window.stripLocallyAnsweredThemeQueriesLocked(chunk, hint)
+	if len(window.attachOscBuffer) == 0 {
+		return output
+	}
+	output = append(output, window.attachOscBuffer...)
+	return output
+}
+
+func (w *muxWindow) stripLocallyAnsweredThemeQueriesLocked(chunk []byte, hint []byte) []byte {
+	if len(chunk) == 0 && len(w.attachOscBuffer) == 0 {
+		return chunk
+	}
+	data := chunk
+	if len(w.attachOscBuffer) > 0 {
+		combined := make([]byte, 0, len(w.attachOscBuffer)+len(chunk))
+		combined = append(combined, w.attachOscBuffer...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.attachOscBuffer = nil
+	}
+
+	var responses map[string][]byte
+	answerable := func(queryKeys []string) bool {
+		if len(queryKeys) == 0 || len(hint) == 0 {
+			return false
+		}
+		if responses == nil {
+			responses = themeHintResponseMap(hint)
+			if len(responses) == 0 {
+				return false
+			}
+		}
+		for _, key := range queryKeys {
+			if len(responses[key]) == 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	var output []byte
+	copyStart := 0
+	for i := 0; i < len(data); {
+		if data[i] != '\x1b' {
+			i++
+			continue
+		}
+		if i+1 >= len(data) {
+			if w.storeAttachPartialOscLocked(data[i:]) {
+				if output == nil {
+					return data[:i]
+				}
+				output = append(output, data[copyStart:i]...)
+				return output
+			}
+			break
+		}
+		if data[i+1] != ']' {
+			i++
+			continue
+		}
+		payloadStart := i + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			if w.storeAttachPartialOscLocked(data[i:]) {
+				if output == nil {
+					return data[:i]
+				}
+				output = append(output, data[copyStart:i]...)
+				return output
+			}
+			break
+		}
+		sequenceEnd := payloadStart + payloadEnd + terminatorLength
+		payload := data[payloadStart : payloadStart+payloadEnd]
+		queryKeys := themeQueryKeysFromOscPayload(string(payload))
+		if !answerable(queryKeys) {
+			i = sequenceEnd
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-(sequenceEnd-i))
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = sequenceEnd
+		i = sequenceEnd
+	}
+	if output == nil {
+		return data
+	}
+	output = append(output, data[copyStart:]...)
+	return output
+}
+
+func (w *muxWindow) storeAttachPartialOscLocked(data []byte) bool {
+	if len(data) > oscBufferLimitBytes {
+		w.attachOscBuffer = nil
+		return false
+	}
+	w.attachOscBuffer = append(w.attachOscBuffer[:0], data...)
+	return true
 }
 
 func stripTerminalQueriesFromReplay(data []byte) []byte {
@@ -1562,42 +3739,48 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	}
 
 	var output []byte
+	copyStart := 0
 	for i := 0; i < len(data); {
 		if data[i] != '\x1b' || i+1 >= len(data) {
-			output = append(output, data[i])
 			i++
 			continue
 		}
 		next := data[i+1]
+		stripEnd := -1
 		if next == '[' {
 			end := csiSequenceEnd(data, i+2)
 			if end < 0 {
-				output = append(output, data[i:]...)
 				break
 			}
 			sequence := data[i : end+1]
 			if isReplayUnsafeCsiQuery(sequence) {
-				i = end + 1
-				continue
+				stripEnd = end + 1
 			}
 		} else if next == ']' {
 			end, terminatorLength, ok := findOscTerminator(data[i+2:])
 			if !ok {
-				output = append(output, data[i:]...)
 				break
 			}
 			payload := data[i+2 : i+2+end]
 			if isReplayUnsafeOscQuery(payload) {
-				i += 2 + end + terminatorLength
-				continue
+				stripEnd = i + 2 + end + terminatorLength
 			}
 		}
-		output = append(output, data[i])
-		i++
+		if stripEnd < 0 {
+			i++
+			continue
+		}
+		if output == nil {
+			output = make([]byte, 0, len(data)-(stripEnd-i))
+		}
+		output = append(output, data[copyStart:i]...)
+		copyStart = stripEnd
+		i = stripEnd
 	}
 	if output == nil {
 		return data
 	}
+	output = append(output, data[copyStart:]...)
 	return output
 }
 
@@ -1704,18 +3887,135 @@ func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
 	}
 	w.lastProcessMetadataRefresh = now
 
-	pgrp, err := unix.IoctlGetInt(int(w.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
-		return
-	}
-	w.foregroundPid = pgrp
+	pgrp := w.foregroundProcessGroupLocked()
 	if command := commandNameForProcessGroup(pgrp); command != "" {
 		w.foregroundCommand = command
 	}
 }
 
 func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.focusModeEnabled && w.agentToolLocked() != ""
+	return w.themeHintFocusTransitionLocked() ||
+		w.themeHintFocusRefreshLocked() ||
+		len(w.themeHintRefreshKeysLocked()) > 0
+}
+
+// themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
+// should re-answer when refreshing the cached theme hint.
+//
+// Do not infer safety from a previous OSC color query alone: many TUIs
+// query OSC 10/11 once at startup, react to the first response, and then
+// never expect another one. Any follow-up push (every reconnect, every
+// brightness change, every app-resume) surfaces as literal `]11;rgb:...`
+// text in their input composer (observed with Nous Hermes, Codex, and
+// Claude Code). Synthetic focus-out/focus-in transitions can cause the
+// same kind of prompt/composer pollution.
+//
+// DEC private mode 2031 is the opt-in signal for color-scheme update
+// reports. Only windows that currently have that mode enabled get
+// refreshed replies for previously observed color queries. Focus-aware TUIs
+// get a FocusIn nudge so they can re-query colors through the normal path.
+// Known agent TUIs also get the default background response they already
+// tolerate through the tmux refresh path.
+//
+// The contractually-correct live-query response path in
+// handleWindowOutput still answers OSC 10/11/4/17/19 queries the
+// foreground process actually emits. Other focus-aware programs can re-query
+// after the FocusIn nudge instead of receiving unsolicited OSC bytes.
+func (w *muxWindow) themeHintRefreshKeysLocked() []string {
+	if !w.themeRefreshModeActiveLocked() {
+		return nil
+	}
+	return w.activeThemeColorQueryKeysLocked()
+}
+
+func (w *muxWindow) themeHintFocusTransitionLocked() bool {
+	return (w.themeRefreshModeActiveLocked() && w.focusModeActiveLocked()) ||
+		w.agentThemeHintFocusTransitionLocked()
+}
+
+func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
+	var refreshKeys []string
+	refreshKeys = appendThemeQueryKeys(refreshKeys, w.themeHintRefreshKeysLocked())
+	refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
+	themeHintData := themeHintResponsesForKeys(themeHint, refreshKeys)
+	if w.agentThemeHintModeReportLocked() {
+		themeHintData = append(terminalThemeModeReportFromHint(themeHint), themeHintData...)
+	}
+	return themeHintData
+}
+
+func (w *muxWindow) themeHintFocusRefreshLocked() bool {
+	return w.focusModeActiveLocked()
+}
+
+func (w *muxWindow) agentThemeHintFocusTransitionLocked() bool {
+	if !w.agentThemeHintRefreshLocked() {
+		return false
+	}
+	switch w.agentToolLocked() {
+	case "claude", "gemini", "opencode", "antigravity":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *muxWindow) agentThemeHintRefreshKeysLocked() []string {
+	if !w.agentThemeHintRefreshLocked() {
+		return nil
+	}
+	return []string{"11"}
+}
+
+func (w *muxWindow) agentThemeHintModeReportLocked() bool {
+	return w.agentThemeHintRefreshLocked() && w.agentToolLocked() == "copilot"
+}
+
+func (w *muxWindow) agentThemeHintRefreshLocked() bool {
+	return w.focusModeActiveLocked() && w.agentToolLocked() != ""
+}
+
+func (w *muxWindow) themeRefreshModeActiveLocked() bool {
+	if w == nil || !w.privateModes["2031"] {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.themeRefreshModeProcessID <= 0 ||
+		activePid <= 0 ||
+		w.themeRefreshModeProcessID == activePid
+}
+
+func (w *muxWindow) activeThemeColorQueryKeysLocked() []string {
+	activePid := w.activeForegroundPidLocked()
+	if w.themeColorQueryPid <= 0 ||
+		activePid <= 0 ||
+		w.themeColorQueryPid != activePid ||
+		len(w.themeColorQueryKeys) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(w.themeColorQueryKeys))
+	for key := range w.themeColorQueryKeys {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (w *muxWindow) activeForegroundPidLocked() int {
+	if w.pty == nil {
+		return w.metadataProcessIDLocked()
+	}
+	return w.foregroundProcessGroupLocked()
+}
+
+func (w *muxWindow) focusModeActiveLocked() bool {
+	if w == nil || !w.focusModeEnabled {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.focusModeProcessID <= 0 ||
+		activePid <= 0 ||
+		w.focusModeProcessID == activePid
 }
 
 func commandNameForProcessGroup(pgrp int) string {
@@ -1734,26 +4034,22 @@ func commandNameForProcessGroup(pgrp int) string {
 		return fallback
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-eo", "pid=,pgid=,comm=,args=").Output()
-	if err != nil || ctx.Err() != nil {
+	processes := cachedProcessTable(time.Now())
+	if len(processes) == 0 {
 		return fallback
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 || fields[1] != strconv.Itoa(pgrp) {
+	for _, process := range processes {
+		if process.pgid != pgrp {
 			continue
 		}
-		command := commandNameFromProcessFields(fields[2], strings.Join(fields[3:], " "))
+		command := commandNameFromProcessFields(process.comm, process.args)
 		if command == "" {
 			continue
 		}
 		if agentToolFromCommandName(command) != "" {
 			return command
 		}
-		if fields[0] == strconv.Itoa(pgrp) &&
-			!isGenericRuntimeCommandName(command) {
+		if process.pid == pgrp && !isGenericRuntimeCommandName(command) {
 			return command
 		}
 		if fallback == "" ||
@@ -1866,6 +4162,93 @@ func agentToolFromCommandName(command string) string {
 		return "opencode"
 	case "gemini", "gemini-cli":
 		return "gemini"
+	case "agy", "antigravity", "antigravity-cli":
+		return "antigravity"
+	default:
+		return ""
+	}
+}
+
+func agentLaunchCommand(tool string, startInYoloMode bool) string {
+	switch tool {
+	case "claude":
+		if startInYoloMode {
+			return "claude --dangerously-skip-permissions"
+		}
+		return "claude"
+	case "copilot":
+		if startInYoloMode {
+			return "copilot --yolo"
+		}
+		return "copilot"
+	case "codex":
+		if startInYoloMode {
+			return "codex --yolo"
+		}
+		return "codex"
+	case "opencode":
+		if startInYoloMode {
+			return "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " opencode"
+		}
+		return "opencode"
+	case "gemini":
+		if startInYoloMode {
+			return "gemini --yolo"
+		}
+		return "gemini"
+	case "antigravity":
+		if startInYoloMode {
+			return "agy --dangerously-skip-permissions"
+		}
+		return "agy"
+	default:
+		return ""
+	}
+}
+
+func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) string {
+	quotedSessionID := shellQuote(sessionID)
+	switch tool {
+	case "claude":
+		if startInYoloMode {
+			return "claude --dangerously-skip-permissions --resume " + quotedSessionID
+		}
+		return "claude --resume " + quotedSessionID
+	case "copilot":
+		if startInYoloMode {
+			return "copilot --yolo --resume " + quotedSessionID
+		}
+		return "copilot --resume " + quotedSessionID
+	case "codex":
+		if startInYoloMode {
+			return "codex --yolo resume " + quotedSessionID
+		}
+		return "codex resume " + quotedSessionID
+	case "opencode":
+		commandPrefix := ""
+		if startInYoloMode {
+			commandPrefix = "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " "
+		}
+		if sessionID == "_continue" {
+			return commandPrefix + "opencode --continue"
+		}
+		return commandPrefix + "opencode --session " + quotedSessionID
+	case "gemini":
+		if startInYoloMode {
+			return "gemini --yolo --resume " + quotedSessionID
+		}
+		return "gemini --resume " + quotedSessionID
+	case "antigravity":
+		commandPrefix := ""
+		if startInYoloMode {
+			commandPrefix = "agy --dangerously-skip-permissions "
+		} else {
+			commandPrefix = "agy "
+		}
+		if sessionID == "_continue" {
+			return commandPrefix + "--continue"
+		}
+		return commandPrefix + "--conversation " + quotedSessionID
 	default:
 		return ""
 	}
@@ -1893,6 +4276,9 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "gemini" || normalized == "gemini cli" ||
 		strings.HasPrefix(normalized, "gemini cli "):
 		return "gemini"
+	case normalized == "agy" || normalized == "antigravity" ||
+		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
+		return "antigravity"
 	default:
 		return ""
 	}
@@ -1953,7 +4339,7 @@ func leadingShellToken(value string) string {
 	return fields[0]
 }
 
-func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
+func (w *muxWindow) observeTerminalModesLocked(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
@@ -1975,7 +4361,19 @@ func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
 			w.storePartialCsiLocked(data[escapeIndex:])
 			return
 		}
-		if data[escapeIndex+1] != '[' {
+		switch data[escapeIndex+1] {
+		case '[':
+		case '=':
+			w.applicationKeypadEnabled = true
+			w.applicationKeypadKnown = true
+			data = data[escapeIndex+2:]
+			continue
+		case '>':
+			w.applicationKeypadEnabled = false
+			w.applicationKeypadKnown = true
+			data = data[escapeIndex+2:]
+			continue
+		default:
 			data = data[escapeIndex+1:]
 			continue
 		}
@@ -1989,12 +4387,17 @@ func (w *muxWindow) observeCursorVisibilityLocked(chunk []byte) {
 		if final == 'h' || final == 'l' {
 			params := string(data[escapeIndex+2 : end])
 			enabled := final == 'h'
-			if csiPrivateModeEnabled(params, "25") {
-				w.cursorVisible = enabled
-				w.cursorVisibilityKnown = true
-			}
-			if csiPrivateModeEnabled(params, "1004") {
-				w.focusModeEnabled = enabled
+			if strings.HasPrefix(params, "?") {
+				for _, mode := range csiModeParams(strings.TrimPrefix(params, "?")) {
+					w.setPrivateModeLocked(mode, enabled)
+				}
+			} else {
+				for _, mode := range csiModeParams(params) {
+					if mode == "4" {
+						w.insertModeEnabled = enabled
+						w.insertModeKnown = true
+					}
+				}
 			}
 		}
 		data = data[end+1:]
@@ -2009,16 +4412,52 @@ func (w *muxWindow) storePartialCsiLocked(data []byte) {
 	w.csiBuffer = append(w.csiBuffer[:0], data...)
 }
 
-func csiPrivateModeEnabled(params string, mode string) bool {
-	if !strings.HasPrefix(params, "?") {
-		return false
+func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
+	if mode == "25" {
+		w.cursorVisible = enabled
+		w.cursorVisibilityKnown = true
+		return
 	}
-	for _, part := range strings.Split(strings.TrimPrefix(params, "?"), ";") {
-		if part == mode {
-			return true
+	if mode == "1004" {
+		w.focusModeEnabled = enabled
+		if enabled {
+			w.focusModeProcessID = w.activeForegroundPidLocked()
+		} else {
+			w.focusModeProcessID = 0
 		}
 	}
-	return false
+	if mode == "2031" {
+		if enabled {
+			w.themeRefreshModeProcessID = w.activeForegroundPidLocked()
+		} else {
+			w.themeRefreshModeProcessID = 0
+		}
+	}
+	if _, ok := trackedPrivateModes[mode]; !ok {
+		return
+	}
+	if w.privateModes == nil {
+		w.privateModes = map[string]bool{}
+	}
+	w.privateModes[mode] = enabled
+}
+
+func csiModeParams(params string) []string {
+	if params == "" {
+		return nil
+	}
+	parts := strings.Split(params, ";")
+	modes := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		mode, _, _ := strings.Cut(part, ":")
+		if mode != "" {
+			modes = append(modes, mode)
+		}
+	}
+	return modes
 }
 
 func (w *muxWindow) cursorVisibleForReplayLocked() bool {
@@ -2032,9 +4471,9 @@ func cursorVisibilityReplaySequence(visible bool) string {
 	return "\x1b[?25l"
 }
 
-func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
+func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) []string {
 	if len(chunk) == 0 {
-		return
+		return nil
 	}
 	data := chunk
 	if len(w.oscBuffer) > 0 {
@@ -2045,14 +4484,15 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
 		w.oscBuffer = nil
 	}
 
+	var observedThemeQueries []string
 	for len(data) > 0 {
 		escapeIndex := bytes.IndexByte(data, '\x1b')
 		if escapeIndex < 0 {
-			return
+			return observedThemeQueries
 		}
 		if escapeIndex+1 >= len(data) {
 			w.storePartialOscLocked(data[escapeIndex:])
-			return
+			return observedThemeQueries
 		}
 		if data[escapeIndex+1] != ']' {
 			data = data[escapeIndex+1:]
@@ -2063,11 +4503,17 @@ func (w *muxWindow) observeTerminalMetadataLocked(chunk []byte) {
 		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
 		if !ok {
 			w.storePartialOscLocked(data[escapeIndex:])
-			return
+			return observedThemeQueries
 		}
-		w.applyOscPayloadLocked(string(data[payloadStart : payloadStart+payloadEnd]))
+		observedThemeQueries = appendThemeQueryKeys(
+			observedThemeQueries,
+			w.applyOscPayloadLocked(
+				string(data[payloadStart:payloadStart+payloadEnd]),
+			),
+		)
 		data = data[payloadStart+payloadEnd+terminatorLength:]
 	}
+	return observedThemeQueries
 }
 
 func findOscTerminator(data []byte) (payloadEnd int, terminatorLength int, ok bool) {
@@ -2095,25 +4541,190 @@ func (w *muxWindow) storePartialOscLocked(data []byte) {
 	w.oscBuffer = append(w.oscBuffer[:0], data...)
 }
 
-func (w *muxWindow) applyOscPayloadLocked(payload string) {
+func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 	code, value, ok := strings.Cut(payload, ";")
 	if !ok {
-		return
+		return nil
 	}
 	switch code {
 	case "0", "1", "2":
 		title := cleanTerminalTitle(value)
 		if title == "" {
-			return
+			return nil
 		}
 		w.paneTitle = title
-		w.name = title
 	case "7":
 		path := pathFromOsc7(value)
 		if path != "" {
 			w.cwd = path
 		}
 	}
+	queryKeys := themeQueryKeysFromOscPayload(payload)
+	if len(queryKeys) == 0 {
+		return nil
+	}
+	queryPid := w.activeForegroundPidLocked()
+	if queryPid <= 0 {
+		return nil
+	}
+	if w.themeColorQueryPid != queryPid {
+		w.themeColorQueryKeys = nil
+	}
+	w.themeColorQueryPid = queryPid
+	if w.themeColorQueryKeys == nil {
+		w.themeColorQueryKeys = map[string]bool{}
+	}
+	for _, key := range queryKeys {
+		w.themeColorQueryKeys[key] = true
+	}
+	return queryKeys
+}
+
+func appendThemeQueryKeys(existing []string, keys []string) []string {
+	if len(keys) == 0 {
+		return existing
+	}
+	seen := make(map[string]bool, len(existing)+len(keys))
+	for _, key := range existing {
+		seen[key] = true
+	}
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		existing = append(existing, key)
+	}
+	return existing
+}
+
+func themeQueryKeysFromOscPayload(payload string) []string {
+	parts := strings.Split(payload, ";")
+	if len(parts) < 2 {
+		return nil
+	}
+	code := strings.TrimSpace(parts[0])
+	args := parts[1:]
+	switch code {
+	case "4":
+		return paletteThemeQueryKeys(args)
+	case "10", "11", "12", "17", "19":
+		if strings.TrimSpace(args[0]) == "?" {
+			return []string{code}
+		}
+	}
+	return nil
+}
+
+func paletteThemeQueryKeys(args []string) []string {
+	var keys []string
+	for i := 0; i+1 < len(args); i += 2 {
+		if strings.TrimSpace(args[i+1]) != "?" {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(args[i]))
+		if err != nil || index < 0 || index > 255 {
+			continue
+		}
+		keys = append(keys, fmt.Sprintf("4;%d", index))
+	}
+	return keys
+}
+
+func themeHintResponsesForKeys(hint []byte, keys []string) []byte {
+	if len(hint) == 0 || len(keys) == 0 {
+		return nil
+	}
+	responses := themeHintResponseMap(hint)
+	if len(responses) == 0 {
+		return nil
+	}
+	var output []byte
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		response := responses[key]
+		if len(response) == 0 {
+			continue
+		}
+		output = append(output, response...)
+	}
+	return output
+}
+
+func terminalThemeModeReportFromHint(hint []byte) []byte {
+	const darkReport = "\x1b[?997;1n"
+	const lightReport = "\x1b[?997;2n"
+	darkIndex := bytes.Index(hint, []byte(darkReport))
+	lightIndex := bytes.Index(hint, []byte(lightReport))
+	if darkIndex < 0 && lightIndex < 0 {
+		return nil
+	}
+	if lightIndex < 0 || (darkIndex >= 0 && darkIndex < lightIndex) {
+		return []byte(darkReport)
+	}
+	return []byte(lightReport)
+}
+
+func themeHintResponseMap(hint []byte) map[string][]byte {
+	responses := map[string][]byte{}
+	data := hint
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return responses
+		}
+		if escapeIndex+1 >= len(data) {
+			return responses
+		}
+		if data[escapeIndex+1] != ']' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+
+		payloadStart := escapeIndex + 2
+		payloadEnd, terminatorLength, ok := findOscTerminator(data[payloadStart:])
+		if !ok {
+			return responses
+		}
+		sequenceEnd := payloadStart + payloadEnd + terminatorLength
+		key := themeResponseKeyFromOscPayload(
+			string(data[payloadStart : payloadStart+payloadEnd]),
+		)
+		if key != "" {
+			responses[key] = append([]byte(nil), data[escapeIndex:sequenceEnd]...)
+		}
+		data = data[sequenceEnd:]
+	}
+	return responses
+}
+
+func themeResponseKeyFromOscPayload(payload string) string {
+	parts := strings.Split(payload, ";")
+	if len(parts) < 2 {
+		return ""
+	}
+	code := strings.TrimSpace(parts[0])
+	switch code {
+	case "4":
+		if len(parts) < 3 {
+			return ""
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || index < 0 || index > 255 {
+			return ""
+		}
+		return fmt.Sprintf("4;%d", index)
+	case "10", "11", "12", "17", "19":
+		if strings.TrimSpace(parts[1]) == "?" {
+			return ""
+		}
+		return code
+	}
+	return ""
 }
 
 func cleanTerminalTitle(value string) string {
@@ -2244,12 +4855,12 @@ func promptForServerUpdate(
 	if status.supportsCapability("shutdown") {
 		fmt.Fprint(
 			writer,
-			"Update now? This will close existing MonkeyMux windows for this session. [y/N] ",
+			"Update now? MonkeyMux will try to restore existing windows in the new helper. [y/N] ",
 		)
 	} else {
 		fmt.Fprint(
 			writer,
-			"Update now? This old helper cannot close itself; updating may abandon existing MonkeyMux windows. [y/N] ",
+			"Update now? This old helper cannot close itself; MonkeyMux will try to restore windows but may abandon the old ones. [y/N] ",
 		)
 	}
 	answer, err := bufio.NewReader(reader).ReadString('\n')
@@ -2385,6 +4996,57 @@ func inheritedEnvironment(base []string) []string {
 	return result
 }
 
+func terminalEnvironment(base []string) []string {
+	env := inheritedEnvironment(base)
+	env = appendEnvironmentDefault(env, "TERM", "xterm-256color", terminalTermIsUsable)
+	env = appendEnvironmentDefault(env, "COLORTERM", "truecolor", terminalColorTermIsTrueColor)
+	return env
+}
+
+func appendEnvironmentDefault(
+	env []string,
+	key string,
+	value string,
+	valid func(string) bool,
+) []string {
+	prefix := key + "="
+	defaultEntry := prefix + value
+	replacement := defaultEntry
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) && valid(strings.TrimPrefix(entry, prefix)) {
+			replacement = entry
+			break
+		}
+	}
+
+	result := make([]string, 0, len(env)+1)
+	inserted := false
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+			continue
+		}
+		if !inserted {
+			result = append(result, replacement)
+			inserted = true
+		}
+	}
+	if !inserted {
+		result = append(result, defaultEntry)
+	}
+	return result
+}
+
+func terminalColorTermIsTrueColor(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized == "truecolor" || normalized == "24bit"
+}
+
+func terminalTermIsUsable(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized != "" && normalized != "dumb"
+}
+
 func expandHomePath(path string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {
 		return path, nil
@@ -2419,6 +5081,10 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func terminalSize() (int, int) {
@@ -2521,6 +5187,15 @@ func dialSession(session string) (net.Conn, error) {
 
 func ptrWindowSnapshot(snapshot windowSnapshot) *windowSnapshot {
 	return &snapshot
+}
+
+func snapshotByID(snapshots []windowSnapshot, id string) *windowSnapshot {
+	for i := range snapshots {
+		if snapshots[i].ID == id {
+			return &snapshots[i]
+		}
+	}
+	return nil
 }
 
 func fatal(err error) {

@@ -83,6 +83,7 @@ const _knownDiscoveredSessionTools = <String>[
   'Codex',
   'Gemini CLI',
   'OpenCode',
+  'Antigravity',
 ];
 
 /// Orders discovered-session providers for UI rendering in a stable list.
@@ -305,6 +306,14 @@ bool _isLikelyToolStateWorkingDirectory(String directory) =>
     directory.contains('/.gemini/') ||
     directory.endsWith('/.local/share/opencode') ||
     directory.contains('/.local/share/opencode/') ||
+    directory.endsWith('/.antigravity') ||
+    directory.contains('/.antigravity/') ||
+    directory.endsWith('/.antigravitycli') ||
+    directory.contains('/.antigravitycli/') ||
+    directory.endsWith('/.agy') ||
+    directory.contains('/.agy/') ||
+    directory.endsWith('/.agycli') ||
+    directory.contains('/.agycli/') ||
     directory.startsWith('/tmp/') ||
     directory.startsWith('/private/tmp/') ||
     directory.startsWith('/var/folders/');
@@ -610,6 +619,137 @@ parseClaudeSessionMetadata(String raw) {
     agentName: agentName,
     lastPrompt: lastPrompt,
     userSummary: userSummary,
+    parsedAny: parsedAny,
+  );
+}
+
+/// Parses Antigravity session metadata from a saved session JSON file.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+parseAntigravitySessionMetadata(String raw) {
+  final decoded = _tryDecodeJsonObject(raw);
+  if (decoded == null) {
+    return _parsePartialAntigravitySessionMetadata(raw);
+  }
+
+  final sessionId =
+      _readStringField(decoded, 'id') ?? _readStringField(decoded, 'sessionId');
+  final summary =
+      _readStringField(decoded, 'display') ??
+      _readStringField(decoded, 'summary') ??
+      _readStringField(decoded, 'name');
+
+  var workingDirectory =
+      _readStringField(decoded, 'workingDirectory') ??
+      _readStringField(decoded, 'cwd');
+
+  if (workingDirectory == null) {
+    final projectResources = _readMapField(decoded, 'projectResources');
+    final resources = _readListField(projectResources, 'resources');
+    if (resources != null) {
+      for (final resource in resources) {
+        if (resource is Map) {
+          final resourceMap = resource.map((k, v) => MapEntry('$k', v));
+          final gitFolder = _readMapField(resourceMap, 'gitFolder');
+          final folderUriStr = _readStringField(gitFolder, 'folderUri');
+          if (folderUriStr != null) {
+            try {
+              final uri = Uri.tryParse(folderUriStr);
+              if (uri != null && uri.isScheme('file')) {
+                workingDirectory = uri.toFilePath();
+                break;
+              }
+            } on Object {
+              // Ignore uri parsing errors
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (workingDirectory == null && summary != null && summary.startsWith('/')) {
+    workingDirectory = summary;
+  }
+
+  final updatedAt =
+      _parseDateTimeValue(decoded['updatedAt']) ??
+      _parseDateTimeValue(decoded['lastActive']);
+
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      workingDirectory != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parsedAny: parsedAny,
+  );
+}
+
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+_parsePartialAntigravitySessionMetadata(String raw) {
+  final sessionId =
+      _readJsonStringFromRaw(raw, 'id') ??
+      _readJsonStringFromRaw(raw, 'sessionId');
+  final summary =
+      _readJsonStringFromRaw(raw, 'display') ??
+      _readJsonStringFromRaw(raw, 'summary') ??
+      _readJsonStringFromRaw(raw, 'name');
+
+  var workingDirectory =
+      _readJsonStringFromRaw(raw, 'workingDirectory') ??
+      _readJsonStringFromRaw(raw, 'cwd');
+
+  if (workingDirectory == null) {
+    final folderUriStr = _readJsonStringFromRaw(raw, 'folderUri');
+    if (folderUriStr != null) {
+      try {
+        final uri = Uri.tryParse(folderUriStr);
+        if (uri != null && uri.isScheme('file')) {
+          workingDirectory = uri.toFilePath();
+        }
+      } on Object {
+        // Ignore uri parsing errors
+      }
+    }
+  }
+
+  if (workingDirectory == null && summary != null && summary.startsWith('/')) {
+    workingDirectory = summary;
+  }
+
+  final updatedAt =
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'updatedAt')) ??
+      _parseDateTimeValue(_readJsonStringFromRaw(raw, 'lastActive'));
+
+  final parsedAny =
+      sessionId != null ||
+      summary != null ||
+      workingDirectory != null ||
+      updatedAt != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
     parsedAny: parsedAny,
   );
 }
@@ -1461,6 +1601,13 @@ class AgentSessionDiscoveryService {
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
+            _discoverAntigravitySessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
           ]
         : [
             _discoverSessionsForTool(
@@ -1505,6 +1652,12 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Claude Code' => _discoverClaudeSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Antigravity' => _discoverAntigravitySessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -2301,6 +2454,241 @@ class AgentSessionDiscoveryService {
       sortAndLimitDiscoveredSessions(sessions, max),
       hadError: hadError,
     );
+  }
+
+  // ── Antigravity CLI ────────────────────────────────────────────────────
+  // Sessions: ~/.antigravity/sessions/*.json
+
+  Future<_ToolDiscoveryResult> _discoverAntigravitySessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      const pyScript = r'''
+import os
+import sys
+import json
+import re
+import glob
+from datetime import datetime
+
+def extract_partial_json_field(raw, key):
+    pattern = r"\"" + re.escape(key) + r"\"\s*:\s*\"([^\"]*)\""
+    match = re.search(pattern, raw)
+    if match:
+        return match.group(1)
+    return None
+
+home = os.path.expanduser("~")
+legacy_dirs = [
+    os.path.join(home, ".antigravity", "sessions"),
+    os.path.join(home, ".agy", "sessions"),
+    "./.antigravitycli",
+    "./.agycli"
+]
+
+sessions = []
+visited_session_ids = set()
+
+for d in legacy_dirs:
+    if os.path.isdir(d):
+        for fp in glob.glob(os.path.join(d, "*.json")):
+            try:
+                mtime = os.path.getmtime(fp)
+                dt = datetime.utcfromtimestamp(mtime)
+                last_active = dt.isoformat() + "Z"
+                
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                
+                metadata = {}
+                try:
+                    metadata = json.loads(content)
+                except Exception:
+                    session_id = extract_partial_json_field(content, "id") or extract_partial_json_field(content, "sessionId")
+                    summary = extract_partial_json_field(content, "summary") or extract_partial_json_field(content, "name")
+                    cwd = extract_partial_json_field(content, "workingDirectory") or extract_partial_json_field(content, "cwd")
+                    if not cwd:
+                        folder_uri = extract_partial_json_field(content, "folderUri")
+                        if folder_uri and folder_uri.startswith("file://"):
+                            cwd = folder_uri[7:]
+                    if not cwd and summary and summary.startswith("/"):
+                        cwd = summary
+                    updated_at = extract_partial_json_field(content, "updatedAt") or extract_partial_json_field(content, "lastActive")
+                    
+                    if session_id or summary or cwd or updated_at:
+                        metadata = {
+                            "id": session_id,
+                            "summary": summary,
+                            "workingDirectory": cwd,
+                            "updatedAt": updated_at
+                        }
+                
+                session_id = metadata.get("id") or metadata.get("sessionId") or os.path.basename(fp).replace(".json", "")
+                if session_id in visited_session_ids:
+                    continue
+                visited_session_ids.add(session_id)
+                
+                summary = metadata.get("display") or metadata.get("summary") or metadata.get("name") or session_id[:8]
+                cwd = metadata.get("workingDirectory") or metadata.get("cwd")
+                
+                if not cwd:
+                    res = metadata.get("projectResources", {}).get("resources", [])
+                    for r in res:
+                        git_folder = r.get("gitFolder", {}) if isinstance(r, dict) else {}
+                        uri_str = git_folder.get("folderUri")
+                        if uri_str and uri_str.startswith("file://"):
+                            cwd = uri_str[7:]
+                            break
+                
+                if not cwd and summary and summary.startswith("/"):
+                    cwd = summary
+                
+                updated_at = metadata.get("updatedAt") or metadata.get("lastActive")
+                if updated_at:
+                    last_active = updated_at
+                
+                sessions.append({
+                    "sessionId": session_id,
+                    "summary": summary,
+                    "workingDirectory": cwd,
+                    "lastActive": last_active
+                })
+            except Exception:
+                pass
+
+history_path = os.path.join(home, ".gemini", "antigravity-cli", "history.jsonl")
+history_by_id = {}
+if os.path.exists(history_path):
+    with open(history_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                conv_id = entry.get("conversationId")
+                if conv_id:
+                    history_by_id[conv_id] = entry
+            except Exception:
+                pass
+
+conv_dirs = [
+    os.path.join(home, ".gemini", "antigravity-cli", "conversations"),
+    os.path.join(home, ".gemini", "antigravity-cli", "implicit")
+]
+
+for d in conv_dirs:
+    if os.path.isdir(d):
+        for fp in glob.glob(os.path.join(d, "*.pb")):
+            try:
+                conv_id = os.path.basename(fp).replace(".pb", "")
+                if conv_id in visited_session_ids:
+                    continue
+                visited_session_ids.add(conv_id)
+                
+                mtime = os.path.getmtime(fp)
+                dt = datetime.utcfromtimestamp(mtime)
+                last_active = dt.isoformat() + "Z"
+                
+                annotation_path = os.path.join(home, ".gemini", "antigravity-cli", "annotations", conv_id + ".pbtxt")
+                title = None
+                if os.path.exists(annotation_path):
+                    with open(annotation_path, "r", encoding="utf-8", errors="ignore") as af:
+                        ann_content = af.read()
+                        m = re.search(r"title\s*:\s*\"([^\"]+)\"", ann_content)
+                        if m:
+                            title = m.group(1)
+                
+                history_entry = history_by_id.get(conv_id, {})
+                summary = history_entry.get("display") or title or conv_id[:8]
+                cwd = history_entry.get("workspace")
+                
+                timestamp = history_entry.get("timestamp")
+                if timestamp:
+                    try:
+                        dt_hist = datetime.utcfromtimestamp(timestamp / 1000.0)
+                        last_active = dt_hist.isoformat() + "Z"
+                    except Exception:
+                        pass
+                
+                sessions.append({
+                    "sessionId": conv_id,
+                    "summary": summary,
+                    "workingDirectory": cwd,
+                    "lastActive": last_active
+                })
+            except Exception:
+                pass
+
+print(json.dumps(sessions))
+''';
+
+      final pyCommand = "python3 -c '${pyScript.replaceAll("'", r"'\''")}'";
+      final output = await _exec(session, pyCommand);
+
+      final sessions = <ToolSessionInfo>[];
+      var hadError = false;
+
+      if (output.trim().isNotEmpty) {
+        try {
+          final List<dynamic> decoded = jsonDecode(output);
+          for (final entry in decoded) {
+            if (entry is Map<String, dynamic>) {
+              final sessionId = entry['sessionId'] as String?;
+              final summary = entry['summary'] as String?;
+              final workingDir = entry['workingDirectory'] as String?;
+              final lastActiveStr = entry['lastActive'] as String?;
+
+              if (sessionId != null) {
+                DateTime? lastActive;
+                if (lastActiveStr != null) {
+                  lastActive = DateTime.tryParse(lastActiveStr);
+                }
+                sessions.add(
+                  ToolSessionInfo(
+                    toolName: 'Antigravity',
+                    sessionId: sessionId,
+                    workingDirectory: workingDir,
+                    lastActive: lastActive,
+                    summary: summary ?? _truncateId(sessionId),
+                  ),
+                );
+              }
+            }
+          }
+        } on Object {
+          hadError = true;
+        }
+      }
+
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+
+      return _ToolDiscoveryResult.success(
+        'Antigravity',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Antigravity');
+    }
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────

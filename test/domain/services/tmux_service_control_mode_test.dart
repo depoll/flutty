@@ -13,6 +13,10 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
+String _tmuxSendKeysHex(String value) => value.codeUnits
+    .map((codeUnit) => codeUnit.toRadixString(16).padLeft(2, '0'))
+    .join(' ');
+
 void main() {
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
@@ -92,7 +96,10 @@ void main() {
           '#{pane_start_command}$sep'
           '#{@flutty_agent_tool}$sep'
           '#{window_id}$sep'
-          "#{pane_pid}'",
+          '#{pane_pid}$sep'
+          '#{@flutty_agent_session_id}$sep'
+          '#{@flutty_agent_session_title}$sep'
+          "#{@flutty_agent_session_confidence}'",
         );
       },
     );
@@ -148,22 +155,23 @@ void main() {
       expect(
         command,
         contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{pane_title}${SEP}#{pane_start_command}${SEP}#{@flutty_agent_tool}',
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_start_command}',
         ),
       );
       expect(
         command,
         contains(
-          r'{ while IFS="$SEP" read -r pane active alternate pane_command window_name pane_title pane_start_command agent_metadata',
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_start_command',
         ),
       );
       expect(command, isNot(contains(r'if [ "$active" = 1 ]')));
       expect(command, isNot(contains('window_active')));
-      expect(command, contains(r'[ "$alternate" = 1 ]'));
+      expect(command, isNot(contains(r'[ "$alternate" = 1 ]')));
       expect(command, isNot(contains(r'[ "$theme_refresh_tui" = 1 ]')));
       expect(command, isNot(contains('theme_refresh_tui=0')));
       expect(command, contains('flutty_set_agent_tool_from_command_name'));
-      expect(command, contains('flutty_set_agent_tool_from_exact_name'));
+      expect(command, isNot(contains('flutty_set_agent_tool_from_exact_name')));
+      expect(command, contains('flutty_is_generic_runtime_command_name'));
       expect(command, contains('flutty_set_agent_tool_from_command_text'));
       expect(command, contains(r'current_agent_tool=$agent_tool'));
       expect(
@@ -172,15 +180,7 @@ void main() {
       );
       expect(
         command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$agent_metadata"'),
-      );
-      expect(
-        command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$window_name"'),
-      );
-      expect(
-        command,
-        contains(r'flutty_set_agent_tool_from_exact_name "$pane_title"'),
+        contains(r'flutty_is_generic_runtime_command_name "$pane_command"'),
       );
       expect(
         command,
@@ -193,6 +193,7 @@ void main() {
       expect(command, contains('codex|codex-*'));
       expect(command, contains('opencode|opencode-*'));
       expect(command, contains('gemini|gemini-*'));
+      expect(command, contains('node|nodejs|npm|npx|bun|deno|python|python3'));
       expect(command, isNot(contains(r'case "$pane_title" in')));
       expect(command, isNot(contains('*Copilot*|*copilot*')));
       expect(command, isNot(contains('*Codex*|*codex*')));
@@ -202,18 +203,12 @@ void main() {
       expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
-      expect(
-        command,
-        contains(
-          r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
-        ),
-      );
+      expect(command, contains(r'if [ -n "$current_agent_tool" ]; then'));
       expect(command, contains(r'case "$agent_tool" in'));
-      expect(command, contains('copilot)'));
-      expect(command, contains('codex)'));
-      expect(command, contains('opencode|claude|gemini)'));
+      expect(command, contains('copilot|codex)'));
+      expect(command, contains('gemini|opencode|claude|antigravity)'));
       final directBranchStart = command.indexOf(
-        r'if [ -n "$agent_tool" ] && { [ "$alternate" = 1 ] || [ -n "$current_agent_tool" ]; }; then',
+        r'if [ -n "$current_agent_tool" ]; then',
       );
       expect(directBranchStart, isNonNegative);
       final directBranch = command.substring(directBranchStart);
@@ -251,34 +246,29 @@ void main() {
       );
       expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
-      final copilotBranchStart = directBranch.indexOf('copilot)');
-      final codexBranchStart = directBranch.indexOf('codex)');
-      final opencodeBranchStart = directBranch.indexOf(
-        'opencode|claude|gemini)',
+      final copilotCodexBranchStart = directBranch.indexOf('copilot|codex)');
+      final otherAgentBranchStart = directBranch.indexOf(
+        'gemini|opencode|claude|antigravity)',
       );
-      expect(copilotBranchStart, isNonNegative);
-      expect(codexBranchStart, greaterThan(copilotBranchStart));
-      expect(opencodeBranchStart, greaterThan(codexBranchStart));
-      expect(
-        directBranch.substring(copilotBranchStart, codexBranchStart),
-        contains('1b 5b 3f 39 39 37 3b 31 6e'),
+      final focusOutHex = _tmuxSendKeysHex('\x1b[O');
+      final focusInHex = _tmuxSendKeysHex('\x1b[I');
+      final themeModeHexPrefix = _tmuxSendKeysHex('\x1b[?997;');
+      final oscHexPrefix = _tmuxSendKeysHex('\x1b]');
+      expect(copilotCodexBranchStart, isNonNegative);
+      expect(otherAgentBranchStart, greaterThan(copilotCodexBranchStart));
+      final copilotCodexBranch = directBranch.substring(
+        copilotCodexBranchStart,
+        otherAgentBranchStart,
       );
-      expect(
-        directBranch.substring(codexBranchStart, opencodeBranchStart),
-        isNot(contains('1b 5b 3f 39 39 37')),
-      );
-      expect(
-        directBranch.substring(opencodeBranchStart),
-        isNot(contains('1b 5b 3f 39 39 37')),
-      );
-      expect(
-        directBranch.substring(codexBranchStart, opencodeBranchStart),
-        isNot(contains('1b 5b 4f')),
-      );
-      expect(
-        directBranch.indexOf('1b 5b 4f', opencodeBranchStart),
-        greaterThan(opencodeBranchStart),
-      );
+      final otherAgentBranch = directBranch.substring(otherAgentBranchStart);
+      expect(copilotCodexBranch, contains(focusInHex));
+      expect(copilotCodexBranch, isNot(contains(focusOutHex)));
+      expect(copilotCodexBranch, isNot(contains(themeModeHexPrefix)));
+      expect(copilotCodexBranch, isNot(contains(oscHexPrefix)));
+      expect(otherAgentBranch, contains(focusOutHex));
+      expect(otherAgentBranch, contains(focusInHex));
+      expect(otherAgentBranch, isNot(contains(themeModeHexPrefix)));
+      expect(otherAgentBranch, isNot(contains(oscHexPrefix)));
       expect(command, isNot(contains('sleep 0.25')));
       final tmuxCacheReports = [
         buildTerminalThemeModeReport(isDark: TerminalThemes.dracula.isDark),
@@ -299,15 +289,13 @@ void main() {
           buildTerminalThemeRefreshReportList(TerminalThemes.dracula).join(),
         ),
       );
+      expect(command, contains(r'send-keys -t "$pane" -H 1b 5b 49'));
+      expect(command, contains(r'send-keys -t "$pane" -H 1b 5b 4f'));
       expect(
         command,
-        contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37 3b 31 6e'),
+        isNot(contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37')),
       );
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 30')));
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 31 31')));
-      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d 34')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), isEmpty);
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), isEmpty);
+      expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d')));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
@@ -758,6 +746,47 @@ void main() {
       }
     });
 
+    test('agent session metadata refreshes periodically for watches', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 38);
+      const service = TmuxService(
+        agentSessionMetadataRefreshDebounce: Duration(milliseconds: 5),
+        agentSessionMetadataPeriodicRefreshInterval: Duration(milliseconds: 40),
+      );
+      final commands = <String>[];
+
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('list-windows')) {
+          return _buildOpenExecSession(
+            stdout:
+                '${_tmuxWindowLine(id: '@42', panePid: 42)}\n${_doneMarker()}',
+          );
+        }
+        return _buildOpenExecSession(stdout: _doneMarker());
+      });
+
+      try {
+        service.watchWindowChanges(session, 'main');
+        await service.listWindows(session, 'main');
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+
+        expect(commands.where(_isCopilotMetadataCommand), hasLength(1));
+
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(
+          commands.where(_isCopilotMetadataCommand).length,
+          greaterThanOrEqualTo(2),
+        );
+      } finally {
+        await service.clearCache(session.connectionId);
+      }
+    });
+
     test('Copilot metadata refreshes wait for exec channel backoff', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 35);
@@ -838,6 +867,9 @@ void main() {
         'gemini',
         '@12',
         '4321',
+        'gemini-session',
+        'Gemini live title',
+        'medium',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
@@ -854,6 +886,12 @@ void main() {
       expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
       expect(snapshot.window.id, '@12');
       expect(snapshot.window.panePid, 4321);
+      expect(snapshot.window.activeAgentSessionId, 'gemini-session');
+      expect(snapshot.window.agentSessionTitle, 'Gemini live title');
+      expect(
+        snapshot.window.activeAgentSessionConfidence,
+        AgentSessionConfidence.medium,
+      );
     });
 
     test('normalizes the wrapped first control-mode line', () {
@@ -1273,7 +1311,7 @@ void main() {
         await service.createWindow(
           session,
           'main',
-          command: 'gemini --yolo',
+          command: 'gemini --resume gemini-session --yolo',
           name: 'gemini',
           workingDirectory: '/tmp/project',
         );
@@ -1294,7 +1332,12 @@ void main() {
             any(
               that: contains(
                 "tmux -u set-option -w -t 'main:4' "
-                "@flutty_agent_tool 'gemini'",
+                r"@flutty_agent_tool 'gemini' \; "
+                "set-option -w -t 'main:4' "
+                r"@flutty_agent_session_id 'gemini-session' \; "
+                "set-option -w -t 'main:4' "
+                r"@flutty_agent_session_confidence 'high' \; "
+                "set-option -w -t 'main:4' @flutty_agent_session_updated_at",
               ),
             ),
             pty: any(named: 'pty'),
@@ -1304,7 +1347,8 @@ void main() {
           () => client.execute(
             any(
               that: contains(
-                "tmux -u send-keys -t 'main:4' 'gemini --yolo' Enter",
+                "tmux -u send-keys -t 'main:4' "
+                "'gemini --resume gemini-session --yolo' Enter",
               ),
             ),
             pty: any(named: 'pty'),
@@ -1650,7 +1694,7 @@ void main() {
       await service.createWindow(
         session,
         'main',
-        command: 'gemini --yolo',
+        command: 'gemini --resume gemini-session --yolo',
         name: 'gemini',
         workingDirectory: '/tmp/project',
       );
@@ -1663,10 +1707,22 @@ void main() {
         ),
       );
       expect(
-        writes,
-        contains("set-option -w -t 'main:4' @flutty_agent_tool 'gemini'\n"),
+        writes.any(
+          (write) =>
+              write.contains("@flutty_agent_tool 'gemini'") &&
+              write.contains("@flutty_agent_session_id 'gemini-session'") &&
+              write.contains("@flutty_agent_session_confidence 'high'") &&
+              write.contains('@flutty_agent_session_updated_at '),
+        ),
+        isTrue,
       );
-      expect(writes, contains("send-keys -t 'main:4' 'gemini --yolo' Enter\n"));
+      expect(
+        writes,
+        contains(
+          "send-keys -t 'main:4' "
+          "'gemini --resume gemini-session --yolo' Enter\n",
+        ),
+      );
       verifyNever(
         () => client.execute(
           any(that: contains('new-window')),

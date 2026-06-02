@@ -15,6 +15,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
+import '../../domain/models/terminal_preview.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -50,6 +51,13 @@ import 'transfer_screen.dart';
 const _redactStoreScreenshotIdentities = bool.fromEnvironment(
   'STORE_SCREENSHOT_REDACT_IDENTITIES',
 );
+const _connectionTileHorizontalPadding = 16.0;
+const _connectionTileMinLeadingWidth = 40.0;
+const _connectionTileHorizontalTitleGap = 16.0;
+const _connectionPreviewLeadingInset =
+    _connectionTileHorizontalPadding +
+    _connectionTileMinLeadingWidth +
+    _connectionTileHorizontalTitleGap;
 
 /// Top-level sections available on the home screen.
 enum HomeScreenTab {
@@ -81,6 +89,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   late int _selectedIndex;
+  bool _isOpeningTerminalRoute = false;
 
   /// Switches to the Connections tab so the user lands there when
   /// returning from the terminal.
@@ -91,6 +100,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// Switches back to the Hosts tab.
   void switchToHostsTab() {
     if (_selectedIndex != 0) setState(() => _selectedIndex = 0);
+  }
+
+  Future<void> _openTerminalRoute(String route) async {
+    if (_isOpeningTerminalRoute) {
+      return;
+    }
+    final router = GoRouter.maybeOf(context);
+    if (router == null) {
+      return;
+    }
+    _isOpeningTerminalRoute = true;
+    try {
+      await router.push(route);
+    } finally {
+      if (mounted) {
+        ref.read(terminalAppThemeOverrideProvider.notifier).clear();
+        setState(() => _isOpeningTerminalRoute = false);
+      } else {
+        _isOpeningTerminalRoute = false;
+      }
+    }
   }
 
   StreamSubscription<String>? _incomingTransferSubscription;
@@ -374,7 +404,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
 
     switchToConnectionsTab();
-    unawaited(context.push('/terminal/${host.id}'));
+    unawaited(_openTerminalRoute('/terminal/${host.id}'));
   }
 
   @override
@@ -387,6 +417,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (!hadConnections || next.isNotEmpty || _selectedIndex != 1) {
         return;
       }
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _selectedIndex != 1) {
           return;
@@ -580,6 +611,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     3 => const SnippetsPanel(),
     _ => const HostsPanel(),
   };
+}
+
+void _openTerminalRoute(BuildContext context, String route) {
+  final homeState = context.findAncestorStateOfType<_HomeScreenState>();
+  if (homeState != null) {
+    unawaited(homeState._openTerminalRoute(route));
+    return;
+  }
+  final router = GoRouter.maybeOf(context);
+  if (router != null) {
+    unawaited(router.push(route));
+  }
 }
 
 class _NavItem extends StatelessWidget {
@@ -850,7 +893,7 @@ class HostsPanel extends ConsumerWidget {
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: hosts.length,
-    onReorder: (oldIndex, newIndex) => unawaited(
+    onReorderItem: (oldIndex, newIndex) => unawaited(
       _reorderHosts(
         ref: ref,
         hosts: hosts,
@@ -937,11 +980,12 @@ class _HostRow extends ConsumerWidget {
     final connectionCount = rowData.connectionCount;
     final isPinnedToHomeScreen = rowData.isPinnedToHomeScreen;
     final previewEntries = rowData.previewEntries;
+    void openHostConnection() => unawaited(_openHostConnection(context, ref));
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => unawaited(_openHostConnection(context, ref)),
+        onTap: openHostConnection,
         onLongPress: () => unawaited(_showContextMenuAtCenter(context, ref)),
         onSecondaryTapDown: (details) =>
             unawaited(_showContextMenu(context, ref, details.globalPosition)),
@@ -1100,7 +1144,10 @@ class _HostRow extends ConsumerWidget {
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.only(left: 20),
-                  child: ConnectionPreviewStack(entries: previewEntries),
+                  child: ConnectionPreviewStack(
+                    entries: previewEntries,
+                    onTap: openHostConnection,
+                  ),
                 ),
               ],
             ],
@@ -1124,10 +1171,9 @@ class _HostRow extends ConsumerWidget {
         context
             .findAncestorStateOfType<_HomeScreenState>()
             ?.switchToConnectionsTab();
-        unawaited(
-          context.push(
-            '/terminal/${host.id}?connectionId=${connectionIds.first}',
-          ),
+        _openTerminalRoute(
+          context,
+          '/terminal/${host.id}?connectionId=${connectionIds.first}',
         );
       }
       return;
@@ -1161,22 +1207,26 @@ class _HostRow extends ConsumerWidget {
                         SshConnectionState.disconnected,
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
+                    previewSnapshot: connection?.previewSnapshot,
+                    terminalTheme:
+                        connection?.terminalTheme ??
+                        resolveConnectionPreviewTheme(
+                          brightness: Theme.of(context).brightness,
+                          themeSettings: terminalThemeSettings,
+                          availableThemes: terminalThemes,
+                          lightThemeId:
+                              connection?.terminalThemeLightId ??
+                              host.terminalThemeLightId,
+                          darkThemeId:
+                              connection?.terminalThemeDarkId ??
+                              host.terminalThemeDarkId,
+                        ),
+                    sessionTitle: connection?.sessionTitle,
                     windowTitle: connection?.windowTitle,
                     iconName: connection?.iconName,
                     workingDirectory: connection?.workingDirectory,
                     shellStatus: connection?.shellStatus,
                     lastExitCode: connection?.lastExitCode,
-                    terminalTheme: resolveConnectionPreviewTheme(
-                      brightness: Theme.of(context).brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection?.terminalThemeLightId ??
-                          host.terminalThemeLightId,
-                      darkThemeId:
-                          connection?.terminalThemeDarkId ??
-                          host.terminalThemeDarkId,
-                    ),
                     createdAt: sessionsNotifier
                         .getSession(connectionId)
                         ?.createdAt,
@@ -1209,7 +1259,10 @@ class _HostRow extends ConsumerWidget {
       context
           .findAncestorStateOfType<_HomeScreenState>()
           ?.switchToConnectionsTab();
-      unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
+      _openTerminalRoute(
+        context,
+        '/terminal/${host.id}?connectionId=$selectedId',
+      );
     }
   }
 
@@ -1239,13 +1292,14 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
-    unawaited(
-      context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
-    );
     if (context.mounted) {
       context
           .findAncestorStateOfType<_HomeScreenState>()
           ?.switchToConnectionsTab();
+      _openTerminalRoute(
+        context,
+        '/terminal/${host.id}?connectionId=${result.connectionId}',
+      );
     }
   }
 
@@ -1534,6 +1588,8 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.endpoint,
     required this.onTap,
     this.preview,
+    this.previewSnapshot,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -1547,6 +1603,8 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final SshConnectionState state;
   final String endpoint;
   final String? preview;
+  final TerminalPreviewSnapshot? previewSnapshot;
+  final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
   final Uri? workingDirectory;
@@ -1570,6 +1628,8 @@ class _ConnectionSelectionTile extends StatelessWidget {
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
+        previewSnapshot: previewSnapshot,
+        sessionTitle: sessionTitle,
         windowTitle: windowTitle,
         iconName: iconName,
         workingDirectory: workingDirectory,
@@ -1658,21 +1718,34 @@ class _ConnectionsPanel extends ConsumerWidget {
                     final endpoint =
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
-                    final preview = connection.preview;
-                    final previewTheme = resolveConnectionPreviewTheme(
+                    void openConnection() => _openTerminalRoute(
+                      context,
+                      '/terminal/${connection.hostId}'
+                      '?connectionId=${connection.connectionId}',
+                    );
+                    final previewEntry = buildConnectionPreviewStackEntry(
+                      connectionId: connection.connectionId,
+                      state: state,
                       brightness: theme.brightness,
                       themeSettings: terminalThemeSettings,
                       availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection.terminalThemeLightId ??
-                          (hasHostThemeAccess
-                              ? host?.terminalThemeLightId
-                              : null),
-                      darkThemeId:
-                          connection.terminalThemeDarkId ??
-                          (hasHostThemeAccess
-                              ? host?.terminalThemeDarkId
-                              : null),
+                      preview: connection.preview,
+                      previewSnapshot: connection.previewSnapshot,
+                      activeTerminalTheme: connection.terminalTheme,
+                      sessionTitle: connection.sessionTitle,
+                      windowTitle: connection.windowTitle,
+                      iconName: connection.iconName,
+                      workingDirectory: connection.workingDirectory,
+                      shellStatus: connection.shellStatus,
+                      lastExitCode: connection.lastExitCode,
+                      hostLightThemeId: hasHostThemeAccess
+                          ? host?.terminalThemeLightId
+                          : null,
+                      hostDarkThemeId: hasHostThemeAccess
+                          ? host?.terminalThemeDarkId
+                          : null,
+                      connectionLightThemeId: connection.terminalThemeLightId,
+                      connectionDarkThemeId: connection.terminalThemeDarkId,
                     );
                     final preferredTmuxSessionName =
                         resolvePreferredTmuxSessionName(
@@ -1684,6 +1757,11 @@ class _ConnectionsPanel extends ConsumerWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: _connectionTileHorizontalPadding,
+                          ),
+                          horizontalTitleGap: _connectionTileHorizontalTitleGap,
+                          minLeadingWidth: _connectionTileMinLeadingWidth,
                           leading: Icon(
                             Icons.terminal,
                             color: state == SshConnectionState.connected
@@ -1693,18 +1771,9 @@ class _ConnectionsPanel extends ConsumerWidget {
                           title: Text(
                             host?.label ?? 'Host ${connection.hostId}',
                           ),
-                          subtitle: _ConnectionPreviewText(
-                            endpoint:
-                                '$endpoint  •  Connection #${connection.connectionId}',
-                            preview: preview,
-                            windowTitle: connection.windowTitle,
-                            iconName: connection.iconName,
-                            workingDirectory: connection.workingDirectory,
-                            shellStatus: connection.shellStatus,
-                            lastExitCode: connection.lastExitCode,
-                            terminalTheme: previewTheme,
+                          subtitle: Text(
+                            '$endpoint  •  Connection #${connection.connectionId}',
                           ),
-                          isThreeLine: preview?.trim().isNotEmpty ?? false,
                           trailing: IconButton(
                             icon: const Icon(Icons.close),
                             tooltip: 'Disconnect',
@@ -1715,10 +1784,21 @@ class _ConnectionsPanel extends ConsumerWidget {
                               ),
                             ),
                           ),
-                          onTap: () => unawaited(
-                            context.push(
-                              '/terminal/${connection.hostId}'
-                              '?connectionId=${connection.connectionId}',
+                          onTap: openConnection,
+                        ),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: openConnection,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(
+                              _connectionPreviewLeadingInset,
+                              0,
+                              _connectionTileHorizontalPadding,
+                              8,
+                            ),
+                            child: ConnectionPreviewStack(
+                              entries: [previewEntry],
+                              onTap: openConnection,
                             ),
                           ),
                         ),
@@ -1738,12 +1818,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                                 ) ??
                                 RemoteMuxBackend.tmux,
                             tmuxExtraFlags: host?.tmuxExtraFlags,
-                            onTap: () => unawaited(
-                              context.push(
-                                '/terminal/${connection.hostId}'
-                                '?connectionId=${connection.connectionId}',
-                              ),
-                            ),
+                            onTap: openConnection,
                           ),
                       ],
                     );
@@ -1768,6 +1843,8 @@ class _ConnectionPreviewText extends StatelessWidget {
   const _ConnectionPreviewText({
     required this.endpoint,
     this.preview,
+    this.previewSnapshot,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -1778,6 +1855,8 @@ class _ConnectionPreviewText extends StatelessWidget {
 
   final String endpoint;
   final String? preview;
+  final TerminalPreviewSnapshot? previewSnapshot;
+  final String? sessionTitle;
   final String? windowTitle;
   final String? iconName;
   final Uri? workingDirectory;
@@ -1789,6 +1868,8 @@ class _ConnectionPreviewText extends StatelessWidget {
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
     preview: preview,
+    previewSnapshot: previewSnapshot,
+    sessionTitle: sessionTitle,
     windowTitle: windowTitle,
     iconName: iconName,
     workingDirectory: workingDirectory,
@@ -2627,7 +2708,7 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: visibleSnippets.length,
-    onReorder: (oldIndex, newIndex) => unawaited(
+    onReorderItem: (oldIndex, newIndex) => unawaited(
       _reorderSnippets(
         allSnippets: allSnippets,
         visibleSnippets: visibleSnippets,
@@ -2999,6 +3080,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _hasInitializedSessionProviders = false;
         }
       });
+      _syncConnectionSessionTitle(null);
       unawaited(_queryTmux());
     }
   }
@@ -3194,6 +3276,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     );
   }
 
+  String? _activeConnectionSessionTitle(List<TmuxWindow>? windows) => windows
+      ?.where((window) => window.isActive)
+      .firstOrNull
+      ?.agentSessionDisplayTitle;
+
+  void _syncConnectionSessionTitle(List<TmuxWindow>? windows) {
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateConnectionSessionTitle(
+          widget.connectionId,
+          _activeConnectionSessionTitle(windows),
+        );
+  }
+
   Future<void> _prefetchPreferredSessionProvider() async {
     if (!_hasAgentSessionAccess) return;
     final toolName = _preferredSessionToolName;
@@ -3228,6 +3324,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final session = sessionsNotifier.getSession(widget.connectionId);
     if (session == null) {
+      _syncConnectionSessionTitle(null);
       // Session not available yet — retry after a delay so the badge
       // still appears for connections that finish establishing shortly.
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
@@ -3242,6 +3339,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
     if (sessionName == null) {
+      _syncConnectionSessionTitle(null);
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
@@ -3306,18 +3404,21 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _muxBackend = muxBackend;
           _queried = true;
         });
+        _syncConnectionSessionTitle(const <TmuxWindow>[]);
         unawaited(_disconnectEndedMonkeyMuxSession(session));
         return;
       }
       final currentWindows = _windows;
+      final nextWindows = currentWindows == null
+          ? event.windows
+          : applyTmuxWindowChangeEvent(currentWindows, event);
       setState(() {
-        _windows = currentWindows == null
-            ? event.windows
-            : applyTmuxWindowChangeEvent(currentWindows, event);
+        _windows = nextWindows;
         _sessionName = sessionName;
         _muxBackend = muxBackend;
         _queried = true;
       });
+      _syncConnectionSessionTitle(nextWindows);
       return;
     }
     final currentWindows = _windows;
@@ -3333,12 +3434,14 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _windowReloadGeneration += 1;
     _tmuxRetryTimer?.cancel();
     _tmuxRetryTimer = null;
+    final nextWindows = applyTmuxWindowChangeEvent(currentWindows, event);
     setState(() {
-      _windows = applyTmuxWindowChangeEvent(currentWindows, event);
+      _windows = nextWindows;
       _sessionName = sessionName;
       _muxBackend = muxBackend;
       _queried = true;
     });
+    _syncConnectionSessionTitle(nextWindows);
   }
 
   Future<void> _refreshTmuxWindows(
@@ -3378,6 +3481,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _muxBackend = muxBackend;
           _queried = true;
         });
+        _syncConnectionSessionTitle(const <TmuxWindow>[]);
         await _disconnectEndedMonkeyMuxSession(session);
         return;
       }
@@ -3393,6 +3497,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         _muxBackend = muxBackend;
         _queried = true;
       });
+      _syncConnectionSessionTitle(windows);
     } on Object {
       if (!_isCurrentTmuxQuery(queryGeneration)) {
         return;

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -14,6 +15,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import '../models/remote_multiplexer.dart';
+import '../models/terminal_preview.dart';
 import '../models/terminal_theme.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
@@ -200,6 +202,320 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       return '\x1b[${row + 1};${column + 1}R';
     });
 
+/// Adapts remote terminal output so xterm.dart renders it correctly.
+///
+/// xterm.dart 4.0.0 tracks IRM (`CSI 4 h/l`) but does not shift existing cells
+/// when printable characters arrive while the mode is active. Injecting ICH
+/// before each printable cell preserves behavior from editors such as nano,
+/// while [pendingInput] keeps split escape sequences from leaking printable
+/// bytes into the renderer.
+///
+/// xterm.dart 4.0.0 also corrupts its line buffer when RI (`ESC M`) scrolls a
+/// vertical margin region down. When cursor state is provided, that RI is
+/// rewritten to IL (`CSI L`), which has the same effect at the top margin
+/// without reusing detached buffer lines internally.
+///
+/// xterm.dart also treats private `CSI > ... m` keyboard modifier controls as
+/// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
+/// accidentally enabling underline/bold while painting spaces.
+@visibleForTesting
+({String output, String pendingInput, bool insertMode})
+adaptTerminalInsertModeOutputForXterm({
+  required String input,
+  required String pendingInput,
+  required bool insertMode,
+  int? terminalColumns,
+  int? terminalRows,
+  int? cursorColumn,
+  int? cursorRow,
+  int? marginTop,
+  int? marginBottom,
+  bool originMode = false,
+}) {
+  final combinedInput = pendingInput + input;
+  final output = StringBuffer();
+  var cursor = 0;
+  var nextInsertMode = insertMode;
+  final cursorTracker = _TerminalOutputCursorTracker(
+    columns: terminalColumns,
+    rows: terminalRows,
+    cursorColumn: cursorColumn,
+    cursorRow: cursorRow,
+    marginTop: marginTop,
+    marginBottom: marginBottom,
+    originMode: originMode,
+  );
+
+  while (cursor < combinedInput.length) {
+    final codeUnit = combinedInput.codeUnitAt(cursor);
+    if (codeUnit == _terminalEscapeCodeUnit) {
+      final endIndex = _terminalEscapeSequenceEndIndex(combinedInput, cursor);
+      if (endIndex == null) {
+        return (
+          output: output.toString(),
+          pendingInput: combinedInput.substring(cursor),
+          insertMode: nextInsertMode,
+        );
+      }
+
+      final sequence = combinedInput.substring(cursor, endIndex);
+      if (!_shouldDropTerminalOutputSequenceForXterm(sequence)) {
+        output.write(cursorTracker.adaptEscapeSequence(sequence));
+        final insertModeUpdate = _terminalInsertModeUpdate(sequence);
+        if (insertModeUpdate != null) {
+          nextInsertMode = insertModeUpdate;
+        }
+      }
+      cursor = endIndex;
+      continue;
+    }
+
+    final rune = _terminalRuneAt(combinedInput, cursor);
+    final runeLength = _terminalRuneLength(rune);
+    if (nextInsertMode && _isTerminalGraphicRune(rune)) {
+      final width = _terminalCellWidth(rune);
+      for (var cell = 0; cell < width; cell += 1) {
+        output.write(_terminalInsertBlankCharacterSequence);
+      }
+    }
+    output.write(combinedInput.substring(cursor, cursor + runeLength));
+    cursorTracker.writeRune(rune);
+    cursor += runeLength;
+  }
+
+  return (
+    output: output.toString(),
+    pendingInput: '',
+    insertMode: nextInsertMode,
+  );
+}
+
+class _TerminalOutputCursorTracker {
+  _TerminalOutputCursorTracker({
+    required int? columns,
+    required int? rows,
+    required int? cursorColumn,
+    required int? cursorRow,
+    required int? marginTop,
+    required int? marginBottom,
+    required bool originMode,
+  }) : _columns = columns != null && columns > 0 ? columns : null,
+       _rows = rows != null && rows > 0 ? rows : null,
+       _originMode = originMode {
+    final validRows = _rows;
+    final validColumns = _columns;
+    if (validRows == null ||
+        validColumns == null ||
+        cursorColumn == null ||
+        cursorRow == null) {
+      return;
+    }
+
+    _cursorColumn = cursorColumn.clamp(0, validColumns);
+    _cursorRow = cursorRow.clamp(0, validRows - 1);
+    _marginTop = (marginTop ?? 0).clamp(0, validRows - 1);
+    _marginBottom = (marginBottom ?? validRows - 1).clamp(0, validRows - 1);
+    if (_marginTop! > _marginBottom!) {
+      final top = _marginTop!;
+      _marginTop = _marginBottom;
+      _marginBottom = top;
+    }
+  }
+
+  final int? _columns;
+  final int? _rows;
+  int? _cursorColumn;
+  int? _cursorRow;
+  int? _marginTop;
+  int? _marginBottom;
+  bool _originMode;
+
+  bool get _hasPosition =>
+      _columns != null &&
+      _rows != null &&
+      _cursorColumn != null &&
+      _cursorRow != null &&
+      _marginTop != null &&
+      _marginBottom != null;
+
+  String adaptEscapeSequence(String sequence) {
+    if (sequence == _terminalReverseIndexSequence) {
+      return _adaptReverseIndex();
+    }
+
+    _applyEscapeSequence(sequence);
+    return sequence;
+  }
+
+  void writeRune(int rune) {
+    if (!_hasPosition) {
+      return;
+    }
+
+    switch (rune) {
+      case _terminalBackspaceCodeUnit:
+        _cursorColumn = math.max(_cursorColumn! - 1, 0);
+      case _terminalHorizontalTabCodeUnit:
+        _cursorColumn = math.min(((_cursorColumn! ~/ 8) + 1) * 8, _columns!);
+      case _terminalLineFeedCodeUnit:
+      case _terminalVerticalTabCodeUnit:
+      case _terminalFormFeedCodeUnit:
+        _lineFeed();
+      case _terminalCarriageReturnCodeUnit:
+        _cursorColumn = 0;
+      default:
+        final width = _terminalCellWidth(rune);
+        if (width <= 0) {
+          return;
+        }
+        final columns = _columns!;
+        if (_cursorColumn! >= columns) {
+          _lineFeed();
+          _cursorColumn = 0;
+        }
+        _cursorColumn = math.min(_cursorColumn! + width, columns);
+    }
+  }
+
+  String _adaptReverseIndex() {
+    if (!_hasPosition) {
+      return _terminalReverseIndexSequence;
+    }
+
+    if (_cursorRow == _marginTop) {
+      final restoreColumn = _cursorColumn!;
+      return restoreColumn == 0
+          ? _terminalInsertLineSequence
+          : '$_terminalInsertLineSequence\x1b[${restoreColumn + 1}G';
+    }
+
+    _cursorRow = math.max(_cursorRow! - 1, 0);
+    return _terminalReverseIndexSequence;
+  }
+
+  void _applyEscapeSequence(String sequence) {
+    if (!_hasPosition || sequence.length < 2) {
+      return;
+    }
+
+    if (sequence.length == 2 &&
+        sequence.codeUnitAt(1) == _terminalFullResetFinalCodeUnit) {
+      _resetCursorState();
+      return;
+    }
+
+    if (sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
+      return;
+    }
+
+    final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
+    final params = _terminalCsiNumericParams(sequence);
+    final originModeUpdate = _terminalDecOriginModeUpdate(sequence);
+    if (originModeUpdate != null) {
+      _originMode = originModeUpdate;
+      return;
+    }
+
+    switch (finalCodeUnit) {
+      case _terminalCursorUpFinalCodeUnit:
+        _moveCursorRows(-_terminalCsiParam(params, 0, defaultValue: 1));
+      case _terminalCursorDownFinalCodeUnit:
+        _moveCursorRows(_terminalCsiParam(params, 0, defaultValue: 1));
+      case _terminalCursorForwardFinalCodeUnit:
+        _moveCursorColumns(_terminalCsiParam(params, 0, defaultValue: 1));
+      case _terminalCursorBackFinalCodeUnit:
+        _moveCursorColumns(-_terminalCsiParam(params, 0, defaultValue: 1));
+      case _terminalCursorNextLineFinalCodeUnit:
+        _moveCursorRows(_terminalCsiParam(params, 0, defaultValue: 1));
+        _cursorColumn = 0;
+      case _terminalCursorPreviousLineFinalCodeUnit:
+        _moveCursorRows(-_terminalCsiParam(params, 0, defaultValue: 1));
+        _cursorColumn = 0;
+      case _terminalCursorHorizontalAbsoluteFinalCodeUnit:
+        _setCursorColumn(_terminalCsiParam(params, 0, defaultValue: 1) - 1);
+      case _terminalCursorPositionFinalCodeUnit:
+      case _terminalHorizontalVerticalPositionFinalCodeUnit:
+        _setCursor(
+          row: _terminalCsiParam(params, 0, defaultValue: 1) - 1,
+          column: _terminalCsiParam(params, 1, defaultValue: 1) - 1,
+        );
+      case _terminalLinePositionAbsoluteFinalCodeUnit:
+        _setCursorRow(_terminalCsiParam(params, 0, defaultValue: 1) - 1);
+      case _terminalSetMarginsFinalCodeUnit:
+        _setMargins(params);
+      case _terminalInsertLinesFinalCodeUnit:
+      case _terminalDeleteLinesFinalCodeUnit:
+        _cursorColumn = 0;
+    }
+  }
+
+  void _lineFeed() {
+    final row = _cursorRow!;
+    final marginTop = _marginTop!;
+    final marginBottom = _marginBottom!;
+    final inMargins = row >= marginTop && row <= marginBottom;
+    if (inMargins && row == marginBottom) {
+      return;
+    }
+    if (!inMargins && row >= _rows! - 1) {
+      return;
+    }
+    _cursorRow = math.min(row + 1, _rows! - 1);
+  }
+
+  void _moveCursorRows(int offset) {
+    _setCursorRow(_cursorRow! + offset);
+  }
+
+  void _moveCursorColumns(int offset) {
+    _setCursorColumn(_cursorColumn! + offset);
+  }
+
+  void _setCursor({required int row, required int column}) {
+    if (_originMode) {
+      _cursorRow = (row + _marginTop!).clamp(0, _marginBottom!);
+    } else {
+      _setCursorRow(row);
+    }
+    _setCursorColumn(column);
+  }
+
+  void _setCursorRow(int row) {
+    _cursorRow = row.clamp(0, _rows! - 1);
+  }
+
+  void _setCursorColumn(int column) {
+    _cursorColumn = column.clamp(0, _columns! - 1);
+  }
+
+  void _setMargins(List<int?> params) {
+    if (params.length > 2) {
+      return;
+    }
+
+    final rows = _rows!;
+    final top = _terminalCsiParam(params, 0, defaultValue: 1) - 1;
+    final bottom = params.length >= 2 && params[1] != null && params[1] != 0
+        ? params[1]! - 1
+        : rows - 1;
+    _marginTop = top.clamp(0, rows - 1);
+    _marginBottom = bottom.clamp(0, rows - 1);
+    if (_marginTop! > _marginBottom!) {
+      final topMargin = _marginTop!;
+      _marginTop = _marginBottom;
+      _marginBottom = topMargin;
+    }
+  }
+
+  void _resetCursorState() {
+    _cursorColumn = 0;
+    _cursorRow = 0;
+    _marginTop = 0;
+    _marginBottom = _rows! - 1;
+    _originMode = false;
+  }
+}
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
@@ -208,6 +524,7 @@ final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
+final _terminalCsiNumericParamsPattern = RegExp(r'^[0-9;]*$');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -293,6 +610,46 @@ const _terminalModeSet = 1;
 const _terminalModeReset = 2;
 
 const _terminalEscape = '\x1b';
+const _terminalEscapeCodeUnit = 0x1B;
+const _terminalBellCodeUnit = 0x07;
+const _terminalBackspaceCodeUnit = 0x08;
+const _terminalHorizontalTabCodeUnit = 0x09;
+const _terminalLineFeedCodeUnit = 0x0A;
+const _terminalVerticalTabCodeUnit = 0x0B;
+const _terminalFormFeedCodeUnit = 0x0C;
+const _terminalCarriageReturnCodeUnit = 0x0D;
+const _terminalCsiIntroducerCodeUnit = 0x5B;
+const _terminalDcsIntroducerCodeUnit = 0x50;
+const _terminalOscIntroducerCodeUnit = 0x5D;
+const _terminalSosIntroducerCodeUnit = 0x58;
+const _terminalPmIntroducerCodeUnit = 0x5E;
+const _terminalApcIntroducerCodeUnit = 0x5F;
+const _terminalStringTerminatorCodeUnit = 0x5C;
+const _terminalDeleteCodeUnit = 0x7F;
+const _terminalCursorUpFinalCodeUnit = 0x41;
+const _terminalCursorDownFinalCodeUnit = 0x42;
+const _terminalCursorForwardFinalCodeUnit = 0x43;
+const _terminalCursorBackFinalCodeUnit = 0x44;
+const _terminalCursorNextLineFinalCodeUnit = 0x45;
+const _terminalCursorPreviousLineFinalCodeUnit = 0x46;
+const _terminalCursorHorizontalAbsoluteFinalCodeUnit = 0x47;
+const _terminalCursorPositionFinalCodeUnit = 0x48;
+const _terminalInsertLinesFinalCodeUnit = 0x4C;
+const _terminalDeleteLinesFinalCodeUnit = 0x4D;
+const _terminalHorizontalVerticalPositionFinalCodeUnit = 0x66;
+const _terminalLinePositionAbsoluteFinalCodeUnit = 0x64;
+const _terminalSetMarginsFinalCodeUnit = 0x72;
+const _terminalInsertMode = 4;
+const _terminalOriginMode = 6;
+const _terminalSetModeFinalCodeUnit = 0x68;
+const _terminalResetModeFinalCodeUnit = 0x6C;
+const _terminalSoftResetFinalCodeUnit = 0x70;
+const _terminalFullResetFinalCodeUnit = 0x63;
+const _terminalPrivateMarkerCodeUnit = 0x3E;
+const _terminalSelectGraphicRenditionFinalCodeUnit = 0x6D;
+const _terminalInsertBlankCharacterSequence = '\x1b[@';
+const _terminalReverseIndexSequence = '\x1bM';
+const _terminalInsertLineSequence = '\x1b[L';
 const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
 const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
@@ -334,6 +691,238 @@ String _terminalTmuxPassthroughPendingSuffix(String input) {
   }
   return '';
 }
+
+int? _terminalEscapeSequenceEndIndex(String input, int start) {
+  if (start + 1 >= input.length) {
+    return null;
+  }
+
+  final introducer = input.codeUnitAt(start + 1);
+  switch (introducer) {
+    case _terminalCsiIntroducerCodeUnit:
+      return _terminalCsiEndIndex(input, start + 2);
+    case _terminalDcsIntroducerCodeUnit:
+    case _terminalOscIntroducerCodeUnit:
+    case _terminalSosIntroducerCodeUnit:
+    case _terminalPmIntroducerCodeUnit:
+    case _terminalApcIntroducerCodeUnit:
+      return _terminalStringEndIndex(input, start + 2);
+  }
+
+  var cursor = start + 1;
+  while (cursor < input.length &&
+      _isTerminalEscapeIntermediate(input.codeUnitAt(cursor))) {
+    cursor += 1;
+  }
+  if (cursor >= input.length) {
+    return null;
+  }
+  return cursor + 1;
+}
+
+int? _terminalCsiEndIndex(String input, int start) {
+  var cursor = start;
+  while (cursor < input.length) {
+    final codeUnit = input.codeUnitAt(cursor);
+    if (codeUnit >= 0x40 && codeUnit <= 0x7E) {
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
+int? _terminalStringEndIndex(String input, int start) {
+  var cursor = start;
+  while (cursor < input.length) {
+    final codeUnit = input.codeUnitAt(cursor);
+    if (codeUnit == _terminalBellCodeUnit) {
+      return cursor + 1;
+    }
+    if (codeUnit == _terminalEscapeCodeUnit) {
+      if (cursor + 1 >= input.length) {
+        return null;
+      }
+      if (input.codeUnitAt(cursor + 1) == _terminalStringTerminatorCodeUnit) {
+        return cursor + 2;
+      }
+      cursor += 1;
+      continue;
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
+bool _isTerminalEscapeIntermediate(int codeUnit) =>
+    codeUnit >= 0x20 && codeUnit <= 0x2F;
+
+bool? _terminalInsertModeUpdate(String sequence) {
+  if (sequence.length < 2 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit) {
+    return null;
+  }
+  if (sequence.length == 2 &&
+      sequence.codeUnitAt(1) == _terminalFullResetFinalCodeUnit) {
+    return false;
+  }
+  if (sequence.length < 4 ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
+    return null;
+  }
+
+  final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
+  final params = sequence.substring(2, sequence.length - 1);
+  if (finalCodeUnit == _terminalSoftResetFinalCodeUnit &&
+      (params == '!' || params.endsWith('"'))) {
+    return false;
+  }
+  if (finalCodeUnit != _terminalSetModeFinalCodeUnit &&
+      finalCodeUnit != _terminalResetModeFinalCodeUnit) {
+    return null;
+  }
+
+  if (params.startsWith('?')) {
+    return null;
+  }
+  for (final param in params.split(';')) {
+    if (int.tryParse(param) == _terminalInsertMode) {
+      return finalCodeUnit == _terminalSetModeFinalCodeUnit;
+    }
+  }
+  return null;
+}
+
+bool? _terminalDecOriginModeUpdate(String sequence) {
+  if (sequence.length < 5 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
+    return null;
+  }
+
+  final finalCodeUnit = sequence.codeUnitAt(sequence.length - 1);
+  if (finalCodeUnit != _terminalSetModeFinalCodeUnit &&
+      finalCodeUnit != _terminalResetModeFinalCodeUnit) {
+    return null;
+  }
+
+  final params = sequence.substring(2, sequence.length - 1);
+  if (!params.startsWith('?')) {
+    return null;
+  }
+
+  for (final param in params.substring(1).split(';')) {
+    if (int.tryParse(param) == _terminalOriginMode) {
+      return finalCodeUnit == _terminalSetModeFinalCodeUnit;
+    }
+  }
+  return null;
+}
+
+bool _shouldDropTerminalOutputSequenceForXterm(String sequence) {
+  if (sequence.length < 4 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit ||
+      sequence.codeUnitAt(2) != _terminalPrivateMarkerCodeUnit ||
+      sequence.codeUnitAt(sequence.length - 1) !=
+          _terminalSelectGraphicRenditionFinalCodeUnit) {
+    return false;
+  }
+
+  final params = sequence.substring(3, sequence.length - 1);
+  return _terminalCsiNumericParamsPattern.hasMatch(params);
+}
+
+List<int?> _terminalCsiNumericParams(String sequence) {
+  if (sequence.length < 3 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit) {
+    return const [];
+  }
+
+  final params = sequence.substring(2, sequence.length - 1);
+  if (params.isEmpty) {
+    return const [];
+  }
+  if (!_terminalCsiNumericParamsPattern.hasMatch(params)) {
+    return const [];
+  }
+  return params
+      .split(';')
+      .map((param) => param.isEmpty ? null : int.tryParse(param))
+      .toList();
+}
+
+int _terminalCsiParam(
+  List<int?> params,
+  int index, {
+  required int defaultValue,
+}) {
+  if (index >= params.length || params[index] == null || params[index] == 0) {
+    return defaultValue;
+  }
+  return params[index]!;
+}
+
+int _terminalRuneAt(String input, int index) {
+  final first = input.codeUnitAt(index);
+  if (_isTerminalHighSurrogate(first) && index + 1 < input.length) {
+    final second = input.codeUnitAt(index + 1);
+    if (_isTerminalLowSurrogate(second)) {
+      return 0x10000 + ((first - 0xD800) << 10) + second - 0xDC00;
+    }
+  }
+  return first;
+}
+
+int _terminalRuneLength(int rune) => rune > 0xFFFF ? 2 : 1;
+
+bool _isTerminalHighSurrogate(int codeUnit) =>
+    codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+
+bool _isTerminalLowSurrogate(int codeUnit) =>
+    codeUnit >= 0xDC00 && codeUnit <= 0xDFFF;
+
+bool _isTerminalGraphicRune(int rune) =>
+    rune >= 0x20 &&
+    rune != _terminalDeleteCodeUnit &&
+    !(rune >= 0x80 && rune <= 0x9F);
+
+int _terminalCellWidth(int rune) {
+  if (!_isTerminalGraphicRune(rune) || _isTerminalZeroWidthRune(rune)) {
+    return 0;
+  }
+  if (_isTerminalWideRune(rune)) {
+    return 2;
+  }
+  return 1;
+}
+
+bool _isTerminalZeroWidthRune(int rune) =>
+    rune == 0x200D ||
+    (rune >= 0x0300 && rune <= 0x036F) ||
+    (rune >= 0x1AB0 && rune <= 0x1AFF) ||
+    (rune >= 0x1DC0 && rune <= 0x1DFF) ||
+    (rune >= 0x20D0 && rune <= 0x20FF) ||
+    (rune >= 0xFE00 && rune <= 0xFE0F) ||
+    (rune >= 0xFE20 && rune <= 0xFE2F) ||
+    (rune >= 0x1F3FB && rune <= 0x1F3FF) ||
+    (rune >= 0xE0100 && rune <= 0xE01EF);
+
+bool _isTerminalWideRune(int rune) =>
+    rune >= 0x1100 &&
+    (rune <= 0x115F ||
+        rune == 0x2329 ||
+        rune == 0x232A ||
+        (rune >= 0x2E80 && rune <= 0xA4CF && rune != 0x303F) ||
+        (rune >= 0xAC00 && rune <= 0xD7A3) ||
+        (rune >= 0xF900 && rune <= 0xFAFF) ||
+        (rune >= 0xFE10 && rune <= 0xFE19) ||
+        (rune >= 0xFE30 && rune <= 0xFE6F) ||
+        (rune >= 0xFF00 && rune <= 0xFF60) ||
+        (rune >= 0xFFE0 && rune <= 0xFFE6) ||
+        (rune >= 0x1F300 && rune <= 0x1FAFF) ||
+        (rune >= 0x20000 && rune <= 0x3FFFD));
 
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics != null &&
@@ -728,184 +1317,236 @@ class SshService {
     ConnectionProgressCallback? onProgress,
     bool useHostThemeOverrides = true,
   }) async {
+    var preflightPhase = 'start';
     DiagnosticsLogService.instance.info(
       'ssh.connect',
       'connect_to_host_start',
       fields: {'hostId': hostId},
     );
-    if (hostRepository == null) {
-      DiagnosticsLogService.instance.warning(
+    try {
+      if (hostRepository == null) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.connect',
+          'connect_to_host_unavailable',
+          fields: {'hostId': hostId, 'reason': 'missing_host_repository'},
+        );
+        return const SshConnectionResult(
+          success: false,
+          error: 'Host repository not available',
+        );
+      }
+
+      preflightPhase = 'load_host';
+      final host = await hostRepository!.getById(hostId);
+      if (host == null) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.connect',
+          'connect_to_host_missing_host',
+          fields: {'hostId': hostId},
+        );
+        return const SshConnectionResult(
+          success: false,
+          error: 'Host not found',
+        );
+      }
+      DiagnosticsLogService.instance.info(
         'ssh.connect',
-        'connect_to_host_unavailable',
-        fields: {'hostId': hostId, 'reason': 'missing_host_repository'},
+        'connect_to_host_loaded_host',
+        fields: {
+          'hostId': hostId,
+          'hasPassword': host.password != null,
+          'hasKeyId': host.keyId != null,
+          'hasJumpHost': host.jumpHostId != null,
+        },
       );
-      return const SshConnectionResult(
-        success: false,
-        error: 'Host repository not available',
-      );
-    }
 
-    final host = await hostRepository!.getById(hostId);
-    if (host == null) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_to_host_missing_host',
-        fields: {'hostId': hostId},
-      );
-      return const SshConnectionResult(success: false, error: 'Host not found');
-    }
+      List<SshKey>? cachedAutoKeys;
+      var didLoadAutoKeys = false;
+      Future<List<SshKey>?> loadAutoKeys() async {
+        if (didLoadAutoKeys) {
+          return cachedAutoKeys;
+        }
+        didLoadAutoKeys = true;
+        if (keyRepository == null) {
+          return null;
+        }
+        preflightPhase = 'load_auto_keys';
+        final keyLoadResult = await keyRepository!.getAllDecryptable();
+        if (keyLoadResult.unreadableCount > 0) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.connect',
+            'auto_key_load_skipped_unreadable',
+            fields: {
+              'hostId': hostId,
+              'unreadableCount': keyLoadResult.unreadableCount,
+              'loadedCount': keyLoadResult.keys.length,
+              'errorType': keyLoadResult.firstUnreadableErrorType,
+            },
+          );
+        }
+        final keys = keyLoadResult.keys;
+        if (keys.isEmpty) {
+          return null;
+        }
+        final sortedKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
+        final autoKeys = sortedKeys.length > _maxAutoKeysPerAttempt
+            ? sortedKeys.take(_maxAutoKeysPerAttempt).toList(growable: false)
+            : sortedKeys;
+        return cachedAutoKeys = autoKeys;
+      }
 
-    List<SshKey>? cachedAutoKeys;
-    var didLoadAutoKeys = false;
-    Future<List<SshKey>?> loadAutoKeys() async {
-      if (didLoadAutoKeys) {
-        return cachedAutoKeys;
-      }
-      didLoadAutoKeys = true;
-      if (keyRepository == null) {
-        return null;
-      }
-      final keys = await keyRepository!.getAll();
-      if (keys.isEmpty) {
-        return null;
-      }
-      final sortedKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
-      final autoKeys = sortedKeys.length > _maxAutoKeysPerAttempt
-          ? sortedKeys.take(_maxAutoKeysPerAttempt).toList(growable: false)
-          : sortedKeys;
-      return cachedAutoKeys = autoKeys;
-    }
-
-    // Get SSH key if explicitly selected, otherwise use auto keys.
-    SshKey? key;
-    List<SshKey>? identityKeys;
-    if (host.keyId != null && keyRepository != null) {
-      key = await keyRepository!.getById(host.keyId!);
-      if (key == null && host.password == null) {
+      // Get SSH key if explicitly selected, otherwise use auto keys.
+      SshKey? key;
+      List<SshKey>? identityKeys;
+      if (host.keyId != null && keyRepository != null) {
+        preflightPhase = 'load_host_key';
+        key = await keyRepository!.getById(host.keyId!);
+        if (key == null && host.password == null) {
+          identityKeys = await loadAutoKeys();
+        }
+      } else if (host.password == null) {
         identityKeys = await loadAutoKeys();
       }
-    } else if (host.password == null) {
-      identityKeys = await loadAutoKeys();
-    }
 
-    // Get jump host config if specified, unless the device is currently
-    // connected to a Wi-Fi network on the host's skip list (in which case
-    // the host is reachable directly).
-    SshConnectionConfig? jumpHostConfig;
-    if (host.jumpHostId != null) {
-      var skipJumpHost = false;
-      if (host.skipJumpHostOnSsids != null &&
-          host.skipJumpHostOnSsids!.isNotEmpty) {
-        onProgress?.call(
-          const ConnectionProgressUpdate(
-            state: SshConnectionState.connecting,
-            message: 'Checking Wi-Fi network for jump host bypass…',
-          ),
-        );
-        final permission = await wifiNetworkService.requestPermission();
-        String? currentSsid;
-        if (permission == WifiPermissionStatus.granted) {
-          currentSsid = await wifiNetworkService.getCurrentSsid();
-          skipJumpHost = shouldSkipJumpHostForSsid(
-            currentSsid: currentSsid,
-            skipJumpHostOnSsids: host.skipJumpHostOnSsids,
-          );
-        } else {
+      // Get jump host config if specified, unless the device is currently
+      // connected to a Wi-Fi network on the host's skip list (in which case
+      // the host is reachable directly).
+      SshConnectionConfig? jumpHostConfig;
+      if (host.jumpHostId != null) {
+        var skipJumpHost = false;
+        if (host.skipJumpHostOnSsids != null &&
+            host.skipJumpHostOnSsids!.isNotEmpty) {
           onProgress?.call(
             const ConnectionProgressUpdate(
               state: SshConnectionState.connecting,
-              message: 'Wi-Fi permission denied. Using jump host…',
+              message: 'Checking Wi-Fi network for jump host bypass…',
             ),
           );
-        }
-        DiagnosticsLogService.instance.info(
-          'ssh.connect',
-          'jump_host_ssid_check',
-          fields: {
-            'hostId': hostId,
-            'permissionStatus': permission.name,
-            'hasCurrentSsid': currentSsid != null,
-            'skipJumpHost': skipJumpHost,
-          },
-        );
-      }
-      if (!skipJumpHost) {
-        final jumpHost = await hostRepository!.getById(host.jumpHostId!);
-        if (jumpHost != null) {
-          SshKey? jumpKey;
-          List<SshKey>? jumpIdentityKeys;
-          if (jumpHost.keyId != null && keyRepository != null) {
-            jumpKey = await keyRepository!.getById(jumpHost.keyId!);
-            if (jumpKey == null && jumpHost.password == null) {
-              jumpIdentityKeys = await loadAutoKeys();
-            }
-          } else if (jumpHost.password == null) {
-            jumpIdentityKeys = await loadAutoKeys();
+          preflightPhase = 'check_wifi_bypass';
+          final permission = await wifiNetworkService.requestPermission();
+          String? currentSsid;
+          if (permission == WifiPermissionStatus.granted) {
+            currentSsid = await wifiNetworkService.getCurrentSsid();
+            skipJumpHost = shouldSkipJumpHostForSsid(
+              currentSsid: currentSsid,
+              skipJumpHostOnSsids: host.skipJumpHostOnSsids,
+            );
+          } else {
+            onProgress?.call(
+              const ConnectionProgressUpdate(
+                state: SshConnectionState.connecting,
+                message: 'Wi-Fi permission denied. Using jump host…',
+              ),
+            );
           }
-          jumpHostConfig = SshConnectionConfig.fromHost(
-            jumpHost,
-            key: jumpKey,
-            identityKeys: jumpIdentityKeys,
+          DiagnosticsLogService.instance.info(
+            'ssh.connect',
+            'jump_host_ssid_check',
+            fields: {
+              'hostId': hostId,
+              'permissionStatus': permission.name,
+              'hasCurrentSsid': currentSsid != null,
+              'skipJumpHost': skipJumpHost,
+            },
           );
         }
+        if (!skipJumpHost) {
+          preflightPhase = 'load_jump_host';
+          final jumpHost = await hostRepository!.getById(host.jumpHostId!);
+          if (jumpHost != null) {
+            SshKey? jumpKey;
+            List<SshKey>? jumpIdentityKeys;
+            if (jumpHost.keyId != null && keyRepository != null) {
+              preflightPhase = 'load_jump_host_key';
+              jumpKey = await keyRepository!.getById(jumpHost.keyId!);
+              if (jumpKey == null && jumpHost.password == null) {
+                jumpIdentityKeys = await loadAutoKeys();
+              }
+            } else if (jumpHost.password == null) {
+              jumpIdentityKeys = await loadAutoKeys();
+            }
+            jumpHostConfig = SshConnectionConfig.fromHost(
+              jumpHost,
+              key: jumpKey,
+              identityKeys: jumpIdentityKeys,
+            );
+          }
+        }
       }
-    }
 
-    final config = SshConnectionConfig.fromHost(
-      host,
-      key: key,
-      identityKeys: identityKeys,
-      jumpHostConfig: jumpHostConfig,
-    );
-
-    final result = await connect(config, onProgress: onProgress);
-
-    if (result.success && result.client != null) {
-      final connectionId = _nextConnectionId++;
-      _sessions[connectionId] = SshSession(
-        connectionId: connectionId,
-        hostId: hostId,
-        client: result.client!,
-        config: config,
-        dependentClients: result.dependentClients,
-        terminalThemeLightId: useHostThemeOverrides
-            ? host.terminalThemeLightId
-            : null,
-        terminalThemeDarkId: useHostThemeOverrides
-            ? host.terminalThemeDarkId
-            : null,
+      preflightPhase = 'build_config';
+      final config = SshConnectionConfig.fromHost(
+        host,
+        key: key,
+        identityKeys: identityKeys,
+        jumpHostConfig: jumpHostConfig,
       );
 
-      // Update last connected timestamp
-      await hostRepository!.updateLastConnected(hostId);
-      DiagnosticsLogService.instance.info(
+      preflightPhase = 'connect';
+      final result = await connect(config, onProgress: onProgress);
+
+      if (result.success && result.client != null) {
+        final connectionId = _nextConnectionId++;
+        _sessions[connectionId] = SshSession(
+          connectionId: connectionId,
+          hostId: hostId,
+          client: result.client!,
+          config: config,
+          dependentClients: result.dependentClients,
+          terminalThemeLightId: useHostThemeOverrides
+              ? host.terminalThemeLightId
+              : null,
+          terminalThemeDarkId: useHostThemeOverrides
+              ? host.terminalThemeDarkId
+              : null,
+        );
+
+        // Update last connected timestamp
+        await hostRepository!.updateLastConnected(hostId);
+        DiagnosticsLogService.instance.info(
+          'ssh.connect',
+          'connect_to_host_success',
+          fields: {
+            'hostId': hostId,
+            'connectionId': connectionId,
+            'usesJumpHost': config.jumpHost != null,
+            'usesPassword': config.password != null,
+            'identityCount': config.identityKeys?.length ?? 0,
+          },
+        );
+        return SshConnectionResult(
+          success: true,
+          client: result.client,
+          connectionId: connectionId,
+          dependentClients: result.dependentClients,
+        );
+      }
+
+      DiagnosticsLogService.instance.warning(
         'ssh.connect',
-        'connect_to_host_success',
+        'connect_to_host_failed',
         fields: {
           'hostId': hostId,
-          'connectionId': connectionId,
-          'usesJumpHost': config.jumpHost != null,
-          'usesPassword': config.password != null,
-          'identityCount': config.identityKeys?.length ?? 0,
+          'errorType': _diagnosticSshResultErrorKind(result.error),
         },
       );
-      return SshConnectionResult(
-        success: true,
-        client: result.client,
-        connectionId: connectionId,
-        dependentClients: result.dependentClients,
+      return result;
+    } on Exception catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_to_host_preflight_failed',
+        fields: {
+          'hostId': hostId,
+          'phase': preflightPhase,
+          'errorType': e.runtimeType,
+        },
+      );
+      return const SshConnectionResult(
+        success: false,
+        error:
+            'Connection setup failed. Check saved credentials and try again.',
       );
     }
-
-    DiagnosticsLogService.instance.warning(
-      'ssh.connect',
-      'connect_to_host_failed',
-      fields: {
-        'hostId': hostId,
-        'errorType': _diagnosticSshResultErrorKind(result.error),
-      },
-    );
-    return result;
   }
 
   /// Connect with a configuration.
@@ -1614,6 +2255,20 @@ Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
   },
 };
 
+String? _diagnosticClosedSshConnectionErrorReason(Object error) {
+  if (error is! SSHStateError) {
+    return null;
+  }
+  final normalized = error.message.toLowerCase();
+  if (normalized.contains('transport is closed')) {
+    return 'transport_closed';
+  }
+  if (normalized.contains('connection closed')) {
+    return 'connection_closed';
+  }
+  return null;
+}
+
 String _diagnosticSshChannelOpenReason(String description) {
   final normalized = description.toLowerCase();
   if (normalized.contains('administratively prohibited')) {
@@ -1893,8 +2548,12 @@ class SshSession {
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
-  static const _previewLineCount = 3;
-  static const _previewMaxChars = 220;
+  static const _sftpOpenRetryDelays = [
+    Duration(milliseconds: 250),
+    Duration(milliseconds: 750),
+  ];
+  static const _previewLineCount = 17;
+  static const _previewMaxChars = 1700;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
   static final _windowTitleSanitizerPattern = RegExp(r'[\x00-\x1F\x7F]');
 
@@ -1942,8 +2601,15 @@ class SshSession {
 
   late final _SshSessionRuntime _runtime = _SshSessionRuntime(this);
 
+  TerminalThemeData? _terminalTheme;
+
   /// The active terminal theme used to answer remote OSC color queries.
-  TerminalThemeData? terminalTheme;
+  TerminalThemeData? get terminalTheme => _terminalTheme;
+
+  /// Updates the active terminal theme and notifies preview listeners.
+  set terminalTheme(TerminalThemeData? theme) {
+    setTerminalTheme(theme);
+  }
 
   /// Whether the foreground app requested xterm color-scheme update reports.
   bool get terminalColorSchemeUpdatesMode =>
@@ -1954,18 +2620,31 @@ class SshSession {
 
   final _previewListeners = <VoidCallback>{};
   final _metadataListeners = <VoidCallback>{};
+  final _connectionHealthFailures =
+      StreamController<_SshConnectionHealthFailure>.broadcast();
+  bool _connectionHealthFailureReported = false;
   String? _terminalPreview;
+  TerminalPreviewSnapshot? _terminalPreviewSnapshot;
   String? _windowTitle;
   String? _iconName;
   Uri? _workingDirectory;
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
+  SftpClient? _sftpClient;
+  Future<SftpClient>? _sftpClientFuture;
 
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _runtime.terminal;
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
+
+  /// A styled preview of the latest terminal content.
+  TerminalPreviewSnapshot? get terminalPreviewSnapshot =>
+      _terminalPreviewSnapshot;
+
+  Stream<_SshConnectionHealthFailure> get _connectionHealthFailureStream =>
+      _connectionHealthFailures.stream;
 
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
@@ -2033,6 +2712,19 @@ class SshSession {
     return true;
   }
 
+  /// Updates the active terminal theme.
+  ///
+  /// Returns `true` when the theme changed enough to repaint previews.
+  bool setTerminalTheme(TerminalThemeData? theme) {
+    if (_sameTerminalTheme(_terminalTheme, theme)) {
+      _terminalTheme = theme;
+      return false;
+    }
+    _terminalTheme = theme;
+    _notifyPreviewChanged();
+    return true;
+  }
+
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) =>
       _runtime.getOrCreateTerminal(maxLines: maxLines);
@@ -2083,6 +2775,7 @@ class SshSession {
     _shellStatus = null;
     _lastExitCode = null;
     _terminalPreview = null;
+    _terminalPreviewSnapshot = null;
     _windowTitle = null;
   }
 
@@ -2261,7 +2954,7 @@ class SshSession {
     );
   }
 
-  /// Builds a compact plain-text preview from the terminal scrollback.
+  /// Builds a plain-text preview from the latest terminal display rows.
   static String? buildTerminalPreview(
     Terminal terminal, {
     int maxLines = _previewLineCount,
@@ -2270,7 +2963,6 @@ class SshSession {
     final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
     final effectiveMaxChars = maxChars < 1 ? 1 : maxChars;
     final previewLines = <String>[];
-    final currentSegments = <String>[];
 
     for (
       var index = terminal.lines.length - 1;
@@ -2281,22 +2973,10 @@ class SshSession {
       final cleanedLine = _sanitizePreviewFragment(rawLine);
 
       if (cleanedLine.isEmpty) {
-        if (currentSegments.isNotEmpty) {
-          previewLines.insert(0, currentSegments.reversed.join());
-          currentSegments.clear();
-        }
         continue;
       }
 
-      currentSegments.add(cleanedLine);
-      if (!terminal.lines[index].isWrapped) {
-        previewLines.insert(0, currentSegments.reversed.join());
-        currentSegments.clear();
-      }
-    }
-
-    if (currentSegments.isNotEmpty && previewLines.length < effectiveMaxLines) {
-      previewLines.insert(0, currentSegments.reversed.join());
+      previewLines.insert(0, cleanedLine);
     }
 
     if (previewLines.isEmpty) {
@@ -2310,12 +2990,63 @@ class SshSession {
     return preview;
   }
 
+  /// Builds a styled preview from the latest terminal display rows.
+  static TerminalPreviewSnapshot? buildTerminalPreviewSnapshot(
+    Terminal terminal, {
+    int maxLines = _previewLineCount,
+  }) {
+    final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
+    final previewLines = <TerminalPreviewLine>[];
+
+    for (
+      var index = terminal.lines.length - 1;
+      index >= 0 && previewLines.length < effectiveMaxLines;
+      index--
+    ) {
+      final sourceLine = terminal.lines[index];
+      final rawLine = sourceLine.getText();
+      final cleanedLine = _sanitizePreviewFragment(rawLine);
+
+      if (cleanedLine.isEmpty) {
+        continue;
+      }
+
+      final cells = BufferLine(
+        sourceLine.length,
+        isWrapped: sourceLine.isWrapped,
+      )..copyFrom(sourceLine, 0, 0, sourceLine.length);
+      previewLines.insert(
+        0,
+        TerminalPreviewLine(text: cleanedLine, cells: cells),
+      );
+    }
+
+    if (previewLines.isEmpty) {
+      return null;
+    }
+
+    return TerminalPreviewSnapshot(
+      lines: List.unmodifiable(previewLines),
+      plainText: previewLines.map((line) => line.text).join('\n'),
+    );
+  }
+
   static String _sanitizePreviewFragment(String text) =>
       text.replaceAll(_previewSanitizerPattern, '').trimRight();
 
   static String? _sanitizeWindowTitle(String text) {
     final sanitized = text.replaceAll(_windowTitleSanitizerPattern, '').trim();
     return sanitized.isEmpty ? null : sanitized;
+  }
+
+  static bool _sameTerminalTheme(
+    TerminalThemeData? previous,
+    TerminalThemeData? next,
+  ) {
+    if (previous == null || next == null) {
+      return previous == next;
+    }
+    return terminalThemesMatchForColors(previous, next);
   }
 
   void _notifyPreviewChanged() {
@@ -2365,6 +3096,7 @@ class SshSession {
           ..._diagnosticSshExecErrorFields(error),
         },
       );
+      _reportConnectionHealthFailureIfClosed(error, operation: 'exec');
       rethrow;
     }
   }
@@ -2382,31 +3114,131 @@ class SshSession {
 
   /// Start an SFTP session.
   Future<SftpClient> sftp() async {
+    final cachedSftp = _sftpClient;
+    if (cachedSftp != null) {
+      DiagnosticsLogService.instance.debug(
+        'ssh.sftp',
+        'reuse_client',
+        fields: {'connectionId': connectionId, 'hostId': hostId},
+      );
+      return cachedSftp;
+    }
+
+    final inFlight = _sftpClientFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _openSftpClient();
+    _sftpClientFuture = future;
+    try {
+      final sftpClient = await future;
+      if (identical(_sftpClientFuture, future)) {
+        _sftpClient = sftpClient;
+      }
+      return sftpClient;
+    } finally {
+      if (identical(_sftpClientFuture, future)) {
+        _sftpClientFuture = null;
+      }
+    }
+  }
+
+  /// Open a one-off SFTP client without using the session cache.
+  ///
+  /// Prefer [sftp] for normal app SFTP work. This exists for flows that must
+  /// bypass an in-flight shared SFTP open, such as a prompt-capable MonkeyMux
+  /// install superseding a probe-only install.
+  Future<SftpClient> openStandaloneSftp() => _openSftpClient();
+
+  /// Discard the cached SFTP client for this session.
+  ///
+  /// Use this only when an SFTP operation timed out or failed in a way that may
+  /// have left pending requests behind. Normal consumers should leave the
+  /// session-owned client open so future SFTP work can reuse the same channel.
+  void discardSftpClient(SftpClient? sftpClient) {
+    final cachedSftp = _sftpClient;
+    if (sftpClient != null) {
+      if (cachedSftp == null) {
+        sftpClient.close();
+        return;
+      }
+      if (!identical(sftpClient, cachedSftp)) {
+        return;
+      }
+    }
+    _sftpClient = null;
+    _sftpClientFuture = null;
+    cachedSftp?.close();
+  }
+
+  Future<SftpClient> _openSftpClient() async {
     DiagnosticsLogService.instance.info(
       'ssh.sftp',
       'open_start',
       fields: {'connectionId': connectionId, 'hostId': hostId},
     );
-    try {
-      final sftpClient = await client.sftp();
-      DiagnosticsLogService.instance.info(
-        'ssh.sftp',
-        'open_success',
-        fields: {'connectionId': connectionId, 'hostId': hostId},
-      );
-      return sftpClient;
-    } on Object catch (error) {
-      DiagnosticsLogService.instance.error(
-        'ssh.sftp',
-        'open_failed',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          ..._diagnosticSshExecErrorFields(error),
-        },
-      );
-      rethrow;
+
+    for (var attempt = 0; ; attempt += 1) {
+      try {
+        final sftpClient = await client.sftp();
+        DiagnosticsLogService.instance.info(
+          'ssh.sftp',
+          'open_success',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'attempt': attempt + 1,
+          },
+        );
+        return sftpClient;
+      } on Object catch (error) {
+        final retryDelay = _sftpOpenRetryDelay(error, attempt);
+        if (retryDelay != null) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.sftp',
+            'open_retry',
+            fields: {
+              'connectionId': connectionId,
+              'hostId': hostId,
+              'attempt': attempt + 1,
+              'delayMs': retryDelay.inMilliseconds,
+              ..._diagnosticSshExecErrorFields(error),
+            },
+          );
+          await Future<void>.delayed(retryDelay);
+          continue;
+        }
+
+        DiagnosticsLogService.instance.error(
+          'ssh.sftp',
+          'open_failed',
+          fields: {
+            'connectionId': connectionId,
+            'hostId': hostId,
+            'attempt': attempt + 1,
+            ..._diagnosticSshExecErrorFields(error),
+          },
+        );
+        _reportConnectionHealthFailureIfClosed(error, operation: 'sftp');
+        rethrow;
+      }
     }
+  }
+
+  Duration? _sftpOpenRetryDelay(Object error, int attempt) {
+    if (attempt >= _sftpOpenRetryDelays.length ||
+        !_isTransientSftpOpenError(error)) {
+      return null;
+    }
+    return _sftpOpenRetryDelays[attempt];
+  }
+
+  bool _isTransientSftpOpenError(Object error) {
+    if (error is! SSHChannelOpenError) {
+      return false;
+    }
+    return error.code == 2 || error.code == 4;
   }
 
   /// Start a local port forward tunnel.
@@ -2445,6 +3277,20 @@ class SshSession {
           final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
 
           await Future.any<void>([forwardToSocket, socketToForward]);
+        } on SSHError catch (e) {
+          DiagnosticsLogService.instance.warning(
+            'ssh.forward',
+            'local_connection_failed',
+            fields: {
+              'connectionId': connectionId,
+              'hostId': hostId,
+              ..._diagnosticSshExecErrorFields(e),
+            },
+          );
+          _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
+          if (kDebugMode) {
+            debugPrint('Port forward connection error: $e');
+          }
         } on Exception catch (e) {
           DiagnosticsLogService.instance.warning(
             'ssh.forward',
@@ -2545,6 +3391,21 @@ class SshSession {
       });
 
       return true;
+    } on SSHError catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'remote_start_failed',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          ..._diagnosticSshExecErrorFields(e),
+        },
+      );
+      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_remote');
+      if (kDebugMode) {
+        debugPrint('Failed to start remote forward: $e');
+      }
+      return false;
     } on Exception catch (e) {
       DiagnosticsLogService.instance.warning(
         'ssh.forward',
@@ -2581,17 +3442,66 @@ class SshSession {
     int remotePort, {
     String localHost = 'localhost',
     int localPort = 0,
-  }) => client.forwardLocal(remoteHost, remotePort);
+  }) async {
+    try {
+      return await client.forwardLocal(remoteHost, remotePort);
+    } on SSHError catch (e) {
+      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
+      rethrow;
+    }
+  }
 
   /// Close the session.
   Future<void> close() async {
     await stopAllForwards();
     await closeShell();
+    discardSftpClient(null);
+    await _connectionHealthFailures.close();
     client.close();
     for (final dependentClient in dependentClients) {
       dependentClient.close();
     }
   }
+
+  void _reportConnectionHealthFailureIfClosed(
+    Object error, {
+    required String operation,
+  }) {
+    final reason = _diagnosticClosedSshConnectionErrorReason(error);
+    if (reason == null ||
+        _connectionHealthFailureReported ||
+        _connectionHealthFailures.isClosed) {
+      return;
+    }
+    _connectionHealthFailureReported = true;
+    DiagnosticsLogService.instance.warning(
+      'ssh.session',
+      'stale_connection_detected',
+      fields: {
+        'connectionId': connectionId,
+        'hostId': hostId,
+        'operation': operation,
+        'reason': reason,
+        'errorType': error.runtimeType,
+      },
+    );
+    _connectionHealthFailures.add(
+      _SshConnectionHealthFailure(
+        connectionId: connectionId,
+        message: 'Connection became unresponsive. Reconnect to continue.',
+      ),
+    );
+  }
+}
+
+class _SshConnectionHealthFailure {
+  const _SshConnectionHealthFailure({
+    required this.connectionId,
+    required this.message,
+  });
+
+  final int connectionId;
+  final String message;
 }
 
 /// Lightweight active connection metadata for UI.
@@ -2604,6 +3514,9 @@ class ActiveConnection {
     required this.createdAt,
     required this.config,
     this.preview,
+    this.previewSnapshot,
+    this.terminalTheme,
+    this.sessionTitle,
     this.windowTitle,
     this.iconName,
     this.workingDirectory,
@@ -2632,6 +3545,15 @@ class ActiveConnection {
 
   /// The latest terminal preview snippet, when available.
   final String? preview;
+
+  /// The latest styled terminal preview snippet, when available.
+  final TerminalPreviewSnapshot? previewSnapshot;
+
+  /// The active terminal theme resolved for this connection.
+  final TerminalThemeData? terminalTheme;
+
+  /// The active coding-agent session title, when available.
+  final String? sessionTitle;
 
   /// The latest remote window title, when available.
   final String? windowTitle;
@@ -2733,14 +3655,26 @@ final activeSessionsProvider =
       ActiveSessionsNotifier.new,
     );
 
+/// Provider for host-level connection attempt progress.
+final connectionAttemptProvider =
+    Provider.family<ConnectionAttemptStatus?, int>((ref, hostId) {
+      ref.watch(activeSessionsProvider);
+      return ref
+          .read(activeSessionsProvider.notifier)
+          .getConnectionAttempt(hostId);
+    });
+
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   static const _previewStateRefreshInterval = Duration(milliseconds: 150);
 
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
+  final Map<int, String> _connectionSessionTitles = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
+  final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
+  _connectionHealthFailureSubscriptions = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -2756,8 +3690,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         unawaited(subscription.cancel());
       }
       _disconnectSubscriptions.clear();
+      for (final subscription in _connectionHealthFailureSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _connectionHealthFailureSubscriptions.clear();
     });
     _connectionHostIds.clear();
+    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     return {};
   }
@@ -2849,6 +3788,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
+    _connectionSessionTitles.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
     await _queueBackgroundStatusSync();
@@ -2866,6 +3806,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
+    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     state = {};
     await _queueBackgroundStatusSync();
@@ -2894,6 +3835,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       createdAt: session.createdAt,
       config: session.config,
       preview: session.terminalPreview,
+      previewSnapshot: session.terminalPreviewSnapshot,
+      terminalTheme: session.terminalTheme,
+      sessionTitle: _connectionSessionTitles[connectionId],
       windowTitle: session.windowTitle,
       iconName: session.iconName,
       workingDirectory: session.workingDirectory,
@@ -2988,6 +3932,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           createdAt: session.createdAt,
           config: session.config,
           preview: session.terminalPreview,
+          previewSnapshot: session.terminalPreviewSnapshot,
+          terminalTheme: session.terminalTheme,
+          sessionTitle: _connectionSessionTitles[connectionId],
           windowTitle: session.windowTitle,
           iconName: session.iconName,
           workingDirectory: session.workingDirectory,
@@ -3021,6 +3968,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (existingSubscription != null) {
       unawaited(existingSubscription.cancel());
     }
+    final existingHealthFailureSubscription =
+        _connectionHealthFailureSubscriptions.remove(session.connectionId);
+    if (existingHealthFailureSubscription != null) {
+      unawaited(existingHealthFailureSubscription.cancel());
+    }
     _disconnectSubscriptions[session.connectionId] = session.client.done
         .asStream()
         .listen(
@@ -3037,6 +3989,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
             ),
           ),
         );
+    _connectionHealthFailureSubscriptions[session.connectionId] = session
+        ._connectionHealthFailureStream
+        .listen(
+          (failure) => unawaited(
+            handleUnexpectedDisconnect(
+              failure.connectionId,
+              message: failure.message,
+            ),
+          ),
+        );
   }
 
   void _detachSessionListeners(int connectionId, {SshSession? session}) {
@@ -3046,6 +4008,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final subscription = _disconnectSubscriptions.remove(connectionId);
     if (subscription != null) {
       unawaited(subscription.cancel());
+    }
+    final healthFailureSubscription = _connectionHealthFailureSubscriptions
+        .remove(connectionId);
+    if (healthFailureSubscription != null) {
+      unawaited(healthFailureSubscription.cancel());
     }
   }
 
@@ -3070,6 +4037,27 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         _schedulePreviewStateRefresh();
       }
     });
+  }
+
+  /// Update the active coding-agent session title attached to a connection.
+  void updateConnectionSessionTitle(int connectionId, String? sessionTitle) {
+    final normalizedTitle = _normalizeConnectionSessionTitle(sessionTitle);
+    final currentTitle = _connectionSessionTitles[connectionId];
+    if (normalizedTitle == currentTitle ||
+        (normalizedTitle == null && currentTitle == null)) {
+      return;
+    }
+    if (normalizedTitle == null) {
+      _connectionSessionTitles.remove(connectionId);
+    } else {
+      _connectionSessionTitles[connectionId] = normalizedTitle;
+    }
+    state = {...state};
+  }
+
+  String? _normalizeConnectionSessionTitle(String? sessionTitle) {
+    final trimmed = sessionTitle?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 
   void _updateConnectionAttempt(
@@ -3135,6 +4123,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _detachSessionListeners(connectionId, session: session);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
+    _connectionSessionTitles.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
     if (hostId != null) {

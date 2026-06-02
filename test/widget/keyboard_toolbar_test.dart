@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_menu_style.dart';
 import 'package:xterm/xterm.dart';
+
+const _terminalAlternateEnterInput = '\x1b\r';
 
 String _terminalKeyOutput(
   TerminalKey key, {
@@ -307,10 +310,28 @@ void main() {
       expect(keyPressedCount, 1);
     });
 
+    testWidgets('Paste button shows an ellipsis long-press options indicator', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      expect(
+        find.descendant(
+          of: find.byTooltip('Paste'),
+          matching: find.byIcon(Icons.more_horiz_rounded),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('Paste long press opens an anchored drag-release menu', (
       tester,
     ) async {
-      var imagePasteCount = 0;
+      var mediaPasteCount = 0;
       var filePasteCount = 0;
 
       await tester.pumpWidget(
@@ -321,7 +342,7 @@ void main() {
                 const Spacer(),
                 KeyboardToolbar(
                   terminal: terminal,
-                  onPasteImageRequested: () async => imagePasteCount++,
+                  onPasteMediaRequested: () async => mediaPasteCount++,
                   onPasteFilesRequested: () async => filePasteCount++,
                 ),
               ],
@@ -335,22 +356,65 @@ void main() {
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump();
 
-      expect(find.text('Paste Images'), findsOneWidget);
+      expect(find.text('Paste Media'), findsOneWidget);
       expect(find.text('Paste Files'), findsOneWidget);
       expect(
-        tester.getCenter(find.text('Paste Images')).dy,
+        tester.getCenter(find.text('Paste Media')).dy,
         lessThan(pasteCenter.dy),
       );
 
-      await gesture.moveTo(tester.getCenter(find.text('Paste Images')));
+      await gesture.moveTo(tester.getCenter(find.text('Paste Media')));
       await tester.pump();
       await gesture.up();
       await tester.pump();
 
-      expect(imagePasteCount, 1);
+      expect(mediaPasteCount, 1);
       expect(filePasteCount, 0);
-      expect(find.text('Paste Images'), findsNothing);
+      expect(find.text('Paste Media'), findsNothing);
       expect(find.text('Paste Files'), findsNothing);
+    });
+
+    testWidgets('Paste long press uses terminal menu styling', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                const Spacer(),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  onPasteMediaRequested: () async {},
+                  onPasteFilesRequested: () async {},
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final pasteCenter = tester.getCenter(find.byTooltip('Paste'));
+      final gesture = await tester.startGesture(pasteCenter);
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump();
+
+      final pasteMedia = find.text('Paste Media');
+      final menuMaterial = tester.widget<Material>(
+        find.ancestor(of: pasteMedia, matching: find.byType(Material)).first,
+      );
+      final menuContext = tester.element(pasteMedia);
+
+      expect(menuMaterial.color, TerminalMenuStyles.surfaceColor(menuContext));
+      expect(menuMaterial.elevation, TerminalMenuStyles.elevation);
+      expect(
+        menuMaterial.shape,
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(TerminalMenuStyles.borderRadius),
+        ),
+      );
+      expect(find.byType(Divider), findsNothing);
+
+      await gesture.cancel();
+      await tester.pump();
     });
 
     testWidgets('Paste long press releases over a top-level snippet', (
@@ -555,11 +619,27 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
-      expect(
-        output,
-        contains(_terminalKeyOutput(TerminalKey.enter, shift: true)),
-      );
+      expect(output, contains(_terminalAlternateEnterInput));
     });
+
+    testWidgets('toolbar Alt applies to Enter', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Alt'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Enter'));
+      await tester.pump();
+
+      expect(output, contains(_terminalAlternateEnterInput));
+    });
+
     test('keeps bottom safe-area padding when keyboard is closed', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 

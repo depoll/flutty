@@ -1,14 +1,19 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/app/router.dart';
+import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
+import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 class _MockAuthService extends Mock implements AuthService {}
+
+class _MockBuildContext extends Mock implements BuildContext {}
 
 void main() {
   group('redirectForAuthState', () {
@@ -244,6 +249,54 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
+    test('terminal route animates the live page during transitions', () {
+      final router = container.read(routerProvider);
+      final terminalRoute = router.configuration.routes
+          .whereType<GoRoute>()
+          .singleWhere((route) => route.name == Routes.terminal);
+
+      final page = terminalRoute.pageBuilder!(
+        _MockBuildContext(),
+        GoRouterState(
+          router.configuration,
+          uri: Uri.parse('/terminal/1?connectionId=7'),
+          matchedLocation: '/terminal/1',
+          name: Routes.terminal,
+          path: '/terminal/:hostId',
+          fullPath: '/terminal/:hostId',
+          pathParameters: const {'hostId': '1'},
+          pageKey: const ValueKey<String>('/terminal/:hostId'),
+          topRoute: terminalRoute,
+        ),
+      );
+
+      final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
+
+      expect(route, isA<PageRoute<void>>());
+      expect(route.opaque, isFalse);
+      expect(route.allowSnapshotting, isFalse);
+    });
+
+    test('terminal route keys distinguish expand tmux requests', () {
+      final router = container.read(routerProvider);
+      final terminalRoute = router.configuration.routes
+          .whereType<GoRoute>()
+          .singleWhere((route) => route.name == Routes.terminal);
+
+      final collapsed = _terminalScreenFor(
+        router: router,
+        route: terminalRoute,
+        uri: Uri.parse('/terminal/1?connectionId=7'),
+      );
+      final expanded = _terminalScreenFor(
+        router: router,
+        route: terminalRoute,
+        uri: Uri.parse('/terminal/1?connectionId=7&expandTmux=1'),
+      );
+
+      expect(collapsed.key, isNot(expanded.key));
+    });
+
     test('intentionally returns a new GoRouter instance when authState changes '
         'to reset protected back-stack history', () async {
       // Initialise the auth notifier and let it settle to notConfigured.
@@ -357,4 +410,43 @@ void main() {
       );
     });
   });
+}
+
+TerminalScreen _terminalScreenFor({
+  required GoRouter router,
+  required GoRoute route,
+  required Uri uri,
+}) {
+  final page = route.pageBuilder!(
+    _MockBuildContext(),
+    GoRouterState(
+      router.configuration,
+      uri: uri,
+      matchedLocation: '/terminal/1',
+      name: Routes.terminal,
+      path: '/terminal/:hostId',
+      fullPath: '/terminal/:hostId',
+      pathParameters: const {'hostId': '1'},
+      pageKey: const ValueKey<String>('/terminal/:hostId'),
+      topRoute: route,
+    ),
+  );
+  final terminalRoute =
+      page.createRoute(_MockBuildContext()) as PageRoute<void>;
+  final pageWidget = terminalRoute.buildPage(
+    _MockBuildContext(),
+    kAlwaysCompleteAnimation,
+    kAlwaysDismissedAnimation,
+  );
+  return _findTerminalScreen(pageWidget);
+}
+
+TerminalScreen _findTerminalScreen(Widget widget) {
+  if (widget is TerminalScreen) {
+    return widget;
+  }
+  if (widget is Semantics && widget.child != null) {
+    return _findTerminalScreen(widget.child!);
+  }
+  throw StateError('TerminalScreen not found in terminal route page.');
 }

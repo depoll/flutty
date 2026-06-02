@@ -7,13 +7,20 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show
+        TargetPlatform,
+        defaultTargetPlatform,
+        kIsWeb,
+        listEquals,
+        visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
+import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/cell_flags.dart';
 import 'package:xterm/src/core/buffer/line.dart';
@@ -45,10 +52,28 @@ import 'package:xterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
+import 'terminal_key_input.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
 const _minimumFaintTextContrast = 4.5;
+const _minimumCursorTextContrast = 4.5;
+const _minimumCellTextContrast = 4.5;
+const _minimumCellBackgroundContrast = 1.04;
+const _maximumNeutralCellBackgroundContrast = 1.75;
+const _backgroundAlphaCandidates = <int>[
+  0x26,
+  0x33,
+  0x40,
+  0x52,
+  0x66,
+  0x72,
+  0x80,
+  0x8F,
+  0xA3,
+  0xB8,
+  0xCC,
+];
 
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
@@ -174,6 +199,186 @@ Color resolveMonkeyTerminalFaintForegroundColor({
       ? readableFaint
       : foreground;
 }
+
+/// Resolves a readable glyph color for text covered by a focused block cursor.
+@visibleForTesting
+Color resolveMonkeyTerminalCursorForegroundColor({
+  required Color cursor,
+  required Color background,
+  required Color foreground,
+  Color? cellBackground,
+  double minimumContrast = _minimumCursorTextContrast,
+}) {
+  final effectiveCellBackground = Color.alphaBlend(
+    cellBackground ?? background,
+    background,
+  );
+  final cursorBackground = Color.alphaBlend(cursor, effectiveCellBackground);
+  Color resolveOpaque(Color color) =>
+      Color.alphaBlend(color, effectiveCellBackground);
+
+  final preferredCandidates = <Color>[
+    if (cellBackground != null) resolveOpaque(cellBackground),
+    resolveOpaque(background),
+    resolveOpaque(foreground),
+  ];
+
+  for (final candidate in preferredCandidates) {
+    if (_contrastRatio(candidate, cursorBackground) >= minimumContrast) {
+      return candidate;
+    }
+  }
+
+  const black = Color(0xFF000000);
+  const white = Color(0xFFFFFFFF);
+  final fallbackCandidates = <Color>[...preferredCandidates, black, white];
+
+  return fallbackCandidates.reduce((best, candidate) {
+    final bestContrast = _contrastRatio(best, cursorBackground);
+    final candidateContrast = _contrastRatio(candidate, cursorBackground);
+    return candidateContrast > bestContrast ? candidate : best;
+  });
+}
+
+/// Resolves a readable paint color for explicit cell backgrounds.
+@visibleForTesting
+Color resolveMonkeyTerminalReadableBackgroundColor({
+  required Color foreground,
+  required Color background,
+  required Color terminalBackground,
+  double minimumTextContrast = _minimumCellTextContrast,
+  double minimumBackgroundContrast = _minimumCellBackgroundContrast,
+  double maximumNeutralBackgroundContrast =
+      _maximumNeutralCellBackgroundContrast,
+  bool toneNeutralBackgrounds = true,
+}) {
+  final effectiveForeground = Color.alphaBlend(foreground, terminalBackground);
+  final effectiveBackground = Color.alphaBlend(background, terminalBackground);
+  final textContrast = _contrastRatio(effectiveForeground, effectiveBackground);
+  final backgroundContrast = _contrastRatio(
+    effectiveBackground,
+    terminalBackground,
+  );
+  if (toneNeutralBackgrounds &&
+      backgroundContrast > maximumNeutralBackgroundContrast &&
+      _isNeutralTerminalColor(background)) {
+    final neutralBackground = _resolveNeutralTerminalBackgroundColor(
+      background: background,
+      terminalBackground: terminalBackground,
+      minimumBackgroundContrast: minimumBackgroundContrast,
+      maximumBackgroundContrast: maximumNeutralBackgroundContrast,
+    );
+    if (neutralBackground != null) {
+      return neutralBackground;
+    }
+  }
+
+  if (textContrast >= minimumTextContrast) {
+    return background;
+  }
+
+  if (_contrastRatio(effectiveForeground, terminalBackground) <
+      minimumTextContrast) {
+    return background;
+  }
+
+  for (final alpha in _backgroundAlphaCandidates) {
+    final candidate = Color.alphaBlend(
+      background.withAlpha(alpha),
+      terminalBackground,
+    );
+    if (_contrastRatio(effectiveForeground, candidate) >= minimumTextContrast &&
+        _contrastRatio(candidate, terminalBackground) >=
+            minimumBackgroundContrast) {
+      return candidate;
+    }
+  }
+
+  return background;
+}
+
+Color? _resolveNeutralTerminalBackgroundColor({
+  required Color background,
+  required Color terminalBackground,
+  required double minimumBackgroundContrast,
+  required double maximumBackgroundContrast,
+}) {
+  for (final alpha in _backgroundAlphaCandidates.reversed) {
+    final candidate = Color.alphaBlend(
+      background.withAlpha(alpha),
+      terminalBackground,
+    );
+    final contrast = _contrastRatio(candidate, terminalBackground);
+    if (contrast >= minimumBackgroundContrast &&
+        contrast <= maximumBackgroundContrast) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+bool _isNeutralTerminalColor(Color color) {
+  final value = color.toARGB32();
+  final red = (value >> 16) & 0xFF;
+  final green = (value >> 8) & 0xFF;
+  final blue = value & 0xFF;
+  final maxChannel = math.max(red, math.max(green, blue));
+  final minChannel = math.min(red, math.min(green, blue));
+  return maxChannel - minChannel <= 24;
+}
+
+/// Resolves a readable paint color for text cells.
+@visibleForTesting
+Color resolveMonkeyTerminalReadableForegroundColor({
+  required Color foreground,
+  required Color background,
+  required Color terminalForeground,
+  required Color terminalBackground,
+  double minimumContrast = _minimumCellTextContrast,
+}) {
+  if (_contrastRatio(foreground, background) >= minimumContrast) {
+    return foreground;
+  }
+
+  if (_contrastRatio(terminalForeground, background) >= minimumContrast) {
+    var low = 0.0;
+    var high = 1.0;
+    for (var iteration = 0; iteration < 12; iteration += 1) {
+      final mid = (low + high) / 2;
+      final candidate = Color.lerp(foreground, terminalForeground, mid)!;
+      if (_contrastRatio(candidate, background) >= minimumContrast) {
+        high = mid;
+      } else {
+        low = mid;
+      }
+    }
+
+    final readableForeground = Color.lerp(
+      foreground,
+      terminalForeground,
+      high,
+    )!;
+    return _contrastRatio(readableForeground, background) >= minimumContrast
+        ? readableForeground
+        : terminalForeground;
+  }
+
+  final candidates = <Color>[
+    terminalForeground,
+    terminalBackground,
+    const Color(0xFF000000),
+    const Color(0xFFFFFFFF),
+  ];
+
+  return candidates.reduce((best, candidate) {
+    final bestContrast = _contrastRatio(best, background);
+    final candidateContrast = _contrastRatio(candidate, background);
+    return candidateContrast > bestContrast ? candidate : best;
+  });
+}
+
+int _encodeRgbCellColor(Color color) =>
+    (color.toARGB32() & CellColor.valueMask) | CellColor.rgb;
 
 /// Terminal render padding.
 ///
@@ -327,6 +532,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
+    this.forceSgrTouchScroll = false,
     this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
@@ -461,6 +667,9 @@ class MonkeyTerminalView extends StatefulWidget {
   /// instead of scrolling the Flutter viewport.
   final bool touchScrollToTerminal;
 
+  /// If true, sends SGR wheel reports even when local mouse mode state is stale.
+  final bool forceSgrTouchScroll;
+
   /// If true, the terminal keeps the viewport pinned to the newest output while
   /// it is already scrolled to the bottom.
   final bool liveOutputAutoScroll;
@@ -546,6 +755,18 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   @override
+  void activate() {
+    super.activate();
+    _logAndroidBackLifecycle('activate');
+  }
+
+  @override
+  void deactivate() {
+    _logAndroidBackLifecycle('deactivate');
+    super.deactivate();
+  }
+
+  @override
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
     if (oldWidget.terminal != widget.terminal) {
       oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
@@ -580,12 +801,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
+    if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
+      _stopTouchScrollInertia();
+      _touchScrollRemainder = 0;
+    }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
   }
 
   @override
   void dispose() {
+    _logAndroidBackLifecycle('dispose');
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
     _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
@@ -601,6 +827,30 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
     _shortcutManager.dispose();
     super.dispose();
+  }
+
+  void _logAndroidBackLifecycle(String event) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android ||
+        !diagnostics.enabled) {
+      return;
+    }
+    diagnostics.debug(
+      'android.back',
+      'terminal_view_lifecycle',
+      fields: <String, Object?>{
+        'event': event,
+        'mounted': mounted,
+        'terminalViewWidth': widget.terminal.viewWidth,
+        'terminalViewHeight': widget.terminal.viewHeight,
+        'hasFocus': _focusNode.hasFocus,
+        'usesExternalFocusNode': widget.focusNode != null,
+        'autoResize': widget.autoResize,
+        'simulateScroll': widget.simulateScroll,
+        'touchScrollToTerminal': widget.touchScrollToTerminal,
+      },
+    );
   }
 
   void _handleTerminalMetricsChanged() {
@@ -670,11 +920,36 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   }
 
   /// Re-sends the current viewport dimensions to the attached terminal.
-  void refreshTerminalSize() {
+  ///
+  /// When [flushKeyboardResize] is true, any debounced keyboard-inset resize is
+  /// applied immediately before reporting the dimensions.
+  void refreshTerminalSize({bool flushKeyboardResize = false}) {
     final renderObject = _viewportKey.currentContext?.findRenderObject();
     if (renderObject is MonkeyRenderTerminal) {
-      renderObject._refreshTerminalSize();
+      renderObject._refreshTerminalSize(
+        flushKeyboardResize: flushKeyboardResize,
+      );
     }
+  }
+
+  /// Forces the visible terminal viewport to repaint after remote replay.
+  void refreshTerminalDisplay({bool revealLatestOutput = false}) {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    if (renderObject is MonkeyRenderTerminal) {
+      renderObject._refreshTerminalDisplay(
+        revealLatestOutput: revealLatestOutput,
+      );
+    }
+    if (!revealLatestOutput) {
+      return;
+    }
+
+    _scrollToBottom();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _scrollToBottom();
+      }
+    });
   }
 
   @override
@@ -736,6 +1011,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       child = MonkeyTerminalScrollGestureHandler(
         terminal: widget.terminal,
         simulateScroll: widget.simulateScroll,
+        forceSgr: widget.forceSgrTouchScroll,
         getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
         getLineHeight: () => renderTerminal.lineHeight,
         child: child,
@@ -957,7 +1233,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (lineHeight <= 0) {
       return 0;
     }
-    if (widget.terminal.mouseMode.reportScroll) {
+    if (widget.terminal.mouseMode.reportScroll || widget.forceSgrTouchScroll) {
       return lineHeight * _touchScrollReportedWheelLinesPerEvent;
     }
     return lineHeight;
@@ -1037,6 +1313,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     terminal: widget.terminal,
     button: button,
     position: position,
+    forceSgr: widget.forceSgrTouchScroll,
   );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {
@@ -1112,12 +1389,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return KeyEventResult.ignored;
     }
 
-    final handled = widget.terminal.keyInput(
-      key,
-      ctrl: HardwareKeyboard.instance.isControlPressed,
-      alt: HardwareKeyboard.instance.isAltPressed,
-      shift: HardwareKeyboard.instance.isShiftPressed,
-    );
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    final alt = HardwareKeyboard.instance.isAltPressed;
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final handled = key == TerminalKey.enter
+        ? sendTerminalEnterInput(
+            widget.terminal,
+            shiftActive: shift,
+            altActive: alt,
+            ctrlActive: ctrl,
+          )
+        : widget.terminal.keyInput(key, ctrl: ctrl, alt: alt, shift: shift);
 
     if (handled) {
       _scrollToBottom();
@@ -1322,6 +1604,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
   List<Color> _palette;
   final _paragraphCache = ParagraphCache(10240);
   final _inlineUnderlineParagraphCache = ParagraphCache(1024);
+  final _cursorCellData = CellData.empty();
 
   @override
   set textStyle(TerminalStyle value) {
@@ -1361,6 +1644,54 @@ class MonkeyTerminalPainter extends TerminalPainter {
     _inlineUnderlineParagraphCache.clear();
   }
 
+  void paintReadableCursor(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData, {
+    required TerminalCursorType cursorType,
+    required bool hasFocus,
+  }) {
+    paintCursor(canvas, offset, cursorType: cursorType, hasFocus: hasFocus);
+
+    if (!hasFocus || cursorType != TerminalCursorType.block) {
+      return;
+    }
+
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return;
+    }
+
+    _cursorCellData
+      ..foreground = _encodeRgbCellColor(
+        _resolveCursorForegroundColor(cellData),
+      )
+      ..background = _encodeRgbCellColor(theme.cursor)
+      ..flags = cellData.flags & ~CellFlags.inverse & ~CellFlags.faint
+      ..content = cellData.content;
+
+    canvas
+      ..save()
+      ..clipRect(offset & cellSize);
+    paintCellForeground(canvas, offset, _cursorCellData);
+    canvas.restore();
+  }
+
+  Color _resolveCursorForegroundColor(CellData cellData) {
+    final cellFlags = cellData.flags;
+    final inverse = cellFlags & CellFlags.inverse != 0;
+    final cellBackground = inverse
+        ? resolveForegroundColor(cellData.foreground)
+        : resolveBackgroundColor(cellData.background);
+
+    return resolveMonkeyTerminalCursorForegroundColor(
+      cursor: theme.cursor,
+      background: theme.background,
+      foreground: theme.foreground,
+      cellBackground: cellBackground,
+    );
+  }
+
   void paintLineInlineUnderlines(
     Canvas canvas,
     Offset offset,
@@ -1383,6 +1714,133 @@ class MonkeyTerminalPainter extends TerminalPainter {
         i++;
       }
     }
+  }
+
+  @override
+  void paintLine(Canvas canvas, Offset offset, BufferLine line) {
+    paintLineBackground(canvas, offset, line);
+    paintLineTrailingBackgroundFill(canvas, offset, line);
+    super.paintLine(canvas, offset, line);
+  }
+
+  void paintLineBackground(Canvas canvas, Offset offset, BufferLine line) {
+    if (line.length == 0) {
+      return;
+    }
+
+    canvas.drawRect(
+      Rect.fromLTWH(
+        offset.dx,
+        offset.dy,
+        line.length * cellSize.width,
+        cellSize.height,
+      ),
+      Paint()..color = theme.background,
+    );
+  }
+
+  void paintLineTrailingBackgroundFill(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+  ) {
+    final fill = resolveMonkeyTerminalTrailingBackgroundFill(line);
+    if (fill == null) {
+      return;
+    }
+
+    canvas.drawRect(
+      Rect.fromLTWH(
+        offset.dx + (fill.startColumn * cellSize.width),
+        offset.dy,
+        (line.length - fill.startColumn) * cellSize.width,
+        cellSize.height,
+      ),
+      Paint()..color = fill.color,
+    );
+  }
+
+  ({int startColumn, Color color})? resolveMonkeyTerminalTrailingBackgroundFill(
+    BufferLine line,
+  ) {
+    if (line.length == 0) {
+      return null;
+    }
+
+    final firstCell = CellData.empty();
+    final runStartColumn = _trailingBackgroundRunStartColumn(line, firstCell);
+    if (runStartColumn == null) {
+      return null;
+    }
+
+    final background = firstCell.background;
+    var fillStartColumn = runStartColumn;
+    var hasHighlightedContent = false;
+    for (; fillStartColumn < line.length; fillStartColumn += 1) {
+      if (line.getBackground(fillStartColumn) != background) {
+        break;
+      }
+      hasHighlightedContent |= line.getCodePoint(fillStartColumn) != 0;
+    }
+
+    if (!hasHighlightedContent || fillStartColumn >= line.length) {
+      return null;
+    }
+
+    for (var column = fillStartColumn; column < line.length; column += 1) {
+      if (line.getCodePoint(column) != 0 ||
+          _cellColorType(line.getBackground(column)) != CellColor.normal) {
+        return null;
+      }
+    }
+
+    return (
+      startColumn: fillStartColumn,
+      color: _resolveCellBackgroundPaintColor(firstCell),
+    );
+  }
+
+  int? _trailingBackgroundRunStartColumn(BufferLine line, CellData firstCell) {
+    line.getCellData(0, firstCell);
+    if (_shouldExtendTrailingBackgroundFill(firstCell)) {
+      return 0;
+    }
+
+    for (var column = 0; column < line.length; column += 1) {
+      line.getCellData(column, firstCell);
+      if (_shouldExtendTrailingBackgroundFill(firstCell)) {
+        return column;
+      }
+      final charCode = firstCell.content & CellContent.codepointMask;
+      final isBlankNormalCell =
+          charCode == 0 &&
+          (firstCell.flags & CellFlags.inverse) == 0 &&
+          _cellBackgroundColorType(firstCell) == CellColor.normal;
+      if (!isBlankNormalCell) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  @override
+  void paintCellBackground(Canvas canvas, Offset offset, CellData cellData) {
+    final colorType = _cellBackgroundColorType(cellData);
+    if (cellData.flags & CellFlags.inverse == 0 &&
+        colorType == CellColor.normal) {
+      return;
+    }
+
+    final charCode = cellData.content & CellContent.codepointMask;
+    final paint = Paint()
+      ..color = _resolveCellBackgroundPaintColor(
+        cellData,
+        toneNeutralBackgrounds: !_isRectPaintedBlockElement(charCode),
+      );
+    final doubleWidth = cellData.content >> CellContent.widthShift == 2;
+    final widthScale = doubleWidth ? 2 : 1;
+    final size = Size(cellSize.width * widthScale + 1, cellSize.height);
+    canvas.drawRect(offset & size, paint);
   }
 
   bool _shouldUnderlineCell(
@@ -1419,7 +1877,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
             italic: cellFlags & CellFlags.italic != 0,
             underline: true,
           )
-          .copyWith(decorationColor: _resolveCellForegroundColor(cellData));
+          .copyWith(
+            decorationColor: resolveMonkeyTerminalCellForegroundColor(cellData),
+          );
 
       var char = String.fromCharCode(charCode);
       if (charCode == 0x20) {
@@ -1444,13 +1904,22 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
 
+    final cellFlags = cellData.flags;
+    final color = resolveMonkeyTerminalCellForegroundColor(cellData);
+    if (_paintBlockElementForeground(
+      canvas,
+      offset,
+      cellData,
+      charCode,
+      color,
+    )) {
+      return;
+    }
+
     final cacheKey = cellData.getHash() ^ textScaler.hashCode;
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
-      final cellFlags = cellData.flags;
-      final color = _resolveCellForegroundColor(cellData);
-
       final style = textStyle.toTextStyle(
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
@@ -1474,7 +1943,122 @@ class MonkeyTerminalPainter extends TerminalPainter {
     canvas.drawParagraph(paragraph, offset);
   }
 
-  Color _resolveCellForegroundColor(CellData cellData) {
+  bool _paintBlockElementForeground(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+    int charCode,
+    Color color,
+  ) {
+    final widthScale = cellData.content >> CellContent.widthShift == 2 ? 2 : 1;
+    final width = (cellSize.width * widthScale) + 1;
+    final height = cellSize.height;
+    final halfWidth = width / 2;
+    final halfHeight = height / 2;
+    final paint = Paint()..color = color;
+
+    void drawRect(
+      double left,
+      double top,
+      double rectWidth,
+      double rectHeight,
+    ) {
+      canvas.drawRect(
+        Rect.fromLTWH(offset.dx + left, offset.dy + top, rectWidth, rectHeight),
+        paint,
+      );
+    }
+
+    void drawQuadrants({
+      bool upperLeft = false,
+      bool upperRight = false,
+      bool lowerLeft = false,
+      bool lowerRight = false,
+    }) {
+      if (upperLeft) {
+        drawRect(0, 0, halfWidth, halfHeight);
+      }
+      if (upperRight) {
+        drawRect(halfWidth, 0, width - halfWidth, halfHeight);
+      }
+      if (lowerLeft) {
+        drawRect(0, halfHeight, halfWidth, height - halfHeight);
+      }
+      if (lowerRight) {
+        drawRect(halfWidth, halfHeight, width - halfWidth, height - halfHeight);
+      }
+    }
+
+    if (charCode >= 0x2581 && charCode <= 0x2587) {
+      final blockHeight = height * (charCode - 0x2580) / 8;
+      drawRect(0, height - blockHeight, width, blockHeight);
+      return true;
+    }
+    if (charCode >= 0x2589 && charCode <= 0x258F) {
+      final blockWidth = width * (0x2590 - charCode) / 8;
+      drawRect(0, 0, blockWidth, height);
+      return true;
+    }
+
+    switch (charCode) {
+      case 0x2580:
+        drawRect(0, 0, width, halfHeight);
+        return true;
+      case 0x2588:
+        drawRect(0, 0, width, height);
+        return true;
+      case 0x2590:
+        drawRect(halfWidth, 0, width - halfWidth, height);
+        return true;
+      case 0x2594:
+        drawRect(0, 0, width, height / 8);
+        return true;
+      case 0x2595:
+        drawRect(width * 7 / 8, 0, width / 8, height);
+        return true;
+      case 0x2596:
+        drawQuadrants(lowerLeft: true);
+        return true;
+      case 0x2597:
+        drawQuadrants(lowerRight: true);
+        return true;
+      case 0x2598:
+        drawQuadrants(upperLeft: true);
+        return true;
+      case 0x2599:
+        drawQuadrants(upperLeft: true, lowerLeft: true, lowerRight: true);
+        return true;
+      case 0x259A:
+        drawQuadrants(upperLeft: true, lowerRight: true);
+        return true;
+      case 0x259B:
+        drawQuadrants(upperLeft: true, upperRight: true, lowerLeft: true);
+        return true;
+      case 0x259C:
+        drawQuadrants(upperLeft: true, upperRight: true, lowerRight: true);
+        return true;
+      case 0x259D:
+        drawQuadrants(upperRight: true);
+        return true;
+      case 0x259E:
+        drawQuadrants(upperRight: true, lowerLeft: true);
+        return true;
+      case 0x259F:
+        drawQuadrants(upperRight: true, lowerLeft: true, lowerRight: true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  bool _isRectPaintedBlockElement(int charCode) =>
+      (charCode >= 0x2580 && charCode <= 0x2590) ||
+      charCode == 0x2594 ||
+      charCode == 0x2595 ||
+      (charCode >= 0x2596 && charCode <= 0x259F);
+
+  @visibleForTesting
+  Color resolveMonkeyTerminalCellForegroundColor(CellData cellData) {
     final cellFlags = cellData.flags;
     final inverse = cellFlags & CellFlags.inverse != 0;
     var color = inverse
@@ -1490,7 +2074,65 @@ class MonkeyTerminalPainter extends TerminalPainter {
         background: background,
       );
     }
-    return color;
+    if (_isRectPaintedBlockElement(
+      cellData.content & CellContent.codepointMask,
+    )) {
+      return color;
+    }
+
+    final background = _cellPaintsBackground(cellData)
+        ? _resolveCellBackgroundPaintColor(cellData)
+        : theme.background;
+    return resolveMonkeyTerminalReadableForegroundColor(
+      foreground: color,
+      background: background,
+      terminalForeground: theme.foreground,
+      terminalBackground: theme.background,
+    );
+  }
+
+  bool _cellPaintsBackground(CellData cellData) =>
+      cellData.flags & CellFlags.inverse != 0 ||
+      _cellBackgroundColorType(cellData) != CellColor.normal;
+
+  bool _shouldExtendTrailingBackgroundFill(CellData firstCell) {
+    if (firstCell.flags & CellFlags.inverse != 0) {
+      return false;
+    }
+    final backgroundType = _cellBackgroundColorType(firstCell);
+    if (backgroundType == CellColor.normal) {
+      return false;
+    }
+    // ANSI bright black is commonly used as a neutral prompt/message row
+    // background; semantic color labels should stay text-width.
+    if ((backgroundType == CellColor.named ||
+            backgroundType == CellColor.palette) &&
+        _cellColorValue(firstCell.background) == 8) {
+      return true;
+    }
+    return _isNeutralTerminalColor(
+      resolveBackgroundColor(firstCell.background),
+    );
+  }
+
+  Color _resolveCellBackgroundPaintColor(
+    CellData cellData, {
+    bool toneNeutralBackgrounds = true,
+  }) {
+    final cellFlags = cellData.flags;
+    final inverse = cellFlags & CellFlags.inverse != 0;
+    final background = inverse
+        ? resolveForegroundColor(cellData.foreground)
+        : resolveBackgroundColor(cellData.background);
+    final foreground = inverse
+        ? resolveBackgroundColor(cellData.background)
+        : resolveForegroundColor(cellData.foreground);
+    return resolveMonkeyTerminalReadableBackgroundColor(
+      foreground: foreground,
+      background: background,
+      terminalBackground: theme.background,
+      toneNeutralBackgrounds: !inverse && toneNeutralBackgrounds,
+    );
   }
 
   @override
@@ -1527,6 +2169,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
   }
 }
+
+int _cellColorType(int cellColor) => cellColor & CellColor.typeMask;
+
+int _cellColorValue(int cellColor) => cellColor & CellColor.valueMask;
+
+int _cellBackgroundColorType(CellData cellData) =>
+    _cellColorType(cellData.background);
 
 class MonkeyRenderTerminal extends RenderBox
     with RelayoutWhenSystemFontsChangeMixin, Selectable, SelectionRegistrant {
@@ -1749,6 +2398,8 @@ class MonkeyRenderTerminal extends RenderBox
   final Set<VoidCallback> _selectionListeners = <VoidCallback>{};
 
   int _lastKnownLineCount = -1;
+  int _forceLayoutOnTerminalChangeCount = 0;
+  final _cursorCellData = CellData.empty();
 
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
@@ -1777,7 +2428,11 @@ class MonkeyRenderTerminal extends RenderBox
       _syncSelectableSelectionFromController();
     }
     final lineCount = _terminal.buffer.lines.length;
-    if (lineCount != _lastKnownLineCount) {
+    if (_forceLayoutOnTerminalChangeCount > 0) {
+      _forceLayoutOnTerminalChangeCount -= 1;
+      _lastKnownLineCount = lineCount;
+      markNeedsLayout();
+    } else if (lineCount != _lastKnownLineCount) {
       _lastKnownLineCount = lineCount;
       markNeedsLayout();
     } else {
@@ -2558,9 +3213,21 @@ class MonkeyRenderTerminal extends RenderBox
       padding: _padding,
     );
 
-    if (_viewportSize != viewportSize) {
+    final terminalNeedsResize =
+        _terminal.viewWidth != viewportSize.width ||
+        _terminal.viewHeight != viewportSize.height;
+
+    if (terminalNeedsResize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
-    } else if (_viewportPixelSize != pixelSize || notifyIfUnchanged) {
+      return;
+    }
+
+    final hasCachedViewportSize = _viewportSize != null;
+    final pixelSizeChanged = _viewportPixelSize != pixelSize;
+    _viewportSize = viewportSize;
+    _viewportPixelSize = pixelSize;
+
+    if ((hasCachedViewportSize && pixelSizeChanged) || notifyIfUnchanged) {
       _notifyTerminalResizeIfNeeded(
         viewportSize: viewportSize,
         pixelSize: pixelSize,
@@ -2568,12 +3235,31 @@ class MonkeyRenderTerminal extends RenderBox
     }
   }
 
-  void _refreshTerminalSize() {
+  void _refreshTerminalSize({bool flushKeyboardResize = false}) {
+    if (!hasSize) {
+      markNeedsLayout();
+      return;
+    }
+    if (flushKeyboardResize) {
+      _cancelPendingTerminalResize();
+    }
+    _updateViewportSize(notifyIfUnchanged: true);
+    markNeedsPaint();
+  }
+
+  void _refreshTerminalDisplay({bool revealLatestOutput = false}) {
+    if (revealLatestOutput) {
+      _stickToBottom = true;
+      _lastKnownLineCount = -1;
+      _forceLayoutOnTerminalChangeCount = 4;
+    }
     if (!hasSize) {
       markNeedsLayout();
       return;
     }
     _updateViewportSize(notifyIfUnchanged: true);
+    markNeedsLayout();
+    markNeedsPaint();
   }
 
   void _resizeTerminalIfNeeded({
@@ -2747,12 +3433,7 @@ class MonkeyRenderTerminal extends RenderBox
       }
 
       if (_shouldShowCursor) {
-        _painter.paintCursor(
-          canvas,
-          offset + cursorOffset,
-          cursorType: _cursorType,
-          hasFocus: _focusNode.hasFocus,
-        );
+        _paintCursor(canvas, offset + cursorOffset);
       }
     }
 
@@ -2779,6 +3460,43 @@ class MonkeyRenderTerminal extends RenderBox
     _contentOrigin.dx,
     (row * _painter.cellSize.height + _lineOffset).truncateToDouble(),
   );
+
+  void _paintCursor(Canvas canvas, Offset offset) {
+    final cellData = _cursorCellDataAtCursor();
+    if (cellData == null) {
+      _painter.paintCursor(
+        canvas,
+        offset,
+        cursorType: _cursorType,
+        hasFocus: _focusNode.hasFocus,
+      );
+      return;
+    }
+
+    _painter.paintReadableCursor(
+      canvas,
+      offset,
+      cellData,
+      cursorType: _cursorType,
+      hasFocus: _focusNode.hasFocus,
+    );
+  }
+
+  CellData? _cursorCellDataAtCursor() {
+    final cursorY = _terminal.buffer.absoluteCursorY;
+    if (cursorY < 0 || cursorY >= _terminal.buffer.lines.length) {
+      return null;
+    }
+
+    final line = _terminal.buffer.lines[cursorY];
+    final cursorX = _terminal.buffer.cursorX;
+    if (cursorX < 0 || cursorX >= line.length) {
+      return null;
+    }
+
+    line.getCellData(cursorX, _cursorCellData);
+    return _cursorCellData;
+  }
 
   void _paintInlineUnderlines(
     Canvas canvas,

@@ -22,6 +22,7 @@ class TerminalSessionController {
     required bool Function() hasError,
     required bool Function() isBackgrounded,
     required VoidCallback onSessionMetadataChanged,
+    Duration sessionMetadataDebounce = const Duration(milliseconds: 75),
   }) : _wakeLockService = wakeLockService,
        _wakeLockOwnerId = wakeLockOwnerId,
        _readCurrentConnectionState = readCurrentConnectionState,
@@ -30,7 +31,8 @@ class TerminalSessionController {
        _hasActiveShell = hasActiveShell,
        _hasError = hasError,
        _isBackgrounded = isBackgrounded,
-       _onSessionMetadataChanged = onSessionMetadataChanged;
+       _onSessionMetadataChanged = onSessionMetadataChanged,
+       _sessionMetadataDebounce = sessionMetadataDebounce;
 
   final TerminalWakeLockService _wakeLockService;
   final int _wakeLockOwnerId;
@@ -41,8 +43,11 @@ class TerminalSessionController {
   final bool Function() _hasError;
   final bool Function() _isBackgrounded;
   final VoidCallback _onSessionMetadataChanged;
+  final Duration _sessionMetadataDebounce;
 
   SshSession? _observedSession;
+  Timer? _sessionMetadataDebounceTimer;
+  bool _hasPendingSessionMetadataChange = false;
 
   /// Whether the user setting allows the terminal to hold a wake lock.
   bool wakeLockEnabled = false;
@@ -58,16 +63,50 @@ class TerminalSessionController {
       return false;
     }
 
-    _observedSession?.removeMetadataListener(_onSessionMetadataChanged);
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
+    _sessionMetadataDebounceTimer?.cancel();
+    _sessionMetadataDebounceTimer = null;
+    _hasPendingSessionMetadataChange = false;
     _observedSession = session
-      ..removeMetadataListener(_onSessionMetadataChanged)
-      ..addMetadataListener(_onSessionMetadataChanged);
+      ..removeMetadataListener(_handleSessionMetadataChanged)
+      ..addMetadataListener(_handleSessionMetadataChanged);
     return true;
+  }
+
+  void _handleSessionMetadataChanged() {
+    if (_sessionMetadataDebounce == Duration.zero) {
+      _onSessionMetadataChanged();
+      return;
+    }
+    _hasPendingSessionMetadataChange = true;
+    if (_sessionMetadataDebounceTimer?.isActive ?? false) {
+      return;
+    }
+    _sessionMetadataDebounceTimer = Timer(_sessionMetadataDebounce, () {
+      _sessionMetadataDebounceTimer = null;
+      if (!_hasPendingSessionMetadataChange) {
+        return;
+      }
+      _hasPendingSessionMetadataChange = false;
+      _onSessionMetadataChanged();
+    });
   }
 
   /// Returns whether [session] is the currently observed session.
   bool isObservingSession(SshSession session) =>
       identical(_observedSession, session);
+
+  /// Stops observing terminal metadata for the current session.
+  void clearObservedSession({SshSession? session}) {
+    final observedSession = _observedSession;
+    if (observedSession == null ||
+        (session != null && !identical(observedSession, session))) {
+      return;
+    }
+
+    observedSession.removeMetadataListener(_handleSessionMetadataChanged);
+    _observedSession = null;
+  }
 
   /// Resolves the session that should receive a coordinated terminal setting.
   SshSession? resolveTargetSession({SshSession? session}) {
@@ -115,6 +154,9 @@ class TerminalSessionController {
     if (connectionId == null) {
       return SshConnectionState.disconnected;
     }
+    if (_getSession(connectionId) == null) {
+      return SshConnectionState.disconnected;
+    }
     return states[connectionId] ?? SshConnectionState.disconnected;
   }
 
@@ -136,7 +178,10 @@ class TerminalSessionController {
 
   /// Releases session listeners and wake-lock ownership.
   void dispose() {
-    _observedSession?.removeMetadataListener(_onSessionMetadataChanged);
+    _sessionMetadataDebounceTimer?.cancel();
+    _sessionMetadataDebounceTimer = null;
+    _hasPendingSessionMetadataChange = false;
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _observedSession = null;
     unawaited(_wakeLockService.releaseOwner(_wakeLockOwnerId));
   }

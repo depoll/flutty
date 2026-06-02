@@ -3,8 +3,12 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
+
+class _FakeImagePickerPlatform extends ImagePickerPlatform {}
 
 void main() {
   group('trimTerminalSelectionText', () {
@@ -243,19 +247,19 @@ void main() {
   });
 
   group('resolveTerminalUploadPickerRequest', () {
-    test('allows selecting multiple images for terminal uploads', () {
-      final request = resolveTerminalUploadPickerRequest(images: true);
+    test('allows selecting multiple images or videos for terminal uploads', () {
+      final request = resolveTerminalUploadPickerRequest(media: true);
 
-      expect(request.dialogTitle, 'Select images to upload');
-      expect(request.pickerType, FileType.image);
-      expect(request.itemLabelSingular, 'image');
-      expect(request.itemLabelPlural, 'images');
+      expect(request.dialogTitle, 'Select images or videos to upload');
+      expect(request.pickerType, FileType.media);
+      expect(request.itemLabelSingular, 'image or video');
+      expect(request.itemLabelPlural, 'images or videos');
       expect(request.allowMultiple, isTrue);
-      expect(request.failureContext, 'Image picker upload');
+      expect(request.failureContext, 'Media picker upload');
     });
 
     test('allows selecting multiple files for terminal uploads', () {
-      final request = resolveTerminalUploadPickerRequest(images: false);
+      final request = resolveTerminalUploadPickerRequest(media: false);
 
       expect(request.dialogTitle, 'Select files to upload');
       expect(request.pickerType, FileType.any);
@@ -263,6 +267,97 @@ void main() {
       expect(request.itemLabelPlural, 'files');
       expect(request.allowMultiple, isTrue);
       expect(request.failureContext, 'File picker upload');
+    });
+  });
+
+  group('shouldUsePhotoLibraryPickerForTerminalMedia', () {
+    test('uses the photo library picker on native mobile platforms', () {
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.android,
+          isWeb: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.iOS,
+          isWeb: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('keeps the file picker on web and desktop platforms', () {
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.android,
+          isWeb: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.macOS,
+          isWeb: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldUsePhotoLibraryPickerForTerminalMedia(
+          platform: TargetPlatform.windows,
+          isWeb: false,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('enableAndroidPhotoPickerForTerminalMedia', () {
+    test('enables the existing Android image picker implementation', () {
+      final imagePicker = ImagePickerAndroid();
+
+      final configuredPicker = enableAndroidPhotoPickerForTerminalMedia(
+        imagePicker,
+      );
+
+      expect(identical(configuredPicker, imagePicker), isTrue);
+      expect(configuredPicker.useAndroidPhotoPicker, isTrue);
+    });
+
+    test(
+      'replaces fallback implementations with the Android implementation',
+      () {
+        final configuredPicker = enableAndroidPhotoPickerForTerminalMedia(
+          _FakeImagePickerPlatform(),
+        );
+
+        expect(configuredPicker, isA<ImagePickerAndroid>());
+        expect(configuredPicker.useAndroidPhotoPicker, isTrue);
+      },
+    );
+  });
+
+  group('platformFileFromPickedTerminalMedia', () {
+    test('wraps photo-library media for terminal uploads', () async {
+      final directory = Directory.systemTemp.createTempSync(
+        'terminal-media-picker-',
+      );
+      addTearDown(() {
+        if (directory.existsSync()) {
+          directory.deleteSync(recursive: true);
+        }
+      });
+      final mediaFile = File('${directory.path}/photo.jpg')
+        ..writeAsBytesSync([1, 2, 3]);
+
+      final file = await platformFileFromPickedTerminalMedia(
+        XFile(mediaFile.path),
+      );
+
+      expect(file.name, 'photo.jpg');
+      expect(file.path, mediaFile.path);
+      expect(file.size, 3);
     });
   });
 

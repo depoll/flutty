@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
 import 'terminal_key_input.dart';
+import 'terminal_menu_style.dart';
 
 /// Whether the toolbar should keep the bottom safe-area inset.
 ///
@@ -232,7 +233,7 @@ class KeyboardToolbar extends StatefulWidget {
     this.onPasteRequested,
     this.onPasteMenuOpened,
     this.onSnippetPasteRequested,
-    this.onPasteImageRequested,
+    this.onPasteMediaRequested,
     this.onPasteFilesRequested,
     this.snippets = const <KeyboardToolbarSnippet>[],
     this.snippetFolders = const <KeyboardToolbarSnippetFolder>[],
@@ -259,8 +260,8 @@ class KeyboardToolbar extends StatefulWidget {
   final FutureOr<void> Function(KeyboardToolbarSnippet snippet)?
   onSnippetPasteRequested;
 
-  /// Optional callback when the Paste key's long-press image option is tapped.
-  final FutureOr<void> Function()? onPasteImageRequested;
+  /// Optional callback when the Paste key's long-press media option is tapped.
+  final FutureOr<void> Function()? onPasteMediaRequested;
 
   /// Optional callback when the Paste key's long-press file option is tapped.
   final FutureOr<void> Function()? onPasteFilesRequested;
@@ -283,10 +284,8 @@ class KeyboardToolbar extends StatefulWidget {
 class KeyboardToolbarState extends State<KeyboardToolbar> {
   static const _pasteOptionsWidth = 200.0;
   static const _pasteSnippetMenuWidth = 180.0;
-  static const _pasteOptionHeight = 44.0;
-  static const _pasteOptionsDividerHeight = 1.0;
-  static const _pasteOptionsGap = 8.0;
-  static const _pasteOptionsScreenMargin = 8.0;
+  static const _pasteOptionsGap = TerminalMenuStyles.cascadeGap;
+  static const _pasteOptionsScreenMargin = TerminalMenuStyles.screenMargin;
 
   late final KeyboardToolbarController _fallbackController;
   final _pasteButtonKey = GlobalKey();
@@ -438,11 +437,13 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       key: _pasteButtonKey,
       icon: Icons.paste_rounded,
       label: 'Paste',
+      longPressIndicatorIcon: Icons.more_horiz_rounded,
       onTap: _pasteClipboard,
       onLongPressStartWithDetails: _showPasteOptions,
       onLongPressMoveUpdate: _updatePasteOptionsHighlight,
       onLongPressEnd: _chooseHighlightedPasteOption,
       onLongPressCancel: _hidePasteOptionsMenu,
+      semanticsHint: 'Press and hold for paste options',
       tooltip: 'Paste',
     ),
   ];
@@ -643,7 +644,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
           child: _PasteOptionsMenu(
             highlightedAction: _highlightedPasteAction,
             snippetsEnabled: _areSnippetsEnabled,
-            imageEnabled: widget.onPasteImageRequested != null,
+            mediaEnabled: widget.onPasteMediaRequested != null,
             filesEnabled: widget.onPasteFilesRequested != null,
             snippetsTrailingIcon: layout.snippetMenuOpensLeft
                 ? Icons.chevron_left_rounded
@@ -728,7 +729,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         globalSnippetRect.contains(globalPosition)) {
       final entries = _expandedSnippetMenuEntries;
       final index =
-          (globalPosition.dy - globalSnippetRect.top) ~/ _pasteOptionHeight;
+          (globalPosition.dy - globalSnippetRect.top) ~/
+          TerminalMenuStyles.itemHeight;
       if (index >= 0 && index < entries.length) {
         final entry = entries[index];
         return _PasteMenuHit(
@@ -793,7 +795,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     Rect? snippetMenuRect;
     var snippetMenuOpensLeft = true;
     if (entries.isNotEmpty) {
-      final snippetMenuHeight = entries.length * _pasteOptionHeight;
+      final snippetMenuHeight = entries.length * TerminalMenuStyles.itemHeight;
       final canOpenLeft =
           mainRect.left -
               _pasteOptionsGap -
@@ -834,7 +836,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   bool _isPasteActionEnabled(_PasteToolbarAction action) => switch (action) {
     _PasteToolbarAction.snippets => _areSnippetsEnabled,
-    _PasteToolbarAction.images => widget.onPasteImageRequested != null,
+    _PasteToolbarAction.media => widget.onPasteMediaRequested != null,
     _PasteToolbarAction.files => widget.onPasteFilesRequested != null,
   };
 
@@ -842,16 +844,15 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       widget.onSnippetPasteRequested != null && _snippetMenuEntries.isNotEmpty;
 
   double get _pasteOptionsMenuHeight =>
-      _PasteToolbarAction.values.length * _pasteOptionHeight +
-      (_PasteToolbarAction.values.length - 1) * _pasteOptionsDividerHeight;
+      _PasteToolbarAction.values.length * TerminalMenuStyles.itemHeight;
 
   int _pasteMainActionIndexAt(double localDy) {
     if (localDy < 0) {
       return -1;
     }
     for (var index = 0; index < _PasteToolbarAction.values.length; index += 1) {
-      final top = index * (_pasteOptionHeight + _pasteOptionsDividerHeight);
-      if (localDy >= top && localDy < top + _pasteOptionHeight) {
+      final top = index * TerminalMenuStyles.itemHeight;
+      if (localDy >= top && localDy < top + TerminalMenuStyles.itemHeight) {
         return index;
       }
     }
@@ -925,8 +926,8 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     switch (action) {
       case _PasteToolbarAction.snippets:
         _refocusTerminal();
-      case _PasteToolbarAction.images:
-        unawaited(_runToolbarAction(widget.onPasteImageRequested));
+      case _PasteToolbarAction.media:
+        unawaited(_runToolbarAction(widget.onPasteMediaRequested));
       case _PasteToolbarAction.files:
         unawaited(_runToolbarAction(widget.onPasteFilesRequested));
       case null:
@@ -1079,7 +1080,7 @@ enum _Modifier { ctrl, alt, shift }
 
 enum _Arrow { up, down, left, right }
 
-enum _PasteToolbarAction { snippets, images, files }
+enum _PasteToolbarAction { snippets, media, files }
 
 class _PasteMenuHit {
   const _PasteMenuHit({required this.action, this.folder, this.snippet});
@@ -1123,53 +1124,45 @@ class _PasteOptionsMenu extends StatelessWidget {
   const _PasteOptionsMenu({
     required this.highlightedAction,
     required this.snippetsEnabled,
-    required this.imageEnabled,
+    required this.mediaEnabled,
     required this.filesEnabled,
     required this.snippetsTrailingIcon,
   });
 
   final _PasteToolbarAction? highlightedAction;
   final bool snippetsEnabled;
-  final bool imageEnabled;
+  final bool mediaEnabled;
   final bool filesEnabled;
   final IconData snippetsTrailingIcon;
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: colorScheme.surfaceContainerHighest,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _PasteOptionsMenuItem(
-            icon: Icons.code_rounded,
-            label: 'Snippets',
-            enabled: snippetsEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.snippets,
-            trailingIcon: snippetsTrailingIcon,
-          ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
-          _PasteOptionsMenuItem(
-            icon: Icons.image_outlined,
-            label: 'Paste Images',
-            enabled: imageEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.images,
-          ),
-          Divider(height: 1, color: colorScheme.outlineVariant),
-          _PasteOptionsMenuItem(
-            icon: Icons.attach_file_rounded,
-            label: 'Paste Files',
-            enabled: filesEnabled,
-            highlighted: highlightedAction == _PasteToolbarAction.files,
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => TerminalMenuStyles.surface(
+    context,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _PasteOptionsMenuItem(
+          icon: Icons.code_rounded,
+          label: 'Snippets',
+          enabled: snippetsEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.snippets,
+          trailingIcon: snippetsTrailingIcon,
+        ),
+        _PasteOptionsMenuItem(
+          icon: Icons.perm_media_outlined,
+          label: 'Paste Media',
+          enabled: mediaEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.media,
+        ),
+        _PasteOptionsMenuItem(
+          icon: Icons.attach_file_rounded,
+          label: 'Paste Files',
+          enabled: filesEnabled,
+          highlighted: highlightedAction == _PasteToolbarAction.files,
+        ),
+      ],
+    ),
+  );
 }
 
 class _SnippetCascadeMenu extends StatelessWidget {
@@ -1213,16 +1206,10 @@ class _CascadeMenuFrame extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: colorScheme.surfaceContainerHighest,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: Column(mainAxisSize: MainAxisSize.min, children: children),
-    );
-  }
+  Widget build(BuildContext context) => TerminalMenuStyles.surface(
+    context,
+    child: Column(mainAxisSize: MainAxisSize.min, children: children),
+  );
 }
 
 class _PasteOptionsMenuItem extends StatelessWidget {
@@ -1261,27 +1248,37 @@ class _PasteOptionsMenuItem extends StatelessWidget {
       selected: highlighted,
       label: label,
       child: Container(
-        height: KeyboardToolbarState._pasteOptionHeight,
+        height: TerminalMenuStyles.itemHeight,
         color: backgroundColor,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(
+          horizontal: TerminalMenuStyles.itemHorizontalPadding,
+        ),
         child: Row(
           children: [
             if (leadingIndent > 0) SizedBox(width: leadingIndent),
-            Icon(icon, size: 20, color: foregroundColor),
-            const SizedBox(width: 12),
+            Icon(
+              icon,
+              size: TerminalMenuStyles.iconSize,
+              color: foregroundColor,
+            ),
+            const SizedBox(width: TerminalMenuStyles.iconLabelGap),
             Expanded(
               child: Text(
                 label,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: foregroundColor,
-                  fontWeight: highlighted ? FontWeight.w600 : FontWeight.w500,
-                ),
+                style: TerminalMenuStyles.itemTextStyle(
+                  context,
+                  emphasized: highlighted,
+                ).copyWith(color: foregroundColor),
               ),
             ),
             if (trailingIcon case final trailingIcon?) ...[
               const SizedBox(width: 8),
-              Icon(trailingIcon, size: 20, color: foregroundColor),
+              Icon(
+                trailingIcon,
+                size: TerminalMenuStyles.iconSize,
+                color: foregroundColor,
+              ),
             ],
           ],
         ),
@@ -1322,6 +1319,8 @@ class _ToolbarButton extends StatefulWidget {
     this.onLongPressCancel,
     this.onLongPressRepeat,
     this.tooltip,
+    this.semanticsHint,
+    this.longPressIndicatorIcon,
     super.key,
   });
 
@@ -1336,6 +1335,8 @@ class _ToolbarButton extends StatefulWidget {
   final VoidCallback? onLongPressCancel;
   final VoidCallback? onLongPressRepeat;
   final String? tooltip;
+  final String? semanticsHint;
+  final IconData? longPressIndicatorIcon;
 
   bool get hasLongPressHandler =>
       onLongPressStart != null ||
@@ -1398,9 +1399,37 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
     return Transform.flip(flipX: true, child: icon);
   }
 
+  Widget _buildContent(Color color) {
+    if (widget.icon != null && widget.label.isNotEmpty) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildIcon(14, color),
+          const SizedBox(width: 3),
+          Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+              color: color,
+            ),
+          ),
+        ],
+      );
+    }
+    if (widget.icon != null) {
+      return _buildIcon(18, color);
+    }
+    return Text(
+      widget.label,
+      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: color),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final foregroundColor = colorScheme.onSurfaceVariant;
 
     Widget button = GestureDetector(
       onTapDown: (_) => _setPressed(true),
@@ -1438,39 +1467,29 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
           borderRadius: BorderRadius.circular(6),
           border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Center(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: widget.icon != null && widget.label.isNotEmpty
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _buildIcon(14, colorScheme.onSurfaceVariant),
-                        const SizedBox(width: 3),
-                        Text(
-                          widget.label,
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    )
-                  : widget.icon != null
-                  ? _buildIcon(18, colorScheme.onSurfaceVariant)
-                  : Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Center(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: _buildContent(foregroundColor),
+                ),
+              ),
             ),
-          ),
+            if (widget.longPressIndicatorIcon case final indicatorIcon?)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Icon(
+                  indicatorIcon,
+                  size: 11,
+                  color: colorScheme.primary,
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -1482,6 +1501,7 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
     return Semantics(
       button: true,
       label: widget.tooltip ?? widget.label,
+      hint: widget.semanticsHint,
       child: button,
     );
   }

@@ -34,6 +34,8 @@ Host _testHost({
   String? tmuxWorkingDirectory,
   String? tmuxExtraFlags,
   String? remoteMuxBackend,
+  String? terminalThemeLightId,
+  String? terminalThemeDarkId,
 }) => Host(
   id: id,
   label: label,
@@ -50,6 +52,8 @@ Host _testHost({
   tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: tmuxExtraFlags,
   remoteMuxBackend: remoteMuxBackend,
+  terminalThemeLightId: terminalThemeLightId,
+  terminalThemeDarkId: terminalThemeDarkId,
   sortOrder: 0,
 );
 
@@ -1724,6 +1728,132 @@ void main() {
         ),
       );
       expect(commandField.readOnly, isTrue);
+    });
+
+    testWidgets('clears selected light and dark themes using the clear buttons', (
+      tester,
+    ) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      final hostRepository = _FakeHostRepository(
+        host: _testHost(
+          id: 1,
+          label: 'Themed Host',
+          autoConnectRequiresConfirmation: false,
+          terminalThemeLightId: 'iterm2-monokai-pro',
+          terminalThemeDarkId: 'iterm2-dracula',
+        ),
+        database: database,
+        encryptionService: encryptionService,
+      );
+
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const Scaffold(body: SizedBox.shrink()),
+          ),
+          GoRoute(
+            path: '/edit',
+            builder: (context, state) => const HostEditScreen(hostId: 1),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+
+      unawaited(router.push('/edit'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // Expand Advanced tile
+      final advancedTile = find.byKey(const Key('host-advanced-tile'));
+      await tester.scrollUntilVisible(
+        advancedTile,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(advancedTile);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // Scroll to the theme section
+      await tester.scrollUntilVisible(
+        find.text('Terminal Theme'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+      // Verify monokai and dracula names are displayed
+      expect(find.text('Monokai Pro'), findsOneWidget);
+      expect(find.text('Dracula'), findsOneWidget);
+
+      // Find the clear buttons and tap them. Since both tiles show a clear button,
+      // we can find by Icon(Icons.clear). Let's verify we have 2 clear icons.
+      final clearButtons = find.byIcon(Icons.clear);
+      expect(clearButtons, findsNWidgets(2));
+
+      // Tap the first one (Light theme clear button)
+      await tester.tap(clearButtons.first);
+      await tester.pump();
+
+      // Verify light theme has been reset to "Use default"
+      expect(find.text('Monokai Pro'), findsNothing);
+      expect(find.text('Dracula'), findsOneWidget);
+
+      // Tap the remaining clear button
+      await tester.tap(find.byIcon(Icons.clear));
+      await tester.pump();
+
+      // Verify both are cleared
+      expect(find.text('Dracula'), findsNothing);
+      expect(find.text('Monokai Pro'), findsNothing);
+
+      // Tap save
+      final saveButton = find.byKey(
+        const Key('host-save-button'),
+        skipOffstage: false,
+      );
+      await tester.scrollUntilVisible(
+        saveButton,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(saveButton);
+      tester.widget<FilledButton>(saveButton).onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // Verify database repositories received updated host with null themes
+      expect(hostRepository.updatedHost, isNotNull);
+      expect(hostRepository.updatedHost!.terminalThemeLightId, isNull);
+      expect(hostRepository.updatedHost!.terminalThemeDarkId, isNull);
     });
   });
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -586,18 +587,24 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     if (_isImporting) {
       return;
     }
-    final result = await FilePicker.pickFiles(withData: true);
+    final file = await FilePicker.pickFile();
 
-    if (!mounted || result == null || result.files.isEmpty) {
+    if (!mounted || file == null) {
       return;
     }
 
-    final file = result.files.single;
-    final bytes = file.bytes;
-    if (bytes == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to read selected file')),
-      );
+    final Uint8List bytes;
+    try {
+      bytes = await file.readAsBytes();
+    } on Exception {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to read selected file')),
+        );
+      }
+      return;
+    }
+    if (!mounted) {
       return;
     }
 

@@ -3,6 +3,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
 
 void main() {
@@ -50,13 +51,29 @@ void main() {
         windowName: 'Codex agent',
         launchCommand: "codex --model 'gpt-5.4'",
         serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        startInYoloMode: true,
       );
 
       expect(
         command,
-        "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never --cwd "
-        "'~/src/it'\"'\"'s app' --name 'Codex agent' --command "
+        "'/home/me/.monkeyssh/bin/monkey mux' attach --update-policy never "
+        "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
         "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
+      );
+    });
+
+    test('passes terminal theme reports as base64 data', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: '/home/me/.monkeyssh/bin/monkeymux',
+        sessionName: 'work',
+        terminalThemeReports: '\x1b]11;rgb:0000/1111/2222\x1b\\',
+      );
+
+      expect(
+        command,
+        "'/home/me/.monkeyssh/bin/monkeymux' attach --theme-hint-base64 "
+        'G10xMTtyZ2I6MDAwMC8xMTExLzIyMjIbXA== '
+        "'work'",
       );
     });
   });
@@ -82,6 +99,21 @@ void main() {
 
       expect(hasForegroundClient, isTrue);
     });
+
+    test('allows one-shot run_command responses to reach server timeout', () {
+      expect(
+        monkeyMuxOneShotResponseTimeoutForTesting(const <String, Object?>{
+          'type': 'run_command',
+        }),
+        const Duration(seconds: 25),
+      );
+      expect(
+        monkeyMuxOneShotResponseTimeoutForTesting(const <String, Object?>{
+          'type': 'list_windows',
+        }),
+        const Duration(seconds: 10),
+      );
+    });
   });
 
   group('parseMonkeyMuxWindowSnapshotForTesting', () {
@@ -98,6 +130,177 @@ void main() {
 
       expect(window, isNotNull);
       expect(window!.foregroundAgentTool, AgentLaunchTool.geminiCli);
+    });
+
+    test('maps helper terminal mouse mode metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Mouse app',
+        'active': true,
+        'terminalReportsMouseWheel': true,
+        'terminalMouseReportSgr': true,
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalReportsMouseWheel, isTrue);
+      expect(window.terminalMouseReportSgr, isTrue);
+    });
+
+    test('maps helper private mode metadata onto tmux windows', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Mouse app',
+        'active': true,
+        'privateModes': {'1002': true, '1006': true},
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalReportsMouseWheel, isTrue);
+      expect(window.terminalMouseReportSgr, isTrue);
+    });
+  });
+
+  group('MonkeyMux agent metadata', () {
+    test('refreshes metadata for every supported agent pane', () {
+      const windows = [
+        TmuxWindow(
+          index: 0,
+          name: 'Codex',
+          isActive: true,
+          currentCommand: 'codex',
+          panePid: 42,
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'shell',
+          isActive: false,
+          currentCommand: 'zsh',
+          panePid: 43,
+        ),
+      ];
+
+      expect(shouldRefreshMonkeyMuxAgentMetadataForTesting(windows), isTrue);
+      expect(
+        shouldRefreshMonkeyMuxAgentMetadataForTesting(const [
+          TmuxWindow(
+            index: 1,
+            name: 'shell',
+            isActive: false,
+            currentCommand: 'zsh',
+            panePid: 43,
+          ),
+        ]),
+        isFalse,
+      );
+    });
+
+    test('applies all-agent metadata with confidence to matching panes', () {
+      const sep = tmuxWindowFieldSeparator;
+      const windows = [
+        TmuxWindow(
+          index: 0,
+          name: 'Codex',
+          isActive: true,
+          currentCommand: 'codex',
+          panePid: 42,
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'Gemini',
+          isActive: false,
+          currentCommand: 'gemini',
+          panePid: 43,
+        ),
+      ];
+
+      final enriched = applyMonkeyMuxAgentMetadataForTesting(
+        windows,
+        'codex${sep}codex-session${sep}501${sep}42${sep}medium$sep\n'
+        'gemini${sep}gemini-session${sep}502${sep}43${sep}medium${sep}Gemini title\n',
+      );
+
+      expect(enriched[0].activeAgentSessionId, 'codex-session');
+      expect(
+        enriched[0].activeAgentSessionConfidence,
+        AgentSessionConfidence.medium,
+      );
+      expect(enriched[1].activeAgentSessionId, 'gemini-session');
+      expect(enriched[1].agentSessionTitle, 'Gemini title');
+      expect(
+        enriched[1].activeAgentSessionConfidence,
+        AgentSessionConfidence.medium,
+      );
+    });
+
+    test('applies live Copilot session titles by pane pid', () {
+      const window = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Copilot CLI',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Copilot CLI',
+      );
+
+      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(
+        const [window],
+        const {
+          42: (sessionId: 'session-1', title: 'Implement MonkeyMux refresh'),
+        },
+        refreshedPanePids: const {42},
+      );
+
+      expect(windows.single.activeAgentSessionId, 'session-1');
+      expect(windows.single.agentSessionTitle, 'Implement MonkeyMux refresh');
+      expect(windows.single.displayTitle, 'Implement MonkeyMux refresh');
+    });
+
+    test('keeps Copilot session titles after a transient refreshed miss', () {
+      const window = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Copilot CLI',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Copilot CLI',
+        activeAgentSessionId: 'stale-session',
+        agentSessionTitle: 'Stale Copilot session',
+      );
+
+      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(
+        const [window],
+        const {},
+        refreshedPanePids: const {42},
+      );
+
+      expect(windows.single.activeAgentSessionId, 'stale-session');
+      expect(windows.single.agentSessionTitle, 'Stale Copilot session');
+      expect(windows.single.displayTitle, 'Stale Copilot session');
+    });
+
+    test('keeps existing Copilot metadata when pane was not refreshed', () {
+      const window = TmuxWindow(
+        index: 1,
+        id: '@7',
+        panePid: 42,
+        name: 'Copilot CLI',
+        isActive: true,
+        currentCommand: 'copilot',
+        paneTitle: 'Copilot CLI',
+        activeAgentSessionId: 'session-1',
+        agentSessionTitle: 'Current Copilot session',
+      );
+
+      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(const [
+        window,
+      ], const {});
+
+      expect(windows.single.activeAgentSessionId, 'session-1');
+      expect(windows.single.agentSessionTitle, 'Current Copilot session');
     });
   });
 }

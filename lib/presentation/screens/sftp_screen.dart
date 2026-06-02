@@ -44,6 +44,9 @@ const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _videoPreviewCacheDirectoryName = 'monkeyssh-sftp-video-preview';
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
 
 /// Identifies a remembered SFTP browser location.
 typedef SftpBrowserLocationKey = ({int hostId, int? connectionId});
@@ -325,13 +328,17 @@ String? formatRemoteModifiedTime(int? modifyTime) {
 
 /// Resolves the picker request used for local SFTP uploads.
 @visibleForTesting
-({bool allowMultiple, bool withReadStream}) resolveSftpUploadPickerRequest() =>
-    (allowMultiple: true, withReadStream: true);
+({bool allowMultiple}) resolveSftpUploadPickerRequest() =>
+    (allowMultiple: true);
 
 /// Resolves a readable stream for a picked SFTP upload file when available.
 @visibleForTesting
-Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) =>
-    file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
+Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) {
+  if (file.path == null) {
+    return null;
+  }
+  return file.readAsByteStream().cast<List<int>>();
+}
 
 /// Resolves the error message shown when selected SFTP upload files are unreadable.
 @visibleForTesting
@@ -467,6 +474,7 @@ class SftpScreen extends ConsumerStatefulWidget {
 
 class _SftpScreenState extends ConsumerState<SftpScreen> {
   SftpClient? _sftp;
+  int? _connectionId;
   final ScrollController _breadcrumbScrollController = ScrollController();
   final ScrollController _fileListScrollController = ScrollController();
   String _currentPath = '/';
@@ -529,7 +537,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   void dispose() {
     _breadcrumbScrollController.dispose();
     _fileListScrollController.dispose();
-    _sftp?.close();
     _sftp = null;
     super.dispose();
   }
@@ -541,13 +548,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     });
 
     SftpClient? pendingSftp;
+    SshSession? session;
     try {
       final remoteFileService = ref.read(remoteFileServiceProvider);
       final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
       var connectionId =
           widget.connectionId ??
           sessionsNotifier.getPreferredConnectionForHost(widget.hostId);
-      var session = connectionId == null
+      session = connectionId == null
           ? null
           : sessionsNotifier.getSession(connectionId);
       final monetizationState =
@@ -590,20 +598,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
 
+      _connectionId = connectionId;
       await sessionsNotifier.syncBackgroundStatus();
       if (!mounted) {
         return;
       }
-      final sftpOpenFuture = session.sftp();
-      late final SftpClient sftp;
-      try {
-        sftp = await withSftpOperationTimeout(sftpOpenFuture);
-      } on TimeoutException {
-        sftpOpenFuture.then((sftp) => sftp.close()).ignore();
-        rethrow;
-      }
+      final sftp = await _openSftpClient(session);
       if (!mounted) {
-        sftp.close();
         return;
       }
       pendingSftp = sftp;
@@ -611,10 +612,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         remoteFileService.resolveInitialDirectory(sftp),
       );
       if (!mounted) {
-        sftp.close();
         return;
       }
-      _sftp?.close();
       _sftp = sftp;
       pendingSftp = null;
       _hostLabel = session.config.hostname;
@@ -636,23 +635,45 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
+    } on SSHError catch (e) {
+      _handleConnectFailure(e, pendingSftp, session);
     } on Exception catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'sftp',
-        'connect_failed',
-        fields: {'errorType': e.runtimeType},
-      );
-      pendingSftp?.close();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isLoading = false;
-        _error = e is TimeoutException
-            ? sftpTimeoutMessage('opening the SFTP browser')
-            : 'SFTP connection failed. Check the connection and try again.';
-      });
+      _handleConnectFailure(e, pendingSftp, session);
     }
+  }
+
+  Future<SftpClient> _openSftpClient(SshSession session) async {
+    final sftpOpenFuture = session.sftp();
+    try {
+      return await withSftpOperationTimeout(sftpOpenFuture);
+    } on TimeoutException {
+      sftpOpenFuture.then(session.discardSftpClient).ignore();
+      rethrow;
+    }
+  }
+
+  void _handleConnectFailure(
+    Object error,
+    SftpClient? pendingSftp,
+    SshSession? session,
+  ) {
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      'connect_failed',
+      fields: {'errorType': error.runtimeType},
+    );
+    if (_shouldReconnectSftpAfterDirectoryError(error)) {
+      session?.discardSftpClient(pendingSftp);
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isLoading = false;
+      _error = error is TimeoutException
+          ? sftpTimeoutMessage('opening the SFTP browser')
+          : 'SFTP connection failed. Check the connection and try again.';
+    });
   }
 
   Future<String?> _resolveHomeDirectoryPath() async {
@@ -732,6 +753,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     List<String>? nextHistory,
     bool rethrowTimeout = false,
     bool showError = true,
+    bool allowReconnect = true,
   }) async {
     if (_sftp == null) {
       return false;
@@ -770,28 +792,169 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _rememberCurrentPath(path);
       _queueScrollBreadcrumbTailIntoView();
       return true;
-    } on Exception catch (e) {
-      if (e is TimeoutException && rethrowTimeout) {
+    } on TimeoutException catch (e) {
+      if (rethrowTimeout) {
         rethrow;
       }
-      DiagnosticsLogService.instance.warning(
-        'sftp',
-        'list_failed',
-        fields: {'errorType': e.runtimeType},
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
       );
+    } on SSHError catch (e) {
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
+      );
+    } on SftpStatusError catch (e) {
+      return _handleLoadDirectoryFailure(e, path, showError: showError);
+    } on SftpError catch (e) {
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
+      );
+    } on Exception catch (e) {
+      return _handleLoadDirectoryFailure(e, path, showError: showError);
+    }
+  }
+
+  Future<bool> _handleLoadDirectoryFailure(
+    Object error,
+    String path, {
+    List<String>? nextHistory,
+    bool showError = true,
+    bool allowReconnect = true,
+  }) async {
+    if (allowReconnect && _shouldReconnectSftpAfterDirectoryError(error)) {
+      final reconnected = await _reconnectSftpAndLoadDirectory(
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+      );
+      if (reconnected || !mounted) {
+        return reconnected;
+      }
+    }
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      'list_failed',
+      fields: {'errorType': error.runtimeType},
+    );
+    if (!mounted) {
+      return false;
+    }
+    setState(() {
+      _isLoading = false;
+      if (showError) {
+        _error = error is TimeoutException
+            ? sftpTimeoutMessage('listing this directory')
+            : 'Failed to list this directory. Try another folder.';
+      }
+    });
+    return false;
+  }
+
+  bool _shouldReconnectSftpAfterDirectoryError(Object error) =>
+      error is TimeoutException ||
+      error is SSHError ||
+      (error is SftpError && error is! SftpStatusError);
+
+  Future<bool> _reconnectSftpAndLoadDirectory(
+    String path, {
+    List<String>? nextHistory,
+    bool showError = true,
+  }) async {
+    final connectionId = _connectionId ?? widget.connectionId;
+    if (connectionId == null) {
+      return false;
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      return false;
+    }
+
+    DiagnosticsLogService.instance.info(
+      'sftp',
+      'reconnect_start',
+      fields: {'connectionId': connectionId},
+    );
+    session.discardSftpClient(_sftp);
+    _sftp = null;
+
+    try {
+      final sftp = await _openSftpClient(session);
       if (!mounted) {
         return false;
       }
-      setState(() {
-        _isLoading = false;
-        if (showError) {
-          _error = e is TimeoutException
-              ? sftpTimeoutMessage('listing this directory')
-              : 'Failed to list this directory. Try another folder.';
-        }
-      });
+      _sftp = sftp;
+      DiagnosticsLogService.instance.info(
+        'sftp',
+        'reconnect_success',
+        fields: {'connectionId': connectionId},
+      );
+      return _loadDirectory(
+        path,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: false,
+      );
+    } on TimeoutException catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    } on SSHError catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    } on SftpError catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    } on Exception catch (error) {
+      return _handleSftpReconnectFailure(
+        connectionId,
+        error,
+        showError: showError,
+      );
+    }
+  }
+
+  bool _handleSftpReconnectFailure(
+    int connectionId,
+    Object error, {
+    required bool showError,
+  }) {
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      'reconnect_failed',
+      fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
+    );
+    if (!mounted || !showError) {
       return false;
     }
+    setState(() {
+      _isLoading = false;
+      _error = error is TimeoutException
+          ? sftpTimeoutMessage('reconnecting the SFTP browser')
+          : 'SFTP connection failed. Check the connection and try again.';
+    });
+    return false;
   }
 
   Future<void> _navigateTo(String path) async {
@@ -832,7 +995,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final key = (hostId: widget.hostId, connectionId: widget.connectionId);
+    final key = (
+      hostId: widget.hostId,
+      connectionId: _connectionId ?? widget.connectionId,
+    );
     final notifier = ref.read(sftpBrowserLastPathsProvider.notifier);
     notifier.state = <SftpBrowserLocationKey, String>{
       ...notifier.state,
@@ -1163,16 +1329,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   Widget _buildLocationShortcutChip(String shortcutPath, ThemeData theme) {
     final isCurrent = shortcutPath == _currentPath;
+    final displayPath = _displaySftpPath(shortcutPath);
     if (isCurrent) {
       return Tooltip(
-        message: 'Current folder: $shortcutPath',
+        message: 'Current folder: $displayPath',
         child: Chip(
           avatar: Icon(
             Icons.check_circle_rounded,
             color: theme.colorScheme.onPrimaryContainer,
             size: 18,
           ),
-          label: Text(shortcutPath),
+          label: Text(displayPath),
           labelStyle: theme.textTheme.labelLarge?.copyWith(
             color: theme.colorScheme.onPrimaryContainer,
             fontWeight: FontWeight.w700,
@@ -1184,19 +1351,25 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     return ActionChip(
-      label: Text(shortcutPath),
+      label: Text(displayPath),
       labelStyle: theme.textTheme.labelLarge?.copyWith(
         color: theme.colorScheme.onSurfaceVariant,
       ),
       backgroundColor: theme.colorScheme.surface,
       side: BorderSide(color: theme.colorScheme.outlineVariant),
       onPressed: () => unawaited(_navigateTo(shortcutPath)),
-      tooltip: 'Go to $shortcutPath',
+      tooltip: 'Go to $displayPath',
     );
   }
 
   Widget _buildBreadcrumbs() {
-    final parts = _currentPath.split('/').where((p) => p.isNotEmpty).toList();
+    final realParts = _currentPath
+        .split('/')
+        .where((part) => part.isNotEmpty)
+        .toList();
+    final displayParts = _displaySftpPath(
+      _currentPath,
+    ).split('/').where((p) => p.isNotEmpty).toList();
     final theme = Theme.of(context);
 
     return Container(
@@ -1238,7 +1411,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                       child: Text('/'),
                     ),
                   ),
-                  for (var i = 0; i < parts.length; i++) ...[
+                  for (var i = 0; i < realParts.length; i++) ...[
                     Icon(
                       Icons.chevron_right,
                       size: 16,
@@ -1246,7 +1419,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                     ),
                     InkWell(
                       onTap: () {
-                        final path = '/${parts.sublist(0, i + 1).join('/')}';
+                        final path =
+                            '/${realParts.sublist(0, i + 1).join('/')}';
                         unawaited(_navigateTo(path));
                       },
                       child: Padding(
@@ -1255,8 +1429,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                           vertical: 8,
                         ),
                         child: Text(
-                          parts[i],
-                          style: i == parts.length - 1
+                          _displaySftpBreadcrumbPart(
+                            realParts[i],
+                            displayParts: displayParts,
+                            index: i,
+                            isLast: i == realParts.length - 1,
+                          ),
+                          style: i == realParts.length - 1
                               ? TextStyle(
                                   fontWeight: FontWeight.bold,
                                   color: theme.colorScheme.primary,
@@ -1273,6 +1452,28 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         ],
       ),
     );
+  }
+
+  String _displaySftpPath(String remotePath) {
+    if (!_redactStoreScreenshotIdentities || remotePath == '/') {
+      return remotePath;
+    }
+    return '/release-workspace';
+  }
+
+  String _displaySftpBreadcrumbPart(
+    String realPart, {
+    required List<String> displayParts,
+    required int index,
+    required bool isLast,
+  }) {
+    if (!_redactStoreScreenshotIdentities) {
+      return realPart;
+    }
+    if (isLast && displayParts.isNotEmpty) {
+      return displayParts.last;
+    }
+    return '...';
   }
 
   Widget _buildFileList() {
@@ -1610,6 +1811,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save ${file.filename}',
       fileName: file.filename,
+      bytes: Uint8List(0),
     );
     if (savePath == null) {
       return;
@@ -1644,11 +1846,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final pickerRequest = resolveSftpUploadPickerRequest();
-    final result = await FilePicker.pickFiles(
-      allowMultiple: pickerRequest.allowMultiple,
-      withReadStream: pickerRequest.withReadStream,
-    );
+    final result = await FilePicker.pickFiles();
     if (result == null || result.files.isEmpty) {
       return;
     }
@@ -2887,6 +3085,7 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save ${widget.fileName}',
       fileName: widget.fileName,
+      bytes: Uint8List(0),
     );
     if (savePath == null) {
       return;

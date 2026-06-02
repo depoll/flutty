@@ -67,7 +67,11 @@ class _TmuxExpandableBar extends StatefulWidget {
   /// Called when the expanded/collapsed state changes.
   final ValueChanged<bool> onExpandedChanged;
 
-  final void Function(SshSession session, String sessionName)?
+  final void Function(
+    SshSession session,
+    String sessionName, {
+    required bool activeWindowChanged,
+  })?
   onWindowStateChanged;
 
   final Future<void> Function(SshSession session, String sessionName)?
@@ -277,7 +281,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         },
       );
       _loadWindows();
-      _notifyWindowStateChanged();
+      _notifyWindowStateChanged(activeWindowChanged: false);
       return;
     }
     if (event is TmuxWindowListEvent) {
@@ -295,9 +299,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       final shouldNotifyWindowStateChanged =
           currentWindows == null ||
           _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
+      final activeWindowChanged =
+          currentWindows != null &&
+          _didDisplayedTmuxWindowChange(currentWindows, windows);
       _applyWindows(windows);
       if (shouldNotifyWindowStateChanged) {
-        _notifyWindowStateChanged();
+        _notifyWindowStateChanged(activeWindowChanged: activeWindowChanged);
       }
       return;
     }
@@ -316,6 +323,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
     final shouldNotifyWindowStateChanged =
         _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
+    final activeWindowChanged = _didDisplayedTmuxWindowChange(
+      currentWindows,
+      windows,
+    );
     DiagnosticsLogService.instance.debug(
       'tmux.ui',
       'bar_snapshot_applied',
@@ -327,12 +338,36 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
     _applyWindows(windows);
     if (shouldNotifyWindowStateChanged) {
-      _notifyWindowStateChanged();
+      _notifyWindowStateChanged(activeWindowChanged: activeWindowChanged);
     }
   }
 
-  void _notifyWindowStateChanged() {
-    widget.onWindowStateChanged?.call(widget.session, widget.tmuxSessionName);
+  void _notifyWindowStateChanged({required bool activeWindowChanged}) {
+    widget.onWindowStateChanged?.call(
+      widget.session,
+      widget.tmuxSessionName,
+      activeWindowChanged: activeWindowChanged,
+    );
+  }
+
+  bool _didDisplayedTmuxWindowChange(
+    List<TmuxWindow> previousWindows,
+    List<TmuxWindow> nextWindows,
+  ) =>
+      _displayedTmuxWindowContext(previousWindows) !=
+      _displayedTmuxWindowContext(nextWindows);
+
+  ({String key, int? panePid})? _displayedTmuxWindowContext(
+    List<TmuxWindow> windows,
+  ) {
+    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
+    if (activeWindow == null) {
+      return null;
+    }
+    return (
+      key: activeWindow.id ?? '#${activeWindow.index}',
+      panePid: activeWindow.panePid,
+    );
   }
 
   bool _shouldRefreshTmuxThemeAfterWindowChange(
@@ -374,7 +409,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     String? id,
     int index,
     bool isActive,
-    String name,
     int? panePid,
     String? paneStartCommand,
   })
@@ -384,7 +418,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     id: window.id,
     index: window.index,
     isActive: window.isActive,
-    name: window.name,
     panePid: window.panePid,
     paneStartCommand: window.paneStartCommand,
   );
@@ -965,31 +998,33 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       child: GestureDetector(
         onVerticalDragUpdate: _onVerticalDragUpdate,
         onVerticalDragEnd: _onVerticalDragEnd,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            border: Border(
-              top: BorderSide(
-                color: theme.colorScheme.outlineVariant,
-                width: 0.5,
+        child: Material(
+          color: theme.colorScheme.surfaceContainerHighest,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border(
+                top: BorderSide(
+                  color: theme.colorScheme.outlineVariant,
+                  width: 0.5,
+                ),
               ),
             ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildHandleBar(theme),
-              AnimatedContainer(
-                duration: _dragOffset > 0
-                    ? Duration.zero
-                    : const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-                height: contentHeight,
-                child: contentHeight > 0
-                    ? ClipRect(child: _buildWindowList(theme))
-                    : const SizedBox.shrink(),
-              ),
-            ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildHandleBar(theme),
+                AnimatedContainer(
+                  duration: _dragOffset > 0
+                      ? Duration.zero
+                      : const Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                  height: contentHeight,
+                  child: contentHeight > 0
+                      ? ClipRect(child: _buildWindowList(theme))
+                      : const SizedBox.shrink(),
+                ),
+              ],
+            ),
           ),
         ),
       ),

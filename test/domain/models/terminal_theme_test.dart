@@ -23,6 +23,16 @@ void main() {
       expect(buildTerminalThemeModeReport(isDark: false), '\x1b[?997;2n');
     });
 
+    test('builds MonkeyMux theme hint reports with theme mode first', () {
+      const theme = TerminalThemes.githubLightDefault;
+
+      final reports = buildTerminalThemeHintReports(theme);
+
+      expect(reports, startsWith('\x1b[?997;2n\x1b]10;'));
+      expect(reports, contains('\x1b]11;rgb:ffff/ffff/ffff\x1b\\'));
+      expect(reports, contains('\x1b]4;0;rgb:2424/2929/2f2f\x1b\\'));
+    });
+
     test('creates with required fields', () {
       const theme = TerminalThemeData(
         id: 'test-id',
@@ -330,6 +340,15 @@ void main() {
       expect(reports, isNot(contains('\x1b]12;')));
       expect(reports, isNot(contains('\x1b]17;')));
       expect(reports, isNot(contains('\x1b]19;')));
+    });
+
+    test('buildTerminalThemeBackgroundColorReport answers OSC 11', () {
+      const theme = TerminalThemes.githubLightDefault;
+
+      expect(
+        buildTerminalThemeBackgroundColorReport(theme),
+        '\x1b]11;rgb:ffff/ffff/ffff\x1b\\',
+      );
     });
 
     test('buildTerminalThemeOscResponse ignores unsupported OSC values', () {
