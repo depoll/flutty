@@ -217,6 +217,7 @@ var (
 	leadingCdCommandPattern       = regexp.MustCompile(`^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*`)
 	leadingEnvPattern             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+`)
 	restoreFileNamePattern        = regexp.MustCompile(`^monkeymux-restore-[a-f0-9]{24}-[0-9]+\.json$`)
+	codexSessionIDPattern         = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
 	agentSessionIDArgumentPattern = map[string][]*regexp.Regexp{
 		"claude": {
 			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
@@ -1068,8 +1069,10 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	}
 	processes := readProcessTable()
 	copilotSessions := map[int]string{}
+	codexSessions := map[int]string{}
 	if len(processes) > 0 {
 		copilotSessions = discoverCopilotSessionIDs(processes, panePids)
+		codexSessions = discoverCodexSessionIDs(processes, panePids)
 	}
 	for i := range restore.Windows {
 		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
@@ -1082,6 +1085,12 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		}
 		if panePid > 0 && tool == "copilot" {
 			if sessionID := copilotSessions[panePid]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+				continue
+			}
+		}
+		if panePid > 0 && tool == "codex" {
+			if sessionID := codexSessions[panePid]; sessionID != "" {
 				restore.Windows[i].AgentSessionID = sessionID
 				continue
 			}
@@ -1243,6 +1252,10 @@ type processTableCache struct {
 
 var commandProcessTableCache processTableCache
 
+var processOpenFilePathsForMetadata = defaultProcessOpenFilePathsForMetadata
+
+var processWorkingDirectoryForMetadata = defaultProcessWorkingDirectoryForMetadata
+
 func readProcessTable() map[int]processInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
 	defer cancel()
@@ -1340,6 +1353,274 @@ func discoverCopilotSessionIDs(
 		}
 	}
 	return sessions
+}
+
+func discoverCodexSessionIDs(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
+	type unresolvedCodexProcess struct {
+		panePid          int
+		workingDirectory string
+	}
+	sessions := map[int]string{}
+	unresolved := []unresolvedCodexProcess{}
+	unresolvedPanes := map[int]struct{}{}
+	workingDirectoryCounts := map[string]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 || sessions[panePid] != "" {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != "codex" {
+			continue
+		}
+		if sessionID := agentSessionIDFromArgs("codex", process.args); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		if sessionID := codexSessionIDFromOpenFiles(process.pid); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory == "" {
+			continue
+		}
+		if _, ok := unresolvedPanes[panePid]; ok {
+			continue
+		}
+		unresolvedPanes[panePid] = struct{}{}
+		unresolved = append(unresolved, unresolvedCodexProcess{
+			panePid:          panePid,
+			workingDirectory: workingDirectory,
+		})
+		workingDirectoryCounts[workingDirectory]++
+	}
+	for _, candidate := range unresolved {
+		if sessions[candidate.panePid] != "" ||
+			workingDirectoryCounts[candidate.workingDirectory] != 1 {
+			continue
+		}
+		if sessionID := codexRecentSessionIDForWorkingDirectory(candidate.workingDirectory); sessionID != "" {
+			sessions[candidate.panePid] = sessionID
+		}
+	}
+	return sessions
+}
+
+func codexSessionIDFromOpenFiles(pid int) string {
+	for _, path := range processOpenFilePathsForMetadata(pid) {
+		if sessionID := codexSessionIDFromRolloutFile(path); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func codexRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+	workingDirectory = normalizedMetadataPath(workingDirectory)
+	if workingDirectory == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	sessionsDir := filepath.Join(home, ".codex", "sessions")
+	for _, path := range recentCodexRolloutFiles(sessionsDir, 30) {
+		if normalizedMetadataPath(codexRolloutWorkingDirectory(path)) != workingDirectory {
+			continue
+		}
+		if sessionID := codexSessionIDFromRolloutFile(path); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func recentCodexRolloutFiles(root string, limit int) []string {
+	type recentFile struct {
+		path    string
+		modTime time.Time
+	}
+	files := []recentFile{}
+	if limit <= 0 {
+		return nil
+	}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil || entry.IsDir() {
+			return nil
+		}
+		if !isCodexRolloutPath(path) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		files = append(files, recentFile{path: path, modTime: info.ModTime()})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	if len(files) > limit {
+		files = files[:limit]
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths
+}
+
+func codexRolloutWorkingDirectory(path string) string {
+	if !isCodexRolloutPath(path) {
+		return ""
+	}
+	return jsonStringFieldFromFile(path, "cwd")
+}
+
+func codexSessionIDFromRolloutFile(path string) string {
+	if !isCodexRolloutPath(path) {
+		return ""
+	}
+	if sessionID := codexSessionIDFromRolloutName(filepath.Base(path)); sessionID != "" {
+		return sessionID
+	}
+	if sessionID := jsonStringFieldFromFile(path, "id"); sessionID != "" {
+		return sessionID
+	}
+	return ""
+}
+
+func isCodexRolloutPath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	if !strings.Contains(normalized, "/.codex/sessions/") {
+		return false
+	}
+	name := filepath.Base(path)
+	return strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, ".jsonl")
+}
+
+func codexSessionIDFromRolloutName(name string) string {
+	match := codexSessionIDPattern.FindStringSubmatch(name)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
+func jsonStringFieldFromFile(path string, field string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if value := jsonStringFieldFromLine(scanner.Text(), field); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func jsonStringFieldFromLine(line string, field string) string {
+	var parsed any
+	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+		return ""
+	}
+	return jsonStringField(parsed, field)
+}
+
+func jsonStringField(value any, field string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if raw, ok := typed[field]; ok {
+			if text, ok := raw.(string); ok {
+				return strings.TrimSpace(text)
+			}
+		}
+		for _, child := range typed {
+			if text := jsonStringField(child, field); text != "" {
+				return text
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if text := jsonStringField(child, field); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func defaultProcessOpenFilePathsForMetadata(pid int) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		"lsof",
+		"-nP",
+		"-p",
+		strconv.Itoa(pid),
+		"-Fn",
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	paths := []string{}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "n") && len(line) > 1 {
+			paths = append(paths, line[1:])
+		}
+	}
+	return paths
+}
+
+func defaultProcessWorkingDirectoryForMetadata(pid int) string {
+	if runtime.GOOS == "linux" {
+		if target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd")); err == nil {
+			return target
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		"lsof",
+		"-nP",
+		"-a",
+		"-p",
+		strconv.Itoa(pid),
+		"-d",
+		"cwd",
+		"-Fn",
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "n") && len(line) > 1 {
+			return line[1:]
+		}
+	}
+	return ""
+}
+
+func normalizedMetadataPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.Clean(trimmed)
 }
 
 func pidFromCopilotLockPath(path string) int {

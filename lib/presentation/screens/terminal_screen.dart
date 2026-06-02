@@ -2719,6 +2719,13 @@ class _TmuxTerminalThemeRefreshRequest {
   );
 }
 
+typedef _MonkeyMuxResizeSyncKey = ({
+  int connectionId,
+  String sessionName,
+  int columns,
+  int rows,
+});
+
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
@@ -2887,6 +2894,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   Timer? _monkeyMuxResizeRedrawFollowUpTimer;
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
+  _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
+  final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
+      <_MonkeyMuxResizeSyncKey>{};
   bool _terminalWakeLockSetting = false;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
@@ -6299,6 +6309,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final resizeKey = (
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+      columns: terminalColumns,
+      rows: terminalRows,
+    );
+    final isDuplicateSize =
+        _lastMonkeyMuxResizeSync == resizeKey ||
+        _pendingMonkeyMuxResizeSyncs.contains(resizeKey);
+    if (!refreshVisibleTerminal && isDuplicateSize) {
+      return;
+    }
+    if (!refreshVisibleTerminal) {
+      _pendingMonkeyMuxResizeSyncs.add(resizeKey);
+    }
+
     try {
       await _monkeyMuxService.resizeTerminal(
         session,
@@ -6318,6 +6344,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'refreshedVisibleTerminal': refreshVisibleTerminal,
         },
       );
+      _lastMonkeyMuxResizeSync = resizeKey;
       if (refreshVisibleTerminal) {
         _scheduleMonkeyMuxPostRedrawDisplayRefresh(session.connectionId);
       }
@@ -6330,6 +6357,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
+    } finally {
+      if (!refreshVisibleTerminal) {
+        _pendingMonkeyMuxResizeSyncs.remove(resizeKey);
+      }
     }
   }
 

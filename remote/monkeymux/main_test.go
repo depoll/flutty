@@ -2690,6 +2690,149 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 	}
 }
 
+func TestDiscoverCodexSessionIDsUsesOpenRolloutFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	sessionID := "123e4567-e89b-12d3-a456-426614174000"
+	processOpenFilePathsForMetadata = func(pid int) []string {
+		if pid != 200 {
+			return nil
+		}
+		return []string{
+			"/Users/alice/.codex/sessions/2026/06/rollout-2026-06-01T06-50-00-" + sessionID + ".jsonl",
+		}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		t.Fatalf("processWorkingDirectoryForMetadata(%d) was called; open file match should win", pid)
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {
+			pid:  200,
+			ppid: 100,
+			comm: "node",
+			args: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+		},
+	}
+
+	sessions := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("codex session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverCodexSessionIDsFallsBackToRecentRolloutForCwd(t *testing.T) {
+	originalHome := os.Getenv("HOME")
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", originalHome)
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "123e4567-e89b-12d3-a456-426614174001"
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "06")
+	if err := os.MkdirAll(rolloutDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(
+		rolloutDir,
+		"rollout-2026-06-01T06-50-00-"+sessionID+".jsonl",
+	)
+	if err := os.WriteFile(
+		rolloutPath,
+		[]byte(`{"cwd":"/work/project","id":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(pid int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "codex", args: "codex"},
+	}
+
+	sessions := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("codex session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
+	originalHome := os.Getenv("HOME")
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", originalHome)
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "123e4567-e89b-12d3-a456-426614174002"
+	rolloutDir := filepath.Join(home, ".codex", "sessions", "2026", "06")
+	if err := os.MkdirAll(rolloutDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rolloutPath := filepath.Join(
+		rolloutDir,
+		"rollout-2026-06-01T06-50-00-"+sessionID+".jsonl",
+	)
+	if err := os.WriteFile(
+		rolloutPath,
+		[]byte(`{"cwd":"/work/project","id":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(pid int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		switch pid {
+		case 200, 201:
+			return "/work/project"
+		default:
+			return ""
+		}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "codex", args: "codex"},
+		201: {pid: 201, ppid: 101, comm: "codex", args: "codex"},
+	}
+
+	sessions := discoverCodexSessionIDs(
+		processes,
+		map[int]struct{}{100: {}, 101: {}},
+	)
+
+	if len(sessions) != 0 {
+		t.Fatalf("codex sessions = %#v, want none for ambiguous cwd fallback", sessions)
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -3019,13 +3162,14 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			agentTool: "copilot",
 		},
 		{
-			name: "codex launch",
+			name: "codex resume",
 			state: restoreWindowState{
 				Name:           "Codex",
 				CurrentCommand: "codex",
 				AgentTool:      "codex",
+				AgentSessionID: "codex-session",
 			},
-			want:      "codex --yolo",
+			want:      "codex --yolo resume 'codex-session'",
 			agentTool: "codex",
 		},
 		{
