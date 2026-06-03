@@ -34,6 +34,7 @@ import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
@@ -221,12 +222,12 @@ class _RecordingSftpPageState extends State<_RecordingSftpPage> {
 
 class _RecordingPortForwardBrowserPage extends StatefulWidget {
   const _RecordingPortForwardBrowserPage({
-    required this.queryParameters,
+    required this.launch,
     required this.onOpened,
   });
 
-  final Map<String, String> queryParameters;
-  final ValueChanged<Map<String, String>> onOpened;
+  final PortForwardBrowserLaunch launch;
+  final ValueChanged<PortForwardBrowserLaunch> onOpened;
 
   @override
   State<_RecordingPortForwardBrowserPage> createState() =>
@@ -238,7 +239,7 @@ class _RecordingPortForwardBrowserPageState
   @override
   void initState() {
     super.initState();
-    widget.onOpened(widget.queryParameters);
+    widget.onOpened(widget.launch);
   }
 
   @override
@@ -1564,93 +1565,117 @@ void main() {
       expect(terminalMenuItemButton('Paste Files'), findsOneWidget);
     });
 
-    testWidgets('terminal overflow opens active local forward in app browser', (
-      tester,
-    ) async {
-      session = _ActiveTunnelsSshSession(
-        connectionId: session.connectionId,
-        hostId: host.id,
-        client: sshClient,
-        config: session.config,
-        activeTunnels: const [
-          ActiveTunnelInfo(
-            portForwardId: 42,
-            localHost: '127.0.0.1',
-            localPort: 49152,
-            remoteHost: 'example.com',
-            remotePort: 80,
-            isLocal: true,
-          ),
-        ],
-      )..getOrCreateTerminal();
-      final activeTunnel = session.activeTunnels.single;
-      final openedQueries = <Map<String, String>>[];
-      final router = GoRouter(
-        initialLocation:
-            '/terminal/${host.id}?connectionId=${session.connectionId}',
-        routes: [
-          GoRoute(
-            path: '/terminal/:hostId',
-            name: Routes.terminal,
-            builder: (context, state) => TerminalScreen(
-              hostId: host.id,
-              connectionId: session.connectionId,
+    testWidgets(
+      'terminal overflow opens active local forwards in browser tabs',
+      (tester) async {
+        session = _ActiveTunnelsSshSession(
+          connectionId: session.connectionId,
+          hostId: host.id,
+          client: sshClient,
+          config: session.config,
+          activeTunnels: const [
+            ActiveTunnelInfo(
+              portForwardId: 42,
+              localHost: '127.0.0.1',
+              localPort: 49152,
+              remoteHost: 'example.com',
+              remotePort: 80,
+              isLocal: true,
             ),
-          ),
-          GoRoute(
-            path: '/port-forwards/browser',
-            name: Routes.portForwardBrowser,
-            builder: (context, state) => _RecordingPortForwardBrowserPage(
-              queryParameters: Map<String, String>.from(
-                state.uri.queryParameters,
-              ),
-              onOpened: openedQueries.add,
+            ActiveTunnelInfo(
+              portForwardId: 43,
+              localHost: '0.0.0.0',
+              localPort: 3000,
+              remoteHost: 'localhost',
+              remotePort: 3000,
+              isLocal: true,
             ),
-          ),
-        ],
-      );
-      addTearDown(router.dispose);
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            hostRepositoryProvider.overrideWithValue(hostRepository),
-            monetizationServiceProvider.overrideWithValue(monetizationService),
-            monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
-            ),
-            sharedClipboardProvider.overrideWith((ref) async => false),
-            activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
+            ActiveTunnelInfo(
+              portForwardId: 44,
+              localHost: '127.0.0.1',
+              localPort: 15432,
+              remoteHost: 'localhost',
+              remotePort: 5432,
+              isLocal: false,
             ),
           ],
-          child: MaterialApp.router(routerConfig: router),
-        ),
-      );
-      await tester.pump();
-      await tester.pump();
+        )..getOrCreateTerminal();
+        final openedLaunches = <PortForwardBrowserLaunch>[];
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+            GoRoute(
+              path: '/port-forwards/browser',
+              name: Routes.portForwardBrowser,
+              builder: (context, state) {
+                final launch = state.extra! as PortForwardBrowserLaunch;
+                return _RecordingPortForwardBrowserPage(
+                  launch: launch,
+                  onOpened: openedLaunches.add,
+                );
+              },
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
 
-      await tester.tap(find.byIcon(Icons.more_vert));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      final browserItem = terminalMenuItemButton('Open Forwarded Browser');
-      expect(browserItem, findsOneWidget);
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
 
-      await tester.tap(find.text('Open Forwarded Browser'));
-      await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.more_vert));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        final browserItem = terminalMenuItemButton('Open Forwarded Browser');
+        expect(browserItem, findsOneWidget);
 
-      expect(find.text('Forward browser opened'), findsOneWidget);
-      expect(openedQueries.last, {
-        'url': 'http://127.0.0.1:${activeTunnel.localPort}',
-        'port': activeTunnel.localPort.toString(),
-        'title': '127.0.0.1:${activeTunnel.localPort}',
-      });
+        await tester.tap(find.text('Open Forwarded Browser'));
+        await tester.pumpAndSettle();
 
-      router.pop();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-    });
+        expect(find.text('Forward browser opened'), findsOneWidget);
+        final launch = openedLaunches.last;
+        expect(launch.selectedIndex, 0);
+        expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
+          'http://127.0.0.1:49152',
+          'http://127.0.0.1:3000',
+        ]);
+        expect(launch.tabs.map((tab) => tab.title).toList(), [
+          '127.0.0.1:49152',
+          '127.0.0.1:3000',
+        ]);
+
+        router.pop();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      },
+    );
 
     testWidgets(
       'mobile terminal overflow menu omits sensitive keyboard action',

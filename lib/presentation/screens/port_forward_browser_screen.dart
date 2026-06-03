@@ -6,24 +6,49 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../domain/services/port_forward_browser_service.dart';
 
+/// Initial tab configuration for the embedded browser.
+class PortForwardBrowserInitialTab {
+  /// Creates an initial browser tab.
+  const PortForwardBrowserInitialTab({required this.uri, this.title});
+
+  /// URL loaded by the tab.
+  final Uri uri;
+
+  /// Optional label shown until the page title is available.
+  final String? title;
+}
+
+/// Launch configuration for the embedded port-forward browser.
+class PortForwardBrowserLaunch {
+  /// Creates browser launch configuration.
+  const PortForwardBrowserLaunch({required this.tabs, this.selectedIndex = 0})
+    : assert(tabs.length > 0),
+      assert(selectedIndex >= 0),
+      assert(selectedIndex < tabs.length);
+
+  /// Initial browser tabs.
+  final List<PortForwardBrowserInitialTab> tabs;
+
+  /// Initially selected tab.
+  final int selectedIndex;
+}
+
 /// Embedded browser for pages exposed through local port forwards.
 class PortForwardBrowserScreen extends StatefulWidget {
   /// Creates a port-forward browser screen.
   const PortForwardBrowserScreen({
-    required this.initialUri,
-    required this.allowedPort,
-    this.title,
+    required this.initialTabs,
+    this.initialTabIndex = 0,
     super.key,
-  }) : assert(allowedPort > 0 && allowedPort <= 65535);
+  }) : assert(initialTabs.length > 0),
+       assert(initialTabIndex >= 0),
+       assert(initialTabIndex < initialTabs.length);
 
-  /// Initial URL to load.
-  final Uri initialUri;
+  /// Initial tabs to open.
+  final List<PortForwardBrowserInitialTab> initialTabs;
 
-  /// Local forwarded port this browser is allowed to load.
-  final int allowedPort;
-
-  /// Optional title shown before the page title is available.
-  final String? title;
+  /// Initially selected tab.
+  final int initialTabIndex;
 
   @override
   State<PortForwardBrowserScreen> createState() =>
@@ -31,32 +56,23 @@ class PortForwardBrowserScreen extends StatefulWidget {
 }
 
 class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
-  late final WebViewController _controller;
   late final TextEditingController _addressController;
+  late final List<_PortForwardBrowserTabState> _tabs;
   final _addressFocusNode = FocusNode();
 
-  var _progress = 0;
-  var _canGoBack = false;
-  var _canGoForward = false;
-  var _isLoading = true;
-  String? _pageTitle;
+  var _selectedTabIndex = 0;
+  var _nextTabId = 0;
+
+  _PortForwardBrowserTabState get _selectedTab => _tabs[_selectedTabIndex];
 
   @override
   void initState() {
     super.initState();
-    final initialUri = normalizePortForwardBrowserUri(widget.initialUri);
-    _addressController = TextEditingController(text: initialUri.toString());
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: _handleNavigationRequest,
-          onProgress: _handleProgress,
-          onPageStarted: _handlePageStarted,
-          onPageFinished: (url) => unawaited(_handlePageFinished(url)),
-        ),
-      );
-    unawaited(_controller.loadRequest(initialUri));
+    _tabs = widget.initialTabs.map(_createTab).toList(growable: true);
+    _selectedTabIndex = widget.initialTabIndex;
+    _addressController = TextEditingController(
+      text: _selectedTab.currentUri.toString(),
+    );
   }
 
   @override
@@ -67,147 +83,295 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(_pageTitle?.isNotEmpty ?? false ? _pageTitle! : _title),
-      actions: [
-        IconButton(
-          onPressed: _canGoBack ? () => unawaited(_goBack()) : null,
-          tooltip: 'Back',
-          icon: const Icon(Icons.arrow_back),
-        ),
-        IconButton(
-          onPressed: _canGoForward ? () => unawaited(_goForward()) : null,
-          tooltip: 'Forward',
-          icon: const Icon(Icons.arrow_forward),
-        ),
-        IconButton(
-          onPressed: () => unawaited(_controller.reload()),
-          tooltip: 'Reload',
-          icon: const Icon(Icons.refresh),
-        ),
-      ],
-    ),
-    body: Column(
-      children: [
-        if (_isLoading && _progress < 100)
-          LinearProgressIndicator(value: _progress / 100),
-        _buildAddressBar(context),
-        Expanded(child: WebViewWidget(controller: _controller)),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final selectedTab = _selectedTab;
+    return Scaffold(
+      appBar: AppBar(
+        leading: const CloseButton(),
+        titleSpacing: 0,
+        title: _buildAddressField(context),
+        actions: [
+          IconButton(
+            onPressed: selectedTab.canGoBack
+                ? () => unawaited(_goBack())
+                : null,
+            tooltip: 'Back',
+            icon: const Icon(Icons.arrow_back),
+          ),
+          IconButton(
+            onPressed: selectedTab.canGoForward
+                ? () => unawaited(_goForward())
+                : null,
+            tooltip: 'Forward',
+            icon: const Icon(Icons.arrow_forward),
+          ),
+          IconButton(
+            onPressed: () => unawaited(selectedTab.controller.reload()),
+            tooltip: 'Reload',
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_tabs.length > 1) _buildTabStrip(context),
+          if (selectedTab.isLoading && selectedTab.progress < 100)
+            LinearProgressIndicator(value: selectedTab.progress / 100),
+          Expanded(
+            child: WebViewWidget(
+              key: ValueKey<int>(selectedTab.id),
+              controller: selectedTab.controller,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-  String get _title => widget.title?.isNotEmpty ?? false
-      ? widget.title!
-      : 'Port Forward Browser';
+  _PortForwardBrowserTabState _createTab(PortForwardBrowserInitialTab seed) {
+    final initialUri = normalizePortForwardBrowserUri(seed.uri);
+    late final _PortForwardBrowserTabState tab;
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (request) =>
+              _handleNavigationRequest(tab, request),
+          onProgress: (progress) => _handleProgress(tab, progress),
+          onPageStarted: (url) => _handlePageStarted(tab, url),
+          onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
+        ),
+      );
 
-  Widget _buildAddressBar(BuildContext context) {
+    tab = _PortForwardBrowserTabState(
+      id: _nextTabId++,
+      controller: controller,
+      currentUri: initialUri,
+      initialTitle: seed.title,
+    );
+    unawaited(controller.enableZoom(false));
+    unawaited(controller.loadRequest(initialUri));
+
+    return tab;
+  }
+
+  Widget _buildAddressField(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
+    return TextField(
+      controller: _addressController,
+      focusNode: _addressFocusNode,
+      autocorrect: false,
+      enableSuggestions: false,
+      keyboardType: TextInputType.url,
+      textInputAction: TextInputAction.go,
+      inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s'))],
+      decoration: InputDecoration(
+        isDense: true,
+        filled: true,
+        fillColor: colorScheme.surfaceContainerHighest,
+        hintText: 'Search or enter URL',
+        prefixIcon: const Icon(Icons.travel_explore),
+        suffixIcon: IconButton(
+          onPressed: () => unawaited(_loadAddress(_addressController.text)),
+          tooltip: 'Load URL',
+          icon: const Icon(Icons.arrow_circle_right_outlined),
+        ),
+        border: const OutlineInputBorder(),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
+      ),
+      onSubmitted: (value) => unawaited(_loadAddress(value)),
+    );
+  }
+
+  Widget _buildTabStrip(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-        child: TextField(
-          controller: _addressController,
-          focusNode: _addressFocusNode,
-          autocorrect: false,
-          enableSuggestions: false,
-          keyboardType: TextInputType.url,
-          textInputAction: TextInputAction.go,
-          inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s'))],
-          decoration: InputDecoration(
-            isDense: true,
-            prefixIcon: const Icon(Icons.travel_explore),
-            suffixIcon: IconButton(
-              onPressed: () => unawaited(_loadAddress(_addressController.text)),
-              tooltip: 'Load URL',
-              icon: const Icon(Icons.arrow_circle_right_outlined),
-            ),
-            border: const OutlineInputBorder(),
-          ),
-          onSubmitted: (value) => unawaited(_loadAddress(value)),
+      child: SizedBox(
+        height: 48,
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          scrollDirection: Axis.horizontal,
+          itemCount: _tabs.length,
+          separatorBuilder: (context, index) => const SizedBox(width: 8),
+          itemBuilder: (context, index) {
+            final tab = _tabs[index];
+            final selected = index == _selectedTabIndex;
+            return InputChip(
+              selected: selected,
+              label: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  _tabLabel(tab),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+              avatar: Icon(
+                Icons.language,
+                size: 18,
+                color: selected ? colorScheme.onSecondaryContainer : null,
+              ),
+              onPressed: () => _selectTab(index),
+              onDeleted: _tabs.length > 1 ? () => _closeTab(index) : null,
+            );
+          },
         ),
       ),
     );
   }
 
-  void _handleProgress(int progress) {
-    if (!mounted) return;
+  String _tabLabel(_PortForwardBrowserTabState tab) {
+    if (tab.pageTitle?.trim().isNotEmpty ?? false) {
+      return tab.pageTitle!.trim();
+    }
+    if (tab.initialTitle?.trim().isNotEmpty ?? false) {
+      return tab.initialTitle!.trim();
+    }
+    return tab.currentUri.authority.isNotEmpty
+        ? tab.currentUri.authority
+        : tab.currentUri.toString();
+  }
+
+  void _selectTab(int index) {
+    if (index == _selectedTabIndex) {
+      return;
+    }
     setState(() {
-      _progress = progress;
-      _isLoading = progress < 100;
+      _selectedTabIndex = index;
+      _addressController.text = _selectedTab.currentUri.toString();
+    });
+    unawaited(_refreshNavigationState(_selectedTab));
+  }
+
+  void _closeTab(int index) {
+    if (_tabs.length == 1) {
+      return;
+    }
+    setState(() {
+      _tabs.removeAt(index);
+      if (_selectedTabIndex >= _tabs.length) {
+        _selectedTabIndex = _tabs.length - 1;
+      } else if (index < _selectedTabIndex) {
+        _selectedTabIndex -= 1;
+      }
+      _addressController.text = _selectedTab.currentUri.toString();
     });
   }
 
-  void _handlePageStarted(String url) {
+  void _handleProgress(_PortForwardBrowserTabState tab, int progress) {
     if (!mounted) return;
     setState(() {
-      _isLoading = true;
-      _addressController.text = url;
+      tab
+        ..progress = progress
+        ..isLoading = progress < 100;
     });
   }
 
-  Future<void> _handlePageFinished(String url) async {
-    final title = await _controller.getTitle();
+  void _handlePageStarted(_PortForwardBrowserTabState tab, String url) {
     if (!mounted) return;
+    final uri = Uri.tryParse(url);
     setState(() {
-      _isLoading = false;
-      _pageTitle = title;
-      _addressController.text = url;
+      tab.isLoading = true;
+      if (uri != null) {
+        tab.currentUri = _normalizeLoadedBrowserUri(uri);
+      }
+      if (identical(tab, _selectedTab)) {
+        _addressController.text = tab.currentUri.toString();
+      }
     });
-    await _refreshNavigationState();
+  }
+
+  Future<void> _handlePageFinished(
+    _PortForwardBrowserTabState tab,
+    String url,
+  ) async {
+    final title = await tab.controller.getTitle();
+    if (!mounted) return;
+    final uri = Uri.tryParse(url);
+    setState(() {
+      tab
+        ..isLoading = false
+        ..pageTitle = title;
+      if (uri != null) {
+        tab.currentUri = _normalizeLoadedBrowserUri(uri);
+      }
+      if (identical(tab, _selectedTab)) {
+        _addressController.text = tab.currentUri.toString();
+      }
+    });
+    await _refreshNavigationState(tab);
   }
 
   Future<void> _goBack() async {
-    await _controller.goBack();
-    await _refreshNavigationState();
+    final tab = _selectedTab;
+    await tab.controller.goBack();
+    await _refreshNavigationState(tab);
   }
 
   Future<void> _goForward() async {
-    await _controller.goForward();
-    await _refreshNavigationState();
+    final tab = _selectedTab;
+    await tab.controller.goForward();
+    await _refreshNavigationState(tab);
   }
 
   Future<void> _loadAddress(String address) async {
     final uri = _parseBrowserAddress(address);
     if (uri == null) {
-      _showMessage('Enter a localhost URL for port ${widget.allowedPort}');
+      _showMessage('Enter an HTTP or HTTPS URL');
       return;
     }
 
     _addressFocusNode.unfocus();
-    await _controller.loadRequest(uri);
-  }
-
-  NavigationDecision _handleNavigationRequest(NavigationRequest request) {
-    final uri = Uri.tryParse(request.url);
-    final normalizedUri = uri == null
-        ? null
-        : normalizePortForwardBrowserUri(uri);
-    if (normalizedUri == null ||
-        !isPortForwardBrowserUri(normalizedUri, port: widget.allowedPort)) {
-      _showMessage('Blocked navigation outside this port forward');
-      return NavigationDecision.prevent;
-    }
-    if (normalizedUri.toString() != uri.toString()) {
-      unawaited(_controller.loadRequest(normalizedUri));
-      return NavigationDecision.prevent;
-    }
-    return NavigationDecision.navigate;
-  }
-
-  Future<void> _refreshNavigationState() async {
-    final canGoBack = await _controller.canGoBack();
-    final canGoForward = await _controller.canGoForward();
+    final tab = _selectedTab;
+    await tab.controller.loadRequest(uri);
     if (!mounted) return;
     setState(() {
-      _canGoBack = canGoBack;
-      _canGoForward = canGoForward;
+      tab.currentUri = uri;
+      _addressController.text = uri.toString();
+    });
+  }
+
+  NavigationDecision _handleNavigationRequest(
+    _PortForwardBrowserTabState tab,
+    NavigationRequest request,
+  ) {
+    final uri = Uri.tryParse(request.url);
+    if (uri == null) {
+      _showMessage('Could not open ${request.url}');
+      return NavigationDecision.prevent;
+    }
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      final normalizedUri = normalizePortForwardBrowserUri(uri);
+      if (normalizedUri.toString() != uri.toString()) {
+        unawaited(tab.controller.loadRequest(normalizedUri));
+        return NavigationDecision.prevent;
+      }
+      return NavigationDecision.navigate;
+    }
+    if (uri.scheme == 'about' || uri.scheme == 'blob' || uri.scheme == 'data') {
+      return NavigationDecision.navigate;
+    }
+
+    _showMessage('Unsupported link scheme: ${uri.scheme}');
+    return NavigationDecision.prevent;
+  }
+
+  Future<void> _refreshNavigationState(_PortForwardBrowserTabState tab) async {
+    final canGoBack = await tab.controller.canGoBack();
+    final canGoForward = await tab.controller.canGoForward();
+    if (!mounted) return;
+    setState(() {
+      tab
+        ..canGoBack = canGoBack
+        ..canGoForward = canGoForward;
     });
   }
 
@@ -225,12 +389,13 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (uri.scheme != 'http' && uri.scheme != 'https') {
       return null;
     }
-    final normalizedUri = normalizePortForwardBrowserUri(uri);
-    if (!isPortForwardBrowserUri(normalizedUri, port: widget.allowedPort)) {
-      return null;
-    }
-    return normalizedUri;
+    return normalizePortForwardBrowserUri(uri);
   }
+
+  Uri _normalizeLoadedBrowserUri(Uri uri) =>
+      uri.scheme == 'http' || uri.scheme == 'https'
+      ? normalizePortForwardBrowserUri(uri)
+      : uri;
 
   bool _hasUriScheme(String value) =>
       RegExp('^[a-zA-Z][a-zA-Z0-9+.-]*://').hasMatch(value);
@@ -241,4 +406,23 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
   }
+}
+
+class _PortForwardBrowserTabState {
+  _PortForwardBrowserTabState({
+    required this.id,
+    required this.controller,
+    required this.currentUri,
+    this.initialTitle,
+  });
+
+  final int id;
+  final WebViewController controller;
+  final String? initialTitle;
+  int progress = 0;
+  bool canGoBack = false;
+  bool canGoForward = false;
+  bool isLoading = true;
+  Uri currentUri;
+  String? pageTitle;
 }
