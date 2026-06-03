@@ -71,6 +71,7 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'port_forward_browser_screen.dart';
 import 'sftp_screen.dart';
 import 'snippet_edit_screen.dart';
 
@@ -2634,13 +2635,11 @@ class _PortForwardBrowserOption {
     required this.uri,
     required this.port,
     required this.title,
-    required this.remoteLabel,
   });
 
   final Uri uri;
   final int port;
   final String title;
-  final String remoteLabel;
 }
 
 /// Terminal screen for SSH sessions.
@@ -11689,13 +11688,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           activeLocalPorts: _activeLocalForwardPorts(),
         )) {
       final browserUri = normalizePortForwardBrowserUri(uri);
-      await context.pushNamed<void>(
-        Routes.portForwardBrowser,
-        queryParameters: {
-          'url': browserUri.toString(),
-          'port': browserUri.port.toString(),
-          'title': browserUri.authority,
-        },
+      await _openPortForwardBrowserOption(
+        _PortForwardBrowserOption(
+          uri: browserUri,
+          port: browserUri.port,
+          title: browserUri.authority,
+        ),
       );
       return;
     }
@@ -11738,7 +11736,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 uri: uri,
                 port: tunnel.localPort,
                 title: uri.authority,
-                remoteLabel: '${tunnel.remoteHost}:${tunnel.remotePort}',
               );
             })
             .toList(growable: false) ??
@@ -11752,47 +11749,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final option = options.length == 1
-        ? options.single
-        : await _choosePortForwardBrowserOption(options);
-    if (!mounted || option == null) {
-      return;
-    }
-
-    await _openPortForwardBrowserOption(option);
+    await _openPortForwardBrowserOptions(options);
   }
-
-  Future<_PortForwardBrowserOption?> _choosePortForwardBrowserOption(
-    List<_PortForwardBrowserOption> options,
-  ) => showDialog<_PortForwardBrowserOption>(
-    context: context,
-    builder: (context) => SimpleDialog(
-      title: const Text('Open Forwarded Browser'),
-      children: [
-        for (final option in options)
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, option),
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.open_in_browser_outlined),
-              title: Text(option.title),
-              subtitle: Text(option.remoteLabel),
-            ),
-          ),
-      ],
-    ),
-  );
 
   Future<void> _openPortForwardBrowserOption(
     _PortForwardBrowserOption option,
+  ) => _openPortForwardBrowserOptions([option]);
+
+  Future<void> _openPortForwardBrowserOptions(
+    List<_PortForwardBrowserOption> options,
   ) async {
     await context.pushNamed<void>(
       Routes.portForwardBrowser,
-      queryParameters: {
-        'url': option.uri.toString(),
-        'port': option.port.toString(),
-        'title': option.title,
-      },
+      extra: PortForwardBrowserLaunch(
+        tabs: [
+          for (final option in options)
+            PortForwardBrowserInitialTab(uri: option.uri, title: option.title),
+        ],
+      ),
     );
   }
 

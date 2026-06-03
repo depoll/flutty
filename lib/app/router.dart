@@ -225,16 +225,8 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/port-forwards/browser',
         name: Routes.portForwardBrowser,
         pageBuilder: (context, state) {
-          final uri = Uri.tryParse(state.uri.queryParameters['url'] ?? '');
-          final allowedPort = int.tryParse(
-            state.uri.queryParameters['port'] ?? '',
-          );
-          final initialUri = uri == null
-              ? null
-              : normalizePortForwardBrowserUri(uri);
-          if (initialUri == null ||
-              allowedPort == null ||
-              !isPortForwardBrowserUri(initialUri, port: allowedPort)) {
+          final launch = _portForwardBrowserLaunchFromRouteState(state);
+          if (launch == null) {
             return _buildSlideUpPage<String>(
               key: state.pageKey,
               child: const Scaffold(
@@ -245,9 +237,8 @@ final routerProvider = Provider<GoRouter>((ref) {
           return _buildSlideUpPage<String>(
             key: state.pageKey,
             child: PortForwardBrowserScreen(
-              initialUri: initialUri,
-              allowedPort: allowedPort,
-              title: state.uri.queryParameters['title'],
+              initialTabs: launch.tabs,
+              initialTabIndex: launch.selectedIndex,
             ),
           );
         },
@@ -275,6 +266,39 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+PortForwardBrowserLaunch? _portForwardBrowserLaunchFromRouteState(
+  GoRouterState state,
+) {
+  final extra = state.extra;
+  if (extra is PortForwardBrowserLaunch &&
+      _portForwardBrowserLaunchIsValid(extra)) {
+    return extra;
+  }
+
+  final uri = Uri.tryParse(state.uri.queryParameters['url'] ?? '');
+  if (uri == null || !_isSupportedBrowserUri(uri)) {
+    return null;
+  }
+
+  return PortForwardBrowserLaunch(
+    tabs: [
+      PortForwardBrowserInitialTab(
+        uri: normalizePortForwardBrowserUri(uri),
+        title: state.uri.queryParameters['title'],
+      ),
+    ],
+  );
+}
+
+bool _portForwardBrowserLaunchIsValid(PortForwardBrowserLaunch launch) =>
+    launch.tabs.isNotEmpty &&
+    launch.selectedIndex >= 0 &&
+    launch.selectedIndex < launch.tabs.length &&
+    launch.tabs.every((tab) => _isSupportedBrowserUri(tab.uri));
+
+bool _isSupportedBrowserUri(Uri uri) =>
+    uri.host.isNotEmpty && (uri.scheme == 'http' || uri.scheme == 'https');
 
 HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   'connections' => HomeScreenTab.connections,
