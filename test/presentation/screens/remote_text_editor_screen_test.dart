@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 
@@ -471,5 +472,43 @@ void main() {
         expect(scrollController.offset, closeTo(0.0, 0.5));
       },
     );
+  });
+
+  group('RemoteTextEditorScreen wrapping', () {
+    Widget buildEditor({required TextEditingController controller}) =>
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'authorized_keys',
+            controller: controller,
+            initialFontSize: 12,
+          ),
+        );
+
+    testWidgets('wrap off keeps long logical lines on one visual row', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final firstLine = 'ssh-ed25519 ${'A' * 120}';
+      final controller = TextEditingController(text: '$firstLine\nsecond')
+        ..selection = const TextSelection.collapsed(offset: 0);
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(buildEditor(controller: controller));
+      await tester.pump();
+
+      final renderEditable = tester.allRenderObjects
+          .whereType<RenderEditable>()
+          .single;
+      final secondLineCaret = renderEditable.getLocalRectForCaret(
+        TextPosition(offset: firstLine.length + 1),
+      );
+
+      expect(
+        secondLineCaret.top,
+        lessThan(renderEditable.preferredLineHeight * 1.5),
+      );
+    });
   });
 }
