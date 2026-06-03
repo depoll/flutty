@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../domain/services/port_forward_browser_service.dart';
 
@@ -149,10 +150,22 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       currentUri: initialUri,
       initialTitle: seed.title,
     );
-    unawaited(controller.enableZoom(false));
-    unawaited(controller.loadRequest(initialUri));
+    unawaited(_configureAndLoadController(controller, initialUri));
 
     return tab;
+  }
+
+  Future<void> _configureAndLoadController(
+    WebViewController controller,
+    Uri initialUri,
+  ) async {
+    await controller.enableZoom(false);
+    final platformController = controller.platform;
+    if (platformController is AndroidWebViewController) {
+      await platformController.setUseWideViewPort(true);
+      await platformController.setTextZoom(100);
+    }
+    await controller.loadRequest(initialUri);
   }
 
   Widget _buildAddressField(BuildContext context) {
