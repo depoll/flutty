@@ -9055,12 +9055,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   label: 'Change Theme',
                   action: 'change_theme',
                 ),
-                _terminalOverflowMenuItem(
-                  context: context,
-                  icon: Icons.open_in_browser_outlined,
-                  label: 'Open Forwarded Browser',
-                  action: 'open_port_forward_browser',
-                ),
+                if (isPortForwardBrowserSupported())
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.open_in_browser_outlined,
+                    label: 'Open Forwarded Browser',
+                    action: 'open_port_forward_browser',
+                  ),
                 _terminalOverflowSubmenuButton(
                   context: context,
                   isMobile: isMobile,
@@ -11682,7 +11683,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    if (ref.read(portForwardBrowserLinksNotifierProvider) &&
+    if (isPortForwardBrowserSupported() &&
+        ref.read(portForwardBrowserLinksNotifierProvider) &&
         shouldOpenUriInPortForwardBrowser(
           uri,
           activeLocalPorts: _activeLocalForwardPorts(),

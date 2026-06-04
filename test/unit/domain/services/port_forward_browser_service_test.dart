@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -34,6 +35,56 @@ void main() {
         canOpenPortForwardInBrowser(
           _buildPortForward(localHost: '192.168.1.20'),
         ),
+        isFalse,
+      );
+      expect(
+        canOpenPortForwardInBrowser(_buildPortForward(localPort: 0)),
+        isFalse,
+      );
+    });
+  });
+
+  group('isPortForwardBrowserSupported', () {
+    test('allows mobile and macOS WebView platforms only', () {
+      expect(
+        isPortForwardBrowserSupported(platform: TargetPlatform.android),
+        isTrue,
+      );
+      expect(
+        isPortForwardBrowserSupported(platform: TargetPlatform.iOS),
+        isTrue,
+      );
+      expect(
+        isPortForwardBrowserSupported(platform: TargetPlatform.macOS),
+        isTrue,
+      );
+      expect(
+        isPortForwardBrowserSupported(platform: TargetPlatform.linux),
+        isFalse,
+      );
+      expect(
+        isPortForwardBrowserSupported(platform: TargetPlatform.windows),
+        isFalse,
+      );
+    });
+  });
+
+  group('isPortForwardBrowserEntryUri', () {
+    test('allows only loopback web URLs on valid ports', () {
+      expect(
+        isPortForwardBrowserEntryUri(Uri.parse('http://127.0.0.1:8080')),
+        isTrue,
+      );
+      expect(
+        isPortForwardBrowserEntryUri(Uri.parse('https://localhost')),
+        isTrue,
+      );
+      expect(
+        isPortForwardBrowserEntryUri(Uri.parse('http://example.com:8080')),
+        isFalse,
+      );
+      expect(
+        isPortForwardBrowserEntryUri(Uri.parse('http://127.0.0.1:0')),
         isFalse,
       );
     });
@@ -95,6 +146,20 @@ void main() {
         shouldOpenUriInPortForwardBrowser(
           Uri.parse('http://127.0.0.5:8080'),
           activeLocalPorts: const [8080],
+        ),
+        isTrue,
+      );
+      expect(
+        shouldOpenUriInPortForwardBrowser(
+          Uri.parse('http://localhost/'),
+          activeLocalPorts: const [80],
+        ),
+        isTrue,
+      );
+      expect(
+        shouldOpenUriInPortForwardBrowser(
+          Uri.parse('https://localhost/'),
+          activeLocalPorts: const [443],
         ),
         isTrue,
       );

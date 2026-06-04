@@ -166,6 +166,8 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       await platformController.setTextZoom(100);
       await platformController.setInsetsForWebContentToIgnore([
         AndroidWebViewInsets.systemBars,
+        AndroidWebViewInsets.statusBars,
+        AndroidWebViewInsets.navigationBars,
         AndroidWebViewInsets.displayCutout,
       ]);
     }
@@ -300,7 +302,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       if (uri != null) {
         tab.currentUri = _normalizeLoadedBrowserUri(uri);
       }
-      if (identical(tab, _selectedTab)) {
+      if (identical(tab, _selectedTab) && !_addressFocusNode.hasFocus) {
         _addressController.text = tab.currentUri.toString();
       }
     });
@@ -320,7 +322,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       if (uri != null) {
         tab.currentUri = _normalizeLoadedBrowserUri(uri);
       }
-      if (identical(tab, _selectedTab)) {
+      if (identical(tab, _selectedTab) && !_addressFocusNode.hasFocus) {
         _addressController.text = tab.currentUri.toString();
       }
     });
@@ -398,7 +400,9 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       return null;
     }
 
-    final candidate = _hasUriScheme(trimmed) ? trimmed : 'http://$trimmed';
+    final candidate = _hasUriScheme(trimmed)
+        ? trimmed
+        : '${_defaultSchemeForAddress(trimmed)}://$trimmed';
     final uri = Uri.tryParse(candidate);
     if (uri == null || uri.host.isEmpty) {
       return null;
@@ -413,6 +417,13 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       uri.scheme == 'http' || uri.scheme == 'https'
       ? normalizePortForwardBrowserUri(uri)
       : uri;
+
+  String _defaultSchemeForAddress(String address) {
+    final candidate = Uri.tryParse('//$address');
+    return candidate != null && isPortForwardBrowserHost(candidate.host)
+        ? 'http'
+        : 'https';
+  }
 
   bool _hasUriScheme(String value) =>
       RegExp('^[a-zA-Z][a-zA-Z0-9+.-]*://').hasMatch(value);

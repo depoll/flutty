@@ -119,7 +119,6 @@ class PortForwardsScreen extends ConsumerWidget {
       return;
     }
 
-    final browserUri = buildPortForwardBrowserUri(portForward);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final existingConnectionId =
         sessionsNotifier.getConnectionForActiveLocalForward(portForward.id) ??
@@ -170,6 +169,25 @@ class PortForwardsScreen extends ConsumerWidget {
       );
       return;
     }
+
+    ActiveTunnelInfo? activeTunnel;
+    for (final tunnel in session.activeTunnels) {
+      if (tunnel.portForwardId == portForward.id && tunnel.isLocal) {
+        activeTunnel = tunnel;
+        break;
+      }
+    }
+    if (activeTunnel == null || activeTunnel.localPort < 1) {
+      _showPortForwardMessage(
+        context,
+        'Could not find the active local port for "${portForward.name}".',
+      );
+      return;
+    }
+    final browserUri = buildPortForwardBrowserUriForBind(
+      localHost: activeTunnel.localHost,
+      localPort: activeTunnel.localPort,
+    );
 
     await context.pushNamed<void>(
       Routes.portForwardBrowser,
@@ -299,7 +317,9 @@ class _PortForwardListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final canOpenInBrowser = canOpenPortForwardInBrowser(portForward);
+    final canOpenInBrowser =
+        isPortForwardBrowserSupported() &&
+        canOpenPortForwardInBrowser(portForward);
     final isLocal = portForward.forwardType == 'local';
 
     return ListTile(
