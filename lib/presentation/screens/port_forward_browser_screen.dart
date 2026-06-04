@@ -184,6 +184,10 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         AndroidWebViewInsets.statusBars,
         AndroidWebViewInsets.navigationBars,
         AndroidWebViewInsets.displayCutout,
+        AndroidWebViewInsets.captionBar,
+        AndroidWebViewInsets.mandatorySystemGestures,
+        AndroidWebViewInsets.systemGestures,
+        AndroidWebViewInsets.tappableElement,
       ]);
     }
     await controller.loadRequest(initialUri);
