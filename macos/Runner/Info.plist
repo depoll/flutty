@@ -28,6 +28,11 @@
 	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>CFBundleDocumentTypes</key>
