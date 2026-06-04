@@ -74,6 +74,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     _addressController = TextEditingController(
       text: _selectedTab.currentUri.toString(),
     );
+    _scheduleSelectedTabLoad();
   }
 
   @override
@@ -144,15 +145,29 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         ),
       );
 
-    tab = _PortForwardBrowserTabState(
+    return tab = _PortForwardBrowserTabState(
       id: _nextTabId++,
       controller: controller,
       currentUri: initialUri,
       initialTitle: seed.title,
     );
-    unawaited(_configureAndLoadController(controller, initialUri));
+  }
 
-    return tab;
+  void _scheduleSelectedTabLoad() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(_ensureTabLoaded(_selectedTab));
+    });
+  }
+
+  Future<void> _ensureTabLoaded(_PortForwardBrowserTabState tab) async {
+    if (tab.hasStartedLoading || !_tabs.contains(tab)) {
+      return;
+    }
+    tab.hasStartedLoading = true;
+    await _configureAndLoadController(tab.controller, tab.currentUri);
   }
 
   Future<void> _configureAndLoadController(
@@ -267,6 +282,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       _selectedTabIndex = index;
       _addressController.text = _selectedTab.currentUri.toString();
     });
+    _scheduleSelectedTabLoad();
     unawaited(_refreshNavigationState(_selectedTab));
   }
 
@@ -451,6 +467,7 @@ class _PortForwardBrowserTabState {
   bool canGoBack = false;
   bool canGoForward = false;
   bool isLoading = true;
+  bool hasStartedLoading = false;
   Uri currentUri;
   String? pageTitle;
 }
