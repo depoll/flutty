@@ -1,11 +1,14 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../domain/services/port_forward_browser_service.dart';
+
+const _windowChannel = MethodChannel('xyz.depollsoft.monkeyssh/window');
 
 /// Initial tab configuration for the embedded browser.
 class PortForwardBrowserInitialTab {
@@ -57,8 +60,8 @@ class PortForwardBrowserScreen extends StatefulWidget {
 }
 
 class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
-  late final TextEditingController _addressController;
-  late final List<_PortForwardBrowserTabState> _tabs;
+  TextEditingController? _addressController;
+  List<_PortForwardBrowserTabState> _tabs = [];
   final _addressFocusNode = FocusNode();
 
   var _selectedTabIndex = 0;
@@ -69,62 +72,48 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
   @override
   void initState() {
     super.initState();
-    _tabs = widget.initialTabs.map(_createTab).toList(growable: true);
-    _selectedTabIndex = widget.initialTabIndex;
-    _addressController = TextEditingController(
-      text: _selectedTab.currentUri.toString(),
-    );
-    _scheduleSelectedTabLoad();
+    unawaited(_initializeBrowser());
   }
 
   @override
   void dispose() {
-    _addressController.dispose();
+    unawaited(_setEmbeddedWebViewWindowMode(enabled: false));
+    _addressController?.dispose();
     _addressFocusNode.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_addressController == null || _tabs.isEmpty) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     final selectedTab = _selectedTab;
     return Scaffold(
-      appBar: AppBar(
-        leading: const CloseButton(),
-        titleSpacing: 0,
-        title: _buildAddressField(context),
-        actions: [
-          IconButton(
-            onPressed: selectedTab.canGoBack
-                ? () => unawaited(_goBack())
-                : null,
-            tooltip: 'Back',
-            icon: const Icon(Icons.arrow_back),
-          ),
-          IconButton(
-            onPressed: selectedTab.canGoForward
-                ? () => unawaited(_goForward())
-                : null,
-            tooltip: 'Forward',
-            icon: const Icon(Icons.arrow_forward),
-          ),
-          IconButton(
-            onPressed: () => unawaited(selectedTab.controller.reload()),
-            tooltip: 'Reload',
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-      ),
       body: Column(
         children: [
-          if (_tabs.length > 1) _buildTabStrip(context),
-          if (selectedTab.isLoading && selectedTab.progress < 100)
-            LinearProgressIndicator(value: selectedTab.progress / 100),
           Expanded(
-            child: WebViewWidget(
-              key: ValueKey<int>(selectedTab.id),
-              controller: selectedTab.controller,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: WebViewWidget(
+                    key: ValueKey<int>(selectedTab.id),
+                    controller: selectedTab.controller,
+                  ),
+                ),
+                if (selectedTab.isLoading && selectedTab.progress < 100)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: LinearProgressIndicator(
+                      value: selectedTab.progress / 100,
+                    ),
+                  ),
+              ],
             ),
           ),
+          _buildBottomChrome(context, selectedTab),
         ],
       ),
     );
@@ -153,6 +142,26 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     );
   }
 
+  Future<void> _initializeBrowser() async {
+    await _setEmbeddedWebViewWindowMode(enabled: true);
+    if (!mounted) {
+      await _setEmbeddedWebViewWindowMode(enabled: false);
+      return;
+    }
+
+    final tabs = widget.initialTabs.map(_createTab).toList(growable: true);
+    final selectedTabIndex = widget.initialTabIndex;
+    final addressController = TextEditingController(
+      text: tabs[selectedTabIndex].currentUri.toString(),
+    );
+    setState(() {
+      _tabs = tabs;
+      _selectedTabIndex = selectedTabIndex;
+      _addressController = addressController;
+    });
+    _scheduleSelectedTabLoad();
+  }
+
   void _scheduleSelectedTabLoad() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -179,18 +188,62 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (platformController is AndroidWebViewController) {
       await platformController.setUseWideViewPort(true);
       await platformController.setTextZoom(100);
-      await platformController.setInsetsForWebContentToIgnore([
-        AndroidWebViewInsets.systemBars,
-        AndroidWebViewInsets.statusBars,
-        AndroidWebViewInsets.navigationBars,
-        AndroidWebViewInsets.displayCutout,
-        AndroidWebViewInsets.captionBar,
-        AndroidWebViewInsets.mandatorySystemGestures,
-        AndroidWebViewInsets.systemGestures,
-        AndroidWebViewInsets.tappableElement,
-      ]);
     }
     await controller.loadRequest(initialUri);
+  }
+
+  Widget _buildBottomChrome(
+    BuildContext context,
+    _PortForwardBrowserTabState selectedTab,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.surface,
+      elevation: 8,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_tabs.length > 1) _buildTabStrip(context),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () => Navigator.maybePop(context),
+                    tooltip: 'Close',
+                    icon: const Icon(Icons.close),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(child: _buildAddressField(context)),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    onPressed: selectedTab.canGoBack
+                        ? () => unawaited(_goBack())
+                        : null,
+                    tooltip: 'Back',
+                    icon: const Icon(Icons.arrow_back),
+                  ),
+                  IconButton(
+                    onPressed: selectedTab.canGoForward
+                        ? () => unawaited(_goForward())
+                        : null,
+                    tooltip: 'Forward',
+                    icon: const Icon(Icons.arrow_forward),
+                  ),
+                  IconButton(
+                    onPressed: () => unawaited(selectedTab.controller.reload()),
+                    tooltip: 'Reload',
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildAddressField(BuildContext context) {
@@ -211,15 +264,12 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         hintText: 'Search or enter URL',
         prefixIcon: const Icon(Icons.travel_explore),
         suffixIcon: IconButton(
-          onPressed: () => unawaited(_loadAddress(_addressController.text)),
+          onPressed: () => unawaited(_loadAddress(_addressController!.text)),
           tooltip: 'Load URL',
           icon: const Icon(Icons.arrow_circle_right_outlined),
         ),
         border: const OutlineInputBorder(),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 12,
-          vertical: 10,
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       ),
       onSubmitted: (value) => unawaited(_loadAddress(value)),
     );
@@ -230,7 +280,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colorScheme.surface,
-        border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
+        border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
       ),
       child: SizedBox(
         height: 48,
@@ -284,7 +334,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     }
     setState(() {
       _selectedTabIndex = index;
-      _addressController.text = _selectedTab.currentUri.toString();
+      _addressController?.text = _selectedTab.currentUri.toString();
     });
     _scheduleSelectedTabLoad();
     unawaited(_refreshNavigationState(_selectedTab));
@@ -301,7 +351,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       } else if (index < _selectedTabIndex) {
         _selectedTabIndex -= 1;
       }
-      _addressController.text = _selectedTab.currentUri.toString();
+      _addressController?.text = _selectedTab.currentUri.toString();
     });
   }
 
@@ -323,7 +373,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         tab.currentUri = _normalizeLoadedBrowserUri(uri);
       }
       if (identical(tab, _selectedTab) && !_addressFocusNode.hasFocus) {
-        _addressController.text = tab.currentUri.toString();
+        _addressController?.text = tab.currentUri.toString();
       }
     });
   }
@@ -343,7 +393,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         tab.currentUri = _normalizeLoadedBrowserUri(uri);
       }
       if (identical(tab, _selectedTab) && !_addressFocusNode.hasFocus) {
-        _addressController.text = tab.currentUri.toString();
+        _addressController?.text = tab.currentUri.toString();
       }
     });
     await _refreshNavigationState(tab);
@@ -374,7 +424,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (!mounted) return;
     setState(() {
       tab.currentUri = uri;
-      _addressController.text = uri.toString();
+      _addressController?.text = uri.toString();
     });
   }
 
@@ -453,6 +503,19 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+Future<void> _setEmbeddedWebViewWindowMode({required bool enabled}) async {
+  if (defaultTargetPlatform != TargetPlatform.android) {
+    return;
+  }
+  try {
+    await _windowChannel.invokeMethod<void>('setEmbeddedWebViewMode', {
+      'enabled': enabled,
+    });
+  } on MissingPluginException {
+    return;
   }
 }
 
