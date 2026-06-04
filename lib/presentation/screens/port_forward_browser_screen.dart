@@ -73,12 +73,14 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
   @override
   void initState() {
     super.initState();
+    _addressFocusNode.addListener(_handleAddressFocusChanged);
     unawaited(_initializeBrowser());
   }
 
   @override
   void dispose() {
     unawaited(_setEmbeddedWebViewWindowMode(enabled: false));
+    _addressFocusNode.removeListener(_handleAddressFocusChanged);
     _addressController?.dispose();
     _addressFocusNode.dispose();
     super.dispose();
@@ -209,47 +211,56 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-              child: Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Navigator.maybePop(context),
-                    tooltip: 'Close',
-                    icon: const Icon(Icons.close),
-                  ),
-                  const SizedBox(width: 4),
-                  Expanded(child: _buildAddressField(context)),
-                  const SizedBox(width: 4),
-                  IconButton(
-                    onPressed: selectedTab.canGoBack
-                        ? () => unawaited(_goBack())
-                        : null,
-                    tooltip: 'Back',
-                    icon: const Icon(Icons.arrow_back),
-                  ),
-                  IconButton(
-                    onPressed: selectedTab.canGoForward
-                        ? () => unawaited(_goForward())
-                        : null,
-                    tooltip: 'Forward',
-                    icon: const Icon(Icons.arrow_forward),
-                  ),
-                  IconButton(
-                    onPressed: () => unawaited(selectedTab.controller.reload()),
-                    tooltip: 'Reload',
-                    icon: const Icon(Icons.refresh),
-                  ),
-                  IconButton(
-                    onPressed: () =>
-                        unawaited(_openCurrentPageInSystemBrowser()),
-                    tooltip: 'Open in system browser',
-                    icon: const Icon(Icons.open_in_new),
-                  ),
-                ],
-              ),
+              child: _buildBottomControls(context, selectedTab),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildBottomControls(
+    BuildContext context,
+    _PortForwardBrowserTabState selectedTab,
+  ) {
+    final isEditingAddress = _addressFocusNode.hasFocus;
+    if (isEditingAddress) {
+      return _buildAddressField(context);
+    }
+
+    return Row(
+      children: [
+        IconButton(
+          onPressed: () => Navigator.maybePop(context),
+          tooltip: 'Close',
+          icon: const Icon(Icons.close),
+        ),
+        const SizedBox(width: 4),
+        Expanded(child: _buildAddressField(context)),
+        const SizedBox(width: 4),
+        IconButton(
+          onPressed: selectedTab.canGoBack ? () => unawaited(_goBack()) : null,
+          tooltip: 'Back',
+          icon: const Icon(Icons.arrow_back),
+        ),
+        IconButton(
+          onPressed: selectedTab.canGoForward
+              ? () => unawaited(_goForward())
+              : null,
+          tooltip: 'Forward',
+          icon: const Icon(Icons.arrow_forward),
+        ),
+        IconButton(
+          onPressed: () => unawaited(selectedTab.controller.reload()),
+          tooltip: 'Reload',
+          icon: const Icon(Icons.refresh),
+        ),
+        IconButton(
+          onPressed: () => unawaited(_openCurrentPageInSystemBrowser()),
+          tooltip: 'Open in system browser',
+          icon: const Icon(Icons.open_in_new),
+        ),
+      ],
     );
   }
 
@@ -278,8 +289,15 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         border: const OutlineInputBorder(),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       ),
+      onTapOutside: (_) => _addressFocusNode.unfocus(),
       onSubmitted: (value) => unawaited(_loadAddress(value)),
     );
+  }
+
+  void _handleAddressFocusChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Widget _buildTabStrip(BuildContext context) {
