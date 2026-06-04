@@ -67,6 +67,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
 
   var _selectedTabIndex = 0;
   var _nextTabId = 0;
+  var _allowRoutePop = false;
 
   _PortForwardBrowserTabState get _selectedTab => _tabs[_selectedTabIndex];
 
@@ -93,18 +94,12 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     }
     final selectedTab = _selectedTab;
     return PopScope(
-      canPop: !_addressFocusNode.hasFocus && !selectedTab.canGoBack,
+      canPop: _allowRoutePop,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) {
+        if (didPop || _allowRoutePop) {
           return;
         }
-        if (_addressFocusNode.hasFocus) {
-          _addressFocusNode.unfocus();
-          return;
-        }
-        if (selectedTab.canGoBack) {
-          unawaited(_goBack());
-        }
+        unawaited(_handleRouteBack());
       },
       child: Scaffold(
         body: Column(
@@ -246,7 +241,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     return Row(
       children: [
         IconButton(
-          onPressed: () => Navigator.maybePop(context),
+          onPressed: _closeBrowserRoute,
           tooltip: 'Close',
           icon: const Icon(Icons.close),
         ),
@@ -443,6 +438,45 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     final tab = _selectedTab;
     await tab.controller.goBack();
     await _refreshNavigationState(tab);
+  }
+
+  Future<void> _handleRouteBack() async {
+    if (_addressFocusNode.hasFocus) {
+      _addressFocusNode.unfocus();
+      return;
+    }
+
+    final tab = _selectedTab;
+    final canGoBack = await tab.controller.canGoBack();
+    if (!mounted || !_tabs.contains(tab)) {
+      return;
+    }
+
+    if (canGoBack) {
+      await tab.controller.goBack();
+      await _refreshNavigationState(tab);
+      return;
+    }
+
+    _closeBrowserRoute();
+  }
+
+  void _closeBrowserRoute() {
+    if (_allowRoutePop) {
+      return;
+    }
+    setState(() => _allowRoutePop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final navigator = Navigator.of(context);
+      if (navigator.canPop()) {
+        navigator.pop();
+      } else {
+        unawaited(navigator.maybePop());
+      }
+    });
   }
 
   Future<void> _goForward() async {
