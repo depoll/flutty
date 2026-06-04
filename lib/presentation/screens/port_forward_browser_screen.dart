@@ -154,6 +154,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
           onProgress: (progress) => _handleProgress(tab, progress),
           onPageStarted: (url) => _handlePageStarted(tab, url),
           onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
+          onUrlChange: (change) => _handleUrlChange(tab, change.url),
         ),
       );
 
@@ -421,6 +422,20 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         _addressController?.text = tab.currentUri.toString();
       }
     });
+  }
+
+  void _handleUrlChange(_PortForwardBrowserTabState tab, String? url) {
+    if (!mounted || url == null) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+
+    setState(() {
+      tab.currentUri = _normalizeLoadedBrowserUri(uri);
+      if (identical(tab, _selectedTab) && !_addressFocusNode.hasFocus) {
+        _addressController?.text = tab.currentUri.toString();
+      }
+    });
+    unawaited(_refreshNavigationState(tab));
   }
 
   Future<void> _handlePageFinished(
