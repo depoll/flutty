@@ -732,9 +732,9 @@ class _TerminalSection extends ConsumerWidget {
         ),
         SwitchListTile(
           secondary: const Icon(Icons.open_in_browser_outlined),
-          title: const Text('Forwarded localhost browser'),
+          title: const Text('Open forwarded links in app'),
           subtitle: const Text(
-            'Open localhost links for active port forwards in the app browser',
+            'Keeps the SSH connection open while you browse forwarded pages; turn off to use the system browser',
           ),
           value: portForwardBrowserLinks,
           onChanged: (value) {

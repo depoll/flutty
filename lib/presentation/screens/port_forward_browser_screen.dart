@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
@@ -237,6 +238,12 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
                     tooltip: 'Reload',
                     icon: const Icon(Icons.refresh),
                   ),
+                  IconButton(
+                    onPressed: () =>
+                        unawaited(_openCurrentPageInSystemBrowser()),
+                    tooltip: 'Open in system browser',
+                    icon: const Icon(Icons.open_in_new),
+                  ),
                 ],
               ),
             ),
@@ -426,6 +433,28 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       tab.currentUri = uri;
       _addressController?.text = uri.toString();
     });
+  }
+
+  Future<void> _openCurrentPageInSystemBrowser() async {
+    final currentUrl = await _selectedTab.controller.currentUrl();
+    if (!mounted) return;
+
+    final uri = Uri.tryParse(currentUrl ?? '') ?? _selectedTab.currentUri;
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      _showMessage('Only HTTP and HTTPS pages can open in the system browser');
+      return;
+    }
+
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } on PlatformException {
+      launched = false;
+    }
+    if (!mounted || launched) {
+      return;
+    }
+    _showMessage('Could not open $uri');
   }
 
   NavigationDecision _handleNavigationRequest(

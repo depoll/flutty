@@ -235,7 +235,7 @@ void main() {
       );
     });
 
-    testWidgets('toggles forwarded localhost browser from terminal settings', (
+    testWidgets('toggles forwarded link browser from terminal settings', (
       tester,
     ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -244,7 +244,7 @@ void main() {
       await _pumpSettingsScreen(tester, db: db);
 
       await tester.scrollUntilVisible(
-        find.text('Forwarded localhost browser'),
+        find.text('Open forwarded links in app'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
@@ -252,7 +252,7 @@ void main() {
 
       final tile = find.widgetWithText(
         SwitchListTile,
-        'Forwarded localhost browser',
+        'Open forwarded links in app',
       );
       expect(tile, findsOneWidget);
 
