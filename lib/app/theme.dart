@@ -2,7 +2,7 @@ import 'dart:ui' show clampDouble;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, immutable, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -748,16 +748,16 @@ class PersistentPredictiveBackPageTransitionsBuilder
         currentBackEvent: currentBackEvent,
         child: child,
       );
-      // Keep the same wrapper stack mounted before and during predictive back.
-      // Swapping route transition widgets at gesture start can transiently
-      // detach GlobalKey-heavy descendants such as the terminal renderer.
+      if (suppressFallbackMotion) {
+        return persistentChild;
+      }
       return FadeForwardsPageTransitionsBuilder(
         backgroundColor: fallbackColor,
       ).buildTransitions(
         route,
         context,
-        suppressFallbackMotion ? kAlwaysCompleteAnimation : animation,
-        suppressFallbackMotion ? kAlwaysDismissedAnimation : secondaryAnimation,
+        animation,
+        secondaryAnimation,
         persistentChild,
       );
     }
@@ -778,6 +778,7 @@ final ValueNotifier<_AndroidBackGestureSnapshot> _androidBackGestureSnapshot =
       _AndroidBackGestureSnapshot.idle,
     );
 
+@immutable
 class _AndroidBackGestureSnapshot {
   const _AndroidBackGestureSnapshot({
     required this.active,
@@ -788,6 +789,16 @@ class _AndroidBackGestureSnapshot {
 
   final bool active;
   final Object? owner;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _AndroidBackGestureSnapshot &&
+          active == other.active &&
+          identical(owner, other.owner);
+
+  @override
+  int get hashCode => Object.hash(active, identityHashCode(owner));
 }
 
 class _AndroidBackGestureDetector extends StatefulWidget {
@@ -828,9 +839,13 @@ class _AndroidBackGestureDetectorState
       widget.route.isCurrent && widget.route.popGestureEnabled;
 
   void _publishGlobalGestureState(bool active) {
-    _androidBackGestureSnapshot.value = active
+    final nextSnapshot = active
         ? _AndroidBackGestureSnapshot(active: true, owner: this)
         : _AndroidBackGestureSnapshot.idle;
+    if (_androidBackGestureSnapshot.value == nextSnapshot) {
+      return;
+    }
+    _androidBackGestureSnapshot.value = nextSnapshot;
   }
 
   void _clearGlobalGestureState() {
@@ -1134,9 +1149,19 @@ class _PersistentPredictiveBackTransitionState
     double.infinity,
   );
 
-  SwipeEdge _swipeEdge() {
+  SwipeEdge _swipeEdge(Size size) {
+    final touchOffset =
+        widget.startBackEvent?.touchOffset ??
+        widget.currentBackEvent?.touchOffset;
+    final touchX = touchOffset?.dx;
+    if (touchX != null && touchX.isFinite && size.width > 0) {
+      return _lastSwipeEdge = touchX > size.width / 2
+          ? SwipeEdge.right
+          : SwipeEdge.left;
+    }
+
     final swipeEdge =
-        widget.currentBackEvent?.swipeEdge ?? widget.startBackEvent?.swipeEdge;
+        widget.startBackEvent?.swipeEdge ?? widget.currentBackEvent?.swipeEdge;
     if (swipeEdge != null) {
       _lastSwipeEdge = swipeEdge;
     }
@@ -1163,7 +1188,7 @@ class _PersistentPredictiveBackTransitionState
 
   Offset _offset(Size size, double progress) {
     final xShift = _maxShift(size.width) * progress;
-    final direction = switch (_swipeEdge()) {
+    final direction = switch (_swipeEdge(size)) {
       SwipeEdge.right => -1.0,
       SwipeEdge.left => 1.0,
     };

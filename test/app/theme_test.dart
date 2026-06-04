@@ -115,7 +115,7 @@ void main() {
         await tester.pump();
 
         expect(_findPersistentPredictiveBackTransition(), findsWidgets);
-        expect(_findFadeForwardsPageTransition(), findsWidgets);
+        expect(_findFadeForwardsPageTransition(), findsNothing);
 
         await _sendBackGesture(const MethodCall('cancelBackGesture'));
         await tester.pumpAndSettle();
@@ -151,6 +151,66 @@ void main() {
         await tester.pump();
 
         expect(_persistentBackTranslationX(tester), lessThan(0));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'uses the touch position when Android reports the wrong swipe edge',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[795, 300],
+            'progress': 0.0,
+            'swipeEdge': 0,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[700, 315],
+            'progress': 0.5,
+            'swipeEdge': 0,
+          }),
+        );
+        await tester.pump();
+
+        expect(_persistentBackTranslationX(tester), lessThan(0));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'keeps the terminal route out of fade transitions while swiping back',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[795, 300],
+            'progress': 0.0,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[700, 315],
+            'progress': 0.5,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+
+        expect(
+          find.ancestor(
+            of: find.text('terminal'),
+            matching: find.byType(FadeTransition),
+          ),
+          findsNothing,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
