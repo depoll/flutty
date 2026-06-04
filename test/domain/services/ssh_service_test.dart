@@ -1056,6 +1056,7 @@ void main() {
     test('creates with required fields', () {
       const info = ActiveTunnelInfo(
         portForwardId: 1,
+        localHost: '127.0.0.1',
         localPort: 3306,
         remoteHost: 'db.internal',
         remotePort: 3306,
@@ -1063,6 +1064,7 @@ void main() {
       );
 
       expect(info.portForwardId, 1);
+      expect(info.localHost, '127.0.0.1');
       expect(info.localPort, 3306);
       expect(info.remoteHost, 'db.internal');
       expect(info.remotePort, 3306);
@@ -1072,6 +1074,7 @@ void main() {
     test('supports remote forward info', () {
       const info = ActiveTunnelInfo(
         portForwardId: 2,
+        localHost: 'localhost',
         localPort: 8080,
         remoteHost: 'localhost',
         remotePort: 80,
