@@ -164,6 +164,10 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (platformController is AndroidWebViewController) {
       await platformController.setUseWideViewPort(true);
       await platformController.setTextZoom(100);
+      await platformController.setInsetsForWebContentToIgnore([
+        AndroidWebViewInsets.systemBars,
+        AndroidWebViewInsets.displayCutout,
+      ]);
     }
     await controller.loadRequest(initialUri);
   }
