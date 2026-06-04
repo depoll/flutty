@@ -773,6 +773,23 @@ class PersistentPredictiveBackPageTransitionsBuilder
 
 enum _AndroidBackPhase { idle, start, update, commit, cancel }
 
+final ValueNotifier<_AndroidBackGestureSnapshot> _androidBackGestureSnapshot =
+    ValueNotifier<_AndroidBackGestureSnapshot>(
+      _AndroidBackGestureSnapshot.idle,
+    );
+
+class _AndroidBackGestureSnapshot {
+  const _AndroidBackGestureSnapshot({
+    required this.active,
+    required this.owner,
+  });
+
+  static const idle = _AndroidBackGestureSnapshot(active: false, owner: null);
+
+  final bool active;
+  final Object? owner;
+}
+
 class _AndroidBackGestureDetector extends StatefulWidget {
   const _AndroidBackGestureDetector({
     required this.route,
@@ -810,6 +827,18 @@ class _AndroidBackGestureDetectorState
   bool get _isEnabled =>
       widget.route.isCurrent && widget.route.popGestureEnabled;
 
+  void _publishGlobalGestureState(bool active) {
+    _androidBackGestureSnapshot.value = active
+        ? _AndroidBackGestureSnapshot(active: true, owner: this)
+        : _AndroidBackGestureSnapshot.idle;
+  }
+
+  void _clearGlobalGestureState() {
+    if (_androidBackGestureSnapshot.value.owner == this) {
+      _publishGlobalGestureState(false);
+    }
+  }
+
   void _setGestureState({
     required bool accepted,
     required _AndroidBackPhase phase,
@@ -831,6 +860,24 @@ class _AndroidBackGestureDetectorState
     setState(apply);
   }
 
+  void _handleAnimationStatus(AnimationStatus status) {
+    _clearFinishedGestureState();
+  }
+
+  void _clearFinishedGestureState() {
+    if (!_gestureAccepted) {
+      return;
+    }
+    if (_phase == _AndroidBackPhase.cancel &&
+        widget.animation.status == AnimationStatus.completed) {
+      _clearGlobalGestureState();
+      _setGestureState(accepted: false, phase: _AndroidBackPhase.idle);
+    } else if (_phase == _AndroidBackPhase.commit &&
+        widget.animation.status == AnimationStatus.dismissed) {
+      _clearGlobalGestureState();
+    }
+  }
+
   @override
   bool handleStartBackGesture(PredictiveBackEvent backEvent) {
     final gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
@@ -850,6 +897,7 @@ class _AndroidBackGestureDetectorState
       startBackEvent: backEvent,
       currentBackEvent: backEvent,
     );
+    _publishGlobalGestureState(true);
     widget.route.handleStartBackGesture(progress: 1 - backEvent.progress);
     _logTransitionState(event: 'start', backEvent: backEvent, accepted: true);
     return true;
@@ -867,6 +915,7 @@ class _AndroidBackGestureDetectorState
       startBackEvent: _startBackEvent,
       currentBackEvent: backEvent,
     );
+    _publishGlobalGestureState(true);
     widget.route.handleUpdateBackGestureProgress(
       progress: 1 - backEvent.progress,
     );
@@ -879,9 +928,18 @@ class _AndroidBackGestureDetectorState
       _logTransitionState(event: 'cancel_ignored');
       return;
     }
-    _setGestureState(accepted: true, phase: _AndroidBackPhase.cancel);
+    final startBackEvent = _startBackEvent;
+    final currentBackEvent = _currentBackEvent;
+    _setGestureState(
+      accepted: true,
+      phase: _AndroidBackPhase.cancel,
+      startBackEvent: startBackEvent,
+      currentBackEvent: currentBackEvent,
+    );
+    _publishGlobalGestureState(true);
     widget.route.handleCancelBackGesture();
-    _logTransitionState(event: 'cancel');
+    _clearFinishedGestureState();
+    _logTransitionState(event: 'cancel', backEvent: currentBackEvent);
   }
 
   @override
@@ -890,9 +948,18 @@ class _AndroidBackGestureDetectorState
       _logTransitionState(event: 'commit_ignored');
       return;
     }
-    _setGestureState(accepted: true, phase: _AndroidBackPhase.commit);
+    final startBackEvent = _startBackEvent;
+    final currentBackEvent = _currentBackEvent;
+    _setGestureState(
+      accepted: true,
+      phase: _AndroidBackPhase.commit,
+      startBackEvent: startBackEvent,
+      currentBackEvent: currentBackEvent,
+    );
+    _publishGlobalGestureState(true);
     widget.route.handleCommitBackGesture();
-    _logTransitionState(event: 'commit');
+    _clearFinishedGestureState();
+    _logTransitionState(event: 'commit', backEvent: currentBackEvent);
   }
 
   void _logTransitionState({
@@ -948,35 +1015,57 @@ class _AndroidBackGestureDetectorState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.animation.addStatusListener(_handleAnimationStatus);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AndroidBackGestureDetector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.animation != oldWidget.animation) {
+      oldWidget.animation.removeStatusListener(_handleAnimationStatus);
+      widget.animation.addStatusListener(_handleAnimationStatus);
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.animation.removeStatusListener(_handleAnimationStatus);
+    _clearGlobalGestureState();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final routeGestureInProgress = widget.route.popGestureInProgress;
-    final phase = routeGestureInProgress && _gestureAccepted
-        ? _phase
-        : _AndroidBackPhase.idle;
-    final passThrough = routeGestureInProgress && !_gestureAccepted;
-    final branch = switch ((phase, passThrough)) {
-      (_AndroidBackPhase.idle, true) => 'pass_through',
-      (_AndroidBackPhase.idle, false) => 'fallback',
-      _ => 'persistent',
-    };
-    _logTransitionState(event: 'build', effectivePhase: phase, branch: branch);
-    return widget.builder(
-      context,
-      phase,
-      _startBackEvent,
-      _currentBackEvent,
-      passThrough: passThrough,
-    );
-  }
+  Widget build(BuildContext context) =>
+      ValueListenableBuilder<_AndroidBackGestureSnapshot>(
+        valueListenable: _androidBackGestureSnapshot,
+        builder: (context, globalGestureSnapshot, _) {
+          final routeGestureInProgress = widget.route.popGestureInProgress;
+          final phase = routeGestureInProgress && _gestureAccepted
+              ? _phase
+              : _AndroidBackPhase.idle;
+          final passThrough =
+              (routeGestureInProgress || globalGestureSnapshot.active) &&
+              !_gestureAccepted;
+          final branch = switch ((phase, passThrough)) {
+            (_AndroidBackPhase.idle, true) => 'pass_through',
+            (_AndroidBackPhase.idle, false) => 'fallback',
+            _ => 'persistent',
+          };
+          _logTransitionState(
+            event: 'build',
+            effectivePhase: phase,
+            branch: branch,
+          );
+          return widget.builder(
+            context,
+            phase,
+            _startBackEvent,
+            _currentBackEvent,
+            passThrough: passThrough,
+          );
+        },
+      );
 }
 
 class _PersistentPredictiveBackTransition extends StatefulWidget {
