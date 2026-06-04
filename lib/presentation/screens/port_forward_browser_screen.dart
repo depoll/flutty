@@ -105,24 +105,26 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         body: Column(
           children: [
             Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: WebViewWidget(
-                      key: ValueKey<int>(selectedTab.id),
-                      controller: selectedTab.controller,
-                    ),
-                  ),
-                  if (selectedTab.isLoading && selectedTab.progress < 100)
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: LinearProgressIndicator(
-                        value: selectedTab.progress / 100,
+              child: _buildBrowserViewport(
+                Stack(
+                  children: [
+                    Positioned.fill(
+                      child: WebViewWidget(
+                        key: ValueKey<int>(selectedTab.id),
+                        controller: selectedTab.controller,
                       ),
                     ),
-                ],
+                    if (selectedTab.isLoading && selectedTab.progress < 100)
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: LinearProgressIndicator(
+                          value: selectedTab.progress / 100,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             _buildBottomChrome(context, selectedTab),
@@ -130,6 +132,14 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildBrowserViewport(Widget child) {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return child;
+    }
+
+    return SafeArea(left: false, right: false, bottom: false, child: child);
   }
 
   _PortForwardBrowserTabState _createTab(PortForwardBrowserInitialTab seed) {
