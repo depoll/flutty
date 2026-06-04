@@ -620,6 +620,9 @@ class _TerminalSection extends ConsumerWidget {
     final terminalPathLinkUnderlines = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final portForwardBrowserLinks = ref.watch(
+      portForwardBrowserLinksNotifierProvider,
+    );
     final shellCompletions = ref.watch(shellCompletionsNotifierProvider);
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final sharedClipboardLocalRead = ref.watch(
@@ -726,6 +729,21 @@ class _TerminalSection extends ConsumerWidget {
                       .setEnabled(enabled: value);
                 }
               : null,
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.open_in_browser_outlined),
+          title: const Text('Open forwarded links in app'),
+          subtitle: const Text(
+            'Keeps the SSH connection open while you browse forwarded pages; turn off to use the system browser',
+          ),
+          value: portForwardBrowserLinks,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(portForwardBrowserLinksNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
         ),
         SwitchListTile(
           secondary: const Icon(Icons.auto_awesome_motion_outlined),
@@ -1542,6 +1560,7 @@ class _ImportExportSection extends ConsumerWidget {
         ..invalidate(fontFamilyNotifierProvider)
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
+        ..invalidate(portForwardBrowserLinksNotifierProvider)
         ..invalidate(shellCompletionsNotifierProvider)
         ..invalidate(sharedClipboardNotifierProvider)
         ..invalidate(sharedClipboardProvider)

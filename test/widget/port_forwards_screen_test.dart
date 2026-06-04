@@ -99,6 +99,32 @@ void main() {
       expect(find.text('Web Forward'), findsOneWidget);
     });
 
+    testWidgets('shows browser action for local forwards only', (tester) async {
+      final host = _buildHost(id: 1, label: 'My Server');
+      final localForward = _buildPortForward(
+        id: 1,
+        hostId: 1,
+        name: 'Web Forward',
+      );
+      final remoteForward = _buildPortForward(
+        id: 2,
+        hostId: 1,
+        name: 'Remote Forward',
+        forwardType: 'remote',
+      );
+
+      when(
+        portForwardRepository.watchAll,
+      ).thenAnswer((_) => Stream.value([localForward, remoteForward]));
+      when(hostRepository.watchAll).thenAnswer((_) => Stream.value([host]));
+
+      await tester.pumpWidget(buildWidget());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.byTooltip('Open in app browser'), findsOneWidget);
+    });
+
     testWidgets('live-updates list when stream emits new data', (tester) async {
       final controller = StreamController<List<PortForward>>();
       addTearDown(controller.close);
