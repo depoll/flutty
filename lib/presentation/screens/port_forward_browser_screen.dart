@@ -67,6 +67,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
 
   var _selectedTabIndex = 0;
   var _nextTabId = 0;
+  var _allowRoutePop = false;
 
   _PortForwardBrowserTabState get _selectedTab => _tabs[_selectedTabIndex];
 
@@ -93,41 +94,37 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     }
     final selectedTab = _selectedTab;
     return PopScope(
-      canPop: !_addressFocusNode.hasFocus && !selectedTab.canGoBack,
+      canPop: _allowRoutePop,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) {
+        if (didPop || _allowRoutePop) {
           return;
         }
-        if (_addressFocusNode.hasFocus) {
-          _addressFocusNode.unfocus();
-          return;
-        }
-        if (selectedTab.canGoBack) {
-          unawaited(_goBack());
-        }
+        unawaited(_handleRouteBack());
       },
       child: Scaffold(
         body: Column(
           children: [
             Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: WebViewWidget(
-                      key: ValueKey<int>(selectedTab.id),
-                      controller: selectedTab.controller,
-                    ),
-                  ),
-                  if (selectedTab.isLoading && selectedTab.progress < 100)
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: LinearProgressIndicator(
-                        value: selectedTab.progress / 100,
+              child: _buildBrowserViewport(
+                Stack(
+                  children: [
+                    Positioned.fill(
+                      child: WebViewWidget(
+                        key: ValueKey<int>(selectedTab.id),
+                        controller: selectedTab.controller,
                       ),
                     ),
-                ],
+                    if (selectedTab.isLoading && selectedTab.progress < 100)
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: LinearProgressIndicator(
+                          value: selectedTab.progress / 100,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
             _buildBottomChrome(context, selectedTab),
@@ -135,6 +132,14 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildBrowserViewport(Widget child) {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return child;
+    }
+
+    return SafeArea(left: false, right: false, bottom: false, child: child);
   }
 
   _PortForwardBrowserTabState _createTab(PortForwardBrowserInitialTab seed) {
@@ -149,6 +154,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
           onProgress: (progress) => _handleProgress(tab, progress),
           onPageStarted: (url) => _handlePageStarted(tab, url),
           onPageFinished: (url) => unawaited(_handlePageFinished(tab, url)),
+          onUrlChange: (change) => _handleUrlChange(tab, change.url),
         ),
       );
 
@@ -206,6 +212,12 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     if (platformController is AndroidWebViewController) {
       await platformController.setUseWideViewPort(true);
       await platformController.setTextZoom(100);
+      await platformController.setInsetsForWebContentToIgnore([
+        AndroidWebViewInsets.navigationBars,
+        AndroidWebViewInsets.mandatorySystemGestures,
+        AndroidWebViewInsets.systemGestures,
+        AndroidWebViewInsets.tappableElement,
+      ]);
     }
     await controller.loadRequest(initialUri);
   }
@@ -246,7 +258,7 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     return Row(
       children: [
         IconButton(
-          onPressed: () => Navigator.maybePop(context),
+          onPressed: _closeBrowserRoute,
           tooltip: 'Close',
           icon: const Icon(Icons.close),
         ),
@@ -418,6 +430,20 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     });
   }
 
+  void _handleUrlChange(_PortForwardBrowserTabState tab, String? url) {
+    if (!mounted || url == null) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+
+    setState(() {
+      tab.currentUri = _normalizeLoadedBrowserUri(uri);
+      if (identical(tab, _selectedTab) && !_addressFocusNode.hasFocus) {
+        _addressController?.text = tab.currentUri.toString();
+      }
+    });
+    unawaited(_refreshNavigationState(tab));
+  }
+
   Future<void> _handlePageFinished(
     _PortForwardBrowserTabState tab,
     String url,
@@ -443,6 +469,45 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     final tab = _selectedTab;
     await tab.controller.goBack();
     await _refreshNavigationState(tab);
+  }
+
+  Future<void> _handleRouteBack() async {
+    if (_addressFocusNode.hasFocus) {
+      _addressFocusNode.unfocus();
+      return;
+    }
+
+    final tab = _selectedTab;
+    final canGoBack = await tab.controller.canGoBack();
+    if (!mounted || !_tabs.contains(tab)) {
+      return;
+    }
+
+    if (canGoBack) {
+      await tab.controller.goBack();
+      await _refreshNavigationState(tab);
+      return;
+    }
+
+    _closeBrowserRoute();
+  }
+
+  void _closeBrowserRoute() {
+    if (_allowRoutePop) {
+      return;
+    }
+    setState(() => _allowRoutePop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final navigator = Navigator.of(context);
+      if (navigator.canPop()) {
+        navigator.pop();
+      } else {
+        unawaited(navigator.maybePop());
+      }
+    });
   }
 
   Future<void> _goForward() async {
