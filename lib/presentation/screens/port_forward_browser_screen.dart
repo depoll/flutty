@@ -92,32 +92,47 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     final selectedTab = _selectedTab;
-    return Scaffold(
-      body: Column(
-        children: [
-          Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: WebViewWidget(
-                    key: ValueKey<int>(selectedTab.id),
-                    controller: selectedTab.controller,
-                  ),
-                ),
-                if (selectedTab.isLoading && selectedTab.progress < 100)
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: LinearProgressIndicator(
-                      value: selectedTab.progress / 100,
+    return PopScope(
+      canPop: !_addressFocusNode.hasFocus && !selectedTab.canGoBack,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) {
+          return;
+        }
+        if (_addressFocusNode.hasFocus) {
+          _addressFocusNode.unfocus();
+          return;
+        }
+        if (selectedTab.canGoBack) {
+          unawaited(_goBack());
+        }
+      },
+      child: Scaffold(
+        body: Column(
+          children: [
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: WebViewWidget(
+                      key: ValueKey<int>(selectedTab.id),
+                      controller: selectedTab.controller,
                     ),
                   ),
-              ],
+                  if (selectedTab.isLoading && selectedTab.progress < 100)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(
+                        value: selectedTab.progress / 100,
+                      ),
+                    ),
+                ],
+              ),
             ),
-          ),
-          _buildBottomChrome(context, selectedTab),
-        ],
+            _buildBottomChrome(context, selectedTab),
+          ],
+        ),
       ),
     );
   }
