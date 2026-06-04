@@ -102,8 +102,8 @@ void main() {
       (tester) async {
         await _pumpPredictiveBackApp(tester);
 
-        expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
-        expect(_findFadeForwardsPageTransition(), findsOneWidget);
+        expect(_findPersistentPredictiveBackTransition(), findsWidgets);
+        expect(_findFadeForwardsPageTransition(), findsWidgets);
 
         await _sendBackGesture(
           const MethodCall('startBackGesture', {
@@ -114,8 +114,8 @@ void main() {
         );
         await tester.pump();
 
-        expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
-        expect(_findFadeForwardsPageTransition(), findsOneWidget);
+        expect(_findPersistentPredictiveBackTransition(), findsWidgets);
+        expect(_findFadeForwardsPageTransition(), findsWidgets);
 
         await _sendBackGesture(const MethodCall('cancelBackGesture'));
         await tester.pumpAndSettle();
@@ -151,6 +151,37 @@ void main() {
         await tester.pump();
 
         expect(_persistentBackTranslationX(tester), lessThan(0));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'does not slide the revealed route during Android predictive back',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[795, 300],
+            'progress': 0.0,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[700, 315],
+            'progress': 0.5,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+
+        expect(_persistentBackTranslationX(tester), lessThan(0));
+        expect(
+          _nonZeroFractionalTranslationsOf(tester, find.byKey(_homePageKey)),
+          isEmpty,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -230,6 +261,8 @@ Set<Color> _terminalAccentCandidates(TerminalThemeData theme) => {
   theme.red,
 };
 
+const _homePageKey = ValueKey<String>('home-page');
+
 Finder _findPersistentPredictiveBackTransition() => find.descendant(
   of: find.byType(MaterialApp),
   matching: find.byWidgetPredicate(
@@ -258,12 +291,16 @@ Future<void> _pumpPredictiveBackApp(WidgetTester tester) async {
       ),
       routes: {
         '/': (context) => Material(
+          key: _homePageKey,
           child: TextButton(
-            onPressed: () => Navigator.of(context).pushNamed('/terminal'),
+            onPressed: () => Navigator.of(context).push<void>(
+              _TestLiveMaterialPageRoute<void>(
+                child: const Material(child: Text('terminal')),
+              ),
+            ),
             child: const Text('push'),
           ),
         ),
-        '/terminal': (context) => const Material(child: Text('terminal')),
       },
     ),
   );
@@ -288,8 +325,36 @@ double _persistentBackTranslationX(WidgetTester tester) {
   fail('Could not find a translated predictive back transform.');
 }
 
+List<Offset> _nonZeroFractionalTranslationsOf(
+  WidgetTester tester,
+  Finder finder,
+) => tester
+    .widgetList<FractionalTranslation>(
+      find.ancestor(of: finder, matching: find.byType(FractionalTranslation)),
+    )
+    .map((widget) => widget.translation)
+    .where((translation) => translation != Offset.zero)
+    .toList(growable: false);
+
 Future<void> _sendBackGesture(MethodCall methodCall) async {
   final message = const StandardMethodCodec().encodeMethodCall(methodCall);
   await TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
       .handlePlatformMessage('flutter/backgesture', message, (_) {});
+}
+
+class _TestLiveMaterialPageRoute<T> extends PageRoute<T>
+    with MaterialRouteTransitionMixin<T> {
+  _TestLiveMaterialPageRoute({required this.child})
+    : super(allowSnapshotting: false);
+
+  final Widget child;
+
+  @override
+  bool get opaque => false;
+
+  @override
+  bool get maintainState => true;
+
+  @override
+  Widget buildContent(BuildContext context) => child;
 }
