@@ -1006,11 +1006,11 @@ class _PersistentPredictiveBackTransitionState
   static const double _minScale = 0.90;
   static const double _screenWidthDivisionFactor = 20;
   static const double _xShiftAdjustment = 8;
-  static const double _maxVerticalDragFraction = 0.1;
   static const double _fallbackDeviceBorderRadius = 32;
 
   double _lastProgress = 0;
   double _lastVerticalDrag = 0;
+  SwipeEdge _lastSwipeEdge = SwipeEdge.left;
 
   double _progress() {
     if (!widget.active) {
@@ -1019,7 +1019,11 @@ class _PersistentPredictiveBackTransitionState
       return 0;
     }
 
-    final currentProgress = widget.currentBackEvent?.progress;
+    final currentProgress = switch (widget.phase) {
+      _AndroidBackPhase.start ||
+      _AndroidBackPhase.update => widget.currentBackEvent?.progress,
+      _ => null,
+    };
     if (currentProgress != null) {
       return _lastProgress = clampDouble(currentProgress, 0, 1);
     }
@@ -1035,31 +1039,54 @@ class _PersistentPredictiveBackTransitionState
     return _lastProgress = animationProgress;
   }
 
-  double _verticalDrag(Size size, double progress) {
+  double _maxShift(double extent) => clampDouble(
+    (extent / _screenWidthDivisionFactor) - _xShiftAdjustment,
+    0,
+    double.infinity,
+  );
+
+  SwipeEdge _swipeEdge() {
+    final swipeEdge =
+        widget.currentBackEvent?.swipeEdge ?? widget.startBackEvent?.swipeEdge;
+    if (swipeEdge != null) {
+      _lastSwipeEdge = swipeEdge;
+    }
+    return _lastSwipeEdge;
+  }
+
+  double _verticalDrag(Size size) {
     final startTouchY = widget.startBackEvent?.touchOffset?.dy;
     final currentTouchY = widget.currentBackEvent?.touchOffset?.dy;
     if (startTouchY == null || currentTouchY == null || size.height <= 0) {
       return _lastVerticalDrag;
     }
 
-    final maxShift = size.height * _maxVerticalDragFraction;
+    final maxShift = _maxShift(size.height);
     final rawDrag = currentTouchY - startTouchY;
-    return _lastVerticalDrag = clampDouble(
-      rawDrag * Curves.easeOut.transform(progress),
-      -maxShift,
-      maxShift,
-    );
+    final easedDrag =
+        Curves.easeOut.transform(
+          clampDouble(rawDrag.abs() / size.height, 0, 1),
+        ) *
+        rawDrag.sign *
+        maxShift;
+    return _lastVerticalDrag = clampDouble(easedDrag, -maxShift, maxShift);
   }
 
   Offset _offset(Size size, double progress) {
-    final xShift =
-        ((size.width / _screenWidthDivisionFactor) - _xShiftAdjustment) *
-        Curves.easeOut.transform(progress);
-    final direction = switch (widget.currentBackEvent?.swipeEdge) {
+    final xShift = _maxShift(size.width) * progress;
+    final direction = switch (_swipeEdge()) {
       SwipeEdge.right => -1.0,
-      _ => 1.0,
+      SwipeEdge.left => 1.0,
     };
-    return Offset(direction * xShift, _verticalDrag(size, progress));
+    return Offset(direction * xShift, _verticalDrag(size));
+  }
+
+  BorderRadius _borderRadius(BuildContext context, double progress) {
+    if (!widget.active) {
+      return BorderRadius.zero;
+    }
+    return MediaQuery.displayCornerRadiiOf(context) ??
+        BorderRadius.circular(_fallbackDeviceBorderRadius * progress);
   }
 
   @override
@@ -1068,16 +1095,13 @@ class _PersistentPredictiveBackTransitionState
     builder: (context, child) {
       final size = MediaQuery.sizeOf(context);
       final progress = _progress();
-      final scale = 1 - ((1 - _minScale) * Curves.easeOut.transform(progress));
+      final scale = 1 - ((1 - _minScale) * progress);
       return Transform.translate(
         offset: _offset(size, progress),
         child: Transform.scale(
           scale: scale,
           child: ClipRRect(
-            borderRadius: widget.active
-                ? MediaQuery.displayCornerRadiiOf(context) ??
-                      BorderRadius.circular(_fallbackDeviceBorderRadius)
-                : BorderRadius.zero,
+            borderRadius: _borderRadius(context, progress),
             child: child,
           ),
         ),

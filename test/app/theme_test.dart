@@ -100,31 +100,7 @@ void main() {
     testWidgets(
       'keeps persistent transition mounted when Android gesture starts at zero',
       (tester) async {
-        await tester.pumpWidget(
-          MaterialApp(
-            theme: ThemeData(
-              pageTransitionsTheme: PageTransitionsTheme(
-                builders: <TargetPlatform, PageTransitionsBuilder>{
-                  for (final platform in TargetPlatform.values)
-                    platform:
-                        const PersistentPredictiveBackPageTransitionsBuilder(),
-                },
-              ),
-            ),
-            routes: {
-              '/': (context) => Material(
-                child: TextButton(
-                  onPressed: () => Navigator.of(context).pushNamed('/terminal'),
-                  child: const Text('push'),
-                ),
-              ),
-              '/terminal': (context) => const Material(child: Text('terminal')),
-            },
-          ),
-        );
-
-        await tester.tap(find.text('push'));
-        await tester.pumpAndSettle();
+        await _pumpPredictiveBackApp(tester);
 
         expect(_findPersistentPredictiveBackTransition(), findsOneWidget);
         expect(_findFadeForwardsPageTransition(), findsOneWidget);
@@ -143,6 +119,38 @@ void main() {
 
         await _sendBackGesture(const MethodCall('cancelBackGesture'));
         await tester.pumpAndSettle();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'keeps right-edge Android back gestures moving left after release',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[795, 300],
+            'progress': 0.0,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[700, 315],
+            'progress': 0.5,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+
+        expect(_persistentBackTranslationX(tester), lessThan(0));
+
+        await _sendBackGesture(const MethodCall('commitBackGesture'));
+        await tester.pump();
+
+        expect(_persistentBackTranslationX(tester), lessThan(0));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -236,6 +244,49 @@ Finder _findFadeForwardsPageTransition() => find.descendant(
     (widget) => '${widget.runtimeType}' == '_FadeForwardsPageTransition',
   ),
 );
+
+Future<void> _pumpPredictiveBackApp(WidgetTester tester) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: ThemeData(
+        pageTransitionsTheme: PageTransitionsTheme(
+          builders: <TargetPlatform, PageTransitionsBuilder>{
+            for (final platform in TargetPlatform.values)
+              platform: const PersistentPredictiveBackPageTransitionsBuilder(),
+          },
+        ),
+      ),
+      routes: {
+        '/': (context) => Material(
+          child: TextButton(
+            onPressed: () => Navigator.of(context).pushNamed('/terminal'),
+            child: const Text('push'),
+          ),
+        ),
+        '/terminal': (context) => const Material(child: Text('terminal')),
+      },
+    ),
+  );
+
+  await tester.tap(find.text('push'));
+  await tester.pumpAndSettle();
+}
+
+double _persistentBackTranslationX(WidgetTester tester) {
+  final transforms = tester.widgetList<Transform>(
+    find.descendant(
+      of: _findPersistentPredictiveBackTransition(),
+      matching: find.byType(Transform),
+    ),
+  );
+  for (final transform in transforms) {
+    final translation = transform.transform.getTranslation();
+    if (translation.x != 0 || translation.y != 0) {
+      return translation.x;
+    }
+  }
+  fail('Could not find a translated predictive back transform.');
+}
 
 Future<void> _sendBackGesture(MethodCall methodCall) async {
   final message = const StandardMethodCodec().encodeMethodCall(methodCall);
