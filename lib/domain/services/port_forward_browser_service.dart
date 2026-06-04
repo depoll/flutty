@@ -1,9 +1,40 @@
+import 'package:flutter/foundation.dart';
+
 import '../../data/database/database.dart';
+
+/// Returns whether the embedded WebView browser is available on [platform].
+bool isPortForwardBrowserSupported({TargetPlatform? platform}) {
+  final targetPlatform = platform ?? defaultTargetPlatform;
+  return targetPlatform == TargetPlatform.android ||
+      targetPlatform == TargetPlatform.iOS ||
+      targetPlatform == TargetPlatform.macOS;
+}
 
 /// Returns whether [portForward] can be opened in the embedded browser.
 bool canOpenPortForwardInBrowser(PortForward portForward) =>
     portForward.forwardType == 'local' &&
-    isPortForwardBrowserHost(portForward.localHost);
+    isPortForwardBrowserHost(portForward.localHost) &&
+    _isValidPort(portForward.localPort);
+
+/// Returns whether [uri] is a valid initial embedded-browser URL.
+bool isPortForwardBrowserEntryUri(Uri uri) {
+  final port = portForwardBrowserUriPort(uri);
+  return _isValidPort(port) &&
+      (uri.scheme == 'http' || uri.scheme == 'https') &&
+      isPortForwardBrowserHost(uri.host);
+}
+
+/// Returns the effective network port for [uri], including scheme defaults.
+int portForwardBrowserUriPort(Uri uri) {
+  if (uri.hasPort) {
+    return uri.port;
+  }
+  return switch (uri.scheme) {
+    'http' => 80,
+    'https' => 443,
+    _ => 0,
+  };
+}
 
 /// Builds the local URL used to browse a local port forward.
 Uri buildPortForwardBrowserUri(PortForward portForward) =>
@@ -38,7 +69,7 @@ bool isPortForwardBrowserUri(Uri uri, {required int port}) =>
     _isValidPort(port) &&
     (uri.scheme == 'http' || uri.scheme == 'https') &&
     isPortForwardBrowserHost(uri.host) &&
-    uri.port == port;
+    portForwardBrowserUriPort(uri) == port;
 
 /// Normalizes wildcard and IPv6 loopback hosts for embedded browser loading.
 Uri normalizePortForwardBrowserUri(Uri uri) =>
