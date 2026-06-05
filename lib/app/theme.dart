@@ -1195,6 +1195,11 @@ class _PersistentPredictiveBackTransitionState
     return Offset(direction * xShift, _verticalDrag(size));
   }
 
+  Alignment _scaleAlignment(Size size) => switch (_swipeEdge(size)) {
+    SwipeEdge.right => Alignment.centerLeft,
+    SwipeEdge.left => Alignment.centerRight,
+  };
+
   BorderRadius _borderRadius(BuildContext context, double progress) {
     if (!widget.active) {
       return BorderRadius.zero;
@@ -1213,6 +1218,7 @@ class _PersistentPredictiveBackTransitionState
       return Transform.translate(
         offset: _offset(size, progress),
         child: Transform.scale(
+          alignment: _scaleAlignment(size),
           scale: scale,
           child: ClipRRect(
             borderRadius: _borderRadius(context, progress),
