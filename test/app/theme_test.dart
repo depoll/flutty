@@ -183,6 +183,60 @@ void main() {
     );
 
     testWidgets(
+      'anchors the Android back surface to a right-edge swipe',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[795, 300],
+            'progress': 0.0,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[700, 315],
+            'progress': 0.5,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+
+        expect(_persistentBackScaleAlignment(tester), Alignment.centerLeft);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'anchors the Android back surface to a left-edge swipe',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[5, 300],
+            'progress': 0.0,
+            'swipeEdge': 0,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[100, 315],
+            'progress': 0.5,
+            'swipeEdge': 0,
+          }),
+        );
+        await tester.pump();
+
+        expect(_persistentBackScaleAlignment(tester), Alignment.centerRight);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'keeps the terminal route out of fade transitions while swiping back',
       (tester) async {
         await _pumpPredictiveBackApp(tester);
@@ -383,6 +437,22 @@ double _persistentBackTranslationX(WidgetTester tester) {
     }
   }
   fail('Could not find a translated predictive back transform.');
+}
+
+AlignmentGeometry? _persistentBackScaleAlignment(WidgetTester tester) {
+  final transforms = tester.widgetList<Transform>(
+    find.descendant(
+      of: _findPersistentPredictiveBackTransition(),
+      matching: find.byType(Transform),
+    ),
+  );
+  for (final transform in transforms) {
+    final scaleX = transform.transform.storage[0];
+    if (scaleX != 1) {
+      return transform.alignment;
+    }
+  }
+  fail('Could not find a scaled predictive back transform.');
 }
 
 List<Offset> _nonZeroFractionalTranslationsOf(
