@@ -249,13 +249,13 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
-    test('terminal route uses the standard Material route builder', () {
+    test('terminal route uses a live non-opaque Material route', () {
       final router = container.read(routerProvider);
       final terminalRoute = router.configuration.routes
           .whereType<GoRoute>()
           .singleWhere((route) => route.name == Routes.terminal);
 
-      final terminalScreen = terminalRoute.builder!(
+      final page = terminalRoute.pageBuilder!(
         _MockBuildContext(),
         GoRouterState(
           router.configuration,
@@ -269,9 +269,11 @@ void main() {
           topRoute: terminalRoute,
         ),
       );
+      final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
 
-      expect(terminalRoute.pageBuilder, isNull);
-      expect(terminalScreen, isA<TerminalScreen>());
+      expect(route.opaque, isFalse);
+      expect(route.allowSnapshotting, isFalse);
+      expect(_terminalScreenForPage(page), isA<TerminalScreen>());
     });
 
     test('terminal route keys distinguish expand tmux requests', () {
@@ -414,7 +416,7 @@ TerminalScreen _terminalScreenFor({
   required GoRoute route,
   required Uri uri,
 }) {
-  final terminalScreen = route.builder!(
+  final page = route.pageBuilder!(
     _MockBuildContext(),
     GoRouterState(
       router.configuration,
@@ -428,7 +430,18 @@ TerminalScreen _terminalScreenFor({
       topRoute: route,
     ),
   );
-  return _findTerminalScreen(terminalScreen);
+  return _terminalScreenForPage(page);
+}
+
+TerminalScreen _terminalScreenForPage(Page<void> page) {
+  final terminalRoute =
+      page.createRoute(_MockBuildContext()) as PageRoute<void>;
+  final pageWidget = terminalRoute.buildPage(
+    _MockBuildContext(),
+    kAlwaysCompleteAnimation,
+    kAlwaysDismissedAnimation,
+  );
+  return _findTerminalScreen(pageWidget);
 }
 
 TerminalScreen _findTerminalScreen(Widget widget) {
