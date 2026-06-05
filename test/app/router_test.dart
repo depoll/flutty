@@ -249,7 +249,7 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
-    test('terminal route uses a live non-opaque Material route', () {
+    test('terminal route animates the live page during transitions', () {
       final router = container.read(routerProvider);
       final terminalRoute = router.configuration.routes
           .whereType<GoRoute>()
@@ -269,11 +269,12 @@ void main() {
           topRoute: terminalRoute,
         ),
       );
+
       final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
 
+      expect(route, isA<PageRoute<void>>());
       expect(route.opaque, isFalse);
       expect(route.allowSnapshotting, isFalse);
-      expect(_terminalScreenForPage(page), isA<TerminalScreen>());
     });
 
     test('terminal route keys distinguish expand tmux requests', () {
@@ -430,10 +431,6 @@ TerminalScreen _terminalScreenFor({
       topRoute: route,
     ),
   );
-  return _terminalScreenForPage(page);
-}
-
-TerminalScreen _terminalScreenForPage(Page<void> page) {
   final terminalRoute =
       page.createRoute(_MockBuildContext()) as PageRoute<void>;
   final pageWidget = terminalRoute.buildPage(

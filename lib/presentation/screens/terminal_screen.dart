@@ -2991,6 +2991,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
+  double? _terminalOverflowMenuAnchorTopCache;
+  bool _terminalOverflowMenuAnchorTopUpdateScheduled = false;
   final Map<String, String> _lastAndroidPredictiveBackDiagnosticsKeys =
       <String, String>{};
   String? _lastAndroidTerminalContentDiagnosticsKey;
@@ -3172,7 +3174,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool isMobilePlatform,
   }) {
     final mediaQuery = MediaQuery.of(context);
-    final anchorTop = _terminalOverflowMenuAnchorTop(context);
+    // Reading paint geometry (localToGlobal) during build throws while an
+    // ancestor route transform has not been laid out yet, which happens during
+    // the Android predictive-back transition. Use the value cached after the
+    // previous frame's layout instead, and refresh it from a post-frame
+    // callback when it is actually needed (mobile + keyboard visible).
+    if (isMobilePlatform && mediaQuery.viewInsets.bottom > 0) {
+      _scheduleTerminalOverflowMenuAnchorTopUpdate(context);
+    }
+    final anchorTop = _terminalOverflowMenuAnchorTopCache;
     final maxHeight = resolveTerminalOverflowMenuMaxHeight(
       mediaQuery: mediaQuery,
       isMobilePlatform: isMobilePlatform,
@@ -3203,6 +3213,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _scheduleTerminalOverflowMenuAnchorTopUpdate(BuildContext context) {
+    if (_terminalOverflowMenuAnchorTopUpdateScheduled) {
+      return;
+    }
+    _terminalOverflowMenuAnchorTopUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _terminalOverflowMenuAnchorTopUpdateScheduled = false;
+      if (!mounted) {
+        return;
+      }
+      final next = _terminalOverflowMenuAnchorTop(context);
+      if (next != _terminalOverflowMenuAnchorTopCache) {
+        setState(() => _terminalOverflowMenuAnchorTopCache = next);
+      }
+    });
+  }
+
   double? _terminalOverflowMenuAnchorTop(BuildContext context) {
     final anchorContext = _terminalOverflowMenuButtonKey.currentContext;
     if (anchorContext == null) {
@@ -3215,7 +3242,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (anchorRenderObject is! RenderBox ||
         overlayRenderObject is! RenderBox ||
         !anchorRenderObject.attached ||
-        !overlayRenderObject.attached) {
+        !overlayRenderObject.attached ||
+        !anchorRenderObject.hasSize ||
+        !overlayRenderObject.hasSize) {
       return null;
     }
 
@@ -8916,6 +8945,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           didPop: didPop,
         );
         if (didPop) {
+          _clearAppThemeOverride();
           return;
         }
         _collapseTmuxBarIfExpanded();

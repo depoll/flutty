@@ -237,28 +237,22 @@ class _TerminalThemeOverridePage extends ConsumerStatefulWidget {
 class _TerminalThemeOverridePageState
     extends ConsumerState<_TerminalThemeOverridePage> {
   final Object _overrideOwner = Object();
-  late final TerminalAppThemeOverrideNotifier _overrideNotifier;
 
   @override
   void initState() {
     super.initState();
-    _overrideNotifier = ref.read(terminalAppThemeOverrideProvider.notifier);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
       }
-      _overrideNotifier.activeOverride = TerminalAppThemeOverride(
+      ref
+          .read(terminalAppThemeOverrideProvider.notifier)
+          .activeOverride = TerminalAppThemeOverride(
         owner: _overrideOwner,
         darkThemeId: 'active-terminal-theme',
         lightThemeId: 'active-terminal-theme',
       );
     });
-  }
-
-  @override
-  void dispose() {
-    _overrideNotifier.clearForOwner(_overrideOwner);
-    super.dispose();
   }
 
   @override
@@ -736,100 +730,101 @@ void main() {
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
     });
 
-    testWidgets('terminal route disposal clears the app theme override', (
-      tester,
-    ) async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(db.close);
-      final sessionsNotifier = _MutableActiveSessionsNotifier(
-        initialConnections: [
-          _buildActiveConnection(
-            connectionId: 7,
-            hostId: 1,
-            state: SshConnectionState.connecting,
-            preview: 'ready',
-            previewSnapshot: _buildStyledPreviewSnapshot(),
-          ),
-        ],
-      );
-      final router = GoRouter(
-        initialLocation: '/',
-        routes: [
-          GoRoute(
-            path: '/',
-            builder: (context, state) =>
-                const HomeScreen(initialTab: HomeScreenTab.connections),
-          ),
-          GoRoute(
-            path: '/terminal/:hostId',
-            builder: (context, state) => const _TerminalThemeOverridePage(),
-          ),
-        ],
-      );
-      addTearDown(router.dispose);
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            transferIntentServiceProvider.overrideWith(
-              (ref) => _TestTransferIntentService(),
-            ),
-            homeScreenShortcutServiceProvider.overrideWith(
-              (ref) => _TestHomeScreenShortcutService(),
-            ),
-            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
-              (ref) => Stream<Set<int>>.value(const <int>{}),
-            ),
-            activeSessionsProvider.overrideWith(() => sessionsNotifier),
-            allHostsProvider.overrideWith(
-              (ref) => Stream.value([
-                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
-              ]),
+    testWidgets(
+      'terminal route return clears the app theme override immediately',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final sessionsNotifier = _MutableActiveSessionsNotifier(
+          initialConnections: [
+            _buildActiveConnection(
+              connectionId: 7,
+              hostId: 1,
+              state: SshConnectionState.connecting,
+              preview: 'ready',
+              previewSnapshot: _buildStyledPreviewSnapshot(),
             ),
           ],
-          child: _ThemeOverrideTestApp(router: router),
-        ),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
+        );
+        final router = GoRouter(
+          initialLocation: '/',
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) =>
+                  const HomeScreen(initialTab: HomeScreenTab.connections),
+            ),
+            GoRoute(
+              path: '/terminal/:hostId',
+              builder: (context, state) => const _TerminalThemeOverridePage(),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
 
-      Finder connectionsHeader() => find.byWidgetPredicate(
-        (widget) =>
-            widget is Text &&
-            widget.data == 'Connections' &&
-            widget.style?.fontWeight == FontWeight.w600,
-      );
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              transferIntentServiceProvider.overrideWith(
+                (ref) => _TestTransferIntentService(),
+              ),
+              homeScreenShortcutServiceProvider.overrideWith(
+                (ref) => _TestHomeScreenShortcutService(),
+              ),
+              pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+                (ref) => Stream<Set<int>>.value(const <int>{}),
+              ),
+              activeSessionsProvider.overrideWith(() => sessionsNotifier),
+              allHostsProvider.overrideWith(
+                (ref) => Stream.value([
+                  _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+                ]),
+              ),
+            ],
+            child: _ThemeOverrideTestApp(router: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
 
-      expect(
-        tester.widget<Text>(connectionsHeader()).style?.color,
-        Colors.black,
-      );
-      final container = ProviderScope.containerOf(
-        tester.element(find.byType(HomeScreen)),
-      );
+        Finder connectionsHeader() => find.byWidgetPredicate(
+          (widget) =>
+              widget is Text &&
+              widget.data == 'Connections' &&
+              widget.style?.fontWeight == FontWeight.w600,
+        );
 
-      await tester.tap(
-        find
-            .descendant(
-              of: find.byType(ConnectionPreviewStack),
-              matching: find.byType(CustomPaint),
-            )
-            .last,
-      );
-      await tester.pumpAndSettle();
+        expect(
+          tester.widget<Text>(connectionsHeader()).style?.color,
+          Colors.black,
+        );
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(HomeScreen)),
+        );
 
-      expect(container.read(terminalAppThemeOverrideProvider), isNotNull);
+        await tester.tap(
+          find
+              .descendant(
+                of: find.byType(ConnectionPreviewStack),
+                matching: find.byType(CustomPaint),
+              )
+              .last,
+        );
+        await tester.pumpAndSettle();
 
-      router.pop();
-      await tester.pumpAndSettle();
+        expect(container.read(terminalAppThemeOverrideProvider), isNotNull);
 
-      expect(container.read(terminalAppThemeOverrideProvider), isNull);
-      expect(
-        tester.widget<Text>(connectionsHeader()).style?.color,
-        Colors.black,
-      );
-    });
+        router.pop();
+        await tester.pumpAndSettle();
+
+        expect(container.read(terminalAppThemeOverrideProvider), isNull);
+        expect(
+          tester.widget<Text>(connectionsHeader()).style?.color,
+          Colors.black,
+        );
+      },
+    );
 
     testWidgets('hosts preview tap opens terminal route', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
