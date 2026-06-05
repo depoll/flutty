@@ -32,22 +32,38 @@ void main() {
       final writeSession = await client.execute(
         RemoteClipboardSyncService.buildWriteCommand(localText),
       );
-      await _drainSession(writeSession);
+      final writeOutput = await _drainSession(writeSession);
+      expect(
+        RemoteClipboardSyncService.outputIndicatesUnsupported(writeOutput),
+        isFalse,
+      );
+      expect(
+        RemoteClipboardSyncService.outputIndicatesFailure(writeOutput),
+        isFalse,
+      );
 
-      final remoteReadback = await _runCommand(client, 'pbpaste');
-      expect(remoteReadback.trimRight(), localText);
+      final remoteReadback = await _readRemoteClipboard(client);
+      expect(remoteReadback, localText);
 
       const remoteText = 'remote-mac-copy';
-      await _runCommand(client, "printf %s 'remote-mac-copy' | pbcopy");
-      final readSession = await client.execute(
-        RemoteClipboardSyncService.buildReadCommand(),
+      final remoteWriteSession = await client.execute(
+        RemoteClipboardSyncService.buildWriteCommand(remoteText),
       );
-      final readOutput = await _drainSession(readSession);
-      final parsed = RemoteClipboardSyncService.parseReadOutput(readOutput);
-      expect(parsed.supported, isTrue);
-      expect(parsed.text, remoteText);
+      final remoteWriteOutput = await _drainSession(remoteWriteSession);
+      expect(
+        RemoteClipboardSyncService.outputIndicatesUnsupported(
+          remoteWriteOutput,
+        ),
+        isFalse,
+      );
+      expect(
+        RemoteClipboardSyncService.outputIndicatesFailure(remoteWriteOutput),
+        isFalse,
+      );
+      final readback = await _readRemoteClipboard(client);
+      expect(readback, remoteText);
 
-      await Clipboard.setData(ClipboardData(text: parsed.text));
+      await Clipboard.setData(ClipboardData(text: readback));
       final localClipboard = await Clipboard.getData(Clipboard.kTextPlain);
       expect(localClipboard?.text, remoteText);
     },
@@ -69,6 +85,16 @@ Future<SSHClient> _connectClient() async {
 Future<String> _runCommand(SSHClient client, String command) async {
   final session = await client.execute(command);
   return _drainSession(session);
+}
+
+Future<String> _readRemoteClipboard(SSHClient client) async {
+  final readOutput = await _runCommand(
+    client,
+    RemoteClipboardSyncService.buildReadCommand(),
+  );
+  final parsed = RemoteClipboardSyncService.parseReadOutput(readOutput);
+  expect(parsed.status, RemoteClipboardReadStatus.supported);
+  return parsed.text;
 }
 
 Future<String> _drainSession(SSHSession session) async {

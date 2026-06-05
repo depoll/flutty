@@ -30,6 +30,7 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
+import '../../domain/models/terminal_backend.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -2744,6 +2745,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
+  static const _remoteClipboardWriteFailureLimit = 3;
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   static const _tmuxForegroundVerificationInterval = Duration(seconds: 5);
   static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
@@ -2901,6 +2903,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastAppliedRemoteClipboardText;
   String? _recentLocalClipboardText;
   DateTime? _recentLocalClipboardAt;
+  int _remoteClipboardWriteFailureCount = 0;
   bool _isTerminalSizeRefreshQueued = false;
   bool _pendingTerminalSizeRefreshForcesDisplayRefresh = false;
   bool _pendingTerminalSizeRefreshRevealsLatestOutput = false;
@@ -4745,6 +4748,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
     _remoteClipboardUnsupported = false;
+    _remoteClipboardWriteFailureCount = 0;
     _lastObservedLocalClipboardText = session.localClipboardReadEnabled
         ? await _readSystemClipboardText()
         : null;
@@ -4777,6 +4781,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _remoteClipboardSyncTimer = null;
     _isPollingRemoteClipboard = false;
     _isPushingLocalClipboard = false;
+    _remoteClipboardWriteFailureCount = 0;
+  }
+
+  void _markRemoteClipboardUnsupported() {
+    _remoteClipboardUnsupported = true;
+    _localClipboardSyncTimer?.cancel();
+    _localClipboardSyncTimer = null;
+    _remoteClipboardSyncTimer?.cancel();
+    _remoteClipboardSyncTimer = null;
+    _remoteClipboardWriteFailureCount = 0;
   }
 
   Future<String?> _readSystemClipboardText() async {
@@ -4824,16 +4838,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _isPushingLocalClipboard = true;
     try {
-      final output = await _runRemoteCommand(
+      final result = await _runRemoteCommand(
         session,
         RemoteClipboardSyncService.buildWriteCommand(localText),
       );
-      if (RemoteClipboardSyncService.outputIndicatesUnsupported(output)) {
-        _remoteClipboardUnsupported = true;
-        _remoteClipboardSyncTimer?.cancel();
-        _remoteClipboardSyncTimer = null;
+      if (RemoteClipboardSyncService.outputIndicatesUnsupported(
+        result.output,
+      )) {
+        _markRemoteClipboardUnsupported();
         return;
       }
+      if (!result.succeeded ||
+          RemoteClipboardSyncService.outputIndicatesFailure(result.output)) {
+        _remoteClipboardWriteFailureCount += 1;
+        if (_remoteClipboardWriteFailureCount >=
+            _remoteClipboardWriteFailureLimit) {
+          _markRemoteClipboardUnsupported();
+        }
+        return;
+      }
+      _remoteClipboardWriteFailureCount = 0;
       _lastObservedLocalClipboardText = localText;
       _lastObservedRemoteClipboardText = localText;
       _lastAppliedRemoteClipboardText = localText;
@@ -4885,22 +4909,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<String?> _readRemoteClipboardText(SshSession session) async {
-    final output = await _runRemoteCommand(
+    final result = await _runRemoteCommand(
       session,
       RemoteClipboardSyncService.buildReadCommand(),
     );
-    final parsed = RemoteClipboardSyncService.parseReadOutput(output);
-    if (!parsed.supported) {
-      _remoteClipboardUnsupported = true;
+    if (!result.succeeded) {
       return null;
     }
-    return parsed.text;
+    final parsed = RemoteClipboardSyncService.parseReadOutput(result.output);
+    switch (parsed.status) {
+      case RemoteClipboardReadStatus.supported:
+        return parsed.text;
+      case RemoteClipboardReadStatus.unsupported:
+        _markRemoteClipboardUnsupported();
+        return null;
+      case RemoteClipboardReadStatus.failed:
+        return null;
+    }
   }
 
-  Future<String> _runRemoteCommand(SshSession session, String command) async =>
-      (await _activeTerminalConnectionBackend(
-        session,
-      ).runClientCommand(command, priority: SshExecPriority.low)).output;
+  Future<TerminalClientCommandResult> _runRemoteCommand(
+    SshSession session,
+    String command,
+  ) => _activeTerminalConnectionBackend(
+    session,
+  ).runClientCommand(command, priority: SshExecPriority.low);
 
   void _handleTerminalScroll() {
     final currentOffset = _terminalScrollController.hasClients

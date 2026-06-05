@@ -45,7 +45,7 @@ void main() {
         invocation,
       ) async {
         commands.add(invocation.positionalArguments.single as String);
-        return _buildExecSession(stdout: 'ok');
+        return _buildExecSession(stdout: 'ok', exitCode: 0);
       });
       final service = TerminalConnectionBackendService(
         tmuxMultiplexer: _FakeRemoteMultiplexerService(),
@@ -59,11 +59,29 @@ void main() {
       );
 
       expect(result.output, 'ok');
-      expect(result.exitCode, isNull);
+      expect(result.exitCode, 0);
       expect(
         commands,
         contains("cd '/tmp/user'\"'\"'s repo' && ( printf hi )"),
       );
+    });
+
+    test('propagates direct client command exit codes with stderr', () async {
+      final client = _MockSshClient();
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+        (_) async => _buildExecSession(stderr: 'failed', exitCode: 7),
+      );
+      final service = TerminalConnectionBackendService(
+        tmuxMultiplexer: _FakeRemoteMultiplexerService(),
+        monkeyMuxService: _MockMonkeyMuxService(),
+      );
+      final backend = service.resolve(_buildSession(client));
+
+      final result = await backend.runClientCommand('false');
+
+      expect(result.output, 'failed');
+      expect(result.exitCode, 7);
+      expect(result.succeeded, isFalse);
     });
 
     test('delegates tmux window operations through the multiplexer', () async {
@@ -154,7 +172,11 @@ SshSession _buildSession(SSHClient client) => SshSession(
   ),
 );
 
-SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
+SSHSession _buildExecSession({
+  String stdout = '',
+  String stderr = '',
+  int? exitCode,
+}) {
   final exec = _MockSshExecSession();
   when(() => exec.stdout).thenAnswer(
     (_) => Stream<Uint8List>.fromIterable([
@@ -167,6 +189,7 @@ SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
     ]),
   );
   when(() => exec.done).thenAnswer((_) => Future<void>.value());
+  when(() => exec.exitCode).thenReturn(exitCode);
   return exec;
 }
 

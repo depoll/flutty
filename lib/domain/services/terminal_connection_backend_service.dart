@@ -407,6 +407,7 @@ class _SshClientCommandRunner {
       final stdoutText = stdout.toString();
       return TerminalClientCommandResult(
         output: stdoutText.isNotEmpty ? stdoutText : stderr.toString(),
+        exitCode: exec.exitCode,
       );
     } finally {
       exec.close();
