@@ -249,13 +249,13 @@ void main() {
       expect(router, isA<GoRouter>());
     });
 
-    test('terminal route animates the live page during transitions', () {
+    test('terminal route uses the standard Material route builder', () {
       final router = container.read(routerProvider);
       final terminalRoute = router.configuration.routes
           .whereType<GoRoute>()
           .singleWhere((route) => route.name == Routes.terminal);
 
-      final page = terminalRoute.pageBuilder!(
+      final terminalScreen = terminalRoute.builder!(
         _MockBuildContext(),
         GoRouterState(
           router.configuration,
@@ -270,11 +270,8 @@ void main() {
         ),
       );
 
-      final route = page.createRoute(_MockBuildContext()) as PageRoute<void>;
-
-      expect(route, isA<PageRoute<void>>());
-      expect(route.opaque, isFalse);
-      expect(route.allowSnapshotting, isFalse);
+      expect(terminalRoute.pageBuilder, isNull);
+      expect(terminalScreen, isA<TerminalScreen>());
     });
 
     test('terminal route keys distinguish expand tmux requests', () {
@@ -417,7 +414,7 @@ TerminalScreen _terminalScreenFor({
   required GoRoute route,
   required Uri uri,
 }) {
-  final page = route.pageBuilder!(
+  final terminalScreen = route.builder!(
     _MockBuildContext(),
     GoRouterState(
       router.configuration,
@@ -431,14 +428,7 @@ TerminalScreen _terminalScreenFor({
       topRoute: route,
     ),
   );
-  final terminalRoute =
-      page.createRoute(_MockBuildContext()) as PageRoute<void>;
-  final pageWidget = terminalRoute.buildPage(
-    _MockBuildContext(),
-    kAlwaysCompleteAnimation,
-    kAlwaysDismissedAnimation,
-  );
-  return _findTerminalScreen(pageWidget);
+  return _findTerminalScreen(terminalScreen);
 }
 
 TerminalScreen _findTerminalScreen(Widget widget) {

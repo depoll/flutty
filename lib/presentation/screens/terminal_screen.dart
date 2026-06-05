@@ -8916,7 +8916,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           didPop: didPop,
         );
         if (didPop) {
-          _clearAppThemeOverride();
           return;
         }
         _collapseTmuxBarIfExpanded();
