@@ -7,9 +7,9 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_pinch_zoom_gesture_handler.dart';
-import 'package:xterm/xterm.dart';
 
 const _tmuxSessionName = 'flutty-touch-scroll';
 const _sshPort = String.fromEnvironment('FLUTTY_SCROLL_SSH_PORT');

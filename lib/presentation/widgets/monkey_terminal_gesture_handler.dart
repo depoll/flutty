@@ -1,18 +1,18 @@
-// Adapted from package:xterm 4.0.0 gesture internals used by TerminalView.
-// Keep this aligned with the pinned xterm dependency when upgrading.
+// Adapted from package:kterm 4.0.0 gesture internals used by TerminalView.
+// Keep this aligned with the pinned kterm dependency when upgrading.
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, use_late_for_private_fields_and_variables, prefer_expression_function_bodies, sort_child_properties_last, invalid_use_of_internal_member
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
-import 'package:xterm/src/core/mouse/button.dart';
-import 'package:xterm/src/core/mouse/button_state.dart';
-import 'package:xterm/src/ui/controller.dart';
-import 'package:xterm/src/ui/pointer_input.dart';
+import 'package:kterm/src/core/mouse/button.dart';
+import 'package:kterm/src/core/mouse/button_state.dart';
+import 'package:kterm/src/ui/controller.dart';
+import 'package:kterm/src/ui/pointer_input.dart';
 
 import 'monkey_terminal_gesture_detector.dart';
 import 'monkey_terminal_view.dart';
 
-/// Adapted xterm gesture handler for [MonkeyTerminalView].
+/// Adapted kterm gesture handler for [MonkeyTerminalView].
 class MonkeyTerminalGestureHandler extends StatefulWidget {
   const MonkeyTerminalGestureHandler({
     super.key,
@@ -85,13 +85,13 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
 
   final bool readOnly;
 
-  /// When true, suppresses xterm's drag-to-extend behavior during a touch
+  /// When true, suppresses kterm's drag-to-extend behavior during a touch
   /// long-press while still allowing the initial long-press to set a word
   /// selection. Useful when the parent widget renders its own selection UI
   /// and doesn't want to be re-entered on every drag update.
   final bool suppressLongPressDragSelection;
 
-  /// Whether this handler should install xterm-owned selection gestures.
+  /// Whether this handler should install kterm-owned selection gestures.
   final bool enableTerminalSelectionGestures;
 
   @override
@@ -279,7 +279,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       return;
     }
     if (widget.suppressLongPressDragSelection) {
-      // Skip xterm's drag-to-extend on touch so the parent's selection UI
+      // Skip kterm's drag-to-extend on touch so the parent's selection UI
       // (e.g. native selection overlay) isn't thrashed by repeated selection
       // changes during a long-press drag.
       return;

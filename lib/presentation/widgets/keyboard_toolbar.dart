@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:xterm/xterm.dart';
+import 'package:kterm/kterm.dart';
 
 import 'terminal_key_input.dart';
 import 'terminal_menu_style.dart';

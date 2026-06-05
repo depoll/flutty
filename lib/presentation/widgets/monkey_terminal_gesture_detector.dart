@@ -1,5 +1,5 @@
-// Adapted from package:xterm 4.0.0 gesture detector internals used by
-// TerminalView. Keep this aligned with the pinned xterm dependency when
+// Adapted from package:kterm 4.0.0 gesture detector internals used by
+// TerminalView. Keep this aligned with the pinned kterm dependency when
 // upgrading.
 // ignore_for_file: public_member_api_docs
 

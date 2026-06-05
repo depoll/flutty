@@ -1,8 +1,8 @@
 // ignore_for_file: implementation_imports, public_member_api_docs, always_put_required_named_parameters_first, type_annotate_public_apis, use_setters_to_change_properties
 
 import 'package:flutter/widgets.dart';
-import 'package:xterm/core.dart';
-import 'package:xterm/src/ui/infinite_scroll_view.dart';
+import 'package:kterm/core.dart';
+import 'package:kterm/src/ui/infinite_scroll_view.dart';
 
 import 'terminal_scroll_mouse_input.dart';
 
@@ -31,7 +31,7 @@ class MonkeyTerminalScrollGestureHandler extends StatefulWidget {
   /// is the default behavior of most terminals.
   final bool simulateScroll;
 
-  /// Whether to send SGR wheel reports even if xterm has not observed mouse
+  /// Whether to send SGR wheel reports even if kterm has not observed mouse
   /// reporting mode yet.
   final bool forceSgr;
 

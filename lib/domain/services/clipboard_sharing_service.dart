@@ -36,7 +36,7 @@ class ClipboardSharingService {
 
   /// Handles an incoming OSC 52 sequence from the remote terminal.
   ///
-  /// [args] is the list produced by xterm's OSC parser, split on `;`.
+  /// [args] is the list produced by kterm's OSC parser, split on `;`.
   /// For `ESC ] 52 ; c ; <base64> ST` this is `['c', '<base64>']`.
   /// For a query `ESC ] 52 ; c ; ? ST` this is `['c', '?']`.
   ///
@@ -73,7 +73,7 @@ class ClipboardSharingService {
     if (args.isEmpty) return null;
 
     // Some terminals send the target and payload as a single semicolon-
-    // delimited string (e.g. `['c;SGVsbG8=']`), while xterm's parser already
+    // delimited string (e.g. `['c;SGVsbG8=']`), while kterm's parser already
     // splits them into separate list elements (`['c', 'SGVsbG8=']`).
     if (args.length == 1) {
       final parts = args[0].split(';');

@@ -16,10 +16,10 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:kterm/kterm.dart' hide TerminalThemes;
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/routes.dart';
 import '../../data/database/database.dart';
@@ -2135,7 +2135,7 @@ int resolveTerminalLineSnapshotTextLength({
       : clampedPreserveOffset;
 }
 
-/// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
+/// Whether to let kterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
 /// tmux, but still need the synthetic fallback whenever the active alt-buffer
@@ -2204,7 +2204,7 @@ bool isAgentToolActiveForTerminalScroll({
 }
 
 /// Whether touch scroll should send SGR wheel reports from mux metadata even
-/// when local xterm mouse-mode state is stale.
+/// when local terminal mouse-mode state is stale.
 @visibleForTesting
 bool shouldForceSgrTouchScroll({
   bool? activeWindowReportsMouseWheel,
@@ -2228,7 +2228,7 @@ bool hasActiveNativeOverlaySelection(TextSelection selection) =>
 
 /// Resolves the terminal range to select for a touch long-press.
 ///
-/// xterm's word selection returns null on separators and blank cells. Mobile
+/// kterm's word selection returns null on separators and blank cells. Mobile
 /// touch selection should still start when the finger lands on punctuation in a
 /// path/URL or slightly misses a word, so this falls back to separator runs and
 /// nearby selectable cells on the same row.
@@ -2487,7 +2487,7 @@ String buildSnippetNameFromTerminalSelection(String text) {
   return 'Terminal selection';
 }
 
-/// Resolves the active terminal selection text, preferring the xterm
+/// Resolves the active terminal selection text, preferring the kterm
 /// controller's selection but falling back to the SelectionArea's content
 /// when system selection (mobile) owns the selection.
 @visibleForTesting
@@ -9819,7 +9819,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : null,
       focusNode: _terminalFocusNode,
       cursorFocusNode: isMobile ? _terminalFocusNode : null,
-      theme: terminalTheme.toXtermTheme(),
+      theme: terminalTheme.toKtermTheme(),
       textStyle: terminalTextStyle,
       inlineUnderlines: inlineUnderlines,
       keyboardAppearance: keyboardAppearance,
@@ -11903,7 +11903,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Reads the live system selection from the terminal's render object. This is
   // the source of truth on mobile (`useSystemSelection: true`), where Flutter's
-  // SelectionArea owns the selection rather than the xterm controller.
+  // SelectionArea owns the selection rather than the kterm controller.
   String? _readSystemSelectionPlainText() {
     final state = _terminalViewKey.currentState;
     if (state == null) {

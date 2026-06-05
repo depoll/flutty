@@ -33,7 +33,7 @@ import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
+import 'package:kterm/kterm.dart' hide TerminalThemes;
 
 class _MockHostRepository extends Mock implements HostRepository {}
 

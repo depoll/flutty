@@ -1,4 +1,4 @@
-import 'package:xterm/xterm.dart';
+import 'package:kterm/kterm.dart';
 
 const _terminalAlternateEnterInput = '\x1b\r';
 
@@ -11,7 +11,7 @@ bool sendTerminalEnterInput(
 }) {
   if (shiftActive || altActive) {
     // Prompt UIs such as Copilot CLI use ESC+CR as their terminal-agnostic
-    // multiline Enter sequence; xterm.dart's legacy Shift+Return emits ESCOM.
+    // multiline Enter sequence; kterm's legacy Shift+Return emits ESCOM.
     terminal.textInput(_terminalAlternateEnterInput);
     return true;
   }

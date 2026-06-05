@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:kterm/kterm.dart' hide TerminalThemes;
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
@@ -23,7 +24,6 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 const _sshPort = int.fromEnvironment('TUI_THEME_PROOF_SSH_PORT');
 const _sshUser = String.fromEnvironment('TUI_THEME_PROOF_SSH_USER');
@@ -568,8 +568,8 @@ double _minimumTokenContrast(
   TerminalThemeData theme,
   String token,
 ) {
-  final xtermTheme = theme.toXtermTheme();
-  final palette = _buildTerminalPalette(xtermTheme);
+  final ktermTheme = theme.toKtermTheme();
+  final palette = _buildTerminalPalette(ktermTheme);
   final cell = CellData.empty();
 
   for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
@@ -588,7 +588,7 @@ double _minimumTokenContrast(
         continue;
       }
       line.getCellData(column, cell);
-      final colors = _effectiveCellColors(cell, xtermTheme, palette);
+      final colors = _effectiveCellColors(cell, ktermTheme, palette);
       minimum = math.min(
         minimum,
         _contrastRatio(colors.foreground, colors.background),
@@ -608,8 +608,8 @@ double _minimumTokenContrast(
   TerminalThemeData theme,
   String token,
 ) {
-  final xtermTheme = theme.toXtermTheme();
-  final palette = _buildTerminalPalette(xtermTheme);
+  final ktermTheme = theme.toKtermTheme();
+  final palette = _buildTerminalPalette(ktermTheme);
   final cell = CellData.empty();
 
   for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
@@ -624,7 +624,7 @@ double _minimumTokenContrast(
     final tokenSurfaceColor = _effectiveBackgroundCellColor(cell);
     final background = _effectiveCellColors(
       cell,
-      xtermTheme,
+      ktermTheme,
       palette,
     ).background;
     var sampledCells = 0;
@@ -647,8 +647,8 @@ double _minimumTokenContrast(
   TerminalThemeData theme,
   String text,
 ) {
-  final xtermTheme = theme.toXtermTheme();
-  final palette = _buildTerminalPalette(xtermTheme);
+  final ktermTheme = theme.toKtermTheme();
+  final palette = _buildTerminalPalette(ktermTheme);
   final cell = CellData.empty();
 
   for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
@@ -661,7 +661,7 @@ double _minimumTokenContrast(
 
     line.getCellData(startColumn, cell);
     return (
-      background: _effectiveCellColors(cell, xtermTheme, palette).background,
+      background: _effectiveCellColors(cell, ktermTheme, palette).background,
     );
   }
 
@@ -670,8 +670,8 @@ double _minimumTokenContrast(
 
 ({int sampledCells, int oppositeThemeCells, double oppositeThemeFraction})
 _viewportBackgroundStats(Terminal terminal, TerminalThemeData theme) {
-  final xtermTheme = theme.toXtermTheme();
-  final palette = _buildTerminalPalette(xtermTheme);
+  final ktermTheme = theme.toKtermTheme();
+  final palette = _buildTerminalPalette(ktermTheme);
   final cell = CellData.empty();
   var sampledCells = 0;
   var oppositeThemeCells = 0;
@@ -684,7 +684,7 @@ _viewportBackgroundStats(Terminal terminal, TerminalThemeData theme) {
       line.getCellData(column, cell);
       final background = _effectiveCellColors(
         cell,
-        xtermTheme,
+        ktermTheme,
         palette,
       ).background;
       final luminance = background.computeLuminance();
@@ -710,15 +710,15 @@ int _effectiveBackgroundCellColor(CellData cell) =>
 
 ({Color foreground, Color background}) _effectiveCellColors(
   CellData cell,
-  TerminalTheme xtermTheme,
+  TerminalTheme ktermTheme,
   List<Color> palette,
 ) {
   var foreground = (cell.flags & CellFlags.inverse) == 0
-      ? _resolveForegroundColor(cell.foreground, xtermTheme, palette)
-      : _resolveBackgroundColor(cell.background, xtermTheme, palette);
+      ? _resolveForegroundColor(cell.foreground, ktermTheme, palette)
+      : _resolveBackgroundColor(cell.background, ktermTheme, palette);
   final background = (cell.flags & CellFlags.inverse) == 0
-      ? _resolveBackgroundColor(cell.background, xtermTheme, palette)
-      : _resolveForegroundColor(cell.foreground, xtermTheme, palette);
+      ? _resolveBackgroundColor(cell.background, ktermTheme, palette)
+      : _resolveForegroundColor(cell.foreground, ktermTheme, palette);
 
   if ((cell.flags & CellFlags.faint) != 0) {
     foreground = resolveMonkeyTerminalFaintForegroundColor(
@@ -731,13 +731,13 @@ int _effectiveBackgroundCellColor(CellData cell) =>
 
 Color _resolveForegroundColor(
   int cellColor,
-  TerminalTheme xtermTheme,
+  TerminalTheme ktermTheme,
   List<Color> palette,
 ) {
   final colorType = cellColor & CellColor.typeMask;
   final colorValue = cellColor & CellColor.valueMask;
   return switch (colorType) {
-    CellColor.normal => xtermTheme.foreground,
+    CellColor.normal => ktermTheme.foreground,
     CellColor.named || CellColor.palette => palette[colorValue],
     _ => Color.fromARGB(
       0xFF,
@@ -750,13 +750,13 @@ Color _resolveForegroundColor(
 
 Color _resolveBackgroundColor(
   int cellColor,
-  TerminalTheme xtermTheme,
+  TerminalTheme ktermTheme,
   List<Color> palette,
 ) {
   final colorType = cellColor & CellColor.typeMask;
   final colorValue = cellColor & CellColor.valueMask;
   return switch (colorType) {
-    CellColor.normal => xtermTheme.background,
+    CellColor.normal => ktermTheme.background,
     CellColor.named || CellColor.palette => palette[colorValue],
     _ => Color.fromARGB(
       0xFF,
@@ -767,10 +767,10 @@ Color _resolveBackgroundColor(
   };
 }
 
-List<Color> _buildTerminalPalette(TerminalTheme xtermTheme) =>
+List<Color> _buildTerminalPalette(TerminalTheme ktermTheme) =>
     List<Color>.generate(
       256,
-      (index) => resolveMonkeyTerminalPaletteColor(xtermTheme, index),
+      (index) => resolveMonkeyTerminalPaletteColor(ktermTheme, index),
       growable: false,
     );
 

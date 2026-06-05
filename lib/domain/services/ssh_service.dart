@@ -8,7 +8,7 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:xterm/xterm.dart';
+import 'package:kterm/kterm.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -52,7 +52,7 @@ typedef TerminalControlModeState = ({
 ///
 /// Apps running inside tmux wrap terminal queries as
 /// `DCS tmux; <escaped sequence> ST`. The inner ESC bytes are doubled by tmux;
-/// this returns a stream that xterm can parse normally while preserving split
+/// this returns a stream that kterm can parse normally while preserving split
 /// passthrough sequences across chunks.
 ({String output, String pendingInput}) unwrapTerminalTmuxPassthroughSequences({
   required String input,
@@ -159,10 +159,97 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
+/// Removes OSC 52 clipboard operations so MonkeySSH validates them before kterm.
+///
+/// kterm decodes OSC 52 payloads before invoking callbacks. MonkeySSH strips
+/// them from terminal rendering and sends the raw arguments through
+/// [ClipboardSharingService] so disabled clipboard sharing and payload limits
+/// are enforced before any base64 decode.
+@visibleForTesting
+({String output, List<List<String>> osc52Args}) extractTerminalClipboardOsc52({
+  required String input,
+}) {
+  final output = StringBuffer();
+  final osc52Args = <List<String>>[];
+  var cursor = 0;
+
+  while (cursor < input.length) {
+    final codeUnit = input.codeUnitAt(cursor);
+    if (codeUnit != _terminalEscapeCodeUnit) {
+      output.writeCharCode(codeUnit);
+      cursor += 1;
+      continue;
+    }
+
+    final endIndex = _terminalEscapeSequenceEndIndex(input, cursor);
+    if (endIndex == null) {
+      output.write(input.substring(cursor));
+      break;
+    }
+
+    final sequence = input.substring(cursor, endIndex);
+    final args = _terminalOscArgs(sequence, expectedCode: '52');
+    if (args == null) {
+      output.write(sequence);
+    } else {
+      osc52Args.add(args);
+    }
+    cursor = endIndex;
+  }
+
+  return (output: output.toString(), osc52Args: osc52Args);
+}
+
+/// Removes OSC color queries that MonkeySSH answers before terminal rendering.
+///
+/// kterm handles some OSC values internally (notably OSC 10), so remote color
+/// queries must be answered before the escape sequence reaches kterm.
+@visibleForTesting
+({String output, String? response}) extractTerminalThemeOscQueryResponses({
+  required String input,
+  required TerminalThemeData? theme,
+}) {
+  final output = StringBuffer();
+  final responses = StringBuffer();
+  var cursor = 0;
+
+  while (cursor < input.length) {
+    final codeUnit = input.codeUnitAt(cursor);
+    if (codeUnit != _terminalEscapeCodeUnit) {
+      output.writeCharCode(codeUnit);
+      cursor += 1;
+      continue;
+    }
+
+    final endIndex = _terminalEscapeSequenceEndIndex(input, cursor);
+    if (endIndex == null) {
+      output.write(input.substring(cursor));
+      break;
+    }
+
+    final sequence = input.substring(cursor, endIndex);
+    final themeResponse = _terminalThemeOscQueryResponse(
+      sequence: sequence,
+      theme: theme,
+    );
+    if (themeResponse == null) {
+      output.write(sequence);
+    } else if (themeResponse.isNotEmpty) {
+      responses.write(themeResponse);
+    }
+    cursor = endIndex;
+  }
+
+  return (
+    output: output.toString(),
+    response: responses.isEmpty ? null : responses.toString(),
+  );
+}
+
 /// Extracts terminal color-scheme update mode changes from shell output.
 ///
 /// Some TUIs enable DEC private mode 2031 to request a report when the
-/// terminal switches between light and dark color schemes. xterm.dart does not
+/// terminal switches between light and dark color schemes. kterm does not
 /// currently model that mode, so MonkeySSH tracks it while scanning the same
 /// shell output used for other terminal control queries.
 ({bool? colorSchemeUpdatesMode, String pendingInput})
@@ -191,7 +278,7 @@ extractTerminalControlModeUpdates({
 
 /// Normalizes terminal-generated output before it is sent to the remote shell.
 ///
-/// xterm.dart currently emits cursor-position reports using its internal
+/// kterm currently emits cursor-position reports using its internal
 /// zero-based cursor coordinates. The terminal DSR wire protocol is one-based,
 /// and TUIs such as Codex can stall or mis-detect terminal state after receiving
 /// `CSI 0;0 R`.
@@ -202,25 +289,25 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
       return '\x1b[${row + 1};${column + 1}R';
     });
 
-/// Adapts remote terminal output so xterm.dart renders it correctly.
+/// Adapts remote terminal output so kterm renders it correctly.
 ///
-/// xterm.dart 4.0.0 tracks IRM (`CSI 4 h/l`) but does not shift existing cells
+/// kterm 4.0.0 tracks IRM (`CSI 4 h/l`) but does not shift existing cells
 /// when printable characters arrive while the mode is active. Injecting ICH
 /// before each printable cell preserves behavior from editors such as nano,
 /// while [pendingInput] keeps split escape sequences from leaking printable
 /// bytes into the renderer.
 ///
-/// xterm.dart 4.0.0 also corrupts its line buffer when RI (`ESC M`) scrolls a
+/// kterm 4.0.0 also corrupts its line buffer when RI (`ESC M`) scrolls a
 /// vertical margin region down. When cursor state is provided, that RI is
 /// rewritten to IL (`CSI L`), which has the same effect at the top margin
 /// without reusing detached buffer lines internally.
 ///
-/// xterm.dart also treats private `CSI > ... m` keyboard modifier controls as
+/// kterm also treats private `CSI > ... m` keyboard modifier controls as
 /// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
 /// accidentally enabling underline/bold while painting spaces.
 @visibleForTesting
 ({String output, String pendingInput, bool insertMode})
-adaptTerminalInsertModeOutputForXterm({
+adaptTerminalInsertModeOutputForKterm({
   required String input,
   required String pendingInput,
   required bool insertMode,
@@ -259,7 +346,7 @@ adaptTerminalInsertModeOutputForXterm({
       }
 
       final sequence = combinedInput.substring(cursor, endIndex);
-      if (!_shouldDropTerminalOutputSequenceForXterm(sequence)) {
+      if (!_shouldDropTerminalOutputSequenceForKterm(sequence)) {
         output.write(cursorTracker.adaptEscapeSequence(sequence));
         final insertModeUpdate = _terminalInsertModeUpdate(sequence);
         if (insertModeUpdate != null) {
@@ -525,6 +612,96 @@ final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
 final _terminalCsiNumericParamsPattern = RegExp(r'^[0-9;]*$');
+
+String? _terminalThemeOscQueryResponse({
+  required String sequence,
+  required TerminalThemeData? theme,
+}) {
+  final osc = _terminalOscArgsWithCode(sequence);
+  if (osc == null) return null;
+  final (code, args) = osc;
+  if (!_isTerminalThemeOscQuery(code, args)) {
+    return null;
+  }
+
+  if (theme == null) {
+    return '';
+  }
+
+  return buildTerminalThemeOscResponse(theme: theme, code: code, args: args) ??
+      '';
+}
+
+List<String>? _terminalOscArgs(
+  String sequence, {
+  required String expectedCode,
+}) {
+  final osc = _terminalOscArgsWithCode(sequence);
+  if (osc == null || osc.$1 != expectedCode) {
+    return null;
+  }
+  return osc.$2;
+}
+
+(String code, List<String> args)? _terminalOscArgsWithCode(String sequence) {
+  final payload = _terminalOscPayload(sequence);
+  if (payload == null) {
+    return null;
+  }
+
+  final separator = payload.indexOf(';');
+  if (separator == -1) {
+    return null;
+  }
+
+  return (
+    payload.substring(0, separator),
+    payload.substring(separator + 1).split(';'),
+  );
+}
+
+String? _terminalOscPayload(String sequence) {
+  if (sequence.length < 4 ||
+      sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
+      sequence.codeUnitAt(1) != _terminalOscIntroducerCodeUnit) {
+    return null;
+  }
+
+  if (sequence.codeUnitAt(sequence.length - 1) == _terminalBellCodeUnit) {
+    return sequence.substring(2, sequence.length - 1);
+  }
+
+  if (sequence.length >= 4 &&
+      sequence.codeUnitAt(sequence.length - 2) == _terminalEscapeCodeUnit &&
+      sequence.codeUnitAt(sequence.length - 1) ==
+          _terminalStringTerminatorCodeUnit) {
+    return sequence.substring(2, sequence.length - 2);
+  }
+
+  return null;
+}
+
+bool _isTerminalThemeOscQuery(String code, List<String> args) {
+  if (args.isEmpty) {
+    return false;
+  }
+
+  return switch (code) {
+    '4' => _hasAnsiPaletteQueryArg(args),
+    '10' || '11' || '12' || '17' || '19' => args.first.trim() == '?',
+    _ => false,
+  };
+}
+
+bool _hasAnsiPaletteQueryArg(List<String> args) {
+  for (var index = 0; index + 1 < args.length; index += 2) {
+    if (int.tryParse(args[index].trim()) != null &&
+        args[index + 1].trim() == '?') {
+      return true;
+    }
+  }
+  return false;
+}
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -819,7 +996,7 @@ bool? _terminalDecOriginModeUpdate(String sequence) {
   return null;
 }
 
-bool _shouldDropTerminalOutputSequenceForXterm(String sequence) {
+bool _shouldDropTerminalOutputSequenceForKterm(String sequence) {
   if (sequence.length < 4 ||
       sequence.codeUnitAt(0) != _terminalEscapeCodeUnit ||
       sequence.codeUnitAt(1) != _terminalCsiIntroducerCodeUnit ||
@@ -2953,6 +3130,14 @@ class SshSession {
             }
           }),
     );
+  }
+
+  void _handleTerminalClipboardRead(String target) {
+    _handleOsc52([target, '?']);
+  }
+
+  void _handleTerminalClipboardWrite(String data, String target) {
+    _handleOsc52([target, base64Encode(utf8.encode(data))]);
   }
 
   /// Builds a plain-text preview from the latest terminal display rows.

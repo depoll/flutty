@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
-import 'package:xterm/xterm.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();

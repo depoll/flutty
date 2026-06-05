@@ -5,8 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
-import 'package:xterm/xterm.dart';
 
 class _FakeImagePickerPlatform extends ImagePickerPlatform {}
 

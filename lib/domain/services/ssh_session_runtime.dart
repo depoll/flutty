@@ -90,7 +90,9 @@ class _SshSessionRuntime {
     _terminal ??= Terminal(maxLines: maxLines);
     _terminal!
       ..onTitleChange = _session._handleWindowTitleChange
-      ..onIconChange = _session._handleIconNameChange;
+      ..onIconChange = _session._handleIconNameChange
+      ..onClipboardRead = _session._handleTerminalClipboardRead
+      ..onClipboardWrite = _session._handleTerminalClipboardWrite;
     _session.terminalHyperlinkTracker.attach(_terminal!);
     _terminal!.onPrivateOSC = _session._handlePrivateOsc;
     _refreshTerminalPreview();
@@ -489,7 +491,7 @@ class _SshSessionRuntime {
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      final terminalOutput = adaptTerminalInsertModeOutputForXterm(
+      final terminalOutput = adaptTerminalInsertModeOutputForKterm(
         input: output.terminalData,
         pendingInput: _terminalInsertModePendingInput,
         insertMode: _terminalInsertMode,
@@ -504,7 +506,25 @@ class _SshSessionRuntime {
       _terminalInsertModePendingInput = terminalOutput.pendingInput;
       _terminalInsertMode = terminalOutput.insertMode;
       if (terminalOutput.output.isNotEmpty) {
-        terminal.write(terminalOutput.output);
+        final clipboardOutput = extractTerminalClipboardOsc52(
+          input: terminalOutput.output,
+        );
+        for (final args in clipboardOutput.osc52Args) {
+          _session._handleOsc52(args);
+        }
+        final themeOscOutput = extractTerminalThemeOscQueryResponses(
+          input: clipboardOutput.output,
+          theme: _session.terminalTheme,
+        );
+        final themeResponse = themeOscOutput.response;
+        if (themeResponse != null) {
+          _shell?.write(utf8.encode(themeResponse));
+        }
+        final terminalWriteOutput = _session.terminalHyperlinkTracker
+            .normalizeTerminalOutput(themeOscOutput.output);
+        if (terminalWriteOutput.isNotEmpty) {
+          terminal.write(terminalWriteOutput);
+        }
       }
       _respondToTerminalWindowControlQueries(output.terminalData, terminal);
       if (terminalOutput.output.isNotEmpty) {

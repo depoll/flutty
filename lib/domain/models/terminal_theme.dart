@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:xterm/xterm.dart';
+import 'package:kterm/kterm.dart';
 
 /// Builds an xterm/tmux theme-mode report for the current terminal theme.
 ///
@@ -294,7 +294,7 @@ const _terminalThemeOptionalColorKeys = <String>[
 /// Data model for a terminal color theme.
 ///
 /// Contains all 16 ANSI colors plus special colors for cursor, selection,
-/// foreground, and background. Can be converted to xterm's [TerminalTheme].
+/// foreground, and background. Can be converted to kterm's [TerminalTheme].
 @immutable
 class TerminalThemeData {
   /// Creates a new [TerminalThemeData].
@@ -493,8 +493,8 @@ class TerminalThemeData {
     selection: selection,
   );
 
-  /// Converts this theme data to xterm's [TerminalTheme].
-  TerminalTheme toXtermTheme() => TerminalTheme(
+  /// Converts this theme data to kterm's [TerminalTheme].
+  TerminalTheme toKtermTheme() => TerminalTheme(
     cursor: cursor,
     selection: readableSelection,
     foreground: foreground,

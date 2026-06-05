@@ -1,4 +1,4 @@
-import 'package:xterm/core.dart';
+import 'package:kterm/core.dart';
 
 /// Sends terminal scroll mouse input with corrected SGR wheel button IDs.
 bool sendTerminalScrollMouseInput({

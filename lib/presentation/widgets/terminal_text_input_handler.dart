@@ -4,11 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-// xterm 4.0.0 does not expose keyToTerminalKey via a public API.
-// Pinned to xterm 4.0.0.
+import 'package:kterm/kterm.dart';
+// kterm 1.1.11 does not expose keyToTerminalKey via a public API.
+// Pinned to kterm 1.1.11.
 // ignore: implementation_imports
-import 'package:xterm/src/ui/input_map.dart';
-import 'package:xterm/xterm.dart';
+import 'package:kterm/src/ui/input_map.dart';
 
 import '../../domain/models/auto_connect_command.dart';
 import 'terminal_key_input.dart';
@@ -182,7 +182,7 @@ class TerminalTextInputHandlerController {
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
 /// proper IME configuration for swipe typing.
 ///
-/// The xterm package's built-in [CustomTextEdit] hard-codes
+/// The kterm package's built-in [CustomTextEdit] hard-codes
 /// `autocorrect: false` and `enableSuggestions: false`, which hides voice
 /// input on some system keyboards and causes most IMEs to drop spaces between
 /// swiped words. This widget replaces that text input handling with a normal

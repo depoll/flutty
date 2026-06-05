@@ -211,10 +211,10 @@ void main() {
       expect(modified.foreground, original.foreground);
     });
 
-    test('toXtermTheme converts to xterm TerminalTheme', () {
+    test('toKtermTheme converts to kterm TerminalTheme', () {
       const theme = TerminalThemeData(
-        id: 'xterm-test',
-        name: 'Xterm Test',
+        id: 'kterm-test',
+        name: 'Kterm Test',
         isDark: true,
         foreground: Color(0xFFFFFFFF),
         background: Color(0xFF000000),
@@ -238,9 +238,9 @@ void main() {
         brightWhite: Color(0xFFFFFFFF),
       );
 
-      final xtermTheme = theme.toXtermTheme();
+      final ktermTheme = theme.toKtermTheme();
 
-      expect(xtermTheme, isNotNull);
+      expect(ktermTheme, isNotNull);
     });
 
     test('buildTerminalThemeOscResponse answers special color queries', () {
@@ -380,7 +380,7 @@ void main() {
       );
     });
 
-    test('toXtermTheme normalizes unreadable selection backgrounds', () {
+    test('toKtermTheme normalizes unreadable selection backgrounds', () {
       const theme = TerminalThemeData(
         id: 'selection-test',
         name: 'Selection Test',
@@ -407,12 +407,12 @@ void main() {
         brightWhite: Color(0xFFFFFFFF),
       );
 
-      final xtermTheme = theme.toXtermTheme();
+      final ktermTheme = theme.toKtermTheme();
 
       expect(
         _contrastRatio(
           theme.foreground,
-          _compositeOver(xtermTheme.selection, theme.background),
+          _compositeOver(ktermTheme.selection, theme.background),
         ),
         greaterThanOrEqualTo(3.5),
       );
@@ -626,11 +626,11 @@ void main() {
 
     test('default search hit colors stay readable', () {
       for (final theme in TerminalThemes.all) {
-        final xtermTheme = theme.toXtermTheme();
+        final ktermTheme = theme.toKtermTheme();
         expect(
           _contrastRatio(
-            xtermTheme.searchHitForeground,
-            xtermTheme.searchHitBackground,
+            ktermTheme.searchHitForeground,
+            ktermTheme.searchHitBackground,
           ),
           greaterThanOrEqualTo(4.5),
           reason:
@@ -638,8 +638,8 @@ void main() {
         );
         expect(
           _contrastRatio(
-            xtermTheme.searchHitForeground,
-            xtermTheme.searchHitBackgroundCurrent,
+            ktermTheme.searchHitForeground,
+            ktermTheme.searchHitBackgroundCurrent,
           ),
           greaterThanOrEqualTo(4.5),
           reason:

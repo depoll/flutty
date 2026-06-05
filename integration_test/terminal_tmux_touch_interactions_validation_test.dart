@@ -3,10 +3,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/domain/services/terminal_hyperlink_tracker.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart';
 
 const _terminalLink = 'https://github.com/features/copilot';
 const _hiddenTerminalLink = 'https://github.com/orgs/community/discussions/1';

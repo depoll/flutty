@@ -2,12 +2,11 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:kterm/kterm.dart' hide TerminalThemes;
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 void main() {
   Widget buildSnippet({

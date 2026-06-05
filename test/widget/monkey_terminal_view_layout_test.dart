@@ -4,9 +4,9 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kterm/kterm.dart' hide TerminalThemes;
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
@@ -241,7 +241,7 @@ void main() {
       'clears normal-background cells before drawing terminal rows',
       () async {
         final terminal = Terminal()..resize(8, 1);
-        final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+        final theme = TerminalThemes.defaultDarkTheme.toKtermTheme();
         final painter = MonkeyTerminalPainter(
           theme: theme,
           textStyle: const TerminalStyle(fontSize: 20),
@@ -302,7 +302,7 @@ void main() {
 
     test('keeps bright-black backgrounds readable across built-in themes', () {
       for (final themeData in TerminalThemes.all) {
-        final theme = themeData.toXtermTheme();
+        final theme = themeData.toKtermTheme();
         final background = resolveMonkeyTerminalReadableBackgroundColor(
           foreground: theme.foreground,
           background: theme.brightBlack,
@@ -396,7 +396,7 @@ void main() {
         final terminal = Terminal()
           ..resize(12, 2)
           ..write('\x1b[38;2;215;119;87m ▐\x1b[48;2;0;0;0m▛███▜\x1b[49m▌');
-        final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+        final theme = TerminalThemes.defaultLightTheme.toKtermTheme();
         final painter = MonkeyTerminalPainter(
           theme: theme,
           textStyle: const TerminalStyle(fontSize: 32),
@@ -456,7 +456,7 @@ void main() {
         ..resize(24, 2)
         ..write('\x1b[100m> fix contrast\x1b[49m');
       final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        theme: TerminalThemes.defaultLightTheme.toKtermTheme(),
         textStyle: const TerminalStyle(),
         textScaler: TextScaler.noScaling,
       );
@@ -479,7 +479,7 @@ void main() {
         ..resize(32, 2)
         ..write('\x1b[48;2;95;95;95mAsk Codex\x1b[49m');
       final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+        theme: TerminalThemes.defaultDarkTheme.toKtermTheme(),
         textStyle: const TerminalStyle(),
         textScaler: TextScaler.noScaling,
       );
@@ -504,7 +504,7 @@ void main() {
           ..resize(32, 2)
           ..write('\x1b[2C\x1b[48;2;95;95;95mAsk Codex\x1b[49m');
         final painter = MonkeyTerminalPainter(
-          theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+          theme: TerminalThemes.defaultDarkTheme.toKtermTheme(),
           textStyle: const TerminalStyle(),
           textScaler: TextScaler.noScaling,
         );
@@ -523,7 +523,7 @@ void main() {
         ..resize(24, 2)
         ..write('x \x1b[100mstatus\x1b[49m');
       final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        theme: TerminalThemes.defaultLightTheme.toKtermTheme(),
         textStyle: const TerminalStyle(),
         textScaler: TextScaler.noScaling,
       );
@@ -541,7 +541,7 @@ void main() {
         ..resize(24, 2)
         ..write('\x1b[41mERROR\x1b[49m');
       final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        theme: TerminalThemes.defaultLightTheme.toKtermTheme(),
         textStyle: const TerminalStyle(),
         textScaler: TextScaler.noScaling,
       );
@@ -559,7 +559,7 @@ void main() {
         ..resize(24, 2)
         ..write('\x1b[48;2;168;47;69mERROR\x1b[49m');
       final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        theme: TerminalThemes.defaultLightTheme.toKtermTheme(),
         textStyle: const TerminalStyle(),
         textScaler: TextScaler.noScaling,
       );
@@ -576,7 +576,7 @@ void main() {
       final terminal = Terminal()
         ..resize(24, 2)
         ..write('\x1b[90mforeground only');
-      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final theme = TerminalThemes.defaultDarkTheme.toKtermTheme();
       final painter = MonkeyTerminalPainter(
         theme: theme,
         textStyle: const TerminalStyle(),
@@ -600,7 +600,7 @@ void main() {
       final terminal = Terminal()
         ..resize(24, 2)
         ..write('\x1b[96mforeground only');
-      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final theme = TerminalThemes.defaultDarkTheme.toKtermTheme();
       final painter = MonkeyTerminalPainter(
         theme: theme,
         textStyle: const TerminalStyle(),

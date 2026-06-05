@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:xterm/xterm.dart';
+import 'package:kterm/kterm.dart';
 
 /// A value-equal snapshot of terminal rows used by connection preview cards.
 @immutable
@@ -33,7 +33,7 @@ class TerminalPreviewLine {
   /// Sanitized plain text for the row.
   final String text;
 
-  /// Copied xterm cell data for this display row.
+  /// Copied kterm cell data for this display row.
   final BufferLine cells;
 
   @override

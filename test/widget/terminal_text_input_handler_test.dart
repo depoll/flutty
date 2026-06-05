@@ -7,11 +7,11 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
-import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 const _terminalAlternateEnterInput = '\x1b\r';

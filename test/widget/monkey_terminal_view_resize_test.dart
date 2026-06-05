@@ -2,9 +2,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart';
 
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
@@ -492,7 +492,7 @@ void main() {
     expect(output, ['\x1b[O', '\x1b[I']);
   });
 
-  testWidgets('refreshThemeModeReport sends xterm theme mode report', (
+  testWidgets('refreshThemeModeReport sends terminal theme mode report', (
     tester,
   ) async {
     final output = <String>[];
@@ -557,7 +557,7 @@ void main() {
           background: backgroundColor,
           cursor: hiddenColor,
         )
-        .toXtermTheme();
+        .toKtermTheme();
 
     await tester.pumpWidget(
       MaterialApp(
@@ -609,9 +609,9 @@ void main() {
 
   test('explicit xterm palette grayscale colors stay standard', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
-        .toXtermTheme();
+        .toKtermTheme();
     final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
-        .toXtermTheme();
+        .toKtermTheme();
     final darkPainter = MonkeyTerminalPainter(
       theme: darkTheme,
       textStyle: const TerminalStyle(),
@@ -637,9 +637,9 @@ void main() {
 
   test('ANSI bright colors follow the active theme palette', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
-        .toXtermTheme();
+        .toKtermTheme();
     final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
-        .toXtermTheme();
+        .toKtermTheme();
     final darkPainter = MonkeyTerminalPainter(
       theme: darkTheme,
       textStyle: const TerminalStyle(),

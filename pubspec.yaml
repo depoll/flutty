@@ -29,7 +29,7 @@ dependencies:
   dartssh2: ^2.15.0
   
   # Terminal
-  xterm: ^4.0.0
+  kterm: ^1.1.11
   
   # Syntax highlighting
   highlight: ^0.7.0

@@ -12,6 +12,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
@@ -21,11 +22,11 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
+import 'package:monkeyssh/domain/services/clipboard_sharing_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/wifi_network_service.dart';
-import 'package:xterm/xterm.dart';
 
 const _backgroundSshChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/ssh_service',
@@ -347,9 +348,9 @@ void main() {
       },
     );
 
-    test('adapts insert mode output so xterm shifts existing cells', () {
+    test('adapts insert mode output so kterm shifts existing cells', () {
       final terminal = Terminal(maxLines: 100);
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final result = adaptTerminalInsertModeOutputForKterm(
         input: 'abcdef\r\x1b[3C\x1b[4hXY',
         pendingInput: '',
         insertMode: false,
@@ -364,14 +365,14 @@ void main() {
 
     test('adapts split insert mode sequences across chunks', () {
       final terminal = Terminal(maxLines: 100);
-      final first = adaptTerminalInsertModeOutputForXterm(
+      final first = adaptTerminalInsertModeOutputForKterm(
         input: 'abcdef\r\x1b[3C\x1b[',
         pendingInput: '',
         insertMode: false,
       );
       terminal.write(first.output);
 
-      final second = adaptTerminalInsertModeOutputForXterm(
+      final second = adaptTerminalInsertModeOutputForKterm(
         input: '4hZ\x1b[4lQ',
         pendingInput: first.pendingInput,
         insertMode: first.insertMode,
@@ -386,7 +387,7 @@ void main() {
     });
 
     test('does not inject insert blanks into OSC payloads', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final result = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[4h\x1b]0;nano title\x07Z',
         pendingInput: '',
         insertMode: false,
@@ -397,13 +398,13 @@ void main() {
       expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
     });
 
-    test('strips private CSI modifier controls that xterm treats as SGR', () {
-      final first = adaptTerminalInsertModeOutputForXterm(
+    test('strips private CSI modifier controls that kterm treats as SGR', () {
+      final first = adaptTerminalInsertModeOutputForKterm(
         input: 'before\x1b[>4;',
         pendingInput: '',
         insertMode: false,
       );
-      final second = adaptTerminalInsertModeOutputForXterm(
+      final second = adaptTerminalInsertModeOutputForKterm(
         input: '1mafter',
         pendingInput: first.pendingInput,
         insertMode: first.insertMode,
@@ -417,7 +418,7 @@ void main() {
     });
 
     test('clears tracked insert mode on terminal reset sequences', () {
-      final fullReset = adaptTerminalInsertModeOutputForXterm(
+      final fullReset = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[4hA\x1bcB',
         pendingInput: '',
         insertMode: false,
@@ -427,7 +428,7 @@ void main() {
       expect(fullReset.insertMode, isFalse);
       expect(fullReset.output, '\x1b[4h\x1b[@A\x1bcB');
 
-      final softReset = adaptTerminalInsertModeOutputForXterm(
+      final softReset = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[4hA\x1b[!pB',
         pendingInput: '',
         insertMode: false,
@@ -439,13 +440,13 @@ void main() {
     });
 
     test('does not inject insert blanks into DCS payloads', () {
-      final first = adaptTerminalInsertModeOutputForXterm(
+      final first = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[4h\x1bP1+r',
         pendingInput: '',
         insertMode: false,
       );
 
-      final second = adaptTerminalInsertModeOutputForXterm(
+      final second = adaptTerminalInsertModeOutputForKterm(
         input: 'abc\x1b\\Z',
         pendingInput: first.pendingInput,
         insertMode: first.insertMode,
@@ -460,7 +461,7 @@ void main() {
     });
 
     test('treats emoji modifiers as zero-width insert-mode cells', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final result = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[4h\u{1F44D}\u{1F3FD}Z',
         pendingInput: '',
         insertMode: false,
@@ -472,12 +473,12 @@ void main() {
     });
 
     test(
-      'adapts reverse index at top margin to keep xterm buffer attached',
+      'adapts reverse index at top margin to keep kterm buffer attached',
       () {
         final terminal = Terminal(maxLines: 100)..resize(61, 37);
         final reverseIndexes = List.filled(9, '\x1bM').join();
         final insertLines = List.filled(9, '\x1b[L').join();
-        final result = adaptTerminalInsertModeOutputForXterm(
+        final result = adaptTerminalInsertModeOutputForKterm(
           input: '\x1b[1;37r\x1b[1;1H$reverseIndexes',
           pendingInput: '',
           insertMode: false,
@@ -505,7 +506,7 @@ void main() {
     );
 
     test('preserves reverse index when cursor is below the top margin', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final result = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[5;4H\x1bM',
         pendingInput: '',
         insertMode: false,
@@ -521,7 +522,7 @@ void main() {
     });
 
     test('restores cursor column after adapted reverse index', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final result = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[1;4H\x1bM',
         pendingInput: '',
         insertMode: false,
@@ -538,7 +539,7 @@ void main() {
 
     test('adapts origin-mode reverse index at the top margin', () {
       final terminal = Terminal(maxLines: 100)..resize(61, 37);
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final result = adaptTerminalInsertModeOutputForKterm(
         input: '\x1b[2;10r\x1b[?6h\x1b[1;1H\x1bM',
         pendingInput: '',
         insertMode: false,
@@ -1516,6 +1517,77 @@ void main() {
         ),
       );
     });
+
+    test(
+      'answers OSC 10 foreground queries before kterm handles them',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        final terminal = session.terminal!;
+        session.terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]10;?\x1b\\')));
+        await pumpEventQueue();
+
+        expect(firstLineText(terminal), isEmpty);
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          buildTerminalThemeOscResponse(
+            theme: monkey_themes.TerminalThemes.defaultLightTheme,
+            code: '10',
+            args: const ['?'],
+          ),
+        );
+      },
+    );
+
+    test('extracts raw OSC 52 payloads before kterm handles them', () {
+      final oversizedPayload =
+          'A' * (ClipboardSharingService.maxEncodedLength + 1);
+
+      final result = extractTerminalClipboardOsc52(
+        input: 'before\x1b]52;c;$oversizedPayload\x1b\\after',
+      );
+
+      expect(result.output, 'beforeafter');
+      expect(result.osc52Args, [
+        ['c', oversizedPayload],
+      ]);
+    });
+
+    test(
+      'answers OSC 52 clipboard queries before kterm handles them',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+              if (call.method == 'Clipboard.getData') {
+                return <String, Object?>{'text': 'local-secret'};
+              }
+              return null;
+            });
+        addTearDown(
+          () => TestDefaultBinaryMessengerBinding
+              .instance
+              .defaultBinaryMessenger
+              .setMockMethodCallHandler(SystemChannels.platform, null),
+        );
+        final shell = await openShell();
+        shell.session
+          ..clipboardSharingEnabled = true
+          ..localClipboardReadEnabled = true;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]52;c;?\x1b\\')));
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          ClipboardSharingService.buildOsc52Response(
+            'c',
+            base64Encode(utf8.encode('local-secret')),
+          ),
+        );
+      },
+    );
 
     test(
       'flushes tmux-wrapped terminal theme OSC queries without frame delay',

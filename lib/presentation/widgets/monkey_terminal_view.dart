@@ -1,6 +1,6 @@
-// Adapted from package:xterm 4.0.0 TerminalView internals to keep local
+// Adapted from package:kterm 4.0.0 TerminalView internals to keep local
 // terminal layout and trackpad/mobile gesture fixes. Keep this aligned with the
-// pinned xterm dependency when upgrading.
+// pinned kterm dependency when upgrading.
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks, invalid_use_of_internal_member
 
 import 'dart:async';
@@ -21,34 +21,34 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
-import 'package:xterm/src/core/buffer/cell_offset.dart';
-import 'package:xterm/src/core/buffer/cell_flags.dart';
-import 'package:xterm/src/core/buffer/line.dart';
-import 'package:xterm/src/core/buffer/range.dart';
-import 'package:xterm/src/core/buffer/range_line.dart';
-import 'package:xterm/src/core/buffer/segment.dart';
-import 'package:xterm/src/core/cell.dart';
-import 'package:xterm/src/core/input/keys.dart';
-import 'package:xterm/src/core/mouse/button.dart';
-import 'package:xterm/src/core/mouse/button_state.dart';
-import 'package:xterm/src/terminal.dart';
-import 'package:xterm/src/ui/controller.dart';
-import 'package:xterm/src/ui/cursor_type.dart';
-import 'package:xterm/src/ui/custom_text_edit.dart';
-import 'package:xterm/src/ui/input_map.dart';
-import 'package:xterm/src/ui/keyboard_listener.dart';
-import 'package:xterm/src/ui/keyboard_visibility.dart';
-import 'package:xterm/src/ui/palette_builder.dart';
-import 'package:xterm/src/ui/paragraph_cache.dart';
-import 'package:xterm/src/ui/painter.dart';
-import 'package:xterm/src/ui/pointer_input.dart';
-import 'package:xterm/src/ui/render.dart';
-import 'package:xterm/src/ui/selection_mode.dart';
-import 'package:xterm/src/ui/shortcut/shortcuts.dart';
-import 'package:xterm/src/ui/terminal_size.dart';
-import 'package:xterm/src/ui/terminal_text_style.dart';
-import 'package:xterm/src/ui/terminal_theme.dart';
-import 'package:xterm/src/ui/themes.dart';
+import 'package:kterm/src/core/buffer/cell_offset.dart';
+import 'package:kterm/src/core/buffer/cell_flags.dart';
+import 'package:kterm/src/core/buffer/line.dart';
+import 'package:kterm/src/core/buffer/range.dart';
+import 'package:kterm/src/core/buffer/range_line.dart';
+import 'package:kterm/src/core/buffer/segment.dart';
+import 'package:kterm/src/core/cell.dart';
+import 'package:kterm/src/core/input/keys.dart';
+import 'package:kterm/src/core/mouse/button.dart';
+import 'package:kterm/src/core/mouse/button_state.dart';
+import 'package:kterm/src/terminal.dart';
+import 'package:kterm/src/ui/controller.dart';
+import 'package:kterm/src/ui/cursor_type.dart';
+import 'package:kterm/src/ui/custom_text_edit.dart';
+import 'package:kterm/src/ui/input_map.dart';
+import 'package:kterm/src/ui/keyboard_listener.dart';
+import 'package:kterm/src/ui/keyboard_visibility.dart';
+import 'package:kterm/src/ui/palette_builder.dart';
+import 'package:kterm/src/ui/paragraph_cache.dart';
+import 'package:kterm/src/ui/painter.dart';
+import 'package:kterm/src/ui/pointer_input.dart';
+import 'package:kterm/src/ui/render.dart';
+import 'package:kterm/src/ui/selection_mode.dart';
+import 'package:kterm/src/ui/shortcut/shortcuts.dart';
+import 'package:kterm/src/ui/terminal_size.dart';
+import 'package:kterm/src/ui/terminal_text_style.dart';
+import 'package:kterm/src/ui/terminal_theme.dart';
+import 'package:kterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
@@ -161,7 +161,7 @@ bool _terminalThemesEqual(TerminalTheme a, TerminalTheme b) =>
 
 /// Resolves SGR 2 faint text while preserving readable contrast.
 ///
-/// xterm paints faint text at 50% opacity, which drops many dark-theme
+/// kterm paints faint text at 50% opacity, which drops many dark-theme
 /// secondary labels below WCAG AA contrast. Keep 50% when it is readable, then
 /// raise only as much as needed for the active foreground/background pair.
 @visibleForTesting
@@ -494,7 +494,7 @@ const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
 /// A terminal cell range rendered with text underline decoration.
 typedef TerminalTextUnderline = ({int row, int startColumn, int endColumn});
 
-/// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
+/// Adapted kterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
   const MonkeyTerminalView(
     this.terminal, {
@@ -687,7 +687,7 @@ class MonkeyTerminalView extends StatefulWidget {
   /// Called before inserted text is sent to the terminal.
   final Future<bool> Function(String text)? onInsertText;
 
-  /// Called to handle paste shortcuts before xterm pastes clipboard text.
+  /// Called to handle paste shortcuts before kterm pastes clipboard text.
   final Future<void> Function()? onPasteText;
 
   /// Cell ranges that should be painted with inline text underlines.
@@ -871,9 +871,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   /// foreground/background colors without waiting for a real focus transition.
   ///
   /// Set [force] to send the report even when [Terminal.reportFocusMode] is
-  /// off. Inside tmux the outer xterm rarely sees the inner app's
+  /// off. Inside tmux the outer terminal rarely sees the inner app's
   /// `CSI ? 1004 h` request because tmux intercepts and re-emits it for its
-  /// own clients, so the outer xterm's tracking flag is unreliable as a gate.
+  /// own clients, so the outer kterm's tracking flag is unreliable as a gate.
   void refreshFocusReport({bool forceTransition = false, bool force = false}) {
     if (!force && !widget.terminal.reportFocusMode) {
       return;

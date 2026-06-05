@@ -3,8 +3,8 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_scroll_gesture_handler.dart';
-import 'package:xterm/xterm.dart';
 
 void main() {
   testWidgets(

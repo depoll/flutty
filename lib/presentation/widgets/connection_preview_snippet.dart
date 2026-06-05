@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
+import 'package:kterm/kterm.dart' hide TerminalThemes;
 
 import '../../app/theme.dart';
 import '../../domain/models/terminal_preview.dart';
@@ -803,7 +803,7 @@ MonkeyTerminalPainter _buildStyledPreviewPainter({
   required double fontSize,
   required TextScaler textScaler,
 }) => MonkeyTerminalPainter(
-  theme: terminalTheme.toXtermTheme(),
+  theme: terminalTheme.toKtermTheme(),
   textStyle: TerminalStyle.fromTextStyle(
     FluttyTheme.monoStyle.copyWith(
       fontSize: fontSize,

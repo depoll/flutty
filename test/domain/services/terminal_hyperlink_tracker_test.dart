@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kterm/kterm.dart';
 import 'package:monkeyssh/domain/services/terminal_hyperlink_tracker.dart';
-import 'package:xterm/xterm.dart';
 
 void main() {
   group('TerminalHyperlinkTracker', () {
@@ -31,11 +31,13 @@ void main() {
 
     test('reassembles OSC 8 destinations containing semicolons', () {
       terminal.write(
-        [
-          '\u001b]8;;https://example.com/docs;topic=tmux\u0007',
-          'tmux docs',
-          '\u001b]8;;\u0007',
-        ].join(),
+        tracker.normalizeTerminalOutput(
+          [
+            '\u001b]8;;https://example.com/docs;topic=tmux\u0007',
+            'tmux docs',
+            '\u001b]8;;\u0007',
+          ].join(),
+        ),
       );
 
       expect(
@@ -61,39 +63,42 @@ void main() {
       );
     });
 
-    test('prunes detached hyperlinks while processing later OSC 8 output', () {
-      terminal = Terminal(maxLines: 200);
-      tracker = TerminalHyperlinkTracker()..attach(terminal);
-      terminal
-        ..onPrivateOSC = tracker.handlePrivateOsc
-        ..write(
+    test(
+      'ignores scrolled-out native hyperlinks before later OSC 8 output',
+      () {
+        terminal = Terminal(maxLines: 200);
+        tracker = TerminalHyperlinkTracker()..attach(terminal);
+        terminal
+          ..onPrivateOSC = tracker.handlePrivateOsc
+          ..write(
+            [
+              '\u001b]8;;https://example.com/one\u0007',
+              'one',
+              '\u001b]8;;\u0007\n',
+              for (var i = 0; i < 220; i++) 'filler $i\n',
+            ].join(),
+          );
+
+        expect(tracker.trackedHyperlinkCount, 0);
+
+        terminal.write(
           [
-            '\u001b]8;;https://example.com/one\u0007',
-            'one',
-            '\u001b]8;;\u0007\n',
-            for (var i = 0; i < 220; i++) 'filler $i\n',
+            '\u001b]8;;https://example.com/two\u0007',
+            'two',
+            '\u001b]8;;\u0007',
           ].join(),
         );
 
-      expect(tracker.trackedHyperlinkCount, 1);
-
-      terminal.write(
-        [
-          '\u001b]8;;https://example.com/two\u0007',
-          'two',
-          '\u001b]8;;\u0007',
-        ].join(),
-      );
-
-      expect(tracker.trackedHyperlinkCount, 1);
-      String? resolvedLink;
-      for (var y = 0; y <= terminal.buffer.absoluteCursorY; y++) {
-        for (var x = 0; x < terminal.buffer.viewWidth; x++) {
-          resolvedLink ??= tracker.resolveLinkAt(CellOffset(x, y));
+        expect(tracker.trackedHyperlinkCount, 1);
+        String? resolvedLink;
+        for (var y = 0; y <= terminal.buffer.absoluteCursorY; y++) {
+          for (var x = 0; x < terminal.buffer.viewWidth; x++) {
+            resolvedLink ??= tracker.resolveLinkAt(CellOffset(x, y));
+          }
         }
-      }
-      expect(resolvedLink, 'https://example.com/two');
-    });
+        expect(resolvedLink, 'https://example.com/two');
+      },
+    );
 
     group('retained-link cap / LRU eviction', () {
       test('caps retained hyperlinks at maxRetainedLinks', () {
