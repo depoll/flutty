@@ -270,6 +270,51 @@ void main() {
     );
 
     testWidgets(
+      'keeps the terminal route persistent if navigator gesture state stops',
+      (tester) async {
+        await _pumpPredictiveBackApp(tester);
+
+        await _sendBackGesture(
+          const MethodCall('startBackGesture', {
+            'touchOffset': <double>[795, 300],
+            'progress': 0.0,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+        await _sendBackGesture(
+          const MethodCall('updateBackGestureProgress', {
+            'touchOffset': <double>[700, 315],
+            'progress': 0.5,
+            'swipeEdge': 1,
+          }),
+        );
+        await tester.pump();
+
+        Navigator.of(
+          tester.element(find.text('terminal')),
+        ).didStopUserGesture();
+        await tester.pump();
+
+        expect(_persistentBackTranslationX(tester), lessThan(0));
+        expect(
+          find.ancestor(
+            of: find.text('terminal'),
+            matching: find.byType(FadeTransition),
+          ),
+          findsNothing,
+        );
+
+        Navigator.of(
+          tester.element(find.text('terminal')),
+        ).didStartUserGesture();
+        await _sendBackGesture(const MethodCall('cancelBackGesture'));
+        await tester.pumpAndSettle();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'does not slide the revealed route during Android predictive back',
       (tester) async {
         await _pumpPredictiveBackApp(tester);

@@ -1056,9 +1056,7 @@ class _AndroidBackGestureDetectorState
         valueListenable: _androidBackGestureSnapshot,
         builder: (context, globalGestureSnapshot, _) {
           final routeGestureInProgress = widget.route.popGestureInProgress;
-          final phase = routeGestureInProgress && _gestureAccepted
-              ? _phase
-              : _AndroidBackPhase.idle;
+          final phase = _gestureAccepted ? _phase : _AndroidBackPhase.idle;
           final passThrough =
               (routeGestureInProgress || globalGestureSnapshot.active) &&
               !_gestureAccepted;
