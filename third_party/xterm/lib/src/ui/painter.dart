@@ -351,7 +351,7 @@ void paintTerminalCellUnderline(
       canvas.drawLine(Offset(x0, baseY - gap), Offset(x1, baseY - gap), paint);
       canvas.drawLine(Offset(x0, baseY), Offset(x1, baseY), paint);
     case 3: // UnderlineStyle.curly
-      final amplitude = (cellHeight * 0.06).clamp(1.5, 3.0);
+      final amplitude = (cellHeight * 0.045).clamp(1.0, 2.0);
       final period = math.max(cellWidth, 4.0);
       final midY = baseY - amplitude;
       final path = Path();
