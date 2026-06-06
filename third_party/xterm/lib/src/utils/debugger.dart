@@ -1,3 +1,4 @@
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/core/escape/parser.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
@@ -472,6 +473,16 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void setCursorUnderlineStyle(UnderlineStyle style) {
+    onCommand('setCursorUnderlineStyle($style)');
+  }
+
+  @override
+  void setCursorOverline() {
+    onCommand('setCursorOverline');
+  }
+
+  @override
   void setCursorBlink() {
     onCommand('setCursorBlink');
   }
@@ -509,6 +520,11 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   @override
   void unsetCursorUnderline() {
     onCommand('unsetCursorUnderline');
+  }
+
+  @override
+  void unsetCursorOverline() {
+    onCommand('unsetCursorOverline');
   }
 
   @override

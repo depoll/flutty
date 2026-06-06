@@ -1,3 +1,4 @@
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/color.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/core/escape/handler.dart';
@@ -460,7 +461,14 @@ class EscapeParser {
           handler.setCursorItalic();
           continue;
         case 4:
-          handler.setCursorUnderline();
+          {
+            final sub = _csi.subParamsOf(i);
+            if (sub.isNotEmpty) {
+              handler.setCursorUnderlineStyle(_underlineStyleFromParam(sub[0]));
+            } else {
+              handler.setCursorUnderline();
+            }
+          }
           continue;
         case 5:
           handler.setCursorBlink();
@@ -476,9 +484,13 @@ class EscapeParser {
           continue;
 
         case 21:
-          handler.unsetCursorBold();
+          // Doubly underlined (matches xterm.js; ECMA-48 also allows "not
+          // bold" here, but xterm/xterm.js treat 21 as double underline).
+          handler.setCursorUnderlineStyle(UnderlineStyle.double);
           continue;
         case 22:
+          // Neither bold nor faint.
+          handler.unsetCursorBold();
           handler.unsetCursorFaint();
           continue;
         case 23:
@@ -498,6 +510,13 @@ class EscapeParser {
           continue;
         case 29:
           handler.unsetCursorStrikethrough();
+          continue;
+
+        case 53:
+          handler.setCursorOverline();
+          continue;
+        case 55:
+          handler.unsetCursorOverline();
           continue;
 
         case 30:
@@ -661,6 +680,15 @@ class EscapeParser {
   }
 
   int _sub(List<int> sub, int i) => i < sub.length ? sub[i] : 0;
+
+  /// Maps an SGR `4 : x` sub-parameter to an [UnderlineStyle]. Invalid values
+  /// fall back to a single underline, matching xterm.js.
+  UnderlineStyle _underlineStyleFromParam(int value) {
+    if (value < 0 || value >= UnderlineStyle.values.length) {
+      return UnderlineStyle.single;
+    }
+    return UnderlineStyle.values[value];
+  }
 
   void _applySgrColorRgb(int code, int r, int g, int b) {
     if (code == 38) {

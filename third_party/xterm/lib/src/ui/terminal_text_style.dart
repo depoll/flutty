@@ -57,7 +57,15 @@ class TerminalStyle {
     bool bold = false,
     bool italic = false,
     bool underline = false,
+    bool strikethrough = false,
+    bool overline = false,
+    TextDecorationStyle underlineStyle = TextDecorationStyle.solid,
   }) {
+    final decorations = <TextDecoration>[
+      if (underline) TextDecoration.underline,
+      if (overline) TextDecoration.overline,
+      if (strikethrough) TextDecoration.lineThrough,
+    ];
     return TextStyle(
       fontSize: fontSize,
       height: height,
@@ -67,7 +75,12 @@ class TerminalStyle {
       backgroundColor: backgroundColor,
       fontWeight: bold ? FontWeight.bold : FontWeight.normal,
       fontStyle: italic ? FontStyle.italic : FontStyle.normal,
-      decoration: underline ? TextDecoration.underline : TextDecoration.none,
+      decoration: decorations.isEmpty
+          ? TextDecoration.none
+          : TextDecoration.combine(decorations),
+      // Flutter applies a single decoration style to all lines at once, so the
+      // underline style also governs any overline/strikethrough drawn here.
+      decorationStyle: decorations.isEmpty ? null : underlineStyle,
     );
   }
 

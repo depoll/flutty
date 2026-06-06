@@ -4,6 +4,7 @@ import 'package:xterm/src/base/observable.dart';
 import 'package:xterm/src/core/buffer/buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/cursor.dart';
 import 'package:xterm/src/core/escape/emitter.dart';
 import 'package:xterm/src/core/escape/handler.dart';
@@ -783,6 +784,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void setCursorUnderlineStyle(UnderlineStyle style) {
+    _cursorStyle.setUnderlineStyle(style);
+  }
+
+  @override
+  void setCursorOverline() {
+    _cursorStyle.setOverline();
+  }
+
+  @override
   void setCursorBlink() {
     _cursorStyle.setBlink();
   }
@@ -820,6 +831,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void unsetCursorUnderline() {
     _cursorStyle.unsetUnderline();
+  }
+
+  @override
+  void unsetCursorOverline() {
+    _cursorStyle.unsetOverline();
   }
 
   @override

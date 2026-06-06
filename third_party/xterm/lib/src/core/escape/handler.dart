@@ -1,3 +1,4 @@
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
 
 abstract class EscapeHandler {
@@ -163,6 +164,12 @@ abstract class EscapeHandler {
 
   void setCursorUnderline();
 
+  /// Sets a specific underline [style] (single, double, curly, dotted or
+  /// dashed). [UnderlineStyle.none] removes the underline.
+  void setCursorUnderlineStyle(UnderlineStyle style);
+
+  void setCursorOverline();
+
   void setCursorBlink();
 
   void setCursorInverse();
@@ -178,6 +185,8 @@ abstract class EscapeHandler {
   void unsetCursorItalic();
 
   void unsetCursorUnderline();
+
+  void unsetCursorOverline();
 
   void unsetCursorBlink();
 
