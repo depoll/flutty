@@ -29,7 +29,10 @@ dependencies:
   dartssh2: ^2.15.0
   
   # Terminal
-  xterm: ^4.0.0
+  # Vendored fork of xterm.dart 4.0.0 (upstream unmaintained since 2024-02).
+  # Maintained in third_party/xterm with emulation-core fixes ported from xterm.js.
+  xterm:
+    path: third_party/xterm
   
   # Syntax highlighting
   highlight: ^0.7.0
