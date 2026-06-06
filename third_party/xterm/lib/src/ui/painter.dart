@@ -351,11 +351,15 @@ void paintTerminalCellUnderline(
       canvas.drawLine(Offset(x0, baseY - gap), Offset(x1, baseY - gap), paint);
       canvas.drawLine(Offset(x0, baseY), Offset(x1, baseY), paint);
     case 3: // UnderlineStyle.curly
-      final amplitude = (cellHeight * 0.045).clamp(1.0, 2.0);
+      // Anchor the wave's top at [baseY] (the single-underline position, which
+      // sits just below the glyphs) and let it dip downward into the descender/
+      // leading space. This keeps the curl out of the letter bodies regardless
+      // of the font's baseline, instead of cresting up through the text.
+      final amplitude = (cellHeight * 0.05).clamp(1.0, 1.8);
       final period = math.max(cellWidth, 4.0);
-      final midY = baseY - amplitude;
+      final midY = baseY + amplitude;
       final path = Path();
-      const steps = 10;
+      const steps = 12;
       for (var i = 0; i <= steps; i++) {
         final x = x0 + (x1 - x0) * (i / steps);
         final y = midY + math.sin((x / period) * 2 * math.pi) * amplitude;
