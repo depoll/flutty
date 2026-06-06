@@ -87,4 +87,36 @@ void main() {
       expect(CellFlags.underlineStyleMask & otherFlags, 0);
     });
   });
+
+  group('CursorStyle underline color', () {
+    test('setters encode the color like a foreground color', () {
+      final style = CursorStyle()..setUnderlineColor256(160);
+      expect(style.underlineColor, 160 | CellColor.palette);
+
+      style.setUnderlineColorRgb(10, 20, 30);
+      expect(style.underlineColor, (10 << 16) | (20 << 8) | 30 | CellColor.rgb);
+
+      style.resetUnderlineColor();
+      expect(style.underlineColor, 0);
+    });
+
+    test('reset() clears the underline color', () {
+      final style = CursorStyle()..setUnderlineColorRgb(1, 2, 3);
+      style.reset();
+      expect(style.underlineColor, 0);
+    });
+
+    test('underline color round-trips through a buffer cell', () {
+      final line = BufferLine(4);
+      final style = CursorStyle()
+        ..setUnderline()
+        ..setUnderlineColorRgb(255, 0, 0);
+      line.setCell(0, 0x41, 1, style);
+
+      final cell = CellData.empty();
+      line.getCellData(0, cell);
+      expect(cell.underlineColor, (255 << 16) | CellColor.rgb);
+      expect(cell.flags & CellFlags.underline, isNot(0));
+    });
+  });
 }

@@ -204,6 +204,9 @@ class TerminalPainter {
         overline: overline,
         strikethrough: strikethrough,
         underlineStyle: terminalUnderlineDecorationStyle(cellFlags),
+        decorationColor: cellData.underlineColor != 0
+            ? resolveForegroundColor(cellData.underlineColor)
+            : null,
       );
 
       // Flutter does not draw a line decoration below/over/through a space

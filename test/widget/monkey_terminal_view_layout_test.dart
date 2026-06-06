@@ -279,6 +279,60 @@ void main() {
       expect(visible, greaterThan(0), reason: 'visible glyph should be drawn');
       expect(concealed, 0, reason: 'concealed glyph should not be drawn');
     });
+
+    test('colored underline (SGR 58) tints the underline', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+
+      Future<ByteData> render(String sequence) async {
+        final terminal = Terminal()
+          ..resize(1, 1)
+          ..write(sequence);
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final width = painter.cellSize.width.ceil();
+        final height = painter.cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+        final image = await recorder.endRecording().toImage(width, height);
+        return (await image.toByteData())!;
+      }
+
+      bool hasRedDominantPixel(ByteData data) {
+        for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
+          final r = data.getUint8(i);
+          final g = data.getUint8(i + 1);
+          final b = data.getUint8(i + 2);
+          // An (anti-aliased) red underline pixel: red clearly dominates.
+          if (r > 100 && r > g + 60 && r > b + 60) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      // Same white glyph + underline; only SGR 58 changes the underline color.
+      final whiteUnderline = await render('\x1b[37;4mx');
+      final redUnderline = await render('\x1b[37;4;58:2::255:0:0mx');
+
+      expect(
+        hasRedDominantPixel(whiteUnderline),
+        isFalse,
+        reason: 'a default underline should not introduce red pixels',
+      );
+      expect(
+        hasRedDominantPixel(redUnderline),
+        isTrue,
+        reason: 'SGR 58 should tint the underline red',
+      );
+    });
   });
 
   group('explicit cell background rendering', () {

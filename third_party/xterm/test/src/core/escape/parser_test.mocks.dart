@@ -970,6 +970,42 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
       );
 
   @override
+  void setUnderlineColor256(int? index) => super.noSuchMethod(
+        Invocation.method(
+          #setUnderlineColor256,
+          [index],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void setUnderlineColorRgb(
+    int? r,
+    int? g,
+    int? b,
+  ) =>
+      super.noSuchMethod(
+        Invocation.method(
+          #setUnderlineColorRgb,
+          [
+            r,
+            g,
+            b,
+          ],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void resetUnderlineColor() => super.noSuchMethod(
+        Invocation.method(
+          #resetUnderlineColor,
+          [],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
   void unsupportedStyle(int? param) => super.noSuchMethod(
         Invocation.method(
           #unsupportedStyle,

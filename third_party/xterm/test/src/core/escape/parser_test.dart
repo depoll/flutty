@@ -115,5 +115,39 @@ void main() {
         verify(parser.handler.unsetCursorOverline());
       });
     });
+
+    group('SGR underline color', () {
+      test('indexed underline color (58:5:n)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[58:5:160m');
+        verify(parser.handler.setUnderlineColor256(160));
+      });
+
+      test('legacy indexed underline color (58;5;n)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[58;5;160m');
+        verify(parser.handler.setUnderlineColor256(160));
+      });
+
+      test('truecolor underline color (58:2::r:g:b)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[58:2::10:20:30m');
+        verify(parser.handler.setUnderlineColorRgb(10, 20, 30));
+      });
+
+      test('reset underline color (59)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[59m');
+        verify(parser.handler.resetUnderlineColor());
+      });
+
+      test('combined curly underline with color does not bleed', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[4:3;58:2::255:0:0mX');
+        verify(parser.handler.setCursorUnderlineStyle(UnderlineStyle.curly));
+        verify(parser.handler.setUnderlineColorRgb(255, 0, 0));
+        verify(parser.handler.writeChar(0x58));
+      });
+    });
   });
 }

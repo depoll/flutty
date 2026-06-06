@@ -581,6 +581,13 @@ class EscapeParser {
           handler.resetBackground();
           continue;
 
+        case 58:
+          i += _handleSgrColor(58, i);
+          continue;
+        case 59:
+          handler.resetUnderlineColor();
+          continue;
+
         case 90:
           handler.setForegroundColor16(NamedColor.brightBlack);
           continue;
@@ -695,6 +702,8 @@ class EscapeParser {
       handler.setForegroundColorRgb(r, g, b);
     } else if (code == 48) {
       handler.setBackgroundColorRgb(r, g, b);
+    } else if (code == 58) {
+      handler.setUnderlineColorRgb(r, g, b);
     }
   }
 
@@ -703,6 +712,8 @@ class EscapeParser {
       handler.setForegroundColor256(index);
     } else if (code == 48) {
       handler.setBackgroundColor256(index);
+    } else if (code == 58) {
+      handler.setUnderlineColor256(index);
     }
   }
 
