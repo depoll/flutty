@@ -1671,10 +1671,9 @@ packages:
   xterm:
     dependency: "direct main"
     description:
-      name: xterm
-      sha256: "168dfedca77cba33fdb6f52e2cd001e9fde216e398e89335c19b524bb22da3a2"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/xterm"
+      relative: true
+    source: path
     version: "4.0.0"
   yaml:
     dependency: transitive
@@ -1693,5 +1692,5 @@ packages:
     source: hosted
     version: "0.0.6"
 sdks:
-  dart: ">=3.11.0 <4.0.0"
-  flutter: ">=3.41.0"
+  dart: ">=3.10.7 <4.0.0"
+  flutter: ">=3.38.4"
