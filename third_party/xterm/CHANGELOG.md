@@ -1,6 +1,35 @@
-## [4.0.0] - 2024-02-27
-* Update for Flutter 3.19 [#190]. Thanks [@domesticmouse].
-* Fix designate charset logic [#186]. Thanks [@djnalluri].
+## [vendored] - unreleased
+
+Vendored into MonkeySSH (`third_party/xterm`) from upstream 4.0.0. Changes below
+are ported from xterm.js to bring the terminal-emulation core back in line with
+current xterm.js behavior. Upstream's renderer (DOM/canvas/WebGL), addon system
+and accessibility DOM have no analog in this Flutter port and are intentionally
+out of scope.
+
+### Synced from xterm.js
+* SGR colon sub-parameters (ITU-T T.416 / ISO 8613-6). `CSI 38:2::r:g:b m`,
+  `CSI 38:5:n m` and friends are parsed correctly instead of being mangled, and
+  missing extended-color arguments no longer throw.
+* Extended underline styles via `CSI 4 : x m` (single, double, curly, dotted,
+  dashed) plus `CSI 21 m` (double underline) and `CSI 22 m` (clear bold *and*
+  faint), matching xterm.js.
+* Overline via `CSI 53 m` / `CSI 55 m`.
+* Conceal (`SGR 8`) now hides glyphs (content preserved for copy) and
+  strikethrough (`SGR 9`) is rendered; both were previously parsed but ignored
+  by the painter.
+
+### Evaluated but intentionally not ported
+* Colored underline (`SGR 58/59`) requires a fifth per-cell word (~25% more cell
+  memory across all scrollback) to store the underline color; deferred pending a
+  product decision on that tradeoff. The underline *styles* above are supported.
+* Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end
+  marker would otherwise freeze the view), which conflicts with this package's
+  deliberately stateless, timer-free core. Flutter already coalesces repaints
+  per frame, limiting the practical benefit.
+* Unicode width tables remain at v11. Bumping them can either help or hurt
+  cursor alignment depending on the host's own `wcwidth`, so it is left as a
+  separate, deliberate change.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback
