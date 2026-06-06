@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/painting.dart';
 
@@ -176,23 +177,21 @@ class TerminalPainter {
 
     // Conceal (SGR 8): the cell keeps its content for selection/copy but the
     // glyph is not drawn.
-    if (cellData.flags & CellFlags.invisible != 0) return;
+    final cellFlags = cellData.flags;
+    if (cellFlags & CellFlags.invisible != 0) return;
+
+    var color = cellFlags & CellFlags.inverse == 0
+        ? resolveForegroundColor(cellData.foreground)
+        : resolveBackgroundColor(cellData.background);
+
+    if (cellFlags & CellFlags.faint != 0) {
+      color = color.withValues(alpha: 0.5);
+    }
 
     final cacheKey = cellData.getHash() ^ _textScaler.hashCode;
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
-      final cellFlags = cellData.flags;
-
-      var color = cellFlags & CellFlags.inverse == 0
-          ? resolveForegroundColor(cellData.foreground)
-          : resolveBackgroundColor(cellData.background);
-
-      if (cellData.flags & CellFlags.faint != 0) {
-        color = color.withValues(alpha: 0.5);
-      }
-
-      final underline = cellFlags & CellFlags.underline != 0;
       final overline = cellFlags & CellFlags.overline != 0;
       final strikethrough = cellFlags & CellFlags.strikethrough != 0;
 
@@ -200,10 +199,10 @@ class TerminalPainter {
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
         italic: cellFlags & CellFlags.italic != 0,
-        underline: underline,
+        // The underline is drawn manually below so styled underlines render and
+        // connect across cells; Flutter's per-glyph decoration cannot.
         overline: overline,
         strikethrough: strikethrough,
-        underlineStyle: terminalUnderlineDecorationStyle(cellFlags),
         decorationColor: cellData.underlineColor != 0
             ? resolveForegroundColor(cellData.underlineColor)
             : null,
@@ -216,7 +215,7 @@ class TerminalPainter {
       // replaced with the CodePoint 0xA0, a non breaking space below which a
       // line can be drawn.
       var char = String.fromCharCode(charCode);
-      if ((underline || overline || strikethrough) && charCode == 0x20) {
+      if ((overline || strikethrough) && charCode == 0x20) {
         char = String.fromCharCode(0xA0);
       }
 
@@ -229,6 +228,21 @@ class TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+
+    if (cellFlags & CellFlags.underline != 0) {
+      final styleIndex = (cellFlags & CellFlags.underlineStyleMask) >>
+          CellFlags.underlineStyleShift;
+      final underlineColor = cellData.underlineColor != 0
+          ? resolveForegroundColor(cellData.underlineColor)
+          : color;
+      paintTerminalCellUnderline(
+        canvas,
+        offset,
+        _cellSize,
+        styleIndex,
+        underlineColor,
+      );
+    }
   }
 
   /// Paints the background of a cell represented by [cellData] to [canvas] at
@@ -289,5 +303,88 @@ class TerminalPainter {
       default:
         return Color(colorValue | 0xFF000000);
     }
+  }
+}
+
+/// Draws a cell underline of [styleIndex] (matching the index of an
+/// `UnderlineStyle`) in [color], filling the cell at [offset] whose size is
+/// [cellSize].
+///
+/// The underline is drawn directly on the canvas rather than via Flutter's
+/// per-glyph text decoration, so the double/curly/dotted/dashed styles render
+/// and connect across adjacent cells (which per-glyph decoration cannot).
+void paintTerminalCellUnderline(
+  Canvas canvas,
+  Offset offset,
+  Size cellSize,
+  int styleIndex,
+  Color color,
+) {
+  final cellWidth = cellSize.width;
+  final cellHeight = cellSize.height;
+  final thickness = (cellHeight * 0.07).clamp(1.0, 2.5);
+  final baseY = offset.dy + cellHeight - thickness;
+  final x0 = offset.dx;
+  final x1 = x0 + cellWidth;
+
+  final paint = Paint()
+    ..color = color
+    ..strokeWidth = thickness
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.butt
+    ..isAntiAlias = true;
+
+  switch (styleIndex) {
+    case 2: // UnderlineStyle.double
+      final gap = (thickness * 1.6).clamp(1.5, 3.0);
+      canvas.drawLine(Offset(x0, baseY - gap), Offset(x1, baseY - gap), paint);
+      canvas.drawLine(Offset(x0, baseY), Offset(x1, baseY), paint);
+    case 3: // UnderlineStyle.curly
+      final amplitude = (cellHeight * 0.06).clamp(1.5, 3.0);
+      final period = math.max(cellWidth, 4.0);
+      final midY = baseY - amplitude;
+      final path = Path();
+      const steps = 10;
+      for (var i = 0; i <= steps; i++) {
+        final x = x0 + (x1 - x0) * (i / steps);
+        final y = midY + math.sin((x / period) * 2 * math.pi) * amplitude;
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+      canvas.drawPath(path, paint);
+    case 4: // UnderlineStyle.dotted
+      final unit = math.max(thickness * 1.5, 2.0);
+      _paintDashedLine(canvas, baseY, x0, x1, unit, unit, paint);
+    case 5: // UnderlineStyle.dashed
+      final dash = math.max(cellWidth * 0.35, 3.0);
+      final gap = math.max(cellWidth * 0.2, 2.0);
+      _paintDashedLine(canvas, baseY, x0, x1, dash, gap, paint);
+    default: // UnderlineStyle.single / legacy
+      canvas.drawLine(Offset(x0, baseY), Offset(x1, baseY), paint);
+  }
+}
+
+void _paintDashedLine(
+  Canvas canvas,
+  double y,
+  double x0,
+  double x1,
+  double dash,
+  double gap,
+  Paint paint,
+) {
+  final period = dash + gap;
+  // Phase by absolute x so segments align across adjacent cells.
+  var x = x0 - (x0 % period);
+  while (x < x1) {
+    final start = math.max(x, x0);
+    final end = math.min(x + dash, x1);
+    if (end > start) {
+      canvas.drawLine(Offset(start, y), Offset(end, y), paint);
+    }
+    x += period;
   }
 }
