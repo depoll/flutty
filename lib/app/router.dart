@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
+import '../domain/services/port_forward_browser_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
@@ -12,6 +13,7 @@ import '../presentation/screens/hosts_screen.dart';
 import '../presentation/screens/key_add_screen.dart';
 import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
+import '../presentation/screens/port_forward_browser_screen.dart';
 import '../presentation/screens/port_forward_edit_screen.dart';
 import '../presentation/screens/port_forwards_screen.dart';
 import '../presentation/screens/settings_screen.dart';
@@ -220,6 +222,38 @@ final routerProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(
+        path: '/port-forwards/browser',
+        name: Routes.portForwardBrowser,
+        pageBuilder: (context, state) {
+          if (!isPortForwardBrowserSupported()) {
+            return _buildSlideUpPage<String>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(
+                  child: Text('In-app browser is not supported here.'),
+                ),
+              ),
+            );
+          }
+          final launch = _portForwardBrowserLaunchFromRouteState(state);
+          if (launch == null) {
+            return _buildSlideUpPage<String>(
+              key: state.pageKey,
+              child: const Scaffold(
+                body: Center(child: Text('Invalid port-forward browser URL')),
+              ),
+            );
+          }
+          return _buildSlideUpPage<String>(
+            key: state.pageKey,
+            child: PortForwardBrowserScreen(
+              initialTabs: launch.tabs,
+              initialTabIndex: launch.selectedIndex,
+            ),
+          );
+        },
+      ),
+      GoRoute(
         path: '/settings',
         name: Routes.settings,
         builder: (context, state) => const SettingsScreen(),
@@ -242,6 +276,36 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+PortForwardBrowserLaunch? _portForwardBrowserLaunchFromRouteState(
+  GoRouterState state,
+) {
+  final extra = state.extra;
+  if (extra is PortForwardBrowserLaunch &&
+      _portForwardBrowserLaunchIsValid(extra)) {
+    return extra;
+  }
+
+  final uri = Uri.tryParse(state.uri.queryParameters['url'] ?? '');
+  if (uri == null || !isPortForwardBrowserEntryUri(uri)) {
+    return null;
+  }
+
+  return PortForwardBrowserLaunch(
+    tabs: [
+      PortForwardBrowserInitialTab(
+        uri: normalizePortForwardBrowserUri(uri),
+        title: state.uri.queryParameters['title'],
+      ),
+    ],
+  );
+}
+
+bool _portForwardBrowserLaunchIsValid(PortForwardBrowserLaunch launch) =>
+    launch.tabs.isNotEmpty &&
+    launch.selectedIndex >= 0 &&
+    launch.selectedIndex < launch.tabs.length &&
+    launch.tabs.every((tab) => isPortForwardBrowserEntryUri(tab.uri));
 
 HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   'connections' => HomeScreenTab.connections,

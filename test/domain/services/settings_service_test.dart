@@ -383,6 +383,29 @@ void main() {
       });
     });
 
+    group('portForwardBrowserLinksNotifierProvider', () {
+      test('defaults to enabled and persists changes', () async {
+        final notifier = container.read(
+          portForwardBrowserLinksNotifierProvider.notifier,
+        );
+
+        expect(container.read(portForwardBrowserLinksNotifierProvider), isTrue);
+
+        await notifier.setEnabled(enabled: false);
+
+        expect(
+          container.read(portForwardBrowserLinksNotifierProvider),
+          isFalse,
+        );
+        expect(
+          await container
+              .read(settingsServiceProvider)
+              .getBool(SettingKeys.portForwardBrowserLinks, defaultValue: true),
+          isFalse,
+        );
+      });
+    });
+
     group('terminalThemeSettingsProvider', () {
       test(
         'normalizes legacy default theme ids to their iTerm2 successors',

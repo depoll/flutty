@@ -235,6 +235,38 @@ void main() {
       );
     });
 
+    testWidgets('toggles forwarded link browser from terminal settings', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Open forwarded links in app'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      final tile = find.widgetWithText(
+        SwitchListTile,
+        'Open forwarded links in app',
+      );
+      expect(tile, findsOneWidget);
+
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+
+      expect(
+        await SettingsService(
+          db,
+        ).getBool(SettingKeys.portForwardBrowserLinks, defaultValue: true),
+        isFalse,
+      );
+    });
+
     testWidgets('shows active subscription state when Pro is unlocked', (
       tester,
     ) async {

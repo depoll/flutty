@@ -34,6 +34,7 @@ import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/screens/port_forward_browser_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
@@ -169,6 +170,21 @@ class _PromptingMonkeyMuxInstallerService implements MonkeyMuxInstallerService {
 class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
 
+class _ActiveTunnelsSshSession extends SshSession {
+  _ActiveTunnelsSshSession({
+    required super.connectionId,
+    required super.hostId,
+    required super.client,
+    required super.config,
+    required List<ActiveTunnelInfo> activeTunnels,
+  }) : _activeTunnels = activeTunnels;
+
+  final List<ActiveTunnelInfo> _activeTunnels;
+
+  @override
+  List<ActiveTunnelInfo> get activeTunnels => _activeTunnels;
+}
+
 class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
   final toggleCalls = <bool>[];
   bool _enabled = false;
@@ -202,6 +218,33 @@ class _RecordingSftpPageState extends State<_RecordingSftpPage> {
   @override
   Widget build(BuildContext context) =>
       const Scaffold(body: Text('SFTP opened'));
+}
+
+class _RecordingPortForwardBrowserPage extends StatefulWidget {
+  const _RecordingPortForwardBrowserPage({
+    required this.launch,
+    required this.onOpened,
+  });
+
+  final PortForwardBrowserLaunch launch;
+  final ValueChanged<PortForwardBrowserLaunch> onOpened;
+
+  @override
+  State<_RecordingPortForwardBrowserPage> createState() =>
+      _RecordingPortForwardBrowserPageState();
+}
+
+class _RecordingPortForwardBrowserPageState
+    extends State<_RecordingPortForwardBrowserPage> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onOpened(widget.launch);
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const Scaffold(body: Text('Forward browser opened'));
 }
 
 class _RecordingLocalNotificationService extends LocalNotificationService {
@@ -1523,6 +1566,118 @@ void main() {
     });
 
     testWidgets(
+      'terminal overflow opens active local forwards in browser tabs',
+      (tester) async {
+        session = _ActiveTunnelsSshSession(
+          connectionId: session.connectionId,
+          hostId: host.id,
+          client: sshClient,
+          config: session.config,
+          activeTunnels: const [
+            ActiveTunnelInfo(
+              portForwardId: 42,
+              localHost: '127.0.0.1',
+              localPort: 49152,
+              remoteHost: 'example.com',
+              remotePort: 80,
+              isLocal: true,
+            ),
+            ActiveTunnelInfo(
+              portForwardId: 43,
+              localHost: '0.0.0.0',
+              localPort: 3000,
+              remoteHost: 'localhost',
+              remotePort: 3000,
+              isLocal: true,
+            ),
+            ActiveTunnelInfo(
+              portForwardId: 44,
+              localHost: '127.0.0.1',
+              localPort: 15432,
+              remoteHost: 'localhost',
+              remotePort: 5432,
+              isLocal: false,
+            ),
+          ],
+        )..getOrCreateTerminal();
+        final openedLaunches = <PortForwardBrowserLaunch>[];
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+            GoRoute(
+              path: '/port-forwards/browser',
+              name: Routes.portForwardBrowser,
+              builder: (context, state) {
+                final launch = state.extra! as PortForwardBrowserLaunch;
+                return _RecordingPortForwardBrowserPage(
+                  launch: launch,
+                  onOpened: openedLaunches.add,
+                );
+              },
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        await tester.tap(find.byIcon(Icons.more_vert));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        final browserItem = terminalMenuItemButton('Open Forwarded Browser');
+        expect(browserItem, findsOneWidget);
+
+        await tester.tap(find.text('Open Forwarded Browser'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Forward browser opened'), findsOneWidget);
+        final launch = openedLaunches.last;
+        expect(launch.selectedIndex, 0);
+        expect(launch.tabs.map((tab) => tab.uri.toString()).toList(), [
+          'http://127.0.0.1:49152',
+          'http://127.0.0.1:3000',
+        ]);
+        expect(launch.tabs.map((tab) => tab.title).toList(), [
+          '127.0.0.1:49152',
+          '127.0.0.1:3000',
+        ]);
+
+        router.pop();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      },
+    );
+
+    testWidgets(
       'mobile terminal overflow menu omits sensitive keyboard action',
       (tester) async {
         await pumpScreen(tester);
@@ -2755,6 +2910,22 @@ void main() {
 
         expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
         expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isFalse);
+        final nonRedrawResizeCount = monkeyMuxService.resizeTerminalCalls
+            .where((call) => !call.redraw)
+            .length;
+        session.terminal!.onResize?.call(
+          width,
+          nextHeight,
+          width * 10,
+          nextHeight * 20,
+        );
+        await tester.pump();
+        expect(
+          monkeyMuxService.resizeTerminalCalls
+              .where((call) => !call.redraw)
+              .length,
+          nonRedrawResizeCount,
+        );
 
         await tester.pump(const Duration(milliseconds: 300));
         await tester.pump();
