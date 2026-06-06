@@ -1905,6 +1905,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     final cellFlags = cellData.flags;
+    // Conceal (SGR 8): keep the cell content for selection/copy but do not
+    // draw the glyph.
+    if (cellFlags & CellFlags.invisible != 0) {
+      return;
+    }
     final color = resolveMonkeyTerminalCellForegroundColor(cellData);
     if (_paintBlockElementForeground(
       canvas,
@@ -1920,15 +1925,22 @@ class MonkeyTerminalPainter extends TerminalPainter {
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
+      final underline = cellFlags & CellFlags.underline != 0;
+      final overline = cellFlags & CellFlags.overline != 0;
+      final strikethrough = cellFlags & CellFlags.strikethrough != 0;
+
       final style = textStyle.toTextStyle(
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
         italic: cellFlags & CellFlags.italic != 0,
-        underline: cellFlags & CellFlags.underline != 0,
+        underline: underline,
+        overline: overline,
+        strikethrough: strikethrough,
+        underlineStyle: terminalUnderlineDecorationStyle(cellFlags),
       );
 
       var char = String.fromCharCode(charCode);
-      if (cellFlags & CellFlags.underline != 0 && charCode == 0x20) {
+      if ((underline || overline || strikethrough) && charCode == 0x20) {
         char = String.fromCharCode(0xA0);
       }
 

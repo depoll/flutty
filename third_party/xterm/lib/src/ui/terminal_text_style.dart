@@ -1,4 +1,27 @@
 import 'package:flutter/widgets.dart';
+import 'package:xterm/src/core/buffer/cell_flags.dart';
+
+/// Maps the underline-style bits packed into a cell's [flags] (see
+/// [CellFlags.underlineStyleMask]) to a Flutter [TextDecorationStyle].
+///
+/// Shared by the built-in painter and any custom terminal painters so the
+/// `CSI 4 : x m` styles render consistently.
+TextDecorationStyle terminalUnderlineDecorationStyle(int flags) {
+  final style =
+      (flags & CellFlags.underlineStyleMask) >> CellFlags.underlineStyleShift;
+  switch (style) {
+    case 2: // UnderlineStyle.double
+      return TextDecorationStyle.double;
+    case 3: // UnderlineStyle.curly
+      return TextDecorationStyle.wavy;
+    case 4: // UnderlineStyle.dotted
+      return TextDecorationStyle.dotted;
+    case 5: // UnderlineStyle.dashed
+      return TextDecorationStyle.dashed;
+    default: // 0 (legacy) and 1 (single)
+      return TextDecorationStyle.solid;
+  }
+}
 
 const _kDefaultFontSize = 13.0;
 

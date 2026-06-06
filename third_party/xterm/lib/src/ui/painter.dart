@@ -203,7 +203,7 @@ class TerminalPainter {
         underline: underline,
         overline: overline,
         strikethrough: strikethrough,
-        underlineStyle: _underlineDecorationStyle(cellFlags),
+        underlineStyle: terminalUnderlineDecorationStyle(cellFlags),
       );
 
       // Flutter does not draw a line decoration below/over/through a space
@@ -226,26 +226,6 @@ class TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
-  }
-
-  /// Translates the underline-style bits of [flags] into a Flutter
-  /// [TextDecorationStyle].
-  @pragma('vm:prefer-inline')
-  TextDecorationStyle _underlineDecorationStyle(int flags) {
-    final style =
-        (flags & CellFlags.underlineStyleMask) >> CellFlags.underlineStyleShift;
-    switch (style) {
-      case 2: // UnderlineStyle.double
-        return TextDecorationStyle.double;
-      case 3: // UnderlineStyle.curly
-        return TextDecorationStyle.wavy;
-      case 4: // UnderlineStyle.dotted
-        return TextDecorationStyle.dotted;
-      case 5: // UnderlineStyle.dashed
-        return TextDecorationStyle.dashed;
-      default: // 0 (legacy) and 1 (single)
-        return TextDecorationStyle.solid;
-    }
   }
 
   /// Paints the background of a cell represented by [cellData] to [canvas] at
