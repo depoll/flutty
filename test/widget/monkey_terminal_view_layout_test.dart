@@ -236,6 +236,51 @@ void main() {
     });
   });
 
+  group('text attribute rendering', () {
+    test('conceal (SGR 8) does not draw the glyph', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+
+      Future<int> foregroundPixels(String sequence) async {
+        final terminal = Terminal()
+          ..resize(1, 1)
+          ..write(sequence);
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final width = painter.cellSize.width.ceil();
+        final height = painter.cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+        final image = await recorder.endRecording().toImage(width, height);
+        final byteData = (await image.toByteData())!;
+        var count = 0;
+        for (var y = 0; y < height; y++) {
+          for (var x = 0; x < width; x++) {
+            if (_rawRgbaPixel(byteData, width, x, y) != theme.background) {
+              count++;
+            }
+          }
+        }
+        return count;
+      }
+
+      final visible = await foregroundPixels('\x1b[37mM');
+      final concealed = await foregroundPixels('\x1b[37;8mM');
+
+      expect(visible, greaterThan(0), reason: 'visible glyph should be drawn');
+      expect(concealed, 0, reason: 'concealed glyph should not be drawn');
+    });
+  });
+
   group('explicit cell background rendering', () {
     test(
       'clears normal-background cells before drawing terminal rows',
