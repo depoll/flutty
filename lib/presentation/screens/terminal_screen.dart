@@ -42,6 +42,7 @@ import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/monkeymux_installer_service.dart';
 import '../../domain/services/monkeymux_service.dart';
+import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
@@ -70,6 +71,7 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'port_forward_browser_screen.dart';
 import 'sftp_screen.dart';
 import 'snippet_edit_screen.dart';
 
@@ -2628,6 +2630,18 @@ bool didTerminalScrollPolicyChange({
 
 enum _TerminalExclusiveAction { sftpBrowser, tmuxNavigator }
 
+class _PortForwardBrowserOption {
+  const _PortForwardBrowserOption({
+    required this.uri,
+    required this.port,
+    required this.title,
+  });
+
+  final Uri uri;
+  final int port;
+  final String title;
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -2977,6 +2991,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _suppressRemoteMuxDetectionConnectionId;
   bool _restoreKeyboardAfterAppResume = false;
   final GlobalKey _terminalOverflowMenuButtonKey = GlobalKey();
+  double? _terminalOverflowMenuAnchorTopCache;
+  bool _terminalOverflowMenuAnchorTopUpdateScheduled = false;
   final Map<String, String> _lastAndroidPredictiveBackDiagnosticsKeys =
       <String, String>{};
   String? _lastAndroidTerminalContentDiagnosticsKey;
@@ -3158,7 +3174,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool isMobilePlatform,
   }) {
     final mediaQuery = MediaQuery.of(context);
-    final anchorTop = _terminalOverflowMenuAnchorTop(context);
+    // Reading paint geometry (localToGlobal) during build throws while an
+    // ancestor route transform has not been laid out yet, which happens during
+    // the Android predictive-back transition. Use the value cached after the
+    // previous frame's layout instead, and refresh it from a post-frame
+    // callback when it is actually needed (mobile + keyboard visible).
+    if (isMobilePlatform && mediaQuery.viewInsets.bottom > 0) {
+      _scheduleTerminalOverflowMenuAnchorTopUpdate(context);
+    }
+    final anchorTop = _terminalOverflowMenuAnchorTopCache;
     final maxHeight = resolveTerminalOverflowMenuMaxHeight(
       mediaQuery: mediaQuery,
       isMobilePlatform: isMobilePlatform,
@@ -3189,6 +3213,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _scheduleTerminalOverflowMenuAnchorTopUpdate(BuildContext context) {
+    if (_terminalOverflowMenuAnchorTopUpdateScheduled) {
+      return;
+    }
+    _terminalOverflowMenuAnchorTopUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _terminalOverflowMenuAnchorTopUpdateScheduled = false;
+      if (!mounted) {
+        return;
+      }
+      final next = _terminalOverflowMenuAnchorTop(context);
+      if (next != _terminalOverflowMenuAnchorTopCache) {
+        setState(() => _terminalOverflowMenuAnchorTopCache = next);
+      }
+    });
+  }
+
   double? _terminalOverflowMenuAnchorTop(BuildContext context) {
     final anchorContext = _terminalOverflowMenuButtonKey.currentContext;
     if (anchorContext == null) {
@@ -3201,7 +3242,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (anchorRenderObject is! RenderBox ||
         overlayRenderObject is! RenderBox ||
         !anchorRenderObject.attached ||
-        !overlayRenderObject.attached) {
+        !overlayRenderObject.attached ||
+        !anchorRenderObject.hasSize ||
+        !overlayRenderObject.hasSize) {
       return null;
     }
 
@@ -9041,6 +9084,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   label: 'Change Theme',
                   action: 'change_theme',
                 ),
+                if (isPortForwardBrowserSupported())
+                  _terminalOverflowMenuItem(
+                    context: context,
+                    icon: Icons.open_in_browser_outlined,
+                    label: 'Open Forwarded Browser',
+                    action: 'open_port_forward_browser',
+                  ),
                 _terminalOverflowSubmenuButton(
                   context: context,
                   isMobile: isMobile,
@@ -10158,6 +10208,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'change_theme':
         unawaited(_showThemePicker());
+        break;
+      case 'open_port_forward_browser':
+        await _openPortForwardBrowserFromTerminal();
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
@@ -11659,6 +11712,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    if (isPortForwardBrowserSupported() &&
+        ref.read(portForwardBrowserLinksNotifierProvider) &&
+        shouldOpenUriInPortForwardBrowser(
+          uri,
+          activeLocalPorts: _activeLocalForwardPorts(),
+        )) {
+      final browserUri = normalizePortForwardBrowserUri(uri);
+      await _openPortForwardBrowserOption(
+        _PortForwardBrowserOption(
+          uri: browserUri,
+          port: browserUri.port,
+          title: browserUri.authority,
+        ),
+      );
+      return;
+    }
+
     var launched = false;
     try {
       launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -11670,6 +11740,65 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _showTerminalLinkMessage('Could not open $link');
+  }
+
+  Iterable<int> _activeLocalForwardPorts() =>
+      _activePortForwardBrowserOptions().map((option) => option.port);
+
+  List<_PortForwardBrowserOption> _activePortForwardBrowserOptions() {
+    final connectionId = _connectionId;
+    final session = connectionId == null
+        ? _sessionController.observedSession
+        : ref.read(activeSessionsProvider.notifier).getSession(connectionId);
+    return session?.activeTunnels
+            .where(
+              (tunnel) =>
+                  tunnel.isLocal &&
+                  isPortForwardBrowserHost(tunnel.localHost) &&
+                  tunnel.localPort >= 1 &&
+                  tunnel.localPort <= 65535,
+            )
+            .map((tunnel) {
+              final uri = buildPortForwardBrowserUriForBind(
+                localHost: tunnel.localHost,
+                localPort: tunnel.localPort,
+              );
+              return _PortForwardBrowserOption(
+                uri: uri,
+                port: tunnel.localPort,
+                title: uri.authority,
+              );
+            })
+            .toList(growable: false) ??
+        const <_PortForwardBrowserOption>[];
+  }
+
+  Future<void> _openPortForwardBrowserFromTerminal() async {
+    final options = _activePortForwardBrowserOptions();
+    if (options.isEmpty) {
+      _showTerminalLinkMessage('No active localhost port forwards to browse');
+      return;
+    }
+
+    await _openPortForwardBrowserOptions(options);
+  }
+
+  Future<void> _openPortForwardBrowserOption(
+    _PortForwardBrowserOption option,
+  ) => _openPortForwardBrowserOptions([option]);
+
+  Future<void> _openPortForwardBrowserOptions(
+    List<_PortForwardBrowserOption> options,
+  ) async {
+    await context.pushNamed<void>(
+      Routes.portForwardBrowser,
+      extra: PortForwardBrowserLaunch(
+        tabs: [
+          for (final option in options)
+            PortForwardBrowserInitialTab(uri: option.uri, title: option.title),
+        ],
+      ),
+    );
   }
 
   Future<void> _openTerminalFilePath(String path) =>

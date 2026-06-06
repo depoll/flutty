@@ -48,6 +48,9 @@ abstract final class SettingKeys {
   /// Show underlines for clickable terminal file paths.
   static const terminalPathLinkUnderlines = 'terminal_path_link_badges';
 
+  /// Open forwarded localhost links in the embedded browser.
+  static const portForwardBrowserLinks = 'port_forward_browser_links';
+
   /// Enable shell completion popups while typing in the terminal.
   static const shellCompletions = 'shell_completions';
 
@@ -555,6 +558,33 @@ class TerminalPathLinkUnderlinesNotifier extends _AsyncSettingsNotifier<bool> {
 final terminalPathLinkUnderlinesNotifierProvider =
     NotifierProvider<TerminalPathLinkUnderlinesNotifier, bool>(
       TerminalPathLinkUnderlinesNotifier.new,
+    );
+
+/// Notifier for forwarded localhost links with write capability.
+class PortForwardBrowserLinksNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
+
+  @override
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.portForwardBrowserLinks,
+    defaultValue: true,
+  );
+
+  /// Sets forwarded localhost link handling.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settingsService.setBool(
+      SettingKeys.portForwardBrowserLinks,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for forwarded localhost links with write capability.
+final portForwardBrowserLinksNotifierProvider =
+    NotifierProvider<PortForwardBrowserLinksNotifier, bool>(
+      PortForwardBrowserLinksNotifier.new,
     );
 
 /// Notifier for terminal shell completion popups with write capability.
