@@ -216,6 +216,7 @@ class EscapeParser {
     }
 
     _csi.params.clear();
+    _csi.subParams.clear();
 
     // test whether the csi is a `CSI ? Ps ...` or `CSI Ps ...`
     final prefix = _queue.peek();
@@ -228,6 +229,22 @@ class EscapeParser {
 
     var param = 0;
     var hasParam = false;
+    // Sub-parameters of the parameter currently being parsed, populated once a
+    // `:` is seen. `null` while the current parameter has no sub-parameters.
+    List<int>? sub;
+
+    void commitParam() {
+      if (sub != null) {
+        sub!.add(param);
+      } else if (hasParam) {
+        _csi.params.add(param);
+        _csi.subParams.add(const []);
+      }
+      param = 0;
+      hasParam = false;
+      sub = null;
+    }
+
     while (true) {
       // The sequence isn't completed, just ignore it.
       if (_queue.isEmpty) {
@@ -237,10 +254,23 @@ class EscapeParser {
       final char = _queue.consume();
 
       if (char == Ascii.semicolon) {
-        if (hasParam) {
+        commitParam();
+        continue;
+      }
+
+      if (char == Ascii.colon) {
+        // The first `:` promotes the accumulated value to the primary parameter
+        // and begins collecting sub-parameters; subsequent `:` push the next
+        // sub-parameter value.
+        if (sub == null) {
+          sub = <int>[];
           _csi.params.add(param);
+          _csi.subParams.add(sub!);
+        } else {
+          sub!.add(param);
         }
         param = 0;
+        hasParam = true;
         continue;
       }
 
@@ -257,9 +287,7 @@ class EscapeParser {
       }
 
       if (char >= Ascii.atSign && char <= Ascii.tilde) {
-        if (hasParam) {
-          _csi.params.add(param);
-        }
+        commitParam();
 
         _csi.finalByte = char;
         return true;
@@ -497,21 +525,7 @@ class EscapeParser {
           handler.setForegroundColor16(NamedColor.white);
           continue;
         case 38:
-          final mode = params[i + 1];
-          switch (mode) {
-            case 2:
-              final r = params[i + 2];
-              final g = params[i + 3];
-              final b = params[i + 4];
-              handler.setForegroundColorRgb(r, g, b);
-              i += 4;
-              break;
-            case 5:
-              final index = params[i + 2];
-              handler.setForegroundColor256(index);
-              i += 2;
-              break;
-          }
+          i += _handleSgrColor(38, i);
           continue;
         case 39:
           handler.resetForeground();
@@ -542,21 +556,7 @@ class EscapeParser {
           handler.setBackgroundColor16(NamedColor.white);
           continue;
         case 48:
-          final mode = params[i + 1];
-          switch (mode) {
-            case 2:
-              final r = params[i + 2];
-              final g = params[i + 3];
-              final b = params[i + 4];
-              handler.setBackgroundColorRgb(r, g, b);
-              i += 4;
-              break;
-            case 5:
-              final index = params[i + 2];
-              handler.setBackgroundColor256(index);
-              i += 2;
-              break;
-          }
+          i += _handleSgrColor(48, i);
           continue;
         case 49:
           handler.resetBackground();
@@ -616,6 +616,65 @@ class EscapeParser {
           handler.unsupportedStyle(param);
           continue;
       }
+    }
+  }
+
+  /// Resolves an extended color SGR (`38` foreground, `48` background) whose
+  /// arguments begin at top-level parameter [i].
+  ///
+  /// Supports both the legacy semicolon form (`CSI 38;2;r;g;b m`,
+  /// `CSI 38;5;n m`) and the ITU-T T.416 colon sub-parameter form
+  /// (`CSI 38:2::r:g:b m`, `CSI 38:5:n m`). Missing arguments default to `0`
+  /// instead of throwing, matching xterm.js. Returns the number of *extra*
+  /// top-level parameters consumed (always `0` for the colon form).
+  int _handleSgrColor(int code, int i) {
+    final params = _csi.params;
+    final sub = _csi.subParamsOf(i);
+
+    // Colon (sub-parameter) form: the whole color lives in `sub`.
+    if (sub.isNotEmpty) {
+      final mode = sub[0];
+      if (mode == 2) {
+        // sub = [2, r, g, b] or [2, colorSpaceId, r, g, b] (id ignored).
+        final off = sub.length >= 5 ? 2 : 1;
+        _applySgrColorRgb(
+            code, _sub(sub, off), _sub(sub, off + 1), _sub(sub, off + 2));
+      } else if (mode == 5) {
+        _applySgrColorIndexed(code, _sub(sub, 1));
+      }
+      return 0;
+    }
+
+    // Legacy semicolon form: read the following top-level parameters.
+    final mode = i + 1 < params.length ? params[i + 1] : 0;
+    if (mode == 2) {
+      final r = i + 2 < params.length ? params[i + 2] : 0;
+      final g = i + 3 < params.length ? params[i + 3] : 0;
+      final b = i + 4 < params.length ? params[i + 4] : 0;
+      _applySgrColorRgb(code, r, g, b);
+      return 4;
+    } else if (mode == 5) {
+      _applySgrColorIndexed(code, i + 2 < params.length ? params[i + 2] : 0);
+      return 2;
+    }
+    return 0;
+  }
+
+  int _sub(List<int> sub, int i) => i < sub.length ? sub[i] : 0;
+
+  void _applySgrColorRgb(int code, int r, int g, int b) {
+    if (code == 38) {
+      handler.setForegroundColorRgb(r, g, b);
+    } else if (code == 48) {
+      handler.setBackgroundColorRgb(r, g, b);
+    }
+  }
+
+  void _applySgrColorIndexed(int code, int index) {
+    if (code == 38) {
+      handler.setForegroundColor256(index);
+    } else if (code == 48) {
+      handler.setBackgroundColor256(index);
     }
   }
 
@@ -1136,8 +1195,22 @@ class _Csi {
 
   List<int> params;
 
+  /// Colon-separated sub-parameters (ITU-T T.416 / ISO 8613-6), aligned by
+  /// index with [params]. `subParams[i]` holds the values that followed
+  /// `params[i]` after a `:`, or an empty list when that parameter had none.
+  ///
+  /// For example `CSI 38:2::1:2:3 m` yields `params = [38]` and
+  /// `subParams = [[2, 0, 1, 2, 3]]`.
+  final List<List<int>> subParams = [];
+
   int finalByte;
   // final List<int> intermediates;
+
+  /// The sub-parameters that followed `params[index]`, or an empty list when
+  /// none were present.
+  List<int> subParamsOf(int index) {
+    return index < subParams.length ? subParams[index] : const [];
+  }
 
   @override
   String toString() {
