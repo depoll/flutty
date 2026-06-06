@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:math' show max;
+import 'dart:typed_data';
 
 import 'package:xterm/src/base/observable.dart';
 import 'package:xterm/src/core/buffer/buffer.dart';
@@ -8,6 +10,7 @@ import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/cursor.dart';
 import 'package:xterm/src/core/escape/emitter.dart';
 import 'package:xterm/src/core/escape/handler.dart';
+import 'package:xterm/src/core/graphics_manager.dart';
 import 'package:xterm/src/core/escape/parser.dart';
 import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
@@ -89,6 +92,17 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   late final _parser = EscapeParser(this);
 
   final _emitter = const EscapeEmitter();
+
+  /// Decoded Kitty-graphics-protocol images and their placements. Read by the
+  /// painter to composite images over the cell grid.
+  final GraphicsManager graphics = GraphicsManager();
+
+  /// Cap on the size of a single buffered graphics transmission (16 MiB).
+  static const _maxGraphicsBytes = 16 * 1024 * 1024;
+
+  bool _graphicsActive = false;
+  Map<String, String> _graphicsArgs = const {};
+  final List<int> _graphicsData = [];
 
   late var _buffer = _mainBuffer;
 
@@ -937,13 +951,74 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void graphicsCommandStart(Map<String, String> args) {
-    // Kitty graphics rendering is wired up in a later change; for now the
-    // command is parsed and consumed so its payload is not shown as text.
+    if (_graphicsActive) return; // continuation chunk; keep the first args
+    _graphicsActive = true;
+    _graphicsArgs = args;
+    _graphicsData.clear();
   }
 
   @override
-  void graphicsDataChunk(List<int> data) {}
+  void graphicsDataChunk(List<int> data) {
+    if (!_graphicsActive) return;
+    if (_graphicsData.length + data.length > _maxGraphicsBytes) {
+      // Discard oversized transmissions instead of growing without bound.
+      _graphicsActive = false;
+      _graphicsData.clear();
+      return;
+    }
+    _graphicsData.addAll(data);
+  }
 
   @override
-  void graphicsCommandEnd() {}
+  void graphicsCommandEnd() {
+    if (!_graphicsActive) return;
+    _graphicsActive = false;
+
+    final args = _graphicsArgs;
+    final data = Uint8List.fromList(_graphicsData);
+    _graphicsData.clear();
+
+    // Only transmit-and-display (a=T) is rendered; other actions are ignored.
+    if ((args['a'] ?? 't') != 'T' || data.isEmpty) {
+      return;
+    }
+
+    // Anchor the placement to the cursor cell now, before the async decode or
+    // any further output can move the cursor.
+    final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
+
+    // Move the cursor below the image so following output does not overlap it.
+    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    for (var i = 0; i < rows; i++) {
+      _buffer.index();
+    }
+
+    unawaited(_finalizeGraphics(args, data, anchor));
+  }
+
+  Future<void> _finalizeGraphics(
+    Map<String, String> args,
+    Uint8List data,
+    CellAnchor anchor,
+  ) async {
+    final format = int.tryParse(args['f'] ?? '') ?? 100;
+    final width = int.tryParse(args['s'] ?? '') ?? 0;
+    final height = int.tryParse(args['v'] ?? '') ?? 0;
+
+    final image = await decodeTerminalImage(
+      data,
+      format: format,
+      width: width,
+      height: height,
+    );
+
+    if (image == null || !anchor.attached) {
+      anchor.dispose();
+      return;
+    }
+
+    final imageId = graphics.storeImage(image);
+    graphics.placeImage(imageId, anchor);
+    notifyListeners();
+  }
 }
