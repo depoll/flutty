@@ -1723,6 +1723,41 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.paintLine(canvas, offset, line);
   }
 
+  /// Draws the styled (SGR) cell underlines for [line] in a pass separate from
+  /// the glyphs. Curly/dotted/etc. underlines extend into the descender space
+  /// below the cell, so drawing them after every line's opaque background keeps
+  /// the next line's background from clipping the wave's lower edge.
+  void paintLineCellUnderlines(Canvas canvas, Offset offset, BufferLine line) {
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final charWidth = cellData.content >> CellContent.widthShift;
+      final charCode = cellData.content & CellContent.codepointMask;
+      final flags = cellData.flags;
+      if (charCode != 0 &&
+          flags & CellFlags.invisible == 0 &&
+          flags & CellFlags.underline != 0) {
+        final styleIndex =
+            (flags & CellFlags.underlineStyleMask) >>
+            CellFlags.underlineStyleShift;
+        final underlineColor = cellData.underlineColor != 0
+            ? resolveForegroundColor(cellData.underlineColor)
+            : resolveMonkeyTerminalCellForegroundColor(cellData);
+        paintTerminalCellUnderline(
+          canvas,
+          offset.translate(i * cellWidth, 0),
+          cellSize,
+          styleIndex,
+          underlineColor,
+        );
+      }
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
   void paintLineBackground(Canvas canvas, Offset offset, BufferLine line) {
     if (line.length == 0) {
       return;
@@ -1956,22 +1991,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
-
-    if (cellFlags & CellFlags.underline != 0) {
-      final styleIndex =
-          (cellFlags & CellFlags.underlineStyleMask) >>
-          CellFlags.underlineStyleShift;
-      final underlineColor = cellData.underlineColor != 0
-          ? resolveForegroundColor(cellData.underlineColor)
-          : color;
-      paintTerminalCellUnderline(
-        canvas,
-        offset,
-        cellSize,
-        styleIndex,
-        underlineColor,
-      );
-    }
   }
 
   bool _paintBlockElementForeground(
@@ -3455,6 +3474,17 @@ class MonkeyRenderTerminal extends RenderBox
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       _painter.paintLine(canvas, _linePaintOffset(offset, i), lines[i]);
+    }
+
+    // Styled underlines are drawn as a separate pass, after every line's opaque
+    // background, so a curly/dotted underline that dips into the descender space
+    // below its cell is not clipped by the next line's background.
+    for (var i = effectFirstLine; i <= effectLastLine; i++) {
+      _painter.paintLineCellUnderlines(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+      );
     }
 
     _paintGraphics(canvas, offset, effectFirstLine, effectLastLine);
