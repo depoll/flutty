@@ -23,6 +23,14 @@ out of scope.
   in a new per-cell word and rendered via `TextStyle.decorationColor`, so e.g.
   neovim diagnostics can draw a red undercurl. Supports both the colon
   (`58:2::r:g:b`, `58:5:n`) and legacy semicolon forms.
+* Kitty graphics protocol (`APC _G … ST`). Transmitted images are parsed and
+  consumed (so payloads never leak as text), decoded (PNG/JPEG/GIF via Flutter's
+  codecs, or raw RGBA/RGB), and composited over the cell grid. Each placement is
+  anchored to its cursor cell with a `CellAnchor` so it tracks scrollback and
+  reflow. Chunked transmissions and a 16 MiB cap are handled.
+* Robustness: CSI parameter/sub-parameter cap (256) to avoid OOM on malformed
+  sequences, removal of a dead `case 10061000`, and `withOpacity` ->
+  `withValues`.
 
 ### Evaluated but intentionally not ported
 * Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end

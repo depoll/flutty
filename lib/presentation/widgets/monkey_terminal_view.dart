@@ -3441,6 +3441,8 @@ class MonkeyRenderTerminal extends RenderBox
       _painter.paintLine(canvas, _linePaintOffset(offset, i), lines[i]);
     }
 
+    _paintGraphics(canvas, offset, effectFirstLine, effectLastLine);
+
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
         _terminal.buffer.absoluteCursorY <= effectLastLine) {
       if (_isComposingText) {
@@ -3475,6 +3477,69 @@ class MonkeyRenderTerminal extends RenderBox
     _contentOrigin.dx,
     (row * _painter.cellSize.height + _lineOffset).truncateToDouble(),
   );
+
+  /// Composites Kitty-graphics-protocol images over the cell grid for the
+  /// visible rows ([firstLine]..[lastLine], inclusive).
+  void _paintGraphics(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+  ) {
+    final graphics = _terminal.graphics;
+    if (!graphics.hasPlacements) {
+      return;
+    }
+
+    final cellWidth = _painter.cellSize.width;
+    final cellHeight = _painter.cellSize.height;
+
+    for (final placement in graphics.placements) {
+      if (!placement.attached) {
+        continue;
+      }
+      final stored = graphics.imageById(placement.imageId);
+      if (stored == null) {
+        continue;
+      }
+      final image = stored.image;
+
+      final double dstWidth;
+      final double dstHeight;
+      if (placement.cols > 0 && placement.rows > 0) {
+        dstWidth = placement.cols * cellWidth;
+        dstHeight = placement.rows * cellHeight;
+      } else {
+        // No explicit cell span: fit the image width within the remaining row.
+        final maxWidth =
+            (_terminal.viewWidth - placement.col).clamp(
+              1,
+              _terminal.viewWidth,
+            ) *
+            cellWidth;
+        final scale = image.width > maxWidth ? maxWidth / image.width : 1.0;
+        dstWidth = image.width * scale;
+        dstHeight = image.height * scale;
+      }
+
+      final rowSpan = (dstHeight / cellHeight).ceil();
+      if (placement.row + rowSpan < firstLine || placement.row > lastLine) {
+        continue;
+      }
+
+      final topLeft = _linePaintOffset(
+        offset,
+        placement.row,
+      ).translate(placement.col * cellWidth, 0);
+
+      canvas.drawImageRect(
+        image,
+        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+        Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
+        Paint()..filterQuality = FilterQuality.medium,
+      );
+    }
+  }
 
   void _paintCursor(Canvas canvas, Offset offset) {
     final cellData = _cursorCellDataAtCursor();

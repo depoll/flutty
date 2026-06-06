@@ -1018,7 +1018,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     final imageId = graphics.storeImage(image);
-    graphics.placeImage(imageId, anchor);
+    graphics.placeImage(
+      imageId,
+      anchor,
+      cols: int.tryParse(args['c'] ?? '') ?? 0,
+      rows: int.tryParse(args['r'] ?? '') ?? 0,
+    );
     notifyListeners();
   }
 }

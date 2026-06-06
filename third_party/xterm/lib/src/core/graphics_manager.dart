@@ -27,6 +27,8 @@ class TerminalImagePlacement {
     required this.placementId,
     required this.imageId,
     required this.anchor,
+    this.cols = 0,
+    this.rows = 0,
   });
 
   /// Placement id assigned by the [GraphicsManager].
@@ -37,6 +39,14 @@ class TerminalImagePlacement {
 
   /// Anchor for the top-left cell of the placement.
   final CellAnchor anchor;
+
+  /// Number of columns the image should occupy (from `c=`), or `0` to size the
+  /// image from its own pixel dimensions.
+  final int cols;
+
+  /// Number of rows the image should occupy (from `r=`), or `0` to size the
+  /// image from its own pixel dimensions.
+  final int rows;
 
   /// Column of the top-left cell.
   int get col => anchor.x;
@@ -82,12 +92,20 @@ class GraphicsManager {
     return id;
   }
 
-  /// Creates a placement of [imageId] anchored at [anchor].
-  TerminalImagePlacement placeImage(int imageId, CellAnchor anchor) {
+  /// Creates a placement of [imageId] anchored at [anchor], optionally spanning
+  /// [cols] x [rows] cells.
+  TerminalImagePlacement placeImage(
+    int imageId,
+    CellAnchor anchor, {
+    int cols = 0,
+    int rows = 0,
+  }) {
     final placement = TerminalImagePlacement(
       placementId: _nextPlacementId++,
       imageId: imageId,
       anchor: anchor,
+      cols: cols,
+      rows: rows,
     );
     _placements.add(placement);
     return placement;
