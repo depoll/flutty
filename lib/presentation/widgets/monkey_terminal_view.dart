@@ -1937,6 +1937,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
         overline: overline,
         strikethrough: strikethrough,
         underlineStyle: terminalUnderlineDecorationStyle(cellFlags),
+        decorationColor: cellData.underlineColor != 0
+            ? resolveForegroundColor(cellData.underlineColor)
+            : null,
       );
 
       var char = String.fromCharCode(charCode);

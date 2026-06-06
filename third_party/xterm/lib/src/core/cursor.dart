@@ -7,7 +7,16 @@ class CursorStyle {
 
   int attrs;
 
-  CursorStyle({this.foreground = 0, this.background = 0, this.attrs = 0});
+  /// Underline color, encoded like [foreground]/[background]. `0` means the
+  /// underline uses the text color.
+  int underlineColor;
+
+  CursorStyle({
+    this.foreground = 0,
+    this.background = 0,
+    this.attrs = 0,
+    this.underlineColor = 0,
+  });
 
   static final empty = CursorStyle();
 
@@ -160,10 +169,23 @@ class CursorStyle {
     background = 0; // | CellColor.normal;
   }
 
+  void setUnderlineColor256(int color) {
+    underlineColor = color | CellColor.palette;
+  }
+
+  void setUnderlineColorRgb(int r, int g, int b) {
+    underlineColor = (r << 16) | (g << 8) | b | CellColor.rgb;
+  }
+
+  void resetUnderlineColor() {
+    underlineColor = 0;
+  }
+
   void reset() {
     foreground = 0;
     background = 0;
     attrs = 0;
+    underlineColor = 0;
   }
 }
 

@@ -83,6 +83,7 @@ class TerminalStyle {
     bool strikethrough = false,
     bool overline = false,
     TextDecorationStyle underlineStyle = TextDecorationStyle.solid,
+    Color? decorationColor,
   }) {
     final decorations = <TextDecoration>[
       if (underline) TextDecoration.underline,
@@ -101,9 +102,10 @@ class TerminalStyle {
       decoration: decorations.isEmpty
           ? TextDecoration.none
           : TextDecoration.combine(decorations),
-      // Flutter applies a single decoration style to all lines at once, so the
-      // underline style also governs any overline/strikethrough drawn here.
+      // Flutter applies a single decoration style/color to all lines at once,
+      // so the underline style/color also governs any overline/strikethrough.
       decorationStyle: decorations.isEmpty ? null : underlineStyle,
+      decorationColor: decorations.isEmpty ? null : decorationColor,
     );
   }
 

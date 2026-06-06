@@ -6,6 +6,7 @@ class CellData {
     required this.background,
     required this.flags,
     required this.content,
+    this.underlineColor = 0,
   });
 
   factory CellData.empty() {
@@ -14,6 +15,7 @@ class CellData {
       background: 0,
       flags: 0,
       content: 0,
+      underlineColor: 0,
     );
   }
 
@@ -25,13 +27,18 @@ class CellData {
 
   int content;
 
+  /// Underline color, encoded like [foreground]/[background] (a [CellColor]
+  /// type plus value). `0` means "use the text color".
+  int underlineColor;
+
   int getHash() {
-    return hashValues(foreground, background, flags, content);
+    return hashValues(foreground, background, flags, content, underlineColor);
   }
 
   @override
   String toString() {
-    return 'CellData{foreground: $foreground, background: $background, flags: $flags, content: $content}';
+    return 'CellData{foreground: $foreground, background: $background, '
+        'flags: $flags, content: $content, underlineColor: $underlineColor}';
   }
 }
 

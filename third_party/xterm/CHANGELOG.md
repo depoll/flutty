@@ -18,10 +18,13 @@ out of scope.
   strikethrough (`SGR 9`) is rendered; both were previously parsed but ignored
   by the painter.
 
+### Synced from kterm.dart (lbp0200/kterm.dart)
+* Colored underline (`CSI 58 ... m` / `CSI 59 m`). The underline color is stored
+  in a new per-cell word and rendered via `TextStyle.decorationColor`, so e.g.
+  neovim diagnostics can draw a red undercurl. Supports both the colon
+  (`58:2::r:g:b`, `58:5:n`) and legacy semicolon forms.
+
 ### Evaluated but intentionally not ported
-* Colored underline (`SGR 58/59`) requires a fifth per-cell word (~25% more cell
-  memory across all scrollback) to store the underline color; deferred pending a
-  product decision on that tradeoff. The underline *styles* above are supported.
 * Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end
   marker would otherwise freeze the view), which conflicts with this package's
   deliberately stateless, timer-free core. Flutter already coalesces repaints
