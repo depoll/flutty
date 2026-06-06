@@ -3762,7 +3762,8 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 				break
 			}
 			payload := data[i+2 : i+2+end]
-			if isReplayUnsafeOscQuery(payload) {
+			if isReplayUnsafeOscQuery(payload) ||
+				isReplayUnsafeOscNotification(payload) {
 				stripEnd = i + 2 + end + terminatorLength
 			}
 		}
@@ -3825,6 +3826,32 @@ func isReplayUnsafeOscQuery(payload []byte) bool {
 	}
 	switch code {
 	case "4", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19":
+		return true
+	default:
+		return false
+	}
+}
+
+// isReplayUnsafeOscNotification reports whether payload is a desktop
+// notification escape (OSC 9 / 777 / 99). These are transient events, so
+// replaying them when a window is reattached would re-fire the notification.
+func isReplayUnsafeOscNotification(payload []byte) bool {
+	code, rest, ok := strings.Cut(string(payload), ";")
+	if !ok {
+		return false
+	}
+	switch code {
+	case "99", "777":
+		return true
+	case "9":
+		// iTerm2 notifications are `OSC 9 ; <text>`. ConEmu reuses OSC 9 with a
+		// numeric sub-command (9;4 progress, 9;9 working dir, ...); leave those
+		// alone since they aren't notifications.
+		if first, _, hasSub := strings.Cut(rest, ";"); hasSub {
+			if _, err := strconv.Atoi(strings.TrimSpace(first)); err == nil {
+				return false
+			}
+		}
 		return true
 	default:
 		return false

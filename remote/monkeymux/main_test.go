@@ -1532,6 +1532,37 @@ func TestReplayStripDoesNotCopyCleanHistory(t *testing.T) {
 	}
 }
 
+func TestReplayStripRemovesDesktopNotifications(t *testing.T) {
+	history := []byte("before" +
+		"\x1b]9;build finished\x07" +
+		"\x1b]777;notify;Deploy;done\x07" +
+		"\x1b]99;i=1:d=0;Tests\x1b\\" +
+		"\x1b]99;i=1:p=body;412 ok\x1b\\" +
+		"middle" +
+		"\x1b]9;4;1;50\x07" + // ConEmu progress: not a notification
+		"after")
+
+	replay := string(stripTerminalQueriesFromReplay(history))
+
+	for _, stripped := range []string{
+		"build finished",
+		"\x1b]777;notify;Deploy;done\x07",
+		"412 ok",
+	} {
+		if strings.Contains(replay, stripped) {
+			t.Fatalf("replay retained notification %q in %q", stripped, replay)
+		}
+	}
+	if !strings.Contains(replay, "\x1b]9;4;1;50\x07") {
+		t.Fatalf("replay stripped ConEmu OSC 9 progress: %q", replay)
+	}
+	if !strings.Contains(replay, "before") ||
+		!strings.Contains(replay, "middle") ||
+		!strings.Contains(replay, "after") {
+		t.Fatalf("replay = %q, want normal output preserved", replay)
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}

@@ -990,6 +990,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // active at command time so a later buffer switch can't misplace it.
     final buffer = _buffer;
     final anchor = buffer.currentLine.createAnchor(buffer.cursorX);
+    final generation = buffer.graphics.generation;
 
     // Move the cursor below the image so following output does not overlap it.
     final rows = int.tryParse(args['r'] ?? '') ?? 0;
@@ -997,7 +998,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       buffer.index();
     }
 
-    unawaited(_finalizeGraphics(args, data, anchor, buffer.graphics));
+    unawaited(
+      _finalizeGraphics(args, data, anchor, buffer.graphics, generation),
+    );
   }
 
   Future<void> _finalizeGraphics(
@@ -1005,6 +1008,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     Uint8List data,
     CellAnchor anchor,
     GraphicsManager manager,
+    int generation,
   ) async {
     final format = int.tryParse(args['f'] ?? '') ?? 100;
     final width = int.tryParse(args['s'] ?? '') ?? 0;
@@ -1017,7 +1021,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       height: height,
     );
 
-    if (image == null || !anchor.attached) {
+    // Skip placing if the decode failed, the anchored cell is gone, or the
+    // screen was cleared while we were decoding (e.g. a MonkeyMux replay clear
+    // racing this decode — placing now would leave a duplicate/stale image).
+    if (image == null || !anchor.attached || manager.generation != generation) {
       anchor.dispose();
       return;
     }
