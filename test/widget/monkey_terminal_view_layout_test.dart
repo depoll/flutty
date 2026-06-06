@@ -293,14 +293,22 @@ void main() {
           textScaler: TextScaler.noScaling,
         );
         final width = painter.cellSize.width.ceil();
-        final height = painter.cellSize.height.ceil();
+        // Add headroom below the cell so a curly underline that dips into the
+        // descender space is captured (it is drawn in a separate overlay pass).
+        final height = painter.cellSize.height.ceil() + 8;
         final recorder = ui.PictureRecorder();
         final canvas = Canvas(recorder)
           ..drawRect(
             Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
             Paint()..color = theme.background,
           );
-        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+        painter
+          ..paintLine(canvas, Offset.zero, terminal.buffer.lines[0])
+          ..paintLineCellUnderlines(
+            canvas,
+            Offset.zero,
+            terminal.buffer.lines[0],
+          );
         final image = await recorder.endRecording().toImage(width, height);
         return (await image.toByteData())!;
       }
@@ -347,14 +355,22 @@ void main() {
           textScaler: TextScaler.noScaling,
         );
         final width = painter.cellSize.width.ceil();
-        final height = painter.cellSize.height.ceil();
+        // Add headroom below the cell so a curly underline that dips into the
+        // descender space is captured (it is drawn in a separate overlay pass).
+        final height = painter.cellSize.height.ceil() + 8;
         final recorder = ui.PictureRecorder();
         final canvas = Canvas(recorder)
           ..drawRect(
             Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
             Paint()..color = theme.background,
           );
-        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+        painter
+          ..paintLine(canvas, Offset.zero, terminal.buffer.lines[0])
+          ..paintLineCellUnderlines(
+            canvas,
+            Offset.zero,
+            terminal.buffer.lines[0],
+          );
         final image = await recorder.endRecording().toImage(width, height);
         return (await image.toByteData())!;
       }
