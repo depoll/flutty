@@ -118,6 +118,8 @@ class _BackgroundLifecycleBridgeState
   StreamSubscription<List<Host>>? _homeScreenShortcutHostsSubscription;
   StreamSubscription<Set<int>>? _pinnedHomeScreenShortcutHostsSubscription;
   StreamSubscription<TmuxAlertNotificationPayload>? _tmuxAlertTapSubscription;
+  StreamSubscription<TerminalNotificationPayload>?
+  _terminalNotificationTapSubscription;
   ProviderSubscription<AuthState>? _authStateSubscription;
   List<Host> _latestHomeScreenShortcutHosts = const <Host>[];
   Set<int> _latestPinnedHomeScreenShortcutHostIds = const <int>{};
@@ -125,6 +127,8 @@ class _BackgroundLifecycleBridgeState
   bool _hasLoadedPinnedHomeScreenShortcutHostIds = false;
   TmuxAlertNotificationPayload? _pendingTmuxAlertNavigation;
   bool _isTmuxAlertNavigationQueued = false;
+  TerminalNotificationPayload? _pendingTerminalNavigation;
+  bool _isTerminalNavigationQueued = false;
 
   @override
   void initState() {
@@ -156,6 +160,7 @@ class _BackgroundLifecycleBridgeState
     unawaited(_homeScreenShortcutHostsSubscription?.cancel());
     unawaited(_pinnedHomeScreenShortcutHostsSubscription?.cancel());
     unawaited(_tmuxAlertTapSubscription?.cancel());
+    unawaited(_terminalNotificationTapSubscription?.cancel());
     _authStateSubscription?.close();
     super.dispose();
   }
@@ -165,12 +170,16 @@ class _BackgroundLifecycleBridgeState
     _tmuxAlertTapSubscription = notificationService.tmuxAlertTaps.listen(
       _handleTmuxAlertNotification,
     );
+    _terminalNotificationTapSubscription = notificationService
+        .terminalNotificationTaps
+        .listen(_handleTerminalNotification);
     _authStateSubscription = ref.listenManual<AuthState>(authStateProvider, (
       previous,
       next,
     ) {
       if (_canOpenTmuxAlertNotification(next)) {
         _queuePendingTmuxAlertNavigation();
+        _queuePendingTerminalNavigation();
       }
     });
   }
@@ -212,6 +221,39 @@ class _BackgroundLifecycleBridgeState
       }
       _pendingTmuxAlertNavigation = null;
       openTmuxAlertNotificationStack(
+        router: ref.read(routerProvider),
+        payload: payload,
+        notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _handleTerminalNotification(TerminalNotificationPayload payload) {
+    _pendingTerminalNavigation = payload;
+    _queuePendingTerminalNavigation();
+  }
+
+  void _queuePendingTerminalNavigation() {
+    if (_isTerminalNavigationQueued ||
+        _pendingTerminalNavigation == null ||
+        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+      return;
+    }
+
+    _isTerminalNavigationQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalNavigationQueued = false;
+      if (!mounted ||
+          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+        return;
+      }
+      final payload = _pendingTerminalNavigation;
+      if (payload == null) {
+        return;
+      }
+      _pendingTerminalNavigation = null;
+      openTerminalNotificationStack(
         router: ref.read(routerProvider),
         payload: payload,
         notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',

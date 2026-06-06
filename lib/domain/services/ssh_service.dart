@@ -22,8 +22,11 @@ import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
+import 'local_notification_service.dart';
+import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
 import 'terminal_hyperlink_tracker.dart';
+import 'terminal_notification.dart';
 import 'wifi_network_service.dart';
 
 part 'ssh_session_runtime.dart';
@@ -2622,6 +2625,9 @@ class SshSession {
   final _metadataListeners = <VoidCallback>{};
   final _connectionHealthFailures =
       StreamController<_SshConnectionHealthFailure>.broadcast();
+  final _terminalNotificationParser = TerminalNotificationParser();
+  final _terminalNotifications =
+      StreamController<TerminalNotificationRequest>.broadcast();
   bool _connectionHealthFailureReported = false;
   String? _terminalPreview;
   TerminalPreviewSnapshot? _terminalPreviewSnapshot;
@@ -2645,6 +2651,17 @@ class SshSession {
 
   Stream<_SshConnectionHealthFailure> get _connectionHealthFailureStream =>
       _connectionHealthFailures.stream;
+
+  /// Desktop-notification requests emitted by the remote shell via OSC 9 / 777
+  /// / 99 escape sequences.
+  Stream<TerminalNotificationRequest> get terminalNotifications =>
+      _terminalNotifications.stream;
+
+  /// Routes a private OSC sequence exactly as the live terminal does. Exposed so
+  /// tests can exercise the OSC dispatch without a real shell channel.
+  @visibleForTesting
+  void debugHandlePrivateOsc(String code, List<String> args) =>
+      _handlePrivateOsc(code, args);
 
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
@@ -2915,7 +2932,20 @@ class SshSession {
       return;
     }
 
+    if (code == '9' || code == '99' || code == '777') {
+      _handleTerminalNotificationOsc(code, args);
+      return;
+    }
+
     _logUnhandledPrivateOsc(code, args);
+  }
+
+  void _handleTerminalNotificationOsc(String code, List<String> args) {
+    final request = _terminalNotificationParser.handleOsc(code, args);
+    if (request == null || _terminalNotifications.isClosed) {
+      return;
+    }
+    _terminalNotifications.add(request);
   }
 
   void _logUnhandledPrivateOsc(String code, List<String> args) {
@@ -3460,6 +3490,7 @@ class SshSession {
     await closeShell();
     discardSftpClient(null);
     await _connectionHealthFailures.close();
+    await _terminalNotifications.close();
     client.close();
     for (final dependentClient in dependentClients) {
       dependentClient.close();
@@ -3685,6 +3716,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   final Map<int, StreamSubscription<_SshConnectionHealthFailure>>
   _connectionHealthFailureSubscriptions = {};
+  final Map<int, StreamSubscription<TerminalNotificationRequest>>
+  _terminalNotificationSubscriptions = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -3704,6 +3737,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         unawaited(subscription.cancel());
       }
       _connectionHealthFailureSubscriptions.clear();
+      for (final subscription in _terminalNotificationSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _terminalNotificationSubscriptions.clear();
     });
     _connectionHostIds.clear();
     _connectionSessionTitles.clear();
@@ -4009,7 +4046,59 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
             ),
           ),
         );
+    final existingNotificationSubscription = _terminalNotificationSubscriptions
+        .remove(session.connectionId);
+    if (existingNotificationSubscription != null) {
+      unawaited(existingNotificationSubscription.cancel());
+    }
+    _terminalNotificationSubscriptions[session.connectionId] = session
+        .terminalNotifications
+        .listen(
+          (request) => unawaited(_showTerminalNotification(session, request)),
+        );
   }
+
+  Future<void> _showTerminalNotification(
+    SshSession session,
+    TerminalNotificationRequest request,
+  ) async {
+    if (!ref.mounted) return;
+    if (!ref.read(terminalNotificationsNotifierProvider)) return;
+    final title = request.title ?? await _resolveSessionLabel(session);
+    if (!ref.mounted) return;
+    await ref
+        .read(localNotificationServiceProvider)
+        .showTerminalNotification(
+          notificationId: _terminalNotificationId(session.connectionId),
+          title: title,
+          body: request.body,
+          payload: TerminalNotificationPayload(
+            hostId: session.hostId,
+            connectionId: session.connectionId,
+          ),
+        );
+  }
+
+  Future<String> _resolveSessionLabel(SshSession session) async {
+    final windowTitle = session.windowTitle;
+    if (windowTitle != null && windowTitle.trim().isNotEmpty) {
+      return windowTitle.trim();
+    }
+    try {
+      final host = await ref
+          .read(hostRepositoryProvider)
+          .getById(session.hostId);
+      if (host != null && host.label.trim().isNotEmpty) {
+        return host.label.trim();
+      }
+    } on Object {
+      // Fall through to the generic label below.
+    }
+    return 'Terminal';
+  }
+
+  int _terminalNotificationId(int connectionId) =>
+      Object.hash('terminal-notification', connectionId) & 0x7fffffff;
 
   void _detachSessionListeners(int connectionId, {SshSession? session}) {
     (session ?? _sshService.getSession(connectionId))?.removePreviewListener(
@@ -4023,6 +4112,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         .remove(connectionId);
     if (healthFailureSubscription != null) {
       unawaited(healthFailureSubscription.cancel());
+    }
+    final notificationSubscription = _terminalNotificationSubscriptions.remove(
+      connectionId,
+    );
+    if (notificationSubscription != null) {
+      unawaited(notificationSubscription.cancel());
     }
   }
 
