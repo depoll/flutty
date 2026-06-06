@@ -1925,7 +1925,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
-      final underline = cellFlags & CellFlags.underline != 0;
       final overline = cellFlags & CellFlags.overline != 0;
       final strikethrough = cellFlags & CellFlags.strikethrough != 0;
 
@@ -1933,17 +1932,18 @@ class MonkeyTerminalPainter extends TerminalPainter {
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
         italic: cellFlags & CellFlags.italic != 0,
-        underline: underline,
+        // The underline is drawn manually below so wavy/dotted/dashed/double
+        // styles render and connect across cells; Flutter's per-glyph
+        // decoration cannot.
         overline: overline,
         strikethrough: strikethrough,
-        underlineStyle: terminalUnderlineDecorationStyle(cellFlags),
         decorationColor: cellData.underlineColor != 0
             ? resolveForegroundColor(cellData.underlineColor)
             : null,
       );
 
       var char = String.fromCharCode(charCode);
-      if ((underline || overline || strikethrough) && charCode == 0x20) {
+      if ((overline || strikethrough) && charCode == 0x20) {
         char = String.fromCharCode(0xA0);
       }
 
@@ -1956,6 +1956,22 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+
+    if (cellFlags & CellFlags.underline != 0) {
+      final styleIndex =
+          (cellFlags & CellFlags.underlineStyleMask) >>
+          CellFlags.underlineStyleShift;
+      final underlineColor = cellData.underlineColor != 0
+          ? resolveForegroundColor(cellData.underlineColor)
+          : color;
+      paintTerminalCellUnderline(
+        canvas,
+        offset,
+        cellSize,
+        styleIndex,
+        underlineColor,
+      );
+    }
   }
 
   bool _paintBlockElementForeground(
