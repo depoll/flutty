@@ -174,6 +174,10 @@ class TerminalPainter {
     final charCode = cellData.content & CellContent.codepointMask;
     if (charCode == 0) return;
 
+    // Conceal (SGR 8): the cell keeps its content for selection/copy but the
+    // glyph is not drawn.
+    if (cellData.flags & CellFlags.invisible != 0) return;
+
     final cacheKey = cellData.getHash() ^ _textScaler.hashCode;
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
@@ -188,21 +192,28 @@ class TerminalPainter {
         color = color.withOpacity(0.5);
       }
 
+      final underline = cellFlags & CellFlags.underline != 0;
+      final overline = cellFlags & CellFlags.overline != 0;
+      final strikethrough = cellFlags & CellFlags.strikethrough != 0;
+
       final style = _textStyle.toTextStyle(
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
         italic: cellFlags & CellFlags.italic != 0,
-        underline: cellFlags & CellFlags.underline != 0,
+        underline: underline,
+        overline: overline,
+        strikethrough: strikethrough,
+        underlineStyle: _underlineDecorationStyle(cellFlags),
       );
 
-      // Flutter does not draw an underline below a space which is not between
-      // other regular characters. As only single characters are drawn, this
-      // will never produce an underline below a space in the terminal. As a
-      // workaround the regular space CodePoint 0x20 is replaced with
-      // the CodePoint 0xA0. This is a non breaking space and a underline can be
-      // drawn below it.
+      // Flutter does not draw a line decoration below/over/through a space
+      // which is not between other regular characters. As only single
+      // characters are drawn, this will never produce a decoration on a space
+      // in the terminal. As a workaround the regular space CodePoint 0x20 is
+      // replaced with the CodePoint 0xA0, a non breaking space below which a
+      // line can be drawn.
       var char = String.fromCharCode(charCode);
-      if (cellFlags & CellFlags.underline != 0 && charCode == 0x20) {
+      if ((underline || overline || strikethrough) && charCode == 0x20) {
         char = String.fromCharCode(0xA0);
       }
 
@@ -215,6 +226,26 @@ class TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+  }
+
+  /// Translates the underline-style bits of [flags] into a Flutter
+  /// [TextDecorationStyle].
+  @pragma('vm:prefer-inline')
+  TextDecorationStyle _underlineDecorationStyle(int flags) {
+    final style =
+        (flags & CellFlags.underlineStyleMask) >> CellFlags.underlineStyleShift;
+    switch (style) {
+      case 2: // UnderlineStyle.double
+        return TextDecorationStyle.double;
+      case 3: // UnderlineStyle.curly
+        return TextDecorationStyle.wavy;
+      case 4: // UnderlineStyle.dotted
+        return TextDecorationStyle.dotted;
+      case 5: // UnderlineStyle.dashed
+        return TextDecorationStyle.dashed;
+      default: // 0 (legacy) and 1 (single)
+        return TextDecorationStyle.solid;
+    }
   }
 
   /// Paints the background of a cell represented by [cellData] to [canvas] at

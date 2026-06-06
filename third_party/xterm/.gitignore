@@ -4,3 +4,6 @@
 .flutter-plugins-dependencies
 .packages
 build/
+
+# Flutter golden-test failure output.
+failures/

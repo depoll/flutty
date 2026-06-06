@@ -68,5 +68,52 @@ void main() {
         verify(parser.handler.setBackgroundColorRgb(0, 0, 0));
       });
     });
+
+    group('SGR underline and overline', () {
+      test('legacy single underline (4)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[4m');
+        verify(parser.handler.setCursorUnderline());
+      });
+
+      test('curly underline (4:3)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[4:3m');
+        verify(parser.handler.setCursorUnderlineStyle(UnderlineStyle.curly));
+      });
+
+      test('dotted underline (4:4)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[4:4m');
+        verify(parser.handler.setCursorUnderlineStyle(UnderlineStyle.dotted));
+      });
+
+      test('underline off via sub-parameter (4:0)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[4:0m');
+        verify(parser.handler.setCursorUnderlineStyle(UnderlineStyle.none));
+      });
+
+      test('double underline (21)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[21m');
+        verify(parser.handler.setCursorUnderlineStyle(UnderlineStyle.double));
+      });
+
+      test('22 clears both bold and faint', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[22m');
+        verify(parser.handler.unsetCursorBold());
+        verify(parser.handler.unsetCursorFaint());
+      });
+
+      test('overline on and off (53 / 55)', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[53m');
+        verify(parser.handler.setCursorOverline());
+        parser.write('\x1b[55m');
+        verify(parser.handler.unsetCursorOverline());
+      });
+    });
   });
 }

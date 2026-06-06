@@ -44,6 +44,25 @@ abstract class CellAttr {
   static const inverse = 1 << 5;
   static const invisible = 1 << 6;
   static const strikethrough = 1 << 7;
+
+  // Underline style occupies bits 8..10 and holds an [UnderlineStyle] index.
+  // Must stay in sync with [CellFlags] in cell_flags.dart, which is the
+  // painter-facing view of the same attribute integer.
+  static const underlineStyleShift = 8;
+  static const underlineStyleMask = 7 << underlineStyleShift;
+
+  static const overline = 1 << 11;
+}
+
+/// Visual style of an underline, matching the values used by the `CSI 4 : x m`
+/// SGR sub-parameter in xterm.js.
+enum UnderlineStyle {
+  none,
+  single,
+  double,
+  curly,
+  dotted,
+  dashed,
 }
 
 abstract class CellColor {

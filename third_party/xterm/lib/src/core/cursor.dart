@@ -24,7 +24,24 @@ class CursorStyle {
   }
 
   void setUnderline() {
+    attrs &= ~CellAttr.underlineStyleMask;
     attrs |= CellAttr.underline;
+  }
+
+  /// Applies an underline [style]. [UnderlineStyle.none] removes the underline.
+  void setUnderlineStyle(UnderlineStyle style) {
+    attrs &= ~CellAttr.underlineStyleMask;
+    if (style == UnderlineStyle.none) {
+      attrs &= ~CellAttr.underline;
+    } else {
+      attrs |= CellAttr.underline;
+      attrs |= (style.index << CellAttr.underlineStyleShift) &
+          CellAttr.underlineStyleMask;
+    }
+  }
+
+  void setOverline() {
+    attrs |= CellAttr.overline;
   }
 
   void setBlink() {
@@ -57,6 +74,7 @@ class CursorStyle {
 
   void unsetUnderline() {
     attrs &= ~CellAttr.underline;
+    attrs &= ~CellAttr.underlineStyleMask;
   }
 
   void unsetBlink() {
@@ -75,6 +93,10 @@ class CursorStyle {
     attrs &= ~CellAttr.strikethrough;
   }
 
+  void unsetOverline() {
+    attrs &= ~CellAttr.overline;
+  }
+
   bool get isBold => (attrs & CellAttr.bold) != 0;
 
   bool get isFaint => (attrs & CellAttr.faint) != 0;
@@ -88,6 +110,23 @@ class CursorStyle {
   bool get isInverse => (attrs & CellAttr.inverse) != 0;
 
   bool get isInvisible => (attrs & CellAttr.invisible) != 0;
+
+  bool get isStrikethrough => (attrs & CellAttr.strikethrough) != 0;
+
+  bool get isOverline => (attrs & CellAttr.overline) != 0;
+
+  UnderlineStyle get underlineStyle {
+    if ((attrs & CellAttr.underline) == 0) {
+      return UnderlineStyle.none;
+    }
+    final index =
+        (attrs & CellAttr.underlineStyleMask) >> CellAttr.underlineStyleShift;
+    // A set underline bit with a 0 style index means the legacy single style.
+    if (index == 0 || index >= UnderlineStyle.values.length) {
+      return UnderlineStyle.single;
+    }
+    return UnderlineStyle.values[index];
+  }
 
   void setForegroundColor16(int color) {
     foreground = color | CellColor.named;
