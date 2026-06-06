@@ -6,6 +6,7 @@ import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/charset.dart';
 import 'package:xterm/src/core/cursor.dart';
+import 'package:xterm/src/core/graphics_manager.dart';
 import 'package:xterm/src/core/reflow.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
@@ -21,6 +22,10 @@ class Buffer {
   /// Characters that break selection when calling [getWordBoundary]. If null,
   /// defaults to [defaultWordSeparators].
   final Set<int>? wordSeparators;
+
+  /// Kitty-graphics-protocol images placed in this buffer. Each buffer (main and
+  /// alternate) keeps its own set so images do not leak between them.
+  final GraphicsManager graphics = GraphicsManager();
 
   Buffer(
     this.terminal, {
@@ -177,6 +182,8 @@ class Buffer {
       line.isWrapped = false;
       line.eraseRange(0, viewWidth, terminal.cursor);
     }
+    // The visible rows were just cleared, so drop any images placed on them.
+    graphics.removePlacementsInRows(scrollBack, scrollBack + viewHeight - 1);
   }
 
   /// Erases the line from the cursor to the end of the line, including the
@@ -368,11 +375,13 @@ class Buffer {
       return;
     }
 
+    graphics.removePlacementsInRows(0, scrollBack - 1);
     lines.trimStart(scrollBack);
   }
 
   /// Clears the viewport and scrollback buffer. Then fill with empty lines.
   void clear() {
+    graphics.clear();
     lines.clear();
     for (int i = 0; i < viewHeight; i++) {
       lines.push(_newEmptyLine());

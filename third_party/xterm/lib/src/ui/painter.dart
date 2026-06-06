@@ -322,6 +322,17 @@ void paintTerminalCellUnderline(
 ) {
   final cellWidth = cellSize.width;
   final cellHeight = cellSize.height;
+  // Guard against non-finite/degenerate cell metrics (e.g. transient values
+  // mid-pinch-zoom): `clamp` lets NaN through, and a NaN offset crashes the
+  // engine. Skip drawing rather than risk it.
+  if (!cellWidth.isFinite ||
+      !cellHeight.isFinite ||
+      !offset.dx.isFinite ||
+      !offset.dy.isFinite ||
+      cellWidth <= 0 ||
+      cellHeight <= 0) {
+    return;
+  }
   final thickness = (cellHeight * 0.07).clamp(1.0, 2.5);
   final baseY = offset.dy + cellHeight - thickness;
   final x0 = offset.dx;

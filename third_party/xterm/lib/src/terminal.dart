@@ -93,9 +93,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   final _emitter = const EscapeEmitter();
 
-  /// Decoded Kitty-graphics-protocol images and their placements. Read by the
-  /// painter to composite images over the cell grid.
-  final GraphicsManager graphics = GraphicsManager();
+  /// Decoded Kitty-graphics-protocol images and their placements for the active
+  /// buffer. Read by the painter to composite images over the cell grid. Each
+  /// buffer keeps its own set, so images do not leak between the main and
+  /// alternate screens.
+  GraphicsManager get graphics => _buffer.graphics;
 
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
@@ -984,22 +986,25 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     // Anchor the placement to the cursor cell now, before the async decode or
-    // any further output can move the cursor.
-    final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
+    // any further output can move the cursor. Bind it to the buffer that is
+    // active at command time so a later buffer switch can't misplace it.
+    final buffer = _buffer;
+    final anchor = buffer.currentLine.createAnchor(buffer.cursorX);
 
     // Move the cursor below the image so following output does not overlap it.
     final rows = int.tryParse(args['r'] ?? '') ?? 0;
     for (var i = 0; i < rows; i++) {
-      _buffer.index();
+      buffer.index();
     }
 
-    unawaited(_finalizeGraphics(args, data, anchor));
+    unawaited(_finalizeGraphics(args, data, anchor, buffer.graphics));
   }
 
   Future<void> _finalizeGraphics(
     Map<String, String> args,
     Uint8List data,
     CellAnchor anchor,
+    GraphicsManager manager,
   ) async {
     final format = int.tryParse(args['f'] ?? '') ?? 100;
     final width = int.tryParse(args['s'] ?? '') ?? 0;
@@ -1017,8 +1022,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    final imageId = graphics.storeImage(image);
-    graphics.placeImage(
+    final imageId = manager.storeImage(image);
+    manager.placeImage(
       imageId,
       anchor,
       cols: int.tryParse(args['c'] ?? '') ?? 0,

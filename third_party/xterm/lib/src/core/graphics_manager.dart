@@ -124,6 +124,27 @@ class GraphicsManager {
     return _placements.length != before;
   }
 
+  /// Removes placements anchored within rows `[firstRow, lastRow]` (inclusive),
+  /// or whose anchor has detached, disposing any images that become
+  /// unreferenced. Used when the screen or scrollback is erased.
+  void removePlacementsInRows(int firstRow, int lastRow) {
+    final orphaned = <int>[];
+    _placements.removeWhere((placement) {
+      final remove = !placement.attached ||
+          (placement.row >= firstRow && placement.row <= lastRow);
+      if (remove) {
+        orphaned.add(placement.imageId);
+        placement.dispose();
+      }
+      return remove;
+    });
+    for (final id in orphaned) {
+      if (!_placements.any((p) => p.imageId == id)) {
+        _images.remove(id)?.image.dispose();
+      }
+    }
+  }
+
   /// Removes every image and placement.
   void clear() {
     for (final placement in _placements) {

@@ -72,4 +72,45 @@ void main() {
       expect(terminal.graphics.hasPlacements, isFalse);
     });
   });
+
+  testWidgets('clearing the screen (CSI 2 J) removes placed images', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
+          '\x1b\\');
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.hasPlacements, isTrue);
+
+      terminal.write('\x1b[2J');
+      expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('images do not leak across the alternate screen', (tester) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
+          '\x1b\\');
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.hasPlacements, isTrue);
+
+      // The alternate screen has its own (empty) image set.
+      terminal.write('\x1b[?47h');
+      expect(terminal.graphics.hasPlacements, isFalse);
+
+      // Returning to the main screen restores the image.
+      terminal.write('\x1b[?47l');
+      expect(terminal.graphics.hasPlacements, isTrue);
+    });
+  });
 }

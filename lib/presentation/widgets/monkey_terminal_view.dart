@@ -3509,6 +3509,15 @@ class MonkeyRenderTerminal extends RenderBox
 
     final cellWidth = _painter.cellSize.width;
     final cellHeight = _painter.cellSize.height;
+    // Guard against the transient zero/non-finite cell metrics that can occur
+    // mid-pinch-zoom: doing cell-size arithmetic (and drawImageRect) with those
+    // values crashes the engine.
+    if (!cellWidth.isFinite ||
+        !cellHeight.isFinite ||
+        cellWidth <= 0 ||
+        cellHeight <= 0) {
+      return;
+    }
 
     for (final placement in graphics.placements) {
       if (!placement.attached) {
@@ -3537,6 +3546,9 @@ class MonkeyRenderTerminal extends RenderBox
         dstWidth = image.width * scale;
         dstHeight = image.height * scale;
       }
+      if (dstWidth <= 0 || dstHeight <= 0) {
+        continue;
+      }
 
       final rowSpan = (dstHeight / cellHeight).ceil();
       if (placement.row + rowSpan < firstLine || placement.row > lastLine) {
@@ -3547,6 +3559,9 @@ class MonkeyRenderTerminal extends RenderBox
         offset,
         placement.row,
       ).translate(placement.col * cellWidth, 0);
+      if (!topLeft.dx.isFinite || !topLeft.dy.isFinite) {
+        continue;
+      }
 
       canvas.drawImageRect(
         image,
