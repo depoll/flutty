@@ -74,12 +74,18 @@ class GraphicsManager {
 
   int _nextImageId = 1;
   int _nextPlacementId = 1;
+  int _generation = 0;
 
   /// Active placements, oldest first.
   List<TerminalImagePlacement> get placements => _placements;
 
   /// Whether any images are currently placed.
   bool get hasPlacements => _placements.isNotEmpty;
+
+  /// Bumped whenever placements are cleared. An asynchronous image decode
+  /// captures this before it starts and skips placing if it changed, so a clear
+  /// that races an in-flight decode cannot leave a stale image behind.
+  int get generation => _generation;
 
   /// Looks up a stored image by id.
   TerminalImage? imageById(int id) => _images[id];
@@ -134,6 +140,7 @@ class GraphicsManager {
   /// that already drew the image keeps its own reference alive, and the image is
   /// reclaimed by the GC finalizer once nothing can paint it.
   void removePlacementsInRows(int firstRow, int lastRow) {
+    _generation++;
     _placements.removeWhere((placement) {
       final remove = !placement.attached ||
           (placement.row >= firstRow && placement.row <= lastRow);
@@ -148,6 +155,7 @@ class GraphicsManager {
   /// Removes every image and placement. The decoded images are dropped rather
   /// than disposed; see [removePlacementsInRows] for why.
   void clear() {
+    _generation++;
     for (final placement in _placements) {
       placement.dispose();
     }

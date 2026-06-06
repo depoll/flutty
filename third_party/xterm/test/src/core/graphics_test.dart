@@ -120,6 +120,40 @@ void main() {
     });
   });
 
+  testWidgets('a clear that races an in-flight decode places no stale image',
+      (tester) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal()..resize(40, 10);
+      // Start the (asynchronous) decode, then clear the screen before it can
+      // finish — as a MonkeyMux replay clear would. The image must not appear.
+      terminal
+        ..write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\')
+        ..write('\x1b[H\x1b[2J\x1b[3J');
+
+      // Give any pending decode time to complete.
+      var waited = 0;
+      while (waited < 600) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(
+        terminal.graphics.hasPlacements,
+        isFalse,
+        reason: 'an image decoded after a clear must be discarded',
+      );
+
+      // A subsequent (replay) image still places exactly one.
+      terminal.write(
+          '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\');
+      waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(1));
+    });
+  });
+
   testWidgets('images do not leak across the alternate screen', (tester) async {
     await tester.runAsync(() async {
       final terminal = Terminal();
