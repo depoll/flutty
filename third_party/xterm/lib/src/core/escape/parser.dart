@@ -233,11 +233,14 @@ class EscapeParser {
     // Sub-parameters of the parameter currently being parsed, populated once a
     // `:` is seen. `null` while the current parameter has no sub-parameters.
     List<int>? sub;
+    // Cap the number of (sub-)parameters to avoid unbounded memory growth from
+    // malformed sequences such as `CSI 1;1;1;...m`, matching kterm.dart.
+    const maxParams = 256;
 
     void commitParam() {
       if (sub != null) {
-        sub!.add(param);
-      } else if (hasParam) {
+        if (sub!.length < maxParams) sub!.add(param);
+      } else if (hasParam && _csi.params.length < maxParams) {
         _csi.params.add(param);
         _csi.subParams.add(const []);
       }
@@ -264,10 +267,12 @@ class EscapeParser {
         // and begins collecting sub-parameters; subsequent `:` push the next
         // sub-parameter value.
         if (sub == null) {
-          sub = <int>[];
-          _csi.params.add(param);
-          _csi.subParams.add(sub!);
-        } else {
+          if (_csi.params.length < maxParams) {
+            sub = <int>[];
+            _csi.params.add(param);
+            _csi.subParams.add(sub!);
+          }
+        } else if (sub!.length < maxParams) {
           sub!.add(param);
         }
         param = 0;
@@ -1080,7 +1085,6 @@ class EscapeParser {
       case 66:
         return handler.setAppKeypadMode(enabled);
       case 1000:
-      case 10061000:
         return enabled
             ? handler.setMouseMode(MouseMode.upDownScroll)
             : handler.setMouseMode(MouseMode.none);

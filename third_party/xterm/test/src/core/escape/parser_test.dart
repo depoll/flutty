@@ -149,5 +149,19 @@ void main() {
         verify(parser.handler.writeChar(0x58));
       });
     });
+
+    group('robustness', () {
+      test('caps the number of CSI parameters without hanging', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        final huge = '\x1b[${List.filled(5000, '1').join(';')}m';
+        expect(() => parser.write(huge), returnsNormally);
+      });
+
+      test('caps the number of colon sub-parameters', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        final huge = '\x1b[38:${List.filled(5000, '1').join(':')}m';
+        expect(() => parser.write(huge), returnsNormally);
+      });
+    });
   });
 }
