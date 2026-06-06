@@ -73,6 +73,47 @@ void main() {
     });
   });
 
+  testWidgets('a viewport image keeps its row after clearing scrollback', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal(maxLines: 1000)..resize(40, 10);
+      // Build some scrollback, then a marker line and the image right below it,
+      // all kept inside the viewport.
+      for (var i = 0; i < 20; i++) {
+        terminal.write('pre $i\r\n');
+      }
+      terminal.write('MARKER\r\n');
+      terminal.write(
+          '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\');
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      int markerRow() {
+        for (var i = 0; i < terminal.buffer.lines.length; i++) {
+          if (terminal.buffer.lines[i].getText().contains('MARKER')) return i;
+        }
+        return -1;
+      }
+
+      expect(terminal.graphics.placements.single.row, markerRow() + 1);
+
+      // Clearing the scrollback (CSI 3 J) shifts every surviving line up; the
+      // image must move with its anchor line, not stay at the old absolute row.
+      terminal.write('\x1b[3J');
+      expect(terminal.graphics.hasPlacements, isTrue);
+      expect(
+        terminal.graphics.placements.single.row,
+        markerRow() + 1,
+        reason:
+            'the image must stay glued to its content after clearScrollback',
+      );
+    });
+  });
+
   testWidgets('clearing the screen (CSI 2 J) removes placed images', (
     tester,
   ) async {
