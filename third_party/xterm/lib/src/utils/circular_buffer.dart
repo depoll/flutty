@@ -217,15 +217,21 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     }
   }
 
-  /// Removes [count] elements starting at [index], shifting all elements after
-  /// [index] to the left.
+  /// Removes [count] elements starting at the front of the list, shifting all
+  /// remaining elements toward index 0.
   ///
-  /// This method is cheap since it does not actually modify the list, but
-  /// instead just adjusts the start index and length.
+  /// The trimmed elements are detached so their [IndexedItem.index] / anchors
+  /// report as removed, and [_absoluteStartIndex] is advanced so the surviving
+  /// elements keep reporting correct indices (matching eviction via [push]).
   void trimStart(int count) {
     if (count > _length) count = _length;
+    if (count <= 0) return;
+    for (var i = 0; i < count; i++) {
+      _dropChild(i);
+    }
     _startIndex += count;
     _startIndex %= _array.length;
+    _absoluteStartIndex += count;
     _length -= count;
   }
 

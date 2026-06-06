@@ -297,6 +297,31 @@ void main() {
       expect(cl[9], 9.indexed);
     });
 
+    test("trim start updates item indices and detaches trimmed items", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
+      final items = List<IndexedValue<int>>.generate(
+        10,
+        (index) => IndexedValue(index),
+      );
+      cl.pushAll(items);
+      expect(items[7].index, 7);
+
+      cl.trimStart(5);
+
+      // Surviving items report indices relative to the new front (matching
+      // eviction via push), and trimmed items are detached.
+      expect(items[5].index, 0);
+      expect(items[7].index, 2);
+      expect(items[9].index, 4);
+      expect(items[0].attached, isFalse);
+      expect(items[4].attached, isFalse);
+
+      // Further pushes keep counting from the trimmed baseline.
+      final next = IndexedValue(10);
+      cl.push(next);
+      expect(next.index, 5);
+    });
+
     test("trim start works", () {
       final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
       cl.pushAll(
