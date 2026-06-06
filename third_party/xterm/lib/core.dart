@@ -7,6 +7,7 @@ export 'src/core/buffer/range_block.dart';
 export 'src/core/buffer/range_line.dart';
 export 'src/core/buffer/segment.dart';
 export 'src/core/cell.dart';
+export 'src/core/graphics_manager.dart';
 export 'src/core/color.dart';
 export 'src/core/cursor.dart';
 export 'src/core/escape/handler.dart';
