@@ -125,42 +125,47 @@ class GraphicsManager {
   }
 
   /// Removes placements anchored within rows `[firstRow, lastRow]` (inclusive),
-  /// or whose anchor has detached, disposing any images that become
-  /// unreferenced. Used when the screen or scrollback is erased.
+  /// or whose anchor has detached. Used when the screen or scrollback is erased.
+  ///
+  /// The decoded [ui.Image]s are intentionally *not* disposed here. A placement
+  /// that was painted in a still-in-flight frame would otherwise have its image
+  /// freed out from under the raster thread, which crashes the engine ("Cannot
+  /// draw a disposed image"). Dropping the references is enough: any picture
+  /// that already drew the image keeps its own reference alive, and the image is
+  /// reclaimed by the GC finalizer once nothing can paint it.
   void removePlacementsInRows(int firstRow, int lastRow) {
-    final orphaned = <int>[];
     _placements.removeWhere((placement) {
       final remove = !placement.attached ||
           (placement.row >= firstRow && placement.row <= lastRow);
       if (remove) {
-        orphaned.add(placement.imageId);
         placement.dispose();
       }
       return remove;
     });
-    for (final id in orphaned) {
-      if (!_placements.any((p) => p.imageId == id)) {
-        _images.remove(id)?.image.dispose();
-      }
-    }
+    _dropUnreferencedImages();
   }
 
-  /// Removes every image and placement.
+  /// Removes every image and placement. The decoded images are dropped rather
+  /// than disposed; see [removePlacementsInRows] for why.
   void clear() {
     for (final placement in _placements) {
       placement.dispose();
     }
     _placements.clear();
-    for (final image in _images.values) {
-      image.image.dispose();
-    }
     _images.clear();
+  }
+
+  /// Drops stored images that no longer have a placement referencing them.
+  void _dropUnreferencedImages() {
+    if (_images.isEmpty) return;
+    final referenced = _placements.map((p) => p.imageId).toSet();
+    _images.removeWhere((id, _) => !referenced.contains(id));
   }
 
   void _evictIfNeeded() {
     while (_images.length > maxImageCount) {
       final oldestId = _images.keys.first;
-      _images.remove(oldestId)?.image.dispose();
+      _images.remove(oldestId);
       _placements.removeWhere((placement) {
         if (placement.imageId != oldestId) return false;
         placement.dispose();

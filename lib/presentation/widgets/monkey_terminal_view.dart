@@ -3509,9 +3509,9 @@ class MonkeyRenderTerminal extends RenderBox
 
     final cellWidth = _painter.cellSize.width;
     final cellHeight = _painter.cellSize.height;
-    // Guard against the transient zero/non-finite cell metrics that can occur
-    // mid-pinch-zoom: doing cell-size arithmetic (and drawImageRect) with those
-    // values crashes the engine.
+    // Guard against transient degenerate cell metrics (zero or non-finite) that
+    // can occur during a relayout/pinch-zoom: cell-size arithmetic and
+    // drawImageRect with those values crash the engine.
     if (!cellWidth.isFinite ||
         !cellHeight.isFinite ||
         cellWidth <= 0 ||
@@ -3546,7 +3546,10 @@ class MonkeyRenderTerminal extends RenderBox
         dstWidth = image.width * scale;
         dstHeight = image.height * scale;
       }
-      if (dstWidth <= 0 || dstHeight <= 0) {
+      if (!dstWidth.isFinite ||
+          !dstHeight.isFinite ||
+          dstWidth <= 0 ||
+          dstHeight <= 0) {
         continue;
       }
 
@@ -3563,12 +3566,21 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
 
-      canvas.drawImageRect(
-        image,
-        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-        Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
-        Paint()..filterQuality = FilterQuality.medium,
-      );
+      // Defense in depth: image compositing is non-essential overlay drawing,
+      // but an exception here (e.g. a disposed image surfaced by an unexpected
+      // race) would crash the whole terminal paint and tear down the user's
+      // session. Skip the offending image for this frame instead.
+      try {
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
+          Paint()..filterQuality = FilterQuality.medium,
+        );
+      } on Object catch (_) {
+        // Intentionally swallowed: a failed image draw must never crash the
+        // terminal. The next frame re-attempts with fresh metrics.
+      }
     }
   }
 

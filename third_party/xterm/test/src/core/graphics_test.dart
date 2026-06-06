@@ -92,6 +92,34 @@ void main() {
     });
   });
 
+  testWidgets('clearing does not dispose the decoded image (no use-after-free)',
+      (tester) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
+          '\x1b\\');
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final placement = terminal.graphics.placements.single;
+      final image = terminal.graphics.imageById(placement.imageId)!.image;
+      expect(image.debugDisposed, isFalse);
+
+      // Clearing the screen drops the placement, but the underlying image must
+      // NOT be disposed: a frame already in flight may still draw it, and
+      // drawing a disposed image crashes the engine.
+      terminal.write('\x1b[2J');
+      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(
+        image.debugDisposed,
+        isFalse,
+        reason: 'the decoded image must not be force-disposed on clear',
+      );
+    });
+  });
+
   testWidgets('images do not leak across the alternate screen', (tester) async {
     await tester.runAsync(() async {
       final terminal = Terminal();
