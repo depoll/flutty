@@ -934,4 +934,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   void unknownOSC(String ps, List<String> pt) {
     onPrivateOSC?.call(ps, pt);
   }
+
+  @override
+  void graphicsCommandStart(Map<String, String> args) {
+    // Kitty graphics rendering is wired up in a later change; for now the
+    // command is parsed and consumed so its payload is not shown as text.
+  }
+
+  @override
+  void graphicsDataChunk(List<int> data) {}
+
+  @override
+  void graphicsCommandEnd() {}
 }

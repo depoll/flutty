@@ -1047,4 +1047,31 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
         ),
         returnValueForMissingStub: null,
       );
+
+  @override
+  void graphicsCommandStart(Map<String, String>? args) => super.noSuchMethod(
+        Invocation.method(
+          #graphicsCommandStart,
+          [args],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void graphicsDataChunk(List<int>? data) => super.noSuchMethod(
+        Invocation.method(
+          #graphicsDataChunk,
+          [data],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void graphicsCommandEnd() => super.noSuchMethod(
+        Invocation.method(
+          #graphicsCommandEnd,
+          [],
+        ),
+        returnValueForMissingStub: null,
+      );
 }

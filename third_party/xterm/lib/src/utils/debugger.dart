@@ -623,4 +623,19 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   void unknownOSC(String code, List<String> args) {
     onCommand('unknownOSC($code, $args)', error: true);
   }
+
+  @override
+  void graphicsCommandStart(Map<String, String> args) {
+    onCommand('graphicsCommandStart($args)');
+  }
+
+  @override
+  void graphicsDataChunk(List<int> data) {
+    onCommand('graphicsDataChunk(${data.length} bytes)');
+  }
+
+  @override
+  void graphicsCommandEnd() {
+    onCommand('graphicsCommandEnd');
+  }
 }
