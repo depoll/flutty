@@ -163,5 +163,55 @@ void main() {
         expect(() => parser.write(huge), returnsNormally);
       });
     });
+
+    group('Kitty graphics (APC)', () {
+      test('parses args and decodes the base64 payload', () {
+        final handler = MockEscapeHandler();
+        // 'hi' -> base64 'aGk='
+        EscapeParser(handler).write('\x1b_Ga=T,f=100;aGk=\x1b\\');
+        final args =
+            verify(handler.graphicsCommandStart(captureAny)).captured.single;
+        expect(args, {'a': 'T', 'f': '100'});
+        final chunk =
+            verify(handler.graphicsDataChunk(captureAny)).captured.single;
+        expect(chunk, [0x68, 0x69]);
+        verify(handler.graphicsCommandEnd());
+      });
+
+      test('m=1 marks a non-final chunk (no end yet)', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b_Ga=t,m=1;aGk=\x1b\\');
+        verify(handler.graphicsCommandStart(captureAny));
+        verifyNever(handler.graphicsCommandEnd());
+      });
+
+      test('command without payload still starts and ends', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b_Ga=d\x1b\\');
+        final args =
+            verify(handler.graphicsCommandStart(captureAny)).captured.single;
+        expect(args, {'a': 'd'});
+        verifyNever(handler.graphicsDataChunk(captureAny));
+        verify(handler.graphicsCommandEnd());
+      });
+
+      test('unknown APC is consumed without leaking payload as text', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler).write('\x1b_Xsome data\x1b\\hi');
+        verifyNever(handler.graphicsCommandStart(captureAny));
+        // The trailing "hi" is still written normally.
+        verify(handler.writeChar(0x68));
+        verify(handler.writeChar(0x69));
+      });
+
+      test('a command split across writes is dispatched once', () {
+        final handler = MockEscapeHandler();
+        EscapeParser(handler)
+          ..write('\x1b_Ga=T;aG')
+          ..write('k=\x1b\\');
+        verify(handler.graphicsCommandStart(captureAny)).called(1);
+        verify(handler.graphicsCommandEnd()).called(1);
+      });
+    });
   });
 }

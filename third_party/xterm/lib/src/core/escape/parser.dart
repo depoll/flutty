@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/color.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
@@ -106,6 +108,7 @@ class EscapeParser {
     // '#'.charCode: _unsupportedHandler,
     '('.charCode: _escHandleDesignateCharset0, //  SCS - G0
     ')'.charCode: _escHandleDesignateCharset1, //  SCS - G1
+    '_'.charCode: _escHandleAPC, // APC - Kitty graphics protocol
     // '*'.charCode: _voidHandler(1), // TODO: G2 (vt220)
     // '+'.charCode: _voidHandler(1), // TODO: G3 (vt220)
     '>'.charCode: _escHandleResetAppKeypadMode, // TODO: Normal Keypad
@@ -1225,7 +1228,148 @@ class EscapeParser {
       param.writeCharCode(char);
     }
   }
+
+  /// `ESC _ ... ST` Application Program Command (APC).
+  ///
+  /// Only the Kitty graphics protocol (`ESC _ G <args> ; <payload> ST`) is
+  /// understood; any other APC string is consumed and ignored so its payload is
+  /// not rendered as text. Returns false when the sequence is incomplete so the
+  /// caller can wait for more data.
+  bool _escHandleAPC() {
+    if (_queue.isEmpty) return false;
+
+    if (_queue.peek() != 'G'.charCode) {
+      return _skipToStringTerminator();
+    }
+    _queue.consume(); // consume 'G'
+
+    final args = <String, String>{};
+    final argsResult = _parseGraphicsArgs(args);
+    if (argsResult == _ApcParse.incomplete) return false;
+
+    final payload = <int>[];
+    if (argsResult == _ApcParse.payloadFollows) {
+      if (!_parseGraphicsPayload(payload)) return false;
+    }
+
+    // The full command is buffered before dispatching so an incomplete payload
+    // that rolls back never double-delivers a command.
+    handler.graphicsCommandStart(args);
+    if (payload.isNotEmpty) {
+      handler.graphicsDataChunk(payload);
+    }
+    if (args['m'] != '1') {
+      handler.graphicsCommandEnd();
+    }
+    return true;
+  }
+
+  /// Parses `key=value` pairs (comma separated) up to the `;` that begins the
+  /// payload or the terminating ST.
+  _ApcParse _parseGraphicsArgs(Map<String, String> args) {
+    final key = StringBuffer();
+    final value = StringBuffer();
+    var inKey = true;
+
+    void flush() {
+      if (key.isNotEmpty) {
+        args[key.toString()] = value.toString();
+      }
+      key.clear();
+      value.clear();
+      inKey = true;
+    }
+
+    while (true) {
+      if (_queue.isEmpty) return _ApcParse.incomplete;
+      final char = _queue.consume();
+
+      if (char == Ascii.semicolon) {
+        flush();
+        return _ApcParse.payloadFollows;
+      }
+      if (char == Ascii.ESC) {
+        if (_queue.isEmpty) return _ApcParse.incomplete;
+        if (_queue.consume() == Ascii.backslash) {
+          flush();
+          return _ApcParse.terminated;
+        }
+        continue;
+      }
+      if (char == Ascii.BEL) {
+        flush();
+        return _ApcParse.terminated;
+      }
+      if (char == 0x2c) {
+        // ,
+        flush();
+        continue;
+      }
+      if (char == 0x3d) {
+        // =
+        inKey = false;
+        continue;
+      }
+      (inKey ? key : value).writeCharCode(char);
+    }
+  }
+
+  /// Reads the base64 payload up to ST and decodes it into [out]. Returns false
+  /// if the sequence is incomplete.
+  bool _parseGraphicsPayload(List<int> out) {
+    final payload = StringBuffer();
+
+    while (true) {
+      if (_queue.isEmpty) return false;
+      final char = _queue.consume();
+
+      if (char == Ascii.ESC) {
+        if (_queue.isEmpty) return false;
+        if (_queue.consume() == Ascii.backslash) break;
+        continue;
+      }
+      if (char == Ascii.BEL) break;
+
+      payload.writeCharCode(char);
+    }
+
+    out.addAll(_decodeBase64(payload.toString()));
+    return true;
+  }
+
+  /// Skips an unrecognized string sequence up to ST. Returns false when the
+  /// terminator has not arrived yet.
+  bool _skipToStringTerminator() {
+    while (true) {
+      if (_queue.isEmpty) return false;
+      final char = _queue.consume();
+      if (char == Ascii.ESC) {
+        if (_queue.isEmpty) return false;
+        if (_queue.consume() == Ascii.backslash) return true;
+        continue;
+      }
+      if (char == Ascii.BEL) return true;
+    }
+  }
+
+  /// Lenient base64 decode that tolerates missing padding and whitespace.
+  List<int> _decodeBase64(String input) {
+    var cleaned = input.replaceAll(RegExp(r'\s'), '');
+    if (cleaned.isEmpty) return const [];
+    final remainder = cleaned.length % 4;
+    if (remainder != 0) {
+      cleaned = cleaned.padRight(cleaned.length + (4 - remainder), '=');
+    }
+    try {
+      return base64.decode(cleaned);
+    } on FormatException {
+      return const [];
+    }
+  }
 }
+
+/// Result of parsing the key/value header of an APC graphics command.
+enum _ApcParse { incomplete, payloadFollows, terminated }
 
 class _Csi {
   _Csi({

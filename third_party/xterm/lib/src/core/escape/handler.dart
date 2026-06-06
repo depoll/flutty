@@ -229,4 +229,15 @@ abstract class EscapeHandler {
   void setIconName(String name);
 
   void unknownOSC(String code, List<String> args);
+
+  /* Kitty graphics protocol (APC _G ... ST) */
+
+  /// Start of a Kitty graphics command with its parsed key/value [args].
+  void graphicsCommandStart(Map<String, String> args);
+
+  /// A chunk of (base64-decoded) image payload for the current command.
+  void graphicsDataChunk(List<int> data);
+
+  /// End of the current Kitty graphics command (final chunk received).
+  void graphicsCommandEnd();
 }
