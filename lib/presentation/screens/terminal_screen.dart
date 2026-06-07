@@ -8264,6 +8264,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _prepareTerminalForMuxWindowChange();
+    // Draw the newly selected window immediately. The foreground-client check
+    // below issues an SSH exec round-trip that can take a few hundred
+    // milliseconds; gating the redraw nudge behind it made tmux switches feel
+    // laggy. Nudge the size refresh now (which resizes the pane and makes tmux
+    // repaint it), then run the reattach recovery and nudge again in case it
+    // actually reattached.
+    _scheduleTerminalSizeRefresh();
     await _reattachTmuxIfNeeded(
       session,
       sessionName,
@@ -8320,6 +8327,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       workingDirectory: resolvedWorkingDirectory,
     );
     if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      // Draw the new window immediately rather than after the foreground-client
+      // check's SSH round-trip (see _switchTmuxWindow).
+      _scheduleTerminalSizeRefresh();
       await _reattachTmuxIfNeeded(session, sessionName);
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
