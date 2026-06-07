@@ -1545,17 +1545,27 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     try {
-      await _exec(
+      final usedControl = await _refreshForegroundClientsViaControl(
         session,
-        buildTmuxRefreshForegroundClientsCommand(
-          sessionName,
-          extraFlags: extraFlags,
-        ),
+        sessionName,
+        extraFlags: extraFlags,
       );
+      if (!usedControl) {
+        await _exec(
+          session,
+          buildTmuxRefreshForegroundClientsCommand(
+            sessionName,
+            extraFlags: extraFlags,
+          ),
+        );
+      }
       DiagnosticsLogService.instance.info(
         'tmux.action',
         'refresh_clients_complete',
-        fields: {'connectionId': session.connectionId},
+        fields: {
+          'connectionId': session.connectionId,
+          'usedControl': usedControl,
+        },
       );
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -1567,6 +1577,36 @@ class TmuxService {
         },
       );
     }
+  }
+
+  Future<bool> _refreshForegroundClientsViaControl(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    final listOutput = await _tryControlCommand(
+      session,
+      sessionName,
+      'list-clients -t ${_shellQuote(sessionName)} -F '
+      '${_shellQuote('#{client_control_mode}$tmuxWindowFieldSeparator#{client_name}')}',
+      extraFlags: extraFlags,
+    );
+    if (listOutput == null) {
+      return false;
+    }
+    final clientNames = parseForegroundClientNamesForRefresh(listOutput);
+    for (final clientName in clientNames) {
+      final refreshOutput = await _tryControlCommand(
+        session,
+        sessionName,
+        'refresh-client -t ${_shellQuote(clientName)}',
+        extraFlags: extraFlags,
+      );
+      if (refreshOutput == null) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Updates tmux's pane palette for [sessionName] and redraws foreground
@@ -2487,6 +2527,29 @@ bool tmuxCommandNeedsLoginProfile(String command) {
     return true;
   }
   return !_profileFreeTmuxSubcommands.contains(match.group(1));
+}
+
+/// Parses `list-clients` output for foreground (non-control) client names.
+///
+/// Each line is `${client_control_mode}<US>${client_name}`.
+@visibleForTesting
+List<String> parseForegroundClientNamesForRefresh(String output) {
+  final clientNames = <String>[];
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trim();
+    if (line.isEmpty) {
+      continue;
+    }
+    final fields = line.split(tmuxWindowFieldSeparator);
+    if (fields.length < 2 || fields[0] != '0') {
+      continue;
+    }
+    final clientName = fields[1].trim();
+    if (clientName.isNotEmpty) {
+      clientNames.add(clientName);
+    }
+  }
+  return clientNames;
 }
 
 bool _shouldTreatTmuxExecChannelAsUnavailable(Object error) =>

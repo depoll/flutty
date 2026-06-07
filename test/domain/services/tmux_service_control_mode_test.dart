@@ -134,6 +134,21 @@ void main() {
       );
     });
 
+    test('parses foreground client names for control refresh', () {
+      expect(
+        parseForegroundClientNamesForRefresh(
+          [
+            '1\x1fcontrol-client',
+            '0\x1f/dev/ttys001',
+            '0\x1fandroid-client',
+            '0\x1f',
+            '',
+          ].join('\n'),
+        ),
+        ['/dev/ttys001', 'android-client'],
+      );
+    });
+
     test('theme refresh command updates pane palette before redraw', () {
       final command = buildTmuxRefreshTerminalThemeCommand(
         "dev's session",

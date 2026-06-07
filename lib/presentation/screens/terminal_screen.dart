@@ -8303,14 +8303,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         _tmuxPostWindowSwitchExecQuietPeriod,
       );
+      unawaited(
+        _tmuxService.refreshForegroundClients(
+          session,
+          sessionName,
+          extraFlags: _activeTmuxExtraFlags,
+        ),
+      );
     }
-    // tmux redraws the newly selected window on its own within ~20ms, so the
-    // switch itself needs nothing more than the control-channel select-window
-    // above. The foreground-client check is a heavy exec shell script that walks
-    // this SSH session's process tree to correlate it with tmux's clients (to
-    // detect a detached window); it can't run over the control channel and used
-    // to block the switch for a few hundred milliseconds. Run it in the
-    // background and only resync the size if it actually reattaches.
+    // The foreground-client check is a heavy exec shell script that walks this
+    // SSH session's process tree to correlate it with tmux's clients (to detect
+    // a detached window); it can't run over the control channel and used to block
+    // the switch for a few hundred milliseconds. Run it in the background and
+    // only resync the size if it actually reattaches.
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
