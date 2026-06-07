@@ -1930,9 +1930,19 @@ class TmuxService {
     final prefixedCommand = cachedPath != null
         ? utf8Command.replaceFirst('tmux -u ', '$cachedPath -u ')
         : utf8Command;
-    // Always source the login-shell profile so locale- and PATH-related tmux
-    // settings stay consistent even after the binary path is cached.
-    return '${_profilePrefix(session.connectionId)}'
+    // Sourcing the login-shell profile can be slow (hundreds of ms when a
+    // user's ~/.zprofile is heavy), and a single window switch issues several
+    // exec commands. Once the tmux binary path is cached we only need the
+    // profile for subcommands that spawn a shell/process and therefore want the
+    // login PATH; pure server queries/controls (list-clients, select-window,
+    // display-message, ...) run correctly with just the cached path and the
+    // explicit locale below, so skip the profile for them to keep switches snappy.
+    final needsProfile =
+        cachedPath == null || tmuxCommandNeedsLoginProfile(utf8Command);
+    final profilePrefix = needsProfile
+        ? _profilePrefix(session.connectionId)
+        : '';
+    return '$profilePrefix'
         'export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; '
         '$prefixedCommand';
   }
@@ -2380,6 +2390,37 @@ class _TmuxExecChannelBackoff {
 @visibleForTesting
 bool shouldBackOffTmuxExecChannelAfterFailure(Object error) =>
     error is SSHChannelOpenError || error is TimeoutException;
+
+/// tmux subcommands that spawn a shell/process and therefore want the login
+/// profile's PATH.
+const _shellSpawningTmuxSubcommands = <String>[
+  'new-window',
+  'new-session',
+  'split-window',
+  'run-shell',
+  'if-shell',
+  'respawn-pane',
+  'respawn-window',
+  'pipe-pane',
+];
+
+/// Whether a tmux exec [command] needs the login-shell profile sourced.
+///
+/// Pure server queries/controls (list-clients, select-window, display-message,
+/// ...) run correctly with just the cached tmux path and an explicit locale, so
+/// they skip the (possibly slow) profile sourcing once the path is cached. Only
+/// subcommands that spawn a shell/process want the login PATH. The check is a
+/// conservative substring match: a false positive merely re-sources the profile
+/// (slower but still correct).
+@visibleForTesting
+bool tmuxCommandNeedsLoginProfile(String command) {
+  for (final subcommand in _shellSpawningTmuxSubcommands) {
+    if (command.contains(subcommand)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 bool _shouldTreatTmuxExecChannelAsUnavailable(Object error) =>
     shouldBackOffTmuxExecChannelAfterFailure(error) ||
