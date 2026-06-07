@@ -2774,6 +2774,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
     milliseconds: 150,
   );
+  static const _tmuxPostWindowSwitchExecQuietPeriod = Duration(
+    milliseconds: 900,
+  );
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -2941,6 +2944,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
+  DateTime? _lastMuxWindowChangeAt;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -4197,6 +4201,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     if (activeWindowChanged) {
+      _lastMuxWindowChangeAt = DateTime.now();
       _terminalTextInputController.resetImeCompletions();
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
@@ -4211,6 +4216,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String sessionName, {
     bool force = false,
   }) {
+    final quietPeriod = _remainingMuxWindowSwitchQuietPeriod();
+    if (quietPeriod > Duration.zero) {
+      unawaited(
+        Future<void>.delayed(quietPeriod).then((_) {
+          if (!mounted ||
+              _tmuxStateConnectionId != session.connectionId ||
+              _tmuxSessionName != sessionName) {
+            return;
+          }
+          _refreshMuxPaneContextAfterWindowStateChange(
+            session,
+            sessionName,
+            force: force,
+          );
+        }),
+      );
+      return;
+    }
     final refreshedAt = _muxPaneContextRefreshedAt;
     if (!force &&
         refreshedAt != null &&
@@ -4341,24 +4364,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     late final Timer timer;
-    timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
-      _terminalThemeRefreshTimers.remove(timer);
-      if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
-        _tmuxWindowThemeRefreshDebounceTimer = null;
-      }
-      final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
-      _pendingTmuxWindowThemeRefreshRequest = null;
-      if (pendingRequest == null ||
-          _tmuxSessionName != pendingRequest.sessionName ||
-          !_isCurrentTerminalThemeRefresh(
-            theme: pendingRequest.theme,
-            session: pendingRequest.session,
-            refreshGeneration: pendingRequest.refreshGeneration,
-          )) {
-        return;
-      }
-      _queueTmuxTerminalThemeRefresh(pendingRequest);
-    });
+    timer = Timer(
+      _tmuxWindowThemeRefreshDebounceDelay +
+          _remainingMuxWindowSwitchQuietPeriod(),
+      () {
+        _terminalThemeRefreshTimers.remove(timer);
+        if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
+          _tmuxWindowThemeRefreshDebounceTimer = null;
+        }
+        final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
+        _pendingTmuxWindowThemeRefreshRequest = null;
+        if (pendingRequest == null ||
+            _tmuxSessionName != pendingRequest.sessionName ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: pendingRequest.theme,
+              session: pendingRequest.session,
+              refreshGeneration: pendingRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        _queueTmuxTerminalThemeRefresh(pendingRequest);
+      },
+    );
     _tmuxWindowThemeRefreshDebounceTimer = timer;
     _terminalThemeRefreshTimers.add(timer);
   }
@@ -7849,6 +7876,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         targetWindow.index,
         windowId: target.windowId,
         forceVisibleTmux: target.requiresVisibleSession,
+        deferPostSwitchExec: false,
       );
     } on Exception catch (error) {
       _showTmuxActionFailure(error);
@@ -8241,6 +8269,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     int windowIndex, {
     String? windowId,
     bool forceVisibleTmux = false,
+    bool deferPostSwitchExec = true,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
@@ -8264,6 +8293,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _prepareTerminalForMuxWindowChange();
+    if (deferPostSwitchExec) {
+      _lastMuxWindowChangeAt = DateTime.now();
+    }
     // tmux redraws the newly selected window on its own within ~20ms, so the
     // switch itself needs nothing more than the control-channel select-window
     // above. The foreground-client check is a heavy exec shell script that walks
@@ -8282,6 +8314,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         sessionName,
         forceVisibleTmux: forceVisibleTmux,
+        deferUntilAfterRedraw: deferPostSwitchExec,
       ),
     );
   }
@@ -8293,7 +8326,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session,
     String sessionName, {
     bool forceVisibleTmux = false,
+    bool deferUntilAfterRedraw = true,
   }) async {
+    if (deferUntilAfterRedraw && !forceVisibleTmux) {
+      final quietPeriod = _remainingMuxWindowSwitchQuietPeriod();
+      if (quietPeriod > Duration.zero) {
+        await Future<void>.delayed(quietPeriod);
+      }
+      if (!mounted ||
+          _connectionId != session.connectionId ||
+          _tmuxSessionName != sessionName) {
+        return;
+      }
+    }
     await _reattachTmuxIfNeeded(
       session,
       sessionName,
@@ -8355,7 +8400,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // the create on its exec round-trip (see _switchTmuxWindow).
       _scheduleTerminalSizeRefresh();
       unawaited(
-        _reattachTmuxAfterWindowChangeInBackground(session, sessionName),
+        _reattachTmuxAfterWindowChangeInBackground(
+          session,
+          sessionName,
+          deferUntilAfterRedraw: false,
+        ),
       );
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
@@ -8418,6 +8467,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
     _probeAndForceMuxWindowRefresh();
+  }
+
+  Duration _remainingMuxWindowSwitchQuietPeriod() {
+    final changedAt = _lastMuxWindowChangeAt;
+    if (changedAt == null) {
+      return Duration.zero;
+    }
+    final elapsed = DateTime.now().difference(changedAt);
+    if (elapsed >= _tmuxPostWindowSwitchExecQuietPeriod) {
+      return Duration.zero;
+    }
+    return _tmuxPostWindowSwitchExecQuietPeriod - elapsed;
   }
 
   /// Diagnoses and papers over a window-switch refresh that fails to repaint.
