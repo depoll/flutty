@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.65"
+	monkeyMuxVersion                  = "0.1.66"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -364,6 +364,7 @@ type muxWindow struct {
 	applicationKeypadKnown     bool
 	focusModeEnabled           bool
 	focusModeProcessID         int
+	mouseTrackingProcessID     int
 	themeRefreshModeProcessID  int
 	themeColorQueryPid         int
 	themeColorQueryKeys        map[string]bool
@@ -1902,7 +1903,7 @@ func createWindowOptionsForRestore(
 		agentTool:                agentTool,
 		cursorVisible:            state.CursorVisible,
 		cursorVisibilityKnown:    state.CursorVisibilityKnown,
-		privateModes:             copyPrivateModes(state.PrivateModes),
+		privateModes:             privateModesForRestore(state.PrivateModes),
 		insertModeEnabled:        state.InsertModeEnabled,
 		insertModeKnown:          state.InsertModeKnown,
 		applicationKeypadEnabled: state.ApplicationKeypadEnabled,
@@ -2712,7 +2713,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		AgentTool:                 window.agentToolLocked(),
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
-		TerminalMouseReportSgr:    window.privateModes["1006"],
+		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
 		PrivateModes:              copyPrivateModes(window.privateModes),
 	}
 }
@@ -3190,12 +3191,36 @@ func (w *muxWindow) alternateScreenModeActiveLocked() bool {
 }
 
 func (w *muxWindow) reportsMouseWheelLocked() bool {
+	return w.mouseTrackingActiveLocked()
+}
+
+// reportsMouseWheelRawLocked reports whether any mouse-tracking mode is enabled
+// in the window's tracked state, ignoring which process enabled it.
+func (w *muxWindow) reportsMouseWheelRawLocked() bool {
 	if w == nil {
 		return false
 	}
 	return w.privateModes["1000"] ||
 		w.privateModes["1002"] ||
 		w.privateModes["1003"]
+}
+
+// mouseTrackingActiveLocked reports whether mouse-tracking should be considered
+// active for the window's *current* foreground process. A TUI that enables
+// mouse tracking and then exits (or is killed, e.g. when the app crashes
+// mid-session) leaves the mode set in our tracked state, but the shell that
+// returns to the foreground does not want mouse reports. Gating on the
+// foreground PID — mirroring focus/theme mode handling — stops a plain shell
+// prompt from being told it reports mouse wheel, which would otherwise turn
+// touch-scrolls into SGR mouse-report spew.
+func (w *muxWindow) mouseTrackingActiveLocked() bool {
+	if !w.reportsMouseWheelRawLocked() {
+		return false
+	}
+	activePid := w.activeForegroundPidLocked()
+	return w.mouseTrackingProcessID <= 0 ||
+		activePid <= 0 ||
+		w.mouseTrackingProcessID == activePid
 }
 
 func copyPrivateModes(privateModes map[string]bool) map[string]bool {
@@ -3207,6 +3232,26 @@ func copyPrivateModes(privateModes map[string]bool) map[string]bool {
 		if _, ok := trackedPrivateModes[mode]; ok {
 			copied[mode] = enabled
 		}
+	}
+	if len(copied) == 0 {
+		return nil
+	}
+	return copied
+}
+
+// privateModesForRestore copies tracked modes for a restored window but drops
+// mouse-tracking modes (1000/1002/1003/1006). A restore spawns a fresh process:
+// agent windows are relaunched and re-enable mouse tracking themselves, while
+// shell windows do not want it. Carrying a dead process's mouse modes forward
+// would make a plain shell prompt report mouse wheel and spew SGR reports on
+// scroll.
+func privateModesForRestore(privateModes map[string]bool) map[string]bool {
+	copied := copyPrivateModes(privateModes)
+	if copied == nil {
+		return nil
+	}
+	for _, mode := range []string{"1000", "1002", "1003", "1006"} {
+		delete(copied, mode)
 	}
 	if len(copied) == 0 {
 		return nil
@@ -3311,10 +3356,21 @@ func appendGroupedPrivateModeReplay(
 			continue
 		}
 		if enabled, ok := window.privateModes[mode]; ok && enabled {
+			// Don't re-enable mouse tracking on replay if the process that
+			// turned it on is no longer in the foreground; the prefix already
+			// disabled it, so the reattached client ends up in the effective
+			// (off) state instead of spewing mouse reports at a shell prompt.
+			if isMouseWheelMode(mode) && !window.mouseTrackingActiveLocked() {
+				continue
+			}
 			replay = appendPrivateModeReplay(replay, mode, true)
 		}
 	}
 	return replay
+}
+
+func isMouseWheelMode(mode string) bool {
+	return mode == "1000" || mode == "1002" || mode == "1003"
 }
 
 func appendPrivateModeReplay(replay []byte, mode string, enabled bool) []byte {
@@ -4467,6 +4523,18 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 		w.privateModes = map[string]bool{}
 	}
 	w.privateModes[mode] = enabled
+	if mode == "1000" || mode == "1002" || mode == "1003" {
+		// Remember which foreground process owns mouse tracking so it can be
+		// suppressed once that process is no longer in the foreground. Clear it
+		// once no mouse-tracking mode remains enabled.
+		if w.reportsMouseWheelRawLocked() {
+			if enabled {
+				w.mouseTrackingProcessID = w.activeForegroundPidLocked()
+			}
+		} else {
+			w.mouseTrackingProcessID = 0
+		}
+	}
 }
 
 func csiModeParams(params string) []string {

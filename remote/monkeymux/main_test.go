@@ -1985,6 +1985,36 @@ func TestWindowTitleUpdatesStillBroadcast(t *testing.T) {
 	}
 }
 
+func TestRestoreWindowOptionsDropMouseTrackingModes(t *testing.T) {
+	state := restoreWindowState{
+		ID:    "@1",
+		Index: 0,
+		Name:  "shell",
+		PrivateModes: map[string]bool{
+			"1000": true,
+			"1002": true,
+			"1003": true,
+			"1006": true,
+			"1049": true,
+			"7":    false,
+		},
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	for _, mode := range []string{"1000", "1002", "1003", "1006"} {
+		if _, ok := options.privateModes[mode]; ok {
+			t.Fatalf("restored options retained mouse mode %s: %#v", mode, options.privateModes)
+		}
+	}
+	if !options.privateModes["1049"] {
+		t.Fatalf("restored options dropped non-mouse mode: %#v", options.privateModes)
+	}
+	if enabled, ok := options.privateModes["7"]; !ok || enabled {
+		t.Fatalf("restored options wrap mode = %v, %v, want present false", enabled, ok)
+	}
+}
+
 func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -2008,6 +2038,77 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	}
 	if !snapshot.PrivateModes["1006"] {
 		t.Fatalf("snapshot private modes = %#v, want SGR report mode", snapshot.PrivateModes)
+	}
+}
+
+func TestMouseTrackingClearsWhenOwningProcessExits(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		name:          "tui",
+		foregroundPid: 100,
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	// A TUI in the foreground turns on mouse tracking + SGR reporting.
+	window.observeTerminalModesLocked([]byte("\x1b[?1000h\x1b[?1006h"))
+
+	if !window.reportsMouseWheelLocked() {
+		t.Fatal("mouse wheel reporting should be active while the TUI is foreground")
+	}
+	snapshot := server.snapshot(window)
+	if !snapshot.TerminalReportsMouseWheel || !snapshot.TerminalMouseReportSgr {
+		t.Fatalf("snapshot = %+v, want mouse wheel + SGR while TUI foreground", snapshot)
+	}
+	replay := string(window.modeReplayForAttachedTerminalLocked())
+	if !strings.Contains(replay, "\x1b[?1000h") {
+		t.Fatalf("replay = %q, want mouse mode re-enabled while TUI foreground", replay)
+	}
+
+	// The TUI exits without disabling mouse mode; the shell returns to the
+	// foreground with a different process group.
+	window.foregroundPid = 200
+
+	if window.reportsMouseWheelLocked() {
+		t.Fatal("mouse wheel reporting must stop once the owning process exits")
+	}
+	if window.mouseTrackingActiveLocked() {
+		t.Fatal("mouse tracking must not be active for a new foreground process")
+	}
+	snapshot = server.snapshot(window)
+	if snapshot.TerminalReportsMouseWheel {
+		t.Fatal("snapshot must not report mouse wheel after the owning process exits")
+	}
+	if snapshot.TerminalMouseReportSgr {
+		t.Fatal("snapshot must not report SGR mouse after the owning process exits")
+	}
+	replay = string(window.modeReplayForAttachedTerminalLocked())
+	if strings.Contains(replay, "\x1b[?1000h") {
+		t.Fatalf("replay = %q, must not re-enable mouse mode after owner exits", replay)
+	}
+}
+
+func TestMouseTrackingProcessIDClearsWhenModesDisabled(t *testing.T) {
+	window := &muxWindow{id: "@1", foregroundPid: 100, lastActivity: time.Now()}
+
+	window.observeTerminalModesLocked([]byte("\x1b[?1000h\x1b[?1002h"))
+	if window.mouseTrackingProcessID != 100 {
+		t.Fatalf("mouseTrackingProcessID = %d, want 100", window.mouseTrackingProcessID)
+	}
+
+	// Disabling one of several wheel modes keeps the owner while others remain.
+	window.observeTerminalModesLocked([]byte("\x1b[?1000l"))
+	if window.mouseTrackingProcessID != 100 {
+		t.Fatalf("mouseTrackingProcessID = %d, want owner retained while 1002 stays on", window.mouseTrackingProcessID)
+	}
+
+	// Disabling the last wheel mode clears the recorded owner.
+	window.observeTerminalModesLocked([]byte("\x1b[?1002l"))
+	if window.mouseTrackingProcessID != 0 {
+		t.Fatalf("mouseTrackingProcessID = %d, want cleared once no wheel mode remains", window.mouseTrackingProcessID)
 	}
 }
 
