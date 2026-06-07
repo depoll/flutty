@@ -221,6 +221,12 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+// Pinch-zoom emits a resize every frame. The remote MonkeyMux resize is sent
+// over an SSH exec channel, so we throttle it: send the first change right away
+// (so the remote follows the pinch), then no more than one in flight at a time
+// and at most once per this interval, always ending on the final size. This
+// keeps the remote roughly live without flooding the connection until it wedges.
+const _monkeyMuxResizeSyncMinGap = Duration(milliseconds: 70);
 const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
@@ -2907,6 +2913,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   Timer? _monkeyMuxResizeRedrawFollowUpTimer;
+  Timer? _monkeyMuxResizeSyncCooldownTimer;
+  bool _monkeyMuxResizeSyncInFlight = false;
+  bool _monkeyMuxResizeSyncThrottled = false;
+  bool _monkeyMuxResizeSyncPending = false;
+  int? _monkeyMuxResizeSyncColumns;
+  int? _monkeyMuxResizeSyncRows;
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
@@ -6148,13 +6160,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
-        unawaited(
-          _syncActiveMonkeyMuxTerminalSize(
-            session,
-            columns: width,
-            rows: height,
-          ),
-        );
+        _scheduleMonkeyMuxResizeSync(session, columns: width, rows: height);
         _scheduleMonkeyMuxResizeRedrawFollowUp(session);
       }
     }
@@ -6271,6 +6277,81 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       },
     );
+  }
+
+  /// Throttles the remote MonkeyMux resize so pinch-zoom follows in real time
+  /// without flooding the SSH connection.
+  ///
+  /// The local view scales every frame regardless; this only governs how often
+  /// the remote is told the new size. The first change is sent immediately, then
+  /// at most one resize is in flight at a time and no more than one per
+  /// [_monkeyMuxResizeSyncMinGap]. The latest requested [columns]/[rows] are
+  /// remembered and sent as soon as the in-flight send and cooldown clear, so
+  /// the remote always ends up matching the settled gesture.
+  void _scheduleMonkeyMuxResizeSync(
+    SshSession session, {
+    required int columns,
+    required int rows,
+  }) {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    _monkeyMuxResizeSyncColumns = columns;
+    _monkeyMuxResizeSyncRows = rows;
+    // A send is on the wire or we're inside the throttle window: just record
+    // that a newer size is wanted; it goes out when the guards clear.
+    if (_monkeyMuxResizeSyncInFlight || _monkeyMuxResizeSyncThrottled) {
+      _monkeyMuxResizeSyncPending = true;
+      return;
+    }
+    _sendMonkeyMuxResizeSyncNow(session);
+  }
+
+  void _sendMonkeyMuxResizeSyncNow(SshSession session) {
+    final columns = _monkeyMuxResizeSyncColumns;
+    final rows = _monkeyMuxResizeSyncRows;
+    if (columns == null || rows == null) {
+      return;
+    }
+    final connectionId = session.connectionId;
+    _monkeyMuxResizeSyncInFlight = true;
+    _monkeyMuxResizeSyncThrottled = true;
+    _monkeyMuxResizeSyncCooldownTimer?.cancel();
+    _monkeyMuxResizeSyncCooldownTimer = Timer(_monkeyMuxResizeSyncMinGap, () {
+      _monkeyMuxResizeSyncCooldownTimer = null;
+      _monkeyMuxResizeSyncThrottled = false;
+      _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+    });
+    unawaited(() async {
+      try {
+        await _syncActiveMonkeyMuxTerminalSize(
+          session,
+          columns: columns,
+          rows: rows,
+        );
+      } finally {
+        _monkeyMuxResizeSyncInFlight = false;
+        _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+      }
+    }());
+  }
+
+  void _maybeSendPendingMonkeyMuxResizeSync(
+    SshSession session,
+    int connectionId,
+  ) {
+    if (!mounted ||
+        _connectionId != connectionId ||
+        !_monkeyMuxResizeSyncPending ||
+        _monkeyMuxResizeSyncInFlight ||
+        _monkeyMuxResizeSyncThrottled) {
+      return;
+    }
+    _monkeyMuxResizeSyncPending = false;
+    _sendMonkeyMuxResizeSyncNow(session);
   }
 
   void _scheduleMonkeyMuxResizeRedrawFollowUp(SshSession session) {
@@ -8704,6 +8785,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
