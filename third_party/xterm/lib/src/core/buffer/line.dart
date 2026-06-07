@@ -157,6 +157,16 @@ class BufferLine with IndexedItem {
     for (var i = start; i < end; i++) {
       eraseCell(i, style);
     }
+
+    // Erased cells no longer own any anchored content (hyperlinks, in-flight
+    // Kitty image placements, etc.). Detach anchors in the erased range so
+    // asynchronous image decodes that complete after the erase don't recreate
+    // stale content, and hyperlink hit-testing does not resolve cleared text.
+    for (final anchor in _anchors.toList()) {
+      if (anchor.x >= start && anchor.x < end) {
+        anchor.dispose();
+      }
+    }
   }
 
   /// Remove [count] cells starting at [start]. Cells that are empty after the
