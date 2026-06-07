@@ -1723,6 +1723,45 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.paintLine(canvas, offset, line);
   }
 
+  /// Paints only the backgrounds (line fill, trailing run, and each cell's own
+  /// background color) for [line].
+  ///
+  /// Backgrounds for every visible line are painted before any glyphs so that a
+  /// following line's opaque background can never overdraw the previous line's
+  /// descenders. Glyph ink for letters such as "g"/"y"/"p" can extend a pixel
+  /// or two below the cell box, and the old single per-line pass clipped it
+  /// behind the next row's background.
+  void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
+    paintLineBackground(canvas, offset, line);
+    paintLineTrailingBackgroundFill(canvas, offset, line);
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final charWidth = cellData.content >> CellContent.widthShift;
+      paintCellBackground(canvas, offset.translate(i * cellWidth, 0), cellData);
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
+  /// Paints only the glyphs for [line], in a pass run after every visible
+  /// line's background so descenders that extend past the cell box are not
+  /// clipped by the next row's background.
+  void paintLineForegrounds(Canvas canvas, Offset offset, BufferLine line) {
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final charWidth = cellData.content >> CellContent.widthShift;
+      paintCellForeground(canvas, offset.translate(i * cellWidth, 0), cellData);
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
   /// Draws the styled (SGR) cell underlines for [line] in a pass separate from
   /// the glyphs. Curly/dotted/etc. underlines extend into the descender space
   /// below the cell, so drawing them after every line's opaque background keeps
@@ -3484,7 +3523,22 @@ class MonkeyRenderTerminal extends RenderBox
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      _painter.paintLine(canvas, _linePaintOffset(offset, i), lines[i]);
+      _painter.paintLineBackgrounds(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+      );
+    }
+
+    // Glyphs are drawn in a pass after every line's opaque background so a
+    // descender (the bottom of "g"/"y"/"p") that extends past its cell box is
+    // not clipped by the next line's background.
+    for (var i = effectFirstLine; i <= effectLastLine; i++) {
+      _painter.paintLineForegrounds(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+      );
     }
 
     // Styled underlines are drawn as a separate pass, after every line's opaque
