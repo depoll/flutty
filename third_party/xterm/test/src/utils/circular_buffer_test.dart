@@ -355,6 +355,26 @@ void main() {
       expect(cl.length, 0);
     });
 
+    test("replaceWith rebuilds from index zero after trimStart", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
+      cl.pushAll(
+        List<int>.generate(10, (index) => index).map(IndexedValue.new),
+      );
+      cl.trimStart(5);
+
+      final replacement = List<int>.generate(
+        5,
+        (index) => 100 + index,
+      ).map(IndexedValue.new).toList();
+      cl.replaceWith(replacement);
+
+      expect(cl.length, 5);
+      expect(cl[0], 100.indexed);
+      expect(cl[4], 104.indexed);
+      expect(replacement[0].index, 0);
+      expect(replacement[4].index, 4);
+    });
+
     test('can track index of items', () {
       final cl = IndexAwareCircularBuffer<IndexedValue<int>>(3);
       final item0 = IndexedValue(0);
