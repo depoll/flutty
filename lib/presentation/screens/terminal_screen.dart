@@ -1043,8 +1043,15 @@ const terminalViewportPadding = EdgeInsets.zero;
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
-double clampTerminalFontSize(num size) =>
-    size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
+double clampTerminalFontSize(num size) {
+  // `num.clamp` does not sanitize NaN consistently across Dart versions, so
+  // guard non-finite inputs explicitly to avoid a NaN font size propagating
+  // into the painter (which crashes layout/paint integer math).
+  if (!size.isFinite) {
+    return _minTerminalFontSize;
+  }
+  return size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
+}
 
 /// Scales a terminal font size while keeping it within the supported range.
 @visibleForTesting
@@ -1058,7 +1065,14 @@ double applyTerminalScaleDelta(
   double previousScale,
   double nextScale,
 ) {
-  final safePreviousScale = previousScale <= 0 ? 1.0 : previousScale;
+  // Ignore degenerate gesture frames (e.g. coincident focal points producing a
+  // zero or non-finite scale) so a bad frame can't drive the font size to NaN.
+  if (!nextScale.isFinite || nextScale <= 0) {
+    return clampTerminalFontSize(currentFontSize);
+  }
+  final safePreviousScale = (previousScale.isFinite && previousScale > 0)
+      ? previousScale
+      : 1.0;
   return scaleTerminalFontSize(currentFontSize, nextScale / safePreviousScale);
 }
 
