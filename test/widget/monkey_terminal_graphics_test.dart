@@ -195,4 +195,67 @@ void main() {
       reason: 'a new image should render after a clear',
     );
   });
+
+  testWidgets('degenerate font sizes do not crash layout or paint', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal(maxLines: 200);
+    var fontSize = 14.0;
+
+    Widget build() => MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(
+            width: 400,
+            height: 300,
+            child: RepaintBoundary(
+              key: boundaryKey,
+              child: MonkeyTerminalView(
+                terminal,
+                hardwareKeyboardOnly: true,
+                textStyle: TerminalStyle(fontSize: fontSize),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build());
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      terminal.write('\x1b[4:3;58:2::255:60:60mcurly\x1b[0m text gyp\r\n');
+      final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      terminal.write('\x1b_Ga=T,f=100,c=24,r=6;$png\x1b\\');
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    // A sub-pixel font size used to drive cellSize to ~0 and crash
+    // `width ~/ cellSize.width` / `(dstHeight / cellHeight).ceil()`. (NaN/Inf
+    // font sizes are prevented upstream by the zoom math; see
+    // terminal_screen_zoom_test.dart.)
+    for (final fs in [0.01, 0.5, 1.0, 2.0, 8.0]) {
+      fontSize = fs;
+      await tester.pumpWidget(build());
+      await tester.pump();
+      await tester.runAsync(() async {
+        final boundary =
+            boundaryKey.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary;
+        await (await boundary.toImage()).toByteData();
+      });
+      expect(
+        tester.takeException(),
+        isNull,
+        reason: 'font size $fs crashed the terminal',
+      );
+    }
+  });
 }

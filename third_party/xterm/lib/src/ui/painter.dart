@@ -67,13 +67,18 @@ class TerminalPainter {
     final paragraph = builder.build();
     paragraph.layout(ParagraphConstraints(width: double.infinity));
 
-    final result = Size(
-      paragraph.maxIntrinsicWidth / test.length,
-      paragraph.height,
-    );
-
+    final width = paragraph.maxIntrinsicWidth / test.length;
+    final height = paragraph.height;
     paragraph.dispose();
-    return result;
+
+    // Never return a degenerate cell size. A zero/NaN/Infinity dimension (e.g.
+    // from a sub-pixel or non-finite font size during a pinch) would otherwise
+    // crash downstream integer math like `width ~/ cellSize.width` or
+    // `(dstHeight / cellSize.height).ceil()` with "Infinity or NaN toInt".
+    return Size(
+      width.isFinite && width > 0 ? width : 1.0,
+      height.isFinite && height > 0 ? height : 1.0,
+    );
   }
 
   /// The size of each character in the terminal.

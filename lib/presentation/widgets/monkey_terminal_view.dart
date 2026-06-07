@@ -3249,14 +3249,25 @@ class MonkeyRenderTerminal extends RenderBox
   void _updateViewportSize({bool notifyIfUnchanged = false}) {
     final availableWidth = size.width - _padding.horizontal;
     final availableHeight = _viewportHeight;
-    if (availableWidth <= _painter.cellSize.width ||
-        availableHeight <= _painter.cellSize.height) {
+    final cellWidth = _painter.cellSize.width;
+    final cellHeight = _painter.cellSize.height;
+    // Bail on a degenerate or unusably small cell (e.g. a transient sub-pixel
+    // or non-finite font size mid-pinch). Resizing the grid for such a cell
+    // both divides by ~0 and can blow the grid up to thousands of cells, which
+    // then crashes the buffer reflow on the way back down.
+    const minUsableCell = 2.0;
+    if (!cellWidth.isFinite ||
+        !cellHeight.isFinite ||
+        cellWidth < minUsableCell ||
+        cellHeight < minUsableCell ||
+        availableWidth <= cellWidth ||
+        availableHeight <= cellHeight) {
       return;
     }
 
     final viewportSize = TerminalSize(
-      availableWidth ~/ _painter.cellSize.width,
-      availableHeight ~/ _painter.cellSize.height,
+      availableWidth ~/ cellWidth,
+      availableHeight ~/ cellHeight,
     );
     final pixelSize = resolveTerminalResizePixelDimensions(
       viewportSize: size,

@@ -23,6 +23,24 @@ void main() {
       expect(applyTerminalScaleDelta(13.3, 0.95, 0.75), closeTo(10.5, 0.1));
     });
 
+    test('sanitizes non-finite font sizes instead of propagating NaN', () {
+      // A NaN/Infinity font size must not reach the painter; it would crash
+      // layout/paint integer math (e.g. `width ~/ cellSize.width`).
+      expect(clampTerminalFontSize(double.nan).isFinite, isTrue);
+      expect(clampTerminalFontSize(double.infinity).isFinite, isTrue);
+      expect(clampTerminalFontSize(double.negativeInfinity).isFinite, isTrue);
+      expect(scaleTerminalFontSize(14, double.nan).isFinite, isTrue);
+    });
+
+    test('ignores degenerate pinch frames and keeps the current size', () {
+      // Coincident focal points can produce a zero or non-finite scale.
+      expect(applyTerminalScaleDelta(18, 1, 0), 18);
+      expect(applyTerminalScaleDelta(18, 1, double.nan), 18);
+      expect(applyTerminalScaleDelta(18, 1, double.infinity), 18);
+      expect(applyTerminalScaleDelta(18, double.nan, 1.2).isFinite, isTrue);
+      expect(applyTerminalScaleDelta(18, 0, 1.2).isFinite, isTrue);
+    });
+
     test('prefers session font size over the global default', () {
       expect(
         resolveTerminalFontSize(globalFontSize: 14, sessionFontSize: 18),
