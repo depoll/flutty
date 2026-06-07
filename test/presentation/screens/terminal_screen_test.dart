@@ -4262,6 +4262,13 @@ void main() {
         ).thenAnswer((_) async {
           refreshCount += 1;
         });
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            tmuxSessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
 
         await tester.pumpWidget(
           ProviderScope(
@@ -4327,7 +4334,7 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump(const Duration(milliseconds: 1050));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
@@ -4353,7 +4360,7 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump(const Duration(milliseconds: 1050));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
@@ -4387,7 +4394,7 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 149));
+        await tester.pump(const Duration(milliseconds: 1049));
 
         expect(refreshCount, refreshCountAfterBackgroundWindow);
 
