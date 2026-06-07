@@ -8282,6 +8282,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
+    final wasUsingAltBuffer = _terminal.isUsingAltBuffer;
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
         session,
@@ -8310,6 +8311,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
+      if (wasUsingAltBuffer) {
+        _forceVisibleTmuxRedrawWithSyntheticResize(session);
+      }
     }
     // The foreground-client check is a heavy exec shell script that walks this
     // SSH session's process tree to correlate it with tmux's clients (to detect
@@ -8330,6 +8334,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         deferUntilAfterRedraw: deferPostSwitchExec,
       ),
     );
+  }
+
+  void _forceVisibleTmuxRedrawWithSyntheticResize(SshSession session) {
+    final shell = _shell;
+    final columns = _terminal.viewWidth;
+    final rows = _terminal.viewHeight;
+    if (shell == null || _connectionId != session.connectionId || rows <= 2) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'synthetic_resize_redraw',
+      fields: {
+        'connectionId': session.connectionId,
+        'columns': columns,
+        'rows': rows,
+      },
+    );
+    shell.resizeTerminal(columns, rows - 1);
+    Timer(const Duration(milliseconds: 32), () {
+      if (!mounted ||
+          _connectionId != session.connectionId ||
+          _shell != shell) {
+        return;
+      }
+      shell.resizeTerminal(columns, rows);
+    });
   }
 
   /// Runs the post-window-change tmux reattach recovery without blocking the
