@@ -731,6 +731,23 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   MonkeyRenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as MonkeyRenderTerminal;
 
+  MonkeyRenderTerminal? get _renderTerminalOrNull {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    return renderObject is MonkeyRenderTerminal ? renderObject : null;
+  }
+
+  /// Number of frames the live terminal has painted, or null if the render
+  /// object is not currently attached. Exposed for window-switch diagnostics.
+  int? get terminalPaintCount => _renderTerminalOrNull?.paintCount;
+
+  /// Number of terminal change notifications the live render object has seen,
+  /// or null if it is not attached. Exposed for window-switch diagnostics.
+  int? get terminalChangeCount => _renderTerminalOrNull?.terminalChangeCount;
+
+  /// Forces the live terminal to relayout and repaint its current buffer.
+  /// Used as a safety net after a multiplexer window switch.
+  void forceFullRepaint() => _renderTerminalOrNull?.forceFullRepaint();
+
   @override
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
@@ -2511,6 +2528,7 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _onTerminalChange() {
+    _terminalChangeCount++;
     if (registrar != null && _hasSelectableTextSelection) {
       _preserveSelectableSelectionAcrossTerminalChange();
     } else {
@@ -2541,6 +2559,30 @@ class MonkeyRenderTerminal extends RenderBox
 
   @override
   final isRepaintBoundary = true;
+
+  int _paintCount = 0;
+
+  /// Number of times this render object has painted a frame. Diagnostics use
+  /// this together with [terminalChangeCount] to tell a frozen frame (the
+  /// terminal changed but no paint followed) apart from a stalled write path.
+  int get paintCount => _paintCount;
+
+  int _terminalChangeCount = 0;
+
+  /// Number of terminal change notifications observed (≈ one per write batch).
+  /// See [paintCount].
+  int get terminalChangeCount => _terminalChangeCount;
+
+  /// Forces a full relayout and repaint of the current buffer.
+  ///
+  /// Safety net for multiplexer window switches: if a window-switch redraw is
+  /// applied to the buffer but, for any reason, no frame is produced, the view
+  /// can be left showing the previous window. Re-running layout and paint from
+  /// the current buffer guarantees the visible content matches the buffer.
+  void forceFullRepaint() {
+    markNeedsLayout();
+    markNeedsPaint();
+  }
 
   @override
   void attach(PipelineOwner owner) {
@@ -3506,6 +3548,7 @@ class MonkeyRenderTerminal extends RenderBox
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    _paintCount++;
     _paint(context, offset);
     context.setWillChangeHint();
   }

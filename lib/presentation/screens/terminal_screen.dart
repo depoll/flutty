@@ -228,6 +228,11 @@ const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
 const _monkeyMuxLiveResizeSyncMinGap = Duration(milliseconds: 32);
 const _monkeyMuxFallbackResizeSyncMinGap = Duration(milliseconds: 70);
 const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
+// After a multiplexer window switch, sample the live render object's paint/
+// change counters once the redraw has had time to arrive, then force a repaint.
+// A second, later force catches a redraw that lands after the first sample.
+const _muxWindowRefreshProbeDelay = Duration(milliseconds: 400);
+const _muxWindowRefreshSafetyNetDelay = Duration(milliseconds: 900);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -2934,6 +2939,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _monkeyMuxResizeSyncColumns;
   int? _monkeyMuxResizeSyncRows;
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
+  Timer? _muxWindowRefreshProbeTimer;
+  Timer? _muxWindowRefreshSafetyNetTimer;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -8379,7 +8386,73 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = workingDirectory;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
+    _probeAndForceMuxWindowRefresh();
   }
+
+  /// Diagnoses and papers over a window-switch refresh that fails to repaint.
+  ///
+  /// A multiplexer window switch delivers the new window's redraw over the
+  /// shell/control channel. In rare, timing-dependent cases the redraw lands in
+  /// the terminal buffer but no frame is produced, so the view keeps showing the
+  /// previous window until the next output or a resize forces a repaint.
+  ///
+  /// This captures a baseline of the live render object's paint/change counters,
+  /// then a beat later logs the deltas (a frozen frame shows changes advancing
+  /// while paints do not) and forces a full repaint as a safety net. A second,
+  /// later force catches a redraw that arrives after the first check.
+  void _probeAndForceMuxWindowRefresh() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    final viewState = _terminalViewKey.currentState;
+    final baselinePaints = viewState?.terminalPaintCount;
+    final baselineChanges = viewState?.terminalChangeCount;
+
+    _muxWindowRefreshProbeTimer?.cancel();
+    _muxWindowRefreshProbeTimer = Timer(_muxWindowRefreshProbeDelay, () {
+      _muxWindowRefreshProbeTimer = null;
+      if (!mounted || _connectionId != connectionId) {
+        return;
+      }
+      final state = _terminalViewKey.currentState;
+      DiagnosticsLogService.instance.debug(
+        'terminal.refresh',
+        'mux_window_refresh_probe',
+        fields: {
+          'connectionId': connectionId,
+          'paintsDelta': _counterDelta(
+            baselinePaints,
+            state?.terminalPaintCount,
+          ),
+          'changesDelta': _counterDelta(
+            baselineChanges,
+            state?.terminalChangeCount,
+          ),
+        },
+      );
+      // Read the natural counters above before forcing a paint so the probe
+      // reflects whether the switch repainted on its own.
+      state?.forceFullRepaint();
+      WidgetsBinding.instance.ensureVisualUpdate();
+    });
+
+    _muxWindowRefreshSafetyNetTimer?.cancel();
+    _muxWindowRefreshSafetyNetTimer = Timer(
+      _muxWindowRefreshSafetyNetDelay,
+      () {
+        _muxWindowRefreshSafetyNetTimer = null;
+        if (!mounted || _connectionId != connectionId) {
+          return;
+        }
+        _terminalViewKey.currentState?.forceFullRepaint();
+        WidgetsBinding.instance.ensureVisualUpdate();
+      },
+    );
+  }
+
+  static int? _counterDelta(int? baseline, int? current) =>
+      (baseline == null || current == null) ? null : current - baseline;
 
   void _clearTerminalFollowPauseForMuxWindowChange() {
     var shouldRefreshFollowState = false;
@@ -8842,6 +8915,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
+    _muxWindowRefreshProbeTimer?.cancel();
+    _muxWindowRefreshSafetyNetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
