@@ -140,7 +140,7 @@ class GraphicsManager {
   /// that already drew the image keeps its own reference alive, and the image is
   /// reclaimed by the GC finalizer once nothing can paint it.
   void removePlacementsInRows(int firstRow, int lastRow) {
-    _generation++;
+    final before = _placements.length;
     _placements.removeWhere((placement) {
       final remove = !placement.attached ||
           _placementIntersectsRows(placement, firstRow, lastRow);
@@ -149,6 +149,9 @@ class GraphicsManager {
       }
       return remove;
     });
+    if (_placements.length != before) {
+      _generation++;
+    }
     _dropUnreferencedImages();
   }
 
@@ -161,7 +164,7 @@ class GraphicsManager {
     int firstCol,
     int lastCol,
   ) {
-    _generation++;
+    final before = _placements.length;
     _placements.removeWhere((placement) {
       final remove = !placement.attached ||
           (_placementIntersectsRows(placement, firstRow, lastRow) &&
@@ -171,6 +174,9 @@ class GraphicsManager {
       }
       return remove;
     });
+    if (_placements.length != before) {
+      _generation++;
+    }
     _dropUnreferencedImages();
   }
 

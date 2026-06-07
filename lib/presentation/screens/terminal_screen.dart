@@ -6321,11 +6321,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxResizeSyncRows = rows;
     if (_monkeyMuxService.hasLiveControlChannel(session, sessionName)) {
       // The persistent MonkeyMux control channel is already up, so this update
-      // does not allocate a short-lived SSH exec channel. Send immediately so
-      // apps such as Copilot reflow along with the pinch in real time.
-      unawaited(
-        _syncActiveMonkeyMuxTerminalSize(session, columns: columns, rows: rows),
-      );
+      // does not allocate a short-lived SSH exec channel. Keep it as live as the
+      // control channel can keep up with, but still coalesce to the latest size
+      // if a previous resize response is in flight.
+      _monkeyMuxResizeSyncCooldownTimer?.cancel();
+      _monkeyMuxResizeSyncCooldownTimer = null;
+      _monkeyMuxResizeSyncThrottled = false;
+      if (_monkeyMuxResizeSyncInFlight) {
+        _monkeyMuxResizeSyncPending = true;
+        return;
+      }
+      _sendMonkeyMuxResizeSyncNow(session, throttle: false);
       return;
     }
     // A send is on the wire or we're inside the throttle window: just record
@@ -6334,7 +6340,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _monkeyMuxResizeSyncPending = true;
       return;
     }
-    _sendMonkeyMuxResizeSyncNow(session);
+    _sendMonkeyMuxResizeSyncNow(session, throttle: true);
   }
 
   String? _activeMonkeyMuxSessionName(SshSession session) {
@@ -6344,7 +6350,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         : sessionName;
   }
 
-  void _sendMonkeyMuxResizeSyncNow(SshSession session) {
+  void _sendMonkeyMuxResizeSyncNow(
+    SshSession session, {
+    required bool throttle,
+  }) {
     final columns = _monkeyMuxResizeSyncColumns;
     final rows = _monkeyMuxResizeSyncRows;
     if (columns == null || rows == null) {
@@ -6352,13 +6361,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final connectionId = session.connectionId;
     _monkeyMuxResizeSyncInFlight = true;
-    _monkeyMuxResizeSyncThrottled = true;
-    _monkeyMuxResizeSyncCooldownTimer?.cancel();
-    _monkeyMuxResizeSyncCooldownTimer = Timer(_monkeyMuxResizeSyncMinGap, () {
-      _monkeyMuxResizeSyncCooldownTimer = null;
+    if (throttle) {
+      _monkeyMuxResizeSyncThrottled = true;
+      _monkeyMuxResizeSyncCooldownTimer?.cancel();
+      _monkeyMuxResizeSyncCooldownTimer = Timer(_monkeyMuxResizeSyncMinGap, () {
+        _monkeyMuxResizeSyncCooldownTimer = null;
+        _monkeyMuxResizeSyncThrottled = false;
+        _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+      });
+    } else {
       _monkeyMuxResizeSyncThrottled = false;
-      _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
-    });
+    }
     unawaited(() async {
       try {
         await _syncActiveMonkeyMuxTerminalSize(
@@ -6385,7 +6398,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _monkeyMuxResizeSyncPending = false;
-    _sendMonkeyMuxResizeSyncNow(session);
+    final columns = _monkeyMuxResizeSyncColumns;
+    final rows = _monkeyMuxResizeSyncRows;
+    if (columns == null || rows == null) {
+      return;
+    }
+    _scheduleMonkeyMuxResizeSync(session, columns: columns, rows: rows);
   }
 
   void _scheduleMonkeyMuxResizeRedrawFollowUp(SshSession session) {

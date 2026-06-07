@@ -232,6 +232,33 @@ void main() {
     });
   });
 
+  testWidgets('an unrelated erase does not discard an in-flight image decode', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal()..resize(40, 10);
+      terminal
+        ..write('\x1b[H')
+        ..write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\')
+        // Erase a prompt/status row that does not intersect the image while the
+        // decode is still in flight. Replay streams commonly contain such
+        // erases after the image APC; they must not cancel the image.
+        ..write('\x1b[10;1H\x1b[2K');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(
+        terminal.graphics.hasPlacements,
+        isTrue,
+        reason: 'unrelated erases during replay must not drop the image',
+      );
+    });
+  });
+
   testWidgets('images do not leak across the alternate screen', (tester) async {
     await tester.runAsync(() async {
       final terminal = Terminal();
