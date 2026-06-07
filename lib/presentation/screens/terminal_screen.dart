@@ -8283,6 +8283,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
+    final targetWindow = _resolveTmuxWindowByTarget(
+      windowIndex,
+      windowId: targetWindowId,
+    );
     final wasUsingAltBuffer = _terminal.isUsingAltBuffer;
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
@@ -8312,6 +8316,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
+      if (wasUsingAltBuffer && _tmuxWindowLooksLikeShell(targetWindow)) {
+        _switchLocalTerminalToMainBufferForShellTarget(session, targetWindow);
+      }
       if (wasUsingAltBuffer) {
         _forceVisibleTmuxRedrawWithSyntheticResize(session);
       }
@@ -8335,6 +8342,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         deferUntilAfterRedraw: deferPostSwitchExec,
       ),
     );
+  }
+
+  TmuxWindow? _resolveTmuxWindowByTarget(int windowIndex, {String? windowId}) {
+    final windows = _currentTmuxWindowsSnapshot;
+    if (windows == null) {
+      return null;
+    }
+    if (windowId != null) {
+      final byId = windows.where((window) => window.id == windowId).firstOrNull;
+      if (byId != null) {
+        return byId;
+      }
+    }
+    return windows.where((window) => window.index == windowIndex).firstOrNull;
+  }
+
+  bool _tmuxWindowLooksLikeShell(TmuxWindow? window) {
+    if (window == null) {
+      return false;
+    }
+    if (window.foregroundAgentTool != null || window.agentTool != null) {
+      return false;
+    }
+    return _isShellCommandName(window.currentCommand);
+  }
+
+  void _switchLocalTerminalToMainBufferForShellTarget(
+    SshSession session,
+    TmuxWindow? targetWindow,
+  ) {
+    if (!_terminal.isUsingAltBuffer || _connectionId != session.connectionId) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'local_main_buffer_preview',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowIndex': targetWindow?.index,
+        'hasWindowId': targetWindow?.id != null,
+      },
+    );
+    _terminal.write('\x1b[?1049l');
+    _terminalViewKey.currentState?.forceFullRepaint();
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _forceVisibleTmuxRedrawWithSyntheticResize(SshSession session) {
