@@ -2130,6 +2130,22 @@ void main() {
         expect(tmuxCommandNeedsLoginProfile(command), isTrue, reason: command);
       }
     });
+
+    test('non-tmux and binary-resolving commands keep the login profile', () {
+      for (final command in <String>[
+        // Agent-tool detection resolves CLIs via command -v inside an
+        // interactive shell, which needs ~/.zprofile's PATH (Homebrew) sourced
+        // by the outer shell.
+        r'''SH="${SHELL:-/bin/sh}"; "$SH" -ic 'for c in claude codex; do command -v "$c"; done' || true''',
+        // Foreground-client check: process-tree walk with shell substitution.
+        r'sep=$(printf "\037"); tmux -u list-clients -F "#{client_pid}"',
+        // Theme refresh with a client-report subshell.
+        r'tmux -u set-option -p -t "%1" pane-colours[0] "#fff"; clients=$(tmux -u list-clients)',
+        'which tmux',
+      ]) {
+        expect(tmuxCommandNeedsLoginProfile(command), isTrue, reason: command);
+      }
+    });
   });
 
   group('channel backoff helpers', () {
