@@ -4202,6 +4202,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (activeWindowChanged) {
       _lastMuxWindowChangeAt = DateTime.now();
+      _tmuxService.deferExecsForRedraw(
+        session,
+        _tmuxPostWindowSwitchExecQuietPeriod,
+      );
       _terminalTextInputController.resetImeCompletions();
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
@@ -8295,6 +8299,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _prepareTerminalForMuxWindowChange();
     if (deferPostSwitchExec) {
       _lastMuxWindowChangeAt = DateTime.now();
+      _tmuxService.deferExecsForRedraw(
+        session,
+        _tmuxPostWindowSwitchExecQuietPeriod,
+      );
     }
     // tmux redraws the newly selected window on its own within ~20ms, so the
     // switch itself needs nothing more than the control-channel select-window

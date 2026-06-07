@@ -94,6 +94,10 @@ class TmuxService {
   /// In-flight tmux path/profile probes per SSH session.
   static final Map<int, Future<void>> _tmuxPathRequests = {};
 
+  /// Per-connection deadline before which one-shot tmux exec channels should be
+  /// deferred so the attached shell channel can deliver a window-switch redraw.
+  static final Map<int, DateTime> _execQuietUntil = {};
+
   /// In-flight tmux session-existence probes.
   static final _hasSessionRequests = <_TmuxSessionRequestKey, Future<bool>>{};
 
@@ -190,6 +194,7 @@ class TmuxService {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _tmuxPathRequests.remove(connectionId)?.ignore();
+    _execQuietUntil.remove(connectionId);
     _hasSessionRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -231,6 +236,25 @@ class TmuxService {
     }
     if (observerDisposals.isNotEmpty) {
       await Future.wait(observerDisposals);
+    }
+  }
+
+  /// Defers one-shot tmux exec channels for [duration].
+  ///
+  /// The persistent control-mode client can switch windows immediately, but the
+  /// attached shell channel carries the actual redraw. Opening auxiliary SSH exec
+  /// channels (foreground checks, command detection, theme refreshes) right after
+  /// `select-window` can starve that redraw on high-latency hosts. This quiet
+  /// period keeps those helpers off the critical path while leaving control-mode
+  /// commands untouched.
+  void deferExecsForRedraw(SshSession session, Duration duration) {
+    if (duration <= Duration.zero) {
+      return;
+    }
+    final until = DateTime.now().add(duration);
+    final existing = _execQuietUntil[session.connectionId];
+    if (existing == null || existing.isBefore(until)) {
+      _execQuietUntil[session.connectionId] = until;
     }
   }
 
@@ -2030,10 +2054,28 @@ class TmuxService {
     SshSession session,
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
-  }) => session.runQueuedExec(
-    () => _execUnqueued(session, command),
-    priority: priority,
-  );
+  }) => session.runQueuedExec(() async {
+    final quietUntil = _execQuietUntil[session.connectionId];
+    if (quietUntil != null) {
+      final delay = quietUntil.difference(DateTime.now());
+      if (delay > Duration.zero) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.exec',
+          'deferred_for_redraw',
+          fields: {
+            'connectionId': session.connectionId,
+            'commandKind': _diagnosticTmuxCommandKind(command),
+            'delayMs': delay.inMilliseconds,
+          },
+        );
+        await Future<void>.delayed(delay);
+      }
+      if (_execQuietUntil[session.connectionId] == quietUntil) {
+        _execQuietUntil.remove(session.connectionId);
+      }
+    }
+    return _execUnqueued(session, command);
+  }, priority: priority);
 
   Future<String> _execTmuxCommand(
     SshSession session,
