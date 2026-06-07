@@ -2096,6 +2096,42 @@ void main() {
     );
   });
 
+  group('tmuxCommandNeedsLoginProfile', () {
+    test(
+      'pure server query/control commands do not need the login profile',
+      () {
+        for (final command in <String>[
+          'tmux -u list-clients',
+          'tmux -u select-window -t work:2',
+          'tmux -u display-message -p "#{client_name}"',
+          'tmux -u list-windows -t work',
+          'tmux -u has-session -t work',
+          'tmux -u refresh-client',
+          'tmux -u show-options -g',
+        ]) {
+          expect(
+            tmuxCommandNeedsLoginProfile(command),
+            isFalse,
+            reason: command,
+          );
+        }
+      },
+    );
+
+    test('shell-spawning commands still need the login profile', () {
+      for (final command in <String>[
+        'tmux -u new-window -t work',
+        'tmux -u new-session -s work',
+        'tmux -u split-window -t work:1',
+        'tmux -u run-shell "echo hi"',
+        'tmux -u if-shell "true" "display ok"',
+        'tmux -u respawn-pane -t work:1',
+      ]) {
+        expect(tmuxCommandNeedsLoginProfile(command), isTrue, reason: command);
+      }
+    });
+  });
+
   group('channel backoff helpers', () {
     test('identifies transient channel-open failures', () {
       expect(
