@@ -247,15 +247,15 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     }
 
     for (var i = 0; i < copyStart; i++) {
-      _dropChild(i);
+      replacement[i]._detach();
     }
 
     final copyLength = replacement.length - copyStart;
+    _startIndex = 0;
     for (var i = 0; i < copyLength; i++) {
       _adoptChild(i, replacement[copyStart + i]);
     }
 
-    _startIndex = 0;
     _length = copyLength;
   }
 
