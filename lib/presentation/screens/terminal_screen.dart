@@ -8264,24 +8264,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _prepareTerminalForMuxWindowChange();
-    // Draw the newly selected window immediately. The foreground-client check
-    // below issues an SSH exec round-trip that can take a few hundred
-    // milliseconds; gating the redraw nudge behind it made tmux switches feel
-    // laggy. Nudge the size refresh now (which resizes the pane and makes tmux
-    // repaint it), then run the reattach recovery and nudge again in case it
-    // actually reattached.
-    _scheduleTerminalSizeRefresh();
-    await _reattachTmuxIfNeeded(
-      session,
-      sessionName,
-      forceVisibleTmux: forceVisibleTmux,
-    );
+    // tmux redraws the newly selected window on its own within ~20ms, so the
+    // switch itself needs nothing more than the control-channel select-window
+    // above. The foreground-client check is a heavy exec shell script that walks
+    // this SSH session's process tree to correlate it with tmux's clients (to
+    // detect a detached window); it can't run over the control channel and used
+    // to block the switch for a few hundred milliseconds. Run it in the
+    // background and only resync the size if it actually reattaches.
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_switched',
     );
+    unawaited(
+      _reattachTmuxAfterWindowChangeInBackground(
+        session,
+        sessionName,
+        forceVisibleTmux: forceVisibleTmux,
+      ),
+    );
+  }
+
+  /// Runs the post-window-change tmux reattach recovery without blocking the
+  /// switch. tmux already redrew the selected window; this only matters for the
+  /// uncommon case where the visible terminal has dropped out of tmux.
+  Future<void> _reattachTmuxAfterWindowChangeInBackground(
+    SshSession session,
+    String sessionName, {
+    bool forceVisibleTmux = false,
+  }) async {
+    await _reattachTmuxIfNeeded(
+      session,
+      sessionName,
+      forceVisibleTmux: forceVisibleTmux,
+    );
+    if (!mounted || _connectionId != session.connectionId) {
+      return;
+    }
+    _scheduleTerminalSizeRefresh();
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -8326,16 +8347,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,
     );
-    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
-      // Draw the new window immediately rather than after the foreground-client
-      // check's SSH round-trip (see _switchTmuxWindow).
-      _scheduleTerminalSizeRefresh();
-      await _reattachTmuxIfNeeded(session, sessionName);
-    }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
+      // tmux draws the new window on its own; resync the size and run the
+      // foreground-client reattach check in the background instead of blocking
+      // the create on its exec round-trip (see _switchTmuxWindow).
       _scheduleTerminalSizeRefresh();
+      unawaited(
+        _reattachTmuxAfterWindowChangeInBackground(session, sessionName),
+      );
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
