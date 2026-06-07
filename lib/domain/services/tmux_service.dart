@@ -2391,35 +2391,60 @@ class _TmuxExecChannelBackoff {
 bool shouldBackOffTmuxExecChannelAfterFailure(Object error) =>
     error is SSHChannelOpenError || error is TimeoutException;
 
-/// tmux subcommands that spawn a shell/process and therefore want the login
-/// profile's PATH.
-const _shellSpawningTmuxSubcommands = <String>[
-  'new-window',
-  'new-session',
-  'split-window',
-  'run-shell',
-  'if-shell',
-  'respawn-pane',
-  'respawn-window',
-  'pipe-pane',
-];
+/// tmux read/control subcommands that need nothing beyond the cached tmux
+/// binary and an explicit locale, so they can skip sourcing the login profile
+/// once the path is cached.
+const _profileFreeTmuxSubcommands = <String>{
+  'list-clients',
+  'list-windows',
+  'list-sessions',
+  'list-panes',
+  'select-window',
+  'select-pane',
+  'display-message',
+  'has-session',
+  'refresh-client',
+  'show-options',
+  'show-option',
+  'set-option',
+  'kill-window',
+  'kill-session',
+  'kill-pane',
+  'rename-window',
+  'capture-pane',
+};
 
 /// Whether a tmux exec [command] needs the login-shell profile sourced.
 ///
-/// Pure server queries/controls (list-clients, select-window, display-message,
-/// ...) run correctly with just the cached tmux path and an explicit locale, so
-/// they skip the (possibly slow) profile sourcing once the path is cached. Only
-/// subcommands that spawn a shell/process want the login PATH. The check is a
-/// conservative substring match: a false positive merely re-sources the profile
-/// (slower but still correct).
+/// Sourcing the profile (e.g. `~/.zprofile`) can cost hundreds of milliseconds,
+/// so once the tmux binary path is cached we skip it — but only for a single,
+/// simple tmux read/control invocation that needs nothing beyond the cached
+/// binary and the explicit locale. Anything else keeps the profile because it
+/// may rely on the login PATH:
+///  - agent-tool detection runs `"$SHELL" -ic '... command -v <cli> ...'`; the
+///    interactive shell sources `~/.zshrc` but not `~/.zprofile`, where Homebrew
+///    typically puts the PATH the CLIs live on, so the outer profile is required;
+///  - the foreground-client check and theme client-report use `$(...)` shell
+///    substitution and external tools;
+///  - window-spawning subcommands (new-window, run-shell, ...) want the login
+///    PATH for the process they start.
 @visibleForTesting
 bool tmuxCommandNeedsLoginProfile(String command) {
-  for (final subcommand in _shellSpawningTmuxSubcommands) {
-    if (command.contains(subcommand)) {
-      return true;
-    }
+  final match = RegExp(
+    r'^(?:\S*/)?tmux(?:\s+-u)?\s+([a-z][a-z-]*)',
+  ).firstMatch(command.trimLeft());
+  if (match == null) {
+    return true;
   }
-  return false;
+  // Reject shell substitution / external-binary resolution that may need the
+  // login PATH even when the leading token is tmux.
+  if (command.contains(r'$(') ||
+      command.contains('`') ||
+      command.contains('command -v') ||
+      command.contains('which ')) {
+    return true;
+  }
+  return !_profileFreeTmuxSubcommands.contains(match.group(1));
 }
 
 bool _shouldTreatTmuxExecChannelAsUnavailable(Object error) =>
