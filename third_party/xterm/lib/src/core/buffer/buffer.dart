@@ -161,6 +161,9 @@ class Buffer {
       line.isWrapped = false;
       line.eraseRange(0, viewWidth, terminal.cursor);
     }
+    _removeGraphicsInRegion(
+        absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
+    _removeGraphicsInRows(absoluteCursorY + 1, height - 1);
   }
 
   /// Erases the viewport from the top-left corner to the cursor, including the
@@ -173,6 +176,8 @@ class Buffer {
       line.isWrapped = false;
       line.eraseRange(0, viewWidth, terminal.cursor);
     }
+    _removeGraphicsInRows(scrollBack, absoluteCursorY - 1);
+    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the whole viewport.
@@ -191,6 +196,8 @@ class Buffer {
   void eraseLineFromCursor() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(_cursorX, viewWidth, terminal.cursor);
+    _removeGraphicsInRegion(
+        absoluteCursorY, absoluteCursorY, _cursorX, viewWidth - 1);
   }
 
   /// Erases the line from the start of the line to the cursor, including the
@@ -198,18 +205,41 @@ class Buffer {
   void eraseLineToCursor() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(0, _cursorX, terminal.cursor);
+    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, _cursorX - 1);
   }
 
   /// Erases the line at the current cursor position.
   void eraseLine() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(0, viewWidth, terminal.cursor);
+    _removeGraphicsInRegion(absoluteCursorY, absoluteCursorY, 0, viewWidth - 1);
   }
 
   /// Erases [count] cells starting at the cursor position.
   void eraseChars(int count) {
     final start = _cursorX;
     currentLine.eraseRange(start, start + count, terminal.cursor);
+    _removeGraphicsInRegion(
+      absoluteCursorY,
+      absoluteCursorY,
+      start,
+      min(start + count, viewWidth) - 1,
+    );
+  }
+
+  void _removeGraphicsInRows(int firstRow, int lastRow) {
+    if (lastRow < firstRow) return;
+    graphics.removePlacementsInRows(firstRow, lastRow);
+  }
+
+  void _removeGraphicsInRegion(
+    int firstRow,
+    int lastRow,
+    int firstCol,
+    int lastCol,
+  ) {
+    if (lastRow < firstRow || lastCol < firstCol) return;
+    graphics.removePlacementsInRegion(firstRow, lastRow, firstCol, lastCol);
   }
 
   void scrollDown(int lines) {

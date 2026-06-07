@@ -227,7 +227,9 @@ class LocalNotificationService {
       StreamController<TerminalNotificationPayload>.broadcast();
   Future<bool>? _initializeFuture;
   TmuxAlertNotificationPayload? _launchTmuxAlert;
+  TerminalNotificationPayload? _launchTerminalNotification;
   bool _didConsumeLaunchTmuxAlert = false;
+  bool _didConsumeLaunchTerminalNotification = false;
 
   /// Emits whenever the user taps a tmux alert notification.
   Stream<TmuxAlertNotificationPayload> get tmuxAlertTaps =>
@@ -254,6 +256,18 @@ class LocalNotificationService {
     }
     _didConsumeLaunchTmuxAlert = true;
     return _launchTmuxAlert;
+  }
+
+  /// Returns the terminal notification that launched the app, if one has not
+  /// been consumed.
+  Future<TerminalNotificationPayload?>
+  consumeLaunchTerminalNotification() async {
+    final didInitialize = await initialize();
+    if (!didInitialize || _didConsumeLaunchTerminalNotification) {
+      return null;
+    }
+    _didConsumeLaunchTerminalNotification = true;
+    return _launchTerminalNotification;
   }
 
   /// Shows or refreshes a tmux alert notification.
@@ -374,11 +388,13 @@ class LocalNotificationService {
         ),
       );
       final launchDetails = await _plugin.getNotificationAppLaunchDetails();
-      _launchTmuxAlert = (launchDetails?.didNotificationLaunchApp ?? false)
-          ? TmuxAlertNotificationPayload.decode(
-              launchDetails?.notificationResponse?.payload,
-            )
+      final launchPayload = (launchDetails?.didNotificationLaunchApp ?? false)
+          ? launchDetails?.notificationResponse?.payload
           : null;
+      _launchTmuxAlert = TmuxAlertNotificationPayload.decode(launchPayload);
+      _launchTerminalNotification = TerminalNotificationPayload.decode(
+        launchPayload,
+      );
 
       await _plugin.initialize(
         settings: initializationSettings,

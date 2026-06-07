@@ -77,7 +77,12 @@ class TerminalPainter {
     // `(dstHeight / cellSize.height).ceil()` with "Infinity or NaN toInt".
     return Size(
       width.isFinite && width > 0 ? width : 1.0,
-      height.isFinite && height > 0 ? height : 1.0,
+      // Use an integer cell height so row offsets do not get rounded down and
+      // compressed by callers that align terminal rows to device pixels. A
+      // fractional height like 19.6 followed by truncation makes the next row's
+      // background start above the previous glyph's descenders, clipping the
+      // bottoms of letters such as "g".
+      height.isFinite && height > 0 ? height.ceilToDouble() : 1.0,
     );
   }
 

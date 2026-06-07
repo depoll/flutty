@@ -133,6 +133,43 @@ void main() {
     });
   });
 
+  testWidgets('partial erases remove intersecting placed images', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final terminal = Terminal()..resize(40, 10);
+
+      Future<void> placeImage() async {
+        terminal
+          ..write('\x1b[H')
+          ..write(
+              '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\');
+        var waited = 0;
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+        expect(terminal.graphics.hasPlacements, isTrue);
+      }
+
+      await placeImage();
+      terminal.write('\x1b[H\x1b[2K');
+      expect(
+        terminal.graphics.hasPlacements,
+        isFalse,
+        reason: 'CSI K clears the image row and must drop the placement',
+      );
+
+      await placeImage();
+      terminal.write('\x1b[H\x1b[4X');
+      expect(
+        terminal.graphics.hasPlacements,
+        isFalse,
+        reason: 'CSI X clears the image cells and must drop the placement',
+      );
+    });
+  });
+
   testWidgets('clearing does not dispose the decoded image (no use-after-free)',
       (tester) async {
     await tester.runAsync(() async {

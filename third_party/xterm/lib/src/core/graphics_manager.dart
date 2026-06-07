@@ -143,7 +143,29 @@ class GraphicsManager {
     _generation++;
     _placements.removeWhere((placement) {
       final remove = !placement.attached ||
-          (placement.row >= firstRow && placement.row <= lastRow);
+          _placementIntersectsRows(placement, firstRow, lastRow);
+      if (remove) {
+        placement.dispose();
+      }
+      return remove;
+    });
+    _dropUnreferencedImages();
+  }
+
+  /// Removes placements intersecting the rectangular cell region whose rows and
+  /// columns are inclusive. Used by partial erases (`CSI J/K/X`) so an image
+  /// does not remain painted over cells the terminal just cleared.
+  void removePlacementsInRegion(
+    int firstRow,
+    int lastRow,
+    int firstCol,
+    int lastCol,
+  ) {
+    _generation++;
+    _placements.removeWhere((placement) {
+      final remove = !placement.attached ||
+          (_placementIntersectsRows(placement, firstRow, lastRow) &&
+              _placementIntersectsCols(placement, firstCol, lastCol));
       if (remove) {
         placement.dispose();
       }
@@ -168,6 +190,28 @@ class GraphicsManager {
     if (_images.isEmpty) return;
     final referenced = _placements.map((p) => p.imageId).toSet();
     _images.removeWhere((id, _) => !referenced.contains(id));
+  }
+
+  bool _placementIntersectsRows(
+    TerminalImagePlacement placement,
+    int firstRow,
+    int lastRow,
+  ) {
+    final rows = placement.rows > 0 ? placement.rows : 1;
+    final placementFirst = placement.row;
+    final placementLast = placementFirst + rows - 1;
+    return placementFirst <= lastRow && placementLast >= firstRow;
+  }
+
+  bool _placementIntersectsCols(
+    TerminalImagePlacement placement,
+    int firstCol,
+    int lastCol,
+  ) {
+    final cols = placement.cols > 0 ? placement.cols : 1;
+    final placementFirst = placement.col;
+    final placementLast = placementFirst + cols - 1;
+    return placementFirst <= lastCol && placementLast >= firstCol;
   }
 
   void _evictIfNeeded() {

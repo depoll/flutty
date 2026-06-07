@@ -6313,8 +6313,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!isMonkeyMuxSession) {
       return;
     }
+    final sessionName = _activeMonkeyMuxSessionName(session);
+    if (sessionName == null) {
+      return;
+    }
     _monkeyMuxResizeSyncColumns = columns;
     _monkeyMuxResizeSyncRows = rows;
+    if (_monkeyMuxService.hasLiveControlChannel(session, sessionName)) {
+      // The persistent MonkeyMux control channel is already up, so this update
+      // does not allocate a short-lived SSH exec channel. Send immediately so
+      // apps such as Copilot reflow along with the pinch in real time.
+      unawaited(
+        _syncActiveMonkeyMuxTerminalSize(session, columns: columns, rows: rows),
+      );
+      return;
+    }
     // A send is on the wire or we're inside the throttle window: just record
     // that a newer size is wanted; it goes out when the guards clear.
     if (_monkeyMuxResizeSyncInFlight || _monkeyMuxResizeSyncThrottled) {
@@ -6322,6 +6335,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _sendMonkeyMuxResizeSyncNow(session);
+  }
+
+  String? _activeMonkeyMuxSessionName(SshSession session) {
+    final sessionName = _tmuxSessionName ?? session.remoteMuxSessionName;
+    return sessionName == null || sessionName.trim().isEmpty
+        ? null
+        : sessionName;
   }
 
   void _sendMonkeyMuxResizeSyncNow(SshSession session) {

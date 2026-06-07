@@ -191,6 +191,11 @@ class _BackgroundLifecycleBridgeState
     if (launchAlert != null) {
       _handleTmuxAlertNotification(launchAlert);
     }
+    final launchTerminalNotification = await notificationService
+        .consumeLaunchTerminalNotification();
+    if (launchTerminalNotification != null) {
+      _handleTerminalNotification(launchTerminalNotification);
+    }
   }
 
   bool _canOpenTmuxAlertNotification(AuthState authState) =>

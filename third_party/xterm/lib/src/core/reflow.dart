@@ -121,11 +121,19 @@ class _LineReflow {
 
       // Leave the last cell to the next iteration if it's a wide char.
       if (lineFilled && line.getWidth(from + cellsToCopy - 1) == 2) {
-        cellsToCopy--;
+        // When newWidth is 1, the wide cell cannot be deferred: copying zero
+        // cells would make the loop spin forever. Keep one cell so the reflow
+        // always makes progress; the one-column display is inherently lossy for
+        // full-width glyphs, but it must never hang the terminal.
+        if (cellsToCopy > 1) {
+          cellsToCopy--;
+        }
       }
 
       for (var anchor in line.anchors.toList()) {
-        if (anchor.x >= from && anchor.x <= from + cellsToCopy) {
+        final copyEnd = from + cellsToCopy;
+        final isExclusiveRangeEnd = anchor.x == to && anchor.x == copyEnd;
+        if (anchor.x >= from && (anchor.x < copyEnd || isExclusiveRangeEnd)) {
           _builder.addAnchor(anchor, anchor.x - from);
         }
       }

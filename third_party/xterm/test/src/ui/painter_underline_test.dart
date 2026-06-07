@@ -3,8 +3,19 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/src/ui/painter.dart';
+import 'package:xterm/xterm.dart';
 
 void main() {
+  test('TerminalPainter rounds cell height up to avoid descender clipping', () {
+    final painter = TerminalPainter(
+      theme: TerminalThemes.defaultTheme,
+      textStyle: const TerminalStyle(fontSize: 17),
+      textScaler: TextScaler.noScaling,
+    );
+
+    expect(painter.cellSize.height, painter.cellSize.height.ceilToDouble());
+  });
+
   test('paintTerminalCellUnderline tolerates degenerate cell metrics', () {
     const sizes = [
       Size(0, 0),

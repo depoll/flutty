@@ -78,6 +78,28 @@ void main() {
     expect(terminal.buffer.lines[1].toString(), '是地上霜');
   });
 
+  test('reflow() keeps boundary anchors on the next wrapped line', () {
+    final terminal = Terminal()..resize(10, 10);
+    terminal.write('0123456789');
+    final anchor = terminal.buffer.lines[0].createAnchor(5);
+
+    terminal.resize(5, 10);
+
+    expect(anchor.attached, isTrue);
+    expect(anchor.x, 0);
+    expect(anchor.y, 1);
+  });
+
+  test('reflow() makes progress for a wide character at width 1', () {
+    final terminal = Terminal()..resize(10, 10);
+    terminal.write('床');
+
+    expect(() => terminal.resize(1, 10), returnsNormally);
+    for (final line in terminal.buffer.lines.toList()) {
+      expect(line.length, 1);
+    }
+  });
+
   test('lines has correct length after reflow', () {
     final terminal = Terminal();
 

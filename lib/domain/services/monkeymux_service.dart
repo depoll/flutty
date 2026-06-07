@@ -380,6 +380,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
 
+  /// Whether commands for [sessionName] can be sent over an already-open
+  /// MonkeyMux control channel.
+  ///
+  /// When this is true, high-frequency resize updates do not open a new SSH exec
+  /// channel per event and can follow pinch-zoom in real time. When false, the
+  /// UI should throttle resize syncs to avoid flooding the SSH connection with
+  /// one-shot exec channels.
+  bool hasLiveControlChannel(SshSession session, String sessionName) =>
+      _observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)]
+          ?.isControlChannelReady ??
+      false;
+
   @override
   Future<bool> hasForegroundClientOrThrow(
     SshSession session,

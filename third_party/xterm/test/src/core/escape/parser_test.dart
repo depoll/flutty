@@ -70,6 +70,13 @@ void main() {
     });
 
     group('SGR underline and overline', () {
+      test('empty SGR parameter resets style', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b[31;m');
+        verify(parser.handler.setForegroundColor16(NamedColor.red));
+        verify(parser.handler.resetCursorStyle());
+      });
+
       test('legacy single underline (4)', () {
         final parser = EscapeParser(MockEscapeHandler());
         parser.write('\x1b[4m');
