@@ -111,15 +111,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
     _isOpeningTerminalRoute = true;
+    // Release the double-tap guard once the terminal route has been pushed and
+    // can capture input, rather than when `router.push` resolves. That future
+    // only completes when the route is popped, and is orphaned entirely if the
+    // route is instead removed via `go(...)` (for example navigating home from
+    // SFTP). Tying the guard to it would leave it stuck `true`, permanently
+    // blocking every future terminal open even though connections still open.
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _releaseTerminalRouteGuard(),
+    );
     try {
       await router.push(route);
     } finally {
+      // Belt-and-suspenders: also release here, before the theme clear (which
+      // can throw if the provider is gone) so a throw can never strand the guard.
+      _releaseTerminalRouteGuard();
       if (mounted) {
         ref.read(terminalAppThemeOverrideProvider.notifier).clear();
-        setState(() => _isOpeningTerminalRoute = false);
-      } else {
-        _isOpeningTerminalRoute = false;
       }
+    }
+  }
+
+  void _releaseTerminalRouteGuard() {
+    if (!_isOpeningTerminalRoute) {
+      return;
+    }
+    if (mounted) {
+      setState(() => _isOpeningTerminalRoute = false);
+    } else {
+      _isOpeningTerminalRoute = false;
     }
   }
 
