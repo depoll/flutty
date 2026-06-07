@@ -8385,7 +8385,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
     _terminal.write('\x1b[?1049l');
-    _terminalViewKey.currentState?.forceFullRepaint();
+    if (mounted) {
+      setState(() {
+        _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+      });
+    }
+    _followLiveOutput();
+    _terminalViewKey.currentState?.refreshTerminalDisplay(
+      revealLatestOutput: true,
+    );
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      revealLatestOutput: true,
+      suppressMonkeyMuxResizeSync: true,
+    );
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
