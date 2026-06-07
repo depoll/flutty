@@ -652,6 +652,74 @@ void main() {
     },
   );
 
+  testWidgets(
+    'terminal writes advance the change counter and paints advance the paint '
+    'counter',
+    (tester) async {
+      final terminal = Terminal();
+      final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 320,
+            height: 240,
+            child: MonkeyTerminalView(
+              key: terminalKey,
+              terminal,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final state = terminalKey.currentState!;
+      final changesBefore = state.terminalChangeCount;
+      final paintsBefore = state.terminalPaintCount;
+      expect(changesBefore, isNotNull);
+      expect(paintsBefore, isNotNull);
+
+      terminal.write('hello');
+      await tester.pump();
+
+      expect(state.terminalChangeCount, greaterThan(changesBefore!));
+      expect(state.terminalPaintCount, greaterThan(paintsBefore!));
+    },
+  );
+
+  testWidgets('forceFullRepaint produces a new frame from the current buffer', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 320,
+          height: 240,
+          child: MonkeyTerminalView(
+            key: terminalKey,
+            terminal,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final state = terminalKey.currentState!;
+    // Let any initial frames settle so the counter is stable.
+    await tester.pump();
+    final paintsBefore = state.terminalPaintCount!;
+
+    state.forceFullRepaint();
+    await tester.pump();
+
+    expect(state.terminalPaintCount, greaterThan(paintsBefore));
+  });
+
   test('explicit xterm palette grayscale colors stay standard', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
