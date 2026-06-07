@@ -79,11 +79,16 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   MonkeyMuxServerStatus? installedHelpersStatus;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
+  bool hasLiveControlChannelValue = false;
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  bool hasLiveControlChannel(SshSession session, String sessionName) =>
+      hasLiveControlChannelValue;
 
   @override
   Future<MonkeyMuxServerStatus?> runningServerStatus(

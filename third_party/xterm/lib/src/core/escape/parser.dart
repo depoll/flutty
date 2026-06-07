@@ -233,6 +233,7 @@ class EscapeParser {
 
     var param = 0;
     var hasParam = false;
+    var pendingEmptyParam = false;
     // Sub-parameters of the parameter currently being parsed, populated once a
     // `:` is seen. `null` while the current parameter has no sub-parameters.
     List<int>? sub;
@@ -240,15 +241,16 @@ class EscapeParser {
     // malformed sequences such as `CSI 1;1;1;...m`, matching kterm.dart.
     const maxParams = 256;
 
-    void commitParam() {
+    void commitParam({bool emptyAsZero = false}) {
       if (sub != null) {
         if (sub!.length < maxParams) sub!.add(param);
-      } else if (hasParam && _csi.params.length < maxParams) {
+      } else if ((hasParam || emptyAsZero) && _csi.params.length < maxParams) {
         _csi.params.add(param);
         _csi.subParams.add(const []);
       }
       param = 0;
       hasParam = false;
+      pendingEmptyParam = false;
       sub = null;
     }
 
@@ -261,7 +263,8 @@ class EscapeParser {
       final char = _queue.consume();
 
       if (char == Ascii.semicolon) {
-        commitParam();
+        commitParam(emptyAsZero: true);
+        pendingEmptyParam = true;
         continue;
       }
 
@@ -280,11 +283,13 @@ class EscapeParser {
         }
         param = 0;
         hasParam = true;
+        pendingEmptyParam = false;
         continue;
       }
 
       if (char >= Ascii.num0 && char <= Ascii.num9) {
         hasParam = true;
+        pendingEmptyParam = false;
         param *= 10;
         param += char - Ascii.num0;
         continue;
@@ -296,7 +301,7 @@ class EscapeParser {
       }
 
       if (char >= Ascii.atSign && char <= Ascii.tilde) {
-        commitParam();
+        commitParam(emptyAsZero: pendingEmptyParam);
 
         _csi.finalByte = char;
         return true;
