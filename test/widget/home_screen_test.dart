@@ -654,6 +654,91 @@ void main() {
       expect(find.text('Terminal /terminal/1?connectionId=7'), findsNothing);
     });
 
+    testWidgets('terminal opens again after the route is removed via go()', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final openedRoutes = <String>[];
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(
+            connectionId: 7,
+            hostId: 1,
+            state: SshConnectionState.connecting,
+          ),
+        ],
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const HomeScreen(initialTab: HomeScreenTab.connections),
+          ),
+          GoRoute(
+            path: '/terminal/:hostId',
+            builder: (context, state) => _RecordingTerminalPage(
+              route: state.uri.toString(),
+              openedRoutes: openedRoutes,
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            transferIntentServiceProvider.overrideWith(
+              (ref) => _TestTransferIntentService(),
+            ),
+            homeScreenShortcutServiceProvider.overrideWith(
+              (ref) => _TestHomeScreenShortcutService(),
+            ),
+            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+              (ref) => Stream<Set<int>>.value(const <int>{}),
+            ),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+          child: MediaQuery(
+            data: const MediaQueryData(size: Size(400, 800)),
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tapAt(tester.getCenter(find.text('Alpha')));
+      await tester.pumpAndSettle();
+
+      expect(openedRoutes, ['/terminal/1?connectionId=7']);
+
+      // Returning home via go(...) removes the terminal route without popping,
+      // which orphans the push future. The open guard must still be released so
+      // the connection can be reopened instead of becoming permanently stuck.
+      router.go('/');
+      await tester.pumpAndSettle();
+
+      expect(find.text('Alpha'), findsOneWidget);
+
+      await tester.tapAt(tester.getCenter(find.text('Alpha')));
+      await tester.pumpAndSettle();
+
+      expect(openedRoutes, [
+        '/terminal/1?connectionId=7',
+        '/terminal/1?connectionId=7',
+      ]);
+    });
+
     testWidgets('connections preview tap opens terminal route', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
