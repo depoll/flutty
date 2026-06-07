@@ -231,8 +231,9 @@ const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 // After a multiplexer window switch, sample the live render object's paint/
 // change counters once the redraw has had time to arrive, then force a repaint.
 // A second, later force catches a redraw that lands after the first sample.
-const _muxWindowRefreshProbeDelay = Duration(milliseconds: 400);
-const _muxWindowRefreshSafetyNetDelay = Duration(milliseconds: 900);
+const _muxWindowRefreshProbeDelay = Duration(milliseconds: 250);
+const _muxWindowRefreshSafetyNetDelay = Duration(milliseconds: 500);
+const _tmuxSyntheticResizeRestoreDelay = Duration(milliseconds: 180);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -8353,7 +8354,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
     shell.resizeTerminal(columns, rows - 1);
-    Timer(const Duration(milliseconds: 32), () {
+    Timer(_tmuxSyntheticResizeRestoreDelay, () {
       if (!mounted ||
           _connectionId != session.connectionId ||
           _shell != shell) {
