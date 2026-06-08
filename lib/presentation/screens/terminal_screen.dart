@@ -2944,8 +2944,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
-  final List<Timer> _tmuxAgentTargetLateRefreshTimers = <Timer>[];
-  int _tmuxAgentTargetLateRefreshGeneration = 0;
   DateTime? _lastMuxWindowChangeAt;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
@@ -8316,10 +8314,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
-      if (_tmuxWindowLooksLikeMainBufferTarget(targetWindow)) {
-        _switchLocalTerminalToMainBufferPreview(session, targetWindow);
-      } else if (_tmuxWindowLooksLikeAltBufferTarget(targetWindow)) {
-        _switchLocalTerminalToAltBufferPreview(session, targetWindow);
+      if (_tmuxWindowLooksLikeAltBufferTarget(targetWindow)) {
         _refreshTerminalThemeReportsForTui(
           session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
           includeThemeModeReport: false,
@@ -8362,19 +8357,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return windows.where((window) => window.index == windowIndex).firstOrNull;
   }
 
-  bool _tmuxWindowLooksLikeMainBufferTarget(TmuxWindow? window) {
-    if (window == null) {
-      return false;
-    }
-    if (window.foregroundAgentTool != null || window.agentTool != null) {
-      return false;
-    }
-    return _isShellCommandName(window.currentCommand) ||
-        _isShellCommandName(window.name) ||
-        _isShellCommandName(window.paneTitle) ||
-        window.name.trim().toLowerCase() == 'shell';
-  }
-
   bool _tmuxWindowLooksLikeAltBufferTarget(TmuxWindow? window) {
     if (window == null) {
       return false;
@@ -8382,133 +8364,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return window.foregroundAgentTool != null ||
         window.agentTool != null ||
         (window.terminalReportsMouseWheel ?? false);
-  }
-
-  void _switchLocalTerminalToAltBufferPreview(
-    SshSession session,
-    TmuxWindow? targetWindow,
-  ) {
-    if (_connectionId != session.connectionId) {
-      return;
-    }
-    DiagnosticsLogService.instance.debug(
-      'tmux.ui',
-      'local_alt_buffer_preview',
-      fields: {
-        'connectionId': session.connectionId,
-        'windowIndex': targetWindow?.index,
-        'hasWindowId': targetWindow?.id != null,
-        'targetLooksShell': _isShellCommandName(targetWindow?.currentCommand),
-        'targetIsAgent':
-            targetWindow?.foregroundAgentTool != null ||
-            targetWindow?.agentTool != null,
-        'targetReportsMouseWheel': targetWindow?.terminalReportsMouseWheel,
-      },
-    );
-    _terminal.write('\x1b[?1049h\x1b[H\x1b[2J');
-    if (mounted) {
-      setState(() {
-        _isUsingAltBuffer = _terminal.isUsingAltBuffer;
-        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
-      });
-    }
-    _followLiveOutput();
-    _terminalViewKey.currentState?.refreshTerminalDisplay(
-      revealLatestOutput: true,
-    );
-    _scheduleTerminalSizeRefresh(
-      forceDisplayRefresh: true,
-      revealLatestOutput: true,
-      suppressMonkeyMuxResizeSync: true,
-    );
-    WidgetsBinding.instance.ensureVisualUpdate();
-    _scheduleTmuxAgentTargetLateRefreshes(session);
-  }
-
-  void _scheduleTmuxAgentTargetLateRefreshes(SshSession session) {
-    _cancelTmuxAgentTargetLateRefreshes();
-    final generation = ++_tmuxAgentTargetLateRefreshGeneration;
-    for (final delay in const <Duration>[
-      Duration(milliseconds: 700),
-      Duration(milliseconds: 1100),
-      Duration(milliseconds: 1600),
-    ]) {
-      late final Timer timer;
-      timer = Timer(delay, () {
-        _tmuxAgentTargetLateRefreshTimers.remove(timer);
-        if (!mounted ||
-            _connectionId != session.connectionId ||
-            generation != _tmuxAgentTargetLateRefreshGeneration) {
-          return;
-        }
-        DiagnosticsLogService.instance.debug(
-          'tmux.ui',
-          'local_alt_buffer_late_refresh',
-          fields: {
-            'connectionId': session.connectionId,
-            'delayMs': delay.inMilliseconds,
-          },
-        );
-        _terminalViewKey.currentState?.refreshTerminalDisplay(
-          revealLatestOutput: true,
-        );
-        _scheduleTerminalSizeRefresh(
-          forceDisplayRefresh: true,
-          revealLatestOutput: true,
-          suppressMonkeyMuxResizeSync: true,
-        );
-        WidgetsBinding.instance.ensureVisualUpdate();
-      });
-      _tmuxAgentTargetLateRefreshTimers.add(timer);
-    }
-  }
-
-  void _cancelTmuxAgentTargetLateRefreshes() {
-    _tmuxAgentTargetLateRefreshGeneration += 1;
-    for (final timer in _tmuxAgentTargetLateRefreshTimers) {
-      timer.cancel();
-    }
-    _tmuxAgentTargetLateRefreshTimers.clear();
-  }
-
-  void _switchLocalTerminalToMainBufferPreview(
-    SshSession session,
-    TmuxWindow? targetWindow,
-  ) {
-    if (_connectionId != session.connectionId) {
-      return;
-    }
-    _cancelTmuxAgentTargetLateRefreshes();
-    DiagnosticsLogService.instance.debug(
-      'tmux.ui',
-      'local_main_buffer_preview',
-      fields: {
-        'connectionId': session.connectionId,
-        'windowIndex': targetWindow?.index,
-        'hasWindowId': targetWindow?.id != null,
-        'targetLooksShell': _isShellCommandName(targetWindow?.currentCommand),
-        'targetIsAgent':
-            targetWindow?.foregroundAgentTool != null ||
-            targetWindow?.agentTool != null,
-      },
-    );
-    _terminal.write('\x1b[?1049l');
-    if (mounted) {
-      setState(() {
-        _isUsingAltBuffer = _terminal.isUsingAltBuffer;
-        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
-      });
-    }
-    _followLiveOutput();
-    _terminalViewKey.currentState?.refreshTerminalDisplay(
-      revealLatestOutput: true,
-    );
-    _scheduleTerminalSizeRefresh(
-      forceDisplayRefresh: true,
-      revealLatestOutput: true,
-      suppressMonkeyMuxResizeSync: true,
-    );
-    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   /// Runs the post-window-change tmux reattach recovery without blocking the
@@ -9201,7 +9056,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
-    _cancelTmuxAgentTargetLateRefreshes();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
