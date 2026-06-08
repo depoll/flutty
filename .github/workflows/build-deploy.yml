@@ -353,6 +353,7 @@ jobs:
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
+            --target-platform android-arm64 \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -368,6 +369,7 @@ jobs:
             --flavor ${{ inputs.flavor }} \
             --release \
             --no-tree-shake-icons \
+            --target-platform android-arm64 \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -381,6 +383,7 @@ jobs:
             --flavor ${{ inputs.flavor }} \
             --debug \
             --no-tree-shake-icons \
+            --target-platform android-arm64 \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
