@@ -94,6 +94,10 @@ class TmuxService {
   /// In-flight tmux path/profile probes per SSH session.
   static final Map<int, Future<void>> _tmuxPathRequests = {};
 
+  /// Per-connection deadline before which one-shot tmux exec channels should be
+  /// deferred so the attached shell channel can deliver a window-switch redraw.
+  static final Map<int, DateTime> _execQuietUntil = {};
+
   /// In-flight tmux session-existence probes.
   static final _hasSessionRequests = <_TmuxSessionRequestKey, Future<bool>>{};
 
@@ -190,6 +194,7 @@ class TmuxService {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _tmuxPathRequests.remove(connectionId)?.ignore();
+    _execQuietUntil.remove(connectionId);
     _hasSessionRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -231,6 +236,25 @@ class TmuxService {
     }
     if (observerDisposals.isNotEmpty) {
       await Future.wait(observerDisposals);
+    }
+  }
+
+  /// Defers one-shot tmux exec channels for [duration].
+  ///
+  /// The persistent control-mode client can switch windows immediately, but the
+  /// attached shell channel carries the actual redraw. Opening auxiliary SSH exec
+  /// channels (foreground checks, command detection, theme refreshes) right after
+  /// `select-window` can starve that redraw on high-latency hosts. This quiet
+  /// period keeps those helpers off the critical path while leaving control-mode
+  /// commands untouched.
+  void deferExecsForRedraw(SshSession session, Duration duration) {
+    if (duration <= Duration.zero) {
+      return;
+    }
+    final until = DateTime.now().add(duration);
+    final existing = _execQuietUntil[session.connectionId];
+    if (existing == null || existing.isBefore(until)) {
+      _execQuietUntil[session.connectionId] = until;
     }
   }
 
@@ -1521,17 +1545,27 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     try {
-      await _exec(
+      final usedControl = await _refreshForegroundClientsViaControl(
         session,
-        buildTmuxRefreshForegroundClientsCommand(
-          sessionName,
-          extraFlags: extraFlags,
-        ),
+        sessionName,
+        extraFlags: extraFlags,
       );
+      if (!usedControl) {
+        await _exec(
+          session,
+          buildTmuxRefreshForegroundClientsCommand(
+            sessionName,
+            extraFlags: extraFlags,
+          ),
+        );
+      }
       DiagnosticsLogService.instance.info(
         'tmux.action',
         'refresh_clients_complete',
-        fields: {'connectionId': session.connectionId},
+        fields: {
+          'connectionId': session.connectionId,
+          'usedControl': usedControl,
+        },
       );
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -1543,6 +1577,36 @@ class TmuxService {
         },
       );
     }
+  }
+
+  Future<bool> _refreshForegroundClientsViaControl(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    final listOutput = await _tryControlCommand(
+      session,
+      sessionName,
+      'list-clients -t ${_shellQuote(sessionName)} -F '
+      '${_shellQuote('#{client_control_mode}$tmuxWindowFieldSeparator#{client_name}')}',
+      extraFlags: extraFlags,
+    );
+    if (listOutput == null) {
+      return false;
+    }
+    final clientNames = parseForegroundClientNamesForRefresh(listOutput);
+    for (final clientName in clientNames) {
+      final refreshOutput = await _tryControlCommand(
+        session,
+        sessionName,
+        'refresh-client -t ${_shellQuote(clientName)}',
+        extraFlags: extraFlags,
+      );
+      if (refreshOutput == null) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Updates tmux's pane palette for [sessionName] and redraws foreground
@@ -1930,9 +1994,19 @@ class TmuxService {
     final prefixedCommand = cachedPath != null
         ? utf8Command.replaceFirst('tmux -u ', '$cachedPath -u ')
         : utf8Command;
-    // Always source the login-shell profile so locale- and PATH-related tmux
-    // settings stay consistent even after the binary path is cached.
-    return '${_profilePrefix(session.connectionId)}'
+    // Sourcing the login-shell profile can be slow (hundreds of ms when a
+    // user's ~/.zprofile is heavy), and a single window switch issues several
+    // exec commands. Once the tmux binary path is cached we only need the
+    // profile for subcommands that spawn a shell/process and therefore want the
+    // login PATH; pure server queries/controls (list-clients, select-window,
+    // display-message, ...) run correctly with just the cached path and the
+    // explicit locale below, so skip the profile for them to keep switches snappy.
+    final needsProfile =
+        cachedPath == null || tmuxCommandNeedsLoginProfile(utf8Command);
+    final profilePrefix = needsProfile
+        ? _profilePrefix(session.connectionId)
+        : '';
+    return '$profilePrefix'
         'export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; '
         '$prefixedCommand';
   }
@@ -2020,10 +2094,28 @@ class TmuxService {
     SshSession session,
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
-  }) => session.runQueuedExec(
-    () => _execUnqueued(session, command),
-    priority: priority,
-  );
+  }) => session.runQueuedExec(() async {
+    final quietUntil = _execQuietUntil[session.connectionId];
+    if (quietUntil != null) {
+      final delay = quietUntil.difference(DateTime.now());
+      if (delay > Duration.zero) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.exec',
+          'deferred_for_redraw',
+          fields: {
+            'connectionId': session.connectionId,
+            'commandKind': _diagnosticTmuxCommandKind(command),
+            'delayMs': delay.inMilliseconds,
+          },
+        );
+        await Future<void>.delayed(delay);
+      }
+      if (_execQuietUntil[session.connectionId] == quietUntil) {
+        _execQuietUntil.remove(session.connectionId);
+      }
+    }
+    return _execUnqueued(session, command);
+  }, priority: priority);
 
   Future<String> _execTmuxCommand(
     SshSession session,
@@ -2380,6 +2472,85 @@ class _TmuxExecChannelBackoff {
 @visibleForTesting
 bool shouldBackOffTmuxExecChannelAfterFailure(Object error) =>
     error is SSHChannelOpenError || error is TimeoutException;
+
+/// tmux read/control subcommands that need nothing beyond the cached tmux
+/// binary and an explicit locale, so they can skip sourcing the login profile
+/// once the path is cached.
+const _profileFreeTmuxSubcommands = <String>{
+  'list-clients',
+  'list-windows',
+  'list-sessions',
+  'list-panes',
+  'select-window',
+  'select-pane',
+  'display-message',
+  'has-session',
+  'refresh-client',
+  'show-options',
+  'show-option',
+  'set-option',
+  'kill-window',
+  'kill-session',
+  'kill-pane',
+  'rename-window',
+  'capture-pane',
+};
+
+/// Whether a tmux exec [command] needs the login-shell profile sourced.
+///
+/// Sourcing the profile (e.g. `~/.zprofile`) can cost hundreds of milliseconds,
+/// so once the tmux binary path is cached we skip it — but only for a single,
+/// simple tmux read/control invocation that needs nothing beyond the cached
+/// binary and the explicit locale. Anything else keeps the profile because it
+/// may rely on the login PATH:
+///  - agent-tool detection runs `"$SHELL" -ic '... command -v <cli> ...'`; the
+///    interactive shell sources `~/.zshrc` but not `~/.zprofile`, where Homebrew
+///    typically puts the PATH the CLIs live on, so the outer profile is required;
+///  - the foreground-client check and theme client-report use `$(...)` shell
+///    substitution and external tools;
+///  - window-spawning subcommands (new-window, run-shell, ...) want the login
+///    PATH for the process they start.
+@visibleForTesting
+bool tmuxCommandNeedsLoginProfile(String command) {
+  final match = RegExp(
+    r'^(?:\S*/)?tmux(?:\s+-u)?\s+([a-z][a-z-]*)',
+  ).firstMatch(command.trimLeft());
+  if (match == null) {
+    return true;
+  }
+  // Reject shell substitution / external-binary resolution that may need the
+  // login PATH even when the leading token is tmux.
+  if (command.contains(r'$(') ||
+      command.contains('`') ||
+      command.contains('command -v') ||
+      command.contains('which ')) {
+    return true;
+  }
+  return !_profileFreeTmuxSubcommands.contains(match.group(1));
+}
+
+/// Parses `list-clients` output for foreground (non-control) client names.
+///
+/// Each line is `${client_control_mode}<US>${client_name}`.
+@visibleForTesting
+List<String> parseForegroundClientNamesForRefresh(String output) {
+  final clientNames = <String>[];
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trim();
+    if (line.isEmpty) {
+      continue;
+    }
+    final fields = line.split(tmuxWindowFieldSeparator);
+    if (fields.length < 2 || fields[0] != '0') {
+      continue;
+    }
+    final clientName = fields[1].trim();
+    if (clientName.isNotEmpty) {
+      clientNames.add(clientName);
+    }
+  }
+  return clientNames;
+}
 
 bool _shouldTreatTmuxExecChannelAsUnavailable(Object error) =>
     shouldBackOffTmuxExecChannelAfterFailure(error) ||

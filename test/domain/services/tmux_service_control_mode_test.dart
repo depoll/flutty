@@ -134,6 +134,21 @@ void main() {
       );
     });
 
+    test('parses foreground client names for control refresh', () {
+      expect(
+        parseForegroundClientNamesForRefresh(
+          [
+            '1\x1fcontrol-client',
+            '0\x1f/dev/ttys001',
+            '0\x1fandroid-client',
+            '0\x1f',
+            '',
+          ].join('\n'),
+        ),
+        ['/dev/ttys001', 'android-client'],
+      );
+    });
+
     test('theme refresh command updates pane palette before redraw', () {
       final command = buildTmuxRefreshTerminalThemeCommand(
         "dev's session",
@@ -2094,6 +2109,58 @@ void main() {
         );
       },
     );
+  });
+
+  group('tmuxCommandNeedsLoginProfile', () {
+    test(
+      'pure server query/control commands do not need the login profile',
+      () {
+        for (final command in <String>[
+          'tmux -u list-clients',
+          'tmux -u select-window -t work:2',
+          'tmux -u display-message -p "#{client_name}"',
+          'tmux -u list-windows -t work',
+          'tmux -u has-session -t work',
+          'tmux -u refresh-client',
+          'tmux -u show-options -g',
+        ]) {
+          expect(
+            tmuxCommandNeedsLoginProfile(command),
+            isFalse,
+            reason: command,
+          );
+        }
+      },
+    );
+
+    test('shell-spawning commands still need the login profile', () {
+      for (final command in <String>[
+        'tmux -u new-window -t work',
+        'tmux -u new-session -s work',
+        'tmux -u split-window -t work:1',
+        'tmux -u run-shell "echo hi"',
+        'tmux -u if-shell "true" "display ok"',
+        'tmux -u respawn-pane -t work:1',
+      ]) {
+        expect(tmuxCommandNeedsLoginProfile(command), isTrue, reason: command);
+      }
+    });
+
+    test('non-tmux and binary-resolving commands keep the login profile', () {
+      for (final command in <String>[
+        // Agent-tool detection resolves CLIs via command -v inside an
+        // interactive shell, which needs ~/.zprofile's PATH (Homebrew) sourced
+        // by the outer shell.
+        r'''SH="${SHELL:-/bin/sh}"; "$SH" -ic 'for c in claude codex; do command -v "$c"; done' || true''',
+        // Foreground-client check: process-tree walk with shell substitution.
+        r'sep=$(printf "\037"); tmux -u list-clients -F "#{client_pid}"',
+        // Theme refresh with a client-report subshell.
+        r'tmux -u set-option -p -t "%1" pane-colours[0] "#fff"; clients=$(tmux -u list-clients)',
+        'which tmux',
+      ]) {
+        expect(tmuxCommandNeedsLoginProfile(command), isTrue, reason: command);
+      }
+    });
   });
 
   group('channel backoff helpers', () {

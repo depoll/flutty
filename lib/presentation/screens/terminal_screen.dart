@@ -221,7 +221,18 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+// Pinch-zoom emits a resize every frame. Keep the local zoom immediate, but
+// limit remote MonkeyMux resize traffic to the rate each transport can tolerate:
+// a live control channel can feel smooth at ~30fps, while one-shot SSH exec
+// fallback needs a slower cadence to avoid flooding the connection.
+const _monkeyMuxLiveResizeSyncMinGap = Duration(milliseconds: 32);
+const _monkeyMuxFallbackResizeSyncMinGap = Duration(milliseconds: 70);
 const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
+// After a multiplexer window switch, sample the live render object's paint/
+// change counters once the redraw has had time to arrive, then force a repaint.
+// A second, later force catches a redraw that lands after the first sample.
+const _muxWindowRefreshProbeDelay = Duration(milliseconds: 250);
+const _muxWindowRefreshSafetyNetDelay = Duration(milliseconds: 500);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -1037,8 +1048,15 @@ const terminalViewportPadding = EdgeInsets.zero;
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
-double clampTerminalFontSize(num size) =>
-    size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
+double clampTerminalFontSize(num size) {
+  // `num.clamp` does not sanitize NaN consistently across Dart versions, so
+  // guard non-finite inputs explicitly to avoid a NaN font size propagating
+  // into the painter (which crashes layout/paint integer math).
+  if (!size.isFinite) {
+    return _minTerminalFontSize;
+  }
+  return size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
+}
 
 /// Scales a terminal font size while keeping it within the supported range.
 @visibleForTesting
@@ -1052,7 +1070,14 @@ double applyTerminalScaleDelta(
   double previousScale,
   double nextScale,
 ) {
-  final safePreviousScale = previousScale <= 0 ? 1.0 : previousScale;
+  // Ignore degenerate gesture frames (e.g. coincident focal points producing a
+  // zero or non-finite scale) so a bad frame can't drive the font size to NaN.
+  if (!nextScale.isFinite || nextScale <= 0) {
+    return clampTerminalFontSize(currentFontSize);
+  }
+  final safePreviousScale = (previousScale.isFinite && previousScale > 0)
+      ? previousScale
+      : 1.0;
   return scaleTerminalFontSize(currentFontSize, nextScale / safePreviousScale);
 }
 
@@ -2749,6 +2774,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _tmuxWindowThemeRefreshDebounceDelay = Duration(
     milliseconds: 150,
   );
+  static const _tmuxPostWindowSwitchExecQuietPeriod = Duration(
+    milliseconds: 900,
+  );
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -2907,7 +2935,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _pendingTerminalSizeRefreshSuppressesMonkeyMuxResizeSync = false;
   Timer? _monkeyMuxWindowRefreshFollowUpTimer;
   Timer? _monkeyMuxResizeRedrawFollowUpTimer;
+  Timer? _monkeyMuxResizeSyncCooldownTimer;
+  bool _monkeyMuxResizeSyncInFlight = false;
+  bool _monkeyMuxResizeSyncThrottled = false;
+  bool _monkeyMuxResizeSyncPending = false;
+  int? _monkeyMuxResizeSyncColumns;
+  int? _monkeyMuxResizeSyncRows;
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
+  Timer? _muxWindowRefreshProbeTimer;
+  Timer? _muxWindowRefreshSafetyNetTimer;
+  DateTime? _lastMuxWindowChangeAt;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -4164,6 +4201,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     if (activeWindowChanged) {
+      _lastMuxWindowChangeAt = DateTime.now();
+      _tmuxService.deferExecsForRedraw(
+        session,
+        _tmuxPostWindowSwitchExecQuietPeriod,
+      );
       _terminalTextInputController.resetImeCompletions();
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
@@ -4178,6 +4220,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String sessionName, {
     bool force = false,
   }) {
+    final quietPeriod = _remainingMuxWindowSwitchQuietPeriod();
+    if (quietPeriod > Duration.zero) {
+      unawaited(
+        Future<void>.delayed(quietPeriod).then((_) {
+          if (!mounted ||
+              _tmuxStateConnectionId != session.connectionId ||
+              _tmuxSessionName != sessionName) {
+            return;
+          }
+          _refreshMuxPaneContextAfterWindowStateChange(
+            session,
+            sessionName,
+            force: force,
+          );
+        }),
+      );
+      return;
+    }
     final refreshedAt = _muxPaneContextRefreshedAt;
     if (!force &&
         refreshedAt != null &&
@@ -4308,24 +4368,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     late final Timer timer;
-    timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
-      _terminalThemeRefreshTimers.remove(timer);
-      if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
-        _tmuxWindowThemeRefreshDebounceTimer = null;
-      }
-      final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
-      _pendingTmuxWindowThemeRefreshRequest = null;
-      if (pendingRequest == null ||
-          _tmuxSessionName != pendingRequest.sessionName ||
-          !_isCurrentTerminalThemeRefresh(
-            theme: pendingRequest.theme,
-            session: pendingRequest.session,
-            refreshGeneration: pendingRequest.refreshGeneration,
-          )) {
-        return;
-      }
-      _queueTmuxTerminalThemeRefresh(pendingRequest);
-    });
+    timer = Timer(
+      _tmuxWindowThemeRefreshDebounceDelay +
+          _remainingMuxWindowSwitchQuietPeriod(),
+      () {
+        _terminalThemeRefreshTimers.remove(timer);
+        if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
+          _tmuxWindowThemeRefreshDebounceTimer = null;
+        }
+        final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
+        _pendingTmuxWindowThemeRefreshRequest = null;
+        if (pendingRequest == null ||
+            _tmuxSessionName != pendingRequest.sessionName ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: pendingRequest.theme,
+              session: pendingRequest.session,
+              refreshGeneration: pendingRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        _queueTmuxTerminalThemeRefresh(pendingRequest);
+      },
+    );
     _tmuxWindowThemeRefreshDebounceTimer = timer;
     _terminalThemeRefreshTimers.add(timer);
   }
@@ -6148,13 +6212,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
-        unawaited(
-          _syncActiveMonkeyMuxTerminalSize(
-            session,
-            columns: width,
-            rows: height,
-          ),
-        );
+        _scheduleMonkeyMuxResizeSync(session, columns: width, rows: height);
         _scheduleMonkeyMuxResizeRedrawFollowUp(session);
       }
     }
@@ -6271,6 +6329,122 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       },
     );
+  }
+
+  /// Throttles the remote MonkeyMux resize so pinch-zoom follows in real time
+  /// without flooding the SSH connection.
+  ///
+  /// The local view scales every frame regardless; this only governs how often
+  /// the remote is told the new size. The first change is sent immediately, then
+  /// at most one resize is in flight at a time and no more than the cadence for
+  /// the active transport. The latest requested [columns]/[rows] are remembered
+  /// and sent as soon as the in-flight send and cooldown clear, so the remote
+  /// always ends up matching the settled gesture.
+  void _scheduleMonkeyMuxResizeSync(
+    SshSession session, {
+    required int columns,
+    required int rows,
+  }) {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    final sessionName = _activeMonkeyMuxSessionName(session);
+    if (sessionName == null) {
+      return;
+    }
+    _monkeyMuxResizeSyncColumns = columns;
+    _monkeyMuxResizeSyncRows = rows;
+    if (_monkeyMuxService.hasLiveControlChannel(session, sessionName)) {
+      // The persistent MonkeyMux control channel is already up, so this update
+      // does not allocate a short-lived SSH exec channel. Keep it smooth (~30fps)
+      // but still coalesce to the latest size so remote TUIs don't receive a
+      // stale backlog after the gesture has moved on.
+      if (_monkeyMuxResizeSyncInFlight) {
+        _monkeyMuxResizeSyncPending = true;
+        return;
+      }
+      if (_monkeyMuxResizeSyncThrottled) {
+        _monkeyMuxResizeSyncPending = true;
+        return;
+      }
+      _sendMonkeyMuxResizeSyncNow(
+        session,
+        minGap: _monkeyMuxLiveResizeSyncMinGap,
+      );
+      return;
+    }
+    // A send is on the wire or we're inside the throttle window: just record
+    // that a newer size is wanted; it goes out when the guards clear.
+    if (_monkeyMuxResizeSyncInFlight || _monkeyMuxResizeSyncThrottled) {
+      _monkeyMuxResizeSyncPending = true;
+      return;
+    }
+    _sendMonkeyMuxResizeSyncNow(
+      session,
+      minGap: _monkeyMuxFallbackResizeSyncMinGap,
+    );
+  }
+
+  String? _activeMonkeyMuxSessionName(SshSession session) {
+    final sessionName = _tmuxSessionName ?? session.remoteMuxSessionName;
+    return sessionName == null || sessionName.trim().isEmpty
+        ? null
+        : sessionName;
+  }
+
+  void _sendMonkeyMuxResizeSyncNow(
+    SshSession session, {
+    required Duration minGap,
+  }) {
+    final columns = _monkeyMuxResizeSyncColumns;
+    final rows = _monkeyMuxResizeSyncRows;
+    if (columns == null || rows == null) {
+      return;
+    }
+    final connectionId = session.connectionId;
+    _monkeyMuxResizeSyncInFlight = true;
+    _monkeyMuxResizeSyncThrottled = true;
+    _monkeyMuxResizeSyncCooldownTimer?.cancel();
+    _monkeyMuxResizeSyncCooldownTimer = Timer(minGap, () {
+      _monkeyMuxResizeSyncCooldownTimer = null;
+      _monkeyMuxResizeSyncThrottled = false;
+      _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+    });
+    unawaited(() async {
+      try {
+        await _syncActiveMonkeyMuxTerminalSize(
+          session,
+          columns: columns,
+          rows: rows,
+        );
+      } finally {
+        _monkeyMuxResizeSyncInFlight = false;
+        _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+      }
+    }());
+  }
+
+  void _maybeSendPendingMonkeyMuxResizeSync(
+    SshSession session,
+    int connectionId,
+  ) {
+    if (!mounted ||
+        _connectionId != connectionId ||
+        !_monkeyMuxResizeSyncPending ||
+        _monkeyMuxResizeSyncInFlight ||
+        _monkeyMuxResizeSyncThrottled) {
+      return;
+    }
+    _monkeyMuxResizeSyncPending = false;
+    final columns = _monkeyMuxResizeSyncColumns;
+    final rows = _monkeyMuxResizeSyncRows;
+    if (columns == null || rows == null) {
+      return;
+    }
+    _scheduleMonkeyMuxResizeSync(session, columns: columns, rows: rows);
   }
 
   void _scheduleMonkeyMuxResizeRedrawFollowUp(SshSession session) {
@@ -7706,6 +7880,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         targetWindow.index,
         windowId: target.windowId,
         forceVisibleTmux: target.requiresVisibleSession,
+        deferPostSwitchExec: false,
       );
     } on Exception catch (error) {
       _showTmuxActionFailure(error);
@@ -8098,6 +8273,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     int windowIndex, {
     String? windowId,
     bool forceVisibleTmux = false,
+    bool deferPostSwitchExec = true,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
@@ -8106,6 +8282,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
         ? windowId
         : null;
+    final targetWindow = _resolveTmuxWindowByTarget(
+      windowIndex,
+      windowId: targetWindowId,
+    );
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
         session,
@@ -8121,17 +8301,100 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _prepareTerminalForMuxWindowChange();
-    await _reattachTmuxIfNeeded(
-      session,
-      sessionName,
-      forceVisibleTmux: forceVisibleTmux,
-    );
+    if (deferPostSwitchExec) {
+      _lastMuxWindowChangeAt = DateTime.now();
+      _tmuxService.deferExecsForRedraw(
+        session,
+        _tmuxPostWindowSwitchExecQuietPeriod,
+      );
+      unawaited(
+        _tmuxService.refreshForegroundClients(
+          session,
+          sessionName,
+          extraFlags: _activeTmuxExtraFlags,
+        ),
+      );
+      if (_tmuxWindowLooksLikeAltBufferTarget(targetWindow)) {
+        _refreshTerminalThemeReportsForTui(
+          session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
+          includeThemeModeReport: false,
+          reason: 'tmux_window_switched_immediate_focus',
+        );
+      }
+    }
+    // The foreground-client check is a heavy exec shell script that walks this
+    // SSH session's process tree to correlate it with tmux's clients (to detect
+    // a detached window); it can't run over the control channel and used to block
+    // the switch for a few hundred milliseconds. Run it in the background and
+    // only resync the size if it actually reattaches.
     _scheduleTerminalSizeRefresh();
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
       sessionName: sessionName,
       reason: 'tmux_window_switched',
     );
+    unawaited(
+      _reattachTmuxAfterWindowChangeInBackground(
+        session,
+        sessionName,
+        forceVisibleTmux: forceVisibleTmux,
+        deferUntilAfterRedraw: deferPostSwitchExec,
+      ),
+    );
+  }
+
+  TmuxWindow? _resolveTmuxWindowByTarget(int windowIndex, {String? windowId}) {
+    final windows = _currentTmuxWindowsSnapshot;
+    if (windows == null) {
+      return null;
+    }
+    if (windowId != null) {
+      final byId = windows.where((window) => window.id == windowId).firstOrNull;
+      if (byId != null) {
+        return byId;
+      }
+    }
+    return windows.where((window) => window.index == windowIndex).firstOrNull;
+  }
+
+  bool _tmuxWindowLooksLikeAltBufferTarget(TmuxWindow? window) {
+    if (window == null) {
+      return false;
+    }
+    return window.foregroundAgentTool != null ||
+        window.agentTool != null ||
+        (window.terminalReportsMouseWheel ?? false);
+  }
+
+  /// Runs the post-window-change tmux reattach recovery without blocking the
+  /// switch. tmux already redrew the selected window; this only matters for the
+  /// uncommon case where the visible terminal has dropped out of tmux.
+  Future<void> _reattachTmuxAfterWindowChangeInBackground(
+    SshSession session,
+    String sessionName, {
+    bool forceVisibleTmux = false,
+    bool deferUntilAfterRedraw = true,
+  }) async {
+    if (deferUntilAfterRedraw && !forceVisibleTmux) {
+      final quietPeriod = _remainingMuxWindowSwitchQuietPeriod();
+      if (quietPeriod > Duration.zero) {
+        await Future<void>.delayed(quietPeriod);
+      }
+      if (!mounted ||
+          _connectionId != session.connectionId ||
+          _tmuxSessionName != sessionName) {
+        return;
+      }
+    }
+    await _reattachTmuxIfNeeded(
+      session,
+      sessionName,
+      forceVisibleTmux: forceVisibleTmux,
+    );
+    if (!mounted || _connectionId != session.connectionId) {
+      return;
+    }
+    _scheduleTerminalSizeRefresh();
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -8176,13 +8439,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,
     );
-    if (backend.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
-      await _reattachTmuxIfNeeded(session, sessionName);
-    }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _refreshTerminalAfterMonkeyMuxWindowChange(session);
     } else {
+      // tmux draws the new window on its own; resync the size and run the
+      // foreground-client reattach check in the background instead of blocking
+      // the create on its exec round-trip (see _switchTmuxWindow).
       _scheduleTerminalSizeRefresh();
+      unawaited(
+        _reattachTmuxAfterWindowChangeInBackground(
+          session,
+          sessionName,
+          deferUntilAfterRedraw: false,
+        ),
+      );
     }
     _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
       session: session,
@@ -8243,7 +8513,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxWorkingDirectory = workingDirectory;
     _tmuxCurrentCommand = null;
     _shellCompletionTmuxContextRefreshedAt = null;
+    _probeAndForceMuxWindowRefresh();
   }
+
+  Duration _remainingMuxWindowSwitchQuietPeriod() {
+    final changedAt = _lastMuxWindowChangeAt;
+    if (changedAt == null) {
+      return Duration.zero;
+    }
+    final elapsed = DateTime.now().difference(changedAt);
+    if (elapsed >= _tmuxPostWindowSwitchExecQuietPeriod) {
+      return Duration.zero;
+    }
+    return _tmuxPostWindowSwitchExecQuietPeriod - elapsed;
+  }
+
+  /// Diagnoses and papers over a window-switch refresh that fails to repaint.
+  ///
+  /// A multiplexer window switch delivers the new window's redraw over the
+  /// shell/control channel. In rare, timing-dependent cases the redraw lands in
+  /// the terminal buffer but no frame is produced, so the view keeps showing the
+  /// previous window until the next output or a resize forces a repaint.
+  ///
+  /// This captures a baseline of the live render object's paint/change counters,
+  /// then a beat later logs the deltas (a frozen frame shows changes advancing
+  /// while paints do not) and forces a full repaint as a safety net. A second,
+  /// later force catches a redraw that arrives after the first check.
+  void _probeAndForceMuxWindowRefresh() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    final viewState = _terminalViewKey.currentState;
+    final baselinePaints = viewState?.terminalPaintCount;
+    final baselineChanges = viewState?.terminalChangeCount;
+
+    _muxWindowRefreshProbeTimer?.cancel();
+    _muxWindowRefreshProbeTimer = Timer(_muxWindowRefreshProbeDelay, () {
+      _muxWindowRefreshProbeTimer = null;
+      if (!mounted || _connectionId != connectionId) {
+        return;
+      }
+      final state = _terminalViewKey.currentState;
+      DiagnosticsLogService.instance.debug(
+        'terminal.refresh',
+        'mux_window_refresh_probe',
+        fields: {
+          'connectionId': connectionId,
+          'paintsDelta': _counterDelta(
+            baselinePaints,
+            state?.terminalPaintCount,
+          ),
+          'changesDelta': _counterDelta(
+            baselineChanges,
+            state?.terminalChangeCount,
+          ),
+        },
+      );
+      // Read the natural counters above before forcing a paint so the probe
+      // reflects whether the switch repainted on its own.
+      state?.forceFullRepaint();
+      WidgetsBinding.instance.ensureVisualUpdate();
+    });
+
+    _muxWindowRefreshSafetyNetTimer?.cancel();
+    _muxWindowRefreshSafetyNetTimer = Timer(
+      _muxWindowRefreshSafetyNetDelay,
+      () {
+        _muxWindowRefreshSafetyNetTimer = null;
+        if (!mounted || _connectionId != connectionId) {
+          return;
+        }
+        _terminalViewKey.currentState?.forceFullRepaint();
+        WidgetsBinding.instance.ensureVisualUpdate();
+      },
+    );
+  }
+
+  static int? _counterDelta(int? baseline, int? current) =>
+      (baseline == null || current == null) ? null : current - baseline;
 
   void _clearTerminalFollowPauseForMuxWindowChange() {
     var shouldRefreshFollowState = false;
@@ -8704,7 +9052,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionDebounceTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
+    _muxWindowRefreshProbeTimer?.cancel();
+    _muxWindowRefreshSafetyNetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);

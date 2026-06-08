@@ -39,6 +39,9 @@ abstract final class SettingKeys {
   /// Terminal bell sound enabled.
   static const bellSound = 'bell_sound';
 
+  /// Whether the remote shell may post desktop notifications (OSC 9/777/99).
+  static const terminalNotifications = 'terminal_notifications';
+
   /// Keep the device awake while a terminal is active.
   static const terminalWakeLock = 'terminal_wake_lock';
 
@@ -480,6 +483,34 @@ class BellSoundNotifier extends _AsyncSettingsNotifier<bool> {
 final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
+
+/// Notifier for terminal desktop notifications (OSC 9/777/99) with write
+/// capability.
+class TerminalNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
+
+  @override
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.terminalNotifications,
+    defaultValue: true,
+  );
+
+  /// Sets whether the remote shell may post desktop notifications.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settingsService.setBool(
+      SettingKeys.terminalNotifications,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for terminal desktop notifications with write capability.
+final terminalNotificationsNotifierProvider =
+    NotifierProvider<TerminalNotificationsNotifier, bool>(
+      TerminalNotificationsNotifier.new,
+    );
 
 /// Notifier for terminal wake lock with write capability.
 class TerminalWakeLockNotifier extends _AsyncSettingsNotifier<bool> {
