@@ -2944,7 +2944,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
-  Timer? _tmuxAgentTargetLateRefreshTimer;
+  final List<Timer> _tmuxAgentTargetLateRefreshTimers = <Timer>[];
+  int _tmuxAgentTargetLateRefreshGeneration = 0;
   DateTime? _lastMuxWindowChangeAt;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
@@ -8421,18 +8422,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
     );
     WidgetsBinding.instance.ensureVisualUpdate();
-    _tmuxAgentTargetLateRefreshTimer?.cancel();
-    _tmuxAgentTargetLateRefreshTimer = Timer(
-      const Duration(milliseconds: 1100),
-      () {
-        _tmuxAgentTargetLateRefreshTimer = null;
-        if (!mounted || _connectionId != session.connectionId) {
+    _scheduleTmuxAgentTargetLateRefreshes(session);
+  }
+
+  void _scheduleTmuxAgentTargetLateRefreshes(SshSession session) {
+    _cancelTmuxAgentTargetLateRefreshes();
+    final generation = ++_tmuxAgentTargetLateRefreshGeneration;
+    for (final delay in const <Duration>[
+      Duration(milliseconds: 700),
+      Duration(milliseconds: 1100),
+      Duration(milliseconds: 1600),
+    ]) {
+      late final Timer timer;
+      timer = Timer(delay, () {
+        _tmuxAgentTargetLateRefreshTimers.remove(timer);
+        if (!mounted ||
+            _connectionId != session.connectionId ||
+            generation != _tmuxAgentTargetLateRefreshGeneration) {
           return;
         }
         DiagnosticsLogService.instance.debug(
           'tmux.ui',
           'local_alt_buffer_late_refresh',
-          fields: {'connectionId': session.connectionId},
+          fields: {
+            'connectionId': session.connectionId,
+            'delayMs': delay.inMilliseconds,
+          },
         );
         _terminalViewKey.currentState?.refreshTerminalDisplay(
           revealLatestOutput: true,
@@ -8443,8 +8458,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           suppressMonkeyMuxResizeSync: true,
         );
         WidgetsBinding.instance.ensureVisualUpdate();
-      },
-    );
+      });
+      _tmuxAgentTargetLateRefreshTimers.add(timer);
+    }
+  }
+
+  void _cancelTmuxAgentTargetLateRefreshes() {
+    _tmuxAgentTargetLateRefreshGeneration += 1;
+    for (final timer in _tmuxAgentTargetLateRefreshTimers) {
+      timer.cancel();
+    }
+    _tmuxAgentTargetLateRefreshTimers.clear();
   }
 
   void _switchLocalTerminalToMainBufferPreview(
@@ -8454,6 +8478,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_connectionId != session.connectionId) {
       return;
     }
+    _cancelTmuxAgentTargetLateRefreshes();
     DiagnosticsLogService.instance.debug(
       'tmux.ui',
       'local_main_buffer_preview',
@@ -9176,7 +9201,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
-    _tmuxAgentTargetLateRefreshTimer?.cancel();
+    _cancelTmuxAgentTargetLateRefreshes();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
