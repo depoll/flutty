@@ -1382,6 +1382,25 @@ void main() {
       );
     });
 
+    test('styled preview keeps a contiguous viewport slice', () {
+      final terminal = Terminal(maxLines: 100)
+        ..resize(80, 20)
+        ..write('CLAUDE STALE HEADER')
+        ..write('\x1b[15;1Hopencode')
+        ..write('\x1b[16;1HAsk anything...')
+        ..write('\x1b[17;1HBuild · Big Pickle');
+
+      final preview = SshSession.buildTerminalPreviewSnapshot(
+        terminal,
+        maxLines: 6,
+      );
+
+      expect(preview, isNotNull);
+      expect(preview!.plainText, contains('opencode'));
+      expect(preview.plainText, contains('Build · Big Pickle'));
+      expect(preview.plainText, isNot(contains('CLAUDE STALE HEADER')));
+    });
+
     test('sanitizes control characters and truncates long previews', () {
       final terminal = Terminal(maxLines: 100)
         ..write('prompt> \u0007hello world\r\n')
