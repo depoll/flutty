@@ -8316,8 +8316,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
-      if (wasUsingAltBuffer && _tmuxWindowLooksLikeShell(targetWindow)) {
-        _switchLocalTerminalToMainBufferForShellTarget(session, targetWindow);
+      if (wasUsingAltBuffer) {
+        _switchLocalTerminalToMainBufferPreview(session, targetWindow);
       }
       if (wasUsingAltBuffer) {
         _forceVisibleTmuxRedrawWithSyntheticResize(session);
@@ -8358,17 +8358,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return windows.where((window) => window.index == windowIndex).firstOrNull;
   }
 
-  bool _tmuxWindowLooksLikeShell(TmuxWindow? window) {
-    if (window == null) {
-      return false;
-    }
-    if (window.foregroundAgentTool != null || window.agentTool != null) {
-      return false;
-    }
-    return _isShellCommandName(window.currentCommand);
-  }
-
-  void _switchLocalTerminalToMainBufferForShellTarget(
+  void _switchLocalTerminalToMainBufferPreview(
     SshSession session,
     TmuxWindow? targetWindow,
   ) {
@@ -8382,6 +8372,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'connectionId': session.connectionId,
         'windowIndex': targetWindow?.index,
         'hasWindowId': targetWindow?.id != null,
+        'targetLooksShell': _isShellCommandName(targetWindow?.currentCommand),
+        'targetIsAgent':
+            targetWindow?.foregroundAgentTool != null ||
+            targetWindow?.agentTool != null,
       },
     );
     _terminal.write('\x1b[?1049l');
