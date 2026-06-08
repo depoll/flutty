@@ -713,6 +713,17 @@ jobs:
         if: inputs.ios-reuse-ipa-artifact-name == ''
         run: flutter pub get
 
+      - name: Disable iOS code signing for Flutter build
+        if: inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        run: |
+          cat >> ios/Flutter/Release.xcconfig <<'EOF'
+          DEVELOPMENT_TEAM = 0000000000
+          CODE_SIGNING_ALLOWED = NO
+          CODE_SIGNING_REQUIRED = NO
+          CODE_SIGN_IDENTITY =
+          EXPANDED_CODE_SIGN_IDENTITY =
+          EOF
+
       - name: Setup code signing
         if: inputs.deploy-ios-to != 'none' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
         env:
