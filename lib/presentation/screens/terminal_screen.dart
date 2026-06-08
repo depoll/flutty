@@ -233,7 +233,6 @@ const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
 // A second, later force catches a redraw that lands after the first sample.
 const _muxWindowRefreshProbeDelay = Duration(milliseconds: 250);
 const _muxWindowRefreshSafetyNetDelay = Duration(milliseconds: 500);
-const _tmuxSyntheticResizeRestoreDelay = Duration(milliseconds: 180);
 const _terminalOverflowMenuScreenPadding = TerminalMenuStyles.screenMargin;
 const _terminalOverflowMenuMinWidth = 2.0 * 56.0;
 const _terminalOverflowMenuMaxWidth = 5.0 * 56.0;
@@ -8287,12 +8286,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowIndex,
       windowId: targetWindowId,
     );
-    final sourceWindow = _currentTmuxWindowsSnapshot
-        ?.where((window) => window.isActive)
-        .firstOrNull;
-    final wasUsingAltBuffer = _terminal.isUsingAltBuffer;
-    final shouldPreviewMainBuffer =
-        wasUsingAltBuffer || _tmuxWindowLooksLikeAltScreenSource(sourceWindow);
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
         session,
@@ -8321,12 +8314,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
-      if (shouldPreviewMainBuffer) {
-        _switchLocalTerminalToMainBufferPreview(session, targetWindow);
-      }
-      if (wasUsingAltBuffer) {
-        _forceVisibleTmuxRedrawWithSyntheticResize(session);
-      }
+      _switchLocalTerminalToMainBufferPreview(session, targetWindow);
     }
     // The foreground-client check is a heavy exec shell script that walks this
     // SSH session's process tree to correlate it with tmux's clients (to detect
@@ -8361,15 +8349,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     return windows.where((window) => window.index == windowIndex).firstOrNull;
-  }
-
-  bool _tmuxWindowLooksLikeAltScreenSource(TmuxWindow? window) {
-    if (window == null) {
-      return false;
-    }
-    return window.foregroundAgentTool != null ||
-        window.agentTool != null ||
-        (window.terminalReportsMouseWheel ?? false);
   }
 
   void _switchLocalTerminalToMainBufferPreview(
@@ -8409,33 +8388,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
     );
     WidgetsBinding.instance.ensureVisualUpdate();
-  }
-
-  void _forceVisibleTmuxRedrawWithSyntheticResize(SshSession session) {
-    final shell = _shell;
-    final columns = _terminal.viewWidth;
-    final rows = _terminal.viewHeight;
-    if (shell == null || _connectionId != session.connectionId || rows <= 2) {
-      return;
-    }
-    DiagnosticsLogService.instance.debug(
-      'tmux.ui',
-      'synthetic_resize_redraw',
-      fields: {
-        'connectionId': session.connectionId,
-        'columns': columns,
-        'rows': rows,
-      },
-    );
-    shell.resizeTerminal(columns, rows - 1);
-    Timer(_tmuxSyntheticResizeRestoreDelay, () {
-      if (!mounted ||
-          _connectionId != session.connectionId ||
-          _shell != shell) {
-        return;
-      }
-      shell.resizeTerminal(columns, rows);
-    });
   }
 
   /// Runs the post-window-change tmux reattach recovery without blocking the
