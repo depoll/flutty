@@ -113,10 +113,3 @@ flutter:
     - assets/version_codenames.json
   #   - assets/icons/
   #   - assets/fonts/
-
-hooks:
-  user_defines:
-    sqlite3:
-      source: system
-      name_android: sqlite
-      name_windows: winsqlite3
