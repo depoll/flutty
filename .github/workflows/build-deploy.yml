@@ -431,24 +431,39 @@ jobs:
 
       - name: Generate APK artifact from preview AAB
         if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
+        env:
+          BUNDLETOOL_VERSION: '1.18.3'
         run: |
           set -euo pipefail
 
+          BUNDLETOOL_JAR="$RUNNER_TEMP/bundletool.jar"
+          AAB_PATH="${{ steps.preview-aab.outputs.path }}"
+          APKS_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview.apks"
+          APK_DIR="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview-apks"
           APK_PATH="build/app/outputs/flutter-apk/android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk"
-          mkdir -p "$(dirname "$APK_PATH")"
+          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
 
-          flutter build apk \
-            --flavor ${{ inputs.flavor }} \
-            --debug \
-            --no-tree-shake-icons \
-            --target-platform android-arm64 \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
-            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
-            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "$BUNDLETOOL_JAR" \
+            "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
 
-          cp "build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk" "$APK_PATH"
+          java -jar "$BUNDLETOOL_JAR" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$APKS_PATH" \
+            --mode=universal \
+            --ks="$DEBUG_KEYSTORE" \
+            --ks-pass=pass:android \
+            --ks-key-alias=androiddebugkey \
+            --key-pass=pass:android \
+            --overwrite
+
+          rm -rf "$APK_DIR"
+          mkdir -p "$APK_DIR" "$(dirname "$APK_PATH")"
+          unzip -q "$APKS_PATH" universal.apk -d "$APK_DIR"
+          mv "$APK_DIR/universal.apk" "$APK_PATH"
 
       - name: Download reusable AAB artifact
         if: inputs.android-reuse-aab-artifact-name != ''
