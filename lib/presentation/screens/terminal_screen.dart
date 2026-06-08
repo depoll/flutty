@@ -8318,6 +8318,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _switchLocalTerminalToMainBufferPreview(session, targetWindow);
       } else if (_tmuxWindowLooksLikeAltBufferTarget(targetWindow)) {
         _switchLocalTerminalToAltBufferPreview(session, targetWindow);
+        _refreshTerminalThemeReportsForTui(
+          session.terminalTheme ?? _resolveEffectiveTerminalTheme(),
+          includeThemeModeReport: false,
+          reason: 'tmux_window_switched_immediate_focus',
+        );
       }
     }
     // The foreground-client check is a heavy exec shell script that walks this
