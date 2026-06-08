@@ -2944,6 +2944,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
+  Timer? _tmuxAgentTargetLateRefreshTimer;
   DateTime? _lastMuxWindowChangeAt;
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
@@ -8420,6 +8421,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
     );
     WidgetsBinding.instance.ensureVisualUpdate();
+    _tmuxAgentTargetLateRefreshTimer?.cancel();
+    _tmuxAgentTargetLateRefreshTimer = Timer(
+      const Duration(milliseconds: 1100),
+      () {
+        _tmuxAgentTargetLateRefreshTimer = null;
+        if (!mounted || _connectionId != session.connectionId) {
+          return;
+        }
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'local_alt_buffer_late_refresh',
+          fields: {'connectionId': session.connectionId},
+        );
+        _terminalViewKey.currentState?.refreshTerminalDisplay(
+          revealLatestOutput: true,
+        );
+        _scheduleTerminalSizeRefresh(
+          forceDisplayRefresh: true,
+          revealLatestOutput: true,
+          suppressMonkeyMuxResizeSync: true,
+        );
+        WidgetsBinding.instance.ensureVisualUpdate();
+      },
+    );
   }
 
   void _switchLocalTerminalToMainBufferPreview(
@@ -9151,6 +9176,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
+    _tmuxAgentTargetLateRefreshTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
