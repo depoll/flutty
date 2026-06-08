@@ -8314,7 +8314,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
-      _switchLocalTerminalToMainBufferPreview(session, targetWindow);
+      if (_tmuxWindowLooksLikeMainBufferTarget(targetWindow)) {
+        _switchLocalTerminalToMainBufferPreview(session, targetWindow);
+      }
     }
     // The foreground-client check is a heavy exec shell script that walks this
     // SSH session's process tree to correlate it with tmux's clients (to detect
@@ -8349,6 +8351,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     return windows.where((window) => window.index == windowIndex).firstOrNull;
+  }
+
+  bool _tmuxWindowLooksLikeMainBufferTarget(TmuxWindow? window) {
+    if (window == null) {
+      return false;
+    }
+    if (window.foregroundAgentTool != null || window.agentTool != null) {
+      return false;
+    }
+    return _isShellCommandName(window.currentCommand) ||
+        _isShellCommandName(window.name) ||
+        _isShellCommandName(window.paneTitle) ||
+        window.name.trim().toLowerCase() == 'shell';
   }
 
   void _switchLocalTerminalToMainBufferPreview(
