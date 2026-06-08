@@ -3028,28 +3028,24 @@ class SshSession {
   }) {
     final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
     final previewLines = <TerminalPreviewLine>[];
+    final visibleRange = _terminalVisiblePreviewRange(
+      terminal,
+      effectiveMaxLines,
+    );
+    if (visibleRange == null) {
+      return null;
+    }
 
-    for (
-      var index = terminal.lines.length - 1;
-      index >= 0 && previewLines.length < effectiveMaxLines;
-      index--
-    ) {
+    for (var index = visibleRange.start; index <= visibleRange.end; index++) {
       final sourceLine = terminal.lines[index];
       final rawLine = sourceLine.getText();
       final cleanedLine = _sanitizePreviewFragment(rawLine);
-
-      if (cleanedLine.isEmpty) {
-        continue;
-      }
 
       final cells = BufferLine(
         sourceLine.length,
         isWrapped: sourceLine.isWrapped,
       )..copyFrom(sourceLine, 0, 0, sourceLine.length);
-      previewLines.insert(
-        0,
-        TerminalPreviewLine(text: cleanedLine, cells: cells),
-      );
+      previewLines.add(TerminalPreviewLine(text: cleanedLine, cells: cells));
     }
 
     if (previewLines.isEmpty) {
@@ -3059,6 +3055,38 @@ class SshSession {
     return TerminalPreviewSnapshot(
       lines: List.unmodifiable(previewLines),
       plainText: previewLines.map((line) => line.text).join('\n'),
+    );
+  }
+
+  static ({int start, int end})? _terminalVisiblePreviewRange(
+    Terminal terminal,
+    int maxLines,
+  ) {
+    final lineCount = terminal.lines.length;
+    if (lineCount == 0) {
+      return null;
+    }
+    final visibleStart = math.max(
+      0,
+      terminal.buffer.height - terminal.viewHeight,
+    );
+    final visibleEnd = terminal.buffer.height - 1;
+    var lastNonEmpty = -1;
+    for (var index = visibleEnd; index >= visibleStart; index--) {
+      final cleanedLine = _sanitizePreviewFragment(
+        terminal.lines[index].getText(),
+      );
+      if (cleanedLine.isNotEmpty) {
+        lastNonEmpty = index;
+        break;
+      }
+    }
+    if (lastNonEmpty < 0) {
+      return null;
+    }
+    return (
+      start: math.max(visibleStart, lastNonEmpty - maxLines + 1),
+      end: lastNonEmpty,
     );
   }
 
