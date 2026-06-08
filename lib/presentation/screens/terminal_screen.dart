@@ -8316,6 +8316,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       if (_tmuxWindowLooksLikeMainBufferTarget(targetWindow)) {
         _switchLocalTerminalToMainBufferPreview(session, targetWindow);
+      } else if (_tmuxWindowLooksLikeAltBufferTarget(targetWindow)) {
+        _switchLocalTerminalToAltBufferPreview(session, targetWindow);
       }
     }
     // The foreground-client check is a heavy exec shell script that walks this
@@ -8364,6 +8366,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isShellCommandName(window.name) ||
         _isShellCommandName(window.paneTitle) ||
         window.name.trim().toLowerCase() == 'shell';
+  }
+
+  bool _tmuxWindowLooksLikeAltBufferTarget(TmuxWindow? window) {
+    if (window == null) {
+      return false;
+    }
+    return window.foregroundAgentTool != null ||
+        window.agentTool != null ||
+        (window.terminalReportsMouseWheel ?? false);
+  }
+
+  void _switchLocalTerminalToAltBufferPreview(
+    SshSession session,
+    TmuxWindow? targetWindow,
+  ) {
+    if (_connectionId != session.connectionId) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'local_alt_buffer_preview',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowIndex': targetWindow?.index,
+        'hasWindowId': targetWindow?.id != null,
+        'targetLooksShell': _isShellCommandName(targetWindow?.currentCommand),
+        'targetIsAgent':
+            targetWindow?.foregroundAgentTool != null ||
+            targetWindow?.agentTool != null,
+        'targetReportsMouseWheel': targetWindow?.terminalReportsMouseWheel,
+      },
+    );
+    _terminal.write('\x1b[?1049h\x1b[H\x1b[2J');
+    if (mounted) {
+      setState(() {
+        _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+      });
+    }
+    _followLiveOutput();
+    _terminalViewKey.currentState?.refreshTerminalDisplay(
+      revealLatestOutput: true,
+    );
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      revealLatestOutput: true,
+      suppressMonkeyMuxResizeSync: true,
+    );
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _switchLocalTerminalToMainBufferPreview(
