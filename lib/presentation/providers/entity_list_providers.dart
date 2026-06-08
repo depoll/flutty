@@ -69,6 +69,7 @@ void invalidateSyncedDataProviders(ProviderInvalidator invalidate) {
   invalidate(fontFamilyNotifierProvider);
   invalidate(cursorStyleNotifierProvider);
   invalidate(bellSoundNotifierProvider);
+  invalidate(terminalNotificationsNotifierProvider);
   invalidate(shellCompletionsNotifierProvider);
   invalidate(terminalThemeSettingsProvider);
   invalidate(allTerminalThemesProvider);

@@ -236,6 +236,168 @@ void main() {
     });
   });
 
+  group('text attribute rendering', () {
+    test('conceal (SGR 8) does not draw the glyph', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+
+      Future<int> foregroundPixels(String sequence) async {
+        final terminal = Terminal()
+          ..resize(1, 1)
+          ..write(sequence);
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final width = painter.cellSize.width.ceil();
+        final height = painter.cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+        final image = await recorder.endRecording().toImage(width, height);
+        final byteData = (await image.toByteData())!;
+        var count = 0;
+        for (var y = 0; y < height; y++) {
+          for (var x = 0; x < width; x++) {
+            if (_rawRgbaPixel(byteData, width, x, y) != theme.background) {
+              count++;
+            }
+          }
+        }
+        return count;
+      }
+
+      final visible = await foregroundPixels('\x1b[37mM');
+      final concealed = await foregroundPixels('\x1b[37;8mM');
+
+      expect(visible, greaterThan(0), reason: 'visible glyph should be drawn');
+      expect(concealed, 0, reason: 'concealed glyph should not be drawn');
+    });
+
+    test('colored underline (SGR 58) tints the underline', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+
+      Future<ByteData> render(String sequence) async {
+        final terminal = Terminal()
+          ..resize(1, 1)
+          ..write(sequence);
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final width = painter.cellSize.width.ceil();
+        // Add headroom below the cell so a curly underline that dips into the
+        // descender space is captured (it is drawn in a separate overlay pass).
+        final height = painter.cellSize.height.ceil() + 8;
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+        painter
+          ..paintLine(canvas, Offset.zero, terminal.buffer.lines[0])
+          ..paintLineCellUnderlines(
+            canvas,
+            Offset.zero,
+            terminal.buffer.lines[0],
+          );
+        final image = await recorder.endRecording().toImage(width, height);
+        return (await image.toByteData())!;
+      }
+
+      bool hasRedDominantPixel(ByteData data) {
+        for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
+          final r = data.getUint8(i);
+          final g = data.getUint8(i + 1);
+          final b = data.getUint8(i + 2);
+          // An (anti-aliased) red underline pixel: red clearly dominates.
+          if (r > 100 && r > g + 60 && r > b + 60) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      // Same white glyph + underline; only SGR 58 changes the underline color.
+      final whiteUnderline = await render('\x1b[37;4mx');
+      final redUnderline = await render('\x1b[37;4;58:2::255:0:0mx');
+
+      expect(
+        hasRedDominantPixel(whiteUnderline),
+        isFalse,
+        reason: 'a default underline should not introduce red pixels',
+      );
+      expect(
+        hasRedDominantPixel(redUnderline),
+        isTrue,
+        reason: 'SGR 58 should tint the underline red',
+      );
+    });
+
+    test('underline styles render distinctly', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+
+      Future<ByteData> render(String sequence) async {
+        final terminal = Terminal()
+          ..resize(1, 1)
+          ..write(sequence);
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 24),
+          textScaler: TextScaler.noScaling,
+        );
+        final width = painter.cellSize.width.ceil();
+        // Add headroom below the cell so a curly underline that dips into the
+        // descender space is captured (it is drawn in a separate overlay pass).
+        final height = painter.cellSize.height.ceil() + 8;
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+        painter
+          ..paintLine(canvas, Offset.zero, terminal.buffer.lines[0])
+          ..paintLineCellUnderlines(
+            canvas,
+            Offset.zero,
+            terminal.buffer.lines[0],
+          );
+        final image = await recorder.endRecording().toImage(width, height);
+        return (await image.toByteData())!;
+      }
+
+      bool bytesEqual(ByteData a, ByteData b) {
+        if (a.lengthInBytes != b.lengthInBytes) return false;
+        for (var i = 0; i < a.lengthInBytes; i++) {
+          if (a.getUint8(i) != b.getUint8(i)) return false;
+        }
+        return true;
+      }
+
+      // A blank cell under a single underline: only the underline differs
+      // between styles, so each style must produce a different image.
+      final single = await render('\x1b[4m ');
+      final curly = await render('\x1b[4:3m ');
+      final dotted = await render('\x1b[4:4m ');
+      final dashed = await render('\x1b[4:5m ');
+      final double = await render('\x1b[21m ');
+
+      expect(bytesEqual(single, curly), isFalse, reason: 'curly != single');
+      expect(bytesEqual(single, dotted), isFalse, reason: 'dotted != single');
+      expect(bytesEqual(single, dashed), isFalse, reason: 'dashed != single');
+      expect(bytesEqual(single, double), isFalse, reason: 'double != single');
+    });
+  });
+
   group('explicit cell background rendering', () {
     test(
       'clears normal-background cells before drawing terminal rows',

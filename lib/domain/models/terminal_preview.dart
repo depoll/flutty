@@ -51,9 +51,16 @@ bool _bufferLineEquals(BufferLine a, BufferLine b) {
   if (a.length != b.length || a.isWrapped != b.isWrapped) {
     return false;
   }
-  final cellDataLength = a.length * 4;
-  for (var index = 0; index < cellDataLength; index++) {
-    if (a.data[index] != b.data[index]) {
+  final cellA = CellData.empty();
+  final cellB = CellData.empty();
+  for (var index = 0; index < a.length; index++) {
+    a.getCellData(index, cellA);
+    b.getCellData(index, cellB);
+    if (cellA.foreground != cellB.foreground ||
+        cellA.background != cellB.background ||
+        cellA.flags != cellB.flags ||
+        cellA.content != cellB.content ||
+        cellA.underlineColor != cellB.underlineColor) {
       return false;
     }
   }
@@ -62,9 +69,10 @@ bool _bufferLineEquals(BufferLine a, BufferLine b) {
 
 int _bufferLineHash(BufferLine line) {
   var result = Object.hash(line.length, line.isWrapped);
-  final cellDataLength = line.length * 4;
-  for (var index = 0; index < cellDataLength; index++) {
-    result = Object.hash(result, line.data[index]);
+  final cell = CellData.empty();
+  for (var index = 0; index < line.length; index++) {
+    line.getCellData(index, cell);
+    result = Object.hash(result, cell.getHash());
   }
   return result;
 }

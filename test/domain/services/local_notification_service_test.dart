@@ -53,4 +53,40 @@ void main() {
       '/terminal/12?connectionId=34&tmuxSession=project+main&tmuxWindow=5&tmuxWindowId=%409',
     );
   });
+
+  group('TerminalNotificationPayload', () {
+    test('round-trips terminal notification routing fields', () {
+      const payload = TerminalNotificationPayload(hostId: 7, connectionId: 21);
+
+      expect(TerminalNotificationPayload.decode(payload.encode()), payload);
+    });
+
+    test('ignores malformed and unrelated payloads', () {
+      expect(TerminalNotificationPayload.decode(null), isNull);
+      expect(TerminalNotificationPayload.decode('not json'), isNull);
+      expect(
+        TerminalNotificationPayload.decode('{"type":"tmux-alert"}'),
+        isNull,
+      );
+      expect(
+        TerminalNotificationPayload.decode(
+          '{"type":"terminal-notification","version":1,"hostId":7}',
+        ),
+        isNull,
+      );
+    });
+
+    test('does not decode as a tmux alert and vice versa', () {
+      const terminal = TerminalNotificationPayload(hostId: 7, connectionId: 21);
+      expect(TmuxAlertNotificationPayload.decode(terminal.encode()), isNull);
+    });
+  });
+
+  test('buildTerminalNotificationLocation targets the source connection', () {
+    final location = buildTerminalNotificationLocation(
+      const TerminalNotificationPayload(hostId: 7, connectionId: 21),
+    );
+
+    expect(location, '/terminal/7?connectionId=21');
+  });
 }

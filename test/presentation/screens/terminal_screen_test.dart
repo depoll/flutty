@@ -79,11 +79,16 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   MonkeyMuxServerStatus? installedHelpersStatus;
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
+  bool hasLiveControlChannelValue = false;
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
 
   @override
   bool isExecChannelCoolingDown(SshSession session) => false;
+
+  @override
+  bool hasLiveControlChannel(SshSession session, String sessionName) =>
+      hasLiveControlChannelValue;
 
   @override
   Future<MonkeyMuxServerStatus?> runningServerStatus(
@@ -2906,7 +2911,10 @@ void main() {
           width * 10,
           nextHeight * 20,
         );
+        // The remote resize is throttled (not sent per frame), so let the
+        // throttle window elapse; a single size sync should then go out.
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 90));
 
         expect(monkeyMuxService.resizeTerminalCalls, isNotEmpty);
         expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isFalse);
@@ -2920,6 +2928,7 @@ void main() {
           nextHeight * 20,
         );
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 90));
         expect(
           monkeyMuxService.resizeTerminalCalls
               .where((call) => !call.redraw)
@@ -2934,6 +2943,130 @@ void main() {
         await tester.pump(const Duration(milliseconds: 200));
         await tester.pump();
         expect(position.pixels, position.maxScrollExtent);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'pinch-zoom resize storm is throttled to a few remote syncs',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final windowEvents = StreamController<TmuxWindowChangeEvent>();
+        addTearDown(windowEvents.close);
+        const sessionName = 'work';
+        const initialWindows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
+        ];
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => initialWindows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => windowEvents.stream);
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+        monkeyMuxService.resizeTerminalCalls.clear();
+
+        final width = session.terminal!.viewWidth;
+        final baseHeight = session.terminal!.viewHeight;
+
+        // Simulate a pinch sweep: many distinct sizes within one throttle
+        // window (only microtasks pumped between them, no real time elapses).
+        const steps = 12;
+        for (var i = 0; i < steps; i++) {
+          final rows = baseHeight > steps ? baseHeight - i : baseHeight + i;
+          session.terminal!.onResize?.call(width, rows, width * 10, rows * 20);
+          await tester.pump();
+        }
+        final finalRows = baseHeight > steps
+            ? baseHeight - (steps - 1)
+            : baseHeight + (steps - 1);
+
+        // Let the throttle window and the settle redraw elapse.
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pump();
+
+        final nonRedrawSyncs = monkeyMuxService.resizeTerminalCalls
+            .where((call) => !call.redraw)
+            .toList();
+        // The storm of 12 resizes must collapse into only a couple of remote
+        // size syncs (leading edge + a trailing coalesced one), not one per
+        // event — otherwise the SSH connection floods and wedges.
+        expect(nonRedrawSyncs.length, lessThanOrEqualTo(4));
+        expect(nonRedrawSyncs.length, greaterThanOrEqualTo(1));
+        // The remote must end up at the final size of the gesture.
+        expect(nonRedrawSyncs.last.rows, finalRows);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -4129,6 +4262,13 @@ void main() {
         ).thenAnswer((_) async {
           refreshCount += 1;
         });
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            tmuxSessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => null);
 
         await tester.pumpWidget(
           ProviderScope(
@@ -4194,7 +4334,7 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump(const Duration(milliseconds: 1050));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
@@ -4220,7 +4360,7 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 150));
+        await tester.pump(const Duration(milliseconds: 1050));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
@@ -4254,7 +4394,7 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 149));
+        await tester.pump(const Duration(milliseconds: 1049));
 
         expect(refreshCount, refreshCountAfterBackgroundWindow);
 
