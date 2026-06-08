@@ -8287,7 +8287,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowIndex,
       windowId: targetWindowId,
     );
+    final sourceWindow = _currentTmuxWindowsSnapshot
+        ?.where((window) => window.isActive)
+        .firstOrNull;
     final wasUsingAltBuffer = _terminal.isUsingAltBuffer;
+    final shouldPreviewMainBuffer =
+        wasUsingAltBuffer || _tmuxWindowLooksLikeAltScreenSource(sourceWindow);
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       await _syncActiveMonkeyMuxTerminalSize(
         session,
@@ -8316,7 +8321,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           extraFlags: _activeTmuxExtraFlags,
         ),
       );
-      if (wasUsingAltBuffer) {
+      if (shouldPreviewMainBuffer) {
         _switchLocalTerminalToMainBufferPreview(session, targetWindow);
       }
       if (wasUsingAltBuffer) {
@@ -8358,11 +8363,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return windows.where((window) => window.index == windowIndex).firstOrNull;
   }
 
+  bool _tmuxWindowLooksLikeAltScreenSource(TmuxWindow? window) {
+    if (window == null) {
+      return false;
+    }
+    return window.foregroundAgentTool != null ||
+        window.agentTool != null ||
+        (window.terminalReportsMouseWheel ?? false);
+  }
+
   void _switchLocalTerminalToMainBufferPreview(
     SshSession session,
     TmuxWindow? targetWindow,
   ) {
-    if (!_terminal.isUsingAltBuffer || _connectionId != session.connectionId) {
+    if (_connectionId != session.connectionId) {
       return;
     }
     DiagnosticsLogService.instance.debug(
