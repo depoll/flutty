@@ -1277,7 +1277,7 @@ func TestActiveReplayIsCappedForResponsiveSwitching(t *testing.T) {
 	}
 }
 
-func TestActiveReplayUsesForegroundRedrawForTrackedAlternateScreenHistory(t *testing.T) {
+func TestActiveReplayRetainsTrackedAlternateScreenHistory(t *testing.T) {
 	for _, mode := range []string{"1047", "1049"} {
 		t.Run(mode, func(t *testing.T) {
 			server := newMuxServer("test")
@@ -1285,7 +1285,7 @@ func TestActiveReplayUsesForegroundRedrawForTrackedAlternateScreenHistory(t *tes
 			history := []byte(
 				enterAlternateScreen +
 					"alternate-screen-start" +
-					strings.Repeat("\x1b]66;semantic\a", windowReplayLimitBytes/8) +
+					strings.Repeat("alternate-screen-history", windowReplayLimitBytes/8) +
 					"alternate-screen-end",
 			)
 			window := &muxWindow{
@@ -1300,9 +1300,9 @@ func TestActiveReplayUsesForegroundRedrawForTrackedAlternateScreenHistory(t *tes
 			window.observeTerminalModesLocked(history)
 			replay := string(server.activeReplayLocked())
 
-			if strings.Contains(replay, "alternate-screen-start") ||
-				strings.Contains(replay, "alternate-screen-end") {
-				t.Fatalf("alternate-screen redraw replay retained stale history: %q", replay)
+			if !strings.Contains(replay, "alternate-screen-start") ||
+				!strings.Contains(replay, "alternate-screen-end") {
+				t.Fatalf("alternate-screen redraw replay lost retained history: %q", replay)
 			}
 			if !strings.Contains(
 				replay,
@@ -1372,7 +1372,7 @@ func TestActiveReplaySkipsRunawayAgentHistory(t *testing.T) {
 	}
 }
 
-func TestActiveReplayUsesForegroundRedrawForVimAlternateScreenHistory(t *testing.T) {
+func TestActiveReplayRetainsForegroundAlternateScreenHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
 		"interactive-main-screen-start" +
@@ -1392,9 +1392,9 @@ func TestActiveReplayUsesForegroundRedrawForVimAlternateScreenHistory(t *testing
 
 	replay := string(server.activeReplayLocked())
 
-	if strings.Contains(replay, "interactive-main-screen-start") ||
-		strings.Contains(replay, "interactive-main-screen-end") {
-		t.Fatalf("interactive redraw replay retained stale history: %q", replay)
+	if !strings.Contains(replay, "interactive-main-screen-start") ||
+		!strings.Contains(replay, "interactive-main-screen-end") {
+		t.Fatalf("interactive redraw replay lost retained history: %q", replay)
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
@@ -2401,13 +2401,13 @@ func TestActiveReplayRestoresTrackedEditorModes(t *testing.T) {
 	preHistoryClear := string(terminalPreHistoryClearSequence(window))
 	postModes := string(terminalModePostReplaySequence(window))
 	want := replayPrefixForTest(window) + preModes + preHistoryClear +
-		terminalParserResetSequence + postModes +
+		"nano screen" + terminalParserResetSequence + postModes +
 		terminalCharacterSetResetSequence + cursorVisibilityReplaySequence(true)
 	if replay != want {
 		t.Fatalf("replay = %q, want %q", replay, want)
 	}
-	if strings.Contains(replay, "nano screen") {
-		t.Fatalf("editor redraw replay retained stale history: %q", replay)
+	if !strings.Contains(replay, "nano screen") {
+		t.Fatalf("editor redraw replay lost retained history: %q", replay)
 	}
 	for _, sequence := range []string{
 		"\x1b[?1049h",
