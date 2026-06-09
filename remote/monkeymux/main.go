@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.66"
+	monkeyMuxVersion                  = "0.1.67"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3149,7 +3149,9 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	if window.usesForegroundRedrawReplayLocked() {
-		history = nil
+		if !window.alternateScreenModeActiveLocked() {
+			history = nil
+		}
 	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
