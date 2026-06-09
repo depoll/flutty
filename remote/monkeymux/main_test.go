@@ -2855,6 +2855,314 @@ func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
 	}
 }
 
+func TestDiscoverOpenCodeSessionIDsUsesProcessArgs(t *testing.T) {
+	originalReader := openCodeSessionEntriesReader
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		openCodeSessionEntriesReader = originalReader
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
+		t.Fatal("session store should not be read when the ID is in process args")
+		return nil
+	}
+	processWorkingDirectoryForMetadata = func(int) string { return "" }
+
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode --session ses_arg"},
+	}
+
+	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != "ses_arg" {
+		t.Fatalf("opencode session id = %q, want ses_arg", got)
+	}
+}
+
+func TestDiscoverOpenCodeSessionIDsUsesWorkingDirectory(t *testing.T) {
+	originalReader := openCodeSessionEntriesReader
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		openCodeSessionEntriesReader = originalReader
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
+		return []openCodeSessionEntry{
+			{sessionID: "ses_new", directory: "/work/project"},
+			{sessionID: "ses_other", directory: "/tmp/other"},
+		}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode"},
+	}
+
+	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != "ses_new" {
+		t.Fatalf("opencode session id = %q, want ses_new", got)
+	}
+}
+
+func TestDiscoverOpenCodeSessionIDsSkipsAmbiguousWorkingDirectory(t *testing.T) {
+	originalReader := openCodeSessionEntriesReader
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		openCodeSessionEntriesReader = originalReader
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
+		return []openCodeSessionEntry{{sessionID: "ses_new", directory: "/work/project"}}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		switch pid {
+		case 200, 201:
+			return "/work/project"
+		default:
+			return ""
+		}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode"},
+		201: {pid: 201, ppid: 101, comm: "opencode", args: "opencode"},
+	}
+
+	sessions := discoverOpenCodeSessionIDs(
+		processes,
+		map[int]struct{}{100: {}, 101: {}},
+	)
+
+	if len(sessions) != 0 {
+		t.Fatalf("opencode sessions = %#v, want none for ambiguous cwd fallback", sessions)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsUsesOpenProjectFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	sessionID := "de4e84a3-cf16-4cc2-8ba7-34587e984d4a"
+	processOpenFilePathsForMetadata = func(pid int) []string {
+		if pid != 200 {
+			return nil
+		}
+		return []string{
+			"/Users/alice/.claude/projects/-Users-alice-Code-proj/" + sessionID + ".jsonl",
+		}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		t.Fatalf("processWorkingDirectoryForMetadata(%d) called; open file match should win", pid)
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "fa0a7327-666a-4439-8052-8d9e61c16d3f"
+	projectDir := filepath.Join(home, ".claude", "projects", "-work-project")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectDir, sessionID+".jsonl"),
+		[]byte(`{"type":"user","cwd":"/work/project","sessionId":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverGeminiSessionIDsUsesOpenChatFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	sessionID := "bc1ced23-25ac-4971-8f30-8af35ce2f2f1"
+	chatsDir := filepath.Join(t.TempDir(), ".gemini", "tmp", "proj", "chats")
+	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	chatPath := filepath.Join(chatsDir, "session-abc.json")
+	if err := os.WriteFile(
+		chatPath,
+		[]byte(`{"sessionId":"`+sessionID+`","kind":"main","directories":["/work/project"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(pid int) []string {
+		if pid != 200 {
+			return nil
+		}
+		return []string{chatPath}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		t.Fatalf("processWorkingDirectoryForMetadata(%d) called; open file match should win", pid)
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
+	}
+
+	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("gemini session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverGeminiSessionIDsFallsBackToRecentChatForCwd(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "bc1ced23-25ac-4971-8f30-8af35ce2f2f1"
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "proj", "chats")
+	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(chatsDir, "session-abc.json"),
+		[]byte(`{"sessionId":"`+sessionID+`","kind":"main","directories":["/work/project"],"messages":[`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
+	}
+
+	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("gemini session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverGeminiSessionIDsSkipsSubagentChats(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "proj", "chats")
+	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(chatsDir, "session-sub.json"),
+		[]byte(`{"sessionId":"sub-1","kind":"subagent","directories":["/work/project"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
+	}
+
+	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if len(sessions) != 0 {
+		t.Fatalf("gemini sessions = %#v, want none for subagent chats", sessions)
+	}
+}
+
+func TestParseGeminiSessionMetadataFromTruncatedPrefix(t *testing.T) {
+	metadata := parseGeminiSessionMetadata(`{
+  "sessionId": "session-large",
+  "kind": "main",
+  "directories": ["/Users/depoll/Code/flutty"],
+  "messages": [
+`)
+	if metadata.sessionID != "session-large" {
+		t.Fatalf("sessionID = %q, want session-large", metadata.sessionID)
+	}
+	if metadata.isSubagent {
+		t.Fatal("isSubagent = true, want false")
+	}
+	if len(metadata.directories) != 1 ||
+		metadata.directories[0] != "/Users/depoll/Code/flutty" {
+		t.Fatalf("directories = %#v, want [/Users/depoll/Code/flutty]", metadata.directories)
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -3204,6 +3512,39 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			},
 			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
 			agentTool: "opencode",
+		},
+		{
+			name: "opencode resume by id",
+			state: restoreWindowState{
+				Name:           "OpenCode",
+				CurrentCommand: "opencode",
+				AgentTool:      "opencode",
+				AgentSessionID: "ses_abc",
+			},
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --session 'ses_abc'`,
+			agentTool: "opencode",
+		},
+		{
+			name: "claude resume",
+			state: restoreWindowState{
+				Name:           "Claude Code",
+				CurrentCommand: "claude",
+				AgentTool:      "claude",
+				AgentSessionID: "de4e84a3-cf16-4cc2-8ba7-34587e984d4a",
+			},
+			want:      `claude --dangerously-skip-permissions --resume 'de4e84a3-cf16-4cc2-8ba7-34587e984d4a'`,
+			agentTool: "claude",
+		},
+		{
+			name: "gemini resume",
+			state: restoreWindowState{
+				Name:           "Gemini CLI",
+				CurrentCommand: "gemini",
+				AgentTool:      "gemini",
+				AgentSessionID: "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
+			},
+			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1'`,
+			agentTool: "gemini",
 		},
 		{
 			name: "antigravity resume",
