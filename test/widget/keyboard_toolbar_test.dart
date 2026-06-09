@@ -604,6 +604,36 @@ void main() {
       expect(output, contains('\x1b[Z'));
     });
 
+    testWidgets('toolbar Escape and Tab use Kitty encoding when enabled', (
+      tester,
+    ) async {
+      final output = <String>[];
+      terminal
+        ..onOutput = output.add
+        ..write('\x1b[>31u');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Escape'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Tab'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Shift'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Tab'));
+      await tester.pump();
+
+      expect(output, contains('\x1b[27u'));
+      expect(output, contains('\x1b[9u'));
+      expect(output, contains('\x1b[9;2u'));
+
+      await tester.pump(const Duration(milliseconds: 120));
+    });
+
     testWidgets('toolbar Shift applies to Enter', (tester) async {
       final output = <String>[];
       terminal.onOutput = output.add;
@@ -674,6 +704,82 @@ void main() {
       await tester.pump();
 
       expect(output.where((value) => value == '\x1b[A').length, greaterThan(1));
+    });
+
+    testWidgets('arrow key repeats use Kitty event type when enabled', (
+      tester,
+    ) async {
+      final output = <String>[];
+      terminal
+        ..onOutput = output.add
+        ..write('\x1b[>31u');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byTooltip('Up')),
+      );
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 160));
+      await gesture.up();
+      await tester.pump();
+
+      expect(output, contains('\x1b[A'));
+      expect(output.where((value) => value == '\x1b[1;1:2A'), isNotEmpty);
+    });
+
+    testWidgets(
+      'toolbar presses keep legacy sequences without Kitty key flags',
+      (tester) async {
+        final output = <String>[];
+        terminal
+          ..onOutput = output.add
+          ..write('\x1b[=2u');
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        );
+
+        await tester.tap(find.byTooltip('Shift'));
+        await tester.pump();
+        await tester.tap(find.byTooltip('Up'));
+        await tester.pump();
+
+        expect(output, contains('\x1b[1;2A'));
+        expect(output, isNot(contains('scrollLineUp')));
+      },
+    );
+
+    testWidgets('series navigation repeats use Kitty event type when enabled', (
+      tester,
+    ) async {
+      final output = <String>[];
+      terminal
+        ..onOutput = output.add
+        ..write('\x1b[>31u');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byTooltip('Page Up')),
+      );
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 160));
+      await gesture.up();
+      await tester.pump();
+
+      expect(output, contains('\x1b[5~'));
+      expect(output.where((value) => value == '\x1b[5;1:2~'), isNotEmpty);
     });
 
     testWidgets('repeating navigation stops when gesture is cancelled', (

@@ -8298,6 +8298,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await backend.selectWindow(windowIndex, windowId: targetWindowId);
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _prepareTerminalForMuxWindowChange();
+      _refreshTerminalAfterMonkeyMuxWindowChange(session);
+      _scheduleTmuxTerminalThemeRefreshAfterWindowStateChange(
+        session: session,
+        sessionName: sessionName,
+        reason: 'monkeymux_window_switched',
+      );
+      _refreshMuxPaneContextAfterWindowStateChange(
+        session,
+        sessionName,
+        force: true,
+      );
       return;
     }
     _prepareTerminalForMuxWindowChange();
