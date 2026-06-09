@@ -8,7 +8,24 @@ bool sendTerminalEnterInput(
   required bool shiftActive,
   required bool altActive,
   required bool ctrlActive,
+  bool metaActive = false,
+  TerminalKeyEventType type = TerminalKeyEventType.press,
 }) {
+  if (terminal.kittyKeyboardMode) {
+    return terminal.keyInput(
+      TerminalKey.enter,
+      shift: shiftActive,
+      alt: altActive,
+      ctrl: ctrlActive,
+      meta: metaActive,
+      type: type,
+    );
+  }
+
+  if (type != TerminalKeyEventType.press) {
+    return false;
+  }
+
   if (shiftActive || altActive) {
     // Prompt UIs such as Copilot CLI use ESC+CR as their terminal-agnostic
     // multiline Enter sequence; xterm.dart's legacy Shift+Return emits ESCOM.
@@ -21,5 +38,6 @@ bool sendTerminalEnterInput(
     shift: shiftActive,
     alt: altActive,
     ctrl: ctrlActive,
+    meta: metaActive,
   );
 }

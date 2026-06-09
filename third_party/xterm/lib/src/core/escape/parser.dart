@@ -197,6 +197,10 @@ class EscapeParser {
     final consumed = _consumeCsi();
     if (!consumed) return false;
 
+    if (_csi.finalByte == Ascii.u && _handleKittyKeyboardProtocol()) {
+      return true;
+    }
+
     final csiHandler = _csiHandlers[_csi.finalByte];
 
     if (csiHandler == null) {
@@ -206,6 +210,27 @@ class EscapeParser {
     }
 
     return true;
+  }
+
+  bool _handleKittyKeyboardProtocol() {
+    final flags = _csi.params.isEmpty ? 0 : _csi.params[0];
+    final mode = _csi.params.length > 1 ? _csi.params[1] : 1;
+    switch (_csi.prefix) {
+      case Ascii.equal:
+        handler.setKittyKeyboardFlags(flags, mode);
+        return true;
+      case Ascii.greaterThan:
+        handler.pushKittyKeyboardFlags(flags);
+        return true;
+      case Ascii.lessThan:
+        handler.popKittyKeyboardFlags(flags == 0 ? 1 : flags);
+        return true;
+      case Ascii.questionMark:
+        handler.sendKittyKeyboardFlags();
+        return true;
+      default:
+        return false;
+    }
   }
 
   /// The last parsed [_Csi]. This is a mutable singletion by design to reduce
@@ -677,7 +702,11 @@ class EscapeParser {
         // sub = [2, r, g, b] or [2, colorSpaceId, r, g, b] (id ignored).
         final off = sub.length >= 5 ? 2 : 1;
         _applySgrColorRgb(
-            code, _sub(sub, off), _sub(sub, off + 1), _sub(sub, off + 2));
+          code,
+          _sub(sub, off),
+          _sub(sub, off + 1),
+          _sub(sub, off + 2),
+        );
       } else if (mode == 5) {
         _applySgrColorIndexed(code, _sub(sub, 1));
       }
