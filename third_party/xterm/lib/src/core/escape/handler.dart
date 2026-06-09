@@ -148,6 +148,14 @@ abstract class EscapeHandler {
 
   void setUnknownDecMode(int mode, bool enabled);
 
+  void setKittyKeyboardFlags(int flags, int mode);
+
+  void pushKittyKeyboardFlags(int flags);
+
+  void popKittyKeyboardFlags(int count);
+
+  void sendKittyKeyboardFlags();
+
   void resize(int cols, int rows);
 
   void sendSize();

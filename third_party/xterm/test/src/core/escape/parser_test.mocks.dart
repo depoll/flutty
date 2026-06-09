@@ -675,6 +675,49 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
       );
 
   @override
+  void setKittyKeyboardFlags(
+    int? flags,
+    int? mode,
+  ) =>
+      super.noSuchMethod(
+        Invocation.method(
+          #setKittyKeyboardFlags,
+          [
+            flags,
+            mode,
+          ],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void pushKittyKeyboardFlags(int? flags) => super.noSuchMethod(
+        Invocation.method(
+          #pushKittyKeyboardFlags,
+          [flags],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void popKittyKeyboardFlags(int? count) => super.noSuchMethod(
+        Invocation.method(
+          #popKittyKeyboardFlags,
+          [count],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
+  void sendKittyKeyboardFlags() => super.noSuchMethod(
+        Invocation.method(
+          #sendKittyKeyboardFlags,
+          [],
+        ),
+        returnValueForMissingStub: null,
+      );
+
+  @override
   void resize(
     int? cols,
     int? rows,
