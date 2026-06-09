@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.66"
+	monkeyMuxVersion                  = "0.1.67"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -1065,11 +1065,20 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		return
 	}
 	processes := readProcessTable()
-	copilotSessions := map[int]string{}
-	codexSessions := map[int]string{}
+	// Each entry maps a pane PID to the agent session ID discovered for the
+	// agent running inside that pane. Tools that launch fresh (without a
+	// resumable session ID in their process arguments) are recovered from
+	// their own on-disk session stores so they keep resuming after a
+	// MonkeyMux helper update restarts the session server.
+	processDiscoveredSessions := map[string]map[int]string{}
 	if len(processes) > 0 {
-		copilotSessions = discoverCopilotSessionIDs(processes, panePids)
-		codexSessions = discoverCodexSessionIDs(processes, panePids)
+		processDiscoveredSessions = map[string]map[int]string{
+			"copilot":  discoverCopilotSessionIDs(processes, panePids),
+			"codex":    discoverCodexSessionIDs(processes, panePids),
+			"opencode": discoverOpenCodeSessionIDs(processes, panePids),
+			"claude":   discoverClaudeSessionIDs(processes, panePids),
+			"gemini":   discoverGeminiSessionIDs(processes, panePids),
+		}
 	}
 	for i := range restore.Windows {
 		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
@@ -1080,14 +1089,8 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		if tool == "" {
 			continue
 		}
-		if panePid > 0 && tool == "copilot" {
-			if sessionID := copilotSessions[panePid]; sessionID != "" {
-				restore.Windows[i].AgentSessionID = sessionID
-				continue
-			}
-		}
-		if panePid > 0 && tool == "codex" {
-			if sessionID := codexSessions[panePid]; sessionID != "" {
+		if panePid > 0 {
+			if sessionID := processDiscoveredSessions[tool][panePid]; sessionID != "" {
 				restore.Windows[i].AgentSessionID = sessionID
 				continue
 			}
@@ -1510,6 +1513,508 @@ func codexSessionIDFromRolloutName(name string) string {
 		return match[1]
 	}
 	return ""
+}
+
+// ── OpenCode ───────────────────────────────────────────────────────────────
+// OpenCode persists sessions in a SQLite store keyed by working directory, so
+// a session launched fresh (`opencode`, no `--session`) carries no resumable
+// ID in its process arguments. Recover the most recent session for the pane's
+// working directory so it keeps resuming after a MonkeyMux helper update.
+
+type openCodeSessionEntry struct {
+	sessionID string
+	directory string
+}
+
+// openCodeSessionEntriesReader is overridable in tests so the SQLite-backed
+// lookup can be stubbed without a live OpenCode database.
+var openCodeSessionEntriesReader = defaultOpenCodeSessionEntries
+
+func discoverOpenCodeSessionIDs(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
+	type unresolvedOpenCodeProcess struct {
+		panePid          int
+		workingDirectory string
+	}
+	sessions := map[int]string{}
+	unresolved := []unresolvedOpenCodeProcess{}
+	unresolvedPanes := map[int]struct{}{}
+	workingDirectoryCounts := map[string]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 || sessions[panePid] != "" {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != "opencode" {
+			continue
+		}
+		if sessionID := agentSessionIDFromArgs("opencode", process.args); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory == "" {
+			continue
+		}
+		if _, ok := unresolvedPanes[panePid]; ok {
+			continue
+		}
+		unresolvedPanes[panePid] = struct{}{}
+		unresolved = append(unresolved, unresolvedOpenCodeProcess{
+			panePid:          panePid,
+			workingDirectory: workingDirectory,
+		})
+		workingDirectoryCounts[workingDirectory]++
+	}
+	if len(unresolved) == 0 {
+		return sessions
+	}
+	entries := readOpenCodeSessionEntries()
+	if len(entries) == 0 {
+		return sessions
+	}
+	for _, candidate := range unresolved {
+		if sessions[candidate.panePid] != "" ||
+			workingDirectoryCounts[candidate.workingDirectory] != 1 {
+			continue
+		}
+		if sessionID := openCodeSessionIDForWorkingDirectory(
+			entries,
+			candidate.workingDirectory,
+		); sessionID != "" {
+			sessions[candidate.panePid] = sessionID
+		}
+	}
+	return sessions
+}
+
+func readOpenCodeSessionEntries() []openCodeSessionEntry {
+	return openCodeSessionEntriesReader()
+}
+
+func openCodeSessionIDForWorkingDirectory(
+	entries []openCodeSessionEntry,
+	workingDirectory string,
+) string {
+	workingDirectory = normalizedMetadataPath(workingDirectory)
+	if workingDirectory == "" {
+		return ""
+	}
+	// entries are ordered most-recently-updated first.
+	for _, entry := range entries {
+		if entry.directory == workingDirectory {
+			return entry.sessionID
+		}
+	}
+	return ""
+}
+
+// defaultOpenCodeSessionEntries reads the most recent top-level OpenCode
+// sessions from its SQLite store. OpenCode keeps recent writes in a WAL file,
+// so the lookup shells out to sqlite3 (which the app already requires for
+// OpenCode session discovery) instead of parsing the database file directly.
+func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	dbPath := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	sqlitePath, err := exec.LookPath("sqlite3")
+	if err != nil {
+		return nil
+	}
+	const separator = "\x1f"
+	query := "SELECT id, directory FROM session " +
+		"WHERE parent_id IS NULL AND time_archived IS NULL " +
+		"ORDER BY time_updated DESC LIMIT 200;"
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		sqlitePath,
+		"-readonly",
+		"-separator", separator,
+		dbPath,
+		query,
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	entries := []openCodeSessionEntry{}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.SplitN(line, separator, 2)
+		sessionID := strings.TrimSpace(parts[0])
+		if sessionID == "" {
+			continue
+		}
+		directory := ""
+		if len(parts) > 1 {
+			directory = normalizedMetadataPath(parts[1])
+		}
+		entries = append(entries, openCodeSessionEntry{
+			sessionID: sessionID,
+			directory: directory,
+		})
+	}
+	return entries
+}
+
+// ── Claude Code ──────────────────────────────────────────────────────────────
+// Claude Code stores each session as
+// `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`. A freshly launched
+// `claude` carries no `--resume` argument, so recover the session from the
+// rollout file the process holds open, or the most recent project file whose
+// `cwd` matches the pane's working directory.
+
+var claudeSessionIDPattern = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
+)
+
+func discoverClaudeSessionIDs(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
+	type unresolvedClaudeProcess struct {
+		panePid          int
+		workingDirectory string
+	}
+	sessions := map[int]string{}
+	unresolved := []unresolvedClaudeProcess{}
+	unresolvedPanes := map[int]struct{}{}
+	workingDirectoryCounts := map[string]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 || sessions[panePid] != "" {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != "claude" {
+			continue
+		}
+		if sessionID := agentSessionIDFromArgs("claude", process.args); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		if sessionID := claudeSessionIDFromOpenFiles(process.pid); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory == "" {
+			continue
+		}
+		if _, ok := unresolvedPanes[panePid]; ok {
+			continue
+		}
+		unresolvedPanes[panePid] = struct{}{}
+		unresolved = append(unresolved, unresolvedClaudeProcess{
+			panePid:          panePid,
+			workingDirectory: workingDirectory,
+		})
+		workingDirectoryCounts[workingDirectory]++
+	}
+	for _, candidate := range unresolved {
+		if sessions[candidate.panePid] != "" ||
+			workingDirectoryCounts[candidate.workingDirectory] != 1 {
+			continue
+		}
+		if sessionID := claudeRecentSessionIDForWorkingDirectory(
+			candidate.workingDirectory,
+		); sessionID != "" {
+			sessions[candidate.panePid] = sessionID
+		}
+	}
+	return sessions
+}
+
+func claudeSessionIDFromOpenFiles(pid int) string {
+	for _, path := range processOpenFilePathsForMetadata(pid) {
+		if sessionID := claudeSessionIDFromProjectFile(path); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func claudeRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+	workingDirectory = normalizedMetadataPath(workingDirectory)
+	if workingDirectory == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	projectsDir := filepath.Join(home, ".claude", "projects")
+	for _, path := range recentAgentSessionFiles(projectsDir, 60, isClaudeProjectSessionPath) {
+		if normalizedMetadataPath(jsonStringFieldFromFile(path, "cwd")) != workingDirectory {
+			continue
+		}
+		if sessionID := claudeSessionIDFromProjectFile(path); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func claudeSessionIDFromProjectFile(path string) string {
+	if !isClaudeProjectSessionPath(path) {
+		return ""
+	}
+	name := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	if claudeSessionIDPattern.MatchString(name) {
+		return name
+	}
+	if sessionID := jsonStringFieldFromFile(path, "sessionId"); claudeSessionIDPattern.MatchString(sessionID) {
+		return sessionID
+	}
+	return ""
+}
+
+func isClaudeProjectSessionPath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	if !strings.Contains(normalized, "/.claude/projects/") {
+		return false
+	}
+	return strings.HasSuffix(normalized, ".jsonl")
+}
+
+// ── Gemini CLI ───────────────────────────────────────────────────────────────
+// Gemini stores chats at `~/.gemini/tmp/<project>/chats/session-*.json`, with
+// the resumable `sessionId` and the project `directories` recorded inside the
+// file. Recover the session from the chat file the process holds open, or the
+// most recent non-subagent chat whose directories include the pane's working
+// directory.
+
+var (
+	geminiSessionIDFieldPattern   = regexp.MustCompile(`"sessionId"\s*:\s*"((?:\\.|[^"\\])*)"`)
+	geminiKindFieldPattern        = regexp.MustCompile(`"kind"\s*:\s*"((?:\\.|[^"\\])*)"`)
+	geminiDirectoriesStartPattern = regexp.MustCompile(`"directories"\s*:\s*\[`)
+	geminiQuotedStringPattern     = regexp.MustCompile(`"((?:\\.|[^"\\])*)"`)
+)
+
+type geminiSessionMetadata struct {
+	sessionID   string
+	isSubagent  bool
+	directories []string
+}
+
+func discoverGeminiSessionIDs(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+) map[int]string {
+	type unresolvedGeminiProcess struct {
+		panePid          int
+		workingDirectory string
+	}
+	sessions := map[int]string{}
+	unresolved := []unresolvedGeminiProcess{}
+	unresolvedPanes := map[int]struct{}{}
+	workingDirectoryCounts := map[string]int{}
+	for _, process := range processes {
+		panePid := ancestorPanePID(processes, process.pid, panePids)
+		if panePid <= 0 || sessions[panePid] != "" {
+			continue
+		}
+		command := commandNameFromProcessFields(process.comm, process.args)
+		if agentToolFromCommandName(command) != "gemini" {
+			continue
+		}
+		if sessionID := agentSessionIDFromArgs("gemini", process.args); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		if sessionID := geminiSessionIDFromOpenFiles(process.pid); sessionID != "" {
+			sessions[panePid] = sessionID
+			continue
+		}
+		workingDirectory := normalizedMetadataPath(
+			processWorkingDirectoryForMetadata(process.pid),
+		)
+		if workingDirectory == "" {
+			continue
+		}
+		if _, ok := unresolvedPanes[panePid]; ok {
+			continue
+		}
+		unresolvedPanes[panePid] = struct{}{}
+		unresolved = append(unresolved, unresolvedGeminiProcess{
+			panePid:          panePid,
+			workingDirectory: workingDirectory,
+		})
+		workingDirectoryCounts[workingDirectory]++
+	}
+	for _, candidate := range unresolved {
+		if sessions[candidate.panePid] != "" ||
+			workingDirectoryCounts[candidate.workingDirectory] != 1 {
+			continue
+		}
+		if sessionID := geminiRecentSessionIDForWorkingDirectory(
+			candidate.workingDirectory,
+		); sessionID != "" {
+			sessions[candidate.panePid] = sessionID
+		}
+	}
+	return sessions
+}
+
+func geminiSessionIDFromOpenFiles(pid int) string {
+	for _, path := range processOpenFilePathsForMetadata(pid) {
+		if !isGeminiChatSessionPath(path) {
+			continue
+		}
+		metadata := readGeminiSessionMetadata(path)
+		if metadata.sessionID != "" && !metadata.isSubagent {
+			return metadata.sessionID
+		}
+	}
+	return ""
+}
+
+func geminiRecentSessionIDForWorkingDirectory(workingDirectory string) string {
+	workingDirectory = normalizedMetadataPath(workingDirectory)
+	if workingDirectory == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	tmpDir := filepath.Join(home, ".gemini", "tmp")
+	for _, path := range recentAgentSessionFiles(tmpDir, 60, isGeminiChatSessionPath) {
+		metadata := readGeminiSessionMetadata(path)
+		if metadata.sessionID == "" || metadata.isSubagent {
+			continue
+		}
+		for _, dir := range metadata.directories {
+			if normalizedMetadataPath(dir) == workingDirectory {
+				return metadata.sessionID
+			}
+		}
+	}
+	return ""
+}
+
+func isGeminiChatSessionPath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	if !strings.Contains(normalized, "/.gemini/tmp/") ||
+		!strings.Contains(normalized, "/chats/") {
+		return false
+	}
+	name := filepath.Base(path)
+	return strings.HasPrefix(name, "session-") &&
+		(strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".jsonl"))
+}
+
+func readGeminiSessionMetadata(path string) geminiSessionMetadata {
+	file, err := os.Open(path)
+	if err != nil {
+		return geminiSessionMetadata{}
+	}
+	defer file.Close()
+	const maxBytes = 64 * 1024
+	raw, err := io.ReadAll(io.LimitReader(file, maxBytes))
+	if err != nil {
+		return geminiSessionMetadata{}
+	}
+	return parseGeminiSessionMetadata(string(raw))
+}
+
+func parseGeminiSessionMetadata(text string) geminiSessionMetadata {
+	metadata := geminiSessionMetadata{}
+	if match := geminiSessionIDFieldPattern.FindStringSubmatch(text); match != nil {
+		metadata.sessionID = decodeJSONStringLiteral(match[1])
+	}
+	if match := geminiKindFieldPattern.FindStringSubmatch(text); match != nil {
+		metadata.isSubagent = decodeJSONStringLiteral(match[1]) == "subagent"
+	}
+	metadata.directories = geminiDirectoriesFromText(text)
+	return metadata
+}
+
+func geminiDirectoriesFromText(text string) []string {
+	loc := geminiDirectoriesStartPattern.FindStringIndex(text)
+	if loc == nil {
+		return nil
+	}
+	segment := text[loc[1]:]
+	// Paths never contain ']', so the array ends at the first closing bracket.
+	// When the prefix is truncated mid-array, fall back to the prefix end.
+	if end := strings.IndexByte(segment, ']'); end >= 0 {
+		segment = segment[:end]
+	}
+	directories := []string{}
+	for _, match := range geminiQuotedStringPattern.FindAllStringSubmatch(segment, -1) {
+		if value := decodeJSONStringLiteral(match[1]); value != "" {
+			directories = append(directories, value)
+		}
+	}
+	return directories
+}
+
+// ── Shared agent session-file helpers ────────────────────────────────────────
+
+// recentAgentSessionFiles returns up to limit matching files under root,
+// ordered most-recently-modified first.
+func recentAgentSessionFiles(
+	root string,
+	limit int,
+	match func(path string) bool,
+) []string {
+	if limit <= 0 {
+		return nil
+	}
+	type recentFile struct {
+		path    string
+		modTime time.Time
+	}
+	files := []recentFile{}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil || entry.IsDir() {
+			return nil
+		}
+		if !match(path) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		files = append(files, recentFile{path: path, modTime: info.ModTime()})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	if len(files) > limit {
+		files = files[:limit]
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths
+}
+
+func decodeJSONStringLiteral(value string) string {
+	var decoded string
+	if err := json.Unmarshal([]byte(`"`+value+`"`), &decoded); err == nil {
+		return strings.TrimSpace(decoded)
+	}
+	return strings.TrimSpace(value)
 }
 
 func jsonStringFieldFromFile(path string, field string) string {
