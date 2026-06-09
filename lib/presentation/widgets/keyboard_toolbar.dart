@@ -1004,7 +1004,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEscape() {
     HapticFeedback.lightImpact();
-    if (widget.terminal.kittyKeyboardMode) {
+    if (_shouldUseKittyKeyboardEncoding(TerminalKeyEventType.press)) {
       widget.terminal.keyInput(TerminalKey.escape);
     } else {
       widget.terminal.textInput('\x1b');
@@ -1021,7 +1021,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    if (widget.terminal.kittyKeyboardMode) {
+    if (_shouldUseKittyKeyboardEncoding(TerminalKeyEventType.press)) {
       widget.terminal.keyInput(
         TerminalKey.tab,
         shift: _controller.isShiftActive,
@@ -1084,7 +1084,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (withHaptic) {
       HapticFeedback.lightImpact();
     }
-    if (widget.terminal.kittyKeyboardMode) {
+    if (_shouldUseKittyKeyboardEncoding(type)) {
       final handled = widget.terminal.keyInput(
         key,
         shift: _controller.isShiftActive,
@@ -1113,7 +1113,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (withHaptic) {
       HapticFeedback.lightImpact();
     }
-    if (widget.terminal.kittyKeyboardMode) {
+    if (_shouldUseKittyKeyboardEncoding(type)) {
       final handled = widget.terminal.keyInput(
         _terminalKeyForArrow(arrow),
         shift: _controller.isShiftActive,
@@ -1149,6 +1149,21 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (consumeOneShot) {
       _consumeOneShot();
     }
+  }
+
+  bool _shouldUseKittyKeyboardEncoding(TerminalKeyEventType type) {
+    if (!widget.terminal.kittyKeyboardMode) {
+      return false;
+    }
+    final flags = widget.terminal.kittyKeyboardFlags;
+    const canonicalKeyFlags =
+        KittyKeyboardFlags.disambiguateEscapeCodes |
+        KittyKeyboardFlags.reportAllKeysAsEscapeCodes;
+    if ((flags & canonicalKeyFlags) != 0) {
+      return true;
+    }
+    return type != TerminalKeyEventType.press &&
+        (flags & KittyKeyboardFlags.reportEventTypes) != 0;
   }
 
   TerminalKey _terminalKeyForArrow(_Arrow arrow) => switch (arrow) {

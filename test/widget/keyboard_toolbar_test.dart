@@ -732,6 +732,30 @@ void main() {
       expect(output.where((value) => value == '\x1b[1;1:2A'), isNotEmpty);
     });
 
+    testWidgets(
+      'toolbar presses keep legacy sequences without Kitty key flags',
+      (tester) async {
+        final output = <String>[];
+        terminal
+          ..onOutput = output.add
+          ..write('\x1b[=2u');
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        );
+
+        await tester.tap(find.byTooltip('Shift'));
+        await tester.pump();
+        await tester.tap(find.byTooltip('Up'));
+        await tester.pump();
+
+        expect(output, contains('\x1b[1;2A'));
+        expect(output, isNot(contains('scrollLineUp')));
+      },
+    );
+
     testWidgets('series navigation repeats use Kitty event type when enabled', (
       tester,
     ) async {

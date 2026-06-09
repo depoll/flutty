@@ -33,12 +33,16 @@ class KittyKeyboardState {
     switch (mode) {
       case 1:
         flags = requestedFlags;
+        return;
       case 2:
         flags |= requestedFlags;
+        return;
       case 3:
         flags &= ~requestedFlags;
+        return;
       default:
         flags = requestedFlags;
+        return;
     }
   }
 

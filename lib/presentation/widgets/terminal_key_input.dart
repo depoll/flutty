@@ -11,7 +11,7 @@ bool sendTerminalEnterInput(
   bool metaActive = false,
   TerminalKeyEventType type = TerminalKeyEventType.press,
 }) {
-  if (terminal.kittyKeyboardMode || type != TerminalKeyEventType.press) {
+  if (terminal.kittyKeyboardMode) {
     return terminal.keyInput(
       TerminalKey.enter,
       shift: shiftActive,
@@ -20,6 +20,10 @@ bool sendTerminalEnterInput(
       meta: metaActive,
       type: type,
     );
+  }
+
+  if (type != TerminalKeyEventType.press) {
+    return false;
   }
 
   if (shiftActive || altActive) {
@@ -34,5 +38,6 @@ bool sendTerminalEnterInput(
     shift: shiftActive,
     alt: altActive,
     ctrl: ctrlActive,
+    meta: metaActive,
   );
 }

@@ -37,5 +37,33 @@ void main() {
 
       expect(output, ['\x1b[13;2u']);
     });
+
+    test('ignores non-press Enter events outside Kitty keyboard mode', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      expect(
+        sendTerminalEnterInput(
+          terminal,
+          shiftActive: true,
+          altActive: false,
+          ctrlActive: false,
+          type: TerminalKeyEventType.repeat,
+        ),
+        isFalse,
+      );
+      expect(
+        sendTerminalEnterInput(
+          terminal,
+          shiftActive: false,
+          altActive: true,
+          ctrlActive: false,
+          type: TerminalKeyEventType.release,
+        ),
+        isFalse,
+      );
+
+      expect(output, isEmpty);
+    });
   });
 }
