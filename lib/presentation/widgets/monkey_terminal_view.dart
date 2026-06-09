@@ -28,6 +28,7 @@ import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/cell.dart';
+import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -1396,7 +1397,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return shortcutResult;
     }
 
-    if (event is KeyUpEvent) {
+    if (event is KeyUpEvent && !widget.terminal.kittyKeyboardMode) {
       return KeyEventResult.ignored;
     }
 
@@ -1409,20 +1410,41 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final alt = HardwareKeyboard.instance.isAltPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
+    final meta = HardwareKeyboard.instance.isMetaPressed;
+    final type = _terminalKeyEventType(event);
     final handled = key == TerminalKey.enter
         ? sendTerminalEnterInput(
             widget.terminal,
             shiftActive: shift,
             altActive: alt,
             ctrlActive: ctrl,
+            metaActive: meta,
+            type: type,
           )
-        : widget.terminal.keyInput(key, ctrl: ctrl, alt: alt, shift: shift);
+        : widget.terminal.keyInput(
+            key,
+            ctrl: ctrl,
+            alt: alt,
+            shift: shift,
+            meta: meta,
+            type: type,
+          );
 
     if (handled) {
       _scrollToBottom();
     }
 
     return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+  }
+
+  TerminalKeyEventType _terminalKeyEventType(KeyEvent event) {
+    if (event is KeyRepeatEvent) {
+      return TerminalKeyEventType.repeat;
+    }
+    if (event is KeyUpEvent) {
+      return TerminalKeyEventType.release;
+    }
+    return TerminalKeyEventType.press;
   }
 
   void _onKeyboardShow() {

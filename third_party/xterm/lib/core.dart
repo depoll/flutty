@@ -13,6 +13,7 @@ export 'src/core/cursor.dart';
 export 'src/core/escape/handler.dart';
 export 'src/core/escape/parser.dart';
 export 'src/core/input/handler.dart';
+export 'src/core/input/kitty_keyboard.dart';
 export 'src/core/input/keys.dart';
 export 'src/core/mouse/button.dart';
 export 'src/core/mouse/button_state.dart';
