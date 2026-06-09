@@ -676,6 +676,32 @@ void main() {
       expect(output.where((value) => value == '\x1b[A').length, greaterThan(1));
     });
 
+    testWidgets('arrow key repeats use Kitty event type when enabled', (
+      tester,
+    ) async {
+      final output = <String>[];
+      terminal
+        ..onOutput = output.add
+        ..write('\x1b[>31u');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byTooltip('Up')),
+      );
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 160));
+      await gesture.up();
+      await tester.pump();
+
+      expect(output, contains('\x1b[A'));
+      expect(output.where((value) => value == '\x1b[1;1:2A'), isNotEmpty);
+    });
+
     testWidgets('repeating navigation stops when gesture is cancelled', (
       tester,
     ) async {
