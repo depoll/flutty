@@ -10,6 +10,19 @@ import 'package:xterm/src/core/platform.dart';
 ///
 /// See also:
 /// - [TerminalInputHandler]
+enum TerminalKeyEventType {
+  /// Initial key press.
+  press,
+
+  /// Auto-repeat key event.
+  repeat,
+
+  /// Key release.
+  release,
+}
+
+/// See also:
+/// - [TerminalInputHandler]
 class TerminalKeyboardEvent {
   final TerminalKey key;
 
@@ -18,6 +31,10 @@ class TerminalKeyboardEvent {
   final bool ctrl;
 
   final bool alt;
+
+  final bool meta;
+
+  final TerminalKeyEventType type;
 
   final TerminalState state;
 
@@ -30,6 +47,8 @@ class TerminalKeyboardEvent {
     required this.shift,
     required this.ctrl,
     required this.alt,
+    this.meta = false,
+    this.type = TerminalKeyEventType.press,
     required this.state,
     required this.altBuffer,
     required this.platform,
@@ -40,6 +59,8 @@ class TerminalKeyboardEvent {
     bool? shift,
     bool? ctrl,
     bool? alt,
+    bool? meta,
+    TerminalKeyEventType? type,
     TerminalState? state,
     bool? altBuffer,
     TerminalTargetPlatform? platform,
@@ -49,6 +70,8 @@ class TerminalKeyboardEvent {
       shift: shift ?? this.shift,
       ctrl: ctrl ?? this.ctrl,
       alt: alt ?? this.alt,
+      meta: meta ?? this.meta,
+      type: type ?? this.type,
       state: state ?? this.state,
       altBuffer: altBuffer ?? this.altBuffer,
       platform: platform ?? this.platform,

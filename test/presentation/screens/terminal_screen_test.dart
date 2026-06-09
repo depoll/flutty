@@ -2756,11 +2756,20 @@ void main() {
         await tester.pump();
         tester.testTextInput.log.clear();
 
+        final resizeCallsBeforeSwitch =
+            monkeyMuxService.resizeTerminalCalls.length;
         await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
         await tester.tap(find.text('agent'));
         await tester.pump();
+        await tester.pump();
+        expect(
+          monkeyMuxService.resizeTerminalCalls.length,
+          greaterThanOrEqualTo(resizeCallsBeforeSwitch + 2),
+        );
+        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
+
         windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
         await tester.pump();
         await tester.pump();

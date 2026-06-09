@@ -13,6 +13,7 @@ import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/core/graphics_manager.dart';
 import 'package:xterm/src/core/escape/parser.dart';
 import 'package:xterm/src/core/input/handler.dart';
+import 'package:xterm/src/core/input/kitty_keyboard.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -164,6 +165,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _bracketedPasteMode = false;
 
+  final _mainKittyKeyboardState = KittyKeyboardState();
+
+  final _altKittyKeyboardState = KittyKeyboardState();
+
   /* State getters */
 
   /// Number of cells in a terminal row.
@@ -219,6 +224,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   bool get bracketedPasteMode => _bracketedPasteMode;
 
+  /// Whether Kitty keyboard progressive-enhancement flags are active.
+  bool get kittyKeyboardMode => kittyKeyboardFlags != 0;
+
+  /// Alias matching kterm's public API.
+  bool get kittyMode => kittyKeyboardMode;
+
+  /// Active Kitty keyboard progressive-enhancement flags for the current buffer.
+  int get kittyKeyboardFlags => _kittyKeyboardState.flags;
+
+  KittyKeyboardState get _kittyKeyboardState =>
+      _buffer.isAltBuffer ? _altKittyKeyboardState : _mainKittyKeyboardState;
+
   /// Current active buffer of the terminal. This is initially [mainBuffer] and
   /// can be switched back and forth from [altBuffer] to [mainBuffer] when
   /// the underlying program requests it.
@@ -257,18 +274,35 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     bool shift = false,
     bool alt = false,
     bool ctrl = false,
+    bool meta = false,
+    TerminalKeyEventType type = TerminalKeyEventType.press,
   }) {
-    final output = inputHandler?.call(
-      TerminalKeyboardEvent(
-        key: key,
-        shift: shift,
-        alt: alt,
-        ctrl: ctrl,
-        state: this,
-        altBuffer: isUsingAltBuffer,
-        platform: platform,
-      ),
+    final event = TerminalKeyboardEvent(
+      key: key,
+      shift: shift,
+      alt: alt,
+      ctrl: ctrl,
+      meta: meta,
+      type: type,
+      state: this,
+      altBuffer: isUsingAltBuffer,
+      platform: platform,
     );
+
+    final kittyOutput = encodeKittyKeyboardEvent(
+      event,
+      _kittyKeyboardState.flags,
+    );
+    if (kittyOutput != null) {
+      onOutput?.call(kittyOutput);
+      return true;
+    }
+
+    if (type == TerminalKeyEventType.release) {
+      return false;
+    }
+
+    final output = inputHandler?.call(event);
 
     if (output != null) {
       onOutput?.call(output);
@@ -285,11 +319,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// - [keyInput]
   /// - [textInput]
   /// - [paste]
-  bool charInput(
-    int charCode, {
-    bool alt = false,
-    bool ctrl = false,
-  }) {
+  bool charInput(int charCode, {bool alt = false, bool ctrl = false}) {
     if (ctrl) {
       // a(97) ~ z(122)
       if (charCode >= Ascii.a && charCode <= Ascii.z) {
@@ -325,6 +355,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// - [charInput]
   /// - [paste]
   void textInput(String text) {
+    final kittyOutput = encodeKittyTextInput(text, _kittyKeyboardState.flags);
+    if (kittyOutput != null) {
+      onOutput?.call(kittyOutput);
+      return;
+    }
     onOutput?.call(text);
   }
 
@@ -349,13 +384,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     TerminalMouseButtonState buttonState,
     CellOffset position,
   ) {
-    final output = mouseHandler?.call(TerminalMouseEvent(
-      button: button,
-      buttonState: buttonState,
-      position: position,
-      state: this,
-      platform: platform,
-    ));
+    final output = mouseHandler?.call(
+      TerminalMouseEvent(
+        button: button,
+        buttonState: buttonState,
+        position: position,
+        state: this,
+        platform: platform,
+      ),
+    );
     if (output != null) {
       onOutput?.call(output);
       return true;
@@ -770,6 +807,26 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setUnknownDecMode(int mode, bool enabled) {
     // no-op
+  }
+
+  @override
+  void setKittyKeyboardFlags(int flags, int mode) {
+    _kittyKeyboardState.setFlags(flags, mode);
+  }
+
+  @override
+  void pushKittyKeyboardFlags(int flags) {
+    _kittyKeyboardState.pushFlags(flags);
+  }
+
+  @override
+  void popKittyKeyboardFlags(int count) {
+    _kittyKeyboardState.popFlags(count);
+  }
+
+  @override
+  void sendKittyKeyboardFlags() {
+    onOutput?.call('\x1b[?${_kittyKeyboardState.flags}u');
   }
 
   /* Select Graphic Rendition (SGR) */

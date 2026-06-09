@@ -4,6 +4,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 
+import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
@@ -291,10 +292,7 @@ class TerminalViewState extends State<TerminalView> {
       child: child,
     );
 
-    child = KeyboardVisibilty(
-      onKeyboardShow: _onKeyboardShow,
-      child: child,
-    );
+    child = KeyboardVisibilty(onKeyboardShow: _onKeyboardShow, child: child);
 
     child = TerminalGestureHandler(
       terminalView: this,
@@ -309,14 +307,12 @@ class TerminalViewState extends State<TerminalView> {
       child: child,
     );
 
-    child = MouseRegion(
-      cursor: widget.mouseCursor,
-      child: child,
-    );
+    child = MouseRegion(cursor: widget.mouseCursor, child: child);
 
     child = Container(
-      color:
-          widget.theme.background.withValues(alpha: widget.backgroundOpacity),
+      color: widget.theme.background.withValues(
+        alpha: widget.backgroundOpacity,
+      ),
       padding: widget.padding,
       child: child,
     );
@@ -407,7 +403,7 @@ class TerminalViewState extends State<TerminalView> {
       return shortcutResult;
     }
 
-    if (event is KeyUpEvent) {
+    if (event is KeyUpEvent && !widget.terminal.kittyKeyboardMode) {
       return KeyEventResult.ignored;
     }
 
@@ -422,6 +418,8 @@ class TerminalViewState extends State<TerminalView> {
       ctrl: HardwareKeyboard.instance.isControlPressed,
       alt: HardwareKeyboard.instance.isAltPressed,
       shift: HardwareKeyboard.instance.isShiftPressed,
+      meta: HardwareKeyboard.instance.isMetaPressed,
+      type: _terminalKeyEventType(event),
     );
 
     if (handled) {
@@ -449,6 +447,16 @@ class TerminalViewState extends State<TerminalView> {
       position.jumpTo(position.maxScrollExtent);
     }
   }
+}
+
+TerminalKeyEventType _terminalKeyEventType(KeyEvent event) {
+  if (event is KeyRepeatEvent) {
+    return TerminalKeyEventType.repeat;
+  }
+  if (event is KeyUpEvent) {
+    return TerminalKeyEventType.release;
+  }
+  return TerminalKeyEventType.press;
 }
 
 class _TerminalView extends LeafRenderObjectWidget {

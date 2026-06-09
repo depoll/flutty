@@ -329,6 +329,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     bool ctrl,
     bool alt,
     bool shift,
+    bool meta,
     bool hasShortcutModifier,
   })?
   _hardwareRepeatInput;
@@ -623,7 +624,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     required bool ctrl,
     required bool alt,
     required bool shift,
+    required bool meta,
     required bool hasShortcutModifier,
+    TerminalKeyEventType type = TerminalKeyEventType.press,
   }) {
     final handled = key == TerminalKey.enter
         ? sendTerminalEnterInput(
@@ -631,8 +634,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             shiftActive: shift,
             altActive: alt,
             ctrlActive: ctrl,
+            metaActive: meta,
+            type: type,
           )
-        : widget.terminal.keyInput(key, ctrl: ctrl, alt: alt, shift: shift);
+        : widget.terminal.keyInput(
+            key,
+            ctrl: ctrl,
+            alt: alt,
+            shift: shift,
+            meta: meta,
+            type: type,
+          );
 
     if (handled) {
       _notifyUserInput();
@@ -651,6 +663,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     required bool ctrl,
     required bool alt,
     required bool shift,
+    required bool meta,
     required bool hasShortcutModifier,
   }) {
     _stopHardwareKeyRepeat();
@@ -660,6 +673,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       ctrl: ctrl,
       alt: alt,
       shift: shift,
+      meta: meta,
       hasShortcutModifier: hasShortcutModifier,
     );
     _hardwareKeyRepeatStartTimer = Timer(
@@ -678,7 +692,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           ctrl: repeatInput.ctrl,
           alt: repeatInput.alt,
           shift: repeatInput.shift,
+          meta: repeatInput.meta,
           hasShortcutModifier: repeatInput.hasShortcutModifier,
+          type: TerminalKeyEventType.repeat,
         );
         _hardwareKeyRepeatTimer = Timer.periodic(
           terminalIosHardwareKeyRepeatInterval,
@@ -696,7 +712,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
               ctrl: repeatInput.ctrl,
               alt: repeatInput.alt,
               shift: repeatInput.shift,
+              meta: repeatInput.meta,
               hasShortcutModifier: repeatInput.hasShortcutModifier,
+              type: TerminalKeyEventType.repeat,
             );
           },
         );
@@ -767,7 +785,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     if (event is KeyUpEvent) {
       _stopHardwareKeyRepeat(logicalKey: event.logicalKey);
-      return KeyEventResult.ignored;
+      if (!widget.terminal.kittyKeyboardMode) {
+        return KeyEventResult.ignored;
+      }
     }
 
     final key = keyToTerminalKey(event.logicalKey);
@@ -778,6 +798,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final alt = HardwareKeyboard.instance.isAltPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
+    final meta = HardwareKeyboard.instance.isMetaPressed;
+    final type = _terminalKeyEventType(event);
     final useCustomRepeat =
         _shouldUseCustomHardwareKeyRepeat &&
         _isRepeatableHardwareTerminalKey(key);
@@ -791,7 +813,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       ctrl: ctrl,
       alt: alt,
       shift: shift,
+      meta: meta,
       hasShortcutModifier: hasShortcutModifier,
+      type: type,
     );
 
     if (handled && event is KeyDownEvent && useCustomRepeat) {
@@ -801,11 +825,22 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         ctrl: ctrl,
         alt: alt,
         shift: shift,
+        meta: meta,
         hasShortcutModifier: hasShortcutModifier,
       );
     }
 
     return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+  }
+
+  TerminalKeyEventType _terminalKeyEventType(KeyEvent event) {
+    if (event is KeyRepeatEvent) {
+      return TerminalKeyEventType.repeat;
+    }
+    if (event is KeyUpEvent) {
+      return TerminalKeyEventType.release;
+    }
+    return TerminalKeyEventType.press;
   }
 
   // -- Public API --
