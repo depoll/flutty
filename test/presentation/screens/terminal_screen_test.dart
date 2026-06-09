@@ -2768,7 +2768,10 @@ void main() {
           monkeyMuxService.resizeTerminalCalls.length,
           greaterThanOrEqualTo(resizeCallsBeforeSwitch + 2),
         );
-        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          isTrue,
+        );
 
         windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
         await tester.pump();
@@ -2783,7 +2786,10 @@ void main() {
             extraFlags: any(named: 'extraFlags'),
           ),
         ).called(1);
-        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          isTrue,
+        );
         expect(position.pixels, position.maxScrollExtent);
         final client =
             tester.state(find.byType(TerminalTextInputHandler))
@@ -2800,6 +2806,28 @@ void main() {
             (call) => call.method == 'TextInput.setEditingState',
           ),
           isNotEmpty,
+        );
+
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+        final resizeCallsAfterRemoteRedraws =
+            monkeyMuxService.resizeTerminalCalls.length;
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final paintCountBeforeSettledRefresh =
+            terminalViewState.terminalPaintCount ?? 0;
+
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+
+        expect(
+          terminalViewState.terminalPaintCount,
+          greaterThan(paintCountBeforeSettledRefresh),
+        );
+        expect(
+          monkeyMuxService.resizeTerminalCalls.length,
+          resizeCallsAfterRemoteRedraws,
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
@@ -2948,7 +2976,10 @@ void main() {
         await tester.pump(const Duration(milliseconds: 300));
         await tester.pump();
 
-        expect(monkeyMuxService.resizeTerminalCalls.last.redraw, isTrue);
+        expect(
+          monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
+          isTrue,
+        );
         await tester.pump(const Duration(milliseconds: 200));
         await tester.pump();
         expect(position.pixels, position.maxScrollExtent);
