@@ -221,6 +221,12 @@ double resolveTmuxBarMaxContentHeight(
 
 const _tmuxBarRevealDuration = Duration(milliseconds: 300);
 const _monkeyMuxResizeRedrawFollowUpDelay = Duration(milliseconds: 220);
+const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
+  Duration(milliseconds: 450),
+  Duration(milliseconds: 850),
+  Duration(milliseconds: 1300),
+  Duration(milliseconds: 1900),
+];
 // Pinch-zoom emits a resize every frame. Keep the local zoom immediate, but
 // limit remote MonkeyMux resize traffic to the rate each transport can tolerate:
 // a live control channel can feel smooth at ~30fps, while one-shot SSH exec
@@ -2942,6 +2948,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _monkeyMuxResizeSyncColumns;
   int? _monkeyMuxResizeSyncRows;
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
+  final List<Timer> _monkeyMuxSettledRedrawDisplayRefreshTimers = <Timer>[];
+  int _monkeyMuxSettledRedrawDisplayRefreshGeneration = 0;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
@@ -6482,14 +6490,90 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted || _connectionId != connectionId) {
           return;
         }
-        _followLiveOutput();
-        _scheduleTerminalSizeRefresh(
-          forceDisplayRefresh: true,
-          revealLatestOutput: true,
-          suppressMonkeyMuxResizeSync: true,
+        _refreshTerminalDisplayAfterMonkeyMuxRedraw(
+          connectionId: connectionId,
+          reason: 'post_redraw',
         );
       },
     );
+  }
+
+  void _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
+    SshSession session, {
+    required String reason,
+  }) {
+    final isMonkeyMuxSession =
+        _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
+        session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (!isMonkeyMuxSession) {
+      return;
+    }
+    _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
+    final connectionId = session.connectionId;
+    final generation = ++_monkeyMuxSettledRedrawDisplayRefreshGeneration;
+    for (final delay in _monkeyMuxSettledRedrawDisplayRefreshDelays) {
+      late final Timer timer;
+      timer = Timer(delay, () {
+        _monkeyMuxSettledRedrawDisplayRefreshTimers.remove(timer);
+        if (!mounted ||
+            _connectionId != connectionId ||
+            generation != _monkeyMuxSettledRedrawDisplayRefreshGeneration) {
+          return;
+        }
+        _refreshTerminalDisplayAfterMonkeyMuxRedraw(
+          connectionId: connectionId,
+          reason: reason,
+          delay: delay,
+        );
+      });
+      _monkeyMuxSettledRedrawDisplayRefreshTimers.add(timer);
+    }
+  }
+
+  void _cancelMonkeyMuxSettledRedrawDisplayRefreshes() {
+    _monkeyMuxSettledRedrawDisplayRefreshGeneration += 1;
+    for (final timer in _monkeyMuxSettledRedrawDisplayRefreshTimers) {
+      timer.cancel();
+    }
+    _monkeyMuxSettledRedrawDisplayRefreshTimers.clear();
+  }
+
+  void _refreshTerminalDisplayAfterMonkeyMuxRedraw({
+    required int connectionId,
+    required String reason,
+    Duration? delay,
+  }) {
+    if (!mounted || _connectionId != connectionId) {
+      return;
+    }
+    final revealLatestOutput = !_isTerminalOutputFollowPaused;
+    if (revealLatestOutput) {
+      _followLiveOutput();
+    }
+    DiagnosticsLogService.instance.debug(
+      'monkeymux.redraw',
+      'display_refresh',
+      fields: {
+        'connectionId': connectionId,
+        'reason': reason,
+        if (delay != null) 'delayMs': delay.inMilliseconds,
+        'revealLatestOutput': revealLatestOutput,
+      },
+    );
+    _suppressMonkeyMuxResizeSyncFromTerminalRefresh = true;
+    try {
+      _terminalViewKey.currentState?.refreshTerminalDisplay(
+        revealLatestOutput: revealLatestOutput,
+      );
+    } finally {
+      _suppressMonkeyMuxResizeSyncFromTerminalRefresh = false;
+    }
+    _scheduleTerminalSizeRefresh(
+      forceDisplayRefresh: true,
+      revealLatestOutput: revealLatestOutput,
+      suppressMonkeyMuxResizeSync: true,
+    );
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   Future<void> _syncActiveMonkeyMuxTerminalSize(
@@ -6564,6 +6648,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _lastMonkeyMuxResizeSync = resizeKey;
       if (refreshVisibleTerminal) {
         _scheduleMonkeyMuxPostRedrawDisplayRefresh(session.connectionId);
+        _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
+          session,
+          reason: 'resize_redraw',
+        );
       }
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -9066,6 +9154,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
+    _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
