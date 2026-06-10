@@ -1426,6 +1426,8 @@ void main() {
   });
 
   group('SshSession terminal output batching', () {
+    const monkeyMuxReplayMarker = '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
+
     Future<
       ({
         Completer<void> done,
@@ -1513,6 +1515,48 @@ void main() {
 
       expect(firstLineText(terminal), 'hello world');
       expect(stdoutEvents, ['hello world']);
+      expect(terminalNotifications, 1);
+    });
+
+    test('coalesces split MonkeyMux active-window replay chunks', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+      final stdoutEvents = <String>[];
+      final stdoutSubscription = session.shellStdoutStream.listen(
+        stdoutEvents.add,
+      );
+      addTearDown(stdoutSubscription.cancel);
+
+      var terminalNotifications = 0;
+      terminal.addListener(() => terminalNotifications += 1);
+
+      shell.stdout.add(
+        Uint8List.fromList(utf8.encode(monkeyMuxReplayMarker.substring(0, 12))),
+      );
+      await pumpEventQueue();
+      await Future<void>.delayed(const Duration(milliseconds: 12));
+
+      expect(firstLineText(terminal), isEmpty);
+      expect(stdoutEvents, isEmpty);
+      expect(terminalNotifications, 0);
+
+      shell.stdout
+        ..add(
+          Uint8List.fromList(utf8.encode(monkeyMuxReplayMarker.substring(12))),
+        )
+        ..add(Uint8List.fromList(utf8.encode('coalesced replay')));
+      await pumpEventQueue();
+      await Future<void>.delayed(const Duration(milliseconds: 12));
+
+      expect(firstLineText(terminal), isEmpty);
+      expect(stdoutEvents, isEmpty);
+      expect(terminalNotifications, 0);
+
+      await Future<void>.delayed(const Duration(milliseconds: 35));
+
+      expect(firstLineText(terminal), 'coalesced replay');
+      expect(stdoutEvents.join(), contains('coalesced replay'));
       expect(terminalNotifications, 1);
     });
 
