@@ -1,0 +1,120 @@
+import 'dart:convert';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/services/terminal_notification.dart';
+
+void main() {
+  late TerminalNotificationParser parser;
+
+  setUp(() => parser = TerminalNotificationParser());
+
+  group('OSC 9 (iTerm2)', () {
+    test('plain message becomes the body', () {
+      final req = parser.handleOsc('9', ['Build finished']);
+      expect(req, isNotNull);
+      expect(req!.title, isNull);
+      expect(req.body, 'Build finished');
+    });
+
+    test('message containing semicolons is rejoined', () {
+      final req = parser.handleOsc('9', ['a', 'b', 'c']);
+      expect(req!.body, 'a;b;c');
+    });
+
+    test('ConEmu structured OSC 9 (numeric subcommand) is ignored', () {
+      expect(parser.handleOsc('9', ['4', '1', '50']), isNull);
+      expect(parser.handleOsc('9', ['9', '/home/user']), isNull);
+    });
+
+    test('a message that merely starts with a number still notifies', () {
+      final req = parser.handleOsc('9', ['5 tests failed']);
+      expect(req!.body, '5 tests failed');
+    });
+
+    test('empty payload yields nothing', () {
+      expect(parser.handleOsc('9', []), isNull);
+      expect(parser.handleOsc('9', ['']), isNull);
+    });
+  });
+
+  group('OSC 777 (urxvt)', () {
+    test('notify with title and body', () {
+      final req = parser.handleOsc('777', ['notify', 'Title', 'Body text']);
+      expect(req!.title, 'Title');
+      expect(req.body, 'Body text');
+    });
+
+    test('notify with only a title demotes it to the body', () {
+      final req = parser.handleOsc('777', ['notify', 'Just a title']);
+      expect(req!.title, isNull);
+      expect(req.body, 'Just a title');
+    });
+
+    test('body containing semicolons is rejoined', () {
+      final req = parser.handleOsc('777', ['notify', 'T', 'a', 'b']);
+      expect(req!.title, 'T');
+      expect(req.body, 'a;b');
+    });
+
+    test('non-notify subcommand is ignored', () {
+      expect(parser.handleOsc('777', ['something', 'x']), isNull);
+      expect(parser.handleOsc('777', []), isNull);
+    });
+  });
+
+  group('OSC 99 (kitty)', () {
+    test('single chunk with no metadata is a title-only notification', () {
+      final req = parser.handleOsc('99', ['', 'Hello there']);
+      expect(req!.title, isNull);
+      expect(req.body, 'Hello there');
+    });
+
+    test('separate title and body chunks assemble by id', () {
+      expect(
+        parser.handleOsc('99', ['i=1:d=0', 'My Title']),
+        isNull,
+        reason: 'd=0 means more chunks follow',
+      );
+      final req = parser.handleOsc('99', ['i=1:p=body', 'My Body']);
+      expect(req!.title, 'My Title');
+      expect(req.body, 'My Body');
+    });
+
+    test('a title delivered across multiple chunks is concatenated', () {
+      expect(parser.handleOsc('99', ['i=7:d=0', 'Hello ']), isNull);
+      expect(parser.handleOsc('99', ['i=7:d=0', 'beautiful ']), isNull);
+      final req = parser.handleOsc('99', ['i=7:d=1', 'world']);
+      expect(req!.body, 'Hello beautiful world');
+    });
+
+    test('base64-encoded payload (e=1) is decoded', () {
+      final encoded = base64.encode(utf8.encode('Encoded title'));
+      final req = parser.handleOsc('99', ['i=2:e=1', encoded]);
+      expect(req!.body, 'Encoded title');
+    });
+
+    test('a close action does not emit a notification', () {
+      expect(parser.handleOsc('99', ['i=3:a=close']), isNull);
+    });
+
+    test('interleaved ids stay independent', () {
+      expect(parser.handleOsc('99', ['i=a:d=0', 'Alpha']), isNull);
+      expect(parser.handleOsc('99', ['i=b:d=0', 'Bravo']), isNull);
+      expect(parser.handleOsc('99', ['i=a:d=1', ''])!.body, 'Alpha');
+      expect(parser.handleOsc('99', ['i=b:d=1', ''])!.body, 'Bravo');
+    });
+  });
+
+  group('sanitization', () {
+    test('control characters are stripped from the message', () {
+      final req = parser.handleOsc('9', ['hi\x07\x1b[31mthere']);
+      expect(req!.body, isNot(contains('\x1b')));
+      expect(req.body, isNot(contains('\x07')));
+    });
+  });
+
+  test('unrelated OSC codes are ignored', () {
+    expect(parser.handleOsc('8', ['', 'https://example.com']), isNull);
+    expect(parser.handleOsc('52', ['c', 'ZGF0YQ==']), isNull);
+  });
+}

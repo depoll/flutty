@@ -1,0 +1,9 @@
+# Generated Dart/Flutter artifacts for the vendored xterm package.
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+
+# Flutter golden-test failure output.
+failures/
