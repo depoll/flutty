@@ -260,18 +260,28 @@ Color resolveMonkeyTerminalReadableBackgroundColor({
     effectiveBackground,
     terminalBackground,
   );
-  if (toneNeutralBackgrounds &&
-      backgroundContrast > maximumNeutralBackgroundContrast &&
-      _isNeutralTerminalColor(background)) {
-    final neutralBackground = _resolveNeutralTerminalBackgroundColor(
-      background: background,
-      terminalBackground: terminalBackground,
-      minimumBackgroundContrast: minimumBackgroundContrast,
-      maximumBackgroundContrast: maximumNeutralBackgroundContrast,
-    );
-    if (neutralBackground != null) {
-      return neutralBackground;
+  // Neutral panels (for example a TUI composer surface that paints the same
+  // gray behind muted hints, accent labels, and typed text) must resolve to a
+  // single color across the whole panel. Their painted color must not depend on
+  // the per-cell foreground: if it did, individual glyphs would blend the panel
+  // toward the terminal background by different amounts and tear holes of
+  // near-background colour into the surface (on a light theme this looks like
+  // white patches behind the muted text). Resolve neutral backgrounds purely
+  // from the panel/terminal relationship and leave glyph readability to the
+  // foreground pass, which darkens or lightens the text against this same panel.
+  if (toneNeutralBackgrounds && _isNeutralTerminalColor(background)) {
+    if (backgroundContrast > maximumNeutralBackgroundContrast) {
+      final neutralBackground = _resolveNeutralTerminalBackgroundColor(
+        background: background,
+        terminalBackground: terminalBackground,
+        minimumBackgroundContrast: minimumBackgroundContrast,
+        maximumBackgroundContrast: maximumNeutralBackgroundContrast,
+      );
+      if (neutralBackground != null) {
+        return neutralBackground;
+      }
     }
+    return background;
   }
 
   if (textContrast >= minimumTextContrast) {
