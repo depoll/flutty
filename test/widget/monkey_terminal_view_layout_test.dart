@@ -550,6 +550,55 @@ void main() {
       expect(background, semanticBackground);
     });
 
+    test('keeps neutral composer panels uniform on light themes', () {
+      // opencode paints its whole composer with one truecolor background
+      // (#D3DAD9) and varies only the per-glyph foreground. The panel must
+      // resolve to the same gray for every glyph; otherwise muted-text cells
+      // get lightened toward the near-white terminal background and the panel
+      // tears into white patches behind the hints/labels.
+      const theme = TerminalThemes.defaultLightTheme;
+      const panelBackground = Color(0xFFD3DAD9);
+      const mutedForeground = Color(0xFF616161);
+      const accentForeground = Color(0xFF5B5C9C);
+      const typedForeground = Color(0xFF0D2B28);
+      const hintForeground = Color(0xFFCED4CF);
+
+      final resolvedBackgrounds =
+          [
+            mutedForeground,
+            accentForeground,
+            typedForeground,
+            hintForeground,
+          ].map(
+            (foreground) => resolveMonkeyTerminalReadableBackgroundColor(
+              foreground: foreground,
+              background: panelBackground,
+              terminalBackground: theme.background,
+            ),
+          );
+
+      for (final background in resolvedBackgrounds) {
+        expect(background, panelBackground);
+        // Never lighten the panel toward the lighter terminal background.
+        expect(
+          background.computeLuminance(),
+          lessThanOrEqualTo(theme.background.computeLuminance()),
+        );
+      }
+
+      // Muted text is instead made readable against the uniform panel.
+      final mutedText = resolveMonkeyTerminalReadableForegroundColor(
+        foreground: mutedForeground,
+        background: panelBackground,
+        terminalForeground: theme.foreground,
+        terminalBackground: theme.background,
+      );
+      expect(
+        _contrastRatio(mutedText, panelBackground),
+        greaterThanOrEqualTo(4.5),
+      );
+    });
+
     test(
       'paints Claude logo block cells as solid terminal rectangles',
       () async {
