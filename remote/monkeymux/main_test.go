@@ -1345,6 +1345,40 @@ func TestActiveReplayUsesForegroundRedrawForAgentHistory(t *testing.T) {
 	}
 }
 
+func TestActiveReplayDropsAgentAlternateScreenHistory(t *testing.T) {
+	server := newMuxServer("test")
+	enterAlternateScreen := "\x1b[?1049h"
+	history := []byte(
+		enterAlternateScreen +
+			"agent-alternate-screen-start" +
+			strings.Repeat("conversation-history", windowReplayLimitBytes/8) +
+			"agent-alternate-screen-end",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "codex",
+		history:      history,
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if strings.Contains(replay, "agent-alternate-screen-start") ||
+		strings.Contains(replay, "agent-alternate-screen-end") {
+		t.Fatalf("agent alternate-screen replay retained stale history: %q", replay)
+	}
+	if !strings.Contains(replay, enterAlternateScreen+terminalScreenClearSequence) {
+		t.Fatalf("agent alternate-screen replay did not clear stale alternate buffer: %q", replay)
+	}
+	if got, want := len(window.history), len(history); got != want {
+		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
 func TestActiveReplaySkipsRunawayAgentHistory(t *testing.T) {
 	server := newMuxServer("test")
 	history := []byte(
