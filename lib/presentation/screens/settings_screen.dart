@@ -615,6 +615,9 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final terminalNotifications = ref.watch(
+      terminalNotificationsNotifierProvider,
+    );
     final terminalWakeLock = ref.watch(terminalWakeLockNotifierProvider);
     final terminalPathLinks = ref.watch(terminalPathLinksNotifierProvider);
     final terminalPathLinkUnderlines = ref.watch(
@@ -690,6 +693,19 @@ class _TerminalSection extends ConsumerWidget {
           onChanged: (value) {
             ref
                 .read(bellSoundNotifierProvider.notifier)
+                .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.notifications_active_outlined),
+          title: const Text('Desktop notifications'),
+          subtitle: const Text(
+            'Let the remote shell post notifications (OSC 9/777/99)',
+          ),
+          value: terminalNotifications,
+          onChanged: (value) {
+            ref
+                .read(terminalNotificationsNotifierProvider.notifier)
                 .setEnabled(enabled: value);
           },
         ),

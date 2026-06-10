@@ -584,10 +584,11 @@ void main() {
     final paintPattern = paints;
     for (var row = 0; row < terminal.viewHeight; row += 1) {
       paintPattern.rect(color: backgroundColor, style: PaintingStyle.fill);
-      if (row == 0) {
-        paintPattern.paragraph();
-      }
     }
+    // Glyphs are painted in a second pass after every line's background so a
+    // descender is not clipped by the next row's background. The row 0 "A"
+    // paragraph therefore lands after all of the row backgrounds.
+    paintPattern.paragraph();
     expect(
       renderTerminal,
       paintPattern
@@ -605,6 +606,118 @@ void main() {
       ),
       isNot(hiddenColor),
     );
+  });
+
+  testWidgets(
+    'line backgrounds are painted before glyphs so descenders are not clipped',
+    (tester) async {
+      final terminal = Terminal();
+      final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+
+      const backgroundColor = Color(0xFF0D1A20);
+      final theme = monkey_themes.TerminalThemes.defaultDarkTheme
+          .copyWith(background: backgroundColor)
+          .toXtermTheme();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 320,
+            height: 240,
+            child: MonkeyTerminalView(
+              key: terminalKey,
+              terminal,
+              theme: theme,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      );
+
+      // A descender glyph on the first row only. Its ink can extend past the
+      // cell box, so every row's opaque background must be painted before this
+      // glyph or the next row's background would clip the bottom of the "g".
+      terminal.write('g');
+      await tester.pump();
+
+      final renderTerminal = terminalKey.currentState!.renderTerminal;
+      final paintPattern = paints;
+      for (var row = 0; row < terminal.viewHeight; row += 1) {
+        paintPattern.rect(color: backgroundColor, style: PaintingStyle.fill);
+      }
+      // The glyph paragraph is only reached after every row background, proving
+      // the second (foreground) pass runs after all backgrounds.
+      paintPattern.paragraph();
+      expect(renderTerminal, paintPattern);
+    },
+  );
+
+  testWidgets(
+    'terminal writes advance the change counter and paints advance the paint '
+    'counter',
+    (tester) async {
+      final terminal = Terminal();
+      final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 320,
+            height: 240,
+            child: MonkeyTerminalView(
+              key: terminalKey,
+              terminal,
+              hardwareKeyboardOnly: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final state = terminalKey.currentState!;
+      final changesBefore = state.terminalChangeCount;
+      final paintsBefore = state.terminalPaintCount;
+      expect(changesBefore, isNotNull);
+      expect(paintsBefore, isNotNull);
+
+      terminal.write('hello');
+      await tester.pump();
+
+      expect(state.terminalChangeCount, greaterThan(changesBefore!));
+      expect(state.terminalPaintCount, greaterThan(paintsBefore!));
+    },
+  );
+
+  testWidgets('forceFullRepaint produces a new frame from the current buffer', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 320,
+          height: 240,
+          child: MonkeyTerminalView(
+            key: terminalKey,
+            terminal,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final state = terminalKey.currentState!;
+    // Let any initial frames settle so the counter is stable.
+    await tester.pump();
+    final paintsBefore = state.terminalPaintCount!;
+
+    state.forceFullRepaint();
+    await tester.pump();
+
+    expect(state.terminalPaintCount, greaterThan(paintsBefore));
   });
 
   test('explicit xterm palette grayscale colors stay standard', () {

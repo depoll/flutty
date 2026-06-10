@@ -28,6 +28,7 @@ import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/cell.dart';
+import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -731,6 +732,23 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   MonkeyRenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as MonkeyRenderTerminal;
 
+  MonkeyRenderTerminal? get _renderTerminalOrNull {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    return renderObject is MonkeyRenderTerminal ? renderObject : null;
+  }
+
+  /// Number of frames the live terminal has painted, or null if the render
+  /// object is not currently attached. Exposed for window-switch diagnostics.
+  int? get terminalPaintCount => _renderTerminalOrNull?.paintCount;
+
+  /// Number of terminal change notifications the live render object has seen,
+  /// or null if it is not attached. Exposed for window-switch diagnostics.
+  int? get terminalChangeCount => _renderTerminalOrNull?.terminalChangeCount;
+
+  /// Forces the live terminal to relayout and repaint its current buffer.
+  /// Used as a safety net after a multiplexer window switch.
+  void forceFullRepaint() => _renderTerminalOrNull?.forceFullRepaint();
+
   @override
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
@@ -1379,7 +1397,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return shortcutResult;
     }
 
-    if (event is KeyUpEvent) {
+    if (event is KeyUpEvent && !widget.terminal.kittyKeyboardMode) {
       return KeyEventResult.ignored;
     }
 
@@ -1392,20 +1410,41 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     final ctrl = HardwareKeyboard.instance.isControlPressed;
     final alt = HardwareKeyboard.instance.isAltPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
+    final meta = HardwareKeyboard.instance.isMetaPressed;
+    final type = _terminalKeyEventType(event);
     final handled = key == TerminalKey.enter
         ? sendTerminalEnterInput(
             widget.terminal,
             shiftActive: shift,
             altActive: alt,
             ctrlActive: ctrl,
+            metaActive: meta,
+            type: type,
           )
-        : widget.terminal.keyInput(key, ctrl: ctrl, alt: alt, shift: shift);
+        : widget.terminal.keyInput(
+            key,
+            ctrl: ctrl,
+            alt: alt,
+            shift: shift,
+            meta: meta,
+            type: type,
+          );
 
     if (handled) {
       _scrollToBottom();
     }
 
     return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+  }
+
+  TerminalKeyEventType _terminalKeyEventType(KeyEvent event) {
+    if (event is KeyRepeatEvent) {
+      return TerminalKeyEventType.repeat;
+    }
+    if (event is KeyUpEvent) {
+      return TerminalKeyEventType.release;
+    }
+    return TerminalKeyEventType.press;
   }
 
   void _onKeyboardShow() {
@@ -1723,6 +1762,80 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.paintLine(canvas, offset, line);
   }
 
+  /// Paints only the backgrounds (line fill, trailing run, and each cell's own
+  /// background color) for [line].
+  ///
+  /// Backgrounds for every visible line are painted before any glyphs so that a
+  /// following line's opaque background can never overdraw the previous line's
+  /// descenders. Glyph ink for letters such as "g"/"y"/"p" can extend a pixel
+  /// or two below the cell box, and the old single per-line pass clipped it
+  /// behind the next row's background.
+  void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
+    paintLineBackground(canvas, offset, line);
+    paintLineTrailingBackgroundFill(canvas, offset, line);
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final charWidth = cellData.content >> CellContent.widthShift;
+      paintCellBackground(canvas, offset.translate(i * cellWidth, 0), cellData);
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
+  /// Paints only the glyphs for [line], in a pass run after every visible
+  /// line's background so descenders that extend past the cell box are not
+  /// clipped by the next row's background.
+  void paintLineForegrounds(Canvas canvas, Offset offset, BufferLine line) {
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final charWidth = cellData.content >> CellContent.widthShift;
+      paintCellForeground(canvas, offset.translate(i * cellWidth, 0), cellData);
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
+  /// Draws the styled (SGR) cell underlines for [line] in a pass separate from
+  /// the glyphs. Curly/dotted/etc. underlines extend into the descender space
+  /// below the cell, so drawing them after every line's opaque background keeps
+  /// the next line's background from clipping the wave's lower edge.
+  void paintLineCellUnderlines(Canvas canvas, Offset offset, BufferLine line) {
+    final cellData = CellData.empty();
+    final cellWidth = cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final charWidth = cellData.content >> CellContent.widthShift;
+      final charCode = cellData.content & CellContent.codepointMask;
+      final flags = cellData.flags;
+      if (charCode != 0 &&
+          flags & CellFlags.invisible == 0 &&
+          flags & CellFlags.underline != 0) {
+        final styleIndex =
+            (flags & CellFlags.underlineStyleMask) >>
+            CellFlags.underlineStyleShift;
+        final underlineColor = cellData.underlineColor != 0
+            ? resolveForegroundColor(cellData.underlineColor)
+            : resolveMonkeyTerminalCellForegroundColor(cellData);
+        paintTerminalCellUnderline(
+          canvas,
+          offset.translate(i * cellWidth, 0),
+          cellSize,
+          styleIndex,
+          underlineColor,
+        );
+      }
+      if (charWidth == 2) {
+        i++;
+      }
+    }
+  }
+
   void paintLineBackground(Canvas canvas, Offset offset, BufferLine line) {
     if (line.length == 0) {
       return;
@@ -1905,6 +2018,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     final cellFlags = cellData.flags;
+    // Conceal (SGR 8): keep the cell content for selection/copy but do not
+    // draw the glyph.
+    if (cellFlags & CellFlags.invisible != 0) {
+      return;
+    }
     final color = resolveMonkeyTerminalCellForegroundColor(cellData);
     if (_paintBlockElementForeground(
       canvas,
@@ -1920,15 +2038,25 @@ class MonkeyTerminalPainter extends TerminalPainter {
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
+      final overline = cellFlags & CellFlags.overline != 0;
+      final strikethrough = cellFlags & CellFlags.strikethrough != 0;
+
       final style = textStyle.toTextStyle(
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
         italic: cellFlags & CellFlags.italic != 0,
-        underline: cellFlags & CellFlags.underline != 0,
+        // The underline is drawn manually below so wavy/dotted/dashed/double
+        // styles render and connect across cells; Flutter's per-glyph
+        // decoration cannot.
+        overline: overline,
+        strikethrough: strikethrough,
+        decorationColor: cellData.underlineColor != 0
+            ? resolveForegroundColor(cellData.underlineColor)
+            : null,
       );
 
       var char = String.fromCharCode(charCode);
-      if (cellFlags & CellFlags.underline != 0 && charCode == 0x20) {
+      if ((overline || strikethrough) && charCode == 0x20) {
         char = String.fromCharCode(0xA0);
       }
 
@@ -2422,6 +2550,7 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _onTerminalChange() {
+    _terminalChangeCount++;
     if (registrar != null && _hasSelectableTextSelection) {
       _preserveSelectableSelectionAcrossTerminalChange();
     } else {
@@ -2452,6 +2581,30 @@ class MonkeyRenderTerminal extends RenderBox
 
   @override
   final isRepaintBoundary = true;
+
+  int _paintCount = 0;
+
+  /// Number of times this render object has painted a frame. Diagnostics use
+  /// this together with [terminalChangeCount] to tell a frozen frame (the
+  /// terminal changed but no paint followed) apart from a stalled write path.
+  int get paintCount => _paintCount;
+
+  int _terminalChangeCount = 0;
+
+  /// Number of terminal change notifications observed (≈ one per write batch).
+  /// See [paintCount].
+  int get terminalChangeCount => _terminalChangeCount;
+
+  /// Forces a full relayout and repaint of the current buffer.
+  ///
+  /// Safety net for multiplexer window switches: if a window-switch redraw is
+  /// applied to the buffer but, for any reason, no frame is produced, the view
+  /// can be left showing the previous window. Re-running layout and paint from
+  /// the current buffer guarantees the visible content matches the buffer.
+  void forceFullRepaint() {
+    markNeedsLayout();
+    markNeedsPaint();
+  }
 
   @override
   void attach(PipelineOwner owner) {
@@ -3199,14 +3352,25 @@ class MonkeyRenderTerminal extends RenderBox
   void _updateViewportSize({bool notifyIfUnchanged = false}) {
     final availableWidth = size.width - _padding.horizontal;
     final availableHeight = _viewportHeight;
-    if (availableWidth <= _painter.cellSize.width ||
-        availableHeight <= _painter.cellSize.height) {
+    final cellWidth = _painter.cellSize.width;
+    final cellHeight = _painter.cellSize.height;
+    // Bail on a degenerate or unusably small cell (e.g. a transient sub-pixel
+    // or non-finite font size mid-pinch). Resizing the grid for such a cell
+    // both divides by ~0 and can blow the grid up to thousands of cells, which
+    // then crashes the buffer reflow on the way back down.
+    const minUsableCell = 2.0;
+    if (!cellWidth.isFinite ||
+        !cellHeight.isFinite ||
+        cellWidth < minUsableCell ||
+        cellHeight < minUsableCell ||
+        availableWidth <= cellWidth ||
+        availableHeight <= cellHeight) {
       return;
     }
 
     final viewportSize = TerminalSize(
-      availableWidth ~/ _painter.cellSize.width,
-      availableHeight ~/ _painter.cellSize.height,
+      availableWidth ~/ cellWidth,
+      availableHeight ~/ cellHeight,
     );
     final pixelSize = resolveTerminalResizePixelDimensions(
       viewportSize: size,
@@ -3406,6 +3570,7 @@ class MonkeyRenderTerminal extends RenderBox
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    _paintCount++;
     _paint(context, offset);
     context.setWillChangeHint();
   }
@@ -3423,8 +3588,36 @@ class MonkeyRenderTerminal extends RenderBox
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      _painter.paintLine(canvas, _linePaintOffset(offset, i), lines[i]);
+      _painter.paintLineBackgrounds(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+      );
     }
+
+    // Glyphs are drawn in a pass after every line's opaque background so a
+    // descender (the bottom of "g"/"y"/"p") that extends past its cell box is
+    // not clipped by the next line's background.
+    for (var i = effectFirstLine; i <= effectLastLine; i++) {
+      _painter.paintLineForegrounds(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+      );
+    }
+
+    // Styled underlines are drawn as a separate pass, after every line's opaque
+    // background, so a curly/dotted underline that dips into the descender space
+    // below its cell is not clipped by the next line's background.
+    for (var i = effectFirstLine; i <= effectLastLine; i++) {
+      _painter.paintLineCellUnderlines(
+        canvas,
+        _linePaintOffset(offset, i),
+        lines[i],
+      );
+    }
+
+    _paintGraphics(canvas, offset, effectFirstLine, effectLastLine);
 
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
         _terminal.buffer.absoluteCursorY <= effectLastLine) {
@@ -3460,6 +3653,96 @@ class MonkeyRenderTerminal extends RenderBox
     _contentOrigin.dx,
     (row * _painter.cellSize.height + _lineOffset).truncateToDouble(),
   );
+
+  /// Composites Kitty-graphics-protocol images over the cell grid for the
+  /// visible rows ([firstLine]..[lastLine], inclusive).
+  void _paintGraphics(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+  ) {
+    final graphics = _terminal.graphics;
+    if (!graphics.hasPlacements) {
+      return;
+    }
+
+    final cellWidth = _painter.cellSize.width;
+    final cellHeight = _painter.cellSize.height;
+    // Guard against transient degenerate cell metrics (zero or non-finite) that
+    // can occur during a relayout/pinch-zoom: cell-size arithmetic and
+    // drawImageRect with those values crash the engine.
+    if (!cellWidth.isFinite ||
+        !cellHeight.isFinite ||
+        cellWidth <= 0 ||
+        cellHeight <= 0) {
+      return;
+    }
+
+    for (final placement in graphics.placements) {
+      if (!placement.attached) {
+        continue;
+      }
+      final stored = graphics.imageById(placement.imageId);
+      if (stored == null) {
+        continue;
+      }
+      final image = stored.image;
+
+      final double dstWidth;
+      final double dstHeight;
+      if (placement.cols > 0 && placement.rows > 0) {
+        dstWidth = placement.cols * cellWidth;
+        dstHeight = placement.rows * cellHeight;
+      } else {
+        // No explicit cell span: fit the image width within the remaining row.
+        final maxWidth =
+            (_terminal.viewWidth - placement.col).clamp(
+              1,
+              _terminal.viewWidth,
+            ) *
+            cellWidth;
+        final scale = image.width > maxWidth ? maxWidth / image.width : 1.0;
+        dstWidth = image.width * scale;
+        dstHeight = image.height * scale;
+      }
+      if (!dstWidth.isFinite ||
+          !dstHeight.isFinite ||
+          dstWidth <= 0 ||
+          dstHeight <= 0) {
+        continue;
+      }
+
+      final rowSpan = (dstHeight / cellHeight).ceil();
+      if (placement.row + rowSpan < firstLine || placement.row > lastLine) {
+        continue;
+      }
+
+      final topLeft = _linePaintOffset(
+        offset,
+        placement.row,
+      ).translate(placement.col * cellWidth, 0);
+      if (!topLeft.dx.isFinite || !topLeft.dy.isFinite) {
+        continue;
+      }
+
+      // Defense in depth: image compositing is non-essential overlay drawing,
+      // but an exception here (e.g. a disposed image surfaced by an unexpected
+      // race) would crash the whole terminal paint and tear down the user's
+      // session. Skip the offending image for this frame instead.
+      try {
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
+          Paint()..filterQuality = FilterQuality.medium,
+        );
+      } on Object catch (_) {
+        // Intentionally swallowed: a failed image draw must never crash the
+        // terminal. The next frame re-attempts with fresh metrics.
+      }
+    }
+  }
 
   void _paintCursor(Canvas canvas, Offset offset) {
     final cellData = _cursorCellDataAtCursor();

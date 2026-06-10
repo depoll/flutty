@@ -9,8 +9,6 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../domain/services/port_forward_browser_service.dart';
 
-const _windowChannel = MethodChannel('xyz.depollsoft.monkeyssh/window');
-
 /// Initial tab configuration for the embedded browser.
 class PortForwardBrowserInitialTab {
   /// Creates an initial browser tab.
@@ -80,7 +78,6 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
 
   @override
   void dispose() {
-    unawaited(_setEmbeddedWebViewWindowMode(enabled: false));
     _addressFocusNode.removeListener(_handleAddressFocusChanged);
     _addressController?.dispose();
     _addressFocusNode.dispose();
@@ -94,7 +91,9 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     }
     final selectedTab = _selectedTab;
     return PopScope(
-      canPop: _allowRoutePop,
+      canPop:
+          _allowRoutePop ||
+          (!_addressFocusNode.hasFocus && !selectedTab.canGoBack),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop || _allowRoutePop) {
           return;
@@ -167,12 +166,6 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
   }
 
   Future<void> _initializeBrowser() async {
-    await _setEmbeddedWebViewWindowMode(enabled: true);
-    if (!mounted) {
-      await _setEmbeddedWebViewWindowMode(enabled: false);
-      return;
-    }
-
     final tabs = widget.initialTabs.map(_createTab).toList(growable: true);
     final selectedTabIndex = widget.initialTabIndex;
     final addressController = TextEditingController(
@@ -630,19 +623,6 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
-  }
-}
-
-Future<void> _setEmbeddedWebViewWindowMode({required bool enabled}) async {
-  if (defaultTargetPlatform != TargetPlatform.android) {
-    return;
-  }
-  try {
-    await _windowChannel.invokeMethod<void>('setEmbeddedWebViewMode', {
-      'enabled': enabled,
-    });
-  } on MissingPluginException {
-    return;
   }
 }
 

@@ -452,37 +452,58 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _ToolbarButton(
       icon: Icons.expand_less_rounded,
       label: 'PgUp',
-      onTap: () => _sendSequence('\x1b[5~'),
-      onLongPressStart: () => _sendSequence('\x1b[5~'),
-      onLongPressRepeat: () =>
-          _sendSequence('\x1b[5~', withHaptic: false, consumeOneShot: false),
+      onTap: () => _sendNavigationKey(TerminalKey.pageUp, '\x1b[5~'),
+      onLongPressStart: () => _sendNavigationKey(TerminalKey.pageUp, '\x1b[5~'),
+      onLongPressRepeat: () => _sendNavigationKey(
+        TerminalKey.pageUp,
+        '\x1b[5~',
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Page Up',
     ),
     _ToolbarButton(
       icon: Icons.expand_more_rounded,
       label: 'PgDn',
-      onTap: () => _sendSequence('\x1b[6~'),
-      onLongPressStart: () => _sendSequence('\x1b[6~'),
-      onLongPressRepeat: () =>
-          _sendSequence('\x1b[6~', withHaptic: false, consumeOneShot: false),
+      onTap: () => _sendNavigationKey(TerminalKey.pageDown, '\x1b[6~'),
+      onLongPressStart: () =>
+          _sendNavigationKey(TerminalKey.pageDown, '\x1b[6~'),
+      onLongPressRepeat: () => _sendNavigationKey(
+        TerminalKey.pageDown,
+        '\x1b[6~',
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Page Down',
     ),
     _ToolbarButton(
       icon: Icons.first_page_rounded,
       label: 'Home',
-      onTap: () => _sendSequence('\x1b[H'),
-      onLongPressStart: () => _sendSequence('\x1b[H'),
-      onLongPressRepeat: () =>
-          _sendSequence('\x1b[H', withHaptic: false, consumeOneShot: false),
+      onTap: () => _sendNavigationKey(TerminalKey.home, '\x1b[H'),
+      onLongPressStart: () => _sendNavigationKey(TerminalKey.home, '\x1b[H'),
+      onLongPressRepeat: () => _sendNavigationKey(
+        TerminalKey.home,
+        '\x1b[H',
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Home',
     ),
     _ToolbarButton(
       icon: Icons.last_page_rounded,
       label: 'End',
-      onTap: () => _sendSequence('\x1b[F'),
-      onLongPressStart: () => _sendSequence('\x1b[F'),
-      onLongPressRepeat: () =>
-          _sendSequence('\x1b[F', withHaptic: false, consumeOneShot: false),
+      onTap: () => _sendNavigationKey(TerminalKey.end, '\x1b[F'),
+      onLongPressStart: () => _sendNavigationKey(TerminalKey.end, '\x1b[F'),
+      onLongPressRepeat: () => _sendNavigationKey(
+        TerminalKey.end,
+        '\x1b[F',
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'End',
     ),
   ];
@@ -493,8 +514,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.left),
       onLongPressStart: () => _sendArrow(_Arrow.left),
-      onLongPressRepeat: () =>
-          _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
+      onLongPressRepeat: () => _sendArrow(
+        _Arrow.left,
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Left',
     ),
     _ToolbarButton(
@@ -502,8 +527,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.right),
       onLongPressStart: () => _sendArrow(_Arrow.right),
-      onLongPressRepeat: () =>
-          _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
+      onLongPressRepeat: () => _sendArrow(
+        _Arrow.right,
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Right',
     ),
     _ToolbarButton(
@@ -511,8 +540,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.up),
       onLongPressStart: () => _sendArrow(_Arrow.up),
-      onLongPressRepeat: () =>
-          _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
+      onLongPressRepeat: () => _sendArrow(
+        _Arrow.up,
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Up',
     ),
     _ToolbarButton(
@@ -520,8 +553,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       label: '',
       onTap: () => _sendArrow(_Arrow.down),
       onLongPressStart: () => _sendArrow(_Arrow.down),
-      onLongPressRepeat: () =>
-          _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
+      onLongPressRepeat: () => _sendArrow(
+        _Arrow.down,
+        withHaptic: false,
+        consumeOneShot: false,
+        type: TerminalKeyEventType.repeat,
+      ),
       tooltip: 'Down',
     ),
   ];
@@ -967,7 +1004,11 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEscape() {
     HapticFeedback.lightImpact();
-    widget.terminal.textInput('\x1b');
+    if (_shouldUseKittyKeyboardEncoding(TerminalKeyEventType.press)) {
+      widget.terminal.keyInput(TerminalKey.escape);
+    } else {
+      widget.terminal.textInput('\x1b');
+    }
     widget.onKeyPressed?.call();
     // Clear one-shot modifiers without the immediate refocus that
     // _consumeOneShot() would do. Refocus after a short delay so the
@@ -980,9 +1021,18 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    widget.terminal.textInput(
-      resolveTerminalTabInput(shiftActive: _controller.isShiftActive),
-    );
+    if (_shouldUseKittyKeyboardEncoding(TerminalKeyEventType.press)) {
+      widget.terminal.keyInput(
+        TerminalKey.tab,
+        shift: _controller.isShiftActive,
+        alt: _controller.isAltActive,
+        ctrl: _controller.isCtrlActive,
+      );
+    } else {
+      widget.terminal.textInput(
+        resolveTerminalTabInput(shiftActive: _controller.isShiftActive),
+      );
+    }
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }
@@ -1024,15 +1074,30 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _consumeOneShot();
   }
 
-  void _sendSequence(
-    String sequence, {
+  void _sendNavigationKey(
+    TerminalKey key,
+    String legacySequence, {
     bool withHaptic = true,
     bool consumeOneShot = true,
+    TerminalKeyEventType type = TerminalKeyEventType.press,
   }) {
     if (withHaptic) {
       HapticFeedback.lightImpact();
     }
-    widget.terminal.textInput(sequence);
+    if (_shouldUseKittyKeyboardEncoding(type)) {
+      final handled = widget.terminal.keyInput(
+        key,
+        shift: _controller.isShiftActive,
+        alt: _controller.isAltActive,
+        ctrl: _controller.isCtrlActive,
+        type: type,
+      );
+      if (!handled) {
+        return;
+      }
+    } else {
+      widget.terminal.textInput(legacySequence);
+    }
     widget.onKeyPressed?.call();
     if (consumeOneShot) {
       _consumeOneShot();
@@ -1043,10 +1108,29 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _Arrow arrow, {
     bool withHaptic = true,
     bool consumeOneShot = true,
+    TerminalKeyEventType type = TerminalKeyEventType.press,
   }) {
     if (withHaptic) {
       HapticFeedback.lightImpact();
     }
+    if (_shouldUseKittyKeyboardEncoding(type)) {
+      final handled = widget.terminal.keyInput(
+        _terminalKeyForArrow(arrow),
+        shift: _controller.isShiftActive,
+        alt: _controller.isAltActive,
+        ctrl: _controller.isCtrlActive,
+        type: type,
+      );
+      if (!handled) {
+        return;
+      }
+      widget.onKeyPressed?.call();
+      if (consumeOneShot) {
+        _consumeOneShot();
+      }
+      return;
+    }
+
     final modifier = _getModifierPrefix();
     final suffix = switch (arrow) {
       _Arrow.up => 'A',
@@ -1066,6 +1150,28 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       _consumeOneShot();
     }
   }
+
+  bool _shouldUseKittyKeyboardEncoding(TerminalKeyEventType type) {
+    if (!widget.terminal.kittyKeyboardMode) {
+      return false;
+    }
+    final flags = widget.terminal.kittyKeyboardFlags;
+    const canonicalKeyFlags =
+        KittyKeyboardFlags.disambiguateEscapeCodes |
+        KittyKeyboardFlags.reportAllKeysAsEscapeCodes;
+    if ((flags & canonicalKeyFlags) != 0) {
+      return true;
+    }
+    return type != TerminalKeyEventType.press &&
+        (flags & KittyKeyboardFlags.reportEventTypes) != 0;
+  }
+
+  TerminalKey _terminalKeyForArrow(_Arrow arrow) => switch (arrow) {
+    _Arrow.up => TerminalKey.arrowUp,
+    _Arrow.down => TerminalKey.arrowDown,
+    _Arrow.right => TerminalKey.arrowRight,
+    _Arrow.left => TerminalKey.arrowLeft,
+  };
 
   String _getModifierPrefix() {
     var mod = 1;

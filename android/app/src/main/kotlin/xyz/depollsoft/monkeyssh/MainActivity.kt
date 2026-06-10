@@ -8,9 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.view.WindowManager
 import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -27,11 +25,9 @@ class MainActivity : FlutterFragmentActivity() {
 
     private val clipboardChannel = "xyz.depollsoft.monkeyssh/clipboard_content"
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
-    private val windowChannel = "xyz.depollsoft.monkeyssh/window"
     private val maxTransferPayloadBytes = 10 * 1024 * 1024
     private var clipboardMethodChannel: MethodChannel? = null
     private var transferMethodChannel: MethodChannel? = null
-    private var windowMethodChannel: MethodChannel? = null
     private var pendingTransferPayload: String? = null
     private var hasRequestedNotificationPermission = false
 
@@ -101,20 +97,6 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
-        windowMethodChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            windowChannel,
-        )
-        windowMethodChannel?.setMethodCallHandler { call, result ->
-            when (call.method) {
-                "setEmbeddedWebViewMode" -> {
-                    setEmbeddedWebViewMode(call.argument<Boolean>("enabled") == true)
-                    result.success(null)
-                }
-                else -> result.notImplemented()
-            }
-        }
-
         notifyIncomingTransferPayload()
     }
 
@@ -130,8 +112,6 @@ class MainActivity : FlutterFragmentActivity() {
         clipboardMethodChannel = null
         transferMethodChannel?.setMethodCallHandler(null)
         transferMethodChannel = null
-        windowMethodChannel?.setMethodCallHandler(null)
-        windowMethodChannel = null
         super.onDestroy()
     }
 
@@ -202,19 +182,6 @@ class MainActivity : FlutterFragmentActivity() {
     private fun notifyIncomingTransferPayload() {
         val payload = pendingTransferPayload ?: return
         transferMethodChannel?.invokeMethod("onIncomingTransferPayload", payload)
-    }
-
-    private fun setEmbeddedWebViewMode(enabled: Boolean) {
-        WindowCompat.setDecorFitsSystemWindows(window, !enabled)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val attributes = window.attributes
-            attributes.layoutInDisplayCutoutMode = if (enabled) {
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            } else {
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-            }
-            window.attributes = attributes
-        }
     }
 
     private fun isTransferIntent(intent: Intent?): Boolean {

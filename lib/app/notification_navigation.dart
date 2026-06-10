@@ -42,3 +42,32 @@ void openTmuxAlertNotificationStack({
     ),
   );
 }
+
+/// Builds the terminal route for a terminal desktop notification navigation.
+String buildTerminalNotificationNavigationLocation(
+  TerminalNotificationPayload payload, {
+  required String notificationTapId,
+}) {
+  final targetUri = Uri.parse(buildTerminalNotificationLocation(payload));
+  final queryParameters = Map<String, String>.from(targetUri.queryParameters)
+    ..['notificationTap'] = notificationTapId;
+  return targetUri.replace(queryParameters: queryParameters).toString();
+}
+
+/// Opens a terminal desktop notification with the same stack as manual
+/// navigation.
+void openTerminalNotificationStack({
+  required GoRouter router,
+  required TerminalNotificationPayload payload,
+  required String notificationTapId,
+}) {
+  router.go(buildTmuxAlertHomeLocation());
+  unawaited(
+    router.push<void>(
+      buildTerminalNotificationNavigationLocation(
+        payload,
+        notificationTapId: notificationTapId,
+      ),
+    ),
+  );
+}

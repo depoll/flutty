@@ -575,13 +575,13 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	wantReplay := replayPrefixForTest(inactiveWindow) +
 		replayPostHistorySuffixForTest(true)
 	simulateForegroundResize = func(window *muxWindow, width int, height int) {
-		if got := attach.String(); got != wantReplay {
-			t.Fatalf("resize simulated before replay was written: got %q, want %q", got, wantReplay)
+		if got := attach.String(); got != "" {
+			t.Fatalf("resize simulated after premature replay write: got %q", got)
 		}
 	}
 	signalForegroundResize = func(processGroup int) {
-		if got := attach.String(); got != wantReplay {
-			t.Fatalf("resize signaled before redraw replay was written: got %q, want %q", got, wantReplay)
+		if got := attach.String(); got != "" {
+			t.Fatalf("resize signaled after premature replay write: got %q", got)
 		}
 	}
 
@@ -590,6 +590,27 @@ func TestSelectWindowUsesForegroundRedrawReplayForAgentWindows(t *testing.T) {
 	}
 	if strings.Contains(attach.String(), "stale tui screen") {
 		t.Fatalf("redraw replay retained stale TUI history: %q", attach.String())
+	}
+	if got := attach.String(); got != "" {
+		t.Fatalf("foreground redraw replay was written before redraw settled: %q", got)
+	}
+
+	server.handleWindowOutput("@2", []byte("settled tui screen"))
+	if got := attach.String(); got != "" {
+		t.Fatalf("foreground redraw output was forwarded before replay settled: %q", got)
+	}
+
+	server.mu.Lock()
+	generation := inactiveWindow.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.resumePausedAttachForwarding("@2", generation)
+
+	want := wantReplay + "settled tui screen"
+	if got := attach.String(); got != want {
+		t.Fatalf("settled foreground replay = %q, want %q", got, want)
+	}
+	if strings.Contains(attach.String(), "stale tui screen") {
+		t.Fatalf("settled foreground replay retained stale TUI history: %q", attach.String())
 	}
 }
 
@@ -1065,6 +1086,57 @@ func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
 	}
 }
 
+func TestRedrawResizePreservesPendingReplay(t *testing.T) {
+	server := newMuxServer("test")
+	conn := &recordingConn{}
+	window := &muxWindow{
+		id:           "@2",
+		index:        1,
+		agentTool:    "copilot",
+		history:      []byte("stale tui screen"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		window,
+	}
+	server.activeID = "@1"
+	server.attachConn = conn
+
+	originalSignalForegroundResize := signalForegroundResize
+	originalSimulateForegroundResize := simulateForegroundResize
+	defer func() {
+		signalForegroundResize = originalSignalForegroundResize
+		simulateForegroundResize = originalSimulateForegroundResize
+	}()
+	signalForegroundResize = func(processGroup int) {}
+	simulateForegroundResize = func(window *muxWindow, width int, height int) {}
+
+	if err := server.selectWindow("@2"); err != nil {
+		t.Fatal(err)
+	}
+	server.handleWindowOutput("@2", []byte("first redraw"))
+
+	server.mu.Lock()
+	server.pauseAttachForwardingForRedrawLocked(window, 120, 41)
+	generation := window.redrawForwardingGeneration
+	server.mu.Unlock()
+	server.handleWindowOutput("@2", []byte("settled redraw"))
+
+	server.resumePausedAttachForwarding("@2", generation)
+
+	wantReplay := replayPrefixForTest(window) +
+		replayPostHistorySuffixForTest(true)
+	want := wantReplay + "settled redraw"
+	if got := conn.String(); got != want {
+		t.Fatalf("settled replay after resize = %q, want %q", got, want)
+	}
+	if strings.Contains(conn.String(), "stale tui screen") ||
+		strings.Contains(conn.String(), "first redraw") {
+		t.Fatalf("settled replay retained stale output: %q", conn.String())
+	}
+}
+
 func TestRedrawResizeDropsBufferedAttachOutputWhenInactive(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}
@@ -1285,7 +1357,7 @@ func TestActiveReplayUsesForegroundRedrawForTrackedAlternateScreenHistory(t *tes
 			history := []byte(
 				enterAlternateScreen +
 					"alternate-screen-start" +
-					strings.Repeat("\x1b]66;semantic\a", windowReplayLimitBytes/8) +
+					strings.Repeat("alternate-screen-history", windowReplayLimitBytes/8) +
 					"alternate-screen-end",
 			)
 			window := &muxWindow{
@@ -1339,6 +1411,40 @@ func TestActiveReplayUsesForegroundRedrawForAgentHistory(t *testing.T) {
 	if strings.Contains(replay, "agent-main-screen-start") ||
 		strings.Contains(replay, "agent-main-screen-end") {
 		t.Fatalf("agent redraw replay retained stale history: %q", replay)
+	}
+	if got, want := len(window.history), len(history); got != want {
+		t.Fatalf("history length = %d, want %d", got, want)
+	}
+}
+
+func TestActiveReplayDropsAgentAlternateScreenHistory(t *testing.T) {
+	server := newMuxServer("test")
+	enterAlternateScreen := "\x1b[?1049h"
+	history := []byte(
+		enterAlternateScreen +
+			"agent-alternate-screen-start" +
+			strings.Repeat("conversation-history", windowReplayLimitBytes/8) +
+			"agent-alternate-screen-end",
+	)
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		agentTool:    "codex",
+		history:      history,
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	replay := string(server.activeReplayLocked())
+
+	if strings.Contains(replay, "agent-alternate-screen-start") ||
+		strings.Contains(replay, "agent-alternate-screen-end") {
+		t.Fatalf("agent alternate-screen replay retained stale history: %q", replay)
+	}
+	if !strings.Contains(replay, enterAlternateScreen+terminalScreenClearSequence) {
+		t.Fatalf("agent alternate-screen replay did not clear stale alternate buffer: %q", replay)
 	}
 	if got, want := len(window.history), len(history); got != want {
 		t.Fatalf("history length = %d, want %d", got, want)
@@ -1529,6 +1635,37 @@ func TestReplayStripDoesNotCopyCleanHistory(t *testing.T) {
 	replay[0] = 'P'
 	if history[0] != 'P' {
 		t.Fatal("clean replay history was copied, want original slice reused")
+	}
+}
+
+func TestReplayStripRemovesDesktopNotifications(t *testing.T) {
+	history := []byte("before" +
+		"\x1b]9;build finished\x07" +
+		"\x1b]777;notify;Deploy;done\x07" +
+		"\x1b]99;i=1:d=0;Tests\x1b\\" +
+		"\x1b]99;i=1:p=body;412 ok\x1b\\" +
+		"middle" +
+		"\x1b]9;4;1;50\x07" + // ConEmu progress: not a notification
+		"after")
+
+	replay := string(stripTerminalQueriesFromReplay(history))
+
+	for _, stripped := range []string{
+		"build finished",
+		"\x1b]777;notify;Deploy;done\x07",
+		"412 ok",
+	} {
+		if strings.Contains(replay, stripped) {
+			t.Fatalf("replay retained notification %q in %q", stripped, replay)
+		}
+	}
+	if !strings.Contains(replay, "\x1b]9;4;1;50\x07") {
+		t.Fatalf("replay stripped ConEmu OSC 9 progress: %q", replay)
+	}
+	if !strings.Contains(replay, "before") ||
+		!strings.Contains(replay, "middle") ||
+		!strings.Contains(replay, "after") {
+		t.Fatalf("replay = %q, want normal output preserved", replay)
 	}
 }
 
@@ -1954,6 +2091,36 @@ func TestWindowTitleUpdatesStillBroadcast(t *testing.T) {
 	}
 }
 
+func TestRestoreWindowOptionsDropMouseTrackingModes(t *testing.T) {
+	state := restoreWindowState{
+		ID:    "@1",
+		Index: 0,
+		Name:  "shell",
+		PrivateModes: map[string]bool{
+			"1000": true,
+			"1002": true,
+			"1003": true,
+			"1006": true,
+			"1049": true,
+			"7":    false,
+		},
+	}
+
+	options := createWindowOptionsForRestore(state, false)
+
+	for _, mode := range []string{"1000", "1002", "1003", "1006"} {
+		if _, ok := options.privateModes[mode]; ok {
+			t.Fatalf("restored options retained mouse mode %s: %#v", mode, options.privateModes)
+		}
+	}
+	if !options.privateModes["1049"] {
+		t.Fatalf("restored options dropped non-mouse mode: %#v", options.privateModes)
+	}
+	if enabled, ok := options.privateModes["7"]; !ok || enabled {
+		t.Fatalf("restored options wrap mode = %v, %v, want present false", enabled, ok)
+	}
+}
+
 func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -1977,6 +2144,77 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	}
 	if !snapshot.PrivateModes["1006"] {
 		t.Fatalf("snapshot private modes = %#v, want SGR report mode", snapshot.PrivateModes)
+	}
+}
+
+func TestMouseTrackingClearsWhenOwningProcessExits(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:            "@1",
+		index:         0,
+		name:          "tui",
+		foregroundPid: 100,
+		lastActivity:  time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	// A TUI in the foreground turns on mouse tracking + SGR reporting.
+	window.observeTerminalModesLocked([]byte("\x1b[?1000h\x1b[?1006h"))
+
+	if !window.reportsMouseWheelLocked() {
+		t.Fatal("mouse wheel reporting should be active while the TUI is foreground")
+	}
+	snapshot := server.snapshot(window)
+	if !snapshot.TerminalReportsMouseWheel || !snapshot.TerminalMouseReportSgr {
+		t.Fatalf("snapshot = %+v, want mouse wheel + SGR while TUI foreground", snapshot)
+	}
+	replay := string(window.modeReplayForAttachedTerminalLocked())
+	if !strings.Contains(replay, "\x1b[?1000h") {
+		t.Fatalf("replay = %q, want mouse mode re-enabled while TUI foreground", replay)
+	}
+
+	// The TUI exits without disabling mouse mode; the shell returns to the
+	// foreground with a different process group.
+	window.foregroundPid = 200
+
+	if window.reportsMouseWheelLocked() {
+		t.Fatal("mouse wheel reporting must stop once the owning process exits")
+	}
+	if window.mouseTrackingActiveLocked() {
+		t.Fatal("mouse tracking must not be active for a new foreground process")
+	}
+	snapshot = server.snapshot(window)
+	if snapshot.TerminalReportsMouseWheel {
+		t.Fatal("snapshot must not report mouse wheel after the owning process exits")
+	}
+	if snapshot.TerminalMouseReportSgr {
+		t.Fatal("snapshot must not report SGR mouse after the owning process exits")
+	}
+	replay = string(window.modeReplayForAttachedTerminalLocked())
+	if strings.Contains(replay, "\x1b[?1000h") {
+		t.Fatalf("replay = %q, must not re-enable mouse mode after owner exits", replay)
+	}
+}
+
+func TestMouseTrackingProcessIDClearsWhenModesDisabled(t *testing.T) {
+	window := &muxWindow{id: "@1", foregroundPid: 100, lastActivity: time.Now()}
+
+	window.observeTerminalModesLocked([]byte("\x1b[?1000h\x1b[?1002h"))
+	if window.mouseTrackingProcessID != 100 {
+		t.Fatalf("mouseTrackingProcessID = %d, want 100", window.mouseTrackingProcessID)
+	}
+
+	// Disabling one of several wheel modes keeps the owner while others remain.
+	window.observeTerminalModesLocked([]byte("\x1b[?1000l"))
+	if window.mouseTrackingProcessID != 100 {
+		t.Fatalf("mouseTrackingProcessID = %d, want owner retained while 1002 stays on", window.mouseTrackingProcessID)
+	}
+
+	// Disabling the last wheel mode clears the recorded owner.
+	window.observeTerminalModesLocked([]byte("\x1b[?1002l"))
+	if window.mouseTrackingProcessID != 0 {
+		t.Fatalf("mouseTrackingProcessID = %d, want cleared once no wheel mode remains", window.mouseTrackingProcessID)
 	}
 }
 
@@ -2723,6 +2961,314 @@ func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
 	}
 }
 
+func TestDiscoverOpenCodeSessionIDsUsesProcessArgs(t *testing.T) {
+	originalReader := openCodeSessionEntriesReader
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		openCodeSessionEntriesReader = originalReader
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
+		t.Fatal("session store should not be read when the ID is in process args")
+		return nil
+	}
+	processWorkingDirectoryForMetadata = func(int) string { return "" }
+
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode --session ses_arg"},
+	}
+
+	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != "ses_arg" {
+		t.Fatalf("opencode session id = %q, want ses_arg", got)
+	}
+}
+
+func TestDiscoverOpenCodeSessionIDsUsesWorkingDirectory(t *testing.T) {
+	originalReader := openCodeSessionEntriesReader
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		openCodeSessionEntriesReader = originalReader
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
+		return []openCodeSessionEntry{
+			{sessionID: "ses_new", directory: "/work/project"},
+			{sessionID: "ses_other", directory: "/tmp/other"},
+		}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode"},
+	}
+
+	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != "ses_new" {
+		t.Fatalf("opencode session id = %q, want ses_new", got)
+	}
+}
+
+func TestDiscoverOpenCodeSessionIDsSkipsAmbiguousWorkingDirectory(t *testing.T) {
+	originalReader := openCodeSessionEntriesReader
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		openCodeSessionEntriesReader = originalReader
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+	openCodeSessionEntriesReader = func() []openCodeSessionEntry {
+		return []openCodeSessionEntry{{sessionID: "ses_new", directory: "/work/project"}}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		switch pid {
+		case 200, 201:
+			return "/work/project"
+		default:
+			return ""
+		}
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		101: {pid: 101, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode"},
+		201: {pid: 201, ppid: 101, comm: "opencode", args: "opencode"},
+	}
+
+	sessions := discoverOpenCodeSessionIDs(
+		processes,
+		map[int]struct{}{100: {}, 101: {}},
+	)
+
+	if len(sessions) != 0 {
+		t.Fatalf("opencode sessions = %#v, want none for ambiguous cwd fallback", sessions)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsUsesOpenProjectFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	sessionID := "de4e84a3-cf16-4cc2-8ba7-34587e984d4a"
+	processOpenFilePathsForMetadata = func(pid int) []string {
+		if pid != 200 {
+			return nil
+		}
+		return []string{
+			"/Users/alice/.claude/projects/-Users-alice-Code-proj/" + sessionID + ".jsonl",
+		}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		t.Fatalf("processWorkingDirectoryForMetadata(%d) called; open file match should win", pid)
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "fa0a7327-666a-4439-8052-8d9e61c16d3f"
+	projectDir := filepath.Join(home, ".claude", "projects", "-work-project")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectDir, sessionID+".jsonl"),
+		[]byte(`{"type":"user","cwd":"/work/project","sessionId":"`+sessionID+`"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
+	}
+
+	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("claude session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverGeminiSessionIDsUsesOpenChatFile(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	sessionID := "bc1ced23-25ac-4971-8f30-8af35ce2f2f1"
+	chatsDir := filepath.Join(t.TempDir(), ".gemini", "tmp", "proj", "chats")
+	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	chatPath := filepath.Join(chatsDir, "session-abc.json")
+	if err := os.WriteFile(
+		chatPath,
+		[]byte(`{"sessionId":"`+sessionID+`","kind":"main","directories":["/work/project"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(pid int) []string {
+		if pid != 200 {
+			return nil
+		}
+		return []string{chatPath}
+	}
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		t.Fatalf("processWorkingDirectoryForMetadata(%d) called; open file match should win", pid)
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
+	}
+
+	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("gemini session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverGeminiSessionIDsFallsBackToRecentChatForCwd(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionID := "bc1ced23-25ac-4971-8f30-8af35ce2f2f1"
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "proj", "chats")
+	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(chatsDir, "session-abc.json"),
+		[]byte(`{"sessionId":"`+sessionID+`","kind":"main","directories":["/work/project"],"messages":[`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
+	}
+
+	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if got := sessions[100]; got != sessionID {
+		t.Fatalf("gemini session id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestDiscoverGeminiSessionIDsSkipsSubagentChats(t *testing.T) {
+	originalOpenFiles := processOpenFilePathsForMetadata
+	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	t.Cleanup(func() {
+		processOpenFilePathsForMetadata = originalOpenFiles
+		processWorkingDirectoryForMetadata = originalWorkingDirectory
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	chatsDir := filepath.Join(home, ".gemini", "tmp", "proj", "chats")
+	if err := os.MkdirAll(chatsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(chatsDir, "session-sub.json"),
+		[]byte(`{"sessionId":"sub-1","kind":"subagent","directories":["/work/project"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	processOpenFilePathsForMetadata = func(int) []string { return nil }
+	processWorkingDirectoryForMetadata = func(pid int) string {
+		if pid == 200 {
+			return "/work/project"
+		}
+		return ""
+	}
+	processes := map[int]processInfo{
+		100: {pid: 100, ppid: 1, comm: "zsh", args: "zsh"},
+		200: {pid: 200, ppid: 100, comm: "gemini", args: "gemini"},
+	}
+
+	sessions := discoverGeminiSessionIDs(processes, map[int]struct{}{100: {}})
+
+	if len(sessions) != 0 {
+		t.Fatalf("gemini sessions = %#v, want none for subagent chats", sessions)
+	}
+}
+
+func TestParseGeminiSessionMetadataFromTruncatedPrefix(t *testing.T) {
+	metadata := parseGeminiSessionMetadata(`{
+  "sessionId": "session-large",
+  "kind": "main",
+  "directories": ["/Users/depoll/Code/flutty"],
+  "messages": [
+`)
+	if metadata.sessionID != "session-large" {
+		t.Fatalf("sessionID = %q, want session-large", metadata.sessionID)
+	}
+	if metadata.isSubagent {
+		t.Fatal("isSubagent = true, want false")
+	}
+	if len(metadata.directories) != 1 ||
+		metadata.directories[0] != "/Users/depoll/Code/flutty" {
+		t.Fatalf("directories = %#v, want [/Users/depoll/Code/flutty]", metadata.directories)
+	}
+}
+
 func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -3072,6 +3618,39 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			},
 			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
 			agentTool: "opencode",
+		},
+		{
+			name: "opencode resume by id",
+			state: restoreWindowState{
+				Name:           "OpenCode",
+				CurrentCommand: "opencode",
+				AgentTool:      "opencode",
+				AgentSessionID: "ses_abc",
+			},
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --session 'ses_abc'`,
+			agentTool: "opencode",
+		},
+		{
+			name: "claude resume",
+			state: restoreWindowState{
+				Name:           "Claude Code",
+				CurrentCommand: "claude",
+				AgentTool:      "claude",
+				AgentSessionID: "de4e84a3-cf16-4cc2-8ba7-34587e984d4a",
+			},
+			want:      `claude --dangerously-skip-permissions --resume 'de4e84a3-cf16-4cc2-8ba7-34587e984d4a'`,
+			agentTool: "claude",
+		},
+		{
+			name: "gemini resume",
+			state: restoreWindowState{
+				Name:           "Gemini CLI",
+				CurrentCommand: "gemini",
+				AgentTool:      "gemini",
+				AgentSessionID: "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
+			},
+			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1'`,
+			agentTool: "gemini",
 		},
 		{
 			name: "antigravity resume",
