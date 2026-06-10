@@ -6332,6 +6332,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     bool revealLatestOutput = false,
   }) {
+    // The MonkeyMux helper owns the replay/redraw for attach, select, create,
+    // and active-window close. A second app-triggered redraw here competes with
+    // that replay and can expose old alternate-screen output as visible scroll.
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer = null;
     if (revealLatestOutput) {
       _followLiveOutput();
     } else {
@@ -6343,10 +6348,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       suppressMonkeyMuxResizeSync: true,
       suppressAutoScroll: !revealLatestOutput,
     );
-    unawaited(
-      _syncActiveMonkeyMuxTerminalSize(session, refreshVisibleTerminal: true),
+    _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
+      session,
+      reason: 'window_change_replay',
     );
-    _scheduleMonkeyMuxResizeRedrawFollowUp(session);
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
       const Duration(milliseconds: 50),
@@ -6367,12 +6372,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           revealLatestOutput: revealLatestOutput,
           suppressMonkeyMuxResizeSync: true,
           suppressAutoScroll: !revealLatestOutput,
-        );
-        unawaited(
-          _syncActiveMonkeyMuxTerminalSize(
-            session,
-            refreshVisibleTerminal: true,
-          ),
         );
       },
     );
