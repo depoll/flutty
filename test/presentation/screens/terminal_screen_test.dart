@@ -80,6 +80,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
   int runningServerStatusCalls = 0;
   int runningServerStatusFromInstalledHelpersCalls = 0;
   bool hasLiveControlChannelValue = false;
+  final controlOperations = <String>[];
   final resizeTerminalCalls =
       <({String sessionName, int columns, int rows, bool redraw})>[];
 
@@ -120,6 +121,7 @@ class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {
     bool redraw = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    controlOperations.add(redraw ? 'resize:redraw' : 'resize');
     resizeTerminalCalls.add((
       sessionName: sessionName,
       columns: columns,
@@ -2696,7 +2698,9 @@ void main() {
             1,
             extraFlags: any(named: 'extraFlags'),
           ),
-        ).thenAnswer((_) async {});
+        ).thenAnswer((_) async {
+          monkeyMuxService.controlOperations.add('select');
+        });
         when(
           () => monkeyMuxService.refreshTerminalTheme(
             session,
@@ -2761,10 +2765,12 @@ void main() {
 
         final resizeCallsBeforeSwitch =
             monkeyMuxService.resizeTerminalCalls.length;
+        monkeyMuxService.controlOperations.clear();
         await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 350));
         expect(position.pixels, 0);
+        monkeyMuxService.controlOperations.clear();
         await tester.tap(find.text('agent'));
         await tester.pump();
         await tester.pump();
@@ -2777,6 +2783,14 @@ void main() {
           monkeyMuxService.resizeTerminalCalls.any((call) => call.redraw),
           isTrue,
         );
+        final selectOperationIndex = monkeyMuxService.controlOperations.indexOf(
+          'select',
+        );
+        final firstRedrawOperationIndex = monkeyMuxService.controlOperations
+            .indexOf('resize:redraw');
+        expect(selectOperationIndex, isNonNegative);
+        expect(firstRedrawOperationIndex, isNonNegative);
+        expect(firstRedrawOperationIndex, greaterThan(selectOperationIndex));
 
         windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
         await tester.pump();

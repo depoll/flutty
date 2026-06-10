@@ -8411,12 +8411,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowIndex,
       windowId: targetWindowId,
     );
-    if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      await _syncActiveMonkeyMuxTerminalSize(
-        session,
-        refreshVisibleTerminal: true,
-      );
-    }
     if (targetWindowId == null) {
       await backend.selectWindow(windowIndex);
     } else {
