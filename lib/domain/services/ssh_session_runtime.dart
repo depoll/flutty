@@ -15,6 +15,7 @@ class _SshSessionRuntime {
   Timer? _previewRefreshTimer;
   Timer? _shellIoDiagnosticsTimer;
   Timer? _terminalOutputFlushTimer;
+  Timer? _monkeyMuxReplayCoalesceTimer;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
   final _pendingShellOutputs =
@@ -31,13 +32,18 @@ class _SshSessionRuntime {
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
+  String _monkeyMuxReplayDetectionTail = '';
+  bool _isCoalescingMonkeyMuxReplay = false;
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalInsertMode = false;
 
   Terminal? _terminal;
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
+  static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  static const _monkeyMuxActiveWindowReplayMarker =
+      '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM. Launch the
   // user's login shell with the hint instead of relying on server-gated env
   // requests that OpenSSH commonly rejects by default. Keep the outer command
@@ -465,6 +471,12 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = shell;
     _pendingShellOutputTerminal = terminal;
 
+    if (_trackMonkeyMuxActiveWindowReplay(terminalData) ||
+        _isCoalescingMonkeyMuxReplay) {
+      _scheduleMonkeyMuxReplayCoalesceFlush();
+      return;
+    }
+
     if (!(_terminalOutputFlushTimer?.isActive ?? false)) {
       _terminalOutputFlushTimer = Timer(
         _terminalOutputFlushInterval,
@@ -473,12 +485,63 @@ class _SshSessionRuntime {
     }
   }
 
+  bool _trackMonkeyMuxActiveWindowReplay(String terminalData) {
+    if (terminalData.isEmpty) {
+      return false;
+    }
+    final combined = _monkeyMuxReplayDetectionTail + terminalData;
+    final detected = combined.contains(_monkeyMuxActiveWindowReplayMarker);
+    final partialMarkerLength = _activeWindowReplayMarkerPrefixSuffixLength(
+      combined,
+    );
+    const tailLength = _monkeyMuxActiveWindowReplayMarker.length - 1;
+    _monkeyMuxReplayDetectionTail = combined.length <= tailLength
+        ? combined
+        : combined.substring(combined.length - tailLength);
+    if (detected || partialMarkerLength > 2) {
+      _isCoalescingMonkeyMuxReplay = true;
+    }
+    return detected;
+  }
+
+  int _activeWindowReplayMarkerPrefixSuffixLength(String data) {
+    final maxLength = math.min(
+      data.length,
+      _monkeyMuxActiveWindowReplayMarker.length - 1,
+    );
+    for (var length = maxLength; length > 0; length -= 1) {
+      final suffix = data.substring(data.length - length);
+      if (_monkeyMuxActiveWindowReplayMarker.startsWith(suffix)) {
+        return length;
+      }
+    }
+    return 0;
+  }
+
+  void _scheduleMonkeyMuxReplayCoalesceFlush() {
+    _terminalOutputFlushTimer?.cancel();
+    _terminalOutputFlushTimer = null;
+    _monkeyMuxReplayCoalesceTimer?.cancel();
+    _monkeyMuxReplayCoalesceTimer = Timer(
+      _monkeyMuxReplayCoalesceQuietPeriod,
+      () {
+        _monkeyMuxReplayCoalesceTimer = null;
+        _isCoalescingMonkeyMuxReplay = false;
+        _flushPendingShellOutput(drainAll: true);
+      },
+    );
+  }
+
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
-      terminalData.contains('\x1b]') || terminalData.contains('\x1b[?');
+      !_isCoalescingMonkeyMuxReplay &&
+      (terminalData.contains('\x1b]') || terminalData.contains('\x1b[?'));
 
   void _flushPendingShellOutput({bool drainAll = false}) {
     _terminalOutputFlushTimer?.cancel();
     _terminalOutputFlushTimer = null;
+    _monkeyMuxReplayCoalesceTimer?.cancel();
+    _monkeyMuxReplayCoalesceTimer = null;
+    _isCoalescingMonkeyMuxReplay = false;
 
     final shell = _pendingShellOutputShell;
     final terminal = _pendingShellOutputTerminal;
@@ -583,6 +646,8 @@ class _SshSessionRuntime {
     _pendingTerminalWriteChars = 0;
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
+    _monkeyMuxReplayDetectionTail = '';
+    _isCoalescingMonkeyMuxReplay = false;
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
