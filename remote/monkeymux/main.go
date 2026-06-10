@@ -3654,10 +3654,7 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	if window.usesForegroundRedrawReplayLocked() {
-		if window.agentToolLocked() != "" ||
-			!window.alternateScreenModeActiveLocked() {
-			history = nil
-		}
+		history = nil
 	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
