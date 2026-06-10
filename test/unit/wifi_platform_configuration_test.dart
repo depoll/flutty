@@ -24,7 +24,14 @@ void main() {
         entitlements,
         contains('com.apple.developer.networking.wifi-info'),
       );
+      expect(
+        infoPlist,
+        contains('NSLocationAlwaysAndWhenInUseUsageDescription'),
+      );
       expect(infoPlist, contains('NSLocationWhenInUseUsageDescription'));
+      expect(infoPlist, contains('current Wi-Fi network name'));
+      expect(podfile, contains('PERMISSION_LOCATION=0'));
+      expect(podfile, contains('PERMISSION_LOCATION_ALWAYS=0'));
       expect(podfile, contains('PERMISSION_LOCATION_WHENINUSE=1'));
     });
   });
