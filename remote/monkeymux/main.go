@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.68"
+	monkeyMuxVersion                  = "0.1.71"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -372,6 +372,7 @@ type muxWindow struct {
 	closed                     bool
 	redrawForwardingPaused     bool
 	redrawForwardingGeneration int
+	redrawForwardingReplay     []byte
 	redrawForwardingBuffer     []byte
 }
 
@@ -3546,8 +3547,40 @@ func (s *muxServer) writeAttachReplayAndResizeLocked(
 	replay []byte,
 	window *muxWindow,
 ) bool {
+	if s.deferAttachReplayForRedrawLocked(conn, replay, window) {
+		return true
+	}
 	s.writeAttachLocked(conn, replay)
 	return s.simulateForegroundResizeIfAttached(conn, window)
+}
+
+func (s *muxServer) deferAttachReplayForRedrawLocked(
+	conn net.Conn,
+	replay []byte,
+	window *muxWindow,
+) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if conn == nil ||
+		s.attachConn != conn ||
+		window == nil ||
+		window.closed ||
+		!window.usesForegroundRedrawReplayLocked() {
+		return false
+	}
+	if _, _, ok := foregroundRedrawTemporarySize(s.width, s.height); !ok {
+		return false
+	}
+	// Foreground-redraw panes repaint in response to the synthetic resize. Keep
+	// the reset replay with that repaint so attach clients never paint the
+	// intermediate cleared/stale frame.
+	s.pauseAttachForwardingForRedrawLocked(window, s.width, s.height)
+	window.redrawForwardingReplay = append(
+		window.redrawForwardingReplay[:0],
+		replay...,
+	)
+	simulateForegroundResize(window, s.width, s.height)
+	return true
 }
 
 func (s *muxServer) simulateForegroundResizeIfAttached(
@@ -3593,6 +3626,7 @@ func (s *muxServer) resumePausedAttachForwarding(
 	generation int,
 ) {
 	var attach net.Conn
+	var replay []byte
 	var buffered []byte
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
@@ -3605,19 +3639,22 @@ func (s *muxServer) resumePausedAttachForwarding(
 		s.mu.Unlock()
 		return
 	}
+	replay = append([]byte(nil), window.redrawForwardingReplay...)
 	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
+	window.redrawForwardingReplay = nil
 	window.redrawForwardingBuffer = nil
 	window.redrawForwardingPaused = false
 	if s.activeID == windowID {
 		attach = s.attachConn
 	}
 	s.mu.Unlock()
-	if len(buffered) > 0 {
+	output := append(replay, buffered...)
+	if len(output) > 0 {
 		s.mu.Lock()
 		shouldWrite := s.activeID == windowID && s.attachConn == attach
 		s.mu.Unlock()
 		if shouldWrite {
-			s.writeAttachLocked(attach, buffered)
+			s.writeAttachLocked(attach, output)
 		}
 	}
 }
