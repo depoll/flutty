@@ -51,6 +51,8 @@ post_install do |installer|
       definitions = [definitions] if definitions.is_a?(String)
       definitions ||= ['$(inherited)']
       definitions << '$(inherited)' unless definitions.include?('$(inherited)')
+      definitions << 'PERMISSION_LOCATION=0'
+      definitions << 'PERMISSION_LOCATION_ALWAYS=0'
       definitions << 'PERMISSION_LOCATION_WHENINUSE=1'
       config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] =
         definitions.uniq
