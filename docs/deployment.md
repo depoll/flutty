@@ -251,6 +251,8 @@ flutter build apk \
   --dart-define=FLUTTY_FIREBASE_ENABLED=true
 ```
 
+MonkeySSH uses Firebase project `monkeyssh`.
+
 Before enabling that flag, provide the Firebase app config for the matching
 platform/flavor:
 
@@ -269,6 +271,18 @@ default so native startup cannot collect before Dart applies the saved setting.
 Firebase's current iOS pods require iOS 15 or newer. iOS builds use CocoaPods
 with `FLUTTER_SWIFT_PACKAGE_MANAGER=false` until the project intentionally
 migrates to Flutter's Swift Package Manager integration.
+
+GitHub Actions reads Firebase config from these repository secrets and writes
+the matching flavor file before each build:
+
+- `FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON`
+- `FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON`
+- `FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST`
+- `FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST`
+
+When the relevant secret is present, the build passes
+`--dart-define=FLUTTY_FIREBASE_ENABLED=true`; otherwise Firebase remains
+disabled for that build.
 
 ## First-Time Setup Checklist
 

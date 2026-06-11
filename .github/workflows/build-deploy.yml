@@ -163,6 +163,14 @@ on:
         required: false
       APP_STORE_CONNECT_API_KEY_CONTENT:
         required: false
+      FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON:
+        required: false
+      FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON:
+        required: false
+      FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST:
+        required: false
+      FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST:
+        required: false
     outputs:
       apk-artifact-id:
         description: 'Artifact ID of the uploaded APK'
@@ -197,6 +205,7 @@ jobs:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
       FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
+      FLUTTY_FIREBASE_ENABLED: 'false'
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
@@ -269,6 +278,25 @@ jobs:
       - name: Install dependencies
         if: inputs.android-reuse-aab-artifact-name == ''
         run: flutter pub get
+
+      - name: Configure Firebase for Android
+        if: inputs.android-reuse-aab-artifact-name == ''
+        env:
+          FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON }}
+          FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ "${{ inputs.flavor }}" = "private" ]; then
+            GOOGLE_SERVICES_JSON="$FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON"
+          else
+            GOOGLE_SERVICES_JSON="$FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON"
+          fi
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "FLUTTY_FIREBASE_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p "android/app/src/${{ inputs.flavor }}"
+          printf '%s' "$GOOGLE_SERVICES_JSON" > "android/app/src/${{ inputs.flavor }}/google-services.json"
+          echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
 
       - name: Install Android CMake
         if: inputs.android-reuse-aab-artifact-name == ''
@@ -357,7 +385,8 @@ jobs:
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
-            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
       - name: Build unsigned AAB
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
@@ -372,7 +401,8 @@ jobs:
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
-            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
       - name: Build debug AAB for preview artifacts
         if: inputs.build-android-apk && inputs.deploy-android-to == 'none' && !inputs.build-android-unsigned-aab
@@ -385,7 +415,8 @@ jobs:
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
-            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
       - name: Prepare AAB for preview install artifacts
         id: preview-aab
@@ -642,6 +673,7 @@ jobs:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
       FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
+      FLUTTY_FIREBASE_ENABLED: 'false'
     outputs:
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
@@ -713,6 +745,25 @@ jobs:
         if: inputs.ios-reuse-ipa-artifact-name == ''
         run: flutter pub get
 
+      - name: Configure Firebase for iOS
+        if: inputs.ios-reuse-ipa-artifact-name == ''
+        env:
+          FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}
+          FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST }}
+        run: |
+          if [ "${{ inputs.flavor }}" = "private" ]; then
+            GOOGLE_SERVICE_INFO_PLIST="$FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST"
+          else
+            GOOGLE_SERVICE_INFO_PLIST="$FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST"
+          fi
+          if [ -z "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "FLUTTY_FIREBASE_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p "ios/Runner/Firebase/${{ inputs.flavor }}"
+          printf '%s' "$GOOGLE_SERVICE_INFO_PLIST" > "ios/Runner/Firebase/${{ inputs.flavor }}/GoogleService-Info.plist"
+          echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
+
       - name: Setup code signing
         if: inputs.deploy-ios-to != 'none' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
         env:
@@ -749,7 +800,8 @@ jobs:
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
-            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
       - name: Package unsigned IPA
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
