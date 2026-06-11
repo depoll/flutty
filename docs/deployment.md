@@ -239,6 +239,37 @@ flutter build ios --flavor production --release --no-codesign
 flutter build apk --flavor private --release --build-name=0.1.0-pr.1 --build-number=12345
 ```
 
+### Firebase analytics and crash reporting
+
+Firebase Analytics and Crashlytics are compiled into the app but disabled at
+runtime unless Firebase is explicitly enabled for the build:
+
+```bash
+flutter build apk \
+  --flavor production \
+  --release \
+  --dart-define=FLUTTY_FIREBASE_ENABLED=true
+```
+
+Before enabling that flag, provide the Firebase app config for the matching
+platform/flavor:
+
+- Android: `android/app/src/private/google-services.json` and
+  `android/app/src/production/google-services.json`
+- iOS: `ios/Runner/Firebase/private/GoogleService-Info.plist` and
+  `ios/Runner/Firebase/production/GoogleService-Info.plist`
+
+The config files are ignored by git so release automation should write them
+from encrypted secrets before the build. Without these files, the app keeps
+telemetry unavailable and the native Crashlytics upload phase skips dSYM upload.
+The in-app Settings toggle controls both Firebase Analytics collection and
+Crashlytics collection; collection defaults to off for existing and new installs.
+The Android manifest and iOS Info.plist also disable Firebase collection by
+default so native startup cannot collect before Dart applies the saved setting.
+Firebase's current iOS pods require iOS 15 or newer. iOS builds use CocoaPods
+with `FLUTTER_SWIFT_PACKAGE_MANAGER=false` until the project intentionally
+migrates to Flutter's Swift Package Manager integration.
+
 ## First-Time Setup Checklist
 
 - [ ] Apple Developer account active

@@ -47,6 +47,12 @@ app.*.map.json
 # Android signing
 **/android/app/key.properties
 
+# Firebase app configuration
+**/android/app/google-services.json
+**/android/app/src/*/google-services.json
+**/ios/Runner/GoogleService-Info.plist
+**/ios/Runner/Firebase/*/GoogleService-Info.plist
+
 # Fastlane
 **/fastlane/report.xml
 **/fastlane/Preview.html

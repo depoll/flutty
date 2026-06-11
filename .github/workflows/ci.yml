@@ -253,6 +253,9 @@ jobs:
       # iOS simulator runtime. Newer side-by-side Xcodes can drift ahead of the
       # available runtime and fail builds before Flutter starts.
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      # Flutter's SPM integration is still experimental in this project; keep
+      # Firebase on the CocoaPods path until the migration is intentional.
+      FLUTTER_SWIFT_PACKAGE_MANAGER: "false"
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

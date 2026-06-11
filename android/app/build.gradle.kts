@@ -10,6 +10,31 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val requestedFlavorNames = gradle.startParameter.taskNames
+    .joinToString(" ")
+    .let { taskNames ->
+        buildSet {
+            if (taskNames.contains("Private", ignoreCase = true)) {
+                add("private")
+            }
+            if (taskNames.contains("Production", ignoreCase = true)) {
+                add("production")
+            }
+        }
+    }
+val firebaseConfigFlavorNames = requestedFlavorNames.ifEmpty {
+    setOf("private", "production")
+}
+val hasGoogleServicesConfig =
+    file("google-services.json").exists() ||
+        firebaseConfigFlavorNames.any { flavor ->
+            file("src/$flavor/google-services.json").exists()
+        }
+if (hasGoogleServicesConfig) {
+    apply(plugin = "com.google.gms.google-services")
+    apply(plugin = "com.google.firebase.crashlytics")
+}
+
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("app/key.properties")
 if (keystorePropertiesFile.exists()) {
