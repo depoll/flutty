@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
@@ -2150,6 +2151,47 @@ void main() {
       when(
         () => tmuxService.listWindows(session, tmuxSessionName),
       ).thenAnswer((_) async => windows);
+      when(
+        () => tmuxService.selectWindow(
+          session,
+          tmuxSessionName,
+          1,
+          windowId: any(named: 'windowId'),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
+      when(
+        () => tmuxService.refreshForegroundClients(
+          session,
+          tmuxSessionName,
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
+      when(
+        () => tmuxService.hasForegroundClientOrThrow(
+          session,
+          tmuxSessionName,
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async => true);
+      when(
+        () => tmuxService.currentPanePath(
+          session,
+          tmuxSessionName,
+          priority: any(named: 'priority'),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.createWindow(
+          session,
+          tmuxSessionName,
+          command: any(named: 'command'),
+          name: any(named: 'name'),
+          workingDirectory: any(named: 'workingDirectory'),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
       when(
         () => tmuxService.watchWindowChanges(session, tmuxSessionName),
       ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
@@ -5231,6 +5273,99 @@ void main() {
         TargetPlatform.android,
         TargetPlatform.iOS,
       }),
+    );
+
+    testWidgets(
+      'uses a collapsible tmux sidebar on wide terminal layouts',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1100, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        final handleFinder = find.byKey(const ValueKey('tmux-handle-bar'));
+        expect(handleFinder, findsOneWidget);
+        expect(tester.getSize(handleFinder).width, tmuxSidebarCollapsedWidth);
+        expect(tester.getRect(handleFinder).left, closeTo(0, 0.1));
+        expect(
+          find.byKey(const ValueKey('tmux-sidebar-window-0')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('tmux-sidebar-window-1')),
+          findsOneWidget,
+        );
+        expect(find.text('shell'), findsNothing);
+        expect(find.text('agent'), findsNothing);
+        expect(
+          find.byKey(const ValueKey('tmux-terminal-dismiss-region')),
+          findsNothing,
+        );
+
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-new-window')));
+        await tester.pumpAndSettle();
+
+        final emptyWindowFinder = find.text('Empty window');
+        expect(emptyWindowFinder, findsOneWidget);
+        expect(
+          tester.getTopLeft(emptyWindowFinder).dx,
+          greaterThanOrEqualTo(tmuxSidebarCollapsedWidth),
+        );
+
+        await tester.tap(emptyWindowFinder);
+        await tester.pump();
+
+        verify(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: any(named: 'workingDirectory'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        await tester.pump(const Duration(seconds: 1));
+
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-1')));
+        await tester.pump();
+
+        verify(
+          () => tmuxService.selectWindow(
+            session,
+            'work',
+            1,
+            windowId: any(named: 'windowId'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        await tester.pump(const Duration(seconds: 1));
+
+        await tester.drag(
+          find.byKey(const ValueKey('tmux-sidebar-window-0')),
+          const Offset(80, 0),
+          kind: PointerDeviceKind.mouse,
+          touchSlopX: 0,
+        );
+        await tester.pump();
+
+        expect(tester.getSize(handleFinder).width, tmuxSidebarExpandedWidth);
+        expect(tester.getRect(handleFinder).left, closeTo(0, 0.1));
+        expect(find.text('shell'), findsOneWidget);
+        expect(find.text('agent'), findsOneWidget);
+
+        await tester.drag(
+          find.text('shell'),
+          const Offset(-80, 0),
+          kind: PointerDeviceKind.mouse,
+          touchSlopX: 0,
+        );
+        await tester.pump();
+
+        expect(tester.getSize(handleFinder).width, tmuxSidebarCollapsedWidth);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );
 
     testWidgets(
