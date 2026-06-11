@@ -976,6 +976,20 @@ TextEditingValue _iosBackspaceRunwayValue(int length, {String suffix = ''}) {
   );
 }
 
+TextEditingValue _iosBackspaceRunwayComposingValue(
+  int length, {
+  required String suffix,
+}) {
+  final runway = _iosBackspaceRunwayPayload(length);
+  final text = '$_deleteDetectionMarker$runway$suffix';
+  final suffixStart = _deleteDetectionMarker.length + runway.length;
+  return TextEditingValue(
+    text: text,
+    selection: TextSelection.collapsed(offset: text.length),
+    composing: TextRange(start: suffixStart, end: text.length),
+  );
+}
+
 String _terminalKeyOutput(
   TerminalKey key, {
   bool shift = false,
@@ -7000,6 +7014,82 @@ void main() {
             ),
             isEmpty,
           );
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'strips leaked iOS backspace runways before a composed slash command',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('x', selectionOffset: 1),
+          );
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('', selectionOffset: 0),
+          );
+          await tester.pump();
+
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _iosBackspaceRunwayValue(terminalIosBackspaceRepeatRunwayLength),
+          );
+
+          harness.terminalOutput.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _iosBackspaceRunwayComposingValue(
+              terminalIosBackspaceRepeatRunwayLength,
+              suffix: '/help',
+            ),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, isEmpty);
+
+          tester.testTextInput.updateEditingValue(
+            _iosBackspaceRunwayValue(
+              terminalIosBackspaceRepeatRunwayLength,
+              suffix: '/help',
+            ),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, ['/help']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('/help', selectionOffset: '/help'.length),
+          );
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'preserves leading zero-width text outside iOS backspace runway state',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+          const input = '\u200B/help';
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue(input, selectionOffset: input.length),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, [input]);
 
           await _disposeTerminalHarness(tester, harness);
         } finally {
