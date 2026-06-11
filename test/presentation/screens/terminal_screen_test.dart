@@ -5343,7 +5343,7 @@ void main() {
         await tester.pump(const Duration(seconds: 1));
 
         await tester.drag(
-          handleFinder,
+          find.byKey(const ValueKey('tmux-sidebar-window-0')),
           const Offset(80, 0),
           kind: PointerDeviceKind.mouse,
           touchSlopX: 0,
@@ -5356,7 +5356,7 @@ void main() {
         expect(find.text('agent'), findsOneWidget);
 
         await tester.drag(
-          handleFinder,
+          find.text('shell'),
           const Offset(-80, 0),
           kind: PointerDeviceKind.mouse,
           touchSlopX: 0,
