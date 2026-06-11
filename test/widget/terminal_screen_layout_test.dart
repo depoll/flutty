@@ -53,6 +53,22 @@ void main() {
         TmuxBarPlacement.bottomOverlay,
       );
       expect(tmuxSidebarCollapsedWidth, lessThan(tmuxSidebarExpandedWidth));
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: false, dragOffset: 40),
+        tmuxSidebarCollapsedWidth + 40,
+      );
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: false, dragOffset: 400),
+        tmuxSidebarExpandedWidth,
+      );
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: true, dragOffset: -40),
+        tmuxSidebarExpandedWidth - 40,
+      );
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: true, dragOffset: -400),
+        tmuxSidebarCollapsedWidth,
+      );
     });
 
     test('terminal connection labels distinguish connection states', () {

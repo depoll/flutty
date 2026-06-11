@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
@@ -2173,6 +2174,24 @@ void main() {
           extraFlags: any(named: 'extraFlags'),
         ),
       ).thenAnswer((_) async => true);
+      when(
+        () => tmuxService.currentPanePath(
+          session,
+          tmuxSessionName,
+          priority: any(named: 'priority'),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.createWindow(
+          session,
+          tmuxSessionName,
+          command: any(named: 'command'),
+          name: any(named: 'name'),
+          workingDirectory: any(named: 'workingDirectory'),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
       when(
         () => tmuxService.watchWindowChanges(session, tmuxSessionName),
       ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
@@ -5284,6 +5303,31 @@ void main() {
           findsNothing,
         );
 
+        await tester.tap(find.byKey(const ValueKey('tmux-sidebar-new-window')));
+        await tester.pumpAndSettle();
+
+        final emptyWindowFinder = find.text('Empty window');
+        expect(emptyWindowFinder, findsOneWidget);
+        expect(
+          tester.getTopLeft(emptyWindowFinder).dx,
+          greaterThanOrEqualTo(tmuxSidebarCollapsedWidth),
+        );
+
+        await tester.tap(emptyWindowFinder);
+        await tester.pump();
+
+        verify(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            command: any(named: 'command'),
+            name: any(named: 'name'),
+            workingDirectory: any(named: 'workingDirectory'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).called(1);
+        await tester.pump(const Duration(seconds: 1));
+
         await tester.tap(find.byKey(const ValueKey('tmux-sidebar-window-1')));
         await tester.pump();
 
@@ -5298,13 +5342,28 @@ void main() {
         ).called(1);
         await tester.pump(const Duration(seconds: 1));
 
-        await tester.tap(handleFinder);
+        await tester.drag(
+          handleFinder,
+          const Offset(80, 0),
+          kind: PointerDeviceKind.mouse,
+          touchSlopX: 0,
+        );
         await tester.pump();
 
         expect(tester.getSize(handleFinder).width, tmuxSidebarExpandedWidth);
         expect(tester.getRect(handleFinder).left, closeTo(0, 0.1));
         expect(find.text('shell'), findsOneWidget);
         expect(find.text('agent'), findsOneWidget);
+
+        await tester.drag(
+          handleFinder,
+          const Offset(-80, 0),
+          kind: PointerDeviceKind.mouse,
+          touchSlopX: 0,
+        );
+        await tester.pump();
+
+        expect(tester.getSize(handleFinder).width, tmuxSidebarCollapsedWidth);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );

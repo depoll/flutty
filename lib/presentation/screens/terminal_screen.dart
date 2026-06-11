@@ -703,6 +703,10 @@ const double tmuxSidebarExpandedWidth = 320;
 @visibleForTesting
 const double tmuxSidebarMinTerminalWidth = 520;
 
+/// Horizontal drag distance that snaps the sidebar open or closed.
+@visibleForTesting
+const double tmuxSidebarDragThreshold = 60;
+
 /// Chooses whether tmux controls should sit below or beside the terminal.
 @visibleForTesting
 TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
@@ -713,6 +717,25 @@ TmuxBarPlacement resolveTmuxBarPlacement(double availableWidth) {
           tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth
       ? TmuxBarPlacement.sidebar
       : TmuxBarPlacement.bottomOverlay;
+}
+
+/// Resolves the wide-layout sidebar width while the user drags it.
+@visibleForTesting
+double resolveTmuxSidebarWidth({
+  required bool isExpanded,
+  required double dragOffset,
+}) {
+  const widthDelta = tmuxSidebarExpandedWidth - tmuxSidebarCollapsedWidth;
+  final baseWidth = isExpanded
+      ? tmuxSidebarExpandedWidth
+      : tmuxSidebarCollapsedWidth;
+  final clampedDragOffset = isExpanded
+      ? dragOffset.clamp(-widthDelta, 0.0)
+      : dragOffset.clamp(0.0, widthDelta);
+  return (baseWidth + clampedDragOffset).clamp(
+    tmuxSidebarCollapsedWidth,
+    tmuxSidebarExpandedWidth,
+  );
 }
 
 /// Resolves the tmux bar's vertical offset from the animated bottom padding.
@@ -2869,6 +2892,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
+  double _tmuxSidebarDragOffset = 0;
   String? _connectionOpenedWorkingDirectory;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
@@ -7554,6 +7578,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _activeMuxBackend = RemoteMuxBackend.tmux;
     _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
+    _tmuxSidebarDragOffset = 0;
     _remoteMuxStartupTool = null;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
@@ -8194,9 +8219,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required double availableHeight,
     required EdgeInsets safeInsets,
   }) {
-    final sidebarWidth = _isTmuxBarExpanded
-        ? tmuxSidebarExpandedWidth
-        : tmuxSidebarCollapsedWidth;
+    final sidebarWidth = resolveTmuxSidebarWidth(
+      isExpanded: _isTmuxBarExpanded,
+      dragOffset: _tmuxSidebarDragOffset,
+    );
 
     return ColoredBox(
       color: terminalTheme.background,
@@ -8297,6 +8323,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ref: ref,
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
+      onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
@@ -8309,10 +8336,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTmuxBarExpandedChanged(bool expanded) {
-    if (_isTmuxBarExpanded == expanded || !mounted) {
+    if (!mounted) {
       return;
     }
-    setState(() => _isTmuxBarExpanded = expanded);
+    if (_isTmuxBarExpanded == expanded && _tmuxSidebarDragOffset == 0) {
+      return;
+    }
+    setState(() {
+      _isTmuxBarExpanded = expanded;
+      _tmuxSidebarDragOffset = 0;
+    });
+  }
+
+  void _handleTmuxSidebarDragOffsetChanged(double dragOffset) {
+    if (!mounted || _tmuxSidebarDragOffset == dragOffset) {
+      return;
+    }
+    setState(() => _tmuxSidebarDragOffset = dragOffset);
   }
 
   bool _collapseTmuxBarIfExpanded() {
@@ -8321,7 +8361,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final collapsed = _tmuxBarKey.currentState?.collapseIfExpanded() ?? false;
     if (!collapsed && mounted) {
-      setState(() => _isTmuxBarExpanded = false);
+      setState(() {
+        _isTmuxBarExpanded = false;
+        _tmuxSidebarDragOffset = 0;
+      });
     }
     return true;
   }
