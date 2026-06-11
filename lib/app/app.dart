@@ -14,6 +14,7 @@ import '../domain/services/local_notification_service.dart';
 import '../domain/services/monetization_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
+import '../domain/services/telemetry_service.dart';
 import '../domain/services/terminal_theme_service.dart';
 import 'app_lifecycle_coordinator.dart';
 import 'app_metadata.dart';
@@ -152,6 +153,11 @@ class _BackgroundLifecycleBridgeState
       runStartupTask: _runLifecycleSync,
     );
     _bootstrapController.start();
+    _runLifecycleSync(
+      _recordAppStartedTelemetry,
+      errorContext: 'while recording app startup telemetry',
+      defer: true,
+    );
   }
 
   @override
@@ -304,6 +310,13 @@ class _BackgroundLifecycleBridgeState
 
   Future<void> _refreshMonetizationOnStartup() async {
     await ref.read(monetizationServiceProvider).initialize();
+  }
+
+  Future<void> _recordAppStartedTelemetry() async {
+    final appMetadata = await ref.read(appMetadataProvider.future);
+    await ref
+        .read(telemetryServiceProvider)
+        .logAppStarted(appMetadata: appMetadata);
   }
 
   Future<void> _syncHomeScreenShortcuts() async {

@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/port_forward_browser_service.dart';
+import '../domain/services/telemetry_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
@@ -23,6 +24,7 @@ import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 import '../presentation/screens/upgrade_screen.dart';
 import 'routes.dart';
+import 'telemetry_route_observer.dart';
 
 /// Root navigator key used for global modal prompts.
 final appNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'appNavigator');
@@ -35,10 +37,12 @@ final routerProvider = Provider<GoRouter>((ref) {
   // tests prove locked routes cannot be revealed via back navigation and
   // notification deep-link navigation remains compatible.
   final authState = ref.watch(authStateProvider);
+  final telemetryService = ref.watch(telemetryServiceProvider);
 
   return GoRouter(
     navigatorKey: appNavigatorKey,
     initialLocation: '/',
+    observers: [TelemetryRouteObserver(telemetryService: telemetryService)],
     redirect: (context, state) => redirectForAuthState(
       authState: authState,
       matchedLocation: state.matchedLocation,

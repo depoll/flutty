@@ -116,6 +116,9 @@ abstract final class SettingKeys {
   ///
   /// When disabled, the keyboard can only be toggled via the toolbar button.
   static const tapToShowKeyboard = 'tap_to_show_keyboard';
+
+  /// Whether anonymous analytics and crash reporting are enabled.
+  static const telemetryCollection = 'telemetry_collection';
 }
 
 /// Service for managing app settings.
