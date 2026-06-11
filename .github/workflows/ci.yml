@@ -211,6 +211,18 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Configure Firebase for Android
+        env:
+          FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON" ]; then
+            echo "FLUTTY_FIREBASE_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p android/app/src/production
+          printf '%s' "$FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON" > android/app/src/production/google-services.json
+          echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
+
       - name: Generate CI release signing config
         run: |
           keytool -genkeypair \
@@ -230,7 +242,13 @@ jobs:
           EOF
 
       - name: Build release APK
-        run: flutter build apk --flavor production --release --no-tree-shake-icons --target-platform android-arm64
+        run: |
+          flutter build apk \
+            --flavor production \
+            --release \
+            --no-tree-shake-icons \
+            --target-platform android-arm64 \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -279,6 +297,18 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Configure Firebase for iOS
+        env:
+          FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}
+        run: |
+          if [ -z "$FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "FLUTTY_FIREBASE_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p ios/Runner/Firebase/production
+          printf '%s' "$FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST" > ios/Runner/Firebase/production/GoogleService-Info.plist
+          echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
+
       - name: Disable iOS code signing for CI
         run: |
           cat >> ios/Flutter/Release.xcconfig <<'EOF'
@@ -290,7 +320,14 @@ jobs:
           EOF
 
       - name: Build iOS (no codesign)
-        run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons --split-debug-info=.debug-info
+        run: |
+          flutter build ios \
+            --flavor production \
+            --release \
+            --no-codesign \
+            --no-tree-shake-icons \
+            --split-debug-info=.debug-info \
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
 
       - name: Upload iOS build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
