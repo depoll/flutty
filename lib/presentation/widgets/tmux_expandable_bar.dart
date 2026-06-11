@@ -107,6 +107,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
   static const _pendingSelectionTimeout = Duration(seconds: 2);
+  static const _sidebarDragStartThreshold = 8.0;
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -117,7 +118,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
   double _dragOffset = 0;
-  double? _sidebarDragPointerGlobalX;
+  int? _sidebarDragPointer;
+  Offset? _sidebarDragStartGlobalPosition;
+  Offset? _sidebarDragLastGlobalPosition;
+  bool _isSidebarDragActive = false;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
@@ -1040,37 +1044,74 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     widget.onSidebarDragOffsetChanged(0);
   }
 
-  void _onSidebarHandlePointerDown(PointerDownEvent event) {
-    if (!_isSidebar) {
+  void _onSidebarPointerDown(PointerDownEvent event) {
+    if (!_isSidebar || _sidebarDragPointer != null) {
       return;
     }
-    _sidebarDragPointerGlobalX = event.position.dx;
+    _sidebarDragPointer = event.pointer;
+    _sidebarDragStartGlobalPosition = event.position;
+    _sidebarDragLastGlobalPosition = event.position;
+    _isSidebarDragActive = false;
   }
 
-  void _onSidebarHandlePointerMove(PointerMoveEvent event) {
-    final previousGlobalX = _sidebarDragPointerGlobalX;
-    if (!_isSidebar || previousGlobalX == null) {
+  void _onSidebarPointerMove(PointerMoveEvent event) {
+    final start = _sidebarDragStartGlobalPosition;
+    final last = _sidebarDragLastGlobalPosition;
+    if (!_isSidebar ||
+        _sidebarDragPointer != event.pointer ||
+        start == null ||
+        last == null) {
       return;
     }
-    final deltaX = event.position.dx - previousGlobalX;
-    _sidebarDragPointerGlobalX = event.position.dx;
+    final totalDelta = event.position - start;
+    if (!_isSidebarDragActive) {
+      if (totalDelta.dx.abs() < _sidebarDragStartThreshold &&
+          totalDelta.dy.abs() < _sidebarDragStartThreshold) {
+        _sidebarDragLastGlobalPosition = event.position;
+        return;
+      }
+      if (totalDelta.dx.abs() <= totalDelta.dy.abs()) {
+        _sidebarDragLastGlobalPosition = event.position;
+        return;
+      }
+      _isSidebarDragActive = true;
+    }
+
+    final deltaX = event.position.dx - last.dx;
+    _sidebarDragLastGlobalPosition = event.position;
     if (deltaX == 0) {
       return;
     }
     _applySidebarDragDelta(deltaX);
   }
 
-  void _onSidebarHandlePointerUp(PointerUpEvent event) {
-    if (!_isSidebar || _sidebarDragPointerGlobalX == null) {
+  void _onSidebarPointerUp(PointerUpEvent event) {
+    if (!_isSidebar || _sidebarDragPointer != event.pointer) {
       return;
     }
-    _sidebarDragPointerGlobalX = null;
-    _finishSidebarDrag(0);
+    final shouldFinishDrag = _isSidebarDragActive || _dragOffset != 0;
+    _resetSidebarPointerDrag();
+    if (shouldFinishDrag) {
+      _finishSidebarDrag(0);
+    }
   }
 
-  void _onSidebarHandlePointerCancel(PointerCancelEvent event) {
-    _sidebarDragPointerGlobalX = null;
-    _onHorizontalDragCancel();
+  void _onSidebarPointerCancel(PointerCancelEvent event) {
+    if (_sidebarDragPointer != event.pointer) {
+      return;
+    }
+    final shouldCancelDrag = _isSidebarDragActive || _dragOffset != 0;
+    _resetSidebarPointerDrag();
+    if (shouldCancelDrag) {
+      _onHorizontalDragCancel();
+    }
+  }
+
+  void _resetSidebarPointerDrag() {
+    _sidebarDragPointer = null;
+    _sidebarDragStartGlobalPosition = null;
+    _sidebarDragLastGlobalPosition = null;
+    _isSidebarDragActive = false;
   }
 
   @override
@@ -1143,25 +1184,32 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildSidebar(BuildContext context) {
     final theme = Theme.of(context);
-    return Material(
-      color: theme.colorScheme.surfaceContainerHighest,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(
-            right: BorderSide(
-              color: theme.colorScheme.outlineVariant,
-              width: 0.5,
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _onSidebarPointerDown,
+      onPointerMove: _onSidebarPointerMove,
+      onPointerUp: _onSidebarPointerUp,
+      onPointerCancel: _onSidebarPointerCancel,
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHighest,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border(
+              right: BorderSide(
+                color: theme.colorScheme.outlineVariant,
+                width: 0.5,
+              ),
             ),
           ),
-        ),
-        child: Column(
-          children: [
-            _buildSidebarHandle(theme),
-            if (_showsExpandedSidebarContent)
-              Expanded(child: _buildWindowList(theme))
-            else
-              Expanded(child: _buildCollapsedSidebarWindowRail(theme)),
-          ],
+          child: Column(
+            children: [
+              _buildSidebarHandle(theme),
+              if (_showsExpandedSidebarContent)
+                Expanded(child: _buildWindowList(theme))
+              else
+                Expanded(child: _buildCollapsedSidebarWindowRail(theme)),
+            ],
+          ),
         ),
       ),
     );
@@ -1268,47 +1316,41 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           : 'Double tap or drag right to show tmux windows',
       child: Tooltip(
         message: tooltip,
-        child: Listener(
-          onPointerDown: _onSidebarHandlePointerDown,
-          onPointerMove: _onSidebarHandlePointerMove,
-          onPointerUp: _onSidebarHandlePointerUp,
-          onPointerCancel: _onSidebarHandlePointerCancel,
-          child: GestureDetector(
-            key: const ValueKey('tmux-handle-bar'),
-            behavior: HitTestBehavior.opaque,
-            onTap: _toggleExpanded,
-            child: SizedBox(
-              height: 56,
-              width: double.infinity,
-              child: _showsExpandedSidebarContent
-                  ? Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          icon,
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              handleLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
-                                fontWeight: FontWeight.w600,
-                              ),
+        child: GestureDetector(
+          key: const ValueKey('tmux-handle-bar'),
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggleExpanded,
+          child: SizedBox(
+            height: 56,
+            width: double.infinity,
+            child: _showsExpandedSidebarContent
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      children: [
+                        icon,
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            handleLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Icon(
-                            Icons.chevron_left,
-                            size: 20,
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ],
-                      ),
-                    )
-                  : Center(child: icon),
-            ),
+                        ),
+                        const SizedBox(width: 8),
+                        Icon(
+                          Icons.chevron_left,
+                          size: 20,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ],
+                    ),
+                  )
+                : Center(child: icon),
           ),
         ),
       ),
