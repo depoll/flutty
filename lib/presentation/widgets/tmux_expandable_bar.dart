@@ -1,11 +1,11 @@
 part of '../screens/terminal_screen.dart';
 
-/// Expandable tmux bar overlaid at the bottom of the terminal.
+/// Expandable tmux bar shown as a bottom overlay or a wide-layout side rail.
 ///
-/// Collapsed: a slim handle bar sitting over bottom padding in the terminal.
-/// Expanded: slides up over the terminal content.
-/// The handle height matches the terminal's bottom padding so it never
-/// covers actual terminal content when collapsed.
+/// Bottom overlay collapsed: a slim handle bar sitting over bottom padding in
+/// the terminal. Bottom overlay expanded: slides up over the terminal content.
+/// Sidebar collapsed: a vertical window switcher rail. Sidebar expanded: a
+/// master/detail panel docked beside the terminal.
 class _TmuxExpandableBar extends StatefulWidget {
   const _TmuxExpandableBar({
     required this.session,
@@ -1054,7 +1054,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       child: DecoratedBox(
         decoration: BoxDecoration(
           border: Border(
-            left: BorderSide(
+            right: BorderSide(
               color: theme.colorScheme.outlineVariant,
               width: 0.5,
             ),
@@ -1066,7 +1066,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             if (_expanded)
               Expanded(child: _buildWindowList(theme))
             else
-              const Expanded(child: SizedBox.shrink()),
+              Expanded(child: _buildCollapsedSidebarWindowRail(theme)),
           ],
         ),
       ),
@@ -1200,7 +1200,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                         ),
                         const SizedBox(width: 8),
                         Icon(
-                          Icons.chevron_right,
+                          Icons.chevron_left,
                           size: 20,
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -1229,6 +1229,187 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     return Icon(Icons.window_outlined, size: 16, color: color);
   }
+
+  Widget _buildCollapsedSidebarWindowRail(ThemeData theme) {
+    final displayedWindows = _displayedWindows;
+    if (_isLoading) {
+      return const Center(
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+        ),
+      );
+    }
+
+    if (displayedWindows == null || displayedWindows.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        children: [
+          for (final window in displayedWindows)
+            _buildCollapsedSidebarWindowButton(theme, window),
+          const SizedBox(height: 4),
+          _buildCollapsedSidebarNewWindowButton(theme),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollapsedSidebarWindowButton(
+    ThemeData theme,
+    TmuxWindow window,
+  ) {
+    final isActive = window.isActive;
+    final title = _redactStoreScreenshotIdentities
+        ? switch (window.name.trim()) {
+            'claude' || 'claude-code' => 'Claude Code Workspace',
+            'copilot' => 'Mobile Copilot Workspace',
+            final name when name.isNotEmpty => name,
+            _ => window.displayTitle,
+          }
+        : window.displayTitle;
+    final iconColor = isActive
+        ? theme.colorScheme.onPrimaryContainer
+        : theme.colorScheme.onSurfaceVariant;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      child: Tooltip(
+        message: 'Switch to $title',
+        child: Semantics(
+          button: true,
+          selected: isActive,
+          label: 'tmux window ${window.index}: $title',
+          child: InkWell(
+            key: ValueKey('tmux-sidebar-window-${window.index}'),
+            customBorder: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            onTap: isActive
+                ? null
+                : () {
+                    setState(() {
+                      _pendingSelectedWindowIndex = window.index;
+                    });
+                    _startPendingSelectionTimer(window.index);
+                    unawaited(
+                      widget.onAction(TmuxSwitchWindowAction(window.index)),
+                    );
+                  },
+            child: Ink(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: isActive
+                    ? theme.colorScheme.primaryContainer
+                    : theme.colorScheme.surfaceContainerHigh,
+                border: window.hasAlert
+                    ? Border.all(color: theme.colorScheme.error, width: 2)
+                    : null,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Center(
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.center,
+                  children: [
+                    AgentToolIcon(
+                      tool: window.foregroundAgentTool,
+                      color: iconColor,
+                      fallbackIcon: Icons.terminal,
+                    ),
+                    Positioned(
+                      right: -9,
+                      bottom: -9,
+                      child: _buildCollapsedSidebarWindowIndex(
+                        theme,
+                        window,
+                        isActive: isActive,
+                      ),
+                    ),
+                    if (window.hasAlert)
+                      Positioned(
+                        right: -10,
+                        top: -10,
+                        child: Icon(
+                          Icons.notifications_active,
+                          size: 14,
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCollapsedSidebarWindowIndex(
+    ThemeData theme,
+    TmuxWindow window, {
+    required bool isActive,
+  }) {
+    final colorScheme = theme.colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: isActive
+            ? colorScheme.primary
+            : colorScheme.surfaceContainerHigh,
+        border: Border.all(
+          color: theme.colorScheme.surfaceContainerHighest,
+          width: 1.5,
+        ),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        child: Text(
+          '${window.index}',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: isActive
+                ? colorScheme.onPrimary
+                : colorScheme.onSurfaceVariant,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCollapsedSidebarNewWindowButton(ThemeData theme) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+    child: Tooltip(
+      message: 'New Window',
+      child: Semantics(
+        button: true,
+        label: 'New tmux window',
+        child: InkWell(
+          key: const ValueKey('tmux-sidebar-new-window'),
+          customBorder: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          onTap: () => unawaited(_showNewWindowPicker()),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Icon(
+              Icons.add_circle_outline,
+              size: 22,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 
   Widget _buildWindowList(ThemeData theme) {
     final displayedWindows = _displayedWindows;
