@@ -1222,8 +1222,28 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   String _extractRawInputText(String text) =>
       text.substring(_editingPrefixLength(text));
 
+  String _stripLeakedDeleteSentinelPrefix(String text) {
+    if (!widget.deleteDetection || text.isEmpty) {
+      return text;
+    }
+
+    // iOS can replay hidden backspace runway sentinels with the next composed
+    // text update; those sentinels must never reach the terminal stream.
+    var prefixLength = 0;
+    while (prefixLength < text.length &&
+        text.codeUnitAt(prefixLength) == _iosBackspaceRepeatRunwayCodeUnit) {
+      prefixLength++;
+    }
+    if (prefixLength == 0) {
+      return text;
+    }
+    return text.substring(prefixLength);
+  }
+
   String _extractInputText(String text) {
-    final extractedText = _extractRawInputText(text);
+    final extractedText = _stripLeakedDeleteSentinelPrefix(
+      _extractRawInputText(text),
+    );
     final sanitizedText = extractedText.replaceFirst(
       _leadingSwipeNewlineArtifactPattern,
       '',
