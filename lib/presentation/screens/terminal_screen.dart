@@ -687,7 +687,7 @@ enum TmuxBarPlacement {
   /// A bottom bar over reserved terminal padding on narrow layouts.
   bottomOverlay,
 
-  /// A side panel next to the terminal on wide layouts.
+  /// A left side panel next to the terminal on wide layouts.
   sidebar,
 }
 
@@ -8068,7 +8068,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   /// Wraps the terminal view with the inline tmux window controls.
   ///
-  /// Wide layouts use a collapsible side panel. Narrow layouts keep the
+  /// Wide layouts use a collapsible left side panel. Narrow layouts keep the
   /// bottom bar: when tmux is active, the terminal gets bottom padding equal
   /// to the handle height so the collapsed handle sits over empty space; when
   /// expanded, the bar slides up over the terminal content. When tmux is not
@@ -8089,8 +8089,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final tmuxBarSafeInsets = resolveTmuxBarSafeInsets(
           MediaQuery.of(context),
         );
+        final tmuxBarAvailableWidth = max(
+          0,
+          constraints.maxWidth - tmuxBarSafeInsets.horizontal,
+        ).toDouble();
         final tmuxBarPlacement = showTmux
-            ? resolveTmuxBarPlacement(constraints.maxWidth)
+            ? resolveTmuxBarPlacement(tmuxBarAvailableWidth)
             : TmuxBarPlacement.bottomOverlay;
         final availableHeight = max(
           0,
@@ -8104,6 +8108,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             theme,
             connectionState,
             availableHeight: availableHeight,
+            safeInsets: tmuxBarSafeInsets,
           );
         }
 
@@ -8187,6 +8192,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ThemeData theme,
     SshConnectionState connectionState, {
     required double availableHeight,
+    required EdgeInsets safeInsets,
   }) {
     final sidebarWidth = _isTmuxBarExpanded
         ? tmuxSidebarExpandedWidth
@@ -8197,9 +8203,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: _buildTerminalView(terminalTheme, isMobile, connectionState),
-          ),
+          SizedBox(width: safeInsets.left),
           SizedBox(
             width: sidebarWidth,
             child: _buildTmuxExpandableBar(
@@ -8208,12 +8212,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               placement: TmuxBarPlacement.sidebar,
             ),
           ),
+          Expanded(
+            child: _buildTerminalViewWithConsumedLeftSafeInset(
+              terminalTheme,
+              isMobile,
+              connectionState,
+              consumedLeftSafeInset: safeInsets.left,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  /// Builds the tmux expandable bar overlaid at the bottom of the terminal.
+  Widget _buildTerminalViewWithConsumedLeftSafeInset(
+    TerminalThemeData terminalTheme,
+    bool isMobile,
+    SshConnectionState connectionState, {
+    required double consumedLeftSafeInset,
+  }) {
+    final terminalView = _buildTerminalView(
+      terminalTheme,
+      isMobile,
+      connectionState,
+    );
+    if (consumedLeftSafeInset <= 0) {
+      return terminalView;
+    }
+
+    final mediaQuery = MediaQuery.of(context);
+    return MediaQuery(
+      data: mediaQuery.copyWith(
+        padding: EdgeInsets.fromLTRB(
+          0,
+          mediaQuery.padding.top,
+          mediaQuery.padding.right,
+          mediaQuery.padding.bottom,
+        ),
+        viewPadding: EdgeInsets.fromLTRB(
+          0,
+          mediaQuery.viewPadding.top,
+          mediaQuery.viewPadding.right,
+          mediaQuery.viewPadding.bottom,
+        ),
+      ),
+      child: terminalView,
+    );
+  }
+
+  /// Builds the tmux expandable bar for the active terminal layout.
   Widget _buildTmuxExpandableBar(
     ThemeData theme,
     double availableHeight, {
