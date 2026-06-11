@@ -1,6 +1,10 @@
+import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/telemetry_service.dart';
 
 void main() {
@@ -137,7 +141,108 @@ void main() {
       );
     });
   });
+
+  group('TelemetryOptInPromptNotifier', () {
+    test('records launch count for delayed prompt eligibility', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final container = _createTelemetryContainer(db: db);
+      addTearDown(container.dispose);
+      addTearDown(db.close);
+
+      final notifier = container.read(
+        telemetryOptInPromptNotifierProvider.notifier,
+      );
+      await notifier.recordAppLaunch();
+      await notifier.recordAppLaunch();
+      await notifier.recordAppLaunch();
+
+      final state = container.read(telemetryOptInPromptNotifierProvider);
+      expect(
+        state.appLaunchCount,
+        TelemetryOptInPromptNotifier.minimumLaunchCountForPrompt,
+      );
+      expect(state.choice, TelemetryOptInPromptChoice.notShown);
+      expect(
+        await SettingsService(db).getInt(SettingKeys.telemetryAppLaunchCount),
+        TelemetryOptInPromptNotifier.minimumLaunchCountForPrompt,
+      );
+    });
+
+    test('accept enables collection and resolves prompt', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final analytics = _FakeAnalyticsClient();
+      final crashReporter = _FakeCrashReporter();
+      final container = _createTelemetryContainer(
+        db: db,
+        telemetryService: TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: false,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: analytics,
+          crashReporter: crashReporter,
+        ),
+      );
+      addTearDown(container.dispose);
+      addTearDown(db.close);
+
+      await container
+          .read(telemetryOptInPromptNotifierProvider.notifier)
+          .accept();
+
+      final settings = SettingsService(db);
+      expect(
+        container.read(telemetryOptInPromptNotifierProvider).choice,
+        TelemetryOptInPromptChoice.accepted,
+      );
+      expect(await settings.getBool(SettingKeys.telemetryCollection), isTrue);
+      expect(
+        await settings.getString(SettingKeys.telemetryOptInPromptState),
+        TelemetryOptInPromptChoice.accepted.name,
+      );
+      expect(analytics.collectionEnabled, isTrue);
+      expect(crashReporter.collectionEnabled, isTrue);
+    });
+
+    test('dismiss resolves prompt without enabling collection', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final container = _createTelemetryContainer(db: db);
+      addTearDown(container.dispose);
+      addTearDown(db.close);
+
+      await container
+          .read(telemetryOptInPromptNotifierProvider.notifier)
+          .dismiss();
+
+      final settings = SettingsService(db);
+      expect(
+        container.read(telemetryOptInPromptNotifierProvider).choice,
+        TelemetryOptInPromptChoice.dismissed,
+      );
+      expect(await settings.getBool(SettingKeys.telemetryCollection), isFalse);
+      expect(
+        await settings.getString(SettingKeys.telemetryOptInPromptState),
+        TelemetryOptInPromptChoice.dismissed.name,
+      );
+    });
+  });
 }
+
+ProviderContainer _createTelemetryContainer({
+  required AppDatabase db,
+  TelemetryService? telemetryService,
+}) => ProviderContainer(
+  overrides: [
+    databaseProvider.overrideWithValue(db),
+    telemetryServiceProvider.overrideWithValue(
+      telemetryService ??
+          TelemetryService(
+            status: TelemetryServiceStatus.disabledByBuild,
+            collectionEnabled: false,
+            diagnosticsLogger: const NoopDiagnosticsLogger(),
+          ),
+    ),
+  ],
+);
 
 class _FakeAnalyticsClient implements TelemetryAnalyticsClient {
   final List<_AnalyticsEvent> events = <_AnalyticsEvent>[];

@@ -403,6 +403,12 @@ class TelemetryCollectionNotifier extends Notifier<bool> {
       SettingKeys.telemetryCollection,
       value: enabled,
     );
+    if (enabled) {
+      await _settingsService.setString(
+        SettingKeys.telemetryOptInPromptState,
+        TelemetryOptInPromptChoice.accepted.name,
+      );
+    }
     await _telemetryService.setCollectionEnabled(enabled: enabled);
     state = enabled;
   }
@@ -426,6 +432,170 @@ class TelemetryCollectionNotifier extends Notifier<bool> {
 final telemetryCollectionNotifierProvider =
     NotifierProvider<TelemetryCollectionNotifier, bool>(
       TelemetryCollectionNotifier.new,
+    );
+
+/// User choice for the one-time telemetry opt-in prompt.
+enum TelemetryOptInPromptChoice {
+  /// The prompt has not been shown or answered.
+  notShown,
+
+  /// The user dismissed the prompt.
+  dismissed,
+
+  /// The user accepted telemetry collection.
+  accepted,
+}
+
+/// Persistent state for the telemetry opt-in prompt.
+@immutable
+class TelemetryOptInPromptState {
+  /// Creates telemetry prompt state.
+  const TelemetryOptInPromptState({
+    required this.choice,
+    required this.appLaunchCount,
+  });
+
+  /// User's prompt choice.
+  final TelemetryOptInPromptChoice choice;
+
+  /// Number of recorded app launches.
+  final int appLaunchCount;
+
+  /// Whether the user has made a final prompt choice.
+  bool get isResolved => choice != TelemetryOptInPromptChoice.notShown;
+
+  /// Creates a copy with updated fields.
+  TelemetryOptInPromptState copyWith({
+    TelemetryOptInPromptChoice? choice,
+    int? appLaunchCount,
+  }) => TelemetryOptInPromptState(
+    choice: choice ?? this.choice,
+    appLaunchCount: appLaunchCount ?? this.appLaunchCount,
+  );
+}
+
+/// Notifier for delayed telemetry prompt state.
+class TelemetryOptInPromptNotifier extends Notifier<TelemetryOptInPromptState> {
+  /// Minimum number of launches before showing the prompt without a connection.
+  static const int minimumLaunchCountForPrompt = 3;
+
+  late SettingsService _settingsService;
+  bool _disposed = false;
+
+  @override
+  TelemetryOptInPromptState build() {
+    _settingsService = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return const TelemetryOptInPromptState(
+      choice: TelemetryOptInPromptChoice.notShown,
+      appLaunchCount: 0,
+    );
+  }
+
+  /// Records one app launch for prompt eligibility.
+  Future<void> recordAppLaunch() async {
+    final loadedState = await _loadState();
+    if (loadedState.isResolved) {
+      if (!_disposed) {
+        state = loadedState;
+      }
+      return;
+    }
+    final nextLaunchCount = loadedState.appLaunchCount + 1;
+    await _settingsService.setInt(
+      SettingKeys.telemetryAppLaunchCount,
+      nextLaunchCount,
+    );
+    if (_disposed) {
+      return;
+    }
+    state = loadedState.copyWith(appLaunchCount: nextLaunchCount);
+  }
+
+  /// Accepts the prompt and enables telemetry collection.
+  Future<void> accept() async {
+    await ref
+        .read(telemetryCollectionNotifierProvider.notifier)
+        .setEnabled(enabled: true);
+    await _settingsService.setString(
+      SettingKeys.telemetryOptInPromptState,
+      TelemetryOptInPromptChoice.accepted.name,
+    );
+    if (_disposed) {
+      return;
+    }
+    state = state.copyWith(choice: TelemetryOptInPromptChoice.accepted);
+  }
+
+  /// Dismisses the prompt without enabling telemetry collection.
+  Future<void> dismiss() async {
+    await _settingsService.setString(
+      SettingKeys.telemetryOptInPromptState,
+      TelemetryOptInPromptChoice.dismissed.name,
+    );
+    if (_disposed) {
+      return;
+    }
+    state = state.copyWith(choice: TelemetryOptInPromptChoice.dismissed);
+  }
+
+  Future<void> _init() async {
+    final loadedState = await _loadState();
+    if (_disposed) {
+      return;
+    }
+    state = _mergeLoadedState(loadedState);
+  }
+
+  Future<TelemetryOptInPromptState> _loadState() async {
+    final launchCount =
+        await _settingsService.getInt(SettingKeys.telemetryAppLaunchCount) ?? 0;
+    final collectionEnabled = await _settingsService.getBool(
+      SettingKeys.telemetryCollection,
+    );
+    if (collectionEnabled) {
+      return TelemetryOptInPromptState(
+        choice: TelemetryOptInPromptChoice.accepted,
+        appLaunchCount: launchCount,
+      );
+    }
+    final choiceName = await _settingsService.getString(
+      SettingKeys.telemetryOptInPromptState,
+    );
+    return TelemetryOptInPromptState(
+      choice: _parsePromptChoice(choiceName),
+      appLaunchCount: launchCount,
+    );
+  }
+
+  TelemetryOptInPromptChoice _parsePromptChoice(String? value) =>
+      switch (value) {
+        'dismissed' => TelemetryOptInPromptChoice.dismissed,
+        'accepted' => TelemetryOptInPromptChoice.accepted,
+        _ => TelemetryOptInPromptChoice.notShown,
+      };
+
+  TelemetryOptInPromptState _mergeLoadedState(
+    TelemetryOptInPromptState loadedState,
+  ) {
+    final currentState = state;
+    return TelemetryOptInPromptState(
+      choice: currentState.isResolved
+          ? currentState.choice
+          : loadedState.choice,
+      appLaunchCount: currentState.appLaunchCount > loadedState.appLaunchCount
+          ? currentState.appLaunchCount
+          : loadedState.appLaunchCount,
+    );
+  }
+}
+
+/// Provider for telemetry prompt state.
+final telemetryOptInPromptNotifierProvider =
+    NotifierProvider<TelemetryOptInPromptNotifier, TelemetryOptInPromptState>(
+      TelemetryOptInPromptNotifier.new,
     );
 
 class _FirebaseTelemetryAnalyticsClient implements TelemetryAnalyticsClient {

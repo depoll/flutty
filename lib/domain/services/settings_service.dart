@@ -119,6 +119,12 @@ abstract final class SettingKeys {
 
   /// Whether anonymous analytics and crash reporting are enabled.
   static const telemetryCollection = 'telemetry_collection';
+
+  /// State of the one-time telemetry opt-in prompt.
+  static const telemetryOptInPromptState = 'telemetry_opt_in_prompt_state';
+
+  /// Count of foreground app launches used to delay the telemetry prompt.
+  static const telemetryAppLaunchCount = 'telemetry_app_launch_count';
 }
 
 /// Service for managing app settings.

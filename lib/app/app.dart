@@ -154,6 +154,11 @@ class _BackgroundLifecycleBridgeState
     );
     _bootstrapController.start();
     _runLifecycleSync(
+      _recordTelemetryPromptAppLaunch,
+      errorContext: 'while recording telemetry prompt launch state',
+      defer: true,
+    );
+    _runLifecycleSync(
       _recordAppStartedTelemetry,
       errorContext: 'while recording app startup telemetry',
       defer: true,
@@ -310,6 +315,12 @@ class _BackgroundLifecycleBridgeState
 
   Future<void> _refreshMonetizationOnStartup() async {
     await ref.read(monetizationServiceProvider).initialize();
+  }
+
+  Future<void> _recordTelemetryPromptAppLaunch() async {
+    await ref
+        .read(telemetryOptInPromptNotifierProvider.notifier)
+        .recordAppLaunch();
   }
 
   Future<void> _recordAppStartedTelemetry() async {
