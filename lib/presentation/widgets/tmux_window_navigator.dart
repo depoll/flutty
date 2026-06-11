@@ -109,6 +109,111 @@ Future<TmuxNewWindowAction?> showTmuxNewWindowPicker({
   ),
 );
 
+/// Shows the tmux new-window picker as a menu next to [anchorContext].
+Future<TmuxNewWindowAction?> showTmuxNewWindowContextMenu({
+  required BuildContext context,
+  required BuildContext anchorContext,
+  required bool isProUser,
+  required bool startClisInYoloMode,
+  Future<Set<AgentLaunchTool>>? installedToolsFuture,
+  AgentLaunchTool? preferredTool,
+}) async {
+  final overlay = Overlay.maybeOf(context);
+  final overlayBox = overlay?.context.findRenderObject() as RenderBox?;
+  final anchorBox = anchorContext.findRenderObject() as RenderBox?;
+  if (overlayBox == null || anchorBox == null) {
+    return null;
+  }
+
+  final anchorTopLeft = anchorBox.localToGlobal(
+    Offset.zero,
+    ancestor: overlayBox,
+  );
+  final menuPosition = RelativeRect.fromRect(
+    anchorTopLeft & anchorBox.size,
+    Offset.zero & overlayBox.size,
+  );
+
+  final tools = await _resolveTmuxNewWindowTools(
+    installedToolsFuture,
+    preferredTool: preferredTool,
+  );
+  if (!context.mounted || !anchorContext.mounted) {
+    return null;
+  }
+
+  final selection = await showMenu<TmuxNewWindowAction>(
+    context: context,
+    position: menuPosition,
+    requestFocus: terminalOverlayRouteRequestFocus(context),
+    items: [
+      const PopupMenuItem<TmuxNewWindowAction>(
+        enabled: false,
+        child: Text('New Window'),
+      ),
+      if (tools.isEmpty)
+        PopupMenuItem<TmuxNewWindowAction>(
+          enabled: false,
+          child: Text(
+            'No supported CLIs found on PATH.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        )
+      else
+        for (final tool in tools)
+          PopupMenuItem<TmuxNewWindowAction>(
+            enabled: isProUser,
+            value: TmuxNewWindowAction(
+              command: buildAgentToolCommand(
+                tool,
+                startInYoloMode: startClisInYoloMode,
+              ),
+              windowName: tool.commandName,
+            ),
+            child: _TmuxNewWindowMenuItem(
+              icon: TmuxToolPickerSheet._iconForTool(tool, Theme.of(context)),
+              label: tool.label,
+              trailing: !isProUser ? const PremiumBadge() : null,
+            ),
+          ),
+      const PopupMenuDivider(),
+      PopupMenuItem<TmuxNewWindowAction>(
+        value: const TmuxNewWindowAction(),
+        child: _TmuxNewWindowMenuItem(
+          icon: Icon(
+            Icons.terminal,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            size: 18,
+          ),
+          label: 'Empty window',
+        ),
+      ),
+    ],
+  );
+
+  return selection;
+}
+
+Future<List<AgentLaunchTool>> _resolveTmuxNewWindowTools(
+  Future<Set<AgentLaunchTool>>? installedToolsFuture, {
+  AgentLaunchTool? preferredTool,
+}) async {
+  Iterable<AgentLaunchTool> availableTools;
+  if (installedToolsFuture == null) {
+    availableTools = TmuxToolPickerSheet._allTools;
+  } else {
+    try {
+      final installed = await installedToolsFuture;
+      availableTools = TmuxToolPickerSheet._allTools.where(installed.contains);
+    } on Object {
+      availableTools = const <AgentLaunchTool>[];
+    }
+  }
+  return _orderedAgentLaunchTools(availableTools, preferredTool: preferredTool);
+}
+
 /// An action selected from the tmux navigator.
 sealed class TmuxNavigatorAction {
   /// Creates a new [TmuxNavigatorAction].
@@ -1071,4 +1176,27 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) =>
       AgentToolIcon(tool: tool, color: theme.colorScheme.primary);
+}
+
+class _TmuxNewWindowMenuItem extends StatelessWidget {
+  const _TmuxNewWindowMenuItem({
+    required this.icon,
+    required this.label,
+    this.trailing,
+  });
+
+  final Widget icon;
+  final String label;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SizedBox(width: 24, child: Center(child: icon)),
+      const SizedBox(width: 12),
+      Flexible(child: Text(label)),
+      if (trailing != null) ...[const SizedBox(width: 12), trailing!],
+    ],
+  );
 }

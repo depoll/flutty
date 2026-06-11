@@ -40,6 +40,37 @@ void main() {
       expect(tmuxHandleMinTouchExtent, greaterThanOrEqualTo(44));
     });
 
+    test('moves tmux controls to a sidebar only when width allows it', () {
+      const breakpoint = tmuxSidebarExpandedWidth + tmuxSidebarMinTerminalWidth;
+
+      expect(
+        resolveTmuxBarPlacement(breakpoint - 1),
+        TmuxBarPlacement.bottomOverlay,
+      );
+      expect(resolveTmuxBarPlacement(breakpoint), TmuxBarPlacement.sidebar);
+      expect(
+        resolveTmuxBarPlacement(double.infinity),
+        TmuxBarPlacement.bottomOverlay,
+      );
+      expect(tmuxSidebarCollapsedWidth, lessThan(tmuxSidebarExpandedWidth));
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: false, dragOffset: 40),
+        tmuxSidebarCollapsedWidth + 40,
+      );
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: false, dragOffset: 400),
+        tmuxSidebarExpandedWidth,
+      );
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: true, dragOffset: -40),
+        tmuxSidebarExpandedWidth - 40,
+      );
+      expect(
+        resolveTmuxSidebarWidth(isExpanded: true, dragOffset: -400),
+        tmuxSidebarCollapsedWidth,
+      );
+    });
+
     test('terminal connection labels distinguish connection states', () {
       expect(
         describeTerminalConnectionState(
