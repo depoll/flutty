@@ -1223,14 +1223,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       text.substring(_editingPrefixLength(text));
 
   String _stripLeakedDeleteSentinelPrefix(String text) {
-    if (!widget.deleteDetection || text.isEmpty) {
+    if (!_shouldUseIosBackspaceRunway ||
+        _iosBackspaceRunwayLength == 0 ||
+        text.isEmpty) {
       return text;
     }
 
     // iOS can replay hidden backspace runway sentinels with the next composed
     // text update; those sentinels must never reach the terminal stream.
+    final maxPrefixLength = text.length < _iosBackspaceRunwayLength
+        ? text.length
+        : _iosBackspaceRunwayLength;
     var prefixLength = 0;
-    while (prefixLength < text.length &&
+    while (prefixLength < maxPrefixLength &&
         text.codeUnitAt(prefixLength) == _iosBackspaceRepeatRunwayCodeUnit) {
       prefixLength++;
     }
@@ -2300,6 +2305,22 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return true;
   }
 
+  void _preserveIosBackspaceRunwayForComposing(TextEditingValue value) {
+    if (!_shouldUseIosBackspaceRunway || _iosBackspaceRunwayLength == 0) {
+      _iosBackspaceRunwayLength = 0;
+      return;
+    }
+    if (_editingPrefixLength(value.text) != _initEditingState.text.length) {
+      _iosBackspaceRunwayLength = 0;
+      return;
+    }
+
+    final runwayPrefixLength = _leadingIosBackspaceRunwayLength(
+      _extractRawInputText(value.text),
+    );
+    _iosBackspaceRunwayLength = runwayPrefixLength;
+  }
+
   TextEditingValue _stripIosBackspaceRunway(TextEditingValue value) {
     if (!_shouldUseIosBackspaceRunway || _iosBackspaceRunwayLength == 0) {
       return value;
@@ -2472,7 +2493,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       // Handle composing (IME input in progress).
       if (!value.composing.isCollapsed) {
         _cancelDeferredTrailingBackspaceImeClear();
-        _iosBackspaceRunwayLength = 0;
+        _preserveIosBackspaceRunwayForComposing(value);
         if (_sendComposingDeletionIfNeeded(value)) {
           _sawImeComposition = true;
           return;

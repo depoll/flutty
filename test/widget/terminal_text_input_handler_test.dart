@@ -7077,6 +7077,28 @@ void main() {
     );
 
     testWidgets(
+      'preserves leading zero-width text outside iOS backspace runway state',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+          const input = '\u200B/help';
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue(input, selectionOffset: input.length),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, [input]);
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
       'keeps iOS held backspace fast after visible text is exhausted',
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
