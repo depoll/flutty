@@ -21,6 +21,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.activeMuxBackend,
     required this.onAction,
     required this.onExpandedChanged,
+    required this.onSidebarDragOffsetChanged,
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
     this.onWindowStateChanged,
@@ -71,6 +72,9 @@ class _TmuxExpandableBar extends StatefulWidget {
   /// Called when the expanded/collapsed state changes.
   final ValueChanged<bool> onExpandedChanged;
 
+  /// Called as the sidebar is dragged horizontally so the parent can resize.
+  final ValueChanged<double> onSidebarDragOffsetChanged;
+
   final void Function(
     SshSession session,
     String sessionName, {
@@ -113,6 +117,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
   double _dragOffset = 0;
+  double? _sidebarDragPointerGlobalX;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
@@ -137,6 +142,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   bool get _emptyWindowListEndsSession =>
       widget.activeMuxBackend == RemoteMuxBackend.monkeyMux;
+
+  bool get _showsExpandedSidebarContent => _expanded || _dragOffset > 0;
 
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
@@ -774,17 +781,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _resumeSession(selected);
   }
 
-  Future<void> _showNewWindowPicker() async {
+  Future<void> _showNewWindowPicker({BuildContext? anchorContext}) async {
     final installedToolsFuture = widget.ref
         .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
-    final action = await showTmuxNewWindowPicker(
-      context: context,
-      isProUser: widget.isProUser,
-      startClisInYoloMode: widget.startClisInYoloMode,
-      installedToolsFuture: installedToolsFuture,
-      preferredTool: _preferredLaunchTool,
-    );
+    final action = _isSidebar && anchorContext != null
+        ? await showTmuxNewWindowContextMenu(
+            context: context,
+            anchorContext: anchorContext,
+            isProUser: widget.isProUser,
+            startClisInYoloMode: widget.startClisInYoloMode,
+            installedToolsFuture: installedToolsFuture,
+            preferredTool: _preferredLaunchTool,
+          )
+        : await showTmuxNewWindowPicker(
+            context: context,
+            isProUser: widget.isProUser,
+            startClisInYoloMode: widget.startClisInYoloMode,
+            installedToolsFuture: installedToolsFuture,
+            preferredTool: _preferredLaunchTool,
+          );
     if (!mounted || action == null) {
       return;
     }
@@ -979,6 +995,84 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (shouldExpand) _loadWindows();
   }
 
+  void _applySidebarDragDelta(double deltaX) {
+    const maxDrag = tmuxSidebarExpandedWidth - tmuxSidebarCollapsedWidth;
+    final nextDragOffset = (_dragOffset + deltaX).clamp(
+      _expanded ? -maxDrag : 0.0,
+      _expanded ? 0.0 : maxDrag,
+    );
+    if (nextDragOffset == _dragOffset) {
+      return;
+    }
+    setState(() => _dragOffset = nextDragOffset);
+    widget.onSidebarDragOffsetChanged(nextDragOffset);
+  }
+
+  void _finishSidebarDrag(double velocity) {
+    final shouldExpand =
+        !_expanded &&
+        (velocity > 200 || _dragOffset > tmuxSidebarDragThreshold);
+    final shouldCollapse =
+        _expanded &&
+        (velocity < -200 || _dragOffset < -tmuxSidebarDragThreshold);
+    setState(() {
+      if (shouldExpand) {
+        _expanded = true;
+      } else if (shouldCollapse) {
+        _expanded = false;
+      }
+      _dragOffset = 0;
+    });
+    widget.onSidebarDragOffsetChanged(0);
+    if (shouldExpand) {
+      widget.onExpandedChanged(true);
+      _loadWindows();
+    } else if (shouldCollapse) {
+      widget.onExpandedChanged(false);
+    }
+  }
+
+  void _onHorizontalDragCancel() {
+    if (!_isSidebar || _dragOffset == 0) {
+      return;
+    }
+    setState(() => _dragOffset = 0);
+    widget.onSidebarDragOffsetChanged(0);
+  }
+
+  void _onSidebarHandlePointerDown(PointerDownEvent event) {
+    if (!_isSidebar) {
+      return;
+    }
+    _sidebarDragPointerGlobalX = event.position.dx;
+  }
+
+  void _onSidebarHandlePointerMove(PointerMoveEvent event) {
+    final previousGlobalX = _sidebarDragPointerGlobalX;
+    if (!_isSidebar || previousGlobalX == null) {
+      return;
+    }
+    final deltaX = event.position.dx - previousGlobalX;
+    _sidebarDragPointerGlobalX = event.position.dx;
+    if (deltaX == 0) {
+      return;
+    }
+    _applySidebarDragDelta(deltaX);
+  }
+
+  void _onSidebarHandlePointerUp(PointerUpEvent event) {
+    if (!_isSidebar || _sidebarDragPointerGlobalX == null) {
+      return;
+    }
+    _sidebarDragPointerGlobalX = null;
+    _finishSidebarDrag(0);
+  }
+
+  void _onSidebarHandlePointerCancel(PointerCancelEvent event) {
+    _sidebarDragPointerGlobalX = null;
+    _onHorizontalDragCancel();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isSidebar) {
@@ -1063,7 +1157,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         child: Column(
           children: [
             _buildSidebarHandle(theme),
-            if (_expanded)
+            if (_showsExpandedSidebarContent)
               Expanded(child: _buildWindowList(theme))
             else
               Expanded(child: _buildCollapsedSidebarWindowRail(theme)),
@@ -1170,44 +1264,51 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       toggled: _expanded,
       label: 'tmux windows: $handleLabel',
       hint: _expanded
-          ? 'Double tap to collapse the tmux window sidebar'
-          : 'Double tap to show tmux windows',
+          ? 'Double tap or drag left to collapse the tmux window sidebar'
+          : 'Double tap or drag right to show tmux windows',
       child: Tooltip(
         message: tooltip,
-        child: InkWell(
-          key: const ValueKey('tmux-handle-bar'),
-          onTap: _toggleExpanded,
-          child: SizedBox(
-            height: 56,
-            width: double.infinity,
-            child: _expanded
-                ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        icon,
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            handleLabel,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
+        child: Listener(
+          onPointerDown: _onSidebarHandlePointerDown,
+          onPointerMove: _onSidebarHandlePointerMove,
+          onPointerUp: _onSidebarHandlePointerUp,
+          onPointerCancel: _onSidebarHandlePointerCancel,
+          child: GestureDetector(
+            key: const ValueKey('tmux-handle-bar'),
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleExpanded,
+            child: SizedBox(
+              height: 56,
+              width: double.infinity,
+              child: _showsExpandedSidebarContent
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          icon,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              handleLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Icon(
-                          Icons.chevron_left,
-                          size: 20,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ],
-                    ),
-                  )
-                : Center(child: icon),
+                          const SizedBox(width: 8),
+                          Icon(
+                            Icons.chevron_left,
+                            size: 20,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ],
+                      ),
+                    )
+                  : Center(child: icon),
+            ),
           ),
         ),
       ),
@@ -1384,26 +1485,29 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
-  Widget _buildCollapsedSidebarNewWindowButton(ThemeData theme) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-    child: Tooltip(
-      message: 'New Window',
-      child: Semantics(
-        button: true,
-        label: 'New tmux window',
-        child: InkWell(
-          key: const ValueKey('tmux-sidebar-new-window'),
-          customBorder: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          onTap: () => unawaited(_showNewWindowPicker()),
-          child: SizedBox(
-            width: 44,
-            height: 44,
-            child: Icon(
-              Icons.add_circle_outline,
-              size: 22,
-              color: theme.colorScheme.primary,
+  Widget _buildCollapsedSidebarNewWindowButton(ThemeData theme) => Builder(
+    builder: (buttonContext) => Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      child: Tooltip(
+        message: 'New Window',
+        child: Semantics(
+          button: true,
+          label: 'New tmux window',
+          child: InkWell(
+            key: const ValueKey('tmux-sidebar-new-window'),
+            customBorder: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            onTap: () =>
+                unawaited(_showNewWindowPicker(anchorContext: buttonContext)),
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: Icon(
+                Icons.add_circle_outline,
+                size: 22,
+                color: theme.colorScheme.primary,
+              ),
             ),
           ),
         ),
