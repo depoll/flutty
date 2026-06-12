@@ -50,6 +50,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/shell_completion_service.dart';
 import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_connection_backend_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
@@ -721,6 +722,12 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     ?.where((window) => window.isActive)
     .firstOrNull
     ?.foregroundAgentTool;
+
+String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
+  RemoteMuxBackend.auto => 'auto',
+  RemoteMuxBackend.tmux => 'tmux',
+  RemoteMuxBackend.monkeyMux => 'monkeymux',
+};
 
 /// Resolves whether the active tmux window requested mouse-wheel input.
 @visibleForTesting
@@ -7131,6 +7138,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } on MonkeyMuxInstallDeclinedException {
         _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logMuxInstallFailed(
+                backend: 'monkeymux',
+                failureCategory: 'declined',
+              ),
+        );
         DiagnosticsLogService.instance.info(
           'monkeymux.install',
           'attach_declined',
@@ -7142,6 +7157,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return null;
       } on Exception catch (error) {
         _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logMuxInstallFailed(
+                backend: 'monkeymux',
+                failureCategory: 'unavailable',
+              ),
+        );
         DiagnosticsLogService.instance.warning(
           'monkeymux.install',
           'attach_unavailable',
@@ -7461,6 +7484,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _shellCompletionTmuxContextRefreshedAt = null;
       _shellCompletionTmuxContextConnectionId = null;
       _shellCompletionTmuxContextSessionName = null;
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logMuxDetected(backend: _telemetryMuxBackendName(command.backend)),
+      );
     }
 
     if (mounted) {
@@ -7887,6 +7915,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'windowCount': windows.length,
           },
         );
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logMuxDetected(backend: _telemetryMuxBackendName(muxBackend)),
+        );
         // Prime tmux's per-pane color cache with the active theme as soon
         // as we confirm tmux is running. Without this, an inner TUI like
         // Codex CLI that queries OSC 11 for theme detection would receive
@@ -8253,12 +8286,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final isProUser = monetizationState.allowsFeature(
         MonetizationFeature.agentLaunchPresets,
       );
+      final currentWindowCount = _currentTmuxWindowsSnapshot?.length ?? 0;
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logMuxNavigatorOpened(
+              backend: _telemetryMuxBackendName(_activeMuxBackend),
+              windowCount: currentWindowCount,
+            ),
+      );
 
       final action = await showTmuxNavigator(
         context: context,
         ref: ref,
         session: session,
         tmuxSessionName: _tmuxSessionName!,
+        remoteMuxBackend: _activeMuxBackend,
         remoteMultiplexerService: _activeRemoteMultiplexerService,
         tmuxExtraFlags: _activeTmuxExtraFlags,
         isProUser: isProUser,
@@ -8284,8 +8327,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       switch (action) {
         case TmuxSwitchWindowAction(:final windowIndex):
           await _switchTmuxWindow(session, windowIndex);
+          unawaited(
+            ref
+                .read(telemetryServiceProvider)
+                .logMuxWindowSwitched(
+                  backend: _telemetryMuxBackendName(_activeMuxBackend),
+                ),
+          );
         case TmuxNewWindowAction(:final command, :final windowName):
           await _createTmuxWindow(session, command: command, name: windowName);
+          unawaited(
+            ref
+                .read(telemetryServiceProvider)
+                .logMuxWindowCreated(
+                  backend: _telemetryMuxBackendName(_activeMuxBackend),
+                  hasCommand: command?.trim().isNotEmpty ?? false,
+                ),
+          );
         case TmuxResumeSessionAction(
           :final resumeCommand,
           :final workingDirectory,
@@ -8294,6 +8352,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             session,
             command: resumeCommand,
             workingDirectory: workingDirectory,
+          );
+          final tool = agentLaunchToolForCommandText(resumeCommand);
+          unawaited(
+            ref
+                .read(telemetryServiceProvider)
+                .logSessionHistorySelected(tool: tool?.name ?? 'unknown'),
+          );
+          unawaited(
+            ref
+                .read(telemetryServiceProvider)
+                .logAgentLaunchUsed(
+                  tool: tool?.name ?? 'unknown',
+                  usedSessionHistory: true,
+                  usesMux: true,
+                ),
           );
         case TmuxCloseWindowAction(:final windowIndex):
           await _closeTmuxWindow(session, windowIndex);
@@ -8414,6 +8487,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await backend.selectWindow(windowIndex);
     } else {
       await backend.selectWindow(windowIndex, windowId: targetWindowId);
+    }
+    final activeTool =
+        targetWindow?.foregroundAgentTool ?? targetWindow?.agentTool;
+    if (activeTool != null) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logAgentLaunchUsed(
+              tool: activeTool.name,
+              usedSessionHistory: false,
+              usesMux: true,
+            ),
+      );
     }
     if (backend.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
       _prepareTerminalForMuxWindowChange();
@@ -8566,6 +8652,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
+    final tool = agentLaunchToolForCommandText(command);
+    if (tool != null) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logAgentLaunchUsed(
+              tool: tool.name,
+              usedSessionHistory: false,
+              usesMux: true,
+            ),
+      );
+    }
     _prepareTerminalForMuxWindowChange(
       workingDirectory: resolvedWorkingDirectory,
     );
@@ -9537,8 +9635,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
                 isActive: _showKeyboardToolbar,
               ),
-              onPressed: () =>
-                  setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
+              onPressed: _toggleKeyboardToolbar,
               tooltip: _showKeyboardToolbar
                   ? 'Hide extra keys'
                   : 'Show extra keys',
@@ -9689,6 +9786,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   /// Toggles the system keyboard visibility on mobile platforms.
   void _toggleSystemKeyboard(bool isVisible) {
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logSystemKeyboardToggled(visible: !isVisible),
+    );
     if (isVisible) {
       unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
       _terminalFocusNode.unfocus();
@@ -9697,6 +9799,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // tap-to-show setting.
       _restoreTerminalFocus(forceShowSystemKeyboard: true);
     }
+  }
+
+  void _toggleKeyboardToolbar() {
+    final nextValue = !_showKeyboardToolbar;
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logKeyboardToolbarToggled(enabled: nextValue),
+    );
+    setState(() => _showKeyboardToolbar = nextValue);
   }
 
   /// Restores focus to the terminal after a UI interaction.
@@ -9751,6 +9863,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleKeyboardToolbarKeyPressed() {
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logKeyboardToolbarKeyPressed(
+            hasModifier:
+                _toolbarController.isCtrlActive ||
+                _toolbarController.isAltActive ||
+                _toolbarController.isShiftActive,
+          ),
+    );
     _followLiveOutput();
     _terminalTextInputController.clearImeBuffer();
   }
@@ -10538,32 +10660,61 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final buttonItems = buildTerminalSelectionContextMenuButtonItems(
       defaultItems: selectableRegionState.contextMenuButtonItems,
-      onCopy: selectionAction(
-        (text) => unawaited(
+      onCopy: selectionAction((text) {
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logTerminalSelectionAction(action: 'copy'),
+        );
+        unawaited(
           _copySelectionText(
             text,
             clearTerminalSelection: true,
             restoreFocus: true,
           ),
-        ),
-      ),
-      onLookUp: selectionAction(
-        (text) => unawaited(_lookUpTerminalSelectionText(text)),
-      ),
-      onSearchWeb: selectionAction(
-        (text) => unawaited(_searchWebForTerminalSelectionText(text)),
-      ),
-      onShare: selectionAction(
-        (text) => unawaited(_shareTerminalSelectionText(text)),
-      ),
+        );
+      }),
+      onLookUp: selectionAction((text) {
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logTerminalSelectionAction(action: 'look_up'),
+        );
+        unawaited(_lookUpTerminalSelectionText(text));
+      }),
+      onSearchWeb: selectionAction((text) {
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logTerminalSelectionAction(action: 'search_web'),
+        );
+        unawaited(_searchWebForTerminalSelectionText(text));
+      }),
+      onShare: selectionAction((text) {
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logTerminalSelectionAction(action: 'share'),
+        );
+        unawaited(_shareTerminalSelectionText(text));
+      }),
       onCreateSnippet: selectionText == null
           ? null
-          : selectionAction(
-              (text) =>
-                  unawaited(_createSnippetFromTerminalSelectionText(text)),
-            ),
+          : selectionAction((text) {
+              unawaited(
+                ref
+                    .read(telemetryServiceProvider)
+                    .logTerminalSelectionAction(action: 'create_snippet'),
+              );
+              unawaited(_createSnippetFromTerminalSelectionText(text));
+            }),
       onPaste: () {
         selectableRegionState.hideToolbar();
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logTerminalSelectionAction(action: 'paste'),
+        );
         unawaited(_pasteClipboard());
       },
     );
@@ -10593,6 +10744,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) {
         return;
       }
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpOpenedFromTerminal(
+              hasWorkingDirectory: _workingDirectoryPath != null,
+              hasTmuxPaneDirectory: tmuxPaneDirectory != null,
+            ),
+      );
 
       // Prefer the last browser directory when opening from the toolbar. The
       // terminal cwd remains available for relative path resolution and as a
@@ -12301,6 +12460,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (!mounted || verifiedPath == null) {
             return;
           }
+          unawaited(
+            ref.read(telemetryServiceProvider).logTerminalPathLinkOpened(),
+          );
 
           final connectionId = _connectionId;
           final cwd = _workingDirectoryPath;
@@ -13058,8 +13220,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
+      final requiredReview = _shouldReviewTerminalCommandInsertion;
       final shouldPaste =
-          !_shouldReviewTerminalCommandInsertion ||
+          !requiredReview ||
           await _confirmTerminalInsertionIfNeeded(
             insertedText: text,
             buildReview: (commandText) => assessClipboardPasteCommand(
@@ -13079,6 +13242,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       _followLiveOutput();
       _terminal.paste(text);
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalPasteUsed(
+              source: 'clipboard_text',
+              requiredReview: requiredReview,
+            ),
+      );
       _terminalController.clearSelection();
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     } on PlatformException catch (error) {
@@ -13119,6 +13290,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pastePickedMedia() async {
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logTerminalPasteUsed(source: 'picked_media', requiredReview: false),
+    );
     final pickerRequest = resolveTerminalUploadPickerRequest(media: true);
     if (shouldUsePhotoLibraryPickerForTerminalMedia(
       platform: defaultTargetPlatform,
@@ -13143,6 +13319,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pastePickedFiles() async {
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logTerminalPasteUsed(source: 'picked_files', requiredReview: false),
+    );
     final pickerRequest = resolveTerminalUploadPickerRequest(media: false);
     await _pickAndPasteFiles(
       dialogTitle: pickerRequest.dialogTitle,
@@ -13480,6 +13661,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _followLiveOutput();
     _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logTerminalPasteUsed(
+            source: 'clipboard_files',
+            requiredReview: true,
+          ),
+    );
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
@@ -13518,6 +13707,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
     _followLiveOutput();
     _terminal.paste('${shellEscapePosix(remotePath)} ');
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logTerminalPasteUsed(
+            source: 'clipboard_image',
+            requiredReview: true,
+          ),
+    );
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage('Uploaded clipboard image to $remotePath');
@@ -13596,6 +13793,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _followLiveOutput();
     _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logTerminalPasteUsed(source: 'picked_files', requiredReview: true),
+    );
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(

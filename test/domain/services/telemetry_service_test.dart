@@ -64,6 +64,111 @@ void main() {
       });
     });
 
+    test('logs connection funnel with coarse buckets', () async {
+      final analytics = _FakeAnalyticsClient();
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: analytics,
+        crashReporter: _FakeCrashReporter(),
+      );
+
+      await service.logConnectionAttempted(
+        authMethod: 'key',
+        usesJumpHost: true,
+      );
+      await service.logConnectionSucceeded(
+        authMethod: 'key',
+        usesJumpHost: true,
+        duration: const Duration(seconds: 8),
+      );
+      await service.logConnectionFailed(
+        authMethod: 'password',
+        usesJumpHost: false,
+        duration: const Duration(seconds: 61),
+        failureCategory: 'timeout',
+      );
+
+      expect(analytics.events.map((event) => event.name), [
+        'connection_attempted',
+        'connection_succeeded',
+        'connection_failed',
+      ]);
+      expect(analytics.events[1].parameters['duration_bucket'], '5_14s');
+      expect(analytics.events[2].parameters['duration_bucket'], '1_4m');
+      expect(analytics.events[2].parameters['failure_category'], 'timeout');
+    });
+
+    test('logs transfer and interaction events without raw content', () async {
+      final analytics = _FakeAnalyticsClient();
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: analytics,
+        crashReporter: _FakeCrashReporter(),
+      );
+
+      await service.logSftpTransferCompleted(
+        direction: 'upload',
+        fileCount: 6,
+        sizeBytes: 12 * 1024 * 1024,
+        duration: const Duration(seconds: 42),
+      );
+      await service.logTerminalPasteUsed(
+        source: 'clipboard_text',
+        requiredReview: true,
+      );
+      await service.logKeyboardToolbarKeyPressed(hasModifier: true);
+
+      expect(analytics.events[0].name, 'sftp_transfer_completed');
+      expect(analytics.events[0].parameters['file_count_bucket'], '6_20');
+      expect(analytics.events[0].parameters['size_bucket'], '10_99mb');
+      expect(analytics.events[0].parameters['duration_bucket'], '15_59s');
+      expect(analytics.events[1].parameters, {
+        'source': 'clipboard_text',
+        'required_review': 1,
+      });
+      expect(analytics.events[2].parameters, {'has_modifier': 1});
+    });
+
+    test(
+      'logs mux agent and monetization events with allowlisted values',
+      () async {
+        final analytics = _FakeAnalyticsClient();
+        final service = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: analytics,
+          crashReporter: _FakeCrashReporter(),
+        );
+
+        await service.logMuxNavigatorOpened(backend: 'tmux', windowCount: 21);
+        await service.logAgentSessionsDetected(
+          tool: 'codex',
+          sessionCount: 2,
+          failed: false,
+        );
+        await service.logPurchaseFailed(
+          productType: 'annual',
+          failureCategory: 'cancelled',
+        );
+
+        expect(analytics.events[0].parameters['window_count_bucket'], 'gt_20');
+        expect(analytics.events[1].parameters, {
+          'tool': 'codex',
+          'session_count_bucket': '2_5',
+          'failed': 0,
+        });
+        expect(analytics.events[2].parameters, {
+          'product_type': 'annual',
+          'failure_category': 'cancelled',
+        });
+      },
+    );
+
     test('records sanitized crash errors when collection is enabled', () async {
       final crashReporter = _FakeCrashReporter();
       final service = TelemetryService(
