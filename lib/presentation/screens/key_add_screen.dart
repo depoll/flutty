@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -10,6 +11,7 @@ import '../../app/theme.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/services/key_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
 import '../widgets/unsaved_changes_guard.dart';
@@ -328,6 +330,9 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
             const SnackBar(content: Text('Failed to generate key')),
           );
         } else {
+          unawaited(
+            ref.read(telemetryServiceProvider).logKeyAdded(method: 'generated'),
+          );
           widget.onSaved(
             const SnackBar(content: Text('Key generated successfully')),
           );
@@ -557,6 +562,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
       if (mounted) {
         _privateKeyController.clear();
+        unawaited(
+          ref.read(telemetryServiceProvider).logKeyAdded(method: 'import'),
+        );
         widget.onSaved(
           const SnackBar(content: Text('Key imported successfully')),
         );

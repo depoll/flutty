@@ -24,6 +24,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/syntax_highlight_controller.dart';
@@ -73,6 +74,33 @@ Future<T> withSftpOperationTimeout<T>(
 @visibleForTesting
 String sftpTimeoutMessage(String action) =>
     'Timed out $action. The SSH connection may be stale; reconnect and try again.';
+
+int? _selectedUploadSizeBytes(List<PlatformFile> files) {
+  var total = 0;
+  for (final file in files) {
+    if (file.size < 0) {
+      return null;
+    }
+    total += file.size;
+  }
+  return total;
+}
+
+String _sftpTelemetryFailureCategory(Object error) {
+  if (error is TimeoutException) {
+    return 'timeout';
+  }
+  if (error is SftpStatusError) {
+    return 'remote_status';
+  }
+  if (error is FileSystemException) {
+    return 'local_file';
+  }
+  if (error is SSHChannelOpenError || error is SSHSocketError) {
+    return 'connection';
+  }
+  return 'unknown';
+}
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -1817,6 +1845,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
+    final startedAt = DateTime.now();
+    final sizeBytes = file.attr.size;
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logSftpTransferStarted(
+            direction: 'download',
+            fileCount: 1,
+            sizeBytes: sizeBytes,
+          ),
+    );
     try {
       final remotePath = _joinRemotePath(_currentPath, file.filename);
       await ref
@@ -1832,7 +1871,28 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           SnackBar(content: Text('Downloaded "${file.filename}"')),
         );
       }
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpTransferCompleted(
+              direction: 'download',
+              fileCount: 1,
+              sizeBytes: sizeBytes,
+              duration: DateTime.now().difference(startedAt),
+            ),
+      );
     } on Exception catch (e) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpTransferFailed(
+              direction: 'download',
+              fileCount: 1,
+              sizeBytes: sizeBytes,
+              duration: DateTime.now().difference(startedAt),
+              failureCategory: _sftpTelemetryFailureCategory(e),
+            ),
+      );
       _showSftpFailureSnackBar(
         message: 'Download failed. Check the connection and try again.',
         eventName: 'download_failed',
@@ -1860,6 +1920,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         .where((upload) => upload.readStream == null)
         .toList();
     if (unreadableUploads.isNotEmpty) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpTransferFailed(
+              direction: 'upload',
+              fileCount: selectedFiles.length,
+              sizeBytes: _selectedUploadSizeBytes(selectedFiles),
+              duration: Duration.zero,
+              failureCategory: 'unreadable',
+            ),
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1874,6 +1945,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
+    final startedAt = DateTime.now();
+    final sizeBytes = _selectedUploadSizeBytes(selectedFiles);
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logSftpTransferStarted(
+            direction: 'upload',
+            fileCount: selectedFiles.length,
+            sizeBytes: sizeBytes,
+          ),
+    );
     try {
       final remoteFileService = ref.read(remoteFileServiceProvider);
       for (final upload in uploads) {
@@ -1892,7 +1974,28 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           context,
         ).showSnackBar(SnackBar(content: Text(message)));
       }
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpTransferCompleted(
+              direction: 'upload',
+              fileCount: selectedFiles.length,
+              sizeBytes: sizeBytes,
+              duration: DateTime.now().difference(startedAt),
+            ),
+      );
     } on Exception catch (e) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSftpTransferFailed(
+              direction: 'upload',
+              fileCount: selectedFiles.length,
+              sizeBytes: sizeBytes,
+              duration: DateTime.now().difference(startedAt),
+              failureCategory: _sftpTelemetryFailureCategory(e),
+            ),
+      );
       _showSftpFailureSnackBar(
         message: 'Upload failed. Check the connection and try again.',
         eventName: 'upload_failed',

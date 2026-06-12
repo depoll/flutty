@@ -148,6 +148,295 @@ class TelemetryService {
   Future<void> logFeatureOpened({required String feature}) =>
       _logEvent('feature_opened', <String, Object?>{'feature': feature});
 
+  /// Records that the telemetry opt-in prompt was displayed.
+  Future<void> logTelemetryPromptShown({required String trigger}) => _logEvent(
+    'telemetry_prompt_shown',
+    <String, Object?>{'trigger': trigger},
+  );
+
+  /// Records that the telemetry opt-in prompt was accepted.
+  Future<void> logTelemetryPromptAccepted({required String trigger}) =>
+      _logEvent('telemetry_prompt_accepted', <String, Object?>{
+        'trigger': trigger,
+      });
+
+  /// Records that the telemetry opt-in prompt was dismissed.
+  Future<void> logTelemetryPromptDismissed({required String trigger}) =>
+      _logEvent('telemetry_prompt_dismissed', <String, Object?>{
+        'trigger': trigger,
+      });
+
+  /// Records creation of a saved host.
+  Future<void> logHostCreated({
+    required String method,
+    required bool hasKey,
+    required bool hasJumpHost,
+    required bool hasAutoConnect,
+    required bool hasAgentPreset,
+  }) => _logEvent('host_created', <String, Object?>{
+    'method': method,
+    'has_key': hasKey,
+    'has_jump_host': hasJumpHost,
+    'has_auto_connect': hasAutoConnect,
+    'has_agent_preset': hasAgentPreset,
+  });
+
+  /// Records creation of a saved SSH key.
+  Future<void> logKeyAdded({required String method}) =>
+      _logEvent('key_added', <String, Object?>{'method': method});
+
+  /// Records creation of a saved command snippet.
+  Future<void> logSnippetCreated({required String method}) =>
+      _logEvent('snippet_created', <String, Object?>{'method': method});
+
+  /// Records an SSH connection attempt.
+  Future<void> logConnectionAttempted({
+    required String authMethod,
+    required bool usesJumpHost,
+  }) => _logEvent('connection_attempted', <String, Object?>{
+    'auth_method': authMethod,
+    'uses_jump_host': usesJumpHost,
+  });
+
+  /// Records a successful SSH connection.
+  Future<void> logConnectionSucceeded({
+    required String authMethod,
+    required bool usesJumpHost,
+    required Duration duration,
+  }) => _logEvent('connection_succeeded', <String, Object?>{
+    'auth_method': authMethod,
+    'uses_jump_host': usesJumpHost,
+    'duration_bucket': durationBucket(duration),
+  });
+
+  /// Records a failed SSH connection.
+  Future<void> logConnectionFailed({
+    required String authMethod,
+    required bool usesJumpHost,
+    required Duration duration,
+    required String failureCategory,
+  }) => _logEvent('connection_failed', <String, Object?>{
+    'auth_method': authMethod,
+    'uses_jump_host': usesJumpHost,
+    'duration_bucket': durationBucket(duration),
+    'failure_category': failureCategory,
+  });
+
+  /// Records terminal session creation.
+  Future<void> logTerminalSessionStarted({
+    required bool reusedConnection,
+    required bool usedBackgroundService,
+  }) => _logEvent('terminal_session_started', <String, Object?>{
+    'reused_connection': reusedConnection,
+    'used_background_service': usedBackgroundService,
+  });
+
+  /// Records terminal session end.
+  Future<void> logTerminalSessionEnded({
+    required Duration duration,
+    required String disconnectCategory,
+    required bool usedBackgroundService,
+  }) => _logEvent('terminal_session_ended', <String, Object?>{
+    'duration_bucket': durationBucket(duration),
+    'disconnect_category': disconnectCategory,
+    'used_background_service': usedBackgroundService,
+  });
+
+  /// Records SFTP transfer start.
+  Future<void> logSftpTransferStarted({
+    required String direction,
+    required int fileCount,
+    required int? sizeBytes,
+  }) => _logEvent('sftp_transfer_started', <String, Object?>{
+    'direction': direction,
+    'file_count_bucket': countBucket(fileCount),
+    'size_bucket': sizeBucket(sizeBytes),
+  });
+
+  /// Records SFTP transfer completion.
+  Future<void> logSftpTransferCompleted({
+    required String direction,
+    required int fileCount,
+    required int? sizeBytes,
+    required Duration duration,
+  }) => _logEvent('sftp_transfer_completed', <String, Object?>{
+    'direction': direction,
+    'file_count_bucket': countBucket(fileCount),
+    'size_bucket': sizeBucket(sizeBytes),
+    'duration_bucket': durationBucket(duration),
+  });
+
+  /// Records SFTP transfer failure.
+  Future<void> logSftpTransferFailed({
+    required String direction,
+    required int fileCount,
+    required int? sizeBytes,
+    required Duration duration,
+    required String failureCategory,
+  }) => _logEvent('sftp_transfer_failed', <String, Object?>{
+    'direction': direction,
+    'file_count_bucket': countBucket(fileCount),
+    'size_bucket': sizeBucket(sizeBytes),
+    'duration_bucket': durationBucket(duration),
+    'failure_category': failureCategory,
+  });
+
+  /// Records remote multiplexer detection.
+  Future<void> logMuxDetected({required String backend}) =>
+      _logEvent('mux_detected', <String, Object?>{'backend': backend});
+
+  /// Records opening the remote window switcher.
+  Future<void> logMuxNavigatorOpened({
+    required String backend,
+    required int windowCount,
+  }) => _logEvent('mux_navigator_opened', <String, Object?>{
+    'backend': backend,
+    'window_count_bucket': countBucket(windowCount),
+  });
+
+  /// Records remote window switch usage.
+  Future<void> logMuxWindowSwitched({required String backend}) =>
+      _logEvent('mux_window_switched', <String, Object?>{'backend': backend});
+
+  /// Records opening the new remote window dialog.
+  Future<void> logMuxNewWindowDialogOpened({required String backend}) =>
+      _logEvent('mux_new_window_dialog_opened', <String, Object?>{
+        'backend': backend,
+      });
+
+  /// Records remote window creation.
+  Future<void> logMuxWindowCreated({
+    required String backend,
+    required bool hasCommand,
+  }) => _logEvent('mux_window_created', <String, Object?>{
+    'backend': backend,
+    'has_command': hasCommand,
+  });
+
+  /// Records failure to install or use a remote multiplexer.
+  Future<void> logMuxInstallFailed({
+    required String backend,
+    required String failureCategory,
+  }) => _logEvent('mux_install_failed', <String, Object?>{
+    'backend': backend,
+    'failure_category': failureCategory,
+  });
+
+  /// Records agent session-history usage.
+  Future<void> logSessionHistoryOpened({
+    required String tool,
+    required int sessionCount,
+  }) => _logEvent('session_history_opened', <String, Object?>{
+    'tool': tool,
+    'session_count_bucket': countBucket(sessionCount),
+  });
+
+  /// Records agent session-history selection.
+  Future<void> logSessionHistorySelected({required String tool}) =>
+      _logEvent('session_history_selected', <String, Object?>{'tool': tool});
+
+  /// Records agent-session detection results.
+  Future<void> logAgentSessionsDetected({
+    required String tool,
+    required int sessionCount,
+    required bool failed,
+  }) => _logEvent('agent_sessions_detected', <String, Object?>{
+    'tool': tool,
+    'session_count_bucket': countBucket(sessionCount),
+    'failed': failed,
+  });
+
+  /// Records that an agent CLI was detected on the remote host.
+  Future<void> logAgentToolDetected({required String tool}) =>
+      _logEvent('agent_tool_detected', <String, Object?>{'tool': tool});
+
+  /// Records agent launch usage.
+  Future<void> logAgentLaunchUsed({
+    required String tool,
+    required bool usedSessionHistory,
+    required bool usesMux,
+  }) => _logEvent('agent_launch_used', <String, Object?>{
+    'tool': tool,
+    'used_session_history': usedSessionHistory,
+    'uses_mux': usesMux,
+  });
+
+  /// Records paywall display.
+  Future<void> logPaywallShown({
+    required String feature,
+    required String source,
+  }) => _logEvent('paywall_shown', <String, Object?>{
+    'feature': feature,
+    'source': source,
+  });
+
+  /// Records purchase start.
+  Future<void> logPurchaseStarted({required String productType}) => _logEvent(
+    'purchase_started',
+    <String, Object?>{'product_type': productType},
+  );
+
+  /// Records purchase completion.
+  Future<void> logPurchaseCompleted({required String productType}) => _logEvent(
+    'purchase_completed',
+    <String, Object?>{'product_type': productType},
+  );
+
+  /// Records purchase failure or cancellation.
+  Future<void> logPurchaseFailed({
+    required String productType,
+    required String failureCategory,
+  }) => _logEvent('purchase_failed', <String, Object?>{
+    'product_type': productType,
+    'failure_category': failureCategory,
+  });
+
+  /// Records terminal paste usage without paste contents.
+  Future<void> logTerminalPasteUsed({
+    required String source,
+    required bool requiredReview,
+  }) => _logEvent('terminal_paste_used', <String, Object?>{
+    'source': source,
+    'required_review': requiredReview,
+  });
+
+  /// Records terminal selection action usage without selected text.
+  Future<void> logTerminalSelectionAction({required String action}) =>
+      _logEvent('terminal_selection_action', <String, Object?>{
+        'action': action,
+      });
+
+  /// Records the extra-keys toolbar being shown or hidden.
+  Future<void> logKeyboardToolbarToggled({required bool enabled}) => _logEvent(
+    'keyboard_toolbar_toggled',
+    <String, Object?>{'enabled': enabled},
+  );
+
+  /// Records extra-keys toolbar key usage.
+  Future<void> logKeyboardToolbarKeyPressed({required bool hasModifier}) =>
+      _logEvent('keyboard_toolbar_key_pressed', <String, Object?>{
+        'has_modifier': hasModifier,
+      });
+
+  /// Records explicit system-keyboard toggles from terminal UI.
+  Future<void> logSystemKeyboardToggled({required bool visible}) => _logEvent(
+    'system_keyboard_toggled',
+    <String, Object?>{'visible': visible},
+  );
+
+  /// Records file-browser usage from terminal UI.
+  Future<void> logSftpOpenedFromTerminal({
+    required bool hasWorkingDirectory,
+    required bool hasTmuxPaneDirectory,
+  }) => _logEvent('sftp_opened_from_terminal', <String, Object?>{
+    'has_working_directory': hasWorkingDirectory,
+    'has_tmux_pane_directory': hasTmuxPaneDirectory,
+  });
+
+  /// Records terminal path-link usage without the path.
+  Future<void> logTerminalPathLinkOpened() =>
+      _logEvent('terminal_path_link_opened', const <String, Object?>{});
+
   /// Records a sanitized Flutter framework error as non-fatal.
   Future<void> recordFlutterError(FlutterErrorDetails details) async {
     if (!_canRecordCrash()) {
@@ -252,6 +541,71 @@ class TelemetryService {
       return sanitized;
     }
     return sanitized.substring(0, _maxFirebaseStringLength);
+  }
+
+  /// Buckets durations so analytics cannot reconstruct exact activity timing.
+  String durationBucket(Duration duration) {
+    final seconds = duration.inSeconds;
+    if (seconds < 1) {
+      return 'lt_1s';
+    }
+    if (seconds < 5) {
+      return '1_4s';
+    }
+    if (seconds < 15) {
+      return '5_14s';
+    }
+    if (seconds < 60) {
+      return '15_59s';
+    }
+    final minutes = duration.inMinutes;
+    if (minutes < 5) {
+      return '1_4m';
+    }
+    if (minutes < 15) {
+      return '5_14m';
+    }
+    if (minutes < 60) {
+      return '15_59m';
+    }
+    return 'gte_1h';
+  }
+
+  /// Buckets counts into coarse groups.
+  String countBucket(int count) {
+    if (count <= 0) {
+      return '0';
+    }
+    if (count == 1) {
+      return '1';
+    }
+    if (count <= 5) {
+      return '2_5';
+    }
+    if (count <= 20) {
+      return '6_20';
+    }
+    return 'gt_20';
+  }
+
+  /// Buckets byte sizes into coarse groups.
+  String sizeBucket(int? sizeBytes) {
+    if (sizeBytes == null || sizeBytes < 0) {
+      return 'unknown';
+    }
+    if (sizeBytes == 0) {
+      return '0';
+    }
+    if (sizeBytes < 1024 * 1024) {
+      return 'lt_1mb';
+    }
+    if (sizeBytes < 10 * 1024 * 1024) {
+      return '1_9mb';
+    }
+    if (sizeBytes < 100 * 1024 * 1024) {
+      return '10_99mb';
+    }
+    return 'gte_100mb';
   }
 
   String _flutterMode() {
@@ -439,6 +793,9 @@ enum TelemetryOptInPromptChoice {
   /// The prompt has not been shown or answered.
   notShown,
 
+  /// The prompt has been shown but not answered.
+  shown,
+
   /// The user dismissed the prompt.
   dismissed,
 
@@ -462,7 +819,9 @@ class TelemetryOptInPromptState {
   final int appLaunchCount;
 
   /// Whether the user has made a final prompt choice.
-  bool get isResolved => choice != TelemetryOptInPromptChoice.notShown;
+  bool get isResolved =>
+      choice == TelemetryOptInPromptChoice.dismissed ||
+      choice == TelemetryOptInPromptChoice.accepted;
 
   /// Creates a copy with updated fields.
   TelemetryOptInPromptState copyWith({
@@ -515,10 +874,13 @@ class TelemetryOptInPromptNotifier extends Notifier<TelemetryOptInPromptState> {
   }
 
   /// Accepts the prompt and enables telemetry collection.
-  Future<void> accept() async {
+  Future<void> accept({String trigger = 'unknown'}) async {
     await ref
         .read(telemetryCollectionNotifierProvider.notifier)
         .setEnabled(enabled: true);
+    await ref
+        .read(telemetryServiceProvider)
+        .logTelemetryPromptAccepted(trigger: trigger);
     await _settingsService.setString(
       SettingKeys.telemetryOptInPromptState,
       TelemetryOptInPromptChoice.accepted.name,
@@ -529,8 +891,29 @@ class TelemetryOptInPromptNotifier extends Notifier<TelemetryOptInPromptState> {
     state = state.copyWith(choice: TelemetryOptInPromptChoice.accepted);
   }
 
+  /// Records that the prompt has become visible.
+  Future<void> markShown({required String trigger}) async {
+    if (state.choice != TelemetryOptInPromptChoice.notShown) {
+      return;
+    }
+    await ref
+        .read(telemetryServiceProvider)
+        .logTelemetryPromptShown(trigger: trigger);
+    await _settingsService.setString(
+      SettingKeys.telemetryOptInPromptState,
+      TelemetryOptInPromptChoice.shown.name,
+    );
+    if (_disposed) {
+      return;
+    }
+    state = state.copyWith(choice: TelemetryOptInPromptChoice.shown);
+  }
+
   /// Dismisses the prompt without enabling telemetry collection.
-  Future<void> dismiss() async {
+  Future<void> dismiss({String trigger = 'unknown'}) async {
+    await ref
+        .read(telemetryServiceProvider)
+        .logTelemetryPromptDismissed(trigger: trigger);
     await _settingsService.setString(
       SettingKeys.telemetryOptInPromptState,
       TelemetryOptInPromptChoice.dismissed.name,
@@ -572,6 +955,7 @@ class TelemetryOptInPromptNotifier extends Notifier<TelemetryOptInPromptState> {
 
   TelemetryOptInPromptChoice _parsePromptChoice(String? value) =>
       switch (value) {
+        'shown' => TelemetryOptInPromptChoice.shown,
         'dismissed' => TelemetryOptInPromptChoice.dismissed,
         'accepted' => TelemetryOptInPromptChoice.accepted,
         _ => TelemetryOptInPromptChoice.notShown,

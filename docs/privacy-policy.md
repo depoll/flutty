@@ -22,9 +22,9 @@ If you purchase MonkeySSH Pro, Apple or Google processes the transaction through
 
 ## Diagnostics and analytics
 
-MonkeySSH does not include third-party advertising SDKs. Analytics and crash reporting are off by default. If you enable "Share analytics and crash reports" in Settings, MonkeySSH uses Firebase Analytics and Firebase Crashlytics to collect anonymous feature usage events and sanitized crash reports. This data helps understand which broad app areas are used and where crashes happen.
+MonkeySSH does not include third-party advertising SDKs. Analytics and crash reporting are off by default. If you enable "Share analytics and crash reports" in Settings, MonkeySSH uses Firebase Analytics and Firebase Crashlytics to collect anonymous feature usage events and sanitized crash reports. This data helps understand which broad app areas are used, where setup or connection flows fail, how often terminal/SFTP/window-switching/agent-launch features are used, and where crashes happen.
 
-Analytics and crash reports do not include hostnames, usernames, IP addresses you configure, commands, terminal output, remote file paths, file names, tmux session or window names, clipboard contents, passwords, passphrases, private keys, tokens, or raw SSH/SFTP/tmux data. You can turn sharing off in Settings; when it is off, MonkeySSH disables analytics and crash collection in the app.
+Analytics events use coarse labels and buckets, such as feature names, auth-method category, error category, duration bucket, file-count bucket, size bucket, multiplexer backend, agent tool type, and purchase result category. Analytics and crash reports do not include hostnames, usernames, IP addresses you configure, commands, terminal output, remote file paths, file names, tmux session or window names, clipboard contents, passwords, passphrases, private keys, tokens, or raw SSH/SFTP/tmux data. You can turn sharing off in Settings; when it is off, MonkeySSH disables analytics and crash collection in the app.
 
 App store platforms may also provide aggregate crash, purchase, and usage information to developers under their own privacy policies.
 

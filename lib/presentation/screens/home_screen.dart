@@ -733,12 +733,22 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
     final hasSuccessfulConnection = hosts.any(
       (host) => host.lastConnectedAt != null,
     );
+    final trigger = hasSuccessfulConnection
+        ? 'successful_connection'
+        : 'launches';
     final isEligible =
         hasSuccessfulConnection ||
         promptState.appLaunchCount >=
             TelemetryOptInPromptNotifier.minimumLaunchCountForPrompt;
     if (!isEligible) {
       return const SizedBox.shrink();
+    }
+    if (promptState.choice == TelemetryOptInPromptChoice.notShown) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ref
+            .read(telemetryOptInPromptNotifierProvider.notifier)
+            .markShown(trigger: trigger);
+      });
     }
 
     final theme = Theme.of(context);
@@ -804,7 +814,7 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
                     onPressed: () => unawaited(
                       ref
                           .read(telemetryOptInPromptNotifierProvider.notifier)
-                          .dismiss(),
+                          .dismiss(trigger: trigger),
                     ),
                     child: const Text('Not now'),
                   ),
@@ -812,7 +822,7 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
                     onPressed: () => unawaited(
                       ref
                           .read(telemetryOptInPromptNotifierProvider.notifier)
-                          .accept(),
+                          .accept(trigger: trigger),
                     ),
                     child: const Text('Share analytics'),
                   ),
