@@ -70,17 +70,20 @@ void main() {
     );
 
     test('swallows SDK failures while updating collection state', () async {
+      final crashReporter = _FakeCrashReporter();
       final service = TelemetryService(
         status: TelemetryServiceStatus.ready,
         collectionEnabled: true,
         diagnosticsLogger: const NoopDiagnosticsLogger(),
         analyticsClient: _ThrowingAnalyticsClient(),
-        crashReporter: _FakeCrashReporter(),
+        crashReporter: crashReporter,
       );
 
       await service.setCollectionEnabled(enabled: false);
 
       expect(service.collectionEnabled, isFalse);
+      expect(crashReporter.collectionEnabled, isFalse);
+      expect(crashReporter.deleteUnsentReportsCount, 1);
     });
 
     test('swallows SDK failures while logging analytics events', () async {
