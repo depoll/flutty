@@ -745,6 +745,9 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
     }
     if (promptState.choice == TelemetryOptInPromptChoice.notShown) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) {
+          return;
+        }
         ref
             .read(telemetryOptInPromptNotifierProvider.notifier)
             .markShown(trigger: trigger);

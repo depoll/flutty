@@ -69,6 +69,32 @@ void main() {
       },
     );
 
+    test('swallows SDK failures while updating collection state', () async {
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: _ThrowingAnalyticsClient(),
+        crashReporter: _FakeCrashReporter(),
+      );
+
+      await service.setCollectionEnabled(enabled: false);
+
+      expect(service.collectionEnabled, isFalse);
+    });
+
+    test('swallows SDK failures while logging analytics events', () async {
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: _ThrowingAnalyticsClient(),
+        crashReporter: _FakeCrashReporter(),
+      );
+
+      await service.logFeatureOpened(feature: 'terminal');
+    });
+
     test('sanitizes and allowlists event parameter values', () async {
       final analytics = _FakeAnalyticsClient();
       final service = TelemetryService(
@@ -429,6 +455,26 @@ class _FakeAnalyticsClient implements TelemetryAnalyticsClient {
   @override
   Future<void> setCollectionEnabled({required bool enabled}) async {
     collectionEnabled = enabled;
+  }
+}
+
+class _ThrowingAnalyticsClient implements TelemetryAnalyticsClient {
+  @override
+  Future<void> logEvent({
+    required String name,
+    required Map<String, Object> parameters,
+  }) async {
+    throw StateError('analytics unavailable');
+  }
+
+  @override
+  Future<void> resetAnalyticsData() async {
+    throw StateError('analytics unavailable');
+  }
+
+  @override
+  Future<void> setCollectionEnabled({required bool enabled}) async {
+    throw StateError('analytics unavailable');
   }
 }
 
