@@ -867,6 +867,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     activeWorkingDirectory: activeWindow?.currentPath,
                     sessionWorkingDirectory: widget.session.workingDirectory,
                   );
+              final loggedTools = <String>{};
               return _discovery
                   .discoverSessionsStream(
                     widget.session,
@@ -875,6 +876,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   )
                   .map((result) {
                     for (final toolName in result.attemptedTools) {
+                      if (!loggedTools.add(toolName)) {
+                        continue;
+                      }
                       final count = result.sessions
                           .where((session) => session.toolName == toolName)
                           .length;

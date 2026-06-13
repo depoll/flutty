@@ -24,6 +24,7 @@ Future<void> main() async {
     ProviderScope(
       overrides: [
         databaseProvider.overrideWithValue(database),
+        settingsServiceProvider.overrideWithValue(settingsService),
         telemetryServiceProvider.overrideWithValue(telemetryService),
         hostKeyPromptHandlerProvider.overrideWith(
           (ref) => createHostKeyPromptHandler(),
@@ -42,12 +43,18 @@ void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
     } else {
       FlutterError.presentError(details);
     }
-    unawaited(telemetryService.recordFlutterError(details));
+    unawaited(
+      telemetryService.recordFlutterError(details).catchError((Object _) {}),
+    );
   };
 
   final previousPlatformErrorHandler = PlatformDispatcher.instance.onError;
   PlatformDispatcher.instance.onError = (error, stackTrace) {
-    unawaited(telemetryService.recordError(error, stackTrace, fatal: true));
+    unawaited(
+      telemetryService
+          .recordError(error, stackTrace, fatal: true)
+          .catchError((Object _) {}),
+    );
     return previousPlatformErrorHandler?.call(error, stackTrace) ?? false;
   };
 }
