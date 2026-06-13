@@ -228,20 +228,29 @@ class TelemetryService {
       return;
     }
 
-    try {
-      await analyticsClient.setCollectionEnabled(enabled: enabled);
-      await crashReporter.setCollectionEnabled(enabled: enabled);
-      if (!enabled && wasEnabled) {
-        await analyticsClient.resetAnalyticsData();
-        await crashReporter.deleteUnsentReports();
-      } else {
-        await _setCrashMetadata(this);
-      }
-    } on Object catch (error) {
-      _diagnosticsLogger.warning(
-        'telemetry',
-        'collection_update_failed',
-        fields: {'enabled': enabled, 'errorType': error.runtimeType},
+    await _runSdkUpdate(
+      'analytics_collection_update_failed',
+      fields: {'enabled': enabled},
+      operation: () => analyticsClient.setCollectionEnabled(enabled: enabled),
+    );
+    await _runSdkUpdate(
+      'crash_collection_update_failed',
+      fields: {'enabled': enabled},
+      operation: () => crashReporter.setCollectionEnabled(enabled: enabled),
+    );
+    if (!enabled && wasEnabled) {
+      await _runSdkUpdate(
+        'analytics_reset_failed',
+        operation: analyticsClient.resetAnalyticsData,
+      );
+      await _runSdkUpdate(
+        'crash_unsent_report_delete_failed',
+        operation: crashReporter.deleteUnsentReports,
+      );
+    } else if (enabled) {
+      await _runSdkUpdate(
+        'crash_metadata_update_failed',
+        operation: () => _setCrashMetadata(this),
       );
     }
   }
@@ -652,6 +661,22 @@ class TelemetryService {
         'telemetry',
         'analytics_event_failed',
         fields: {'eventName': name, 'errorType': error.runtimeType},
+      );
+    }
+  }
+
+  Future<void> _runSdkUpdate(
+    String failureEventName, {
+    required Future<void> Function() operation,
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) async {
+    try {
+      await operation();
+    } on Object catch (error) {
+      _diagnosticsLogger.warning(
+        'telemetry',
+        failureEventName,
+        fields: <String, Object?>{...fields, 'errorType': error.runtimeType},
       );
     }
   }
