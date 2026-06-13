@@ -17,6 +17,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/premium_access.dart';
@@ -41,6 +42,7 @@ class SettingsScreen extends ConsumerWidget {
         const _SubscriptionSection(),
         const _AppearanceSection(),
         const _SecuritySection(),
+        const _PrivacySection(),
         const _TerminalSection(),
         const _ImportExportSection(),
         if (BackgroundSshService.supportsBatteryOptimizationControls)
@@ -603,6 +605,69 @@ class _SecuritySection extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+class _PrivacySection extends ConsumerWidget {
+  const _PrivacySection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final telemetryService = ref.watch(telemetryServiceProvider);
+    final telemetryCollectionEnabled = ref.watch(
+      telemetryCollectionNotifierProvider,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(
+          title: 'Privacy',
+          subtitle: 'Anonymous usage analytics and crash reporting',
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.insights_outlined),
+          title: const Text('Share analytics and crash reports'),
+          subtitle: Text(
+            _telemetrySubtitle(
+              status: telemetryService.status,
+              enabled: telemetryCollectionEnabled,
+            ),
+          ),
+          value: telemetryService.isAvailable && telemetryCollectionEnabled,
+          onChanged: telemetryService.isAvailable
+              ? (value) {
+                  unawaited(
+                    ref
+                        .read(telemetryCollectionNotifierProvider.notifier)
+                        .setEnabled(enabled: value),
+                  );
+                }
+              : null,
+        ),
+      ],
+    );
+  }
+
+  String _telemetrySubtitle({
+    required TelemetryServiceStatus status,
+    required bool enabled,
+  }) {
+    if (status != TelemetryServiceStatus.ready) {
+      return switch (status) {
+        TelemetryServiceStatus.disabledByBuild =>
+          'Not available in this build.',
+        TelemetryServiceStatus.unsupportedPlatform =>
+          'Not available on this platform.',
+        TelemetryServiceStatus.initializationFailed =>
+          'Unavailable because Firebase could not initialize.',
+        TelemetryServiceStatus.ready => '',
+      };
+    }
+    if (!enabled) {
+      return 'Off. When on, MonkeySSH shares anonymous feature usage and sanitized crash reports.';
+    }
+    return 'On. Never includes hostnames, usernames, commands, terminal output, paths, clipboard, or credentials.';
   }
 }
 

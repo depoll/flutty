@@ -25,6 +25,7 @@ import 'host_key_verification.dart';
 import 'local_notification_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
+import 'telemetry_service.dart';
 import 'terminal_hyperlink_tracker.dart';
 import 'terminal_notification.dart';
 import 'wifi_network_service.dart';
@@ -3707,6 +3708,50 @@ class _ActiveTunnel {
   StreamSubscription<dynamic>? subscription;
 }
 
+String _telemetryAuthMethodFromHost(Host? host) {
+  if (host == null) {
+    return 'unknown';
+  }
+  final hasPassword = host.password?.isNotEmpty ?? false;
+  final hasKey = host.keyId != null;
+  if (hasPassword && hasKey) {
+    return 'password_and_key';
+  }
+  if (hasKey) {
+    return 'key';
+  }
+  if (hasPassword) {
+    return 'password';
+  }
+  return 'none';
+}
+
+String _telemetryConnectionFailureCategory(String? error) {
+  final normalized = error?.toLowerCase() ?? '';
+  if (normalized.contains('auth') ||
+      normalized.contains('password') ||
+      normalized.contains('key') ||
+      normalized.contains('credential')) {
+    return 'authentication';
+  }
+  if (normalized.contains('timeout') || normalized.contains('timed out')) {
+    return 'timeout';
+  }
+  if (normalized.contains('host key')) {
+    return 'host_key';
+  }
+  if (normalized.contains('network') ||
+      normalized.contains('socket') ||
+      normalized.contains('connection refused') ||
+      normalized.contains('unreachable')) {
+    return 'network';
+  }
+  if (normalized.contains('setup')) {
+    return 'setup';
+  }
+  return 'unknown';
+}
+
 /// Provider for [SshService].
 final sshServiceProvider = Provider<SshService>(
   (ref) => SshService(
@@ -3782,6 +3827,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     bool forceNew = false,
     bool useHostThemeOverrides = true,
   }) async {
+    final telemetry = ref.read(telemetryServiceProvider);
     if (!forceNew) {
       final existingConnectionId = getPreferredConnectionForHost(hostId);
       if (existingConnectionId != null) {
@@ -3791,6 +3837,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           fields: {'hostId': hostId, 'connectionId': existingConnectionId},
         );
         unawaited(_queueBackgroundStatusSync());
+        unawaited(
+          telemetry.logTerminalSessionStarted(
+            reusedConnection: true,
+            usedBackgroundService: false,
+          ),
+        );
         return SshConnectionResult(
           success: true,
           connectionId: existingConnectionId,
@@ -3799,6 +3851,14 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       }
     }
 
+    final host = await _telemetryHostForConnection(hostId);
+    final startedAt = DateTime.now();
+    unawaited(
+      telemetry.logConnectionAttempted(
+        authMethod: _telemetryAuthMethodFromHost(host),
+        usesJumpHost: host?.jumpHostId != null,
+      ),
+    );
     _updateConnectionAttempt(
       hostId,
       const ConnectionProgressUpdate(
@@ -3830,12 +3890,33 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         ),
       );
       unawaited(_queueBackgroundStatusSync());
+      unawaited(
+        telemetry.logConnectionSucceeded(
+          authMethod: _telemetryAuthMethodFromHost(host),
+          usesJumpHost: host?.jumpHostId != null,
+          duration: DateTime.now().difference(startedAt),
+        ),
+      );
+      unawaited(
+        telemetry.logTerminalSessionStarted(
+          reusedConnection: false,
+          usedBackgroundService: false,
+        ),
+      );
     } else {
       _updateConnectionAttempt(
         hostId,
         ConnectionProgressUpdate(
           state: SshConnectionState.error,
           message: result.error ?? 'Connection failed',
+        ),
+      );
+      unawaited(
+        telemetry.logConnectionFailed(
+          authMethod: _telemetryAuthMethodFromHost(host),
+          usesJumpHost: host?.jumpHostId != null,
+          duration: DateTime.now().difference(startedAt),
+          failureCategory: _telemetryConnectionFailureCategory(result.error),
         ),
       );
     }
@@ -3855,12 +3936,24 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
+    final session = _sshService.getSession(connectionId);
     DiagnosticsLogService.instance.info(
       'ssh.active',
       'disconnect',
       fields: {'connectionId': connectionId},
     );
     _detachSessionListeners(connectionId);
+    if (session != null) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalSessionEnded(
+              duration: DateTime.now().difference(session.createdAt),
+              disconnectCategory: 'user',
+              usedBackgroundService: false,
+            ),
+      );
+    }
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     _connectionSessionTitles.remove(connectionId);
@@ -3878,6 +3971,15 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     );
     for (final session in _sshService.sessions.values) {
       _detachSessionListeners(session.connectionId, session: session);
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalSessionEnded(
+              duration: DateTime.now().difference(session.createdAt),
+              disconnectCategory: 'disconnect_all',
+              usedBackgroundService: false,
+            ),
+      );
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
@@ -4193,6 +4295,14 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 
+  Future<Host?> _telemetryHostForConnection(int hostId) async {
+    try {
+      return await ref.read(hostRepositoryProvider).getById(hostId);
+    } on Object {
+      return null;
+    }
+  }
+
   void _updateConnectionAttempt(
     int hostId,
     ConnectionProgressUpdate update, {
@@ -4254,6 +4364,17 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       fields: {'connectionId': connectionId, 'hostId': hostId},
     );
     _detachSessionListeners(connectionId, session: session);
+    if (session != null) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logTerminalSessionEnded(
+              duration: DateTime.now().difference(session.createdAt),
+              disconnectCategory: 'unexpected',
+              usedBackgroundService: false,
+            ),
+      );
+    }
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     _connectionSessionTitles.remove(connectionId);
