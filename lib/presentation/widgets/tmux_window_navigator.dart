@@ -5,12 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/agent_launch_preset.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/tmux_service.dart';
 import 'agent_tool_icon.dart';
 import 'ai_session_picker.dart';
@@ -47,6 +49,17 @@ List<AgentLaunchTool> _orderedAgentLaunchTools(
   ];
 }
 
+String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
+  RemoteMuxBackend.auto => 'auto',
+  RemoteMuxBackend.tmux => 'tmux',
+  RemoteMuxBackend.monkeyMux => 'monkeymux',
+};
+
+String _telemetryAgentToolName(String toolName) {
+  final tool = agentLaunchToolForCommandText(toolName);
+  return tool?.name ?? toolName.toLowerCase().replaceAll(' ', '_');
+}
+
 /// Shows the tmux window navigator bottom sheet.
 ///
 /// Returns the action the user selected, or `null` if dismissed.
@@ -55,6 +68,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required WidgetRef ref,
   required SshSession session,
   required String tmuxSessionName,
+  required RemoteMuxBackend remoteMuxBackend,
   required RemoteMultiplexerService remoteMultiplexerService,
   required bool isProUser,
   required bool startClisInYoloMode,
@@ -67,6 +81,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   builder: (context) => _TmuxNavigatorSheet(
     session: session,
     tmuxSessionName: tmuxSessionName,
+    remoteMuxBackend: remoteMuxBackend,
     remoteMultiplexerService: remoteMultiplexerService,
     tmuxExtraFlags: tmuxExtraFlags,
     isProUser: isProUser,
@@ -275,6 +290,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
   const _TmuxNavigatorSheet({
     required this.session,
     required this.tmuxSessionName,
+    required this.remoteMuxBackend,
     required this.remoteMultiplexerService,
     required this.isProUser,
     required this.startClisInYoloMode,
@@ -285,6 +301,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 
   final SshSession session;
   final String tmuxSessionName;
+  final RemoteMuxBackend remoteMuxBackend;
   final RemoteMultiplexerService remoteMultiplexerService;
   final String? tmuxExtraFlags;
   final bool isProUser;
@@ -614,6 +631,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   Future<void> _showSessionPickerForTool(
     AiSessionProviderEntry provider,
   ) async {
+    unawaited(
+      widget.ref
+          .read(telemetryServiceProvider)
+          .logSessionHistoryOpened(
+            tool: _telemetryAgentToolName(provider.toolName),
+            sessionCount: provider.sessions.length,
+          ),
+    );
     final selected = await showAiSessionPickerDialog(
       context: context,
       toolName: provider.toolName,
@@ -643,6 +668,26 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     final installedToolsFuture = _installedToolsFuture ??= widget.ref
         .read(tmuxServiceProvider)
         .detectInstalledAgentTools(widget.session);
+    unawaited(
+      installedToolsFuture
+          .then((tools) {
+            for (final tool in tools) {
+              unawaited(
+                widget.ref
+                    .read(telemetryServiceProvider)
+                    .logAgentToolDetected(tool: tool.name),
+              );
+            }
+          })
+          .catchError((Object _) {}),
+    );
+    unawaited(
+      widget.ref
+          .read(telemetryServiceProvider)
+          .logMuxNewWindowDialogOpened(
+            backend: _telemetryMuxBackendName(widget.remoteMuxBackend),
+          ),
+    );
     final action = await showTmuxNewWindowPicker(
       context: context,
       isProUser: widget.isProUser,
@@ -881,6 +926,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         ),
         onTap: () {
           final showSessions = !_showSessions;
+          if (showSessions) {
+            unawaited(
+              widget.ref
+                  .read(telemetryServiceProvider)
+                  .logSessionHistoryOpened(tool: 'all', sessionCount: 0),
+            );
+          }
           setState(() {
             _showSessions = showSessions;
             if (showSessions) {
@@ -920,11 +972,33 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     activeWorkingDirectory: activeWindow?.currentPath,
                     sessionWorkingDirectory: widget.session.workingDirectory,
                   );
-              return _discovery.discoverSessionsStream(
-                widget.session,
-                workingDirectory: scopeWorkingDirectory,
-                maxPerTool: maxSessions,
-              );
+              final loggedTools = <String>{};
+              return _discovery
+                  .discoverSessionsStream(
+                    widget.session,
+                    workingDirectory: scopeWorkingDirectory,
+                    maxPerTool: maxSessions,
+                  )
+                  .map((result) {
+                    for (final toolName in result.attemptedTools) {
+                      if (!loggedTools.add(toolName)) {
+                        continue;
+                      }
+                      final count = result.sessions
+                          .where((session) => session.toolName == toolName)
+                          .length;
+                      unawaited(
+                        widget.ref
+                            .read(telemetryServiceProvider)
+                            .logAgentSessionsDetected(
+                              tool: _telemetryAgentToolName(toolName),
+                              sessionCount: count,
+                              failed: result.failedTools.contains(toolName),
+                            ),
+                      );
+                    }
+                    return result;
+                  });
             },
             itemBuilder: (context, provider) =>
                 _buildSessionProviderTile(theme, provider),

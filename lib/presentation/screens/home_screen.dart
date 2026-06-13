@@ -31,6 +31,7 @@ import '../../domain/services/remote_multiplexer_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
@@ -624,13 +625,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildContent() => switch (_selectedIndex) {
-    0 => const HostsPanel(),
-    1 => const _ConnectionsPanel(),
-    2 => const _KeysPanel(),
-    3 => const SnippetsPanel(),
-    _ => const HostsPanel(),
-  };
+  Widget _buildContent() => Column(
+    children: [
+      const _TelemetryOptInPromptCard(),
+      Expanded(
+        child: switch (_selectedIndex) {
+          0 => const HostsPanel(),
+          1 => const _ConnectionsPanel(),
+          2 => const _KeysPanel(),
+          3 => const SnippetsPanel(),
+          _ => const HostsPanel(),
+        },
+      ),
+    ],
+  );
 }
 
 void _openTerminalRoute(BuildContext context, String route) {
@@ -699,6 +707,128 @@ class _NavItem extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TelemetryOptInPromptCard extends ConsumerWidget {
+  const _TelemetryOptInPromptCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final telemetryService = ref.watch(telemetryServiceProvider);
+    if (!telemetryService.isAvailable) {
+      return const SizedBox.shrink();
+    }
+
+    final promptState = ref.watch(telemetryOptInPromptNotifierProvider);
+    if (promptState.isResolved) {
+      return const SizedBox.shrink();
+    }
+
+    final hosts = ref.watch(allHostsProvider).asData?.value ?? const <Host>[];
+    final hasSuccessfulConnection = hosts.any(
+      (host) => host.lastConnectedAt != null,
+    );
+    final trigger = hasSuccessfulConnection
+        ? 'successful_connection'
+        : 'launches';
+    final isEligible =
+        hasSuccessfulConnection ||
+        promptState.appLaunchCount >=
+            TelemetryOptInPromptNotifier.minimumLaunchCountForPrompt;
+    if (!isEligible) {
+      return const SizedBox.shrink();
+    }
+    if (promptState.choice == TelemetryOptInPromptChoice.notShown) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ref
+            .read(telemetryOptInPromptNotifierProvider.notifier)
+            .markShown(trigger: trigger);
+      });
+    }
+
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Material(
+        color: colorScheme.primaryContainer.withAlpha(130),
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.insights_outlined,
+                    color: colorScheme.onPrimaryContainer,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Help improve MonkeySSH',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            color: colorScheme.onPrimaryContainer,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Share anonymous feature usage and crash reports so we can understand what works, what breaks, and where to improve the app.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Never includes hostnames, usernames, commands, terminal output, file paths, clipboard contents, or credentials.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onPrimaryContainer.withAlpha(
+                              210,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => unawaited(
+                      ref
+                          .read(telemetryOptInPromptNotifierProvider.notifier)
+                          .dismiss(trigger: trigger),
+                    ),
+                    child: const Text('Not now'),
+                  ),
+                  FilledButton(
+                    onPressed: () => unawaited(
+                      ref
+                          .read(telemetryOptInPromptNotifierProvider.notifier)
+                          .accept(trigger: trigger),
+                    ),
+                    child: const Text('Share analytics'),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
       ),

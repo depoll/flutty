@@ -20,7 +20,7 @@ Future<void> _pumpUntilFound(
 }
 
 Future<void> _launchApp(WidgetTester tester) async {
-  app.main();
+  await app.main();
   await _pumpUntilFound(tester, find.byIcon(Icons.settings_outlined));
 }
 

@@ -21,6 +21,7 @@ import '../../domain/models/tmux_state.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/wifi_network_service.dart';
 import '../providers/entity_list_providers.dart';
@@ -1432,15 +1433,42 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         MonetizationFeature.agentLaunchPresets,
       );
 
+      final draft = _currentDraft();
       await ref
           .read(hostEditViewModelProvider(widget.hostId).notifier)
           .save(
             HostEditSaveRequest(
-              draft: _currentDraft(),
+              draft: draft,
               hasAutomationAccess: hasAutomationAccess,
               hasAgentPresetAccess: hasAgentPresetAccess,
             ),
           );
+      if (widget.hostId == null) {
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logHostCreated(
+                method: widget.initialSshUrl == null ? 'manual' : 'import',
+                hasKey: draft.selectedKeyId != null,
+                hasJumpHost: draft.selectedJumpHostId != null,
+                hasAutoConnect:
+                    draft.selectedStartupMode != HostStartupMode.none,
+                hasAgentPreset:
+                    draft.selectedStartupMode == HostStartupMode.agent,
+              ),
+        );
+        if (draft.selectedStartupMode == HostStartupMode.agent) {
+          unawaited(
+            ref
+                .read(telemetryServiceProvider)
+                .logAgentLaunchUsed(
+                  tool: draft.selectedAgentLaunchTool.name,
+                  usedSessionHistory: false,
+                  usesMux: draft.agentTmuxSession.trim().isNotEmpty,
+                ),
+          );
+        }
+      }
 
       if (mounted) {
         _closeWithoutUnsavedPrompt(

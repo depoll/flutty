@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../widgets/snippet_folder_dialog.dart';
 import '../widgets/unsaved_changes_guard.dart';
 
@@ -412,6 +413,15 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
             description: drift.Value(description),
             folderId: drift.Value(_selectedFolderId),
           ),
+        );
+        unawaited(
+          ref
+              .read(telemetryServiceProvider)
+              .logSnippetCreated(
+                method: widget.prefill.command == null
+                    ? 'manual'
+                    : 'from_terminal',
+              ),
         );
       }
 

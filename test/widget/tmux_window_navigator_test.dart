@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
@@ -323,6 +324,7 @@ void main() {
                         ref: ref,
                         session: session,
                         tmuxSessionName: tmuxSessionName,
+                        remoteMuxBackend: RemoteMuxBackend.tmux,
                         remoteMultiplexerService: TmuxRemoteMultiplexerService(
                           tmuxService,
                         ),
@@ -639,6 +641,7 @@ Future<void> _pumpNavigatorHost(
                     ref: ref,
                     session: session,
                     tmuxSessionName: tmuxSessionName,
+                    remoteMuxBackend: RemoteMuxBackend.tmux,
                     remoteMultiplexerService: TmuxRemoteMultiplexerService(
                       tmuxService,
                     ),

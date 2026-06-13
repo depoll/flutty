@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../domain/models/monetization.dart';
 import '../../domain/services/monetization_service.dart';
+import '../../domain/services/telemetry_service.dart';
 import '../widgets/premium_badge.dart';
 
 /// Upgrade screen for MonkeySSH Pro.
@@ -32,6 +35,24 @@ class UpgradeScreen extends ConsumerStatefulWidget {
 
 class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   var _restoreInProgress = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logPaywallShown(
+              feature: widget.feature?.name ?? 'settings',
+              source: widget.feature == null ? 'settings' : 'feature_gate',
+            ),
+      );
+    });
+  }
 
   MonetizationOffer? _offerForPeriod(
     List<MonetizationOffer> offers,
@@ -123,13 +144,43 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
 
   Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
+    final productType = _productTypeForOffer(offerId);
+    unawaited(
+      ref
+          .read(telemetryServiceProvider)
+          .logPurchaseStarted(productType: productType),
+    );
     final result = await ref
         .read(monetizationServiceProvider)
         .purchaseOffer(offerId);
+    unawaited(
+      result.success
+          ? ref
+                .read(telemetryServiceProvider)
+                .logPurchaseCompleted(productType: productType)
+          : ref
+                .read(telemetryServiceProvider)
+                .logPurchaseFailed(
+                  productType: productType,
+                  failureCategory: result.cancelled ? 'cancelled' : 'failed',
+                ),
+    );
     if (!mounted) {
       return;
     }
     messenger.showSnackBar(SnackBar(content: Text(result.message)));
+  }
+
+  String _productTypeForOffer(String offerId) {
+    final state =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    for (final offer in state.offers) {
+      if (offer.id == offerId) {
+        return offer.billingPeriod.name;
+      }
+    }
+    return 'unknown';
   }
 
   Future<void> _restorePurchases() async {
