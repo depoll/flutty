@@ -228,13 +228,21 @@ class TelemetryService {
       return;
     }
 
-    await analyticsClient.setCollectionEnabled(enabled: enabled);
-    await crashReporter.setCollectionEnabled(enabled: enabled);
-    if (!enabled && wasEnabled) {
-      await analyticsClient.resetAnalyticsData();
-      await crashReporter.deleteUnsentReports();
-    } else {
-      await _setCrashMetadata(this);
+    try {
+      await analyticsClient.setCollectionEnabled(enabled: enabled);
+      await crashReporter.setCollectionEnabled(enabled: enabled);
+      if (!enabled && wasEnabled) {
+        await analyticsClient.resetAnalyticsData();
+        await crashReporter.deleteUnsentReports();
+      } else {
+        await _setCrashMetadata(this);
+      }
+    } on Object catch (error) {
+      _diagnosticsLogger.warning(
+        'telemetry',
+        'collection_update_failed',
+        fields: {'enabled': enabled, 'errorType': error.runtimeType},
+      );
     }
   }
 
@@ -634,10 +642,18 @@ class TelemetryService {
     if (analyticsClient == null) {
       return;
     }
-    await analyticsClient.logEvent(
-      name: _sanitizeFirebaseName(name),
-      parameters: _sanitizeParameters(parameters),
-    );
+    try {
+      await analyticsClient.logEvent(
+        name: _sanitizeFirebaseName(name),
+        parameters: _sanitizeParameters(parameters),
+      );
+    } on Object catch (error) {
+      _diagnosticsLogger.warning(
+        'telemetry',
+        'analytics_event_failed',
+        fields: {'eventName': name, 'errorType': error.runtimeType},
+      );
+    }
   }
 
   bool _canRecordCrash() => isAvailable && _collectionEnabled;
