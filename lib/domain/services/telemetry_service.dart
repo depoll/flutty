@@ -86,6 +86,108 @@ class TelemetryService {
   static final RegExp _safeNamePattern = RegExp('[^a-z0-9_]+');
   static const int _maxFirebaseNameLength = 40;
   static const int _maxFirebaseStringLength = 80;
+  static const _allowedFeatureNames = <String>{
+    'auth',
+    'home',
+    'host_editor',
+    'hosts',
+    'key_editor',
+    'keys',
+    'port_forward_browser',
+    'port_forward_editor',
+    'port_forwards',
+    'settings',
+    'sftp',
+    'snippet_editor',
+    'snippets',
+    'terminal',
+    'upgrade',
+  };
+  static const _allowedPromptTriggers = <String>{
+    'launches',
+    'settings',
+    'successful_connection',
+  };
+  static const _allowedCreationMethods = <String>{
+    'from_terminal',
+    'generated',
+    'import',
+    'manual',
+  };
+  static const _allowedAuthMethods = <String>{
+    'key',
+    'none',
+    'password',
+    'password_and_key',
+    'unknown',
+  };
+  static const _allowedTransferDirections = <String>{'download', 'upload'};
+  static const _allowedFailureCategories = <String>{
+    'authentication',
+    'cancelled',
+    'connection',
+    'declined',
+    'failed',
+    'host_key',
+    'local_file',
+    'network',
+    'remote_status',
+    'setup',
+    'timeout',
+    'unavailable',
+    'unreadable',
+    'unknown',
+  };
+  static const _allowedMuxBackends = <String>{'auto', 'monkeymux', 'tmux'};
+  static const _allowedAgentTools = <String>{
+    'all',
+    'antigravity',
+    'claude_code',
+    'claudecode',
+    'codex',
+    'copilot_cli',
+    'copilotcli',
+    'gemini_cli',
+    'geminicli',
+    'open_code',
+    'opencode',
+    'unknown',
+  };
+  static const _allowedPaywallFeatures = <String>{
+    'agent_launch_presets',
+    'auto_connect_automation',
+    'encrypted_transfers',
+    'host_specific_themes',
+    'migration_import_export',
+    'settings',
+  };
+  static const _allowedPaywallSources = <String>{'feature_gate', 'settings'};
+  static const _allowedProductTypes = <String>{
+    'annual',
+    'lifetime',
+    'monthly',
+    'unknown',
+  };
+  static const _allowedDisconnectCategories = <String>{
+    'disconnect_all',
+    'unexpected',
+    'user',
+  };
+  static const _allowedPasteSources = <String>{
+    'clipboard_files',
+    'clipboard_image',
+    'clipboard_text',
+    'picked_files',
+    'picked_media',
+  };
+  static const _allowedSelectionActions = <String>{
+    'copy',
+    'create_snippet',
+    'look_up',
+    'paste',
+    'search_web',
+    'share',
+  };
 
   final TelemetryServiceStatus _status;
   final DiagnosticsLogger _diagnosticsLogger;
@@ -104,6 +206,7 @@ class TelemetryService {
 
   /// Enables or disables analytics and crash reporting collection.
   Future<void> setCollectionEnabled({required bool enabled}) async {
+    final wasEnabled = _collectionEnabled;
     _collectionEnabled = enabled;
     if (!isAvailable) {
       _diagnosticsLogger.info(
@@ -127,7 +230,7 @@ class TelemetryService {
 
     await analyticsClient.setCollectionEnabled(enabled: enabled);
     await crashReporter.setCollectionEnabled(enabled: enabled);
-    if (!enabled) {
+    if (!enabled && wasEnabled) {
       await analyticsClient.resetAnalyticsData();
       await crashReporter.deleteUnsentReports();
     } else {
@@ -146,25 +249,37 @@ class TelemetryService {
 
   /// Records a high-level feature-opened event.
   Future<void> logFeatureOpened({required String feature}) =>
-      _logEvent('feature_opened', <String, Object?>{'feature': feature});
+      _logEvent('feature_opened', <String, Object?>{
+        'feature': _allowlistedValue(feature, _allowedFeatureNames),
+      });
 
   /// Records that the telemetry opt-in prompt was displayed.
-  Future<void> logTelemetryPromptShown({required String trigger}) => _logEvent(
-    'telemetry_prompt_shown',
-    <String, Object?>{'trigger': trigger},
-  );
+  Future<void> logTelemetryPromptShown({required String trigger}) async {
+    _diagnosticsLogger.info(
+      'telemetry',
+      'prompt_shown',
+      fields: <String, Object?>{
+        'trigger': _allowlistedValue(trigger, _allowedPromptTriggers),
+      },
+    );
+  }
 
   /// Records that the telemetry opt-in prompt was accepted.
   Future<void> logTelemetryPromptAccepted({required String trigger}) =>
       _logEvent('telemetry_prompt_accepted', <String, Object?>{
-        'trigger': trigger,
+        'trigger': _allowlistedValue(trigger, _allowedPromptTriggers),
       });
 
   /// Records that the telemetry opt-in prompt was dismissed.
-  Future<void> logTelemetryPromptDismissed({required String trigger}) =>
-      _logEvent('telemetry_prompt_dismissed', <String, Object?>{
-        'trigger': trigger,
-      });
+  Future<void> logTelemetryPromptDismissed({required String trigger}) async {
+    _diagnosticsLogger.info(
+      'telemetry',
+      'prompt_dismissed',
+      fields: <String, Object?>{
+        'trigger': _allowlistedValue(trigger, _allowedPromptTriggers),
+      },
+    );
+  }
 
   /// Records creation of a saved host.
   Future<void> logHostCreated({
@@ -174,7 +289,7 @@ class TelemetryService {
     required bool hasAutoConnect,
     required bool hasAgentPreset,
   }) => _logEvent('host_created', <String, Object?>{
-    'method': method,
+    'method': _allowlistedValue(method, _allowedCreationMethods),
     'has_key': hasKey,
     'has_jump_host': hasJumpHost,
     'has_auto_connect': hasAutoConnect,
@@ -183,18 +298,22 @@ class TelemetryService {
 
   /// Records creation of a saved SSH key.
   Future<void> logKeyAdded({required String method}) =>
-      _logEvent('key_added', <String, Object?>{'method': method});
+      _logEvent('key_added', <String, Object?>{
+        'method': _allowlistedValue(method, _allowedCreationMethods),
+      });
 
   /// Records creation of a saved command snippet.
   Future<void> logSnippetCreated({required String method}) =>
-      _logEvent('snippet_created', <String, Object?>{'method': method});
+      _logEvent('snippet_created', <String, Object?>{
+        'method': _allowlistedValue(method, _allowedCreationMethods),
+      });
 
   /// Records an SSH connection attempt.
   Future<void> logConnectionAttempted({
     required String authMethod,
     required bool usesJumpHost,
   }) => _logEvent('connection_attempted', <String, Object?>{
-    'auth_method': authMethod,
+    'auth_method': _allowlistedValue(authMethod, _allowedAuthMethods),
     'uses_jump_host': usesJumpHost,
   });
 
@@ -204,7 +323,7 @@ class TelemetryService {
     required bool usesJumpHost,
     required Duration duration,
   }) => _logEvent('connection_succeeded', <String, Object?>{
-    'auth_method': authMethod,
+    'auth_method': _allowlistedValue(authMethod, _allowedAuthMethods),
     'uses_jump_host': usesJumpHost,
     'duration_bucket': durationBucket(duration),
   });
@@ -216,10 +335,13 @@ class TelemetryService {
     required Duration duration,
     required String failureCategory,
   }) => _logEvent('connection_failed', <String, Object?>{
-    'auth_method': authMethod,
+    'auth_method': _allowlistedValue(authMethod, _allowedAuthMethods),
     'uses_jump_host': usesJumpHost,
     'duration_bucket': durationBucket(duration),
-    'failure_category': failureCategory,
+    'failure_category': _allowlistedValue(
+      failureCategory,
+      _allowedFailureCategories,
+    ),
   });
 
   /// Records terminal session creation.
@@ -238,7 +360,10 @@ class TelemetryService {
     required bool usedBackgroundService,
   }) => _logEvent('terminal_session_ended', <String, Object?>{
     'duration_bucket': durationBucket(duration),
-    'disconnect_category': disconnectCategory,
+    'disconnect_category': _allowlistedValue(
+      disconnectCategory,
+      _allowedDisconnectCategories,
+    ),
     'used_background_service': usedBackgroundService,
   });
 
@@ -248,7 +373,7 @@ class TelemetryService {
     required int fileCount,
     required int? sizeBytes,
   }) => _logEvent('sftp_transfer_started', <String, Object?>{
-    'direction': direction,
+    'direction': _allowlistedValue(direction, _allowedTransferDirections),
     'file_count_bucket': countBucket(fileCount),
     'size_bucket': sizeBucket(sizeBytes),
   });
@@ -260,7 +385,7 @@ class TelemetryService {
     required int? sizeBytes,
     required Duration duration,
   }) => _logEvent('sftp_transfer_completed', <String, Object?>{
-    'direction': direction,
+    'direction': _allowlistedValue(direction, _allowedTransferDirections),
     'file_count_bucket': countBucket(fileCount),
     'size_bucket': sizeBucket(sizeBytes),
     'duration_bucket': durationBucket(duration),
@@ -274,34 +399,41 @@ class TelemetryService {
     required Duration duration,
     required String failureCategory,
   }) => _logEvent('sftp_transfer_failed', <String, Object?>{
-    'direction': direction,
+    'direction': _allowlistedValue(direction, _allowedTransferDirections),
     'file_count_bucket': countBucket(fileCount),
     'size_bucket': sizeBucket(sizeBytes),
     'duration_bucket': durationBucket(duration),
-    'failure_category': failureCategory,
+    'failure_category': _allowlistedValue(
+      failureCategory,
+      _allowedFailureCategories,
+    ),
   });
 
   /// Records remote multiplexer detection.
   Future<void> logMuxDetected({required String backend}) =>
-      _logEvent('mux_detected', <String, Object?>{'backend': backend});
+      _logEvent('mux_detected', <String, Object?>{
+        'backend': _allowlistedValue(backend, _allowedMuxBackends),
+      });
 
   /// Records opening the remote window switcher.
   Future<void> logMuxNavigatorOpened({
     required String backend,
     required int windowCount,
   }) => _logEvent('mux_navigator_opened', <String, Object?>{
-    'backend': backend,
+    'backend': _allowlistedValue(backend, _allowedMuxBackends),
     'window_count_bucket': countBucket(windowCount),
   });
 
   /// Records remote window switch usage.
   Future<void> logMuxWindowSwitched({required String backend}) =>
-      _logEvent('mux_window_switched', <String, Object?>{'backend': backend});
+      _logEvent('mux_window_switched', <String, Object?>{
+        'backend': _allowlistedValue(backend, _allowedMuxBackends),
+      });
 
   /// Records opening the new remote window dialog.
   Future<void> logMuxNewWindowDialogOpened({required String backend}) =>
       _logEvent('mux_new_window_dialog_opened', <String, Object?>{
-        'backend': backend,
+        'backend': _allowlistedValue(backend, _allowedMuxBackends),
       });
 
   /// Records remote window creation.
@@ -309,7 +441,7 @@ class TelemetryService {
     required String backend,
     required bool hasCommand,
   }) => _logEvent('mux_window_created', <String, Object?>{
-    'backend': backend,
+    'backend': _allowlistedValue(backend, _allowedMuxBackends),
     'has_command': hasCommand,
   });
 
@@ -318,8 +450,11 @@ class TelemetryService {
     required String backend,
     required String failureCategory,
   }) => _logEvent('mux_install_failed', <String, Object?>{
-    'backend': backend,
-    'failure_category': failureCategory,
+    'backend': _allowlistedValue(backend, _allowedMuxBackends),
+    'failure_category': _allowlistedValue(
+      failureCategory,
+      _allowedFailureCategories,
+    ),
   });
 
   /// Records agent session-history usage.
@@ -327,13 +462,15 @@ class TelemetryService {
     required String tool,
     required int sessionCount,
   }) => _logEvent('session_history_opened', <String, Object?>{
-    'tool': tool,
+    'tool': _allowlistedValue(tool, _allowedAgentTools),
     'session_count_bucket': countBucket(sessionCount),
   });
 
   /// Records agent session-history selection.
-  Future<void> logSessionHistorySelected({required String tool}) =>
-      _logEvent('session_history_selected', <String, Object?>{'tool': tool});
+  Future<void> logSessionHistorySelected({required String tool}) => _logEvent(
+    'session_history_selected',
+    <String, Object?>{'tool': _allowlistedValue(tool, _allowedAgentTools)},
+  );
 
   /// Records agent-session detection results.
   Future<void> logAgentSessionsDetected({
@@ -341,14 +478,16 @@ class TelemetryService {
     required int sessionCount,
     required bool failed,
   }) => _logEvent('agent_sessions_detected', <String, Object?>{
-    'tool': tool,
+    'tool': _allowlistedValue(tool, _allowedAgentTools),
     'session_count_bucket': countBucket(sessionCount),
     'failed': failed,
   });
 
   /// Records that an agent CLI was detected on the remote host.
-  Future<void> logAgentToolDetected({required String tool}) =>
-      _logEvent('agent_tool_detected', <String, Object?>{'tool': tool});
+  Future<void> logAgentToolDetected({required String tool}) => _logEvent(
+    'agent_tool_detected',
+    <String, Object?>{'tool': _allowlistedValue(tool, _allowedAgentTools)},
+  );
 
   /// Records agent launch usage.
   Future<void> logAgentLaunchUsed({
@@ -356,7 +495,7 @@ class TelemetryService {
     required bool usedSessionHistory,
     required bool usesMux,
   }) => _logEvent('agent_launch_used', <String, Object?>{
-    'tool': tool,
+    'tool': _allowlistedValue(tool, _allowedAgentTools),
     'used_session_history': usedSessionHistory,
     'uses_mux': usesMux,
   });
@@ -366,29 +505,32 @@ class TelemetryService {
     required String feature,
     required String source,
   }) => _logEvent('paywall_shown', <String, Object?>{
-    'feature': feature,
-    'source': source,
+    'feature': _allowlistedValue(feature, _allowedPaywallFeatures),
+    'source': _allowlistedValue(source, _allowedPaywallSources),
   });
 
   /// Records purchase start.
-  Future<void> logPurchaseStarted({required String productType}) => _logEvent(
-    'purchase_started',
-    <String, Object?>{'product_type': productType},
-  );
+  Future<void> logPurchaseStarted({required String productType}) =>
+      _logEvent('purchase_started', <String, Object?>{
+        'product_type': _allowlistedValue(productType, _allowedProductTypes),
+      });
 
   /// Records purchase completion.
-  Future<void> logPurchaseCompleted({required String productType}) => _logEvent(
-    'purchase_completed',
-    <String, Object?>{'product_type': productType},
-  );
+  Future<void> logPurchaseCompleted({required String productType}) =>
+      _logEvent('purchase_completed', <String, Object?>{
+        'product_type': _allowlistedValue(productType, _allowedProductTypes),
+      });
 
   /// Records purchase failure or cancellation.
   Future<void> logPurchaseFailed({
     required String productType,
     required String failureCategory,
   }) => _logEvent('purchase_failed', <String, Object?>{
-    'product_type': productType,
-    'failure_category': failureCategory,
+    'product_type': _allowlistedValue(productType, _allowedProductTypes),
+    'failure_category': _allowlistedValue(
+      failureCategory,
+      _allowedFailureCategories,
+    ),
   });
 
   /// Records terminal paste usage without paste contents.
@@ -396,14 +538,14 @@ class TelemetryService {
     required String source,
     required bool requiredReview,
   }) => _logEvent('terminal_paste_used', <String, Object?>{
-    'source': source,
+    'source': _allowlistedValue(source, _allowedPasteSources),
     'required_review': requiredReview,
   });
 
   /// Records terminal selection action usage without selected text.
   Future<void> logTerminalSelectionAction({required String action}) =>
       _logEvent('terminal_selection_action', <String, Object?>{
-        'action': action,
+        'action': _allowlistedValue(action, _allowedSelectionActions),
       });
 
   /// Records the extra-keys toolbar being shown or hidden.
@@ -446,14 +588,18 @@ class TelemetryService {
     if (crashReporter == null) {
       return;
     }
-    await crashReporter.recordFlutterError(
-      FlutterErrorDetails(
-        exception: SanitizedTelemetryError.from(details.exception),
-        stack: details.stack,
-        library: 'flutter',
-        context: ErrorDescription('flutter_error'),
-      ),
-    );
+    try {
+      await crashReporter.recordFlutterError(
+        FlutterErrorDetails(
+          exception: SanitizedTelemetryError.from(details.exception),
+          stack: details.stack,
+          library: 'flutter',
+          context: ErrorDescription('flutter_error'),
+        ),
+      );
+    } on Object {
+      return;
+    }
   }
 
   /// Records a sanitized Dart error.
@@ -469,11 +615,15 @@ class TelemetryService {
     if (crashReporter == null) {
       return;
     }
-    await crashReporter.recordError(
-      SanitizedTelemetryError.from(error),
-      stackTrace,
-      fatal: fatal,
-    );
+    try {
+      await crashReporter.recordError(
+        SanitizedTelemetryError.from(error),
+        stackTrace,
+        fatal: fatal,
+      );
+    } on Object {
+      return;
+    }
   }
 
   Future<void> _logEvent(String name, Map<String, Object?> parameters) async {
@@ -521,7 +671,11 @@ class TelemetryService {
   }
 
   String _sanitizeFirebaseName(String value) {
-    final sanitized = value
+    final normalized = value.replaceAllMapped(
+      RegExp('([a-z0-9])([A-Z])'),
+      (match) => '${match.group(1)}_${match.group(2)}',
+    );
+    final sanitized = normalized
         .toLowerCase()
         .replaceAll(_safeNamePattern, '_')
         .replaceAll(RegExp('_+'), '_')
@@ -536,11 +690,27 @@ class TelemetryService {
   }
 
   String _sanitizeFirebaseString(String value) {
-    final sanitized = _sanitizeFirebaseName(value);
+    final normalized = value.replaceAllMapped(
+      RegExp('([a-z0-9])([A-Z])'),
+      (match) => '${match.group(1)}_${match.group(2)}',
+    );
+    final sanitized = normalized
+        .toLowerCase()
+        .replaceAll(_safeNamePattern, '_')
+        .replaceAll(RegExp('_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    if (sanitized.isEmpty) {
+      return 'unknown';
+    }
     if (sanitized.length <= _maxFirebaseStringLength) {
       return sanitized;
     }
     return sanitized.substring(0, _maxFirebaseStringLength);
+  }
+
+  String _allowlistedValue(String value, Set<String> allowedValues) {
+    final sanitized = _sanitizeFirebaseString(value);
+    return allowedValues.contains(sanitized) ? sanitized : 'unknown';
   }
 
   /// Buckets durations so analytics cannot reconstruct exact activity timing.
@@ -682,7 +852,6 @@ Future<TelemetryService> createTelemetryService({
       ),
     );
     await service.setCollectionEnabled(enabled: collectionEnabled);
-    await _setCrashMetadata(service);
     return service;
   } on FirebaseException catch (error) {
     logger.warning(
@@ -1046,21 +1215,7 @@ Future<void> _setCrashMetadata(TelemetryService service) async {
 }
 
 String _sanitizeErrorType(Object error) {
-  final errorType = switch (error) {
-    FirebaseException() => 'FirebaseException',
-    PlatformException() => 'PlatformException',
-    TimeoutException() => 'TimeoutException',
-    FormatException() => 'FormatException',
-    ArgumentError() => 'ArgumentError',
-    AssertionError() => 'AssertionError',
-    StateError() => 'StateError',
-    TypeError() => 'TypeError',
-    UnimplementedError() => 'UnimplementedError',
-    UnsupportedError() => 'UnsupportedError',
-    Error() => 'Error',
-    Exception() => 'Exception',
-    _ => 'Object',
-  };
+  final errorType = '${error.runtimeType}';
   final sanitized = errorType
       .replaceAll(RegExp('[^A-Za-z0-9_.-]+'), '_')
       .replaceAll(RegExp('_+'), '_')

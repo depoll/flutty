@@ -47,7 +47,29 @@ void main() {
       expect(crashReporter.deleteUnsentReportsCount, 1);
     });
 
-    test('sanitizes event names and parameter values', () async {
+    test(
+      'does not reset analytics when collection is already disabled',
+      () async {
+        final analytics = _FakeAnalyticsClient();
+        final crashReporter = _FakeCrashReporter();
+        final service = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: false,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: analytics,
+          crashReporter: crashReporter,
+        );
+
+        await service.setCollectionEnabled(enabled: false);
+
+        expect(analytics.collectionEnabled, isFalse);
+        expect(analytics.resetCount, 0);
+        expect(crashReporter.collectionEnabled, isFalse);
+        expect(crashReporter.deleteUnsentReportsCount, 0);
+      },
+    );
+
+    test('sanitizes and allowlists event parameter values', () async {
       final analytics = _FakeAnalyticsClient();
       final service = TelemetryService(
         status: TelemetryServiceStatus.ready,
@@ -57,10 +79,18 @@ void main() {
         crashReporter: _FakeCrashReporter(),
       );
 
-      await service.logFeatureOpened(feature: 'Terminal Screen!');
+      await service.logFeatureOpened(feature: 'terminal');
+      await service.logFeatureOpened(feature: 'Host: /secret.example.com');
+      await service.logPaywallShown(
+        feature: 'agentLaunchPresets',
+        source: 'feature_gate',
+      );
 
-      expect(analytics.events.single.parameters, {
-        'feature': 'terminal_screen',
+      expect(analytics.events[0].parameters, {'feature': 'terminal'});
+      expect(analytics.events[1].parameters, {'feature': 'unknown'});
+      expect(analytics.events[2].parameters, {
+        'feature': 'agent_launch_presets',
+        'source': 'feature_gate',
       });
     });
 
@@ -196,6 +226,31 @@ void main() {
       );
       expect(crashReporter.recordedErrors.single.fatal, isTrue);
     });
+
+    test(
+      'preserves sanitized custom error type names for crash grouping',
+      () async {
+        final crashReporter = _FakeCrashReporter();
+        final service = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: _FakeAnalyticsClient(),
+          crashReporter: crashReporter,
+        );
+
+        await service.recordError(
+          const _CustomTelemetryException(),
+          StackTrace.current,
+          fatal: false,
+        );
+
+        expect(
+          crashReporter.recordedErrors.single.error.toString(),
+          'CustomTelemetryException',
+        );
+      },
+    );
 
     test('does not record crashes when unavailable', () async {
       final crashReporter = _FakeCrashReporter();
@@ -348,6 +403,10 @@ ProviderContainer _createTelemetryContainer({
     ),
   ],
 );
+
+class _CustomTelemetryException implements Exception {
+  const _CustomTelemetryException();
+}
 
 class _FakeAnalyticsClient implements TelemetryAnalyticsClient {
   final List<_AnalyticsEvent> events = <_AnalyticsEvent>[];

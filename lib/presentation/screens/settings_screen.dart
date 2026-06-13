@@ -656,7 +656,7 @@ class _PrivacySection extends ConsumerWidget {
     if (status != TelemetryServiceStatus.ready) {
       return switch (status) {
         TelemetryServiceStatus.disabledByBuild =>
-          'Not available in this build. Firebase config must be bundled and FLUTTY_FIREBASE_ENABLED must be true.',
+          'Not available in this build.',
         TelemetryServiceStatus.unsupportedPlatform =>
           'Not available on this platform.',
         TelemetryServiceStatus.initializationFailed =>
