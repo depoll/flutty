@@ -1896,14 +1896,17 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return null;
     }
 
-    final background = firstCell.background;
+    final runBackground = _resolveCellBackgroundPaintColor(firstCell);
     var fillStartColumn = runStartColumn;
     var hasHighlightedContent = false;
+    final runCell = CellData.empty();
     for (; fillStartColumn < line.length; fillStartColumn += 1) {
-      if (line.getBackground(fillStartColumn) != background) {
+      line.getCellData(fillStartColumn, runCell);
+      if (!_cellMatchesTrailingBackgroundRun(runCell, runBackground)) {
         break;
       }
-      hasHighlightedContent |= line.getCodePoint(fillStartColumn) != 0;
+      hasHighlightedContent |=
+          (runCell.content & CellContent.codepointMask) != 0;
     }
 
     if (!hasHighlightedContent || fillStartColumn >= line.length) {
@@ -1922,6 +1925,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
       startColumn: fillStartColumn,
       color: _resolveCellBackgroundPaintColor(firstCell),
     );
+  }
+
+  bool _cellMatchesTrailingBackgroundRun(CellData cellData, Color color) {
+    if (!_cellPaintsBackground(cellData)) {
+      return false;
+    }
+    return _resolveCellBackgroundPaintColor(cellData) == color;
   }
 
   int? _trailingBackgroundRunStartColumn(BufferLine line, CellData firstCell) {
@@ -2230,10 +2240,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
       _cellBackgroundColorType(cellData) != CellColor.normal;
 
   bool _shouldExtendTrailingBackgroundFill(CellData firstCell) {
-    if (firstCell.flags & CellFlags.inverse != 0) {
-      return false;
-    }
-    final backgroundType = _cellBackgroundColorType(firstCell);
+    final inverse = firstCell.flags & CellFlags.inverse != 0;
+    final backgroundSourceColor = inverse
+        ? firstCell.foreground
+        : firstCell.background;
+    final backgroundType = _cellColorType(backgroundSourceColor);
     if (backgroundType == CellColor.normal) {
       return false;
     }
@@ -2241,11 +2252,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
     // background; semantic color labels should stay text-width.
     if ((backgroundType == CellColor.named ||
             backgroundType == CellColor.palette) &&
-        _cellColorValue(firstCell.background) == 8) {
+        _cellColorValue(backgroundSourceColor) == 8) {
       return true;
     }
     return _isNeutralTerminalColor(
-      resolveBackgroundColor(firstCell.background),
+      inverse
+          ? resolveForegroundColor(firstCell.foreground)
+          : resolveBackgroundColor(firstCell.background),
     );
   }
 
