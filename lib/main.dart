@@ -11,8 +11,6 @@ import 'domain/services/host_key_prompt_handler_provider.dart';
 import 'domain/services/settings_service.dart';
 import 'domain/services/telemetry_service.dart';
 
-final _platformErrorsBeingForwarded = <Object>[];
-
 /// Entry point for the MonkeySSH client.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,7 +19,7 @@ Future<void> main() async {
   final telemetryService = await createTelemetryService(
     settingsService: settingsService,
   );
-  installTelemetryErrorHandlers(telemetryService);
+  _installTelemetryErrorHandlers(telemetryService);
   runApp(
     ProviderScope(
       overrides: [
@@ -37,18 +35,13 @@ Future<void> main() async {
   );
 }
 
-/// Installs global Flutter/Dart error hooks for sanitized telemetry reporting.
-@visibleForTesting
-void installTelemetryErrorHandlers(TelemetryService telemetryService) {
+void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
   final previousFlutterErrorHandler = FlutterError.onError;
   FlutterError.onError = (details) {
     if (previousFlutterErrorHandler != null) {
       previousFlutterErrorHandler(details);
     } else {
       FlutterError.presentError(details);
-    }
-    if (_isPlatformErrorBeingForwarded(details.exception)) {
-      return;
     }
     unawaited(
       telemetryService.recordFlutterError(details).catchError((Object _) {}),
@@ -59,33 +52,9 @@ void installTelemetryErrorHandlers(TelemetryService telemetryService) {
   PlatformDispatcher.instance.onError = (error, stackTrace) {
     unawaited(
       telemetryService
-          .recordError(error, stackTrace, fatal: false)
+          .recordError(error, stackTrace, fatal: true)
           .catchError((Object _) {}),
     );
-    _platformErrorsBeingForwarded.add(error);
-    try {
-      previousPlatformErrorHandler?.call(error, stackTrace);
-    } finally {
-      _removePlatformErrorBeingForwarded(error);
-    }
-    return true;
+    return previousPlatformErrorHandler?.call(error, stackTrace) ?? false;
   };
-}
-
-bool _isPlatformErrorBeingForwarded(Object error) =>
-    _platformErrorsBeingForwarded.any(
-      (activeError) => identical(activeError, error),
-    );
-
-void _removePlatformErrorBeingForwarded(Object error) {
-  for (
-    var index = _platformErrorsBeingForwarded.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    if (identical(_platformErrorsBeingForwarded[index], error)) {
-      _platformErrorsBeingForwarded.removeAt(index);
-      return;
-    }
-  }
 }

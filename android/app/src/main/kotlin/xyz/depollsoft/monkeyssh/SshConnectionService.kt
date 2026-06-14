@@ -130,6 +130,14 @@ class SshConnectionService : Service() {
         super.onDestroy()
     }
 
+    override fun onTimeout(startId: Int) {
+        Log.w(TAG, "SSH foreground service timed out; stopping background service")
+        latestStatus = null
+        Companion.latestStatus = null
+        hidePresentation()
+        stopSelf(startId)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun extractStatus(intent: Intent): ConnectionStatus? {

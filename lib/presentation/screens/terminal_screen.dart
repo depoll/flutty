@@ -4918,7 +4918,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _lastObservedLocalClipboardText = session.localClipboardReadEnabled
         ? await _readSystemClipboardText()
         : null;
-    _lastObservedRemoteClipboardText = await _readRemoteClipboardText(session);
+    try {
+      _lastObservedRemoteClipboardText = await _readRemoteClipboardText(
+        session,
+      );
+    } on Object catch (error) {
+      _handleSharedClipboardRemoteCommandFailure(
+        session,
+        error,
+        operation: 'initial_read',
+      );
+      return;
+    }
 
     if (!mounted ||
         !session.clipboardSharingEnabled ||
@@ -5007,6 +5018,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _lastObservedLocalClipboardText = localText;
       _lastObservedRemoteClipboardText = localText;
       _lastAppliedRemoteClipboardText = localText;
+    } on Object catch (error) {
+      _handleSharedClipboardRemoteCommandFailure(
+        session,
+        error,
+        operation: 'write',
+      );
     } finally {
       _isPushingLocalClipboard = false;
     }
@@ -5049,6 +5066,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _lastAppliedLocalClipboardText = remoteClipboardText;
     } on PlatformException {
       return;
+    } on Object catch (error) {
+      _handleSharedClipboardRemoteCommandFailure(
+        session,
+        error,
+        operation: 'read',
+      );
+      return;
     } finally {
       _isPollingRemoteClipboard = false;
     }
@@ -5065,6 +5089,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
     return parsed.text;
+  }
+
+  void _handleSharedClipboardRemoteCommandFailure(
+    SshSession session,
+    Object error, {
+    required String operation,
+  }) {
+    _remoteClipboardUnsupported = true;
+    _localClipboardSyncTimer?.cancel();
+    _localClipboardSyncTimer = null;
+    _remoteClipboardSyncTimer?.cancel();
+    _remoteClipboardSyncTimer = null;
+    DiagnosticsLogService.instance.warning(
+      'terminal.clipboard',
+      'remote_sync_failed',
+      fields: {
+        'connectionId': session.connectionId,
+        'operation': operation,
+        'errorType': error.runtimeType,
+      },
+    );
   }
 
   Future<String> _runRemoteCommand(SshSession session, String command) async =>
@@ -6301,7 +6346,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         pixelWidth: pixelWidth,
         pixelHeight: pixelHeight,
       );
-      _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
+      try {
+        _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.resize',
+          'resize_failed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        unawaited(
+          _cleanupUnexpectedDisconnect(
+            session.connectionId,
+            message: 'Connection became unresponsive. Reconnect to continue.',
+          ),
+        );
+        return;
+      }
       if (!_suppressMonkeyMuxResizeSyncFromTerminalRefresh) {
         _scheduleMonkeyMuxResizeSync(session, columns: width, rows: height);
         _scheduleMonkeyMuxResizeRedrawFollowUp(session);
