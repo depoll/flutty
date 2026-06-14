@@ -748,7 +748,7 @@ class EscapeParser {
       _applySgrColorIndexed(code, i + 2 < params.length ? params[i + 2] : 0);
       return 2;
     }
-    return i + 1 < params.length ? 2 : 0;
+    return i + 1 < params.length ? 1 : 0;
   }
 
   int _sub(List<int> sub, int i) => i < sub.length ? sub[i] : 0;
