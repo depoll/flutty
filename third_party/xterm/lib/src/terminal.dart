@@ -378,10 +378,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// See also:
   /// - [textInput]
   void paste(String text) {
-    // Strip CSI formatting and unsafe controls before sending paste payloads.
-    text = text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '');
+    // Strip terminal control sequences and unsafe controls before sending paste
+    // payloads.
+    text = text.replaceAll(RegExp(r'\x1b\[[0-?]*[ -/]*[@-~]'), '');
+    text = text.replaceAll(RegExp(r'\x1b\][\s\S]*?(?:\x07|\x1b\\)'), '');
+    text = text.replaceAll(RegExp(r'\x1b[P\^_X][\s\S]*?\x1b\\'), '');
+    text = text.replaceAll(RegExp(r'\x1b[ -/]*[@-~]'), '');
     text = text.replaceAll(
-      RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]'),
+      RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f]'),
       '',
     );
 
