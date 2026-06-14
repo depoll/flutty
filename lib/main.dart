@@ -11,6 +11,8 @@ import 'domain/services/host_key_prompt_handler_provider.dart';
 import 'domain/services/settings_service.dart';
 import 'domain/services/telemetry_service.dart';
 
+final _platformErrorsBeingForwarded = <Object>[];
+
 /// Entry point for the MonkeySSH client.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,6 +47,9 @@ void installTelemetryErrorHandlers(TelemetryService telemetryService) {
     } else {
       FlutterError.presentError(details);
     }
+    if (_isPlatformErrorBeingForwarded(details.exception)) {
+      return;
+    }
     unawaited(
       telemetryService.recordFlutterError(details).catchError((Object _) {}),
     );
@@ -57,6 +62,30 @@ void installTelemetryErrorHandlers(TelemetryService telemetryService) {
           .recordError(error, stackTrace, fatal: false)
           .catchError((Object _) {}),
     );
-    return previousPlatformErrorHandler?.call(error, stackTrace) ?? true;
+    _platformErrorsBeingForwarded.add(error);
+    try {
+      previousPlatformErrorHandler?.call(error, stackTrace);
+    } finally {
+      _removePlatformErrorBeingForwarded(error);
+    }
+    return true;
   };
+}
+
+bool _isPlatformErrorBeingForwarded(Object error) =>
+    _platformErrorsBeingForwarded.any(
+      (activeError) => identical(activeError, error),
+    );
+
+void _removePlatformErrorBeingForwarded(Object error) {
+  for (
+    var index = _platformErrorsBeingForwarded.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    if (identical(_platformErrorsBeingForwarded[index], error)) {
+      _platformErrorsBeingForwarded.removeAt(index);
+      return;
+    }
+  }
 }

@@ -27,6 +27,18 @@ void main() {
       'records root isolate Dart errors as handled non-fatal reports',
       () async {
         final crashReporter = _FakeCrashReporter();
+        var previousHandlerCallCount = 0;
+        var previousFlutterErrorCallCount = 0;
+        FlutterError.onError = (_) {
+          previousFlutterErrorCallCount += 1;
+        };
+        PlatformDispatcher.instance.onError = (error, stackTrace) {
+          previousHandlerCallCount += 1;
+          FlutterError.onError!(
+            FlutterErrorDetails(exception: error, stack: stackTrace),
+          );
+          return false;
+        };
         final service = TelemetryService(
           status: TelemetryServiceStatus.ready,
           collectionEnabled: true,
@@ -43,6 +55,8 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(handled, isTrue);
+        expect(previousHandlerCallCount, 1);
+        expect(previousFlutterErrorCallCount, 1);
         expect(crashReporter.recordedErrors, hasLength(1));
         expect(
           crashReporter.recordedErrors.single.error.toString(),
