@@ -18,6 +18,13 @@ final _disallowedCommandControlCharacters = RegExp(
 );
 final _multilinePattern = RegExp(r'[\r\n]');
 
+/// Keyboard insertions longer than this are treated as paste-like.
+///
+/// Normal swipe commits are short words or phrases. Larger payloads can come
+/// from iOS clipboard/autofill handoff paths and should be reviewed before the
+/// terminal receives them.
+const terminalKeyboardPasteLikeInsertionThreshold = 256;
+
 /// Reasons a terminal command should be reviewed before it is inserted or run.
 enum TerminalCommandReviewReason {
   /// The command came from imported auto-connect configuration.
@@ -40,6 +47,9 @@ enum TerminalCommandReviewReason {
 
   /// The command was rendered from snippet variables.
   variableSubstitution,
+
+  /// The keyboard supplied a paste-like amount of text in one update.
+  largeKeyboardInsertion,
 }
 
 /// Review metadata for a terminal command before insertion or execution.
@@ -147,6 +157,24 @@ TerminalCommandReview assessClipboardPasteCommand(
   ),
   bracketedPasteModeEnabled: bracketedPasteModeEnabled,
 );
+
+/// Assesses text inserted through the system keyboard.
+TerminalCommandReview assessKeyboardInsertedCommand(
+  String command, {
+  required String insertedText,
+}) {
+  final reasons = <TerminalCommandReviewReason>[
+    ..._collectPasteCommandReviewReasons(
+      command,
+      bracketedPasteModeEnabled: false,
+    ),
+  ];
+  if (insertedText.length > terminalKeyboardPasteLikeInsertionThreshold &&
+      !reasons.contains(TerminalCommandReviewReason.largeKeyboardInsertion)) {
+    reasons.add(TerminalCommandReviewReason.largeKeyboardInsertion);
+  }
+  return TerminalCommandReview(command: command, reasons: reasons);
+}
 
 /// Assesses a rendered snippet command before terminal insertion.
 TerminalCommandReview assessSnippetCommandInsertion(
@@ -346,6 +374,8 @@ String _describeReviewReason(TerminalCommandReviewReason reason) =>
         'This command uses shell command substitution.',
       TerminalCommandReviewReason.variableSubstitution =>
         'Snippet variables were substituted into the final command.',
+      TerminalCommandReviewReason.largeKeyboardInsertion =>
+        'The keyboard inserted a paste-like amount of text.',
     };
 
 bool _hasVisibleContent(String? value) =>

