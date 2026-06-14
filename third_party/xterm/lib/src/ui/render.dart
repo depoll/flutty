@@ -165,11 +165,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   void _onTerminalChange() {
     markNeedsLayout();
+    markNeedsPaint();
     _notifyEditableRect();
   }
 
   void _onControllerUpdate() {
     markNeedsLayout();
+    markNeedsPaint();
   }
 
   @override
@@ -474,9 +476,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       _painter.cellSize.height,
       PlaceholderAlignment.middle,
     );
-    builder.pushStyle(
-      style.getTextStyle(textScaler: _painter.textScaler),
-    );
+    builder.pushStyle(style.getTextStyle(textScaler: _painter.textScaler));
     builder.addText(composingText);
 
     final paragraph = builder.build();

@@ -31,6 +31,15 @@ out of scope.
 * Robustness: CSI parameter/sub-parameter cap (256) to avoid OOM on malformed
   sequences, removal of a dead `case 10061000`, and `withOpacity` ->
   `withValues`.
+* kterm.dart 1.2.0 catch-up (`8c7e081`): image eviction now accounts for the
+  image being stored and caps retained decoded-image memory; malformed legacy
+  SGR colors no longer leak mode bytes into later attributes; input methods
+  notify listeners after emitting output; pasted text strips unsafe controls and
+  normalizes line endings; terminal render updates invalidate paint; Shift+Enter
+  emits `\n`; `ESC *` / `ESC +` designate G2/G3 charsets; the suggestion
+  overlay uses the non-deprecated `OverlayPortal`; double-tap timers are canceled
+  on dispose; and the ZMODEM detector awaits initial session handling instead of
+  fire-and-forget while serializing stdout chunk processing.
 
 ### Evaluated but intentionally not ported
 * Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end

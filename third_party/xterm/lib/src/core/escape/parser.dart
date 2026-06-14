@@ -109,10 +109,10 @@ class EscapeParser {
     '('.charCode: _escHandleDesignateCharset0, //  SCS - G0
     ')'.charCode: _escHandleDesignateCharset1, //  SCS - G1
     '_'.charCode: _escHandleAPC, // APC - Kitty graphics protocol
-    // '*'.charCode: _voidHandler(1), // TODO: G2 (vt220)
-    // '+'.charCode: _voidHandler(1), // TODO: G3 (vt220)
-    '>'.charCode: _escHandleResetAppKeypadMode, // TODO: Normal Keypad
-    '='.charCode: _escHandleSetAppKeypadMode, // TODO: Application Keypad
+    '*'.charCode: _escHandleDesignateCharset2, //  SCS - G2 (vt220)
+    '+'.charCode: _escHandleDesignateCharset3, //  SCS - G3 (vt220)
+    '>'.charCode: _escHandleResetAppKeypadMode, // Normal Keypad (DECKPNM)
+    '='.charCode: _escHandleSetAppKeypadMode, // Application Keypad (DECKPAM)
   });
 
   /// `ESC 7` Save Cursor (DECSC)
@@ -177,17 +177,33 @@ class EscapeParser {
     return true;
   }
 
-  /// `ESC >` Reset Application Keypad Mode (DECKPNM)
-  ///
-  /// https://terminalguide.namepad.de/seq/a_esc_x3c_greater_than/
-  bool _escHandleSetAppKeypadMode() {
-    handler.setAppKeypadMode(true);
+  /// `ESC * <name>` Designate G2 Character Set (SCS)
+  bool _escHandleDesignateCharset2() {
+    if (_queue.isEmpty) return false;
+    int name = _queue.consume();
+    handler.designateCharset(2, name);
+    return true;
+  }
+
+  /// `ESC + <name>` Designate G3 Character Set (SCS)
+  bool _escHandleDesignateCharset3() {
+    if (_queue.isEmpty) return false;
+    int name = _queue.consume();
+    handler.designateCharset(3, name);
     return true;
   }
 
   /// `ESC =` Set Application Keypad Mode (DECKPAM)
   ///
   /// https://terminalguide.namepad.de/seq/a_esc_x3d_equals/
+  bool _escHandleSetAppKeypadMode() {
+    handler.setAppKeypadMode(true);
+    return true;
+  }
+
+  /// `ESC >` Reset Application Keypad Mode (DECKPNM)
+  ///
+  /// https://terminalguide.namepad.de/seq/a_esc_x3c_greater_than/
   bool _escHandleResetAppKeypadMode() {
     handler.setAppKeypadMode(false);
     return true;
@@ -688,9 +704,10 @@ class EscapeParser {
   ///
   /// Supports both the legacy semicolon form (`CSI 38;2;r;g;b m`,
   /// `CSI 38;5;n m`) and the ITU-T T.416 colon sub-parameter form
-  /// (`CSI 38:2::r:g:b m`, `CSI 38:5:n m`). Missing arguments default to `0`
-  /// instead of throwing, matching xterm.js. Returns the number of *extra*
-  /// top-level parameters consumed (always `0` for the colon form).
+  /// (`CSI 38:2::r:g:b m`, `CSI 38:5:n m`). Incomplete legacy semicolon forms
+  /// are skipped without leaking color-mode bytes into later SGR parameters.
+  /// Returns the number of *extra* top-level parameters consumed (always `0`
+  /// for the colon form).
   int _handleSgrColor(int code, int i) {
     final params = _csi.params;
     final sub = _csi.subParamsOf(i);
@@ -716,16 +733,22 @@ class EscapeParser {
     // Legacy semicolon form: read the following top-level parameters.
     final mode = i + 1 < params.length ? params[i + 1] : 0;
     if (mode == 2) {
+      if (i + 4 >= params.length) {
+        return 2;
+      }
       final r = i + 2 < params.length ? params[i + 2] : 0;
       final g = i + 3 < params.length ? params[i + 3] : 0;
       final b = i + 4 < params.length ? params[i + 4] : 0;
       _applySgrColorRgb(code, r, g, b);
       return 4;
     } else if (mode == 5) {
+      if (i + 2 >= params.length) {
+        return 2;
+      }
       _applySgrColorIndexed(code, i + 2 < params.length ? params[i + 2] : 0);
       return 2;
     }
-    return 0;
+    return i + 1 < params.length ? 1 : 0;
   }
 
   int _sub(List<int> sub, int i) => i < sub.length ? sub[i] : 0;
