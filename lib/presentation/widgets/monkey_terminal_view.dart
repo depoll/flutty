@@ -1906,7 +1906,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         runBackground,
       );
       if (!matchesPromptBackground &&
-          !_isBlankNormalCell(runCell) &&
+          !_isBlankTerminalBackgroundCell(runCell) &&
           !_isNormalTextCell(runCell)) {
         return null;
       }
@@ -1923,7 +1923,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     final trailingCell = CellData.empty();
     for (var column = fillStartColumn; column < line.length; column += 1) {
       line.getCellData(column, trailingCell);
-      if (!_isBlankNormalCell(trailingCell)) {
+      if (!_isBlankTerminalBackgroundCell(trailingCell)) {
         return null;
       }
     }
@@ -1943,6 +1943,15 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   bool _isNormalTextCell(CellData cellData) =>
       !_cellPaintsBackground(cellData) && !_isBlankCell(cellData);
+
+  bool _isBlankTerminalBackgroundCell(CellData cellData) {
+    if (!_isBlankNormalCell(cellData)) {
+      return _isBlankCell(cellData) &&
+          _cellPaintsBackground(cellData) &&
+          _resolveCellBackgroundPaintColor(cellData) == theme.background;
+    }
+    return true;
+  }
 
   int? _trailingBackgroundRunStartColumn(BufferLine line, CellData firstCell) {
     line.getCellData(0, firstCell);
