@@ -754,6 +754,54 @@ void main() {
     });
 
     test(
+      'paints Copilot prompt marker background through normal text rows',
+      () async {
+        const promptBackground = Color(0xFFD0DAD9);
+        const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
+        const promptText = '❯ did it work?';
+        final terminal = Terminal()
+          ..resize(48, 2)
+          ..write('$promptBackgroundSequence❯ \x1b[mdid it work?');
+        final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(),
+          textScaler: TextScaler.noScaling,
+        );
+        final cellSize = painter.cellSize;
+        final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
+        final imageHeight = cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+        final image = await recorder.endRecording().toImage(
+          imageWidth,
+          imageHeight,
+        );
+        final byteData = await image.toByteData();
+        expect(byteData, isNotNull);
+
+        final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+          terminal.buffer.lines[0],
+        );
+        expect(fill, isNotNull);
+        expect(fill!.startColumn, promptText.length);
+        expect(fill.color, promptBackground);
+        expect(
+          _rawRgbaPixel(
+            byteData!,
+            imageWidth,
+            ((promptText.length + 4) * cellSize.width).round(),
+            (cellSize.height / 2).round(),
+          ),
+          promptBackground,
+        );
+      },
+    );
+
+    test(
       'extends neutral truecolor composer rows after blank leading cells',
       () {
         final terminal = Terminal()
