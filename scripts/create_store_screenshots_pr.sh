@@ -146,28 +146,6 @@ if [ -e "$worktree_dir" ]; then
   fail "Worktree path already exists: $worktree_dir"
 fi
 
-workspace="/Users/Shared/monkeyssh-release-workspace"
-workspace_backup=""
-restore_workspace() {
-  local status=$?
-  if [ -n "$workspace_backup" ]; then
-    if [ -e "$workspace/.monkeyssh-release-workspace" ]; then
-      rm -rf "$workspace"
-    fi
-    if [ -e "$workspace_backup" ]; then
-      mv "$workspace_backup" "$workspace"
-    fi
-  fi
-  exit "$status"
-}
-trap restore_workspace EXIT
-
-if [ -e "$workspace" ] && [ ! -e "$workspace/.monkeyssh-release-workspace" ]; then
-  workspace_backup="$workspace.screenshot-backup-$$"
-  echo "Temporarily moving existing $workspace to $workspace_backup"
-  mv "$workspace" "$workspace_backup"
-fi
-
 echo "Fetching origin/$base_branch..."
 git -C "$repo_root" fetch --no-tags origin "$base_branch"
 

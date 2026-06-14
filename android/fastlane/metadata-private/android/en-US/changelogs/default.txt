@@ -1,1 +1,1 @@
-Initial beta release with mobile SSH, SFTP, tmux-aware resume flows, coding-agent launch presets, snippets, port forwarding, and local-first security.
+Initial beta release with mobile SSH, SFTP, MonkeyMux/tmux window switching, scoped coding-agent session history, launch presets for Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Antigravity, snippets, port forwarding, encrypted transfers/migration, and opt-in analytics/crash reporting that starts off.

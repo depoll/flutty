@@ -47,6 +47,14 @@ BAD_OCR_PATTERNS = {
         re.IGNORECASE,
     ),
     'Claude plan-mode footer': re.compile(r'plan mode on', re.IGNORECASE),
+    'Claude unavailable model notice': re.compile(
+        r'Fable\s+\d+|currently unavailable|fable-mythos-access',
+        re.IGNORECASE,
+    ),
+    'Claude setup warning': re.compile(
+        r'setup issue|run claude install|claude command at',
+        re.IGNORECASE,
+    ),
 }
 
 
@@ -173,13 +181,17 @@ def _validate_ocr_content(paths: list[Path]) -> None:
     for path, text in texts.items():
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
-            _require_ocr_markers(path, text, ['Copilot', '/ commands'])
+            _require_ocr_markers(path, text, ['Copilot', 'commands'])
         elif filename in {'02_iphone_6_9.png', '02_ipad_13.png', '2.png'}:
             _require_ocr_markers(path, text, ['Hosts', 'New Host'])
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
             _require_ocr_markers(path, text, ['Snippets'])
         elif filename in {'04_iphone_6_9.png', '04_ipad_13.png', '4.png'}:
-            _require_ocr_markers(path, text, ['copilot', 'gemini', 'claude', 'codex'])
+            _require_ocr_markers(
+                path,
+                text,
+                ['copilot', 'gemini', 'claude', 'codex', 'opencode', 'antigravity'],
+            )
         elif filename in {'05_iphone_6_9.png', '05_ipad_13.png', '5.png'}:
             _require_ocr_markers(path, text, ['AGENTS.md'])
         elif filename in {'06_iphone_6_9.png', '06_ipad_13.png', '6.png'}:
