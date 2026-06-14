@@ -281,6 +281,39 @@ void main() {
       },
     );
 
+    test(
+      'records Flutter framework errors as sanitized non-fatal reports',
+      () async {
+        final crashReporter = _FakeCrashReporter();
+        final service = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: _FakeAnalyticsClient(),
+          crashReporter: crashReporter,
+        );
+
+        await service.recordFlutterError(
+          FlutterErrorDetails(
+            exception: StateError('secret.example.com'),
+            stack: StackTrace.current,
+          ),
+        );
+
+        expect(crashReporter.recordedFlutterErrors, isEmpty);
+        expect(crashReporter.recordedErrors, hasLength(1));
+        expect(
+          crashReporter.recordedErrors.single.error.toString(),
+          'StateError',
+        );
+        expect(
+          crashReporter.recordedErrors.single.error.toString(),
+          isNot(contains('secret.example.com')),
+        );
+        expect(crashReporter.recordedErrors.single.fatal, isFalse);
+      },
+    );
+
     test('does not record crashes when unavailable', () async {
       final crashReporter = _FakeCrashReporter();
       final service = TelemetryService(
@@ -295,6 +328,7 @@ void main() {
       );
 
       expect(crashReporter.recordedFlutterErrors, isEmpty);
+      expect(crashReporter.recordedErrors, isEmpty);
     });
   });
 
