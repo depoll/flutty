@@ -132,6 +132,18 @@ class SshConnectionService : Service() {
 
     override fun onTimeout(startId: Int) {
         Log.w(TAG, "SSH foreground service timed out; stopping background service")
+        stopAfterForegroundServiceTimeout(startId)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(
+            TAG,
+            "SSH foreground service type timed out; stopping background service"
+        )
+        stopAfterForegroundServiceTimeout(startId)
+    }
+
+    private fun stopAfterForegroundServiceTimeout(startId: Int) {
         latestStatus = null
         Companion.latestStatus = null
         hidePresentation()
