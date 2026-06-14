@@ -1910,9 +1910,10 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return null;
     }
 
+    final trailingCell = CellData.empty();
     for (var column = fillStartColumn; column < line.length; column += 1) {
-      if (line.getCodePoint(column) != 0 ||
-          _cellColorType(line.getBackground(column)) != CellColor.normal) {
+      line.getCellData(column, trailingCell);
+      if (!_isBlankNormalCell(trailingCell)) {
         return null;
       }
     }
@@ -1934,12 +1935,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       if (_shouldExtendTrailingBackgroundFill(firstCell)) {
         return column;
       }
-      final charCode = firstCell.content & CellContent.codepointMask;
-      final isBlankNormalCell =
-          charCode == 0 &&
-          (firstCell.flags & CellFlags.inverse) == 0 &&
-          _cellBackgroundColorType(firstCell) == CellColor.normal;
-      if (!isBlankNormalCell) {
+      if (!_isBlankNormalCell(firstCell)) {
         return null;
       }
     }
@@ -2251,6 +2247,23 @@ class MonkeyTerminalPainter extends TerminalPainter {
     return _isNeutralTerminalColor(
       resolveBackgroundColor(firstCell.background),
     );
+  }
+
+  bool _isBlankNormalCell(CellData cellData) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    // TUIs commonly clear row tails with literal spaces; render those like
+    // empty cells when deciding whether a neutral prompt background can extend.
+    final visibleBlank = charCode == 0 || charCode == 0x20;
+    if (!visibleBlank) {
+      return false;
+    }
+    const visibleBlankFlags =
+        CellFlags.inverse |
+        CellFlags.underline |
+        CellFlags.overline |
+        CellFlags.strikethrough;
+    return (cellData.flags & visibleBlankFlags) == 0 &&
+        _cellBackgroundColorType(cellData) == CellColor.normal;
   }
 
   Color _resolveCellBackgroundPaintColor(

@@ -708,6 +708,31 @@ void main() {
       );
     });
 
+    test('extends Copilot prompt rows across trailing normal spaces', () {
+      const copilotPromptStyle = '\x1b[38;2;180;180;180;48;2;32;32;32m';
+      final terminal = Terminal()
+        ..resize(48, 2)
+        ..write(
+          '$copilotPromptStyle❯\x1b[39m once everything is addressed\x1b[m     ',
+        );
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+        terminal.buffer.lines[0],
+      );
+
+      expect(fill, isNotNull);
+      expect(fill!.startColumn, '❯ once everything is addressed'.length);
+      expect(
+        _contrastRatio(fill.color, TerminalThemes.defaultDarkTheme.background),
+        inInclusiveRange(1.04, 1.75),
+      );
+    });
+
     test(
       'extends neutral truecolor composer rows after blank leading cells',
       () {
