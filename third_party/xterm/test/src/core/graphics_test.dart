@@ -6,14 +6,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/xterm.dart';
 
 Future<String> _buildPngBase64(int width, int height) async {
+  final image = await _buildImage(width, height);
+  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+  return base64.encode(bytes!.buffer.asUint8List());
+}
+
+Future<ui.Image> _buildImage(int width, int height) async {
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
     Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
     Paint()..color = const Color(0xFFFF0000),
   );
-  final image = await recorder.endRecording().toImage(width, height);
-  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-  return base64.encode(bytes!.buffer.asUint8List());
+  return recorder.endRecording().toImage(width, height);
 }
 
 void main() {
@@ -85,7 +89,8 @@ void main() {
       }
       terminal.write('MARKER\r\n');
       terminal.write(
-          '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\');
+        '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\',
+      );
       var waited = 0;
       while (!terminal.graphics.hasPlacements && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -119,8 +124,10 @@ void main() {
   ) async {
     await tester.runAsync(() async {
       final terminal = Terminal();
-      terminal.write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
-          '\x1b\\');
+      terminal.write(
+        '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
+        '\x1b\\',
+      );
       var waited = 0;
       while (!terminal.graphics.hasPlacements && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -143,7 +150,8 @@ void main() {
         terminal
           ..write('\x1b[H')
           ..write(
-              '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\');
+            '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\',
+          );
         var waited = 0;
         while (!terminal.graphics.hasPlacements && waited < 2000) {
           await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -170,36 +178,41 @@ void main() {
     });
   });
 
-  testWidgets('clearing does not dispose the decoded image (no use-after-free)',
-      (tester) async {
-    await tester.runAsync(() async {
-      final terminal = Terminal();
-      terminal.write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
-          '\x1b\\');
-      var waited = 0;
-      while (!terminal.graphics.hasPlacements && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
-      final placement = terminal.graphics.placements.single;
-      final image = terminal.graphics.imageById(placement.imageId)!.image;
-      expect(image.debugDisposed, isFalse);
+  testWidgets(
+    'clearing does not dispose the decoded image (no use-after-free)',
+    (tester) async {
+      await tester.runAsync(() async {
+        final terminal = Terminal();
+        terminal.write(
+          '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
+          '\x1b\\',
+        );
+        var waited = 0;
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+        final placement = terminal.graphics.placements.single;
+        final image = terminal.graphics.imageById(placement.imageId)!.image;
+        expect(image.debugDisposed, isFalse);
 
-      // Clearing the screen drops the placement, but the underlying image must
-      // NOT be disposed: a frame already in flight may still draw it, and
-      // drawing a disposed image crashes the engine.
-      terminal.write('\x1b[2J');
-      expect(terminal.graphics.hasPlacements, isFalse);
-      expect(
-        image.debugDisposed,
-        isFalse,
-        reason: 'the decoded image must not be force-disposed on clear',
-      );
-    });
-  });
+        // Clearing the screen drops the placement, but the underlying image must
+        // NOT be disposed: a frame already in flight may still draw it, and
+        // drawing a disposed image crashes the engine.
+        terminal.write('\x1b[2J');
+        expect(terminal.graphics.hasPlacements, isFalse);
+        expect(
+          image.debugDisposed,
+          isFalse,
+          reason: 'the decoded image must not be force-disposed on clear',
+        );
+      });
+    },
+  );
 
-  testWidgets('a clear that races an in-flight decode places no stale image',
-      (tester) async {
+  testWidgets('a clear that races an in-flight decode places no stale image', (
+    tester,
+  ) async {
     await tester.runAsync(() async {
       final terminal = Terminal()..resize(40, 10);
       // Start the (asynchronous) decode, then clear the screen before it can
@@ -222,7 +235,8 @@ void main() {
 
       // A subsequent (replay) image still places exactly one.
       terminal.write(
-          '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\');
+        '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}\x1b\\',
+      );
       waited = 0;
       while (!terminal.graphics.hasPlacements && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -262,8 +276,10 @@ void main() {
   testWidgets('images do not leak across the alternate screen', (tester) async {
     await tester.runAsync(() async {
       final terminal = Terminal();
-      terminal.write('\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
-          '\x1b\\');
+      terminal.write(
+        '\x1b_Ga=T,f=100,c=4,r=2;${await _buildPngBase64(8, 8)}'
+        '\x1b\\',
+      );
       var waited = 0;
       while (!terminal.graphics.hasPlacements && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -278,6 +294,30 @@ void main() {
       // Returning to the main screen restores the image.
       terminal.write('\x1b[?47l');
       expect(terminal.graphics.hasPlacements, isTrue);
+    });
+  });
+
+  testWidgets('eviction accounts for the image being stored', (tester) async {
+    await tester.runAsync(() async {
+      final manager = GraphicsManager(maxImageCount: 10, maxMemoryBytes: 64);
+      final first = await _buildImage(2, 2);
+      final second = await _buildImage(2, 2);
+      final third = await _buildImage(2, 2);
+
+      final firstId = manager.storeImage(first);
+      final secondId = manager.storeImage(second);
+      final thirdId = manager.storeImage(third);
+
+      expect(
+        manager.imageById(firstId),
+        isNull,
+        reason:
+            'the third 16-byte image must evict against future memory usage',
+      );
+      expect(manager.imageById(secondId), isNotNull);
+      expect(manager.imageById(thirdId), isNotNull);
+      expect(manager.currentMemoryBytes, 32);
+      expect(first.debugDisposed, isFalse);
     });
   });
 }

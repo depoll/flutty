@@ -141,8 +141,10 @@ key Clear       +KeyPad : "\E[E"
 
 # other grey PC keys
 
-key Enter+NewLine : "\r\n"
-key Enter-NewLine : "\r"
+key Enter+Shift        : "\n"
+key Enter+Shift+NewLine : "\n"
+key Enter-Shift-NewLine : "\r"
+key Enter-Shift+NewLine : "\r\n"
 
 key NumEnter+NewLine : "\r\n"
 key NumEnter-NewLine : "\r"

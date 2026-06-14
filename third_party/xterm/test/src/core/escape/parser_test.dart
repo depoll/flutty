@@ -59,14 +59,18 @@ void main() {
         verify(parser.handler.setCursorUnderline());
       });
 
-      test('missing extended color arguments do not throw', () {
-        final parser = EscapeParser(MockEscapeHandler());
-        expect(() => parser.write('\x1b[38m'), returnsNormally);
-        expect(() => parser.write('\x1b[48;2m'), returnsNormally);
-        expect(() => parser.write('\x1b[38;5m'), returnsNormally);
-        // Missing rgb arguments fall back to 0 instead of throwing.
-        verify(parser.handler.setBackgroundColorRgb(0, 0, 0));
-      });
+      test(
+        'missing extended color arguments do not leak into later params',
+        () {
+          final parser = EscapeParser(MockEscapeHandler());
+          expect(() => parser.write('\x1b[38m'), returnsNormally);
+          expect(() => parser.write('\x1b[38;5m'), returnsNormally);
+          parser.write('\x1b[48;2;255;31m');
+          verifyNever(parser.handler.setCursorBlink());
+          verifyNever(parser.handler.setBackgroundColorRgb(255, 31, 0));
+          verify(parser.handler.setForegroundColor16(NamedColor.red));
+        },
+      );
     });
 
     group('SGR underline and overline', () {
@@ -158,6 +162,13 @@ void main() {
     });
 
     group('robustness', () {
+      test('designates G2 and G3 charsets', () {
+        final parser = EscapeParser(MockEscapeHandler());
+        parser.write('\x1b*0\x1b+B');
+        verify(parser.handler.designateCharset(2, '0'.codeUnitAt(0)));
+        verify(parser.handler.designateCharset(3, 'B'.codeUnitAt(0)));
+      });
+
       test('caps the number of CSI parameters without hanging', () {
         final parser = EscapeParser(MockEscapeHandler());
         final huge = '\x1b[${List.filled(5000, '1').join(';')}m';
@@ -176,11 +187,13 @@ void main() {
         final handler = MockEscapeHandler();
         // 'hi' -> base64 'aGk='
         EscapeParser(handler).write('\x1b_Ga=T,f=100;aGk=\x1b\\');
-        final args =
-            verify(handler.graphicsCommandStart(captureAny)).captured.single;
+        final args = verify(
+          handler.graphicsCommandStart(captureAny),
+        ).captured.single;
         expect(args, {'a': 'T', 'f': '100'});
-        final chunk =
-            verify(handler.graphicsDataChunk(captureAny)).captured.single;
+        final chunk = verify(
+          handler.graphicsDataChunk(captureAny),
+        ).captured.single;
         expect(chunk, [0x68, 0x69]);
         verify(handler.graphicsCommandEnd());
       });
@@ -195,8 +208,9 @@ void main() {
       test('command without payload still starts and ends', () {
         final handler = MockEscapeHandler();
         EscapeParser(handler).write('\x1b_Ga=d\x1b\\');
-        final args =
-            verify(handler.graphicsCommandStart(captureAny)).captured.single;
+        final args = verify(
+          handler.graphicsCommandStart(captureAny),
+        ).captured.single;
         expect(args, {'a': 'd'});
         verifyNever(handler.graphicsDataChunk(captureAny));
         verify(handler.graphicsCommandEnd());

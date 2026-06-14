@@ -16,6 +16,8 @@ class TerminalImage {
 
   /// Approximate size of the decoded image in bytes (RGBA).
   int get sizeBytes => image.width * image.height * 4;
+
+  int _lastAccess = 0;
 }
 
 /// A placement of a [TerminalImage] anchored to a cell in the buffer.
@@ -61,13 +63,19 @@ class TerminalImagePlacement {
   void dispose() => anchor.dispose();
 }
 
-/// Stores decoded terminal images and their placements, with a simple cap on
-/// the number of retained images.
+/// Stores decoded terminal images and their placements with count and memory
+/// caps.
 class GraphicsManager {
-  GraphicsManager({this.maxImageCount = 256});
+  GraphicsManager({
+    this.maxImageCount = 256,
+    this.maxMemoryBytes = 100 * 1024 * 1024,
+  });
 
   /// Maximum number of decoded images retained before the oldest are evicted.
   final int maxImageCount;
+
+  /// Maximum approximate decoded image memory retained before LRU eviction.
+  final int maxMemoryBytes;
 
   final Map<int, TerminalImage> _images = {};
   final List<TerminalImagePlacement> _placements = [];
@@ -75,9 +83,17 @@ class GraphicsManager {
   int _nextImageId = 1;
   int _nextPlacementId = 1;
   int _generation = 0;
+  int _currentMemoryBytes = 0;
+  int _accessClock = 0;
 
   /// Active placements, oldest first.
   List<TerminalImagePlacement> get placements => _placements;
+
+  /// Approximate decoded image memory currently retained.
+  int get currentMemoryBytes => _currentMemoryBytes;
+
+  /// Number of decoded images currently retained.
+  int get imageCount => _images.length;
 
   /// Whether any images are currently placed.
   bool get hasPlacements => _placements.isNotEmpty;
@@ -88,13 +104,22 @@ class GraphicsManager {
   int get generation => _generation;
 
   /// Looks up a stored image by id.
-  TerminalImage? imageById(int id) => _images[id];
+  TerminalImage? imageById(int id) {
+    final image = _images[id];
+    if (image != null) {
+      image._lastAccess = ++_accessClock;
+    }
+    return image;
+  }
 
   /// Stores [image] and returns its new id.
   int storeImage(ui.Image image) {
+    final sizeBytes = image.width * image.height * 4;
+    _evictIfNeeded(sizeBytes);
+
     final id = _nextImageId++;
-    _images[id] = TerminalImage(id, image);
-    _evictIfNeeded();
+    _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _currentMemoryBytes += sizeBytes;
     return id;
   }
 
@@ -189,13 +214,18 @@ class GraphicsManager {
     }
     _placements.clear();
     _images.clear();
+    _currentMemoryBytes = 0;
   }
 
   /// Drops stored images that no longer have a placement referencing them.
   void _dropUnreferencedImages() {
     if (_images.isEmpty) return;
     final referenced = _placements.map((p) => p.imageId).toSet();
-    _images.removeWhere((id, _) => !referenced.contains(id));
+    for (final id in _images.keys.toList()) {
+      if (!referenced.contains(id)) {
+        _dropImage(id);
+      }
+    }
   }
 
   bool _placementIntersectsRows(
@@ -220,16 +250,36 @@ class GraphicsManager {
     return placementFirst <= lastCol && placementLast >= firstCol;
   }
 
-  void _evictIfNeeded() {
-    while (_images.length > maxImageCount) {
-      final oldestId = _images.keys.first;
-      _images.remove(oldestId);
-      _placements.removeWhere((placement) {
-        if (placement.imageId != oldestId) return false;
-        placement.dispose();
-        return true;
-      });
+  void _evictIfNeeded(int requiredBytes) {
+    if (_images.isEmpty) return;
+
+    final highWaterMemory = (maxMemoryBytes * 0.7).toInt();
+    if (_currentMemoryBytes + requiredBytes <= highWaterMemory &&
+        _images.length < maxImageCount) {
+      return;
     }
+
+    final targetMemory = (maxMemoryBytes * 0.5).toInt();
+    while (_images.isNotEmpty &&
+        (_currentMemoryBytes + requiredBytes > targetMemory ||
+            _images.length >= maxImageCount)) {
+      final oldest = _images.entries.reduce((a, b) {
+        return a.value._lastAccess <= b.value._lastAccess ? a : b;
+      });
+      _dropImage(oldest.key);
+    }
+  }
+
+  void _dropImage(int imageId) {
+    final image = _images.remove(imageId);
+    if (image != null) {
+      _currentMemoryBytes -= image.sizeBytes;
+    }
+    _placements.removeWhere((placement) {
+      if (placement.imageId != imageId) return false;
+      placement.dispose();
+      return true;
+    });
   }
 }
 
@@ -258,8 +308,10 @@ Future<ui.Image?> decodeTerminalImage(
         ui.PixelFormat.rgba8888,
         completer.complete,
       );
-      return await completer.future.timeout(const Duration(seconds: 5),
-          onTimeout: () => throw 'timeout');
+      return await completer.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => throw 'timeout',
+      );
     }
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
