@@ -761,7 +761,10 @@ void main() {
         const promptText = '❯ did it work?';
         final terminal = Terminal()
           ..resize(48, 2)
-          ..write('$promptBackgroundSequence❯ \x1b[mdid it work?');
+          ..write(
+            '\x1b[2;4m\x1b[K\r'
+            '$promptBackgroundSequence❯ \x1b[mdid it work?',
+          );
         final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
         final painter = MonkeyTerminalPainter(
           theme: theme,
@@ -858,7 +861,10 @@ void main() {
       const promptText = '❯ test';
       final terminal = Terminal()
         ..resize(48, 2)
-        ..write('❯ ${promptBackgroundSequence}test\x1b[m\x1b[48G│');
+        ..write(
+          '\x1b[2;4m\x1b[K\r'
+          '$promptBackgroundSequence❯ test\x1b[m\x1b[48G│',
+        );
       final painter = MonkeyTerminalPainter(
         theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
         textStyle: const TerminalStyle(),
