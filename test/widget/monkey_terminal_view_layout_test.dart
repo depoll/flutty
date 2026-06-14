@@ -733,6 +733,26 @@ void main() {
       );
     });
 
+    test('extends inverse Copilot prompt rows on light themes', () {
+      const copilotPromptStyle = '\x1b[38;2;180;180;180;7m';
+      final terminal = Terminal()
+        ..resize(48, 2)
+        ..write('$copilotPromptStyle❯ what is the easiest way?\x1b[m     ');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+        terminal.buffer.lines[0],
+      );
+
+      expect(fill, isNotNull);
+      expect(fill!.startColumn, '❯ what is the easiest way?'.length);
+      expect(fill.color, const Color(0xFFB4B4B4));
+    });
+
     test(
       'extends neutral truecolor composer rows after blank leading cells',
       () {
