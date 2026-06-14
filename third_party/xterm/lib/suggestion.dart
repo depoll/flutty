@@ -48,7 +48,7 @@ class SuggestionPortal extends StatefulWidget {
 class _SuggestionPortalState extends State<SuggestionPortal> {
   @override
   Widget build(BuildContext context) {
-    return OverlayPortal.targetsRootOverlay(
+    return OverlayPortal(
       controller: widget.controller,
       overlayChildBuilder: (context) {
         return SuggestionLayout(
@@ -185,10 +185,7 @@ class RenderCompletionLayout extends RenderShiftedBox {
 
     final childParentData = child.parentData as BoxParentData;
     childParentData.offset = Offset(
-      min(
-        size.width - padding.right - child.size.width,
-        cursorRect.value.left,
-      ),
+      min(size.width - padding.right - child.size.width, cursorRect.value.left),
       // Showing the completion overlay below the cursor is preferred, unless
       // there's insufficient space for it.
       fitsBelow

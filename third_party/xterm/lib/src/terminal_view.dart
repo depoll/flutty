@@ -369,6 +369,12 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   void _onInsert(String text) {
+    if (text == '\r' && HardwareKeyboard.instance.isShiftPressed) {
+      widget.terminal.textInput('\n');
+      _scrollToBottom();
+      return;
+    }
+
     final key = charToTerminalKey(text.trim());
 
     // On mobile platforms there is no guarantee that virtual keyboard will
