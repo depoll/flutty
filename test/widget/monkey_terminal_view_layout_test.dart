@@ -852,6 +852,28 @@ void main() {
       },
     );
 
+    test('extends Copilot prompts past right-edge scrollbar glyphs', () {
+      const promptBackground = Color(0xFFD0DAD9);
+      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
+      const promptText = '❯ test';
+      final terminal = Terminal()
+        ..resize(48, 2)
+        ..write('❯ ${promptBackgroundSequence}test\x1b[m\x1b[48G│');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+        terminal.buffer.lines[0],
+      );
+
+      expect(fill, isNotNull);
+      expect(fill!.startColumn, promptText.length);
+      expect(fill.color, promptBackground);
+    });
+
     test(
       'extends neutral truecolor composer rows after blank leading cells',
       () {
