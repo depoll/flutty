@@ -19,7 +19,7 @@ Future<void> main() async {
   final telemetryService = await createTelemetryService(
     settingsService: settingsService,
   );
-  _installTelemetryErrorHandlers(telemetryService);
+  installTelemetryErrorHandlers(telemetryService);
   runApp(
     ProviderScope(
       overrides: [
@@ -35,7 +35,9 @@ Future<void> main() async {
   );
 }
 
-void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
+/// Installs global Flutter/Dart error hooks for sanitized telemetry reporting.
+@visibleForTesting
+void installTelemetryErrorHandlers(TelemetryService telemetryService) {
   final previousFlutterErrorHandler = FlutterError.onError;
   FlutterError.onError = (details) {
     if (previousFlutterErrorHandler != null) {
@@ -52,9 +54,9 @@ void _installTelemetryErrorHandlers(TelemetryService telemetryService) {
   PlatformDispatcher.instance.onError = (error, stackTrace) {
     unawaited(
       telemetryService
-          .recordError(error, stackTrace, fatal: true)
+          .recordError(error, stackTrace, fatal: false)
           .catchError((Object _) {}),
     );
-    return previousPlatformErrorHandler?.call(error, stackTrace) ?? false;
+    return previousPlatformErrorHandler?.call(error, stackTrace) ?? true;
   };
 }

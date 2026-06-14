@@ -606,13 +606,10 @@ class TelemetryService {
       return;
     }
     try {
-      await crashReporter.recordFlutterError(
-        FlutterErrorDetails(
-          exception: SanitizedTelemetryError.from(details.exception),
-          stack: details.stack,
-          library: 'flutter',
-          context: ErrorDescription('flutter_error'),
-        ),
+      await crashReporter.recordError(
+        SanitizedTelemetryError.from(details.exception),
+        details.stack ?? StackTrace.current,
+        fatal: false,
       );
     } on Object {
       return;
