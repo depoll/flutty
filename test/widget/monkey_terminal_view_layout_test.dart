@@ -801,31 +801,56 @@ void main() {
       },
     );
 
-    test('extends Copilot prompts over explicit terminal-background tails', () {
-      const promptBackground = Color(0xFFD0DAD9);
-      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-      const terminalBackgroundSequence = '\x1b[48;2;235;243;242m';
-      const promptText = '❯ did it work';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write(
-          '$promptBackgroundSequence❯ \x1b[mdid it work'
-          '$terminalBackgroundSequence     \x1b[m',
+    test(
+      'paints Copilot prompts over explicit terminal-background tails',
+      () async {
+        const promptBackground = Color(0xFFD0DAD9);
+        const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
+        const terminalBackgroundSequence = '\x1b[48;2;235;243;242m';
+        const promptText = '❯ did it work';
+        final terminal = Terminal()
+          ..resize(48, 2)
+          ..write(
+            '$promptBackgroundSequence❯ \x1b[mdid it work'
+            '$terminalBackgroundSequence     \x1b[m',
+          );
+        final painter = MonkeyTerminalPainter(
+          theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+          textStyle: const TerminalStyle(),
+          textScaler: TextScaler.noScaling,
         );
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
+        final cellSize = painter.cellSize;
+        final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
+        final imageHeight = cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
 
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
 
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, promptText.length);
-      expect(fill.color, promptBackground);
-    });
+        final image = await recorder.endRecording().toImage(
+          imageWidth,
+          imageHeight,
+        );
+        final byteData = await image.toByteData();
+        expect(byteData, isNotNull);
+
+        final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+          terminal.buffer.lines[0],
+        );
+        expect(fill, isNotNull);
+        expect(fill!.startColumn, promptText.length);
+        expect(fill.color, promptBackground);
+        expect(
+          _rawRgbaPixel(
+            byteData!,
+            imageWidth,
+            ((promptText.length + 4) * cellSize.width).round(),
+            (cellSize.height / 2).round(),
+          ),
+          promptBackground,
+        );
+      },
+    );
 
     test(
       'extends neutral truecolor composer rows after blank leading cells',
