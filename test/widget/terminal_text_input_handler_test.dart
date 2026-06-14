@@ -1323,21 +1323,20 @@ void main() {
   });
 
   group('TerminalTextInputHandler', () {
-    testWidgets(
-      'uses a normal text IME configuration for keyboard voice input',
-      (tester) async {
-        final harness = await _pumpTerminalHarness(tester);
-        final configuration = _latestTextInputSetClientConfiguration(tester);
-        final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
+    testWidgets('disables autocorrect while preserving keyboard suggestions', (
+      tester,
+    ) async {
+      final harness = await _pumpTerminalHarness(tester);
+      final configuration = _latestTextInputSetClientConfiguration(tester);
+      final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
 
-        expect(inputType['name'], 'TextInputType.text');
-        expect(configuration['autocorrect'], isTrue);
-        expect(configuration['enableSuggestions'], isTrue);
-        expect(configuration['enableIMEPersonalizedLearning'], isTrue);
+      expect(inputType['name'], 'TextInputType.text');
+      expect(configuration['autocorrect'], isFalse);
+      expect(configuration['enableSuggestions'], isTrue);
+      expect(configuration['enableIMEPersonalizedLearning'], isTrue);
 
-        await _disposeTerminalHarness(tester, harness);
-      },
-    );
+      await _disposeTerminalHarness(tester, harness);
+    });
 
     testWidgets('uses a password-friendly IME configuration for secrets', (
       tester,
@@ -5849,6 +5848,116 @@ void main() {
       },
     );
 
+    testWidgets('does not review a short swipe-composed word', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return true;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}copilot',
+          selection: TextSelection.collapsed(offset: 9),
+          composing: TextRange(start: 2, end: 9),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, isEmpty);
+      expect(terminalOutput, isEmpty);
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}copilot ',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, isEmpty);
+      expect(terminalOutput.join(), 'copilot ');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('reviews paste-like keyboard payloads', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final reviews = <TerminalCommandReview>[];
+      final insertedText = List.filled(
+        terminalKeyboardPasteLikeInsertionThreshold + 1,
+        'a',
+      ).join();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return false;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: '$_deleteDetectionMarker$insertedText',
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length + insertedText.length,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.largeKeyboardInsertion),
+      );
+      expect(terminalOutput, isEmpty);
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+
+      focusNode.dispose();
+    });
+
     testWidgets(
       'reviews a high-risk committed IME payload after composition ends',
       (tester) async {
@@ -7067,6 +7176,101 @@ void main() {
           expect(
             _terminalTextInputClient(tester).currentTextEditingValue,
             _editingValue('/help', selectionOffset: '/help'.length),
+          );
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets('strips duplicated iOS backspace runways before typed text', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        final harness = await _pumpTerminalHarness(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('x', selectionOffset: 1),
+        );
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('', selectionOffset: 0),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          _iosBackspaceRunwayValue(terminalIosBackspaceRepeatRunwayLength),
+        );
+
+        harness.terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _iosBackspaceRunwayValue(
+            terminalIosBackspaceRepeatRunwayLength * 2,
+            suffix: 'ls ',
+          ),
+        );
+        await tester.pump();
+
+        expect(harness.terminalOutput, ['ls ']);
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          _editingValue('ls ', selectionOffset: 'ls '.length),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets(
+      'strips stale iOS backspace runways after the platform drops state',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('x', selectionOffset: 1),
+          );
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('', selectionOffset: 0),
+          );
+          await tester.pump();
+
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _iosBackspaceRunwayValue(terminalIosBackspaceRepeatRunwayLength),
+          );
+
+          tester.testTextInput.updateEditingValue(
+            const TextEditingValue(
+              text: _deleteDetectionMarker,
+              selection: TextSelection.collapsed(offset: 2),
+            ),
+          );
+          await tester.pump();
+
+          harness.terminalOutput.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _iosBackspaceRunwayValue(
+              terminalIosBackspaceRepeatRunwayLength,
+              suffix: 'add ',
+            ),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, ['add ']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('add ', selectionOffset: 'add '.length),
           );
 
           await _disposeTerminalHarness(tester, harness);
