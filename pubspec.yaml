@@ -1,7 +1,7 @@
 name: monkeyssh
 description: >
-  A cross-platform SSH client built with Flutter. Features terminal emulation,
-  SFTP file transfer, key management, and port forwarding. Inspired by Termius.
+  A mobile SSH workspace for agentic coding with terminal emulation, SFTP,
+  MonkeyMux/tmux remote windows, key management, snippets, and port forwarding.
 publish_to: 'none'
 
 version: 0.1.1+1
