@@ -1901,16 +1901,22 @@ class MonkeyTerminalPainter extends TerminalPainter {
     var lastContentColumn = -1;
     for (var column = runStartColumn; column < line.length; column += 1) {
       line.getCellData(column, runCell);
+      final rightEdgeDecoration = _isRightEdgeDecorationCell(
+        line,
+        column,
+        runCell,
+      );
       final matchesPromptBackground = _cellMatchesTrailingBackgroundRun(
         runCell,
         runBackground,
       );
       if (!matchesPromptBackground &&
           !_isBlankTerminalBackgroundCell(runCell) &&
-          !_isNormalTextCell(runCell)) {
+          !_isNormalTextCell(runCell) &&
+          !rightEdgeDecoration) {
         return null;
       }
-      if (!_isBlankCell(runCell)) {
+      if (!_isBlankCell(runCell) && !rightEdgeDecoration) {
         lastContentColumn = column;
       }
     }
@@ -1923,7 +1929,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
     final trailingCell = CellData.empty();
     for (var column = fillStartColumn; column < line.length; column += 1) {
       line.getCellData(column, trailingCell);
-      if (!_isBlankTerminalBackgroundCell(trailingCell)) {
+      if (!_isBlankTerminalBackgroundCell(trailingCell) &&
+          !_isRightEdgeDecorationCell(line, column, trailingCell)) {
         return null;
       }
     }
@@ -1943,6 +1950,34 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   bool _isNormalTextCell(CellData cellData) =>
       !_cellPaintsBackground(cellData) && !_isBlankCell(cellData);
+
+  bool _isNormalPromptPrefixCell(CellData cellData) {
+    if (_cellPaintsBackground(cellData)) {
+      return false;
+    }
+    final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0x276F || // ❯
+        charCode == 0x203A || // ›
+        charCode == 0x003E; // >
+  }
+
+  bool _isRightEdgeDecorationCell(
+    BufferLine line,
+    int column,
+    CellData cellData,
+  ) {
+    if (column < line.length - 2) {
+      return false;
+    }
+    final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0x2502 || // │
+        charCode == 0x2503 || // ┃
+        charCode == 0x2551 || // ║
+        charCode == 0x2588 || // █
+        charCode == 0x258C || // ▌
+        charCode == 0x2590 || // ▐
+        charCode == 0x2595; // ▕
+  }
 
   bool _isBlankTerminalBackgroundCell(CellData cellData) {
     if (!_isBlankNormalCell(cellData)) {
@@ -1964,7 +1999,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
       if (_shouldExtendTrailingBackgroundFill(firstCell)) {
         return column;
       }
-      if (!_isBlankNormalCell(firstCell)) {
+      if (!_isBlankNormalCell(firstCell) &&
+          !_isNormalPromptPrefixCell(firstCell)) {
         return null;
       }
     }
