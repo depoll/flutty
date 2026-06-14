@@ -71,6 +71,16 @@ void main() {
           verify(parser.handler.setForegroundColor16(NamedColor.red));
         },
       );
+
+      test('unknown extended color mode does not skip following attributes',
+          () {
+        final parser = EscapeParser(MockEscapeHandler());
+
+        parser.write('\x1b[38;7;3m');
+
+        verifyNever(parser.handler.setCursorInverse());
+        verify(parser.handler.setCursorItalic());
+      });
     });
 
     group('SGR underline and overline', () {
