@@ -1951,16 +1951,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
   bool _isNormalTextCell(CellData cellData) =>
       !_cellPaintsBackground(cellData) && !_isBlankCell(cellData);
 
-  bool _isNormalPromptPrefixCell(CellData cellData) {
-    if (_cellPaintsBackground(cellData)) {
-      return false;
-    }
-    final charCode = cellData.content & CellContent.codepointMask;
-    return charCode == 0x276F || // ❯
-        charCode == 0x203A || // ›
-        charCode == 0x003E; // >
-  }
-
   bool _isRightEdgeDecorationCell(
     BufferLine line,
     int column,
@@ -1999,8 +1989,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       if (_shouldExtendTrailingBackgroundFill(firstCell)) {
         return column;
       }
-      if (!_isBlankNormalCell(firstCell) &&
-          !_isNormalPromptPrefixCell(firstCell)) {
+      if (!_isBlankNormalCell(firstCell)) {
         return null;
       }
     }
@@ -2325,7 +2314,12 @@ class MonkeyTerminalPainter extends TerminalPainter {
   bool _isBlankNormalCell(CellData cellData) {
     // TUIs commonly clear row tails with literal spaces; render those like
     // empty cells when deciding whether a neutral prompt background can extend.
-    if (!_isBlankCell(cellData)) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return (cellData.flags & CellFlags.inverse) == 0 &&
+          _cellBackgroundColorType(cellData) == CellColor.normal;
+    }
+    if (charCode != 0x20) {
       return false;
     }
     const visibleBlankFlags =
