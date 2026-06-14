@@ -1768,8 +1768,8 @@ class MonkeyTerminalPainter extends TerminalPainter {
   @override
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
     paintLineBackground(canvas, offset, line);
-    paintLineTrailingBackgroundFill(canvas, offset, line);
     super.paintLine(canvas, offset, line);
+    paintLineTrailingBackgroundFill(canvas, offset, line);
   }
 
   /// Paints only the backgrounds (line fill, trailing run, and each cell's own
@@ -1782,7 +1782,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
   /// behind the next row's background.
   void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
     paintLineBackground(canvas, offset, line);
-    paintLineTrailingBackgroundFill(canvas, offset, line);
     final cellData = CellData.empty();
     final cellWidth = cellSize.width;
     for (var i = 0; i < line.length; i++) {
@@ -1793,6 +1792,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         i++;
       }
     }
+    paintLineTrailingBackgroundFill(canvas, offset, line);
   }
 
   /// Paints only the glyphs for [line], in a pass run after every visible
