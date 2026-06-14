@@ -20,9 +20,12 @@ void main() {
     final output = <String>[];
     final terminal = Terminal(onOutput: output.add);
 
-    terminal.paste('a\x07\x0cb\x1b[7mc\r\nd\re\n');
+    terminal.paste(
+      'a\x07\x0cb\x1b[7mc\x1b[200~d\x1b[?25le'
+      '\x1b]52;c;AAAA\x07f\x1b_Ga=d\x1b\\g\x1bh\r\nh\ri\n',
+    );
 
-    expect(output, ['abc\rd\re\r']);
+    expect(output, ['abcdefg\rh\ri\r']);
   });
 
   test('bracketed paste wraps sanitized text', () {

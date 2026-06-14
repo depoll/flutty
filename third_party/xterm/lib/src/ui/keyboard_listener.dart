@@ -42,7 +42,6 @@ class CustomKeyboardListener extends StatelessWidget {
     return Focus(
       focusNode: focusNode,
       autofocus: autofocus,
-      skipTraversal: true,
       onKeyEvent: _onKeyEvent,
       child: child,
     );

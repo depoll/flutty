@@ -64,12 +64,12 @@ class ZModemMux {
   ZModemRequestHandler? onFileRequest;
 
   ZModemMux({required this.stdin, required this.stdout}) {
-    _stdoutSubscription = stdout.listen(_handleStdout);
+    _stdoutSubscription = stdout.asyncMap(_handleStdout).listen(null);
   }
 
   /// Subscriptions to [stdout]. Used to pause/resume the stream when no more
   /// space is available in local buffers.
-  late final StreamSubscription<Uint8List> _stdoutSubscription;
+  late final StreamSubscription<void> _stdoutSubscription;
 
   late final _terminalSink = StreamController<List<int>>(
       // onPause: _stdoutSubscription.pause,
