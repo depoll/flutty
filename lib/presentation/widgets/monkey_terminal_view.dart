@@ -1897,19 +1897,26 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     final runBackground = _resolveCellBackgroundPaintColor(firstCell);
-    var fillStartColumn = runStartColumn;
-    var hasHighlightedContent = false;
     final runCell = CellData.empty();
-    for (; fillStartColumn < line.length; fillStartColumn += 1) {
-      line.getCellData(fillStartColumn, runCell);
-      if (!_cellMatchesTrailingBackgroundRun(runCell, runBackground)) {
-        break;
+    var lastContentColumn = -1;
+    for (var column = runStartColumn; column < line.length; column += 1) {
+      line.getCellData(column, runCell);
+      final matchesPromptBackground = _cellMatchesTrailingBackgroundRun(
+        runCell,
+        runBackground,
+      );
+      if (!matchesPromptBackground &&
+          !_isBlankNormalCell(runCell) &&
+          !_isNormalTextCell(runCell)) {
+        return null;
       }
-      hasHighlightedContent |=
-          (runCell.content & CellContent.codepointMask) != 0;
+      if (!_isBlankCell(runCell)) {
+        lastContentColumn = column;
+      }
     }
 
-    if (!hasHighlightedContent || fillStartColumn >= line.length) {
+    final fillStartColumn = lastContentColumn + 1;
+    if (lastContentColumn < runStartColumn || fillStartColumn >= line.length) {
       return null;
     }
 
@@ -1933,6 +1940,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
     return _resolveCellBackgroundPaintColor(cellData) == color;
   }
+
+  bool _isNormalTextCell(CellData cellData) =>
+      !_cellPaintsBackground(cellData) && !_isBlankCell(cellData);
 
   int? _trailingBackgroundRunStartColumn(BufferLine line, CellData firstCell) {
     line.getCellData(0, firstCell);
@@ -2262,12 +2272,15 @@ class MonkeyTerminalPainter extends TerminalPainter {
     );
   }
 
-  bool _isBlankNormalCell(CellData cellData) {
+  bool _isBlankCell(CellData cellData) {
     final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0 || charCode == 0x20;
+  }
+
+  bool _isBlankNormalCell(CellData cellData) {
     // TUIs commonly clear row tails with literal spaces; render those like
     // empty cells when deciding whether a neutral prompt background can extend.
-    final visibleBlank = charCode == 0 || charCode == 0x20;
-    if (!visibleBlank) {
+    if (!_isBlankCell(cellData)) {
       return false;
     }
     const visibleBlankFlags =
