@@ -19,7 +19,7 @@ Local Xcode builds with automatic signing pick up the new entitlement on next bu
 
 ## Manual testing: tmux navigation
 
-The tmux navigator feature requires a real SSH connection to a host running tmux. Use the setup script to create a local test environment:
+The tmux/MonkeyMux navigator feature requires a real SSH connection to a host running tmux or MonkeyMux. Use the setup script to create a local tmux test environment:
 
 ```bash
 # Set up local SSH + tmux test environment
@@ -32,7 +32,7 @@ flutter run --device-id <simulator-id>
 ./scripts/setup_tmux_test_env.sh teardown
 ```
 
-The script generates a temporary SSH key, authorizes it for localhost, and creates a tmux session with 3 windows. Follow the on-screen instructions to add a host in the app and test the navigator.
+The script generates a temporary SSH key, authorizes it for localhost, and creates a tmux session with 3 windows. Follow the on-screen instructions to add a host in the app and test the navigator. For MonkeyMux-specific validation, prefer a host configured with `remoteMuxBackend: monkeyMux` and verify window switching, new-window creation, recent agent sessions, alerts, and session-end recovery.
 
 ## Manual testing: Android emulator local SSH
 
@@ -71,6 +71,17 @@ ADB text injection is IME-dependent. Prefer separate key events for spaces (`adb
 - **Format strings**: tmux's `-F` option does **not** interpret `\t` as tab. Use ASCII Unit Separator (`\x1f`) delimiters instead so window names and titles can still contain `|`.
 - **Environment variables**: Exec channels don't share the interactive shell's environment. Use `tmux list-sessions` / `tmux display-message` instead of `echo $TMUX`.
 
+## Store assets and screenshots
+
+Store listing copy lives under `ios/fastlane/metadata-*` and `android/fastlane/metadata-*`. Keep production and private/beta copy aligned while preserving their distinct app names and beta wording. Validate text limits with:
+
+```bash
+python3 scripts/validate_app_store_metadata.py
+python3 scripts/validate_play_store_metadata.py
+```
+
+Regenerate screenshots with `python3 scripts/generate_store_screenshots.py [ios|android|both]`. The generator uses the normal app, a temporary local SSH server, a live MonkeyMux workspace, real Copilot CLI and Claude Code panes, and seeded release-demo data. It must fail rather than substituting mocked screenshots when that live workspace cannot be created. Current scene order is Copilot terminal, Hosts, Snippets, MonkeyMux window switcher, SFTP, and Claude Code terminal. The MonkeyMux window scene should show the current supported agent family: Copilot CLI, Gemini CLI, Claude Code, Codex, OpenCode, and Antigravity.
+
 ## Diagnostics logging
 
 Preview and beta/internal builds expose an in-memory diagnostics log in Settings > Diagnostics. Users can tap **Copy diagnostics log** and paste the sanitized text into an issue or chat for troubleshooting.
@@ -80,3 +91,9 @@ When adding diagnostics, use `DiagnosticsLogService.instance` (or `diagnosticsLo
 Never log secrets or user content. Do not log hostnames, usernames, passwords, passphrases, private keys, tokens, raw commands, terminal output, tmux window/session names, window titles, working directories, file paths, clipboard contents, or raw SSH/tmux stream lines. Prefer safe metadata such as connection ID, host ID, booleans, counts, durations, enum states, retry attempts, error types, exit statuses, and sanitized event categories.
 
 For tmux control-mode logging, log the control marker category (for example `subscription_changed` or `window_add`) and counts/timing only. Do not log the full control-mode line because it can include pane titles, window names, paths, and command output.
+
+## Firebase telemetry
+
+Firebase Analytics and Crashlytics are opt-in and gated by the `FLUTTY_FIREBASE_ENABLED` compile flag. Native Firebase config files are not committed; CI injects the flavor-specific files from secrets.
+
+When adding telemetry, use `telemetryServiceProvider` and keep every event and parameter allowlisted, coarse, and primitive. Never log hostnames, usernames, IP addresses, commands, terminal output, file paths, file names, tmux session/window names, clipboard contents, passwords, passphrases, private keys, tokens, raw SSH/SFTP/tmux streams, or arbitrary user-provided strings. Telemetry failures must stay best-effort and must not block app behavior or prevent opt-out/delete-unsent-reports paths from running.

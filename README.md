@@ -1,28 +1,28 @@
 # MonkeySSH
 
-**MonkeySSH is the SSH app for agentic coding.** It combines a serious mobile terminal, SFTP workspace, tmux-aware remote workflows, and first-class launch/resume flows for modern coding agents.
+**MonkeySSH is the SSH workspace for agentic coding.** It combines a serious mobile terminal, SFTP workspace, MonkeyMux/tmux remote windows, and first-class launch/resume flows for modern coding agents.
 
 [![CI](https://github.com/depollsoft/MonkeySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/depollsoft/MonkeySSH/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-MonkeySSH is built for the way people actually work with remote development environments now: connect to a box, jump into tmux, resume the right agent session, browse files, edit config, forward a port, paste commands safely, and keep moving without a laptop.
+MonkeySSH is built for the way people work with remote development environments now: connect to a box, attach to a persistent agent workspace, switch remote windows, resume the right agent session, browse files, edit config, forward a port, paste commands safely, and keep moving without a laptop.
 
 ## Why MonkeySSH
 
-- **Built for agent workflows** with recent-session discovery for supported coding CLIs and saved launch presets per host
-- **Tmux-aware by design** so long-running coding sessions survive reconnects and stay easy to resume
+- **Built for agent workflows** with scoped recent-session discovery and saved launch presets per host
+- **MonkeyMux and tmux aware** so long-running coding sessions survive reconnects and stay easy to resume
 - **A real SSH workspace** with terminal, SFTP, remote editing, snippets, key management, jump hosts, and port forwarding
-- **Mobile-first terminal UX** with modifier keys, gestures, IME-friendly text input, safer paste review, shared clipboard, and clickable file paths
-- **Private by default** with local auth, host-key verification, encrypted offline transfers, and no required cloud sync
+- **Mobile-first terminal UX** with modifier keys, gestures, IME-friendly text input, safer paste review, shared clipboard, clickable file paths, and responsive window navigation
+- **Private by default** with local auth, host-key verification, encrypted offline transfers, no required cloud sync, and opt-in analytics/crash reporting that starts off
 
 ## Built for agentic coding
 
-MonkeySSH is not just an SSH pipe with a keyboard attached. It is designed around the tools and workflows people use for remote AI-assisted development.
+MonkeySSH is designed around the tools and workflows people use for remote AI-assisted development.
 
 - **Recent agent session discovery** for supported CLIs, scoped to the active project so you can jump back into the right conversation faster
-- **Saved launch presets** for tools like Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Aider
-- **Per-host startup flows** with working-directory changes, tmux session names, extra arguments, and optional one-tap automation
-- **Tmux integration** for discovering sessions and windows, tracking the active pane path, and launching agents into persistent workspaces
+- **Saved launch presets** for tools like Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Antigravity
+- **Per-host startup flows** with working-directory changes, MonkeyMux/tmux session names, extra arguments, and optional one-tap automation
+- **Remote window navigation** for discovering sessions and windows, tracking the active pane path, launching agents into persistent workspaces, and switching windows from a bottom sheet or wide-screen sidebar
 - **IME keyboard support** so autocorrect, suggestions, swipe typing, keyboard dictation, and password-friendly prompt input behave more like a normal mobile text field, even in a terminal
 - **Safer command handling** with review prompts for suspicious pasted or auto-run shell text before it is inserted or executed
 - **Remote clipboard sync** so it is easier to move code and commands between your device and the remote machine
@@ -31,14 +31,14 @@ MonkeySSH is not just an SSH pipe with a keyboard attached. It is designed aroun
 
 | Area | What you get |
 | --- | --- |
-| **SSH connections** | Password and key auth, jump hosts, multiple concurrent sessions, host organization, search, favorites |
+| **SSH connections** | Password and key auth, jump hosts, multiple concurrent sessions, host organization, search, favorites, home-screen shortcuts |
 | **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, tap-to-show keyboard, and IME-friendly typing with autocorrect, swipe, keyboard dictation, and password-friendly prompt input |
-| **Coding workflow** | AI session picker, recent session resume, tmux-aware launch flows, clickable file paths, shared clipboard, safer paste review |
+| **Coding workflow** | AI session picker, scoped recent session resume, MonkeyMux/tmux launch flows, window switcher, wide-screen sidebar, clickable file paths, shared clipboard, safer paste review |
 | **Files** | SFTP browser, upload/download, remote file creation, direct remote text editing, syntax highlighting, path-aware navigation from terminal output |
 | **Automation** | Snippets, variable-aware snippet insertion, host auto-connect commands, saved agent launch presets |
 | **Networking** | Local and remote port forwards for tunnels, dashboards, previews, and remote services |
 | **Keys and trust** | Generate/import/export Ed25519 and RSA keys, verify SSH host fingerprints, track trusted hosts locally |
-| **Security and portability** | PIN + biometrics, auto-lock, encrypted offline transfer bundles, encrypted full-app migration packages, no required cloud sync |
+| **Security and portability** | PIN + biometrics, auto-lock, encrypted offline transfer bundles, encrypted full-app migration packages, no required cloud sync, telemetry sharing off by default |
 
 ## MonkeySSH Pro
 
@@ -51,6 +51,12 @@ MonkeySSH Pro unlocks the features that matter most for power users and multi-de
 - host-specific terminal themes
 
 Core SSH, terminal, SFTP, and everyday remote access stay front and center regardless.
+
+## Privacy and telemetry
+
+MonkeySSH stores hosts, keys, snippets, transfer packages, and settings on device. SSH, SFTP, clipboard, and port-forwarding traffic goes directly between your device and the servers you configure.
+
+Firebase Analytics and Crashlytics are compiled only into telemetry-enabled builds and stay off until you opt in. Opt-in analytics uses coarse allowlisted events for broad feature usage, setup funnels, connection reliability, SFTP transfer outcomes, remote window usage, and agent launch/session-history usage. It excludes hostnames, usernames, IP addresses, commands, terminal output, file paths, file names, tmux session/window names, clipboard contents, passwords, passphrases, private keys, tokens, and raw SSH/SFTP/tmux data.
 
 ## Release focus
 
@@ -71,7 +77,7 @@ flutter test
 Use **JDK 17** for Android and Gradle work in this repo:
 
 ```bash
-export JAVA_HOME="$("/usr/libexec/java_home" -v 17)"
+export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
 ```
 
 ### Integration and manual testing
