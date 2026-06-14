@@ -1,1 +1,1 @@
-Beta SSH workspace for terminals, SFTP, tmux, and coding agents.
+Beta SSH workspace for MonkeyMux, SFTP, tmux, and agents.

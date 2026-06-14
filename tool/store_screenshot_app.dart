@@ -42,6 +42,10 @@ const _sshHostKeyFingerprint = String.fromEnvironment(
   'STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT',
 );
 const _muxSessionName = String.fromEnvironment('STORE_SCREENSHOT_MUX_SESSION');
+const _workspacePath = String.fromEnvironment(
+  'STORE_SCREENSHOT_WORKSPACE_PATH',
+  defaultValue: '/Users/Shared/monkeyssh-release-workspace',
+);
 const _themeMode = String.fromEnvironment(
   'STORE_SCREENSHOT_THEME_MODE',
   defaultValue: 'dark',
@@ -178,6 +182,10 @@ Future<void> main() async {
   const muxSessionName = _muxSessionName;
   if (muxSessionName.isEmpty) {
     stderr.writeln('STORE_SCREENSHOT_MUX_SESSION is required.');
+    exit(64);
+  }
+  if (_workspacePath.isEmpty) {
+    stderr.writeln('STORE_SCREENSHOT_WORKSPACE_PATH is required.');
     exit(64);
   }
   registerFallbackValue(MonetizationFeature.agentLaunchPresets);
@@ -343,9 +351,7 @@ Future<int> _seedDatabase(
       terminalThemeDarkId: const Value(_terminalThemeDarkId),
       terminalFontFamily: const Value('monospace'),
       tmuxSessionName: Value(muxSessionName),
-      tmuxWorkingDirectory: const Value(
-        '/Users/Shared/monkeyssh-release-workspace',
-      ),
+      tmuxWorkingDirectory: const Value(_workspacePath),
       remoteMuxBackend: Value(RemoteMuxBackend.monkeyMux.storageValue),
       sortOrder: const Value(0),
     ),
@@ -452,9 +458,17 @@ Future<int> _seedDatabase(
     (
       name: 'List agent windows',
       command: 'monkeymux control --json $muxSessionName',
-      description: 'Inspect active Copilot, Gemini, Claude, and Codex windows.',
+      description:
+          'Inspect active Copilot, Gemini, Claude, Codex, OpenCode, and Antigravity windows.',
       autoExecute: false,
       usageCount: 7,
+    ),
+    (
+      name: 'Open Antigravity review',
+      command: 'agy --dangerously-skip-permissions',
+      description: 'Start Antigravity in a new remote agent window.',
+      autoExecute: false,
+      usageCount: 6,
     ),
     (
       name: 'Follow deploy logs',
@@ -577,7 +591,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
 
       _go(
         '/sftp/$terminalHostId?connectionId=$_connectionId'
-        '&path=%2FUsers%2FShared%2Fmonkeyssh-release-workspace',
+        '&path=${Uri.encodeComponent(_workspacePath)}',
       );
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(4);

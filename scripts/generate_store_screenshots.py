@@ -193,6 +193,7 @@ def _run_flutter_capture(
         f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={demo.host_key_b64}',
         f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT={demo.host_key_fingerprint}',
         f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={demo.mux_session}',
+        f'--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH={demo.demo_dir}',
         '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
@@ -293,7 +294,7 @@ class StoreDemoEnvironment:
         self.username = getpass.getuser()
         self.port = _free_local_port()
         self.mux_session = f'monkeyssh-store-{os.getpid()}'
-        self.demo_dir = Path('/Users/Shared/monkeyssh-release-workspace')
+        self.demo_dir = Path('/Users/Shared') / self.mux_session
         self._process: subprocess.Popen[str] | None = None
         self._monkeymux = self._extract_monkeymux()
         self._monkeymux_env = self._build_monkeymux_env()
@@ -307,7 +308,6 @@ class StoreDemoEnvironment:
         self._claude = shutil.which('claude')
         if self._claude is None:
             raise RuntimeError('Claude Code CLI is required for the Claude store screenshot.')
-        self._clean_claude_home = self._tmpdir / 'claude-home'
 
     @property
     def private_key_b64(self) -> str:
@@ -495,10 +495,9 @@ class StoreDemoEnvironment:
         self._write_pane_script(
             'claude',
             f"""
-            exec env -i \\
+            exec env \\
               PATH={self._shell_quote(os.environ.get('PATH', ''))} \\
               TERM=xterm-256color \\
-              HOME={self._shell_quote(str(self._clean_claude_home))} \\
               BASH_SILENCE_DEPRECATION_WARNING=1 \\
               CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 \\
               CLAUDE_CODE_HIDE_CWD=1 \\
@@ -524,6 +523,22 @@ class StoreDemoEnvironment:
             printf 'Keep long-running coding sessions alive in MonkeyMux.\\n'
             """,
         )
+        self._write_pane_script(
+            'opencode',
+            """
+            clear
+            printf 'OpenCode agent session ready\\n'
+            printf 'Launch another coding assistant in its own remote window.\\n'
+            """,
+        )
+        self._write_pane_script(
+            'antigravity',
+            """
+            clear
+            printf 'Antigravity agent session ready\\n'
+            printf 'Use MonkeyMux to keep multiple agents running side by side.\\n'
+            """,
+        )
         self._start_monkeymux_windows()
         self._drive_copilot_start_screen()
         self._drive_claude_full_screen()
@@ -546,7 +561,7 @@ class StoreDemoEnvironment:
                     '',
                     'Use this streamer-safe workspace for release screenshots.',
                     '',
-                    '- Do not show emails, usernames, hostnames, tokens, or private identifiers.',
+                    '- Keep captures free of emails, usernames, hostnames, tokens, and private identifiers.',
                     '- Prefer concise checks that fit in a mobile terminal screenshot.',
                     '- Keep terminal output focused on SSH, MonkeyMux, agent, and store asset workflows.',
                     '',
@@ -555,6 +570,8 @@ class StoreDemoEnvironment:
                     '2. gemini  - Gemini CLI workspace',
                     '3. claude  - Claude Code workspace',
                     '4. codex   - Codex CLI workspace',
+                    '5. opencode - OpenCode CLI workspace',
+                    '6. antigravity - Antigravity CLI workspace',
                     '',
                 ]
             )
@@ -579,7 +596,7 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Copilot, hosts, snippets, MonkeyMux selector, SFTP, Claude Code |',
+                    '| App Store | iPhone 6.9, iPad 13 | Copilot, hosts, snippets, MonkeyMux selector with all supported agent windows, SFTP, Claude Code |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
@@ -622,7 +639,7 @@ class StoreDemoEnvironment:
         )
         self._monkeymux_control = self._open_monkeymux_control()
         self._refresh_monkeymux_windows()
-        for window in ('gemini', 'claude', 'codex'):
+        for window in ('gemini', 'claude', 'codex', 'opencode', 'antigravity'):
             response = self._monkeymux_request(
                 {
                     'type': 'create_window',
@@ -687,23 +704,32 @@ class StoreDemoEnvironment:
         raise RuntimeError('copilot pane did not show the Copilot prompt.')
 
     def _drive_claude_full_screen(self) -> None:
-        self._wait_for_visible_text('claude', ['Choose the text style'])
-        self._monkeymux_send_keys('claude', 'Enter')
-        self._wait_for_visible_text(
-            'claude',
-            ['Detected a custom API key', 'ANTHROPIC_API_KEY', 'dummy'],
-        )
-        self._monkeymux_send_keys('claude', 'Up', 'Enter')
-        self._wait_for_visible_text('claude', ['Press Ente'])
-        self._monkeymux_send_keys('claude', 'Enter')
-        self._wait_for_visible_text('claude', ['Yes, I trust this folder'])
-        self._monkeymux_send_keys('claude', 'Enter')
-        self._wait_for_visible_text('claude', ['Claude Code'])
+        self._drive_claude_to_ready_prompt()
         self._monkeymux_send_keys('claude', 'C-l')
         time.sleep(2)
-        self._wait_for_visible_text('claude', ['Claude Code'])
+        self._wait_for_visible_text('claude', ['shortcuts'])
         time.sleep(3)
         self._assert_claude_pane_streamer_safe()
+
+    def _drive_claude_to_ready_prompt(self) -> None:
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            text = self._capture_visible_pane('claude')
+            if _visible_text_contains_marker(text, 'shortcuts') and (
+                _visible_text_contains_marker(text, 'Claude Code')
+                or _visible_text_contains_marker(text, 'Claude Code Workspace')
+            ):
+                return
+            if _visible_text_contains_marker(text, 'Choose the text style'):
+                self._monkeymux_send_keys('claude', 'Enter')
+            elif _visible_text_contains_marker(text, 'Detected a custom API key'):
+                self._monkeymux_send_keys('claude', 'Up', 'Enter')
+            elif _visible_text_contains_marker(text, 'Yes, I trust this folder'):
+                self._monkeymux_send_keys('claude', 'Enter')
+            elif _visible_text_contains_marker(text, 'Press Ente'):
+                self._monkeymux_send_keys('claude', 'Enter')
+            time.sleep(1)
+        raise RuntimeError('claude pane did not show the Claude Code prompt.')
 
     def _ensure_copilot_streamer_mode(self) -> None:
         self._wait_for_copilot_ready()
