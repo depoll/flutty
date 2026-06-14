@@ -13989,7 +13989,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
-    if (!_shouldReviewTerminalCommandInsertion) {
+    final requiresReviewEvenInRunningShell = review.reasons.contains(
+      TerminalCommandReviewReason.largeKeyboardInsertion,
+    );
+    if (!_shouldReviewTerminalCommandInsertion &&
+        !requiresReviewEvenInRunningShell) {
       return true;
     }
     final shouldInsert = await _confirmCommandInsertion(
@@ -14405,6 +14409,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String message,
   }) {
     final reasons = describeTerminalCommandReview(review);
+    final commandPreview = _terminalCommandReviewPreview(review.command);
     return SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -14438,13 +14443,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               borderRadius: BorderRadius.circular(12),
             ),
             child: SelectableText(
-              review.command,
+              commandPreview,
               style: const TextStyle(fontFamily: 'monospace'),
             ),
           ),
         ],
       ),
     );
+  }
+
+  String _terminalCommandReviewPreview(String command) {
+    const maxPreviewLength = 2000;
+    if (command.length <= maxPreviewLength) {
+      return command;
+    }
+    final omittedCount = command.length - maxPreviewLength;
+    return '${command.substring(0, maxPreviewLength)}\n'
+        '... truncated $omittedCount characters ...';
   }
 }
 

@@ -11,6 +11,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import 'terminal_key_input.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
@@ -2014,7 +2015,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.onReviewInsertedText == null) {
       return null;
     }
-    if (delta.appendedText.characters.length <= 1) {
+    final insertedTextLength = delta.appendedText.characters.length;
+    if (insertedTextLength <= 1) {
       return null;
     }
 
@@ -2024,10 +2026,30 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           appendedText: delta.appendedText,
         ), currentText) ??
         currentText;
-    final review = assessClipboardPasteCommand(
+    final review = assessKeyboardInsertedCommand(
       reviewText,
-      bracketedPasteModeEnabled: false,
+      insertedText: delta.appendedText,
     );
+    if (review.requiresReview) {
+      DiagnosticsLogService.instance.debug(
+        'terminal.keyboard',
+        'review_inserted_text',
+        fields: {
+          'insertedLength': insertedTextLength,
+          'deletedCount': delta.deletedCount,
+          'reasonCount': review.reasons.length,
+          'largeInsertion': review.reasons.contains(
+            TerminalCommandReviewReason.largeKeyboardInsertion,
+          ),
+          'multiline': review.reasons.contains(
+            TerminalCommandReviewReason.multiline,
+          ),
+          'controlCharacters': review.reasons.contains(
+            TerminalCommandReviewReason.controlCharacters,
+          ),
+        },
+      );
+    }
     return review.requiresReview ? review : null;
   }
 

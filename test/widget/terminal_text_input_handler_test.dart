@@ -5848,6 +5848,116 @@ void main() {
       },
     );
 
+    testWidgets('does not review a short swipe-composed word', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return true;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}copilot',
+          selection: TextSelection.collapsed(offset: 9),
+          composing: TextRange(start: 2, end: 9),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, isEmpty);
+      expect(terminalOutput, isEmpty);
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}copilot ',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, isEmpty);
+      expect(terminalOutput.join(), 'copilot ');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('reviews paste-like keyboard payloads', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final reviews = <TerminalCommandReview>[];
+      final insertedText = List.filled(
+        terminalKeyboardPasteLikeInsertionThreshold + 1,
+        'a',
+      ).join();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return false;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: '$_deleteDetectionMarker$insertedText',
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length + insertedText.length,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.largeKeyboardInsertion),
+      );
+      expect(terminalOutput, isEmpty);
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+
+      focusNode.dispose();
+    });
+
     testWidgets(
       'reviews a high-risk committed IME payload after composition ends',
       (tester) async {

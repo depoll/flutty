@@ -17,6 +17,7 @@ import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
@@ -6761,6 +6762,40 @@ void main() {
 
         expect(find.text('Review keyboard paste'), findsNothing);
         expect(shellWrites.map(utf8.decode).join(), suspiciousText);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'running shell commands still review paste-like keyboard payloads',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('\u001b]133;C\u0007');
+        await tester.pump();
+
+        expect(session.shellStatus, TerminalShellStatus.runningCommand);
+
+        shellWrites.clear();
+        final insertedText = List.filled(
+          terminalKeyboardPasteLikeInsertionThreshold + 1,
+          'a',
+        ).join();
+        tester.testTextInput.updateEditingValue(
+          _editingValue(insertedText, selectionOffset: insertedText.length),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Review keyboard paste'), findsOneWidget);
+        expect(
+          find.text('The keyboard inserted a paste-like amount of text.'),
+          findsOneWidget,
+        );
+        expect(shellWrites, isEmpty);
+
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
