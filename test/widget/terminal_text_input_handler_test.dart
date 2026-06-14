@@ -1323,21 +1323,20 @@ void main() {
   });
 
   group('TerminalTextInputHandler', () {
-    testWidgets(
-      'uses a normal text IME configuration for keyboard voice input',
-      (tester) async {
-        final harness = await _pumpTerminalHarness(tester);
-        final configuration = _latestTextInputSetClientConfiguration(tester);
-        final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
+    testWidgets('disables autocorrect while preserving keyboard suggestions', (
+      tester,
+    ) async {
+      final harness = await _pumpTerminalHarness(tester);
+      final configuration = _latestTextInputSetClientConfiguration(tester);
+      final inputType = configuration['inputType']! as Map<dynamic, dynamic>;
 
-        expect(inputType['name'], 'TextInputType.text');
-        expect(configuration['autocorrect'], isTrue);
-        expect(configuration['enableSuggestions'], isTrue);
-        expect(configuration['enableIMEPersonalizedLearning'], isTrue);
+      expect(inputType['name'], 'TextInputType.text');
+      expect(configuration['autocorrect'], isFalse);
+      expect(configuration['enableSuggestions'], isTrue);
+      expect(configuration['enableIMEPersonalizedLearning'], isTrue);
 
-        await _disposeTerminalHarness(tester, harness);
-      },
-    );
+      await _disposeTerminalHarness(tester, harness);
+    });
 
     testWidgets('uses a password-friendly IME configuration for secrets', (
       tester,
@@ -7075,6 +7074,49 @@ void main() {
         }
       },
     );
+
+    testWidgets('strips duplicated iOS backspace runways before typed text', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        final harness = await _pumpTerminalHarness(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('x', selectionOffset: 1),
+        );
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('', selectionOffset: 0),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          _iosBackspaceRunwayValue(terminalIosBackspaceRepeatRunwayLength),
+        );
+
+        harness.terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _iosBackspaceRunwayValue(
+            terminalIosBackspaceRepeatRunwayLength * 2,
+            suffix: 'ls ',
+          ),
+        );
+        await tester.pump();
+
+        expect(harness.terminalOutput, ['ls ']);
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          _editingValue('ls ', selectionOffset: 'ls '.length),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
 
     testWidgets(
       'preserves leading zero-width text outside iOS backspace runway state',

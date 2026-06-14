@@ -179,15 +179,14 @@ class TerminalTextInputHandlerController {
   }
 }
 
-/// Wraps a [TerminalView] to provide soft keyboard input on mobile with
-/// proper IME configuration for swipe typing.
+/// Wraps a [TerminalView] to provide soft keyboard input on mobile.
 ///
 /// The xterm package's built-in [CustomTextEdit] hard-codes
-/// `autocorrect: false` and `enableSuggestions: false`, which hides voice
-/// input on some system keyboards and causes most IMEs to drop spaces between
-/// swiped words. This widget replaces that text input handling with a normal
-/// text keyboard configuration so dictation, suggestions, and swipe typing work
-/// correctly.
+/// `enableSuggestions: false`, which hides voice input on some system
+/// keyboards and causes most IMEs to drop spaces between swiped words. This
+/// widget keeps suggestions available, but disables automatic correction
+/// because terminal commands are not prose and must not be rewritten by the
+/// keyboard when the user accepts a space.
 ///
 /// The child [TerminalView] should use `hardwareKeyboardOnly: true`.
 class TerminalTextInputHandler extends StatefulWidget {
@@ -1014,12 +1013,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         // ignore: avoid_redundant_argument_values
         inputType: TextInputType.text,
         // ignore: avoid_redundant_argument_values
-        autocorrect: !widget.sensitiveInput,
+        autocorrect: false,
         // ignore: avoid_redundant_argument_values
         inputAction: TextInputAction.newline,
         keyboardAppearance: widget.keyboardAppearance,
         // Enable suggestions so the IME offers dictation and adds spaces
-        // between swiped words.
+        // between swiped words. Autocorrect remains disabled above so command
+        // tokens like "ls" are not rewritten when accepting a space.
         // ignore: avoid_redundant_argument_values
         enableSuggestions: !widget.sensitiveInput,
         obscureText: widget.sensitiveInput,
@@ -1231,14 +1231,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     // iOS can replay hidden backspace runway sentinels with the next composed
     // text update; those sentinels must never reach the terminal stream.
-    final maxPrefixLength = text.length < _iosBackspaceRunwayLength
-        ? text.length
-        : _iosBackspaceRunwayLength;
-    var prefixLength = 0;
-    while (prefixLength < maxPrefixLength &&
-        text.codeUnitAt(prefixLength) == _iosBackspaceRepeatRunwayCodeUnit) {
-      prefixLength++;
-    }
+    final prefixLength = _leadingIosBackspaceRunwaySentinelLength(text);
     if (prefixLength == 0) {
       return text;
     }
@@ -2172,10 +2165,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
   }
 
-  int _leadingIosBackspaceRunwayLength(String rawUserText) {
-    final limit = rawUserText.length < _iosBackspaceRunwayLength
+  int _leadingIosBackspaceRunwaySentinelLength(
+    String rawUserText, {
+    int? maxLength,
+  }) {
+    final limit = maxLength == null || rawUserText.length < maxLength
         ? rawUserText.length
-        : _iosBackspaceRunwayLength;
+        : maxLength;
     var length = 0;
     while (length < limit &&
         rawUserText.codeUnitAt(length) == _iosBackspaceRepeatRunwayCodeUnit) {
@@ -2183,6 +2179,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     return length;
   }
+
+  int _leadingIosBackspaceRunwayLength(String rawUserText) =>
+      _leadingIosBackspaceRunwaySentinelLength(
+        rawUserText,
+        maxLength: _iosBackspaceRunwayLength,
+      );
 
   int _offsetAfterRemovedRange({
     required int offset,
@@ -2277,13 +2279,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final rawUserText = _extractRawInputText(value.text);
+    final runwaySentinelLength = _leadingIosBackspaceRunwaySentinelLength(
+      rawUserText,
+    );
     final runwayPrefixLength = _leadingIosBackspaceRunwayLength(rawUserText);
     if (runwayPrefixLength == 0) {
       _iosBackspaceRunwayLength = 0;
       return false;
     }
-    if (runwayPrefixLength < rawUserText.length) {
+    if (runwaySentinelLength < rawUserText.length) {
       return false;
+    }
+    if (runwaySentinelLength > _iosBackspaceRunwayLength) {
+      _syncEditingStateWithIosBackspaceRunway();
+      return true;
     }
 
     final deletedCount = _iosBackspaceRunwayLength - runwayPrefixLength;
@@ -2330,14 +2339,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return value;
     }
 
-    final runwayPrefixLength = _leadingIosBackspaceRunwayLength(
-      _extractRawInputText(value.text),
+    final rawUserText = _extractRawInputText(value.text);
+    final runwayPrefixLength = _leadingIosBackspaceRunwaySentinelLength(
+      rawUserText,
     );
     if (runwayPrefixLength == 0) {
       _iosBackspaceRunwayLength = 0;
       return value;
     }
-
     _iosBackspaceRunwayLength = 0;
     return _editingValueWithoutIosBackspaceRunway(value, runwayPrefixLength);
   }
