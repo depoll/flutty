@@ -1224,9 +1224,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       text.substring(_editingPrefixLength(text));
 
   String _stripLeakedDeleteSentinelPrefix(String text) {
-    if (!_shouldUseIosBackspaceRunway ||
-        _iosBackspaceRunwayLength == 0 ||
-        text.isEmpty) {
+    if (!_shouldUseIosBackspaceRunway || text.isEmpty) {
       return text;
     }
 
@@ -1234,6 +1232,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     // text update; those sentinels must never reach the terminal stream.
     final prefixLength = _leadingIosBackspaceRunwaySentinelLength(text);
     if (prefixLength == 0) {
+      return text;
+    }
+    if (_iosBackspaceRunwayLength == 0 &&
+        prefixLength < terminalIosBackspaceRepeatRunwayRefillThreshold) {
       return text;
     }
     return text.substring(prefixLength);

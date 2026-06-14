@@ -7229,6 +7229,58 @@ void main() {
     });
 
     testWidgets(
+      'strips stale iOS backspace runways after the platform drops state',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('x', selectionOffset: 1),
+          );
+          await tester.pump();
+          tester.testTextInput.updateEditingValue(
+            _editingValue('', selectionOffset: 0),
+          );
+          await tester.pump();
+
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _iosBackspaceRunwayValue(terminalIosBackspaceRepeatRunwayLength),
+          );
+
+          tester.testTextInput.updateEditingValue(
+            const TextEditingValue(
+              text: _deleteDetectionMarker,
+              selection: TextSelection.collapsed(offset: 2),
+            ),
+          );
+          await tester.pump();
+
+          harness.terminalOutput.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _iosBackspaceRunwayValue(
+              terminalIosBackspaceRepeatRunwayLength,
+              suffix: 'add ',
+            ),
+          );
+          await tester.pump();
+
+          expect(harness.terminalOutput, ['add ']);
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('add ', selectionOffset: 'add '.length),
+          );
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
       'preserves leading zero-width text outside iOS backspace runway state',
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
