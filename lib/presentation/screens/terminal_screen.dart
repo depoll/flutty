@@ -5097,10 +5097,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String operation,
   }) {
     _remoteClipboardUnsupported = true;
-    _localClipboardSyncTimer?.cancel();
-    _localClipboardSyncTimer = null;
-    _remoteClipboardSyncTimer?.cancel();
-    _remoteClipboardSyncTimer = null;
+    _stopSharedClipboardSync();
     DiagnosticsLogService.instance.warning(
       'terminal.clipboard',
       'remote_sync_failed',
