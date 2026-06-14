@@ -90,6 +90,7 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
     return Focus(
       focusNode: widget.focusNode,
       autofocus: widget.autofocus,
+      skipTraversal: true,
       onKeyEvent: _onKeyEvent,
       child: widget.child,
     );

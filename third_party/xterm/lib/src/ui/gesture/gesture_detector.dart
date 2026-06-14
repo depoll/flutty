@@ -64,6 +64,13 @@ class _TerminalGestureDetectorState extends State<TerminalGestureDetector> {
   // subsequent tap up / tap hold of the same tap.
   bool _isDoubleTap = false;
 
+  @override
+  void dispose() {
+    _doubleTapTimer?.cancel();
+    _doubleTapTimer = null;
+    super.dispose();
+  }
+
   // The down handler is force-run on success of a single tap and optimistically
   // run before a long press success.
   void _handleTapDown(TapDownDetails details) {

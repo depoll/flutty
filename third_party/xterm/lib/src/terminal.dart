@@ -295,6 +295,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     );
     if (kittyOutput != null) {
       onOutput?.call(kittyOutput);
+      notifyListeners();
       return true;
     }
 
@@ -306,6 +307,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     if (output != null) {
       onOutput?.call(output);
+      notifyListeners();
       return true;
     }
 
@@ -325,6 +327,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       if (charCode >= Ascii.a && charCode <= Ascii.z) {
         final output = charCode - Ascii.a + 1;
         onOutput?.call(String.fromCharCode(output));
+        notifyListeners();
         return true;
       }
 
@@ -332,6 +335,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       if (charCode >= Ascii.openBracket && charCode <= Ascii.underscore) {
         final output = charCode - Ascii.openBracket + 27;
         onOutput?.call(String.fromCharCode(output));
+        notifyListeners();
         return true;
       }
     }
@@ -341,6 +345,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         final code = charCode - Ascii.a + 65;
         final input = [0x1b, code];
         onOutput?.call(String.fromCharCodes(input));
+        notifyListeners();
         return true;
       }
     }
@@ -358,9 +363,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final kittyOutput = encodeKittyTextInput(text, _kittyKeyboardState.flags);
     if (kittyOutput != null) {
       onOutput?.call(kittyOutput);
+      notifyListeners();
       return;
     }
     onOutput?.call(text);
+    notifyListeners();
   }
 
   /// Similar to [textInput], except that when the program tells the terminal
@@ -371,8 +378,20 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// See also:
   /// - [textInput]
   void paste(String text) {
+    // Strip CSI formatting and unsafe controls before sending paste payloads.
+    text = text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '');
+    text = text.replaceAll(
+      RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]'),
+      '',
+    );
+
+    text = text.replaceAll('\r\n', '\n');
+    text = text.replaceAll('\r', '\n');
+    text = text.replaceAll('\n', _lineFeedMode ? '\r\n' : '\r');
+
     if (_bracketedPasteMode) {
       onOutput?.call(_emitter.bracketedPaste(text));
+      notifyListeners();
     } else {
       textInput(text);
     }

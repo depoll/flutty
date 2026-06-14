@@ -99,13 +99,13 @@ class ZModemMux {
 
   /// This is the entry point of multiplexing, dispatching data to ZModem or
   /// terminal depending on the current state.
-  void _handleStdout(Uint8List chunk) {
+  Future<void> _handleStdout(Uint8List chunk) async {
     if (_session != null) {
-      _handleZModem(chunk);
+      await _handleZModem(chunk);
       return;
     }
 
-    if (_detectZModem(chunk)) {
+    if (await _detectZModem(chunk)) {
       return;
     }
 
@@ -114,7 +114,7 @@ class ZModemMux {
 
   /// Detects a ZModem session in [chunk] and starts it if found. Returns true
   /// if a session was started.
-  bool _detectZModem(Uint8List chunk) {
+  Future<bool> _detectZModem(Uint8List chunk) async {
     final index = chunk.listIndexOf(_zmodemSenderInit) ??
         chunk.listIndexOf(_zmodemReceiverInit);
 
@@ -127,14 +127,14 @@ class ZModemMux {
         },
       );
 
-      _handleZModem(Uint8List.sublistView(chunk, index));
+      await _handleZModem(Uint8List.sublistView(chunk, index));
       return true;
     }
 
     return false;
   }
 
-  void _handleZModem(Uint8List chunk) async {
+  Future<void> _handleZModem(Uint8List chunk) async {
     for (final event in _session!.receive(chunk)) {
       /// remote is sz
       if (event is ZFileOfferedEvent) {
