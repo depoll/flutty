@@ -1767,9 +1767,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   @override
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
-    paintLineBackground(canvas, offset, line);
-    super.paintLine(canvas, offset, line);
-    paintLineTrailingBackgroundFill(canvas, offset, line);
+    paintLineBackgrounds(canvas, offset, line);
+    paintLineForegrounds(canvas, offset, line);
+    paintLineCellUnderlines(canvas, offset, line);
   }
 
   /// Paints only the backgrounds (line fill, trailing run, and each cell's own
@@ -1898,7 +1898,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
     final runBackground = _resolveCellBackgroundPaintColor(firstCell);
     final runCell = CellData.empty();
-    var lastContentColumn = -1;
+    var contentEndColumn = -1;
     for (var column = runStartColumn; column < line.length; column += 1) {
       line.getCellData(column, runCell);
       final rightEdgeDecoration = _isRightEdgeDecorationCell(
@@ -1916,13 +1916,18 @@ class MonkeyTerminalPainter extends TerminalPainter {
           !rightEdgeDecoration) {
         return null;
       }
-      if (!_isBlankCell(runCell) && !rightEdgeDecoration) {
-        lastContentColumn = column;
+      if ((!_isBlankCell(runCell) ||
+              (matchesPromptBackground && _isLiteralSpaceCell(runCell))) &&
+          !rightEdgeDecoration) {
+        contentEndColumn = math.max(
+          contentEndColumn,
+          column + _cellContentColumnWidth(runCell),
+        );
       }
     }
 
-    final fillStartColumn = lastContentColumn + 1;
-    if (lastContentColumn < runStartColumn || fillStartColumn >= line.length) {
+    final fillStartColumn = contentEndColumn;
+    if (contentEndColumn < 0 || fillStartColumn >= line.length) {
       return null;
     }
 
@@ -2309,6 +2314,16 @@ class MonkeyTerminalPainter extends TerminalPainter {
   bool _isBlankCell(CellData cellData) {
     final charCode = cellData.content & CellContent.codepointMask;
     return charCode == 0 || charCode == 0x20;
+  }
+
+  bool _isLiteralSpaceCell(CellData cellData) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0x20;
+  }
+
+  int _cellContentColumnWidth(CellData cellData) {
+    final width = cellData.content >> CellContent.widthShift;
+    return width > 0 ? width : 1;
   }
 
   bool _isBlankNormalCell(CellData cellData) {

@@ -733,6 +733,48 @@ void main() {
       );
     });
 
+    test('counts prompt-background spaces as prompt row content', () {
+      const promptBackground = Color(0xFFD0DAD9);
+      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
+      final terminal = Terminal()
+        ..resize(48, 2)
+        ..write('$promptBackgroundSequence❯ \x1b[m');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+        terminal.buffer.lines[0],
+      );
+
+      expect(fill, isNotNull);
+      expect(fill!.startColumn, '❯ '.length);
+      expect(fill.color, promptBackground);
+    });
+
+    test('starts Copilot prompt tail fill after full double-width glyphs', () {
+      const promptBackground = Color(0xFFD0DAD9);
+      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
+      final terminal = Terminal()
+        ..resize(48, 2)
+        ..write('$promptBackgroundSequence❯ 中\x1b[m');
+      final painter = MonkeyTerminalPainter(
+        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
+        terminal.buffer.lines[0],
+      );
+
+      expect(fill, isNotNull);
+      expect(fill!.startColumn, 4);
+      expect(fill.color, promptBackground);
+    });
+
     test('extends inverse Copilot prompt rows on light themes', () {
       const copilotPromptStyle = '\x1b[38;2;180;180;180;7m';
       final terminal = Terminal()
@@ -878,6 +920,42 @@ void main() {
       expect(fill, isNotNull);
       expect(fill!.startColumn, promptText.length);
       expect(fill.color, promptBackground);
+    });
+
+    test('keeps right-edge scrollbar glyphs over prompt tail fills', () async {
+      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
+      final terminal = Terminal()
+        ..resize(48, 2)
+        ..write('$promptBackgroundSequence❯ test\x1b[m\x1b[48G█');
+      final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final cellSize = painter.cellSize;
+      final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
+      final imageHeight = cellSize.height.ceil();
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+
+      painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+      final image = await recorder.endRecording().toImage(
+        imageWidth,
+        imageHeight,
+      );
+      final byteData = await image.toByteData();
+      expect(byteData, isNotNull);
+      expect(
+        _rawRgbaPixel(
+          byteData!,
+          imageWidth,
+          ((terminal.viewWidth - 0.5) * cellSize.width).round(),
+          (cellSize.height / 2).round(),
+        ),
+        theme.foreground,
+      );
     });
 
     test(
