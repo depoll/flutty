@@ -5,6 +5,8 @@ class _SshSessionRuntime {
 
   final SshSession _session;
 
+  static const _stdinCloseTimeout = Duration(milliseconds: 250);
+
   SSHSession? _shell;
   StreamController<String>? _shellStdoutController;
   StreamController<String>? _shellStderrController;
@@ -235,7 +237,28 @@ class _SshSessionRuntime {
     _shellStderrController = null;
     _shellDoneController = null;
 
-    _shell?.close();
+    final shell = _shell;
+    if (shell != null) {
+      try {
+        await shell.stdin.close().timeout(_stdinCloseTimeout);
+      } on TimeoutException {
+        DiagnosticsLogService.instance.warning(
+          'ssh.shell',
+          'stdin_close_timed_out',
+          fields: {'connectionId': _session.connectionId},
+        );
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.warning(
+          'ssh.shell',
+          'stdin_close_failed',
+          fields: {
+            'connectionId': _session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+      }
+      _closeShellBestEffort(shell);
+    }
     _shell = null;
     _session._resetShellRuntimeMetadata();
     _terminalWindowMetrics = null;
@@ -251,6 +274,21 @@ class _SshSessionRuntime {
       'close_complete',
       fields: {'connectionId': _session.connectionId},
     );
+  }
+
+  void _closeShellBestEffort(SSHSession shell) {
+    void logFailure(Object error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'close_failed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+
+    runZonedGuarded(shell.close, (error, _) => logFailure(error));
   }
 
   void _ensureShellStreamPipes() {

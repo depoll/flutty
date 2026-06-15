@@ -3016,6 +3016,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _monkeyMuxPostRedrawDisplayRefreshTimer;
   final List<Timer> _monkeyMuxSettledRedrawDisplayRefreshTimers = <Timer>[];
   int _monkeyMuxSettledRedrawDisplayRefreshGeneration = 0;
+  int _monkeyMuxRefreshAndResizeGeneration = 0;
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
@@ -6477,12 +6478,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session,
       reason: 'window_change_replay',
     );
+    final generation = _monkeyMuxRefreshAndResizeGeneration;
     _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
     _monkeyMuxWindowRefreshFollowUpTimer = Timer(
       const Duration(milliseconds: 50),
       () {
         _monkeyMuxWindowRefreshFollowUpTimer = null;
         if (!mounted ||
+            generation != _monkeyMuxRefreshAndResizeGeneration ||
             _isTerminalOutputFollowPaused ||
             _connectionId != session.connectionId) {
           return;
@@ -6576,11 +6579,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final connectionId = session.connectionId;
+    final generation = _monkeyMuxRefreshAndResizeGeneration;
     _monkeyMuxResizeSyncInFlight = true;
     _monkeyMuxResizeSyncThrottled = true;
     _monkeyMuxResizeSyncCooldownTimer?.cancel();
     _monkeyMuxResizeSyncCooldownTimer = Timer(minGap, () {
       _monkeyMuxResizeSyncCooldownTimer = null;
+      if (generation != _monkeyMuxRefreshAndResizeGeneration) {
+        return;
+      }
       _monkeyMuxResizeSyncThrottled = false;
       _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
     });
@@ -6592,8 +6599,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           rows: rows,
         );
       } finally {
-        _monkeyMuxResizeSyncInFlight = false;
-        _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+        if (generation == _monkeyMuxRefreshAndResizeGeneration) {
+          _monkeyMuxResizeSyncInFlight = false;
+          _maybeSendPendingMonkeyMuxResizeSync(session, connectionId);
+        }
       }
     }());
   }
@@ -6626,12 +6635,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final connectionId = session.connectionId;
+    final generation = _monkeyMuxRefreshAndResizeGeneration;
     _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
     _monkeyMuxResizeRedrawFollowUpTimer = Timer(
       _monkeyMuxResizeRedrawFollowUpDelay,
       () {
         _monkeyMuxResizeRedrawFollowUpTimer = null;
-        if (!mounted || _connectionId != connectionId) {
+        if (!mounted ||
+            generation != _monkeyMuxRefreshAndResizeGeneration ||
+            _connectionId != connectionId) {
           return;
         }
         unawaited(
@@ -6645,12 +6657,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _scheduleMonkeyMuxPostRedrawDisplayRefresh(int connectionId) {
+    final generation = _monkeyMuxRefreshAndResizeGeneration;
     _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
     _monkeyMuxPostRedrawDisplayRefreshTimer = Timer(
       _monkeyMuxPostRedrawDisplayRefreshDelay,
       () {
         _monkeyMuxPostRedrawDisplayRefreshTimer = null;
-        if (!mounted || _connectionId != connectionId) {
+        if (!mounted ||
+            generation != _monkeyMuxRefreshAndResizeGeneration ||
+            _connectionId != connectionId) {
           return;
         }
         _refreshTerminalDisplayAfterMonkeyMuxRedraw(
@@ -6701,6 +6716,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _monkeyMuxSettledRedrawDisplayRefreshTimers.clear();
   }
 
+  void _cancelMonkeyMuxRefreshAndResizeState() {
+    _monkeyMuxRefreshAndResizeGeneration += 1;
+    _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
+    _monkeyMuxWindowRefreshFollowUpTimer = null;
+    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
+    _monkeyMuxResizeRedrawFollowUpTimer = null;
+    _monkeyMuxResizeSyncCooldownTimer?.cancel();
+    _monkeyMuxResizeSyncCooldownTimer = null;
+    _monkeyMuxResizeSyncInFlight = false;
+    _monkeyMuxResizeSyncThrottled = false;
+    _monkeyMuxResizeSyncPending = false;
+    _monkeyMuxResizeSyncColumns = null;
+    _monkeyMuxResizeSyncRows = null;
+    _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
+    _monkeyMuxPostRedrawDisplayRefreshTimer = null;
+    _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
+    _pendingMonkeyMuxResizeSyncs.clear();
+    _lastMonkeyMuxResizeSync = null;
+  }
+
   void _refreshTerminalDisplayAfterMonkeyMuxRedraw({
     required int connectionId,
     required String reason,
@@ -6741,6 +6776,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     int? rows,
     bool refreshVisibleTerminal = false,
   }) async {
+    final generation = _monkeyMuxRefreshAndResizeGeneration;
     final isMonkeyMuxSession =
         _activeMuxBackend == RemoteMuxBackend.monkeyMux ||
         session.remoteMuxBackend == RemoteMuxBackend.monkeyMux;
@@ -6806,8 +6842,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'refreshedVisibleTerminal': refreshVisibleTerminal,
         },
       );
-      _lastMonkeyMuxResizeSync = resizeKey;
+      if (generation == _monkeyMuxRefreshAndResizeGeneration) {
+        _lastMonkeyMuxResizeSync = resizeKey;
+      }
       if (refreshVisibleTerminal) {
+        if (generation != _monkeyMuxRefreshAndResizeGeneration) {
+          return;
+        }
         _scheduleMonkeyMuxPostRedrawDisplayRefresh(session.connectionId);
         _scheduleMonkeyMuxSettledRedrawDisplayRefreshes(
           session,
@@ -7659,6 +7700,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _clearTmuxState() {
     _stopTmuxForegroundVerification();
+    _cancelMonkeyMuxRefreshAndResizeState();
     _cancelPendingTmuxWindowThemeRefresh();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
@@ -9521,11 +9563,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
-    _monkeyMuxWindowRefreshFollowUpTimer?.cancel();
-    _monkeyMuxResizeRedrawFollowUpTimer?.cancel();
-    _monkeyMuxResizeSyncCooldownTimer?.cancel();
-    _monkeyMuxPostRedrawDisplayRefreshTimer?.cancel();
-    _cancelMonkeyMuxSettledRedrawDisplayRefreshes();
+    _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
