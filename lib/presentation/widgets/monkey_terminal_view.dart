@@ -1767,9 +1767,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   @override
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
-    paintLineBackground(canvas, offset, line);
-    paintLineTrailingBackgroundFill(canvas, offset, line);
-    super.paintLine(canvas, offset, line);
+    paintLineBackgrounds(canvas, offset, line);
+    paintLineForegrounds(canvas, offset, line);
+    paintLineCellUnderlines(canvas, offset, line);
   }
 
   /// Paints only the backgrounds (line fill, trailing run, and each cell's own
@@ -1782,7 +1782,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
   /// behind the next row's background.
   void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
     paintLineBackground(canvas, offset, line);
-    paintLineTrailingBackgroundFill(canvas, offset, line);
     final cellData = CellData.empty();
     final cellWidth = cellSize.width;
     for (var i = 0; i < line.length; i++) {
@@ -1793,6 +1792,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         i++;
       }
     }
+    paintLineTrailingBackgroundFill(canvas, offset, line);
   }
 
   /// Paints only the glyphs for [line], in a pass run after every visible
@@ -1896,23 +1896,46 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return null;
     }
 
-    final background = firstCell.background;
-    var fillStartColumn = runStartColumn;
-    var hasHighlightedContent = false;
-    for (; fillStartColumn < line.length; fillStartColumn += 1) {
-      if (line.getBackground(fillStartColumn) != background) {
-        break;
+    final runBackground = _resolveCellBackgroundPaintColor(firstCell);
+    final runCell = CellData.empty();
+    var contentEndColumn = -1;
+    for (var column = runStartColumn; column < line.length; column += 1) {
+      line.getCellData(column, runCell);
+      final rightEdgeDecoration = _isRightEdgeDecorationCell(
+        line,
+        column,
+        runCell,
+      );
+      final matchesPromptBackground = _cellMatchesTrailingBackgroundRun(
+        runCell,
+        runBackground,
+      );
+      if (!matchesPromptBackground &&
+          !_isBlankTerminalBackgroundCell(runCell) &&
+          !_isNormalTextCell(runCell) &&
+          !rightEdgeDecoration) {
+        return null;
       }
-      hasHighlightedContent |= line.getCodePoint(fillStartColumn) != 0;
+      if ((!_isBlankCell(runCell) ||
+              (matchesPromptBackground && _isLiteralSpaceCell(runCell))) &&
+          !rightEdgeDecoration) {
+        contentEndColumn = math.max(
+          contentEndColumn,
+          column + _cellContentColumnWidth(runCell),
+        );
+      }
     }
 
-    if (!hasHighlightedContent || fillStartColumn >= line.length) {
+    final fillStartColumn = contentEndColumn;
+    if (contentEndColumn < 0 || fillStartColumn >= line.length) {
       return null;
     }
 
+    final trailingCell = CellData.empty();
     for (var column = fillStartColumn; column < line.length; column += 1) {
-      if (line.getCodePoint(column) != 0 ||
-          _cellColorType(line.getBackground(column)) != CellColor.normal) {
+      line.getCellData(column, trailingCell);
+      if (!_isBlankTerminalBackgroundCell(trailingCell) &&
+          !_isRightEdgeDecorationCell(line, column, trailingCell)) {
         return null;
       }
     }
@@ -1921,6 +1944,43 @@ class MonkeyTerminalPainter extends TerminalPainter {
       startColumn: fillStartColumn,
       color: _resolveCellBackgroundPaintColor(firstCell),
     );
+  }
+
+  bool _cellMatchesTrailingBackgroundRun(CellData cellData, Color color) {
+    if (!_cellPaintsBackground(cellData)) {
+      return false;
+    }
+    return _resolveCellBackgroundPaintColor(cellData) == color;
+  }
+
+  bool _isNormalTextCell(CellData cellData) =>
+      !_cellPaintsBackground(cellData) && !_isBlankCell(cellData);
+
+  bool _isRightEdgeDecorationCell(
+    BufferLine line,
+    int column,
+    CellData cellData,
+  ) {
+    if (column < line.length - 2) {
+      return false;
+    }
+    final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0x2502 || // │
+        charCode == 0x2503 || // ┃
+        charCode == 0x2551 || // ║
+        charCode == 0x2588 || // █
+        charCode == 0x258C || // ▌
+        charCode == 0x2590 || // ▐
+        charCode == 0x2595; // ▕
+  }
+
+  bool _isBlankTerminalBackgroundCell(CellData cellData) {
+    if (!_isBlankNormalCell(cellData)) {
+      return _isBlankCell(cellData) &&
+          _cellPaintsBackground(cellData) &&
+          _resolveCellBackgroundPaintColor(cellData) == theme.background;
+    }
+    return true;
   }
 
   int? _trailingBackgroundRunStartColumn(BufferLine line, CellData firstCell) {
@@ -1934,12 +1994,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       if (_shouldExtendTrailingBackgroundFill(firstCell)) {
         return column;
       }
-      final charCode = firstCell.content & CellContent.codepointMask;
-      final isBlankNormalCell =
-          charCode == 0 &&
-          (firstCell.flags & CellFlags.inverse) == 0 &&
-          _cellBackgroundColorType(firstCell) == CellColor.normal;
-      if (!isBlankNormalCell) {
+      if (!_isBlankNormalCell(firstCell)) {
         return null;
       }
     }
@@ -2234,10 +2289,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
       _cellBackgroundColorType(cellData) != CellColor.normal;
 
   bool _shouldExtendTrailingBackgroundFill(CellData firstCell) {
-    if (firstCell.flags & CellFlags.inverse != 0) {
-      return false;
-    }
-    final backgroundType = _cellBackgroundColorType(firstCell);
+    final inverse = firstCell.flags & CellFlags.inverse != 0;
+    final backgroundSourceColor = inverse
+        ? firstCell.foreground
+        : firstCell.background;
+    final backgroundType = _cellColorType(backgroundSourceColor);
     if (backgroundType == CellColor.normal) {
       return false;
     }
@@ -2245,12 +2301,49 @@ class MonkeyTerminalPainter extends TerminalPainter {
     // background; semantic color labels should stay text-width.
     if ((backgroundType == CellColor.named ||
             backgroundType == CellColor.palette) &&
-        _cellColorValue(firstCell.background) == 8) {
+        _cellColorValue(backgroundSourceColor) == 8) {
       return true;
     }
     return _isNeutralTerminalColor(
-      resolveBackgroundColor(firstCell.background),
+      inverse
+          ? resolveForegroundColor(firstCell.foreground)
+          : resolveBackgroundColor(firstCell.background),
     );
+  }
+
+  bool _isBlankCell(CellData cellData) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0 || charCode == 0x20;
+  }
+
+  bool _isLiteralSpaceCell(CellData cellData) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    return charCode == 0x20;
+  }
+
+  int _cellContentColumnWidth(CellData cellData) {
+    final width = cellData.content >> CellContent.widthShift;
+    return width > 0 ? width : 1;
+  }
+
+  bool _isBlankNormalCell(CellData cellData) {
+    // TUIs commonly clear row tails with literal spaces; render those like
+    // empty cells when deciding whether a neutral prompt background can extend.
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return (cellData.flags & CellFlags.inverse) == 0 &&
+          _cellBackgroundColorType(cellData) == CellColor.normal;
+    }
+    if (charCode != 0x20) {
+      return false;
+    }
+    const visibleBlankFlags =
+        CellFlags.inverse |
+        CellFlags.underline |
+        CellFlags.overline |
+        CellFlags.strikethrough;
+    return (cellData.flags & visibleBlankFlags) == 0 &&
+        _cellBackgroundColorType(cellData) == CellColor.normal;
   }
 
   Color _resolveCellBackgroundPaintColor(
