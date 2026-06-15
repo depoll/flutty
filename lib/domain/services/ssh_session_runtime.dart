@@ -257,6 +257,7 @@ class _SshSessionRuntime {
           },
         );
       }
+      _closeShellBestEffort(shell);
     }
     _shell = null;
     _session._resetShellRuntimeMetadata();
@@ -273,6 +274,21 @@ class _SshSessionRuntime {
       'close_complete',
       fields: {'connectionId': _session.connectionId},
     );
+  }
+
+  void _closeShellBestEffort(SSHSession shell) {
+    void logFailure(Object error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'close_failed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+
+    runZonedGuarded(shell.close, (error, _) => logFailure(error));
   }
 
   void _ensureShellStreamPipes() {
