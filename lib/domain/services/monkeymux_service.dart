@@ -916,14 +916,14 @@ Future<void> _closeMonkeyMuxExecSession(
   SSHSession execSession, {
   required SshSession ownerSession,
   required String operation,
-}) => _closeMonkeyMuxSessionStdin(
+}) => _closeMonkeyMuxSession(
   execSession,
   connectionId: ownerSession.connectionId,
   category: 'monkeymux.control',
   operation: operation,
 );
 
-Future<void> _closeMonkeyMuxSessionStdin(
+Future<void> _closeMonkeyMuxSession(
   SSHSession session, {
   required int connectionId,
   required String category,
@@ -948,6 +948,34 @@ Future<void> _closeMonkeyMuxSessionStdin(
       },
     );
   }
+
+  _closeSshSessionBestEffort(
+    session,
+    connectionId: connectionId,
+    category: category,
+    operation: operation,
+  );
+}
+
+void _closeSshSessionBestEffort(
+  SSHSession session, {
+  required int connectionId,
+  required String category,
+  required String operation,
+}) {
+  void logFailure(Object error) {
+    DiagnosticsLogService.instance.warning(
+      category,
+      'session_close_failed',
+      fields: {
+        'connectionId': connectionId,
+        'operation': operation,
+        'errorType': error.runtimeType,
+      },
+    );
+  }
+
+  runZonedGuarded(session.close, (error, _) => logFailure(error));
 }
 
 class _MonkeyMuxWindowChangeObserver {
@@ -1193,7 +1221,7 @@ class _MonkeyMuxWindowChangeObserver {
   Future<void> _closeControlSession(
     SSHSession controlSession, {
     required String operation,
-  }) => _closeMonkeyMuxSessionStdin(
+  }) => _closeMonkeyMuxSession(
     controlSession,
     connectionId: session.connectionId,
     category: 'monkeymux.watch',

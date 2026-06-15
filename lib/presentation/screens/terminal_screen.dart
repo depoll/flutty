@@ -6842,7 +6842,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'refreshedVisibleTerminal': refreshVisibleTerminal,
         },
       );
-      _lastMonkeyMuxResizeSync = resizeKey;
+      if (generation == _monkeyMuxRefreshAndResizeGeneration) {
+        _lastMonkeyMuxResizeSync = resizeKey;
+      }
       if (refreshVisibleTerminal) {
         if (generation != _monkeyMuxRefreshAndResizeGeneration) {
           return;
