@@ -6311,6 +6311,38 @@ void main() {
     );
 
     testWidgets(
+      'extra keys toggle preserves the visible mobile keyboard',
+      (tester) async {
+        await pumpScreen(tester);
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        Future<void> expectKeyboardReshownAfterToggle(String tooltip) async {
+          tester.testTextInput.log.clear();
+
+          await tester.tap(find.byTooltip(tooltip));
+          await tester.pump();
+          await tester.pump();
+
+          expect(
+            tester.testTextInput.log.where(
+              (call) => call.method == 'TextInput.show',
+            ),
+            isNotEmpty,
+          );
+          expect(tester.testTextInput.isVisible, isTrue);
+        }
+
+        await expectKeyboardReshownAfterToggle('Hide extra keys');
+        await expectKeyboardReshownAfterToggle('Show extra keys');
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'terminal overflow menu stays above the visible mobile keyboard',
       (tester) async {
         tester.view
