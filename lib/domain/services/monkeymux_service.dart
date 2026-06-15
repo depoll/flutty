@@ -26,6 +26,7 @@ typedef _MonkeyMuxAgentSessionMetadata = ({
 
 const _oneShotControlResponseTimeout = Duration(seconds: 10);
 const _oneShotRunCommandResponseTimeout = Duration(seconds: 25);
+const _monkeyMuxSessionStdinCloseTimeout = Duration(milliseconds: 250);
 
 /// MonkeyMux-backed implementation of [RemoteMultiplexerService].
 final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
@@ -861,8 +862,11 @@ Future<_MonkeyMuxControlResponse> _runOneShotControlCommand(
       return response;
     }
   } finally {
-    await execSession.stdin.close();
-    execSession.close();
+    await _closeMonkeyMuxExecSession(
+      execSession,
+      ownerSession: session,
+      operation: 'one_shot_control',
+    );
   }
   throw const MonkeyMuxInstallException(
     'MonkeyMux control command closed without a response.',
@@ -899,10 +903,51 @@ Future<MonkeyMuxServerStatus?> _readRunningServerStatus(
   } on TimeoutException {
     return null;
   } finally {
-    await execSession.stdin.close();
-    execSession.close();
+    await _closeMonkeyMuxExecSession(
+      execSession,
+      ownerSession: session,
+      operation: 'server_status',
+    );
   }
   return null;
+}
+
+Future<void> _closeMonkeyMuxExecSession(
+  SSHSession execSession, {
+  required SshSession ownerSession,
+  required String operation,
+}) => _closeMonkeyMuxSessionStdin(
+  execSession,
+  connectionId: ownerSession.connectionId,
+  category: 'monkeymux.control',
+  operation: operation,
+);
+
+Future<void> _closeMonkeyMuxSessionStdin(
+  SSHSession session, {
+  required int connectionId,
+  required String category,
+  required String operation,
+}) async {
+  try {
+    await session.stdin.close().timeout(_monkeyMuxSessionStdinCloseTimeout);
+  } on TimeoutException {
+    DiagnosticsLogService.instance.warning(
+      category,
+      'stdin_close_timed_out',
+      fields: {'connectionId': connectionId, 'operation': operation},
+    );
+  } on Object catch (error) {
+    DiagnosticsLogService.instance.warning(
+      category,
+      'stdin_close_failed',
+      fields: {
+        'connectionId': connectionId,
+        'operation': operation,
+        'errorType': error.runtimeType,
+      },
+    );
+  }
 }
 
 class _MonkeyMuxWindowChangeObserver {
@@ -1012,7 +1057,7 @@ class _MonkeyMuxWindowChangeObserver {
           '${_shellQuote(sessionName)}';
       final controlSession = await session.execute(command);
       if (_disposed) {
-        controlSession.close();
+        await _closeControlSession(controlSession, operation: 'start_disposed');
         return;
       }
       _controlSession = controlSession;
@@ -1046,7 +1091,13 @@ class _MonkeyMuxWindowChangeObserver {
           ? _normalCommandQueue.removeFirst()
           : _lowCommandQueue.removeFirst();
       _pendingCommands[request.id] = request;
-      controlSession.write(utf8.encode('${jsonEncode(request.payload)}\n'));
+      try {
+        controlSession.write(utf8.encode('${jsonEncode(request.payload)}\n'));
+      } on Object catch (error, stackTrace) {
+        _pendingCommands.remove(request.id);
+        _handleError(error, stackTrace);
+        Error.throwWithStackTrace(error, stackTrace);
+      }
     }
   }
 
@@ -1134,8 +1185,20 @@ class _MonkeyMuxWindowChangeObserver {
       if (stdoutSubscription != null) stdoutSubscription.cancel(),
       if (doneSubscription != null) doneSubscription.cancel(),
     ]);
-    controlSession?.close();
+    if (controlSession != null) {
+      await _closeControlSession(controlSession, operation: 'observer_cleanup');
+    }
   }
+
+  Future<void> _closeControlSession(
+    SSHSession controlSession, {
+    required String operation,
+  }) => _closeMonkeyMuxSessionStdin(
+    controlSession,
+    connectionId: session.connectionId,
+    category: 'monkeymux.watch',
+    operation: operation,
+  );
 
   void _scheduleReconnect() {
     if (_disposed ||
