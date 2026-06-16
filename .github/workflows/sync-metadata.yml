@@ -36,7 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      ios_screenshots: ${{ steps.filter.outputs.ios_screenshots }}
       android: ${{ steps.filter.outputs.android }}
+      android_screenshots: ${{ steps.filter.outputs.android_screenshots }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -48,19 +50,25 @@ jobs:
         shell: bash
         run: |
           ios=false
+          ios_screenshots=false
           android=false
+          android_screenshots=false
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             case "${{ inputs.platform }}" in
               both)
                 ios=true
+                ios_screenshots=true
                 android=true
+                android_screenshots=true
                 ;;
               ios)
                 ios=true
+                ios_screenshots=true
                 ;;
               android)
                 android=true
+                android_screenshots=true
                 ;;
             esac
           else
@@ -72,20 +80,32 @@ jobs:
                   ;;
               esac
               case "$changed_path" in
+                ios/fastlane/screenshots/*)
+                  ios_screenshots=true
+                  ;;
+              esac
+              case "$changed_path" in
                 assets/icons/*|android/fastlane/metadata-*|android/fastlane/metadata-*/*)
                   android=true
+                  ;;
+              esac
+              case "$changed_path" in
+                android/fastlane/metadata-*/android/*/images/*Screenshots/*)
+                  android_screenshots=true
                   ;;
               esac
             done <<< "$changed_files"
           fi
 
           echo "ios=$ios" >> "$GITHUB_OUTPUT"
+          echo "ios_screenshots=$ios_screenshots" >> "$GITHUB_OUTPUT"
           echo "android=$android" >> "$GITHUB_OUTPUT"
+          echo "android_screenshots=$android_screenshots" >> "$GITHUB_OUTPUT"
 
-  validate-screenshots:
-    name: Validate Store Screenshots
+  validate_ios_screenshots:
+    name: Validate iOS Store Screenshots
     needs: changes
-    if: needs.changes.outputs.ios == 'true' || needs.changes.outputs.android == 'true'
+    if: needs.changes.outputs.ios_screenshots == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -99,21 +119,35 @@ jobs:
           .venv/bin/python -m pip install --quiet Pillow
 
       - name: Validate screenshots with OCR
-        shell: bash
+        run: .venv/bin/python scripts/validate_store_screenshots.py ios
+
+  validate_android_screenshots:
+    name: Validate Android Store Screenshots
+    needs: changes
+    if: needs.changes.outputs.android_screenshots == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install screenshot validation dependencies
         run: |
-          if [[ "${{ needs.changes.outputs.ios }}" == "true" && "${{ needs.changes.outputs.android }}" == "true" ]]; then
-            platform=both
-          elif [[ "${{ needs.changes.outputs.ios }}" == "true" ]]; then
-            platform=ios
-          else
-            platform=android
-          fi
-          .venv/bin/python scripts/validate_store_screenshots.py "$platform"
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet Pillow
+
+      - name: Validate screenshots with OCR
+        run: .venv/bin/python scripts/validate_store_screenshots.py android
 
   sync-ios:
     name: Sync iOS Metadata
-    needs: [changes, validate-screenshots]
-    if: needs.changes.outputs.ios == 'true'
+    needs: [changes, validate_ios_screenshots]
+    if: >-
+      !cancelled() &&
+      needs.changes.outputs.ios == 'true' &&
+      needs.validate_ios_screenshots.result != 'failure' &&
+      needs.validate_ios_screenshots.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -152,8 +186,12 @@ jobs:
 
   sync-android:
     name: Sync Android Metadata
-    needs: [changes, validate-screenshots]
-    if: needs.changes.outputs.android == 'true'
+    needs: [changes, validate_android_screenshots]
+    if: >-
+      !cancelled() &&
+      needs.changes.outputs.android == 'true' &&
+      needs.validate_android_screenshots.result != 'failure' &&
+      needs.validate_android_screenshots.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
