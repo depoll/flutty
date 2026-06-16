@@ -210,7 +210,7 @@ jobs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ github.ref }}
@@ -247,7 +247,7 @@ jobs:
 
       - name: Checkout requested source ref for Android build
         if: inputs.source-ref != '' && inputs.android-reuse-aab-artifact-name == ''
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ steps.source-sha.outputs.value }}
@@ -618,7 +618,7 @@ jobs:
 
       - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
-        uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
+        uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1.313.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -677,7 +677,7 @@ jobs:
     outputs:
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ github.ref }}
@@ -714,7 +714,7 @@ jobs:
 
       - name: Checkout requested source ref for iOS build
         if: inputs.source-ref != '' && inputs.ios-reuse-ipa-artifact-name == ''
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ steps.source-sha.outputs.value }}
@@ -736,7 +736,7 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
+      - uses: ruby/setup-ruby@89f90524b88a01fe6e0b732220432cc6142926af # v1.313.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
