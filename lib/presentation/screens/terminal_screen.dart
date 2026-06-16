@@ -10084,12 +10084,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _toggleKeyboardToolbar() {
     final nextValue = !_showKeyboardToolbar;
+    final shouldRestoreSystemKeyboard =
+        _isMobilePlatform &&
+        (_terminalTextInputController.isKeyboardVisible ||
+            MediaQuery.viewInsetsOf(context).bottom > 0);
     unawaited(
       ref
           .read(telemetryServiceProvider)
           .logKeyboardToolbarToggled(enabled: nextValue),
     );
     setState(() => _showKeyboardToolbar = nextValue);
+    if (shouldRestoreSystemKeyboard) {
+      _restoreTerminalFocus(forceShowSystemKeyboard: true);
+    }
   }
 
   /// Restores focus to the terminal after a UI interaction.
