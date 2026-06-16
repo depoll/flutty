@@ -477,6 +477,7 @@ platform :ios do
       skip_binary_upload: true,
       skip_screenshots: false,
       submit_for_review: false,
+      run_precheck_before_submit: false,
       automatic_release: false,
       force: true,
     )
