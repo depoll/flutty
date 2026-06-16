@@ -38,6 +38,44 @@ platform :ios do
     )
   end
 
+  private_lane :patch_deliver_review_attachment_fetch do
+    begin
+      require 'deliver/upload_metadata'
+    rescue LoadError => e
+      UI.important("Could not load Fastlane upload metadata patch target: #{e.message}")
+      next
+    end
+
+    unless defined?(Deliver::UploadMetadata) &&
+           Deliver::UploadMetadata.private_method_defined?(:review_attachment_file)
+      UI.important(
+        'Fastlane Deliver::UploadMetadata#review_attachment_file was not found; ' \
+        'skipping MonkeySSH review attachment patch.',
+      )
+      next
+    end
+
+    next if Deliver::UploadMetadata.private_method_defined?(
+      :monkeyssh_original_review_attachment_file,
+    )
+
+    Deliver::UploadMetadata.class_eval do
+      alias_method :monkeyssh_original_review_attachment_file,
+                   :review_attachment_file
+
+      def review_attachment_file(version)
+        # Fastlane fetches review details even when there is no attachment to sync,
+        # which can abort before screenshots upload on first-version app records.
+        return if options[:app_review_attachment_file].to_s.empty?
+
+        monkeyssh_original_review_attachment_file(version)
+      end
+
+      private :review_attachment_file,
+              :monkeyssh_original_review_attachment_file
+    end
+  end
+
   desc 'Sync certificates and profiles for a given type and app identifier'
   private_lane :sync_certs do |options|
     app_id = options[:app_identifier]
@@ -424,29 +462,23 @@ platform :ios do
     sync_metadata(app_identifier: app_id) unless skip_meta
   end
 
-  desc 'Sync metadata, app icon, and screenshots to App Store Connect (no build required)'
+  desc 'Sync metadata and screenshots to App Store Connect (no build required)'
   lane :sync_metadata do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
     meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
 
-    begin
-      deliver(
-        api_key: get_api_key,
-        app_identifier: app_id,
-        metadata_path: meta_path,
-        screenshots_path: SCREENSHOTS_PATH,
-        skip_binary_upload: true,
-        skip_screenshots: false,
-        submit_for_review: false,
-        automatic_release: false,
-        force: true,
-      )
-    rescue StandardError => e
-      if e.message.include?('No data')
-        UI.important('Review detail not found (expected for first version). Metadata was still uploaded.')
-      else
-        raise e
-      end
-    end
+    patch_deliver_review_attachment_fetch
+
+    deliver(
+      api_key: get_api_key,
+      app_identifier: app_id,
+      metadata_path: meta_path,
+      screenshots_path: SCREENSHOTS_PATH,
+      skip_binary_upload: true,
+      skip_screenshots: false,
+      submit_for_review: false,
+      automatic_release: false,
+      force: true,
+    )
   end
 end

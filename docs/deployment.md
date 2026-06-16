@@ -133,13 +133,15 @@ Builds the **production** flavor and deploys to:
 - **iOS**: App Store (submitted, not auto-released)
 - **Android**: Play Store production track
 
-Metadata (description, icons, etc.) is synced automatically on release deploys.
+Metadata is synced automatically on release deploys. Android listing icons are
+managed as Play Store metadata; iOS App Store icons come from the submitted app
+build's asset catalog.
 
 Android release workflows fail early if the signing secrets or local `android/app/key.properties` configuration are missing or incomplete. This prevents release builds from silently falling back to the debug keystore.
 
 ### Sync Metadata (`sync-metadata.yml`)
 
-Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, icons, or other listing details.
+Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, Android listing icons, or other listing details.
 
 Supports selecting:
 - **Platform**: iOS, Android, or both
@@ -151,7 +153,9 @@ All builds use epoch-minute build numbers (`$(date +%s) / 60`) — monotonically
 
 ## Store Metadata
 
-Store metadata (descriptions, icons, etc.) is managed per-app in the repository. Each app variant (private and production) has its own metadata directory with distinct names and icons.
+Store metadata is managed per-app in the repository. Each app variant (private
+and production) has its own metadata directory with distinct names and listing
+copy. Android also has per-variant Play Store icon metadata.
 
 ### iOS (App Store Connect)
 
@@ -169,15 +173,16 @@ ios/fastlane/
 │   │   ├── privacy_url.txt
 │   │   └── support_url.txt
 │   ├── copyright.txt
-│   ├── primary_category.txt
-│   └── app_icon.png         # 1024x1024 (private banner icon)
+│   └── primary_category.txt
 └── metadata-production/     # MonkeySSH (production app)
     ├── en-US/
     │   └── (same structure)
     ├── copyright.txt
-    ├── primary_category.txt
-    └── app_icon.png         # 1024x1024 (production icon)
+    └── primary_category.txt
 ```
+
+Fastlane `deliver` no longer uploads iOS App Store icons through metadata sync;
+App Store Connect uses the app icon embedded in the selected build.
 
 ### Android (Google Play)
 
