@@ -178,6 +178,7 @@ def _validate_ocr_content(paths: list[Path]) -> None:
                     'regenerate store-quality screenshots before syncing metadata',
                 )
 
+    monkeymux_texts: dict[str, list[tuple[Path, str]]] = {}
     for path, text in texts.items():
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
@@ -187,27 +188,72 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
             _require_ocr_markers(path, text, ['Snippets'])
         elif filename in {'04_iphone_6_9.png', '04_ipad_13.png', '4.png'}:
-            _require_ocr_markers(
-                path,
-                text,
-                ['copilot', 'gemini', 'claude', 'codex', 'opencode', 'antigravity'],
+            _require_ocr_markers(path, text, ['New Window'])
+            monkeymux_texts.setdefault(_monkeymux_scene_group(path), []).append(
+                (path, text),
             )
         elif filename in {'05_iphone_6_9.png', '05_ipad_13.png', '5.png'}:
             _require_ocr_markers(path, text, ['AGENTS.md'])
         elif filename in {'06_iphone_6_9.png', '06_ipad_13.png', '6.png'}:
             _require_ocr_markers(path, text, ['Claude Code'])
 
+    for grouped_texts in monkeymux_texts.values():
+        paths_description = ', '.join(
+            str(path.relative_to(ROOT)) for path, _ in grouped_texts
+        )
+        _require_ocr_markers(
+            paths_description,
+            ' '.join(text for _, text in grouped_texts),
+            ['copilot', 'gemini', 'claude', 'codex', 'opencode', 'antigravity'],
+        )
 
-def _require_ocr_markers(path: Path, text: str, markers: list[str]) -> None:
+
+def _monkeymux_scene_group(path: Path) -> str:
+    relative_parts = path.relative_to(ROOT).parts
+    if relative_parts[:3] == ('ios', 'fastlane', 'screenshots'):
+        return '/'.join(relative_parts[:4])
+    if relative_parts[:2] == ('android', 'fastlane'):
+        return '/'.join(relative_parts[:5])
+    return str(path.parent.relative_to(ROOT))
+
+
+def _require_ocr_markers(path: Path | str, text: str, markers: list[str]) -> None:
     normalized_text = text.casefold()
+    compacted_text = _compact_ocr_text(text)
     missing = [
-        marker for marker in markers if marker.casefold() not in normalized_text
+        marker
+        for marker in markers
+        if not _text_contains_marker(marker, normalized_text, compacted_text)
     ]
     if missing:
         raise ValueError(
-            f'{path.relative_to(ROOT)} is missing expected store screenshot '
+            f'{_display_path(path)} is missing expected store screenshot '
             f'content: {", ".join(missing)}',
         )
+
+
+def _text_contains_marker(
+    marker: str,
+    normalized_text: str,
+    compacted_text: str,
+) -> bool:
+    return (
+        marker.casefold() in normalized_text
+        or _compact_ocr_text(marker) in compacted_text
+    )
+
+
+def _compact_ocr_text(text: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', text.casefold())
+
+
+def _display_path(path: Path | str) -> str:
+    if isinstance(path, str):
+        return path
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _validate_ios() -> None:
