@@ -1723,7 +1723,7 @@ class SshService {
           final trusted = _trustedHostMatchesCallback(trustedHost, fingerprint);
           rejectedTrustedHostKey = !trusted;
           if (!trusted) {
-            rejectedCallbackFingerprint = _formatLegacyFingerprintBytes(
+            rejectedCallbackFingerprint = _formatCallbackHostKeyFingerprint(
               fingerprint,
             );
           }
@@ -1948,7 +1948,7 @@ class SshService {
         username: config.username,
         onVerifyHostKey: (type, fingerprint) {
           callbackKeyType = type;
-          callbackFingerprint = _formatLegacyFingerprintBytes(fingerprint);
+          callbackFingerprint = _formatCallbackHostKeyFingerprint(fingerprint);
           return true;
         },
       );
@@ -2027,7 +2027,10 @@ class SshService {
     required SshConnectionConfig config,
   }) {
     if (callbackFingerprint != null &&
-        callbackFingerprint != presentedHostKey.md5Fingerprint) {
+        !_hostKeyFingerprintMatchesPresentedKey(
+          presentedHostKey,
+          callbackFingerprint,
+        )) {
       throw HostKeyVerificationException(
         'Failed to confirm the presented host key for '
         '${config.hostname}:${config.port}.',
@@ -2041,16 +2044,47 @@ class SshService {
   ) => sshHostTrustMatches(
     firstFingerprint: trustedHost.fingerprint,
     firstEncodedHostKey: trustedHost.hostKey,
-    secondFingerprint: _formatLegacyFingerprintBytes(fingerprint),
+    secondFingerprint: _formatCallbackHostKeyFingerprint(fingerprint),
     secondEncodedHostKey: '',
   );
 
   bool _probedHostKeyMatchesCallback(
     VerifiedHostKey presentedHostKey,
     Uint8List fingerprint,
-  ) =>
-      presentedHostKey.md5Fingerprint ==
-      _formatLegacyFingerprintBytes(fingerprint);
+  ) => _hostKeyFingerprintMatchesPresentedKey(
+    presentedHostKey,
+    _formatCallbackHostKeyFingerprint(fingerprint),
+  );
+
+  bool _hostKeyFingerprintMatchesPresentedKey(
+    VerifiedHostKey presentedHostKey,
+    String callbackFingerprint,
+  ) => sshHostTrustMatches(
+    firstFingerprint: presentedHostKey.fingerprint,
+    firstEncodedHostKey: presentedHostKey.encodedHostKey,
+    secondFingerprint: callbackFingerprint,
+    secondEncodedHostKey: '',
+  );
+
+  String _formatCallbackHostKeyFingerprint(Uint8List fingerprint) {
+    final openSshFingerprint = _tryDecodeOpenSshHostKeyFingerprint(fingerprint);
+    if (openSshFingerprint != null) {
+      return openSshFingerprint;
+    }
+    return _formatLegacyFingerprintBytes(fingerprint);
+  }
+
+  String? _tryDecodeOpenSshHostKeyFingerprint(Uint8List fingerprint) {
+    try {
+      final text = utf8.decode(fingerprint);
+      if (text.startsWith('SHA256:')) {
+        return text;
+      }
+    } on FormatException {
+      return null;
+    }
+    return null;
+  }
 
   String _formatLegacyFingerprintBytes(Uint8List fingerprint) => fingerprint
       .map((value) => value.toRadixString(16).padLeft(2, '0'))
