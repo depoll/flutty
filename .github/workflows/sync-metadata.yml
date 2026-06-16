@@ -75,7 +75,7 @@ jobs:
             changed_files="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")"
             while IFS= read -r changed_path; do
               case "$changed_path" in
-                assets/icons/*|ios/fastlane/metadata-*|ios/fastlane/metadata-*/*|ios/fastlane/screenshots/*)
+                ios/fastlane/metadata-*|ios/fastlane/metadata-*/*|ios/fastlane/screenshots/*)
                   ios=true
                   ;;
               esac
