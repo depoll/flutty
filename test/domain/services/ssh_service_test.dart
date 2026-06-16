@@ -5,7 +5,6 @@ import 'dart:typed_data';
 
 // ignore_for_file: public_member_api_docs
 
-import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
@@ -2582,7 +2581,7 @@ void main() {
                   final bytes = await (socket as HostKeySource).hostKeyBytes;
                   final trusted = await onVerifyHostKey!(
                     'ssh-ed25519',
-                    Uint8List.fromList(md5.convert(bytes).bytes),
+                    _hostKeyCallbackFingerprint(bytes),
                   );
                   expect(trusted, isTrue);
                 });
@@ -2700,7 +2699,7 @@ void main() {
                 final bytes = await (socket as HostKeySource).hostKeyBytes;
                 final trusted = await onVerifyHostKey!(
                   'ssh-ed25519',
-                  Uint8List.fromList(md5.convert(bytes).bytes),
+                  _hostKeyCallbackFingerprint(bytes),
                 );
                 expect(trusted, isTrue);
               });
@@ -2785,7 +2784,7 @@ void main() {
                 final bytes = await (socket as HostKeySource).hostKeyBytes;
                 final trusted = await onVerifyHostKey!(
                   'ssh-ed25519',
-                  Uint8List.fromList(md5.convert(bytes).bytes),
+                  _hostKeyCallbackFingerprint(bytes),
                 );
                 if (!trusted) {
                   return Future<void>.error(
@@ -2872,7 +2871,7 @@ void main() {
                   final bytes = await (socket as HostKeySource).hostKeyBytes;
                   final trusted = await onVerifyHostKey!(
                     'ssh-ed25519',
-                    Uint8List.fromList(md5.convert(bytes).bytes),
+                    _hostKeyCallbackFingerprint(bytes),
                   );
                   if (!trusted) {
                     return Future<void>.error(
@@ -2939,7 +2938,7 @@ void main() {
                 final bytes = await (socket as HostKeySource).hostKeyBytes;
                 await onVerifyHostKey!(
                   'ssh-ed25519',
-                  Uint8List.fromList(md5.convert(bytes).bytes),
+                  _hostKeyCallbackFingerprint(bytes),
                 );
               });
               return client;
@@ -3002,7 +3001,7 @@ void main() {
                   final bytes = await hostKeyBytes;
                   await onVerifyHostKey!(
                     'ssh-ed25519',
-                    Uint8List.fromList(md5.convert(bytes).bytes),
+                    _hostKeyCallbackFingerprint(bytes),
                   );
                 });
               } else {
@@ -3010,7 +3009,7 @@ void main() {
                   final bytes = await hostKeyBytes;
                   await onVerifyHostKey!(
                     'ssh-ed25519',
-                    Uint8List.fromList(md5.convert(bytes).bytes),
+                    _hostKeyCallbackFingerprint(bytes),
                   );
                 });
               }
@@ -3118,7 +3117,7 @@ void main() {
                 final bytes = await hostKeyBytes;
                 final trusted = await onVerifyHostKey!(
                   'ssh-ed25519',
-                  Uint8List.fromList(md5.convert(bytes).bytes),
+                  _hostKeyCallbackFingerprint(bytes),
                 );
                 expect(trusted, isTrue);
               });
@@ -3174,7 +3173,7 @@ void main() {
                   final bytes = await (socket as HostKeySource).hostKeyBytes;
                   await onVerifyHostKey!(
                     'ssh-ed25519',
-                    Uint8List.fromList(md5.convert(bytes).bytes),
+                    _hostKeyCallbackFingerprint(bytes),
                   );
                   return Future<void>.error(
                     SSHAuthFailError('Authentication failed'),
@@ -3255,7 +3254,7 @@ void main() {
                   final bytes = await (socket as HostKeySource).hostKeyBytes;
                   final trusted = await onVerifyHostKey!(
                     'ssh-ed25519',
-                    Uint8List.fromList(md5.convert(bytes).bytes),
+                    _hostKeyCallbackFingerprint(bytes),
                   );
                   if (!trusted) {
                     return Future<void>.error(
@@ -3456,6 +3455,9 @@ Uint8List _ed25519HostKeyBlob(List<int> keyData) {
     ..add(keyData);
   return writer.takeBytes();
 }
+
+Uint8List _hostKeyCallbackFingerprint(List<int> hostKeyBytes) =>
+    Uint8List.fromList(utf8.encode(formatSshHostKeyFingerprint(hostKeyBytes)));
 
 Uint8List _uint32(int value) => Uint8List.fromList([
   (value >> 24) & 0xFF,
