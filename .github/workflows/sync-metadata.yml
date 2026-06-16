@@ -144,7 +144,7 @@ jobs:
     name: Sync iOS Metadata
     needs: [changes, validate_ios_screenshots]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.outputs.ios == 'true' &&
       needs.validate_ios_screenshots.result != 'failure' &&
       needs.validate_ios_screenshots.result != 'cancelled'
@@ -188,7 +188,7 @@ jobs:
     name: Sync Android Metadata
     needs: [changes, validate_android_screenshots]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.outputs.android == 'true' &&
       needs.validate_android_screenshots.result != 'failure' &&
       needs.validate_android_screenshots.result != 'cancelled'
