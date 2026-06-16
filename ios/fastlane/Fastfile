@@ -39,7 +39,21 @@ platform :ios do
   end
 
   private_lane :patch_deliver_review_attachment_fetch do
-    require 'deliver/upload_metadata'
+    begin
+      require 'deliver/upload_metadata'
+    rescue LoadError => e
+      UI.important("Could not load Fastlane upload metadata patch target: #{e.message}")
+      next
+    end
+
+    unless defined?(Deliver::UploadMetadata) &&
+           Deliver::UploadMetadata.private_method_defined?(:review_attachment_file)
+      UI.important(
+        'Fastlane Deliver::UploadMetadata#review_attachment_file was not found; ' \
+        'skipping MonkeySSH review attachment patch.',
+      )
+      next
+    end
 
     next if Deliver::UploadMetadata.private_method_defined?(
       :monkeyssh_original_review_attachment_file,
