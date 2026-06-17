@@ -291,6 +291,10 @@ jobs:
             GOOGLE_SERVICES_JSON="$FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON"
           fi
           if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            if [ "${{ inputs.deploy-android-to }}" != "none" ]; then
+              echo "::error title=Missing Firebase Android config::Firebase Analytics must be enabled for deployed Android release builds. Configure the FIREBASE_ANDROID_${{ inputs.flavor == 'private' && 'PRIVATE' || 'PRODUCTION' }}_GOOGLE_SERVICES_JSON secret."
+              exit 1
+            fi
             echo "FLUTTY_FIREBASE_ENABLED=false" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -387,6 +391,20 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
             --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
+
+      - name: Verify AD_ID permission in AAB
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        env:
+          AAB_PATH: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+        run: |
+          set -euo pipefail
+          MANIFEST_STRINGS="$(
+            unzip -p "$AAB_PATH" base/manifest/AndroidManifest.xml | strings
+          )"
+          if [[ "$MANIFEST_STRINGS" != *'com.google.android.gms.permission.AD_ID'* ]]; then
+            echo "::error title=Missing AD_ID permission::The signed Android App Bundle does not declare com.google.android.gms.permission.AD_ID."
+            exit 1
+          fi
 
       - name: Build unsigned AAB
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
@@ -757,6 +775,10 @@ jobs:
             GOOGLE_SERVICE_INFO_PLIST="$FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST"
           fi
           if [ -z "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            if [ "${{ inputs.deploy-ios-to }}" != "none" ]; then
+              echo "::error title=Missing Firebase iOS config::Firebase Analytics must be enabled for deployed iOS release builds. Configure the FIREBASE_IOS_${{ inputs.flavor == 'private' && 'PRIVATE' || 'PRODUCTION' }}_GOOGLE_SERVICE_INFO_PLIST secret."
+              exit 1
+            fi
             echo "FLUTTY_FIREBASE_ENABLED=false" >> "$GITHUB_ENV"
             exit 0
           fi
