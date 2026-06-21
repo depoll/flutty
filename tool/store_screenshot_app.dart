@@ -633,37 +633,79 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     final terminalHostId = widget.terminalHostId;
     await _connect(terminalHostId);
 
-    // Beat 1 — Prompt a coding agent from a live SSH terminal. The recording
-    // starts on this first READY marker, so hold briefly on the ready terminal
-    // and keyboard before the real prompt is typed.
+    // The composed promo divides the recording into five equal beats, each
+    // paired with one promo segment. Hold every beat to the same wall-clock
+    // length so the overlay narration and touch cues line up with the live
+    // capture underneath.
+    const beatMs = 4600;
+    final clock = Stopwatch();
+
+    // Beat 1 — Ask a coding agent over a real SSH terminal. Show the keyboard
+    // only while the prompt is typed, then hide it so the live response (not
+    // the keyboard) fills the rest of the beat.
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 1600));
-    await _announceSceneWithAction(0, () async {
-      await Future<void>.delayed(const Duration(milliseconds: 1400));
-      await _typePrompt(_copilotPrompt);
-      await Future<void>.delayed(const Duration(seconds: 2));
-    });
+    _emitSceneReady(0);
+    // Let the native recorder spin up before the clock so beat boundaries map
+    // onto the recorded timeline.
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    clock.start();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await _typePrompt(_copilotPrompt);
+    await _hideKeyboard();
+    await _holdUntil(clock, beatMs);
 
-    // Beat 2 — Every agent keeps running in MonkeyMux while you move between
-    // them. Dismiss the keyboard and reveal the live window switcher.
-    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    // Beat 2 — Every agent keeps running in MonkeyMux. Reveal the live window
+    // switcher (the keyboard is already down).
     _go(
       '/terminal/$terminalHostId?connectionId=$_connectionId'
       '&expandTmux=1',
     );
-    await Future<void>.delayed(const Duration(seconds: 3));
-    await _announceScene(3);
-    await Future<void>.delayed(const Duration(milliseconds: 1400));
+    _emitSceneReady(3);
+    await _holdUntil(clock, beatMs * 2);
 
-    // Beat 3 — Switch to another agent without losing the session.
+    // Beat 3 — Pointer + keyboard support for full TUIs. Switch to the Claude
+    // Code TUI and keep the keyboard down while the promo highlights mouse
+    // support over the live terminal.
     await _selectClaudeWindow();
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+    await _hideKeyboard();
+    _emitSceneReady(5);
+    await _holdUntil(clock, beatMs * 3);
+
+    // Beat 4 — Paste images and context. Hold on the same live TUI while the
+    // promo shows the clipboard-image cue dropping into the workflow.
+    await _holdUntil(clock, beatMs * 4);
+
+    // Beat 5 — Switch agents and keep going. Show the keyboard only while the
+    // Claude prompt is typed, then hide it again.
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
-    await Future<void>.delayed(const Duration(milliseconds: 1600));
-    await _announceSceneWithAction(5, () async {
-      await Future<void>.delayed(const Duration(milliseconds: 1400));
-      await _typePrompt(_claudePrompt);
-      await Future<void>.delayed(const Duration(seconds: 2));
-    });
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    await _typePrompt(_claudePrompt);
+    await _hideKeyboard();
+    await _holdUntil(clock, beatMs * 5);
+  }
+
+  void _emitSceneReady(int index) {
+    final payload = {
+      'scene': _sceneNames[index],
+      'index': index + 1,
+      'paths': widget.target.pathsByScene[index],
+    };
+    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+  }
+
+  Future<void> _hideKeyboard() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+  }
+
+  Future<void> _holdUntil(Stopwatch clock, int targetMs) async {
+    final remaining = targetMs - clock.elapsedMilliseconds;
+    if (remaining > 0) {
+      await Future<void>.delayed(Duration(milliseconds: remaining));
+    }
   }
 
   Future<void> _connect(int terminalHostId) async {
@@ -709,19 +751,6 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     await Future<void>.delayed(_postReadyCaptureDelay);
   }
 
-  Future<void> _announceSceneWithAction(
-    int index,
-    Future<void> Function() action,
-  ) async {
-    final payload = {
-      'scene': _sceneNames[index],
-      'index': index + 1,
-      'paths': widget.target.pathsByScene[index],
-    };
-    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
-    await action();
-  }
-
   Future<void> _typePrompt(String prompt) async {
     final deadline = DateTime.now().add(const Duration(seconds: 12));
     var terminal = ref
@@ -746,7 +775,9 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     }
     await Future<void>.delayed(const Duration(milliseconds: 120));
     onOutput('\r');
-    await Future<void>.delayed(const Duration(milliseconds: 1800));
+    // Keep this short so the caller can hide the keyboard quickly; the live
+    // agent response is then revealed (keyboard-free) during the beat hold.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
   }
 
   void _go(String location) {
