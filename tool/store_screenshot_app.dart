@@ -633,57 +633,42 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     final terminalHostId = widget.terminalHostId;
     await _connect(terminalHostId);
 
-    // The composed promo divides the recording into five equal beats, each
-    // paired with one promo segment. Hold every beat to the same wall-clock
-    // length so the overlay narration and touch cues line up with the live
-    // capture underneath.
-    const beatMs = 4600;
-    final clock = Stopwatch();
-
-    // Beat 1 — Ask a coding agent over a real SSH terminal. Show the keyboard
-    // only while the prompt is typed, then hide it so the live response (not
-    // the keyboard) fills the rest of the beat.
+    // Everything recorded for store videos is actual app UI. Keep the route
+    // short and focused on agentic coding rather than a full feature tour.
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 1600));
     _emitSceneReady(0);
-    // Let the native recorder spin up before the clock so beat boundaries map
-    // onto the recorded timeline.
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    clock.start();
     await Future<void>.delayed(const Duration(milliseconds: 700));
     await _typePrompt(_copilotPrompt);
     await _hideKeyboard();
-    await _holdUntil(clock, beatMs);
+    await Future<void>.delayed(const Duration(milliseconds: 2600));
 
-    // Beat 2 — Every agent keeps running in MonkeyMux. Reveal the live window
-    // switcher (the keyboard is already down).
     _go(
       '/terminal/$terminalHostId?connectionId=$_connectionId'
       '&expandTmux=1',
     );
     _emitSceneReady(3);
-    await _holdUntil(clock, beatMs * 2);
+    await Future<void>.delayed(const Duration(milliseconds: 3600));
 
-    // Beat 3 — Pointer + keyboard support for full TUIs. Switch to the Claude
-    // Code TUI and keep the keyboard down while the promo highlights mouse
-    // support over the live terminal.
+    await _selectMonkeyMuxWindow(4);
+    _go(
+      '/terminal/$terminalHostId?connectionId=$_connectionId'
+      '&pasteDemoImage=1',
+    );
+    await _hideKeyboard();
+    await Future<void>.delayed(const Duration(milliseconds: 4300));
+
     await _selectClaudeWindow();
     _go('/terminal/$terminalHostId?connectionId=$_connectionId');
     await _hideKeyboard();
     _emitSceneReady(5);
-    await _holdUntil(clock, beatMs * 3);
+    await Future<void>.delayed(const Duration(milliseconds: 1800));
 
-    // Beat 4 — Paste images and context. Hold on the same live TUI while the
-    // promo shows the clipboard-image cue dropping into the workflow.
-    await _holdUntil(clock, beatMs * 4);
-
-    // Beat 5 — Switch agents and keep going. Show the keyboard only while the
-    // Claude prompt is typed, then hide it again.
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 600));
     await _typePrompt(_claudePrompt);
     await _hideKeyboard();
-    await _holdUntil(clock, beatMs * 5);
+    await Future<void>.delayed(const Duration(milliseconds: 2600));
   }
 
   void _emitSceneReady(int index) {
@@ -701,13 +686,6 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     await Future<void>.delayed(const Duration(milliseconds: 450));
   }
 
-  Future<void> _holdUntil(Stopwatch clock, int targetMs) async {
-    final remaining = targetMs - clock.elapsedMilliseconds;
-    if (remaining > 0) {
-      await Future<void>.delayed(Duration(milliseconds: remaining));
-    }
-  }
-
   Future<void> _connect(int terminalHostId) async {
     if (_connectionId != null) {
       return;
@@ -722,15 +700,19 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   }
 
   Future<void> _selectClaudeWindow() async {
+    await _selectMonkeyMuxWindow(2);
+  }
+
+  Future<void> _selectMonkeyMuxWindow(int windowIndex) async {
     final session = ref
         .read(activeSessionsProvider.notifier)
         .getSession(_connectionId!);
     if (session == null) {
-      throw StateError('SSH session not available for Claude screenshot.');
+      throw StateError('SSH session not available for store demo.');
     }
     await ref
         .read(monkeyMuxServiceProvider)
-        .selectWindow(session, _muxSessionName, 2);
+        .selectWindow(session, _muxSessionName, windowIndex);
   }
 
   Future<void> _waitForApp() async {

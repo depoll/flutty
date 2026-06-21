@@ -83,6 +83,8 @@ final routerProvider = Provider<GoRouter>((ref) {
               state.uri.queryParameters['expandTmux'] == '1';
           final initiallyShowKeyboard =
               state.uri.queryParameters['showKeyboard'] == '1';
+          final pasteDemoImage =
+              state.uri.queryParameters['pasteDemoImage'] == '1';
           if (hostId == null) {
             return _buildTerminalPage(
               state: state,
@@ -104,6 +106,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                   state.uri.queryParameters['notificationTap'],
                   initiallyExpandTmuxWindows,
                   initiallyShowKeyboard,
+                  pasteDemoImage,
                 ),
               ),
               hostId: hostId,
@@ -115,6 +118,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                   state.uri.queryParameters['notificationTap'] != null,
               initiallyExpandTmuxWindows: initiallyExpandTmuxWindows,
               initiallyShowKeyboard: initiallyShowKeyboard,
+              pasteDemoImage: pasteDemoImage,
             ),
           );
         },

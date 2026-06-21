@@ -90,6 +90,9 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
   'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
 );
+final _storeDemoClipboardImageBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC',
+);
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
@@ -2748,6 +2751,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.initialTmuxWindowRequiresVisibleSession = false,
     this.initiallyExpandTmuxWindows = false,
     this.initiallyShowKeyboard = false,
+    this.pasteDemoImage = false,
     super.key,
   });
 
@@ -2774,6 +2778,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Whether the terminal should show the system keyboard after opening.
   final bool initiallyShowKeyboard;
+
+  /// Whether to paste the store-demo image after opening the terminal.
+  final bool pasteDemoImage;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -2884,6 +2891,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
+  bool _shellCompletionsEnabled = false;
   _NativeSelectionSnapshotData? _nativeSelectionSnapshotCache;
   Timer? _nativeOverlayCollapseTimer;
   int? _connectionId;
@@ -2892,6 +2900,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double? _sessionFontSizeOverride;
   bool _isPinchZooming = false;
   bool _shouldFollowLiveOutput = true;
+  bool _didPasteDemoImage = false;
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
@@ -3632,11 +3641,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionsSubscription = ref.listenManual<bool>(
       shellCompletionsNotifierProvider,
       (previous, next) {
+        _shellCompletionsEnabled = next;
         if (!next) {
           _hideShellCompletionPopup();
         }
       },
     );
+    _shellCompletionsEnabled = ref.read(shellCompletionsNotifierProvider);
     _terminalAppThemeOverrideNotifier = ref.read(
       terminalAppThemeOverrideProvider.notifier,
     );
@@ -3729,6 +3740,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onTerminalStateChanged() {
+    if (!mounted) {
+      return;
+    }
     _nativeSelectionSnapshotCache = null;
     _terminalContentGeneration++;
     _syncShellCompletionOptimisticSnapshotWithTerminal();
@@ -3737,8 +3751,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
-    if (mounted &&
-        ref.read(shellCompletionsNotifierProvider) &&
+    if (_shellCompletionsEnabled &&
         _shellCompletionPromptPrefix != null &&
         _shellCompletionDebounceTimer == null &&
         _shellCompletionSuggestions.isEmpty) {
@@ -3749,10 +3762,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isTerminalOutputFollowPaused &&
         !_suppressTerminalAutoScrollFromTerminalRefresh) {
       _queueTerminalScrollToBottom();
-    }
-
-    if (!mounted) {
-      return;
     }
 
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
@@ -6134,6 +6143,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _restoreTerminalFocus(
           forceShowSystemKeyboard: widget.initiallyShowKeyboard,
         );
+        _maybePasteStoreDemoImage();
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -6231,6 +6241,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _restoreTerminalFocus(
         forceShowSystemKeyboard: widget.initiallyShowKeyboard,
       );
+      _maybePasteStoreDemoImage();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -13787,8 +13798,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       RemoteFileService remoteFileService,
       String uploadDirectory,
     )
-    action,
-  ) async {
+    action, {
+    String? uploadBaseDirectory,
+  }) async {
     final session = _activeSession();
     if (session == null) {
       throw StateError('Connection is not ready yet');
@@ -13798,9 +13810,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _disposeTerminalPathVerificationSftp();
     final sftp = await session.sftp();
     try {
-      final homeDirectory = await remoteFileService.resolveInitialDirectory(
-        sftp,
-      );
+      final resolvedUploadBaseDirectory = uploadBaseDirectory?.trim();
+      final homeDirectory = resolvedUploadBaseDirectory?.isNotEmpty ?? false
+          ? resolvedUploadBaseDirectory!
+          : await remoteFileService.resolveInitialDirectory(sftp);
       final appUploadParentDirectory =
           buildRemoteClipboardUploadParentDirectory(homeDirectory);
       final uploadDirectory = buildRemoteClipboardUploadDirectory(
@@ -13973,17 +13986,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
-    final shouldUpload = await _confirmClipboardUpload(
-      title: 'Upload clipboard image?',
-      message:
-          'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
-      confirmLabel: 'Upload and paste',
-      details: const ['image.png'],
-    );
-    if (!shouldUpload) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+  void _maybePasteStoreDemoImage() {
+    if (!widget.pasteDemoImage || _didPasteDemoImage || !mounted) {
       return;
+    }
+    _didPasteDemoImage = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(_pasteStoreDemoImage());
+    });
+  }
+
+  Future<void> _pasteStoreDemoImage() async {
+    await _pasteClipboardImage(
+      _storeDemoClipboardImageBytes,
+      confirm: false,
+      showKeyboardAfterPaste: false,
+      uploadBaseDirectory: _workingDirectoryPath,
+    );
+    if (!mounted) {
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+  }
+
+  Future<void> _pasteClipboardImage(
+    Uint8List imageBytes, {
+    bool confirm = true,
+    bool showKeyboardAfterPaste = true,
+    String? uploadBaseDirectory,
+  }) async {
+    if (confirm) {
+      final shouldUpload = await _confirmClipboardUpload(
+        title: 'Upload clipboard image?',
+        message:
+            'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
+        confirmLabel: 'Upload and paste',
+        details: const ['image.png'],
+      );
+      if (!shouldUpload) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
     }
 
     final remotePath = await _withClipboardSftp((
@@ -14001,7 +14048,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         bytes: imageBytes,
       );
       return remotePath;
-    });
+    }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
     _terminal.paste('${shellEscapePosix(remotePath)} ');
     unawaited(
@@ -14013,7 +14060,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
     );
     _terminalController.clearSelection();
-    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _restoreTerminalFocus(
+      showSystemKeyboard: showKeyboardAfterPaste && _isMobilePlatform,
+    );
     _showClipboardMessage('Uploaded clipboard image to $remotePath');
   }
 
