@@ -24,8 +24,6 @@ DEFAULT_OUTPUT_DIR = ROOT / 'build/store-demo-videos'
 DEFAULT_SCENE_HOLD_MS = 1600
 ANDROID_RECORDING_BIT_RATE = 8_000_000
 IOS_APP_PREVIEW_NAME = 'iphone_67_1.mov'
-# Hard ceiling for the composed promo so a slow live-agent capture can never
-# exceed the store validation maximum. Normal runs finish well under this.
 MAX_COMPOSE_DURATION = 28.0
 PIXEL_LAUNCHER_PACKAGE = 'com.google.android.apps.nexuslauncher'
 OVERLAY_FPS = 30
@@ -48,7 +46,6 @@ class PromoSegment:
     body: str
     label: str
     accent: tuple[int, int, int]
-    interaction: str
 
 
 TARGETS = {
@@ -277,6 +274,8 @@ def _run_flutter_recording(
         raise RuntimeError(f'{target.name} run ended before the video was complete')
     if recorder is None:
         raise RuntimeError(f'{target.name} run ended before recording started')
+    if not output_path.exists():
+        raise RuntimeError(f'{target.name} screen recording was not produced: {output_path}')
     if output_path.stat().st_size < 500_000:
         raise RuntimeError(f'{output_path} is too small to be a real screen recording')
 
@@ -497,7 +496,6 @@ def _render_overlay_frames(
         frame = Image.new('RGBA', (width, height), (0, 0, 0, 0))
         _draw_drift_glow(frame, t, seg_dur, seg_count, glow_sprites, layout)
         _draw_top_text(frame, t, segments, seg_dur, margin, text_top, width, fonts)
-        _draw_interaction(frame, t, segments, seg_dur, layout)
         _draw_timeline(frame, t, segments, seg_dur, duration, margin, width, height, fonts)
         frame.save(directory / f'frame-{index:05d}.png')
     return frame_count
@@ -523,257 +521,6 @@ def _draw_drift_glow(
     bottom_x = int(width * 0.80 + math.sin(phase / 8 + 1.7) * width * 0.10) - size // 2
     bottom_y = int(height * 0.94 + math.cos(phase / 10) * height * 0.012) - size // 2
     frame.alpha_composite(sprite, (bottom_x, bottom_y))
-
-
-def _screen_point(
-    layout: dict[str, int],
-    fx: float,
-    fy: float,
-) -> tuple[int, int]:
-    """Map a fraction of the live phone-screen rectangle to canvas pixels."""
-    return (
-        layout['screen_x'] + int(layout['screen_width'] * fx),
-        layout['screen_y'] + int(layout['screen_height'] * fy),
-    )
-
-
-def _draw_interaction(
-    frame: Image.Image,
-    t: float,
-    segments: list[PromoSegment],
-    seg_dur: float,
-    layout: dict[str, int],
-) -> None:
-    """Draw a touch/pointer/clipboard cue tied to the active segment.
-
-    Each cue is positioned inside the live device capture and timed to the
-    segment whose narration it illustrates, so the gesture always maps to the
-    UI on screen rather than floating over unrelated content.
-    """
-    count = len(segments)
-    index = min(int(t / seg_dur), count - 1)
-    segment = segments[index]
-    local = _clamp01((t - index * seg_dur) / seg_dur)
-
-    layer = Image.new('RGBA', frame.size, (0, 0, 0, 0))
-    if segment.interaction == 'tap_input':
-        _draw_tap(layer, layout, fx=0.5, fy=0.6, local=local, accent=segment.accent)
-    elif segment.interaction == 'tap_window':
-        _draw_tap(layer, layout, fx=0.5, fy=0.56, local=local, accent=segment.accent)
-    elif segment.interaction == 'pointer':
-        _draw_pointer(layer, layout, local=local, accent=segment.accent)
-    elif segment.interaction == 'image_paste':
-        _draw_image_paste(layer, layout, local=local, accent=segment.accent)
-
-    env = min(_clamp01(local / 0.12), _clamp01((1 - local) / 0.12))
-    _scale_alpha(layer, env)
-    frame.alpha_composite(layer)
-
-
-def _draw_tap(
-    frame: Image.Image,
-    layout: dict[str, int],
-    *,
-    fx: float,
-    fy: float,
-    local: float,
-    accent: tuple[int, int, int],
-) -> None:
-    """Draw a single finger-tap ripple in the middle of the segment."""
-    start, end = 0.30, 0.74
-    if local < start or local > end:
-        return
-    progress = (local - start) / (end - start)
-    cx, cy = _screen_point(layout, fx, fy)
-    draw = ImageDraw.Draw(frame)
-    base = max(int(layout['screen_width'] * 0.052), 18)
-    light = _lighten(accent)
-
-    contact = _clamp01(1.0 - abs(progress - 0.18) / 0.55)
-    dot_alpha = int(150 * contact)
-    if dot_alpha > 0:
-        draw.ellipse(
-            [cx - base, cy - base, cx + base, cy + base],
-            fill=(*light, min(90, dot_alpha)),
-            outline=(*light, min(235, dot_alpha + 70)),
-            width=max(3, int(base * 0.16)),
-        )
-
-    for offset in (0.0, 0.34):
-        ripple = progress - offset
-        if ripple <= 0 or ripple >= 1:
-            continue
-        radius = int(base * (1.0 + ripple * 2.7))
-        alpha = int(175 * (1 - ripple))
-        if alpha <= 0:
-            continue
-        draw.ellipse(
-            [cx - radius, cy - radius, cx + radius, cy + radius],
-            outline=(*light, alpha),
-            width=max(3, int(base * 0.16)),
-        )
-
-
-def _draw_pointer(
-    frame: Image.Image,
-    layout: dict[str, int],
-    *,
-    local: float,
-    accent: tuple[int, int, int],
-) -> None:
-    """Glide an external mouse pointer across the live TUI and click once."""
-    travel = _ease_in_out(_clamp01(local / 0.66))
-    start_fx, start_fy = 0.74, 0.52
-    end_fx, end_fy = 0.40, 0.30
-    fx = start_fx + (end_fx - start_fx) * travel
-    fy = start_fy + (end_fy - start_fy) * travel
-    cx, cy = _screen_point(layout, fx, fy)
-    light = _lighten(accent)
-    draw = ImageDraw.Draw(frame)
-
-    if local > 0.66:
-        click = _clamp01((local - 0.66) / 0.26)
-        radius = int(layout['screen_width'] * 0.045 * (1 + click * 2.2))
-        alpha = int(180 * (1 - click))
-        if alpha > 0:
-            draw.ellipse(
-                [cx - radius, cy - radius, cx + radius, cy + radius],
-                outline=(*light, alpha),
-                width=max(3, int(layout['screen_width'] * 0.008)),
-            )
-
-    _draw_cursor_arrow(frame, cx, cy, layout)
-
-
-def _draw_cursor_arrow(
-    frame: Image.Image,
-    x: int,
-    y: int,
-    layout: dict[str, int],
-) -> None:
-    size = max(int(layout['screen_width'] * 0.07), 34)
-    shape = [
-        (0.0, 0.0),
-        (0.0, 1.0),
-        (0.26, 0.74),
-        (0.42, 1.08),
-        (0.56, 1.02),
-        (0.40, 0.68),
-        (0.72, 0.68),
-    ]
-    points = [(x + int(px * size), y + int(py * size)) for px, py in shape]
-    cursor = Image.new('RGBA', frame.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(cursor)
-    shadow = [(px + 3, py + 4) for px, py in points]
-    draw.polygon(shadow, fill=(0, 0, 0, 150))
-    draw.polygon(
-        points,
-        fill=(255, 255, 255, 245),
-        outline=(15, 18, 32, 245),
-    )
-    frame.alpha_composite(
-        cursor.filter(ImageFilter.GaussianBlur(radius=0.6)),
-    )
-
-
-def _draw_image_paste(
-    frame: Image.Image,
-    layout: dict[str, int],
-    *,
-    local: float,
-    accent: tuple[int, int, int],
-) -> None:
-    """Slide a clipboard image card toward the terminal input and drop it."""
-    appear = _ease_in_out(_clamp01(local / 0.34))
-    drop = _ease_in_out(_clamp01((local - 0.6) / 0.3))
-    card_w = max(int(layout['screen_width'] * 0.58), 220)
-    card_h = int(card_w * 0.34)
-    center_x, center_y = _screen_point(layout, 0.5, 0.52)
-    start_x = layout['screen_x'] + int(layout['screen_width'] * 1.25)
-    cx = int(start_x + (center_x - start_x) * appear)
-    cy = int(center_y + layout['screen_height'] * 0.16 * drop)
-    light = _lighten(accent)
-    draw = ImageDraw.Draw(frame)
-
-    box = [cx - card_w // 2, cy - card_h // 2, cx + card_w // 2, cy + card_h // 2]
-    draw.rounded_rectangle(
-        box,
-        radius=int(card_h * 0.22),
-        fill=(14, 18, 34, 235),
-        outline=(*light, 235),
-        width=max(2, int(card_h * 0.05)),
-    )
-
-    pad = int(card_h * 0.16)
-    thumb = [
-        box[0] + pad,
-        box[1] + pad,
-        box[0] + pad + (card_h - 2 * pad),
-        box[3] - pad,
-    ]
-    draw.rounded_rectangle(
-        thumb,
-        radius=int(card_h * 0.12),
-        fill=(*accent, 235),
-    )
-    # Tiny mountain + sun so the thumbnail reads as an image, not a swatch.
-    tw = thumb[2] - thumb[0]
-    th = thumb[3] - thumb[1]
-    sun_r = int(th * 0.12)
-    draw.ellipse(
-        [
-            thumb[0] + int(tw * 0.62),
-            thumb[1] + int(th * 0.2),
-            thumb[0] + int(tw * 0.62) + sun_r * 2,
-            thumb[1] + int(th * 0.2) + sun_r * 2,
-        ],
-        fill=(255, 255, 255, 230),
-    )
-    draw.polygon(
-        [
-            (thumb[0] + int(tw * 0.12), thumb[3] - int(th * 0.14)),
-            (thumb[0] + int(tw * 0.42), thumb[1] + int(th * 0.42)),
-            (thumb[0] + int(tw * 0.72), thumb[3] - int(th * 0.14)),
-        ],
-        fill=(13, 17, 31, 230),
-    )
-
-    label_font = _load_font(
-        30 if layout['canvas_height'] > 2600 else 25,
-        bold=True,
-    )
-    sub_font = _load_font(
-        24 if layout['canvas_height'] > 2600 else 20,
-    )
-    text_x = thumb[2] + int(card_h * 0.2)
-    draw.text(
-        (text_x, box[1] + int(card_h * 0.22)),
-        'Paste image',
-        font=label_font,
-        fill=(255, 255, 255, 245),
-    )
-    draw.text(
-        (text_x, box[1] + int(card_h * 0.56)),
-        'into your agent',
-        font=sub_font,
-        fill=(*light, 235),
-    )
-
-    if drop > 0:
-        input_x, input_y = _screen_point(layout, 0.5, 0.72)
-        radius = int(layout['screen_width'] * 0.05 * drop)
-        alpha = int(170 * (1 - drop))
-        if alpha > 0:
-            draw.ellipse(
-                [
-                    input_x - radius,
-                    input_y - radius,
-                    input_x + radius,
-                    input_y + radius,
-                ],
-                outline=(*light, alpha),
-                width=max(3, int(layout['screen_width'] * 0.008)),
-            )
 
 
 def _draw_top_text(
@@ -883,7 +630,6 @@ def _promo_segments() -> list[PromoSegment]:
             'answers — right from your phone.',
             label='Copilot',
             accent=(0, 201, 255),
-            interaction='tap_input',
         ),
         PromoSegment(
             eyebrow='Always on',
@@ -892,25 +638,22 @@ def _promo_segments() -> list[PromoSegment]:
             'a thing.',
             label='MonkeyMux',
             accent=(244, 114, 182),
-            interaction='tap_window',
         ),
         PromoSegment(
-            eyebrow='Pointer ready',
+            eyebrow='Mouse ready',
             headline='Mouse + keyboard for full TUIs.',
-            body='Drive terminal UIs with a real pointer and physical keys, '
-            'not just taps.',
-            label='Pointer support',
+            body='Copilot, OpenCode, Claude, and other TUIs keep their real '
+            'terminal mouse support inside MonkeySSH.',
+            label='Mouse support',
             accent=(129, 140, 248),
-            interaction='pointer',
         ),
         PromoSegment(
             eyebrow='Rich clipboard',
             headline='Paste images and context.',
-            body='Drop screenshots and snippets straight into your remote '
-            'agent workflow.',
-            label='Image paste',
+            body='The live terminal renders pasted image context directly in '
+            'the SSH session.',
+            label='Real image paste',
             accent=(45, 212, 191),
-            interaction='image_paste',
         ),
         PromoSegment(
             eyebrow='Any agent',
@@ -919,7 +662,6 @@ def _promo_segments() -> list[PromoSegment]:
             'intact.',
             label='Claude',
             accent=(34, 211, 238),
-            interaction='tap_input',
         ),
     ]
 
@@ -1224,6 +966,7 @@ class _IosSimulatorRecorder(_NativeScreenRecorder):
         self._device_id = device_id
         self._output_path = output_path
         self._process: subprocess.Popen[str] | None = None
+        self._stderr = ''
 
     def start(self) -> None:
         if self._output_path.exists():
@@ -1267,7 +1010,13 @@ class _IosSimulatorRecorder(_NativeScreenRecorder):
                     process.kill()
                     process.wait(timeout=5)
         if process.stderr is not None:
+            self._stderr = process.stderr.read()
             process.stderr.close()
+        if not self._output_path.exists():
+            raise RuntimeError(
+                'iOS screen recording did not produce a file. '
+                f'simctl output: {self._stderr.strip()}'
+            )
 
 
 class _AndroidScreenRecorder(_NativeScreenRecorder):
