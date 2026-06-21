@@ -633,13 +633,14 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     final terminalHostId = widget.terminalHostId;
     await _connect(terminalHostId);
 
+    await _selectClaudeWindow();
     // Everything recorded for store videos is actual app UI. Keep the route
     // short and focused on agentic coding rather than a full feature tour.
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 1600));
-    _emitSceneReady(0);
+    _emitSceneReady(5);
     await Future<void>.delayed(const Duration(milliseconds: 700));
-    await _typePrompt(_copilotPrompt);
+    await _typePrompt(_claudePrompt);
     await _hideKeyboard();
     await Future<void>.delayed(const Duration(milliseconds: 2600));
 
@@ -658,15 +659,15 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     await _hideKeyboard();
     await Future<void>.delayed(const Duration(milliseconds: 4300));
 
-    await _selectClaudeWindow();
+    await _selectMonkeyMuxWindow(0);
     _go('/terminal/$terminalHostId?connectionId=$_connectionId');
     await _hideKeyboard();
-    _emitSceneReady(5);
+    _emitSceneReady(0);
     await Future<void>.delayed(const Duration(milliseconds: 1800));
 
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
     await Future<void>.delayed(const Duration(milliseconds: 600));
-    await _typePrompt(_claudePrompt);
+    await _typePrompt(_copilotPrompt);
     await _hideKeyboard();
     await Future<void>.delayed(const Duration(milliseconds: 2600));
   }
