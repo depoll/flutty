@@ -211,7 +211,6 @@ def _run_flutter_recording(
         f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={demo.mux_session}',
         f'--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH={demo.demo_dir}',
         '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
-        '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
         '--dart-define=STORE_SCREENSHOT_VIDEO_DEMO=true',
         f'--dart-define=STORE_SCREENSHOT_COPILOT_PROMPT={COPILOT_PROMPT}',
@@ -625,10 +624,10 @@ def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
             eyebrow='Real SSH',
-            headline='Ask an agent over real SSH.',
+            headline='Start in Claude from your phone.',
             body='Type a prompt into a live terminal and your coding agent '
             'answers — right from your phone.',
-            label='Copilot',
+            label='Claude',
             accent=(0, 201, 255),
         ),
         PromoSegment(
@@ -640,27 +639,27 @@ def _promo_segments() -> list[PromoSegment]:
             accent=(244, 114, 182),
         ),
         PromoSegment(
-            eyebrow='Mouse ready',
-            headline='Mouse + keyboard for full TUIs.',
-            body='Copilot, OpenCode, Claude, and other TUIs keep their real '
-            'terminal mouse support inside MonkeySSH.',
-            label='Mouse support',
+            eyebrow='OpenCode',
+            headline='Move to OpenCode with context.',
+            body='OpenCode, Claude, Copilot, and other TUIs keep their real '
+            'terminal mouse and keyboard support.',
+            label='OpenCode',
             accent=(129, 140, 248),
         ),
         PromoSegment(
             eyebrow='Rich clipboard',
-            headline='Paste images and context.',
-            body='The live terminal renders pasted image context directly in '
-            'the SSH session.',
+            headline='Paste an image for the agent.',
+            body='MonkeySSH uploads the image to the remote workspace and '
+            'pastes its path into the live terminal.',
             label='Real image paste',
             accent=(45, 212, 191),
         ),
         PromoSegment(
-            eyebrow='Any agent',
-            headline='Switch to Claude and keep going.',
-            body='Jump from Copilot to Claude or Codex with the whole session '
+            eyebrow='Copilot',
+            headline='Finish in Copilot without losing state.',
+            body='Jump from Claude to OpenCode to Copilot with the whole session '
             'intact.',
-            label='Claude',
+            label='Copilot',
             accent=(34, 211, 238),
         ),
     ]
