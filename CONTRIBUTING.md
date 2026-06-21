@@ -90,7 +90,7 @@ Be respectful and constructive in all interactions.
    git push origin feature/your-feature-name
    ```
 
-### Store Screenshots
+### Store Screenshots and Demo Videos
 
 Store screenshots are generated locally because the capture flow needs real
 simulators/emulators plus authenticated `copilot` and `claude` CLIs. To generate
@@ -103,6 +103,20 @@ fresh screenshots, commit only the PNG assets, and open a PR:
 You can pass `ios` or `android` instead of `both` for a narrower update. After
 the screenshot PR merges to `main`, the Sync Store Metadata workflow validates
 and uploads the committed screenshots.
+
+Short product demo videos use the same real app, SSH, and MonkeyMux capture
+flow. Generate local iOS and Android recordings with:
+
+```bash
+python3 scripts/generate_store_demo_videos.py both
+python3 scripts/validate_store_demo_videos.py both
+```
+
+The default output is `build/store-demo-videos`. Add `--ios-app-preview` when
+recording iOS to also write `ios/fastlane/app-previews/en-US/iphone_67_1.mov`
+for App Store Connect upload through the metadata sync workflow. Commit Android
+ad/review exports under `store/demo-videos/android/` and validate them with
+`python3 scripts/validate_store_demo_videos.py android --output-dir store/demo-videos`.
 
 ### Commit Messages
 

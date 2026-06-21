@@ -141,7 +141,7 @@ Android release workflows fail early if the signing secrets or local `android/ap
 
 ### Sync Metadata (`sync-metadata.yml`)
 
-Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, Android listing icons, or other listing details.
+Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, iOS App Preview videos, Android listing icons, or other listing details.
 
 Supports selecting:
 - **Platform**: iOS, Android, or both
@@ -163,6 +163,8 @@ copy. Android also has per-variant Play Store icon metadata.
 ios/fastlane/
 ├── screenshots/
 │   └── en-US/                  # Shared App Store iPhone and iPad screenshots
+├── app-previews/
+│   └── en-US/                  # Optional App Store product demo videos
 ├── metadata-private/        # MonkeySSH β (preview app)
 │   ├── en-US/
 │   │   ├── name.txt         # "MonkeySSH β"
@@ -212,6 +214,7 @@ Google Play text limits still apply to the repository files: `title.txt` must st
 App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
 Store screenshots can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`). The generator starts a temporary local `sshd` and uniquely named MonkeyMux workspace, boots the normal MonkeySSH app on iOS simulators and an Android emulator with release-demo data, drives real app navigation through a real Copilot CLI terminal, hosts, snippets, the MonkeyMux window selector with the current supported agent family, SFTP, and a real Claude Code terminal, then captures native device screenshots into the Fastlane folders. The generator fails instead of substituting mock screenshots if the real SSH/MonkeyMux workspace cannot be created.
 Generated screenshot counts, dimensions, and OCR content can be validated locally on macOS with `python3 scripts/validate_store_screenshots.py` after installing Pillow.
+Short product demo videos can be recorded with `python3 scripts/generate_store_demo_videos.py [ios|android|both]` and validated with `python3 scripts/validate_store_demo_videos.py [ios|android|both]`. The video generator reuses the real screenshot capture environment and records native simulator/emulator screen video while the app moves through the same feature sequence. By default it writes ad/review exports under `build/store-demo-videos`; pass `--ios-app-preview` to also write `ios/fastlane/app-previews/en-US/iphone_67_1.mov` for App Store Connect metadata sync. Commit Android ad/review exports under `store/demo-videos/android/` and validate them with `python3 scripts/validate_store_demo_videos.py android --output-dir store/demo-videos`. Google Play listing videos are managed as externally hosted promo videos, so Android MP4 files are not uploaded by Fastlane metadata sync.
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.

@@ -71,7 +71,7 @@ ADB text injection is IME-dependent. Prefer separate key events for spaces (`adb
 - **Format strings**: tmux's `-F` option does **not** interpret `\t` as tab. Use ASCII Unit Separator (`\x1f`) delimiters instead so window names and titles can still contain `|`.
 - **Environment variables**: Exec channels don't share the interactive shell's environment. Use `tmux list-sessions` / `tmux display-message` instead of `echo $TMUX`.
 
-## Store assets and screenshots
+## Store assets, screenshots, and demo videos
 
 Store listing copy lives under `ios/fastlane/metadata-*` and `android/fastlane/metadata-*`. Keep production and private/beta copy aligned while preserving their distinct app names and beta wording. Validate text limits with:
 
@@ -80,7 +80,7 @@ python3 scripts/validate_app_store_metadata.py
 python3 scripts/validate_play_store_metadata.py
 ```
 
-Regenerate screenshots with `python3 scripts/generate_store_screenshots.py [ios|android|both]`. The generator uses the normal app, a temporary local SSH server, a live MonkeyMux workspace, real Copilot CLI and Claude Code panes, and seeded release-demo data. It must fail rather than substituting mocked screenshots when that live workspace cannot be created. Current scene order is Copilot terminal, Hosts, Snippets, MonkeyMux window switcher, SFTP, and Claude Code terminal. The MonkeyMux window scene should show the current supported agent family: Copilot CLI, Gemini CLI, Claude Code, Codex, OpenCode, and Antigravity.
+Regenerate screenshots with `python3 scripts/generate_store_screenshots.py [ios|android|both]` and short demo videos with `python3 scripts/generate_store_demo_videos.py [ios|android|both]`. Both generators use the normal app, a temporary local SSH server, a live MonkeyMux workspace, real Copilot CLI and Claude Code panes, and seeded release-demo data. They must fail rather than substituting mocked captures when that live workspace cannot be created. Current scene order is Copilot terminal, Hosts, Snippets, MonkeyMux window switcher, SFTP, and Claude Code terminal. The MonkeyMux window scene should show the current supported agent family: Copilot CLI, Gemini CLI, Claude Code, Codex, OpenCode, and Antigravity. Use `--ios-app-preview` on the video generator when the iOS recording should be committed under `ios/fastlane/app-previews/en-US` for App Store Connect. Commit Android ad/review exports under `store/demo-videos/android/`.
 
 ## Diagnostics logging
 
