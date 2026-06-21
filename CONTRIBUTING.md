@@ -105,7 +105,9 @@ the screenshot PR merges to `main`, the Sync Store Metadata workflow validates
 and uploads the committed screenshots.
 
 Short product demo videos use the same real app, SSH, and MonkeyMux capture
-flow. Generate local iOS and Android recordings with:
+flow, then compose that live capture into a branded vertical promo canvas with
+explanatory copy around the phone screen. Generate local iOS and Android
+recordings with:
 
 ```bash
 python3 scripts/generate_store_demo_videos.py both

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / 'build/store-demo-videos'
 IOS_APP_PREVIEW_DIR = ROOT / 'ios/fastlane/app-previews/en-US'
+BAD_VIDEO_OCR_PATTERNS = {
+    'Android system error dialog': re.compile(
+        r"Pixel Launcher|isn[’']t responding|not responding|Close app",
+        re.IGNORECASE,
+    ),
+    'private local path': re.compile(r'/Users/depoll|/private/var/folders', re.IGNORECASE),
+    'visible API key': re.compile(r'ANTHROPIC_API_KEY|sk-ant-', re.IGNORECASE),
+}
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,7 @@ def main() -> None:
             max_duration=args.max_duration,
             info=infos[path],
         )
+    _validate_sampled_ocr_content(paths)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -158,6 +168,138 @@ def _probe_videos(paths: list[Path]) -> dict[Path, VideoInfo]:
     raise RuntimeError(
         'Video validation requires ffprobe or macOS with Swift/AVFoundation.',
     )
+
+
+def _validate_sampled_ocr_content(paths: list[Path]) -> None:
+    ffmpeg = shutil.which('ffmpeg')
+    if platform.system() != 'Darwin' or shutil.which('swift') is None or ffmpeg is None:
+        print('Skipping video OCR validation; requires macOS, Swift, and ffmpeg.')
+        return
+
+    with tempfile.TemporaryDirectory(prefix='monkeyssh-demo-video-ocr-') as tmpdir:
+        frame_paths: list[Path] = []
+        tmpdir_path = Path(tmpdir)
+        for video_path in paths:
+            duration = _video_duration(video_path)
+            for index, timestamp in enumerate(_sample_times(duration)):
+                frame_path = tmpdir_path / f'{video_path.stem}-{index}.png'
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        '-y',
+                        '-loglevel',
+                        'error',
+                        '-ss',
+                        f'{timestamp:.3f}',
+                        '-i',
+                        str(video_path),
+                        '-frames:v',
+                        '1',
+                        str(frame_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                frame_paths.append(frame_path)
+
+        texts = _ocr_texts(frame_paths)
+        for frame_path, text in texts.items():
+            for label, pattern in BAD_VIDEO_OCR_PATTERNS.items():
+                if pattern.search(text):
+                    raise ValueError(
+                        f'{frame_path.name} appears to contain {label}; '
+                        'regenerate store-quality demo videos before syncing assets',
+                    )
+
+
+def _video_duration(path: Path) -> float:
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe is None:
+        raise RuntimeError('ffprobe is required to read demo video duration.')
+    result = subprocess.run(
+        [
+            ffprobe,
+            '-v',
+            'error',
+            '-show_entries',
+            'format=duration',
+            '-of',
+            'default=noprint_wrappers=1:nokey=1',
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
+
+
+def _sample_times(duration: float) -> list[float]:
+    if duration <= 4:
+        return [max(duration / 2, 0)]
+    return [
+        min(max(1.0, duration * ratio), max(duration - 0.5, 0))
+        for ratio in (0.1, 0.25, 0.42, 0.58, 0.75, 0.9)
+    ]
+
+
+def _ocr_texts(paths: list[Path]) -> dict[Path, str]:
+    swift_source = r'''
+import Foundation
+import Vision
+import AppKit
+
+let listPath = CommandLine.arguments[1]
+let contents = try String(contentsOfFile: listPath, encoding: .utf8)
+let urls = contents.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+let request = VNRecognizeTextRequest()
+request.recognitionLevel = .accurate
+request.usesLanguageCorrection = false
+request.recognitionLanguages = ["en-US"]
+
+for url in urls {
+    guard let image = NSImage(contentsOf: url),
+          let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let cgImage = bitmap.cgImage else {
+        print("FILE\t\(url.path)\tERROR\tCould not load image")
+        continue
+    }
+    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+    try handler.perform([request])
+    let text = (request.results ?? [])
+        .compactMap { $0.topCandidates(1).first?.string }
+        .joined(separator: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    print("FILE\t\(url.path)")
+    print(text)
+    print("END_FILE")
+}
+'''
+    with tempfile.NamedTemporaryFile('w', suffix='.swift') as script:
+        with tempfile.NamedTemporaryFile('w') as file_list:
+            script.write(swift_source)
+            script.flush()
+            file_list.write('\n'.join(str(path) for path in paths))
+            file_list.flush()
+            result = subprocess.run(
+                ['swift', script.name, file_list.name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+
+    texts: dict[Path, str] = {}
+    for block in result.stdout.split('END_FILE'):
+        lines = [line for line in block.strip().splitlines() if line]
+        if not lines or not lines[0].startswith('FILE\t'):
+            continue
+        path = Path(lines[0].split('\t', 1)[1])
+        texts[path] = ' '.join(lines[1:])
+    return texts
 
 
 def _probe_videos_with_ffprobe(
