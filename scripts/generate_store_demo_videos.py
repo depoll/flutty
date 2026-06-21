@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import shutil
 import signal
@@ -24,6 +25,10 @@ DEFAULT_SCENE_HOLD_MS = 1600
 ANDROID_RECORDING_BIT_RATE = 8_000_000
 IOS_APP_PREVIEW_NAME = 'iphone_67_1.mov'
 PIXEL_LAUNCHER_PACKAGE = 'com.google.android.apps.nexuslauncher'
+OVERLAY_FPS = 30
+# Example prompt "typed" by the post-production keyboard/swipe overlay. It is a
+# promotional cue layered around the real capture, not text the harness types.
+PROMPT_TEXT = 'build a release checklist for the api service'
 
 
 @dataclass(frozen=True)
@@ -36,9 +41,10 @@ class DemoVideoTarget:
 
 @dataclass(frozen=True)
 class PromoSegment:
+    eyebrow: str
     headline: str
     body: str
-    eyebrow: str
+    label: str
     accent: tuple[int, int, int]
 
 
@@ -187,7 +193,9 @@ def _run_flutter_recording(
     java_home = store_screenshots._java_home_17()
     if java_home:
         env['JAVA_HOME'] = java_home
+    restore_error_dialogs = None
     if target.platform == 'android':
+        restore_error_dialogs = _suppress_android_error_dialogs(device_id)
         _dismiss_android_system_dialogs(device_id, force=True)
 
     dart_defines = [
@@ -254,6 +262,8 @@ def _run_flutter_recording(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=20)
+        if restore_error_dialogs is not None:
+            restore_error_dialogs()
 
     if not saw_done:
         if process.returncode not in (0, None):
@@ -281,12 +291,25 @@ def _compose_promotional_video(
     with tempfile.TemporaryDirectory(prefix='monkeyssh-demo-compose-') as tmpdir:
         tmpdir_path = Path(tmpdir)
         layout = _promo_layout(target)
-        base_path, overlay_specs = _write_promo_assets(
+
+        base_path = tmpdir_path / 'base.png'
+        _create_promo_base(target, layout).save(base_path)
+
+        frames_dir = tmpdir_path / 'overlay-frames'
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        _render_overlay_frames(
             target=target,
-            duration=duration,
             layout=layout,
-            directory=tmpdir_path,
+            duration=duration,
+            fps=OVERLAY_FPS,
+            directory=frames_dir,
         )
+
+        screen_w = layout['screen_width']
+        screen_h = layout['screen_height']
+        screen_x = layout['screen_x']
+        screen_y = layout['screen_y']
+
         command = [
             ffmpeg,
             '-y',
@@ -300,41 +323,26 @@ def _compose_promotional_video(
             f'{duration:.3f}',
             '-i',
             str(base_path),
+            '-framerate',
+            str(OVERLAY_FPS),
+            '-i',
+            str(frames_dir / 'frame-%05d.png'),
         ]
-        for overlay_path, _, _ in overlay_specs:
-            command.extend(
-                [
-                    '-loop',
-                    '1',
-                    '-t',
-                    f'{duration:.3f}',
-                    '-i',
-                    str(overlay_path),
-                ]
-            )
 
         filter_parts = [
             (
-                f'[0:v]scale={layout["screen_width"]}:{layout["screen_height"]}:'
-                'force_original_aspect_ratio=decrease,'
-                f'pad={layout["screen_width"]}:{layout["screen_height"]}:'
-                '(ow-iw)/2:(oh-ih)/2:color=0x050816,setsar=1[app]'
+                f'[0:v]scale={screen_w}:{screen_h}:'
+                'force_original_aspect_ratio=decrease,setsar=1[app]'
             ),
-            '[1:v]format=rgba[stage0]',
+            # Gentle living color drift keeps the gradient backdrop in motion.
+            "[1:v]format=rgba,hue=h='14*sin(2*PI*t/16)':s=1.06[bg]",
             (
-                f'[stage0][app]overlay={layout["screen_x"]}:{layout["screen_y"]}:'
-                'shortest=1[stage1]'
+                f'[bg][app]overlay=x={screen_x}+({screen_w}-w)/2:'
+                f'y={screen_y}+({screen_h}-h)/2:shortest=1[comp]'
             ),
+            '[comp][2:v]overlay=0:0:shortest=1[ov]',
+            '[ov]format=yuv420p[out]',
         ]
-        stage = 'stage1'
-        for index, (_, start, end) in enumerate(overlay_specs, start=2):
-            next_stage = f'stage{index}'
-            filter_parts.append(
-                f'[{stage}][{index}:v]overlay=0:0:'
-                f"enable='between(t,{start:.3f},{end:.3f})'[{next_stage}]"
-            )
-            stage = next_stage
-        filter_parts.append(f'[{stage}]format=yuv420p[out]')
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         command.extend(
@@ -346,6 +354,8 @@ def _compose_promotional_video(
                 '-an',
                 '-r',
                 '30',
+                '-t',
+                f'{duration:.3f}',
                 '-c:v',
                 'libx264',
                 '-profile:v',
@@ -390,13 +400,13 @@ def _video_duration(path: Path) -> float:
 def _promo_layout(target: store_screenshots.ScreenshotTarget) -> dict[str, int]:
     canvas_width, canvas_height = target.size
     if target.platform == 'ios':
-        screen_height = int(canvas_height * 0.61)
-        top = int(canvas_height * 0.28)
+        screen_height = int(canvas_height * 0.575)
+        top = int(canvas_height * 0.255)
     else:
-        screen_height = int(canvas_height * 0.60)
-        top = int(canvas_height * 0.29)
+        screen_height = int(canvas_height * 0.565)
+        top = int(canvas_height * 0.262)
     screen_width = int(screen_height * canvas_width / canvas_height)
-    screen_width = min(screen_width, int(canvas_width * 0.68))
+    screen_width = min(screen_width, int(canvas_width * 0.66))
     left = (canvas_width - screen_width) // 2
     return {
         'canvas_width': canvas_width,
@@ -408,71 +418,254 @@ def _promo_layout(target: store_screenshots.ScreenshotTarget) -> dict[str, int]:
     }
 
 
-def _write_promo_assets(
+def _clamp01(value: float) -> float:
+    return 0.0 if value < 0 else 1.0 if value > 1 else value
+
+
+def _ease_in_out(value: float) -> float:
+    value = _clamp01(value)
+    return value * value * (3 - 2 * value)
+
+
+def _scale_alpha(image: Image.Image, factor: float) -> None:
+    if factor >= 1.0:
+        return
+    alpha = image.getchannel('A').point(lambda v: int(v * factor))
+    image.putalpha(alpha)
+
+
+def _text_w(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _text_h(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[3] - bbox[1]
+
+
+def _glow_sprite(accent: tuple[int, int, int], size: int, alpha: int) -> Image.Image:
+    sprite = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(sprite)
+    pad = int(size * 0.18)
+    draw.ellipse([pad, pad, size - pad, size - pad], fill=(*accent, alpha))
+    return sprite.filter(ImageFilter.GaussianBlur(radius=size * 0.16))
+
+
+def _render_overlay_frames(
     *,
     target: store_screenshots.ScreenshotTarget,
-    duration: float,
     layout: dict[str, int],
+    duration: float,
+    fps: int,
     directory: Path,
-) -> tuple[Path, list[tuple[Path, float, float]]]:
-    base_path = directory / 'base.png'
-    base = _create_promo_base(target, layout)
-    base.save(base_path)
-
+) -> int:
+    width = layout['canvas_width']
+    height = layout['canvas_height']
+    big = height > 2600
     segments = _promo_segments()
-    segment_duration = duration / len(segments)
-    overlay_specs: list[tuple[Path, float, float]] = []
+    seg_count = len(segments)
+    seg_dur = duration / seg_count
+    margin = int(width * 0.072)
+    fonts = {
+        'eyebrow': _load_font(27 if big else 22, bold=True),
+        'headline': _load_font(64 if big else 52, bold=True),
+        'body': _load_font(31 if big else 26),
+        'label': _load_font(26 if big else 21, bold=True),
+        'mono': _mono_font(30 if big else 25),
+        'mono_small': _mono_font(23 if big else 19),
+        'key': _load_font(24 if big else 20, bold=True),
+        'tick': _load_font(21 if big else 17, bold=True),
+    }
+
+    glow_size = int(width * 0.5)
+    glow_sprites = [
+        _glow_sprite(segment.accent, glow_size, alpha=80) for segment in segments
+    ]
+
+    type_start = 0.9
+    type_cps = 13.0
+    type_end = type_start + len(PROMPT_TEXT) / type_cps
+    text_top = int(height * 0.103)
+
+    frame_count = int(math.ceil(duration * fps)) + 1
+    for index in range(frame_count):
+        t = min(index / fps, duration)
+        frame = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        _draw_drift_glow(frame, t, seg_dur, seg_count, glow_sprites, layout)
+        _draw_top_text(frame, t, segments, seg_dur, margin, text_top, width, fonts)
+        _draw_keyboard_cue(frame, t, layout, type_start, type_end, type_cps, fonts)
+        _draw_command_bar(
+            frame, t, layout, margin, width, height, fonts,
+            segments, seg_dur, type_start, type_cps, type_end,
+        )
+        _draw_timeline(frame, t, segments, seg_dur, duration, margin, width, height, fonts)
+        frame.save(directory / f'frame-{index:05d}.png')
+    return frame_count
+
+
+def _draw_drift_glow(
+    frame: Image.Image,
+    t: float,
+    seg_dur: float,
+    seg_count: int,
+    glow_sprites: list[Image.Image],
+    layout: dict[str, int],
+) -> None:
+    width = layout['canvas_width']
+    height = layout['canvas_height']
+    index = min(int(t / seg_dur), seg_count - 1)
+    sprite = glow_sprites[index]
+    size = sprite.width
+    phase = 2 * math.pi * t
+    top_x = int(width * 0.20 + math.sin(phase / 9) * width * 0.10) - size // 2
+    top_y = int(height * 0.06 + math.cos(phase / 11) * height * 0.012) - size // 2
+    frame.alpha_composite(sprite, (top_x, top_y))
+    bottom_x = int(width * 0.80 + math.sin(phase / 8 + 1.7) * width * 0.10) - size // 2
+    bottom_y = int(height * 0.94 + math.cos(phase / 10) * height * 0.012) - size // 2
+    frame.alpha_composite(sprite, (bottom_x, bottom_y))
+
+
+def _draw_top_text(
+    frame: Image.Image,
+    t: float,
+    segments: list[PromoSegment],
+    seg_dur: float,
+    margin: int,
+    text_top: int,
+    width: int,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    region_w = width - 2 * margin
+    fade = 0.5
     for index, segment in enumerate(segments):
-        start = index * segment_duration
-        end = duration if index == len(segments) - 1 else (index + 1) * segment_duration
-        overlay_path = directory / f'overlay-{index:02d}.png'
-        _create_promo_overlay(segment, index, len(segments), layout).save(overlay_path)
-        overlay_specs.append((overlay_path, start, end))
-    return base_path, overlay_specs
+        start = index * seg_dur
+        local = t - start
+        if local < -fade or local > seg_dur + fade:
+            continue
+        alpha_in = _clamp01(local / fade)
+        alpha_out = (
+            1.0
+            if index == len(segments) - 1
+            else _clamp01((seg_dur - local) / fade)
+        )
+        env = min(alpha_in, alpha_out)
+        if env <= 0.01:
+            continue
+        slide = int((1 - _ease_in_out(alpha_in)) * 48) - int(
+            (1 - _ease_in_out(alpha_out)) * 48,
+        )
+        layer = _render_segment_text(
+            segment, index + 1, len(segments), region_w, fonts,
+        )
+        _scale_alpha(layer, env)
+        frame.alpha_composite(layer, (margin, text_top + slide))
+
+
+def _render_segment_text(
+    segment: PromoSegment,
+    number: int,
+    count: int,
+    region_w: int,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> Image.Image:
+    measure = ImageDraw.Draw(Image.new('RGBA', (region_w, 8)))
+    eyebrow_font = fonts['eyebrow']
+    headline_font = fonts['headline']
+    body_font = fonts['body']
+
+    pill_text = f'{number:02d} · {segment.eyebrow.upper()}'
+    pill_h = _text_h(measure, 'Ag', eyebrow_font) + 26
+    head_h = _wrapped_text_height(measure, segment.headline, headline_font, region_w, 10)
+    body_h = _wrapped_text_height(measure, segment.body, body_font, region_w, 8)
+    gap1 = 26
+    gap2 = 22
+    total = pill_h + gap1 + head_h + gap2 + body_h + 8
+
+    layer = Image.new('RGBA', (region_w, total), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    accent = segment.accent
+
+    pill_w = _text_w(draw, pill_text, eyebrow_font) + 40
+    draw.rounded_rectangle(
+        [0, 0, pill_w, pill_h],
+        radius=pill_h // 2,
+        fill=(*accent, 46),
+        outline=(*accent, 210),
+        width=2,
+    )
+    draw.text((20, (pill_h - _text_h(draw, 'Ag', eyebrow_font)) // 2 - 2),
+              pill_text, font=eyebrow_font, fill=(*_lighten(accent), 255))
+
+    headline_y = pill_h + gap1
+    _draw_wrapped_text(
+        draw,
+        segment.headline,
+        font=headline_font,
+        xy=(0, headline_y),
+        max_width=region_w,
+        fill=(255, 255, 255, 255),
+        line_spacing=10,
+    )
+    body_y = headline_y + head_h + gap2
+    _draw_wrapped_text(
+        draw,
+        segment.body,
+        font=body_font,
+        xy=(0, body_y),
+        max_width=region_w,
+        fill=(206, 214, 229, 255),
+        line_spacing=8,
+    )
+    return layer
+
+
+def _lighten(accent: tuple[int, int, int]) -> tuple[int, int, int]:
+    return tuple(min(255, int(c + (255 - c) * 0.45)) for c in accent)
 
 
 def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
-            eyebrow='Mobile SSH',
-            headline='Your servers, now pocket-sized.',
-            body='Secure terminals, files, keys, snippets, and tunnels in one focused workspace.',
+            eyebrow='Live agents',
+            headline='Run AI coding agents on any server.',
+            body='Copilot, Claude, Gemini, Codex, OpenCode, and Antigravity — live over SSH.',
+            label='Terminal',
             accent=(0, 201, 255),
         ),
         PromoSegment(
-            eyebrow='Agent workspaces',
-            headline='Keep AI coding agents alive remotely.',
-            body='Run Copilot, Claude, Gemini, Codex, OpenCode, and Antigravity side by side.',
-            accent=(167, 139, 250),
-        ),
-        PromoSegment(
-            eyebrow='Fast launch',
-            headline='Jump from host to workflow in seconds.',
-            body='Favorites, trusted keys, and reusable commands are ready when incidents hit.',
+            eyebrow='One tap in',
+            headline='Every host, key, and tunnel in reach.',
+            body='Favorites and trusted keys open a secure session in seconds.',
+            label='Hosts',
             accent=(52, 211, 153),
         ),
         PromoSegment(
+            eyebrow='Reusable commands',
+            headline='Fire off snippets without typing.',
+            body='Save the commands you repeat and run them with a single tap.',
+            label='Snippets',
+            accent=(167, 139, 250),
+        ),
+        PromoSegment(
             eyebrow='MonkeyMux',
-            headline='Switch long-running sessions instantly.',
-            body='Move between agent windows without losing panes, scrollback, or context.',
+            headline='Switch live agent windows instantly.',
+            body='Move between long-running sessions without losing panes or context.',
+            label='MonkeyMux',
             accent=(244, 114, 182),
         ),
         PromoSegment(
-            eyebrow='SFTP included',
-            headline='Fix files without leaving SSH.',
-            body='Browse, edit, and move remote files right beside the terminal.',
+            eyebrow='Files included',
+            headline='Edit remote files beside the terminal.',
+            body='Browse and fix files over SFTP without leaving the app.',
+            label='SFTP',
             accent=(96, 165, 250),
         ),
         PromoSegment(
-            eyebrow='Reconnect',
-            headline='Pick up exactly where you left off.',
-            body='Persistent remote panes make mobile networks and app switches less scary.',
-            accent=(251, 113, 133),
-        ),
-        PromoSegment(
-            eyebrow='MonkeySSH',
-            headline='Agentic mobile SSH for builders.',
-            body='A complete command center for real work away from the desk.',
+            eyebrow='Agentic SSH',
+            headline='A mobile command center for builders.',
+            body='Real terminals, real agents, real work away from the desk.',
+            label='Agents',
             accent=(34, 211, 238),
         ),
     ]
@@ -528,6 +721,25 @@ def _create_promo_base(
     screen_y = layout['screen_y']
     screen_width = layout['screen_width']
     screen_height = layout['screen_height']
+
+    halo = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    halo_draw = ImageDraw.Draw(halo)
+    halo_draw.rounded_rectangle(
+        [
+            screen_x - 70,
+            screen_y - 70,
+            screen_x + screen_width + 70,
+            screen_y + screen_height + 70,
+        ],
+        radius=120,
+        outline=(0, 201, 255, 90),
+        width=26,
+    )
+    image = Image.alpha_composite(
+        image,
+        halo.filter(ImageFilter.GaussianBlur(radius=60)),
+    )
+
     shadow = Image.new('RGBA', image.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     frame_rect = [
@@ -536,153 +748,298 @@ def _create_promo_base(
         screen_x + screen_width + 18,
         screen_y + screen_height + 18,
     ]
-    shadow_draw.rounded_rectangle(frame_rect, radius=48, fill=(0, 0, 0, 160))
+    shadow_draw.rounded_rectangle(frame_rect, radius=48, fill=(0, 0, 0, 170))
     image = Image.alpha_composite(
         image,
-        shadow.filter(ImageFilter.GaussianBlur(radius=22)),
+        shadow.filter(ImageFilter.GaussianBlur(radius=26)),
     )
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
         frame_rect,
         radius=48,
-        outline=(255, 255, 255, 70),
+        outline=(255, 255, 255, 80),
         width=4,
         fill=(5, 8, 22, 255),
     )
 
-    chip_y = int(height * 0.93)
-    chip_font = _load_font(22 if target.platform == 'ios' else 20, bold=True)
-    chips = ['SSH', 'SFTP', 'Agents', 'Snippets', 'Keys', 'Tunnels']
-    x = margin
-    for chip in chips:
-        bbox = draw.textbbox((0, 0), chip, font=chip_font)
-        chip_width = bbox[2] - bbox[0] + 34
-        draw.rounded_rectangle(
-            [x, chip_y, x + chip_width, chip_y + 48],
-            radius=24,
-            fill=(255, 255, 255, 28),
-            outline=(255, 255, 255, 48),
-            width=1,
-        )
-        draw.text((x + 17, chip_y + 12), chip, font=chip_font, fill=(239, 246, 255))
-        x += chip_width + 12
-        if x > width - margin - 80:
-            break
-
     return image
 
 
-def _create_promo_overlay(
-    segment: PromoSegment,
-    index: int,
-    count: int,
+def _draw_command_bar(
+    frame: Image.Image,
+    t: float,
     layout: dict[str, int],
-) -> Image.Image:
-    width = layout['canvas_width']
-    height = layout['canvas_height']
-    image = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    margin = int(width * 0.08)
-    top = int(height * 0.11)
-    accent = (*segment.accent, 255)
+    margin: int,
+    width: int,
+    height: int,
+    fonts: dict[str, ImageFont.ImageFont],
+    segments: list[PromoSegment],
+    seg_dur: float,
+    type_start: float,
+    type_cps: float,
+    type_end: float,
+) -> None:
+    seg_index = min(int(t / seg_dur), len(segments) - 1)
+    accent = segments[seg_index].accent
+    mono = fonts['mono']
+    key_font = fonts['key']
 
-    eyebrow_font = _load_font(20 if height > 2600 else 18, bold=True)
-    headline_font = _load_font(58 if height > 2600 else 48, bold=True)
-    body_font = _load_font(29 if height > 2600 else 25)
-    small_font = _load_font(20 if height > 2600 else 18, bold=True)
+    bar_x = margin
+    bar_w = width - 2 * margin
+    bar_y = layout['screen_y'] + layout['screen_height'] + int(height * 0.022)
+    bar_h = int(height * 0.058)
+    radius = int(bar_h * 0.30)
 
-    pill_text = f'{index + 1}/{count}  {segment.eyebrow.upper()}'
-    pill_bbox = draw.textbbox((0, 0), pill_text, font=eyebrow_font)
-    pill_width = pill_bbox[2] - pill_bbox[0] + 34
+    draw = ImageDraw.Draw(frame)
     draw.rounded_rectangle(
-        [margin, top, margin + pill_width, top + 44],
-        radius=22,
-        fill=(*segment.accent, 52),
-        outline=(*segment.accent, 180),
+        [bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+        radius=radius,
+        fill=(10, 13, 28, 235),
+        outline=(*accent, 175),
         width=2,
     )
-    draw.text((margin + 17, top + 12), pill_text, font=eyebrow_font, fill=accent)
 
-    headline_y = top + 66
-    _draw_wrapped_text(
-        draw,
-        segment.headline,
-        font=headline_font,
-        xy=(margin, headline_y),
-        max_width=width - 2 * margin,
-        fill=(255, 255, 255, 255),
-        line_spacing=8,
-    )
-    body_y = headline_y + _wrapped_text_height(
-        draw,
-        segment.headline,
-        headline_font,
-        width - 2 * margin,
-        8,
-    ) + 18
-    _draw_wrapped_text(
-        draw,
-        segment.body,
-        font=body_font,
-        xy=(margin, body_y),
-        max_width=width - 2 * margin,
-        fill=(226, 232, 240, 255),
-        line_spacing=7,
-    )
-
-    callout_y = layout['screen_y'] + layout['screen_height'] + 54
-    callout_height = 132 if height > 2600 else 118
-    draw.rounded_rectangle(
-        [margin, callout_y, width - margin, callout_y + callout_height],
-        radius=28,
-        fill=(8, 11, 27, 218),
-        outline=(*segment.accent, 150),
-        width=2,
-    )
+    pad = int(bar_h * 0.34)
+    glyph = '›'
+    glyph_h = _text_h(draw, glyph, mono)
     draw.text(
-        (margin + 28, callout_y + 24),
-        'LIVE APP CAPTURE',
-        font=small_font,
-        fill=accent,
+        (bar_x + pad, bar_y + (bar_h - glyph_h) // 2 - 2),
+        glyph,
+        font=mono,
+        fill=(*accent, 255),
     )
-    _draw_wrapped_text(
-        draw,
-        _segment_detail(index),
-        font=body_font,
-        xy=(margin + 28, callout_y + 58),
-        max_width=width - 2 * margin - 56,
-        fill=(248, 250, 252, 255),
-        line_spacing=5,
+    text_x = bar_x + pad + _text_w(draw, glyph, mono) + int(bar_h * 0.22)
+
+    typed = max(0, min(len(PROMPT_TEXT), int((t - type_start) * type_cps)))
+    shown = PROMPT_TEXT[:typed]
+    line_h = _text_h(draw, 'Ag', mono)
+    text_y = bar_y + (bar_h - line_h) // 2
+    draw.text((text_x, text_y), shown, font=mono, fill=(236, 240, 248, 255))
+    caret_x = text_x + _text_w(draw, shown, mono) + 5
+
+    caret_on = t < type_end or int(t * 2) % 2 == 0
+    if caret_on:
+        draw.rounded_rectangle(
+            [caret_x, text_y, caret_x + max(4, int(bar_h * 0.07)), text_y + line_h],
+            radius=3,
+            fill=(*accent, 235),
+        )
+
+    badge_text = 'LIVE'
+    dot_r = max(5, int(bar_h * 0.07))
+    badge_w = _text_w(draw, badge_text, key_font)
+    pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(2 * math.pi * t / 1.1))
+    badge_y = bar_y + (bar_h - _text_h(draw, badge_text, key_font)) // 2
+    badge_x = bar_x + bar_w - pad - badge_w
+    dot_cx = badge_x - dot_r - 12
+    dot_cy = bar_y + bar_h // 2
+    draw.ellipse(
+        [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
+        fill=(248, 113, 113, int(255 * pulse)),
+    )
+    draw.text((badge_x, badge_y), badge_text, font=key_font, fill=(248, 220, 220, 230))
+
+
+def _qwerty_centers(
+    panel_w: int,
+    panel_h: int,
+) -> tuple[dict[str, tuple[int, int]], int]:
+    rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm']
+    margin_x = int(panel_w * 0.04)
+    top = int(panel_h * 0.30)
+    usable_h = panel_h - top - int(panel_h * 0.10)
+    row_h = usable_h / len(rows)
+    key_w = (panel_w - 2 * margin_x) / 10
+    centers: dict[str, tuple[int, int]] = {}
+    for row_index, row in enumerate(rows):
+        row_offset = margin_x + key_w * (10 - len(row)) / 2
+        cy = int(top + row_h * (row_index + 0.5))
+        for col_index, ch in enumerate(row):
+            cx = int(row_offset + key_w * (col_index + 0.5))
+            centers[ch] = (cx, cy)
+    return centers, int(key_w)
+
+
+def _draw_keyboard_cue(
+    frame: Image.Image,
+    t: float,
+    layout: dict[str, int],
+    type_start: float,
+    type_end: float,
+    type_cps: float,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    fade = 0.4
+    visible_start = type_start - 0.3
+    visible_end = type_end + 0.7
+    alpha = min(
+        _clamp01((t - visible_start) / fade),
+        _clamp01((visible_end - t) / fade),
+    )
+    if alpha <= 0.01:
+        return
+
+    screen_x = layout['screen_x']
+    screen_y = layout['screen_y']
+    screen_w = layout['screen_width']
+    screen_h = layout['screen_height']
+    accent = (0, 201, 255)
+
+    panel_w = screen_w
+    panel_h = int(screen_h * 0.30)
+    panel_top = screen_y + screen_h - panel_h - int(screen_h * 0.02)
+    panel = Image.new('RGBA', (panel_w, panel_h), (0, 0, 0, 0))
+    pdraw = ImageDraw.Draw(panel)
+    pdraw.rounded_rectangle(
+        [0, 0, panel_w - 1, panel_h - 1],
+        radius=int(panel_h * 0.10),
+        fill=(12, 15, 30, 232),
+        outline=(255, 255, 255, 46),
+        width=2,
     )
 
-    progress_x = margin
-    progress_y = callout_y + callout_height + 24
-    progress_width = width - 2 * margin
+    centers, key_w = _qwerty_centers(panel_w, panel_h)
+    key_r = int(key_w * 0.30)
+    for cx, cy in centers.values():
+        pdraw.ellipse(
+            [cx - key_r, cy - key_r, cx + key_r, cy + key_r],
+            fill=(255, 255, 255, 26),
+        )
+
+    typed = max(0, min(len(PROMPT_TEXT), int((t - type_start) * type_cps)))
+    prefix = PROMPT_TEXT[:typed]
+    last_space = prefix.rfind(' ')
+    word = prefix[last_space + 1:]
+    points = [centers[ch] for ch in word if ch in centers]
+
+    if len(points) >= 2:
+        for seg_i in range(1, len(points)):
+            tail = seg_i / (len(points) - 1)
+            stroke_alpha = int(120 + 135 * tail)
+            pdraw.line(
+                [points[seg_i - 1], points[seg_i]],
+                fill=(*accent, stroke_alpha),
+                width=max(6, int(key_w * 0.16)),
+            )
+    if points:
+        fx, fy = points[-1]
+        halo = int(key_w * 0.62)
+        pdraw.ellipse(
+            [fx - halo, fy - halo, fx + halo, fy + halo],
+            fill=(*accent, 70),
+        )
+        finger = int(key_w * 0.34)
+        pdraw.ellipse(
+            [fx - finger, fy - finger, fx + finger, fy + finger],
+            fill=(*_lighten(accent), 255),
+            outline=(255, 255, 255, 230),
+            width=3,
+        )
+
+    chip = 'SWIPE TO TYPE'
+    chip_font = fonts['key']
+    chip_w = _text_w(pdraw, chip, chip_font) + 34
+    chip_h = _text_h(pdraw, chip, chip_font) + 18
+    chip_x = (panel_w - chip_w) // 2
+    chip_y = int(panel_h * 0.05)
+    pdraw.rounded_rectangle(
+        [chip_x, chip_y, chip_x + chip_w, chip_y + chip_h],
+        radius=chip_h // 2,
+        fill=(8, 11, 24, 235),
+        outline=(*accent, 200),
+        width=2,
+    )
+    pdraw.text(
+        (chip_x + 17, chip_y + 7),
+        chip,
+        font=chip_font,
+        fill=(*_lighten(accent), 255),
+    )
+
+    _scale_alpha(panel, alpha)
+    frame.alpha_composite(panel, (screen_x, panel_top))
+
+
+def _draw_timeline(
+    frame: Image.Image,
+    t: float,
+    segments: list[PromoSegment],
+    seg_dur: float,
+    duration: float,
+    margin: int,
+    width: int,
+    height: int,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    draw = ImageDraw.Draw(frame)
+    count = len(segments)
+    seg_index = min(int(t / seg_dur), count - 1)
+    accent = segments[seg_index].accent
+
+    track_y = int(height * 0.955)
+    x0 = margin
+    x1 = width - margin
     draw.rounded_rectangle(
-        [progress_x, progress_y, progress_x + progress_width, progress_y + 7],
-        radius=4,
-        fill=(255, 255, 255, 42),
+        [x0, track_y - 3, x1, track_y + 3],
+        radius=3,
+        fill=(255, 255, 255, 40),
     )
-    fill_width = int(progress_width * (index + 1) / count)
+    progress = _clamp01(t / duration) if duration > 0 else 0.0
+    fill_x = int(x0 + (x1 - x0) * progress)
     draw.rounded_rectangle(
-        [progress_x, progress_y, progress_x + fill_width, progress_y + 7],
-        radius=4,
-        fill=accent,
+        [x0, track_y - 3, fill_x, track_y + 3],
+        radius=3,
+        fill=(*accent, 235),
     )
-    return image
+
+    for index, segment in enumerate(segments):
+        cx = int(x0 + (x1 - x0) * (index + 0.5) / count)
+        if index < seg_index:
+            node_r = 9
+            color = (*segment.accent, 235)
+        elif index == seg_index:
+            pulse = 0.5 + 0.5 * math.sin(2 * math.pi * t / 1.3)
+            node_r = int(13 + 3 * pulse)
+            ring_r = node_r + 8
+            draw.ellipse(
+                [cx - ring_r, track_y - ring_r, cx + ring_r, track_y + ring_r],
+                outline=(*segment.accent, 180),
+                width=3,
+            )
+            color = (*_lighten(segment.accent), 255)
+        else:
+            node_r = 8
+            color = (255, 255, 255, 70)
+        draw.ellipse(
+            [cx - node_r, track_y - node_r, cx + node_r, track_y + node_r],
+            fill=color,
+        )
+
+    label = segments[seg_index].label
+    label_font = fonts['label']
+    label_w = _text_w(draw, label, label_font)
+    label_h = _text_h(draw, label, label_font)
+    label_y = track_y - int(height * 0.028) - label_h
+    draw.text(
+        ((width - label_w) // 2, label_y),
+        label,
+        font=label_font,
+        fill=(*_lighten(accent), 255),
+    )
 
 
-def _segment_detail(index: int) -> str:
-    details = [
-        'Start from a real terminal session, not a mockup.',
-        'Persistent remote windows keep every agent ready.',
-        'Hosts and snippets make repeat work feel instant.',
-        'MonkeyMux turns one SSH connection into a mobile workspace.',
-        'SFTP sits beside the terminal for quick fixes.',
-        'Reconnect and continue from the same remote context.',
-        'Made for production work when your laptop is not open.',
+def _mono_font(size: int) -> ImageFont.ImageFont:
+    candidates = [
+        Path('/System/Library/Fonts/Menlo.ttc'),
+        Path('/System/Library/Fonts/SFNSMono.ttf'),
+        Path('/System/Library/Fonts/Supplemental/Courier New Bold.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'),
     ]
-    return details[index]
+    for path in candidates:
+        if path.exists():
+            return ImageFont.truetype(str(path), size)
+    return _load_font(size, bold=True)
 
 
 def _draw_wrapped_text(
@@ -1019,6 +1376,56 @@ class _AndroidSystemDialogWatchdog:
     def _run(self) -> None:
         while not self._stop.wait(0.75):
             _dismiss_android_system_dialogs(self._device_id)
+
+
+def _suppress_android_error_dialogs(device_id: str):
+    """Disable system ANR/crash dialogs for the duration of a recording.
+
+    Returns a callable that restores the previous values. Pixel Launcher ANR
+    popups are the main offender on a busy headless emulator; hiding error
+    dialogs system-wide is far more reliable than racing to dismiss them.
+    """
+    adb = store_screenshots._adb_path()
+    previous = _android_global_setting(adb, device_id, 'hide_error_dialogs')
+    _put_android_global_setting(adb, device_id, 'hide_error_dialogs', '1')
+
+    def restore() -> None:
+        target = previous if previous in ('0', '1') else '0'
+        _put_android_global_setting(adb, device_id, 'hide_error_dialogs', target)
+
+    return restore
+
+
+def _android_global_setting(adb: Path, device_id: str, key: str) -> str | None:
+    try:
+        result = subprocess.run(
+            [str(adb), '-s', device_id, 'shell', 'settings', 'get', 'global', key],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip()
+    return value if value and value != 'null' else None
+
+
+def _put_android_global_setting(
+    adb: Path,
+    device_id: str,
+    key: str,
+    value: str,
+) -> None:
+    subprocess.run(
+        [str(adb), '-s', device_id, 'shell', 'settings', 'put', 'global', key, value],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
 
 
 def _dismiss_android_system_dialogs(device_id: str, *, force: bool = False) -> None:
