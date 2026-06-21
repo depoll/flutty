@@ -26,9 +26,8 @@ ANDROID_RECORDING_BIT_RATE = 8_000_000
 IOS_APP_PREVIEW_NAME = 'iphone_67_1.mov'
 PIXEL_LAUNCHER_PACKAGE = 'com.google.android.apps.nexuslauncher'
 OVERLAY_FPS = 30
-# Example prompt "typed" by the post-production keyboard/swipe overlay. It is a
-# promotional cue layered around the real capture, not text the harness types.
-PROMPT_TEXT = 'build a release checklist for the api service'
+COPILOT_PROMPT = 'Draft a release checklist for this SSH app'
+CLAUDE_PROMPT = 'Summarize the riskiest release checks'
 
 
 @dataclass(frozen=True)
@@ -46,6 +45,16 @@ class PromoSegment:
     body: str
     label: str
     accent: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class TouchCue:
+    segment: int
+    offset: float
+    duration: float
+    label: str
+    start: tuple[float, float]
+    end: tuple[float, float] | None = None
 
 
 TARGETS = {
@@ -213,6 +222,9 @@ def _run_flutter_recording(
         '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
+        '--dart-define=STORE_SCREENSHOT_VIDEO_DEMO=true',
+        f'--dart-define=STORE_SCREENSHOT_COPILOT_PROMPT={COPILOT_PROMPT}',
+        f'--dart-define=STORE_SCREENSHOT_CLAUDE_PROMPT={CLAUDE_PROMPT}',
         f'--dart-define=STORE_SCREENSHOT_SCENE_HOLD_MS={scene_hold_ms}',
     ]
     command = _flutter_command(target, device_id, env, dart_defines)
@@ -472,9 +484,6 @@ def _render_overlay_frames(
         'headline': _load_font(64 if big else 52, bold=True),
         'body': _load_font(31 if big else 26),
         'label': _load_font(26 if big else 21, bold=True),
-        'mono': _mono_font(30 if big else 25),
-        'mono_small': _mono_font(23 if big else 19),
-        'key': _load_font(24 if big else 20, bold=True),
         'tick': _load_font(21 if big else 17, bold=True),
     }
 
@@ -483,9 +492,6 @@ def _render_overlay_frames(
         _glow_sprite(segment.accent, glow_size, alpha=80) for segment in segments
     ]
 
-    type_start = 0.9
-    type_cps = 13.0
-    type_end = type_start + len(PROMPT_TEXT) / type_cps
     text_top = int(height * 0.103)
 
     frame_count = int(math.ceil(duration * fps)) + 1
@@ -494,11 +500,7 @@ def _render_overlay_frames(
         frame = Image.new('RGBA', (width, height), (0, 0, 0, 0))
         _draw_drift_glow(frame, t, seg_dur, seg_count, glow_sprites, layout)
         _draw_top_text(frame, t, segments, seg_dur, margin, text_top, width, fonts)
-        _draw_keyboard_cue(frame, t, layout, type_start, type_end, type_cps, fonts)
-        _draw_command_bar(
-            frame, t, layout, margin, width, height, fonts,
-            segments, seg_dur, type_start, type_cps, type_end,
-        )
+        _draw_touch_indicators(frame, t, layout, segments, seg_dur, fonts)
         _draw_timeline(frame, t, segments, seg_dur, duration, margin, width, height, fonts)
         frame.save(directory / f'frame-{index:05d}.png')
     return frame_count
@@ -627,9 +629,9 @@ def _lighten(accent: tuple[int, int, int]) -> tuple[int, int, int]:
 def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
-            eyebrow='Live agents',
-            headline='Run AI coding agents on any server.',
-            body='Copilot, Claude, Gemini, Codex, OpenCode, and Antigravity — live over SSH.',
+            eyebrow='Real prompts',
+            headline='Ask Copilot from your phone.',
+            body='Type into a live SSH terminal with the real platform keyboard.',
             label='Terminal',
             accent=(0, 201, 255),
         ),
@@ -663,9 +665,9 @@ def _promo_segments() -> list[PromoSegment]:
         ),
         PromoSegment(
             eyebrow='Agentic SSH',
-            headline='A mobile command center for builders.',
-            body='Real terminals, real agents, real work away from the desk.',
-            label='Agents',
+            headline='Prompt Claude in the same workspace.',
+            body='Switch panes, ask a second agent, and keep the whole session alive.',
+            label='Claude',
             accent=(34, 211, 238),
         ),
     ]
@@ -765,199 +767,233 @@ def _create_promo_base(
     return image
 
 
-def _draw_command_bar(
+def _touch_cues() -> list[TouchCue]:
+    return [
+        TouchCue(
+            segment=0,
+            offset=0.15,
+            duration=0.85,
+            label='tap terminal',
+            start=(0.22, 0.87),
+        ),
+        TouchCue(
+            segment=0,
+            offset=0.78,
+            duration=1.15,
+            label='swipe prompt',
+            start=(0.18, 0.82),
+            end=(0.70, 0.82),
+        ),
+        TouchCue(
+            segment=1,
+            offset=0.22,
+            duration=0.85,
+            label='open host',
+            start=(0.32, 0.25),
+        ),
+        TouchCue(
+            segment=1,
+            offset=1.05,
+            duration=0.95,
+            label='favorite',
+            start=(0.76, 0.25),
+        ),
+        TouchCue(
+            segment=2,
+            offset=0.35,
+            duration=0.85,
+            label='run snippet',
+            start=(0.40, 0.32),
+        ),
+        TouchCue(
+            segment=2,
+            offset=1.25,
+            duration=0.95,
+            label='add command',
+            start=(0.80, 0.08),
+        ),
+        TouchCue(
+            segment=3,
+            offset=0.18,
+            duration=1.20,
+            label='switch window',
+            start=(0.47, 0.78),
+            end=(0.47, 0.58),
+        ),
+        TouchCue(
+            segment=3,
+            offset=1.30,
+            duration=0.85,
+            label='choose agent',
+            start=(0.50, 0.68),
+        ),
+        TouchCue(
+            segment=4,
+            offset=0.40,
+            duration=0.85,
+            label='browse files',
+            start=(0.36, 0.40),
+        ),
+        TouchCue(
+            segment=4,
+            offset=1.18,
+            duration=0.95,
+            label='open file',
+            start=(0.38, 0.53),
+        ),
+        TouchCue(
+            segment=5,
+            offset=0.28,
+            duration=0.85,
+            label='resume pane',
+            start=(0.56, 0.86),
+        ),
+    ]
+
+
+def _draw_touch_indicators(
     frame: Image.Image,
     t: float,
     layout: dict[str, int],
-    margin: int,
-    width: int,
-    height: int,
-    fonts: dict[str, ImageFont.ImageFont],
     segments: list[PromoSegment],
     seg_dur: float,
-    type_start: float,
-    type_cps: float,
-    type_end: float,
-) -> None:
-    seg_index = min(int(t / seg_dur), len(segments) - 1)
-    accent = segments[seg_index].accent
-    mono = fonts['mono']
-    key_font = fonts['key']
-
-    bar_x = margin
-    bar_w = width - 2 * margin
-    bar_y = layout['screen_y'] + layout['screen_height'] + int(height * 0.022)
-    bar_h = int(height * 0.058)
-    radius = int(bar_h * 0.30)
-
-    draw = ImageDraw.Draw(frame)
-    draw.rounded_rectangle(
-        [bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
-        radius=radius,
-        fill=(10, 13, 28, 235),
-        outline=(*accent, 175),
-        width=2,
-    )
-
-    pad = int(bar_h * 0.34)
-    glyph = '›'
-    glyph_h = _text_h(draw, glyph, mono)
-    draw.text(
-        (bar_x + pad, bar_y + (bar_h - glyph_h) // 2 - 2),
-        glyph,
-        font=mono,
-        fill=(*accent, 255),
-    )
-    text_x = bar_x + pad + _text_w(draw, glyph, mono) + int(bar_h * 0.22)
-
-    typed = max(0, min(len(PROMPT_TEXT), int((t - type_start) * type_cps)))
-    shown = PROMPT_TEXT[:typed]
-    line_h = _text_h(draw, 'Ag', mono)
-    text_y = bar_y + (bar_h - line_h) // 2
-    draw.text((text_x, text_y), shown, font=mono, fill=(236, 240, 248, 255))
-    caret_x = text_x + _text_w(draw, shown, mono) + 5
-
-    caret_on = t < type_end or int(t * 2) % 2 == 0
-    if caret_on:
-        draw.rounded_rectangle(
-            [caret_x, text_y, caret_x + max(4, int(bar_h * 0.07)), text_y + line_h],
-            radius=3,
-            fill=(*accent, 235),
-        )
-
-    badge_text = 'LIVE'
-    dot_r = max(5, int(bar_h * 0.07))
-    badge_w = _text_w(draw, badge_text, key_font)
-    pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(2 * math.pi * t / 1.1))
-    badge_y = bar_y + (bar_h - _text_h(draw, badge_text, key_font)) // 2
-    badge_x = bar_x + bar_w - pad - badge_w
-    dot_cx = badge_x - dot_r - 12
-    dot_cy = bar_y + bar_h // 2
-    draw.ellipse(
-        [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
-        fill=(248, 113, 113, int(255 * pulse)),
-    )
-    draw.text((badge_x, badge_y), badge_text, font=key_font, fill=(248, 220, 220, 230))
-
-
-def _qwerty_centers(
-    panel_w: int,
-    panel_h: int,
-) -> tuple[dict[str, tuple[int, int]], int]:
-    rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm']
-    margin_x = int(panel_w * 0.04)
-    top = int(panel_h * 0.30)
-    usable_h = panel_h - top - int(panel_h * 0.10)
-    row_h = usable_h / len(rows)
-    key_w = (panel_w - 2 * margin_x) / 10
-    centers: dict[str, tuple[int, int]] = {}
-    for row_index, row in enumerate(rows):
-        row_offset = margin_x + key_w * (10 - len(row)) / 2
-        cy = int(top + row_h * (row_index + 0.5))
-        for col_index, ch in enumerate(row):
-            cx = int(row_offset + key_w * (col_index + 0.5))
-            centers[ch] = (cx, cy)
-    return centers, int(key_w)
-
-
-def _draw_keyboard_cue(
-    frame: Image.Image,
-    t: float,
-    layout: dict[str, int],
-    type_start: float,
-    type_end: float,
-    type_cps: float,
     fonts: dict[str, ImageFont.ImageFont],
 ) -> None:
-    fade = 0.4
-    visible_start = type_start - 0.3
-    visible_end = type_end + 0.7
-    alpha = min(
-        _clamp01((t - visible_start) / fade),
-        _clamp01((visible_end - t) / fade),
+    for cue in _touch_cues():
+        if cue.segment >= len(segments):
+            continue
+        start_time = cue.segment * seg_dur + cue.offset
+        local = (t - start_time) / cue.duration
+        if local < 0 or local > 1:
+            continue
+        accent = segments[cue.segment].accent
+        if cue.end is None:
+            _draw_tap_cue(frame, cue, local, layout, accent, fonts)
+        else:
+            _draw_swipe_cue(frame, cue, local, layout, accent, fonts)
+
+
+def _draw_tap_cue(
+    frame: Image.Image,
+    cue: TouchCue,
+    local: float,
+    layout: dict[str, int],
+    accent: tuple[int, int, int],
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    draw = ImageDraw.Draw(frame)
+    cx, cy = _screen_point(layout, cue.start)
+    fade = math.sin(math.pi * _clamp01(local))
+    ripple = _ease_in_out(local)
+    base = max(13, int(layout['screen_width'] * 0.035))
+    outer = int(base * (1.25 + 2.2 * ripple))
+    inner = int(base * (0.72 + 0.10 * math.sin(2 * math.pi * local)))
+    alpha = int(230 * fade)
+    draw.ellipse(
+        [cx - outer, cy - outer, cx + outer, cy + outer],
+        outline=(*accent, alpha),
+        width=max(4, int(base * 0.18)),
     )
-    if alpha <= 0.01:
-        return
-
-    screen_x = layout['screen_x']
-    screen_y = layout['screen_y']
-    screen_w = layout['screen_width']
-    screen_h = layout['screen_height']
-    accent = (0, 201, 255)
-
-    panel_w = screen_w
-    panel_h = int(screen_h * 0.30)
-    panel_top = screen_y + screen_h - panel_h - int(screen_h * 0.02)
-    panel = Image.new('RGBA', (panel_w, panel_h), (0, 0, 0, 0))
-    pdraw = ImageDraw.Draw(panel)
-    pdraw.rounded_rectangle(
-        [0, 0, panel_w - 1, panel_h - 1],
-        radius=int(panel_h * 0.10),
-        fill=(12, 15, 30, 232),
-        outline=(255, 255, 255, 46),
-        width=2,
+    draw.ellipse(
+        [cx - inner, cy - inner, cx + inner, cy + inner],
+        fill=(*_lighten(accent), int(190 + 55 * fade)),
+        outline=(255, 255, 255, int(225 * fade)),
+        width=max(2, int(base * 0.12)),
     )
+    _draw_touch_label(draw, cue.label, (cx, cy - outer - int(base * 1.3)), accent, alpha, fonts)
 
-    centers, key_w = _qwerty_centers(panel_w, panel_h)
-    key_r = int(key_w * 0.30)
-    for cx, cy in centers.values():
-        pdraw.ellipse(
-            [cx - key_r, cy - key_r, cx + key_r, cy + key_r],
-            fill=(255, 255, 255, 26),
-        )
 
-    typed = max(0, min(len(PROMPT_TEXT), int((t - type_start) * type_cps)))
-    prefix = PROMPT_TEXT[:typed]
-    last_space = prefix.rfind(' ')
-    word = prefix[last_space + 1:]
-    points = [centers[ch] for ch in word if ch in centers]
-
-    if len(points) >= 2:
-        for seg_i in range(1, len(points)):
-            tail = seg_i / (len(points) - 1)
-            stroke_alpha = int(120 + 135 * tail)
-            pdraw.line(
-                [points[seg_i - 1], points[seg_i]],
-                fill=(*accent, stroke_alpha),
-                width=max(6, int(key_w * 0.16)),
+def _draw_swipe_cue(
+    frame: Image.Image,
+    cue: TouchCue,
+    local: float,
+    layout: dict[str, int],
+    accent: tuple[int, int, int],
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    draw = ImageDraw.Draw(frame)
+    start = _screen_point(layout, cue.start)
+    assert cue.end is not None
+    end = _screen_point(layout, cue.end)
+    progress = _ease_in_out(local)
+    cx = int(start[0] + (end[0] - start[0]) * progress)
+    cy = int(start[1] + (end[1] - start[1]) * progress)
+    fade = math.sin(math.pi * _clamp01(local))
+    alpha = int(235 * fade)
+    trail_steps = 16
+    points: list[tuple[int, int]] = []
+    for index in range(trail_steps + 1):
+        amount = progress * index / trail_steps
+        points.append(
+            (
+                int(start[0] + (end[0] - start[0]) * amount),
+                int(start[1] + (end[1] - start[1]) * amount),
             )
-    if points:
-        fx, fy = points[-1]
-        halo = int(key_w * 0.62)
-        pdraw.ellipse(
-            [fx - halo, fy - halo, fx + halo, fy + halo],
-            fill=(*accent, 70),
         )
-        finger = int(key_w * 0.34)
-        pdraw.ellipse(
-            [fx - finger, fy - finger, fx + finger, fy + finger],
-            fill=(*_lighten(accent), 255),
-            outline=(255, 255, 255, 230),
-            width=3,
-        )
+    if len(points) >= 2:
+        for index in range(1, len(points)):
+            tail = index / max(len(points) - 1, 1)
+            draw.line(
+                [points[index - 1], points[index]],
+                fill=(*accent, int(alpha * (0.28 + 0.72 * tail))),
+                width=max(7, int(layout['screen_width'] * 0.018)),
+            )
+    radius = max(15, int(layout['screen_width'] * 0.041))
+    pulse = 0.5 + 0.5 * math.sin(2 * math.pi * (local * 2.2))
+    draw.ellipse(
+        [cx - radius * 2, cy - radius * 2, cx + radius * 2, cy + radius * 2],
+        fill=(*accent, int(46 * fade)),
+    )
+    draw.ellipse(
+        [cx - radius, cy - radius, cx + radius, cy + radius],
+        fill=(*_lighten(accent), int(210 + 35 * pulse)),
+        outline=(255, 255, 255, int(230 * fade)),
+        width=max(2, int(radius * 0.15)),
+    )
+    _draw_touch_label(draw, cue.label, (cx, cy - radius * 3), accent, alpha, fonts)
 
-    chip = 'SWIPE TO TYPE'
-    chip_font = fonts['key']
-    chip_w = _text_w(pdraw, chip, chip_font) + 34
-    chip_h = _text_h(pdraw, chip, chip_font) + 18
-    chip_x = (panel_w - chip_w) // 2
-    chip_y = int(panel_h * 0.05)
-    pdraw.rounded_rectangle(
-        [chip_x, chip_y, chip_x + chip_w, chip_y + chip_h],
-        radius=chip_h // 2,
-        fill=(8, 11, 24, 235),
-        outline=(*accent, 200),
+
+def _screen_point(
+    layout: dict[str, int],
+    relative: tuple[float, float],
+) -> tuple[int, int]:
+    return (
+        int(layout['screen_x'] + layout['screen_width'] * relative[0]),
+        int(layout['screen_y'] + layout['screen_height'] * relative[1]),
+    )
+
+
+def _draw_touch_label(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    center: tuple[int, int],
+    accent: tuple[int, int, int],
+    alpha: int,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    if alpha < 24:
+        return
+    font = fonts['tick']
+    text = text.upper()
+    width = _text_w(draw, text, font)
+    height = _text_h(draw, text, font)
+    pad_x = 16
+    pad_y = 8
+    x0 = center[0] - width // 2 - pad_x
+    y0 = center[1] - height // 2 - pad_y
+    draw.rounded_rectangle(
+        [x0, y0, x0 + width + 2 * pad_x, y0 + height + 2 * pad_y],
+        radius=height,
+        fill=(9, 12, 28, min(225, alpha)),
+        outline=(*accent, min(235, alpha)),
         width=2,
     )
-    pdraw.text(
-        (chip_x + 17, chip_y + 7),
-        chip,
-        font=chip_font,
-        fill=(*_lighten(accent), 255),
+    draw.text(
+        (x0 + pad_x, y0 + pad_y - 1),
+        text,
+        font=font,
+        fill=(255, 255, 255, min(255, alpha + 20)),
     )
-
-    _scale_alpha(panel, alpha)
-    frame.alpha_composite(panel, (screen_x, panel_top))
 
 
 def _draw_timeline(
@@ -1026,20 +1062,6 @@ def _draw_timeline(
         font=label_font,
         fill=(*_lighten(accent), 255),
     )
-
-
-def _mono_font(size: int) -> ImageFont.ImageFont:
-    candidates = [
-        Path('/System/Library/Fonts/Menlo.ttc'),
-        Path('/System/Library/Fonts/SFNSMono.ttf'),
-        Path('/System/Library/Fonts/Supplemental/Courier New Bold.ttf'),
-        Path('/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf'),
-        Path('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'),
-    ]
-    for path in candidates:
-        if path.exists():
-            return ImageFont.truetype(str(path), size)
-    return _load_font(size, bold=True)
 
 
 def _draw_wrapped_text(

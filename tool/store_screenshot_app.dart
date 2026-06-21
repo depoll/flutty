@@ -8,6 +8,7 @@ import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
@@ -63,6 +64,15 @@ const _postReadyCaptureDelay = Duration(
     'STORE_SCREENSHOT_SCENE_HOLD_MS',
     defaultValue: 6000,
   ),
+);
+const _videoDemoMode = bool.fromEnvironment('STORE_SCREENSHOT_VIDEO_DEMO');
+const _copilotPrompt = String.fromEnvironment(
+  'STORE_SCREENSHOT_COPILOT_PROMPT',
+  defaultValue: 'Draft a release checklist for this SSH app',
+);
+const _claudePrompt = String.fromEnvironment(
+  'STORE_SCREENSHOT_CLAUDE_PROMPT',
+  defaultValue: 'Summarize the riskiest release checks',
 );
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
@@ -566,53 +576,11 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runFlow() async {
     try {
       await _waitForApp();
-      final terminalHostId = widget.terminalHostId;
-      final result = await ref
-          .read(activeSessionsProvider.notifier)
-          .connect(terminalHostId);
-      if (!result.success || result.connectionId == null) {
-        throw StateError(result.error ?? 'SSH connection did not open.');
+      if (_videoDemoMode) {
+        await _runVideoDemoFlow();
+      } else {
+        await _runScreenshotFlow();
       }
-      _connectionId = result.connectionId;
-
-      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
-      await Future<void>.delayed(const Duration(seconds: 6));
-      await _announceScene(0);
-
-      _go('/');
-      await Future<void>.delayed(const Duration(seconds: 2));
-      await _announceScene(1);
-
-      _go('/snippets');
-      await Future<void>.delayed(const Duration(seconds: 2));
-      await _announceScene(2);
-
-      _go(
-        '/terminal/$terminalHostId?connectionId=$_connectionId'
-        '&expandTmux=1',
-      );
-      await Future<void>.delayed(const Duration(seconds: 4));
-      await _announceScene(3);
-
-      _go(
-        '/sftp/$terminalHostId?connectionId=$_connectionId'
-        '&path=${Uri.encodeComponent(_workspacePath)}',
-      );
-      await Future<void>.delayed(const Duration(seconds: 2));
-      await _announceScene(4);
-
-      final session = ref
-          .read(activeSessionsProvider.notifier)
-          .getSession(_connectionId!);
-      if (session == null) {
-        throw StateError('SSH session not available for Claude screenshot.');
-      }
-      await ref
-          .read(monkeyMuxServiceProvider)
-          .selectWindow(session, _muxSessionName, 2);
-      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
-      await Future<void>.delayed(const Duration(seconds: 4));
-      await _announceScene(5);
 
       debugPrintSynchronously('STORE_SCREENSHOT_DONE');
       await ref.read(databaseProvider).close();
@@ -623,6 +591,104 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await ref.read(databaseProvider).close();
       exit(1);
     }
+  }
+
+  Future<void> _runScreenshotFlow() async {
+    final terminalHostId = widget.terminalHostId;
+    await _connect(terminalHostId);
+
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+    await Future<void>.delayed(const Duration(seconds: 6));
+    await _announceScene(0);
+
+    _go('/');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(1);
+
+    _go('/snippets');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(2);
+
+    _go(
+      '/terminal/$terminalHostId?connectionId=$_connectionId'
+      '&expandTmux=1',
+    );
+    await Future<void>.delayed(const Duration(seconds: 4));
+    await _announceScene(3);
+
+    _go(
+      '/sftp/$terminalHostId?connectionId=$_connectionId'
+      '&path=${Uri.encodeComponent(_workspacePath)}',
+    );
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(4);
+
+    await _selectClaudeWindow();
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+    await Future<void>.delayed(const Duration(seconds: 4));
+    await _announceScene(5);
+  }
+
+  Future<void> _runVideoDemoFlow() async {
+    final terminalHostId = widget.terminalHostId;
+    await _connect(terminalHostId);
+
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceSceneWithAction(0, () => _typePrompt(_copilotPrompt));
+
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _go('/');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(1);
+
+    _go('/snippets');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(2);
+
+    _go(
+      '/terminal/$terminalHostId?connectionId=$_connectionId'
+      '&expandTmux=1',
+    );
+    await Future<void>.delayed(const Duration(seconds: 3));
+    await _announceScene(3);
+
+    _go(
+      '/sftp/$terminalHostId?connectionId=$_connectionId'
+      '&path=${Uri.encodeComponent(_workspacePath)}',
+    );
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(4);
+
+    await _selectClaudeWindow();
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceSceneWithAction(5, () => _typePrompt(_claudePrompt));
+  }
+
+  Future<void> _connect(int terminalHostId) async {
+    if (_connectionId != null) {
+      return;
+    }
+    final result = await ref
+        .read(activeSessionsProvider.notifier)
+        .connect(terminalHostId);
+    if (!result.success || result.connectionId == null) {
+      throw StateError(result.error ?? 'SSH connection did not open.');
+    }
+    _connectionId = result.connectionId;
+  }
+
+  Future<void> _selectClaudeWindow() async {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(_connectionId!);
+    if (session == null) {
+      throw StateError('SSH session not available for Claude screenshot.');
+    }
+    await ref
+        .read(monkeyMuxServiceProvider)
+        .selectWindow(session, _muxSessionName, 2);
   }
 
   Future<void> _waitForApp() async {
@@ -641,6 +707,37 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     };
     debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
     await Future<void>.delayed(_postReadyCaptureDelay);
+  }
+
+  Future<void> _announceSceneWithAction(
+    int index,
+    Future<void> Function() action,
+  ) async {
+    final payload = {
+      'scene': _sceneNames[index],
+      'index': index + 1,
+      'paths': widget.target.pathsByScene[index],
+    };
+    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+    await action();
+  }
+
+  Future<void> _typePrompt(String prompt) async {
+    final terminal = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(_connectionId!)
+        ?.terminal;
+    if (terminal?.onOutput == null) {
+      throw StateError('Terminal input is not ready for store demo prompt.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    for (final rune in prompt.runes) {
+      terminal!.onOutput!(String.fromCharCode(rune));
+      await Future<void>.delayed(const Duration(milliseconds: 24));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    terminal!.onOutput!('\r');
+    await Future<void>.delayed(const Duration(milliseconds: 1800));
   }
 
   void _go(String location) {
