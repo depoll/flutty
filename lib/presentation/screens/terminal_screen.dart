@@ -3737,7 +3737,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
-    if (ref.read(shellCompletionsNotifierProvider) &&
+    if (mounted &&
+        ref.read(shellCompletionsNotifierProvider) &&
         _shellCompletionPromptPrefix != null &&
         _shellCompletionDebounceTimer == null &&
         _shellCompletionSuggestions.isEmpty) {

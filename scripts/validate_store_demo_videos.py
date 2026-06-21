@@ -78,6 +78,7 @@ def main() -> None:
             info=infos[path],
         )
     _validate_dynamics(paths)
+    _validate_live_region_motion(paths)
     _validate_sampled_ocr_content(paths)
 
 
@@ -212,6 +213,68 @@ def _validate_dynamics(paths: list[Path]) -> None:
                 'more; the promotional animation is missing — regenerate the demo video',
             )
         print(f'Validated motion for {_display_path(path)} (no black or frozen segments)')
+
+
+def _validate_live_region_motion(paths: list[Path]) -> None:
+    """Ensure the embedded live app capture actually moves over time.
+
+    The promotional background is always animated, so a whole-frame freeze or
+    black check cannot catch a phone screen that failed to render, crashed, or
+    froze on a single frame. This crops the inner region that always overlaps
+    the live device capture and fails if that region is frozen for nearly the
+    entire video. Intentional scene holds on static screens keep the frozen
+    fraction well below the threshold, while a blank or stalled recording is
+    frozen close to 100% of the time.
+    """
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        print('Skipping live-region motion validation; requires ffmpeg.')
+        return
+    max_frozen_fraction = 0.9
+    for path in paths:
+        duration = _video_duration(path)
+        if duration <= 0:
+            continue
+        result = subprocess.run(
+            [
+                ffmpeg,
+                '-hide_banner',
+                '-nostats',
+                '-i',
+                str(path),
+                '-vf',
+                (
+                    'crop=iw*0.58:ih*0.46:iw*0.21:ih*0.31,'
+                    'freezedetect=n=0.003:d=1.0'
+                ),
+                '-an',
+                '-f',
+                'null',
+                '-',
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        frozen = sum(
+            float(value)
+            for value in re.findall(
+                r'freeze_duration:\s*(\d+(?:\.\d+)?)',
+                result.stderr,
+            )
+        )
+        fraction = frozen / duration
+        if fraction > max_frozen_fraction:
+            raise ValueError(
+                f'{_display_path(path)} live app region is frozen '
+                f'{fraction * 100:.0f}% of the time; the device capture likely '
+                'failed or stalled — regenerate the demo video',
+            )
+        print(
+            f'Validated live app motion for {_display_path(path)} '
+            f'(live region frozen {fraction * 100:.0f}% of the time)',
+        )
 
 
 def _validate_sampled_ocr_content(paths: list[Path]) -> None:

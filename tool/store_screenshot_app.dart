@@ -633,37 +633,37 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     final terminalHostId = widget.terminalHostId;
     await _connect(terminalHostId);
 
+    // Beat 1 — Prompt a coding agent from a live SSH terminal. The recording
+    // starts on this first READY marker, so hold briefly on the ready terminal
+    // and keyboard before the real prompt is typed.
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
-    await Future<void>.delayed(const Duration(seconds: 2));
-    await _announceSceneWithAction(0, () => _typePrompt(_copilotPrompt));
+    await Future<void>.delayed(const Duration(milliseconds: 1600));
+    await _announceSceneWithAction(0, () async {
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      await _typePrompt(_copilotPrompt);
+      await Future<void>.delayed(const Duration(seconds: 2));
+    });
 
+    // Beat 2 — Every agent keeps running in MonkeyMux while you move between
+    // them. Dismiss the keyboard and reveal the live window switcher.
     unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
-    _go('/');
-    await Future<void>.delayed(const Duration(seconds: 2));
-    await _announceScene(1);
-
-    _go('/snippets');
-    await Future<void>.delayed(const Duration(seconds: 2));
-    await _announceScene(2);
-
     _go(
       '/terminal/$terminalHostId?connectionId=$_connectionId'
       '&expandTmux=1',
     );
     await Future<void>.delayed(const Duration(seconds: 3));
     await _announceScene(3);
+    await Future<void>.delayed(const Duration(milliseconds: 1400));
 
-    _go(
-      '/sftp/$terminalHostId?connectionId=$_connectionId'
-      '&path=${Uri.encodeComponent(_workspacePath)}',
-    );
-    await Future<void>.delayed(const Duration(seconds: 2));
-    await _announceScene(4);
-
+    // Beat 3 — Switch to another agent without losing the session.
     await _selectClaudeWindow();
     _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
-    await Future<void>.delayed(const Duration(seconds: 2));
-    await _announceSceneWithAction(5, () => _typePrompt(_claudePrompt));
+    await Future<void>.delayed(const Duration(milliseconds: 1600));
+    await _announceSceneWithAction(5, () async {
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      await _typePrompt(_claudePrompt);
+      await Future<void>.delayed(const Duration(seconds: 2));
+    });
   }
 
   Future<void> _connect(int terminalHostId) async {
@@ -723,20 +723,29 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   }
 
   Future<void> _typePrompt(String prompt) async {
-    final terminal = ref
+    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    var terminal = ref
         .read(activeSessionsProvider.notifier)
         .getSession(_connectionId!)
         ?.terminal;
-    if (terminal?.onOutput == null) {
+    while (terminal?.onOutput == null && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      terminal = ref
+          .read(activeSessionsProvider.notifier)
+          .getSession(_connectionId!)
+          ?.terminal;
+    }
+    final onOutput = terminal?.onOutput;
+    if (onOutput == null) {
       throw StateError('Terminal input is not ready for store demo prompt.');
     }
     await Future<void>.delayed(const Duration(milliseconds: 120));
     for (final rune in prompt.runes) {
-      terminal!.onOutput!(String.fromCharCode(rune));
+      onOutput(String.fromCharCode(rune));
       await Future<void>.delayed(const Duration(milliseconds: 24));
     }
     await Future<void>.delayed(const Duration(milliseconds: 120));
-    terminal!.onOutput!('\r');
+    onOutput('\r');
     await Future<void>.delayed(const Duration(milliseconds: 1800));
   }
 
