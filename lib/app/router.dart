@@ -81,6 +81,8 @@ final routerProvider = Provider<GoRouter>((ref) {
           final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           final initiallyExpandTmuxWindows =
               state.uri.queryParameters['expandTmux'] == '1';
+          final initiallyShowKeyboard =
+              state.uri.queryParameters['showKeyboard'] == '1';
           if (hostId == null) {
             return _buildTerminalPage(
               state: state,
@@ -101,6 +103,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                   initialTmuxWindowId,
                   state.uri.queryParameters['notificationTap'],
                   initiallyExpandTmuxWindows,
+                  initiallyShowKeyboard,
                 ),
               ),
               hostId: hostId,
@@ -111,6 +114,7 @@ final routerProvider = Provider<GoRouter>((ref) {
               initialTmuxWindowRequiresVisibleSession:
                   state.uri.queryParameters['notificationTap'] != null,
               initiallyExpandTmuxWindows: initiallyExpandTmuxWindows,
+              initiallyShowKeyboard: initiallyShowKeyboard,
             ),
           );
         },

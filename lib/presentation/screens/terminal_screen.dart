@@ -2747,6 +2747,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.initialTmuxWindowId,
     this.initialTmuxWindowRequiresVisibleSession = false,
     this.initiallyExpandTmuxWindows = false,
+    this.initiallyShowKeyboard = false,
     super.key,
   });
 
@@ -2770,6 +2771,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Whether the tmux window selector should start expanded.
   final bool initiallyExpandTmuxWindows;
+
+  /// Whether the terminal should show the system keyboard after opening.
+  final bool initiallyShowKeyboard;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -6126,7 +6130,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } else {
           _scheduleTerminalSizeRefresh();
         }
-        _restoreTerminalFocus();
+        _restoreTerminalFocus(
+          forceShowSystemKeyboard: widget.initiallyShowKeyboard,
+        );
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -6221,7 +6227,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       } else {
         _scheduleTerminalSizeRefresh();
       }
-      _restoreTerminalFocus();
+      _restoreTerminalFocus(
+        forceShowSystemKeyboard: widget.initiallyShowKeyboard,
+      );
 
       // Start port forwards
       await _startPortForwards(session);
