@@ -77,6 +77,7 @@ def main() -> None:
             max_duration=args.max_duration,
             info=infos[path],
         )
+    _validate_dynamics(paths)
     _validate_sampled_ocr_content(paths)
 
 
@@ -168,6 +169,49 @@ def _probe_videos(paths: list[Path]) -> dict[Path, VideoInfo]:
     raise RuntimeError(
         'Video validation requires ffprobe or macOS with Swift/AVFoundation.',
     )
+
+
+def _validate_dynamics(paths: list[Path]) -> None:
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        print('Skipping motion/black validation; requires ffmpeg.')
+        return
+    for path in paths:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                '-hide_banner',
+                '-nostats',
+                '-i',
+                str(path),
+                '-vf',
+                'blackdetect=d=0.4:pic_th=0.98,freezedetect=n=0.003:d=2.0',
+                '-an',
+                '-f',
+                'null',
+                '-',
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        stderr = result.stderr
+        black_total = sum(
+            float(value)
+            for value in re.findall(r'black_duration:(\d+(?:\.\d+)?)', stderr)
+        )
+        if black_total > 1.0:
+            raise ValueError(
+                f'{_display_path(path)} contains {black_total:.1f}s of near-black '
+                'frames; the screen capture likely failed — regenerate the demo video',
+            )
+        if 'freeze_start' in stderr:
+            raise ValueError(
+                f'{_display_path(path)} contains a frozen/static segment of 2s or '
+                'more; the promotional animation is missing — regenerate the demo video',
+            )
+        print(f'Validated motion for {_display_path(path)} (no black or frozen segments)')
 
 
 def _validate_sampled_ocr_content(paths: list[Path]) -> None:
