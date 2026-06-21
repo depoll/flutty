@@ -58,7 +58,12 @@ const _terminalThemeDarkId = String.fromEnvironment(
   'STORE_SCREENSHOT_TERMINAL_THEME_DARK_ID',
   defaultValue: 'velvet',
 );
-const _postReadyCaptureDelay = Duration(seconds: 6);
+const _postReadyCaptureDelay = Duration(
+  milliseconds: int.fromEnvironment(
+    'STORE_SCREENSHOT_SCENE_HOLD_MS',
+    defaultValue: 6000,
+  ),
+);
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
   productId: 'store-screenshot-fallback',
