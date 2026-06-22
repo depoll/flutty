@@ -2739,6 +2739,10 @@ class _PortForwardBrowserOption {
   final String title;
 }
 
+class _StoreDemoAutoConfirmDialogState {
+  bool open = true;
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -13853,9 +13857,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String message,
     required String confirmLabel,
     List<String> details = const [],
+    Duration? autoConfirmAfter,
   }) async {
     if (!mounted) {
       return false;
+    }
+    final dialogState = _StoreDemoAutoConfirmDialogState();
+    if (autoConfirmAfter != null) {
+      unawaited(
+        Future<void>.delayed(autoConfirmAfter, () {
+          if (!mounted || !dialogState.open) {
+            return;
+          }
+          final navigator = Navigator.of(context, rootNavigator: true);
+          if (navigator.canPop()) {
+            navigator.pop(true);
+          }
+        }),
+      );
     }
     final confirmed = await showDialog<bool>(
       context: context,
@@ -13891,6 +13910,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
+    dialogState.open = false;
     return confirmed ?? false;
   }
 
@@ -14002,7 +14022,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _pasteStoreDemoImage() async {
     await _pasteClipboardImage(
       _storeDemoClipboardImageBytes,
-      confirm: false,
+      autoConfirmAfter: const Duration(milliseconds: 4200),
       showKeyboardAfterPaste: false,
       uploadBaseDirectory: _workingDirectoryPath,
     );
@@ -14016,6 +14036,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _pasteClipboardImage(
     Uint8List imageBytes, {
     bool confirm = true,
+    Duration? autoConfirmAfter,
     bool showKeyboardAfterPaste = true,
     String? uploadBaseDirectory,
   }) async {
@@ -14025,7 +14046,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         message:
             'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
-        details: const ['image.png'],
+        details: const ['release-checklist.png'],
+        autoConfirmAfter: autoConfirmAfter,
       );
       if (!shouldUpload) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
