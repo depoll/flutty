@@ -623,42 +623,42 @@ def _lighten(accent: tuple[int, int, int]) -> tuple[int, int, int]:
 def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
-            eyebrow='Real SSH',
-            headline='Start in Claude from your phone.',
-            body='Type a prompt into a live terminal and your coding agent '
-            'answers — right from your phone.',
+            eyebrow='Real SSH session',
+            headline='Start in Claude without leaving mobile.',
+            body='Open a persistent SSH workspace, type with the extended '
+            'keyboard, and ask an agent to reason in the real terminal.',
             label='Claude',
             accent=(0, 201, 255),
         ),
         PromoSegment(
-            eyebrow='Always on',
-            headline='Keep every agent running in MonkeyMux.',
-            body='Switch between long-running agent sessions without dropping '
-            'a thing.',
+            eyebrow='Persistent agents',
+            headline='Keep every coding session alive.',
+            body='MonkeyMux keeps Claude, OpenCode, Copilot, and other panes '
+            'running remotely while your phone moves between tasks.',
             label='MonkeyMux',
             accent=(244, 114, 182),
         ),
         PromoSegment(
-            eyebrow='OpenCode',
-            headline='Move to OpenCode with context.',
-            body='OpenCode, Claude, Copilot, and other TUIs keep their real '
-            'terminal mouse and keyboard support.',
+            eyebrow='OpenCode TUI',
+            headline='Switch to another agent instantly.',
+            body='OpenCode runs in the same remote workspace with terminal '
+            'mouse support, keyboard shortcuts, and full scrollback intact.',
             label='OpenCode',
             accent=(129, 140, 248),
         ),
         PromoSegment(
-            eyebrow='Rich clipboard',
-            headline='Paste an image for the agent.',
-            body='MonkeySSH uploads the image to the remote workspace and '
-            'pastes its path into the live terminal.',
+            eyebrow='Image context',
+            headline='Paste screenshots into the workflow.',
+            body='MonkeySSH uploads the real image to the remote workspace, '
+            'then pastes the safe path into the live agent terminal.',
             label='Real image paste',
             accent=(45, 212, 191),
         ),
         PromoSegment(
-            eyebrow='Copilot',
-            headline='Finish in Copilot without losing state.',
-            body='Jump from Claude to OpenCode to Copilot with the whole session '
-            'intact.',
+            eyebrow='Copilot CLI',
+            headline='Finish in Copilot with the same context.',
+            body='Jump from Claude to OpenCode to Copilot while the SSH '
+            'connection, panes, image context, and working directory stay put.',
             label='Copilot',
             accent=(34, 211, 238),
         ),

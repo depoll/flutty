@@ -657,7 +657,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       '&pasteDemoImage=1',
     );
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 4300));
+    await Future<void>.delayed(const Duration(milliseconds: 7800));
 
     await _selectMonkeyMuxWindow(0);
     _go('/terminal/$terminalHostId?connectionId=$_connectionId');
