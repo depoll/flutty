@@ -15,6 +15,7 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class MockInAppPurchase extends Mock implements InAppPurchase {}
 
@@ -29,70 +30,80 @@ class MockInAppPurchaseAndroidPlatformAddition extends Mock
 class _FakePurchaseParam extends Fake implements PurchaseParam {}
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   setUpAll(() {
     registerFallbackValue(_FakePurchaseParam());
   });
 
-  test(
-    'queries both preview and prod App Store product IDs on Apple platforms',
-    () {
-      expect(
-        MonetizationProductIds.forPlatform(TargetPlatform.iOS),
-        unorderedEquals([
-          MonetizationProductIds.iosMonthly,
-          MonetizationProductIds.iosAnnual,
-          MonetizationProductIds.iosMonthlyProd,
-          MonetizationProductIds.iosAnnualProd,
-          MonetizationProductIds.iosProLifetime,
-          MonetizationProductIds.iosProLifetimeProd,
-        ]),
-      );
-      expect(
-        MonetizationProductIds.forPlatform(TargetPlatform.macOS),
-        unorderedEquals([
-          MonetizationProductIds.iosMonthly,
-          MonetizationProductIds.iosAnnual,
-          MonetizationProductIds.iosMonthlyProd,
-          MonetizationProductIds.iosAnnualProd,
-          MonetizationProductIds.iosProLifetime,
-          MonetizationProductIds.iosProLifetimeProd,
-        ]),
-      );
-      expect(
-        MonetizationProductIds.forPlatform(TargetPlatform.android),
-        unorderedEquals([
-          MonetizationProductIds.androidPro,
-          MonetizationProductIds.androidProLifetime,
-        ]),
-      );
-      expect(
-        MonetizationProductIds.allKnown,
-        containsAll({
-          MonetizationProductIds.iosMonthlyProd,
-          MonetizationProductIds.iosAnnualProd,
-          MonetizationProductIds.iosProLifetimeProd,
-          MonetizationProductIds.androidProLifetime,
-        }),
-      );
-      expect(
-        MonetizationProductIds.isLifetime(
-          MonetizationProductIds.androidProLifetime,
-        ),
-        isTrue,
-      );
-      expect(
-        MonetizationProductIds.isLifetime(
-          MonetizationProductIds.iosProLifetimeProd,
-        ),
-        isTrue,
-      );
-      expect(
-        MonetizationProductIds.isLifetime(MonetizationProductIds.androidPro),
-        isFalse,
-      );
-      expect(MonetizationProductIds.isLifetime(null), isFalse);
-    },
-  );
+  test('queries the App Store product IDs for the current Apple bundle', () {
+    expect(
+      MonetizationProductIds.forPlatform(
+        TargetPlatform.iOS,
+        packageName: 'xyz.depollsoft.monkeyssh.private',
+      ),
+      unorderedEquals([
+        MonetizationProductIds.iosMonthly,
+        MonetizationProductIds.iosAnnual,
+        MonetizationProductIds.iosProLifetime,
+      ]),
+    );
+    expect(
+      MonetizationProductIds.forPlatform(
+        TargetPlatform.iOS,
+        packageName: 'xyz.depollsoft.monkeyssh',
+      ),
+      unorderedEquals([
+        MonetizationProductIds.iosMonthlyProd,
+        MonetizationProductIds.iosAnnualProd,
+        MonetizationProductIds.iosProLifetimeProd,
+      ]),
+    );
+    expect(
+      MonetizationProductIds.forPlatform(TargetPlatform.android),
+      unorderedEquals([
+        MonetizationProductIds.androidPro,
+        MonetizationProductIds.androidProLifetime,
+      ]),
+    );
+    expect(
+      MonetizationProductIds.allKnown,
+      containsAll({
+        MonetizationProductIds.iosMonthlyProd,
+        MonetizationProductIds.iosAnnualProd,
+        MonetizationProductIds.iosProLifetimeProd,
+        MonetizationProductIds.androidProLifetime,
+      }),
+    );
+    expect(
+      MonetizationProductIds.forPlatform(TargetPlatform.macOS),
+      containsAll({
+        MonetizationProductIds.iosMonthly,
+        MonetizationProductIds.iosAnnual,
+        MonetizationProductIds.iosMonthlyProd,
+        MonetizationProductIds.iosAnnualProd,
+        MonetizationProductIds.iosProLifetime,
+        MonetizationProductIds.iosProLifetimeProd,
+      }),
+    );
+    expect(
+      MonetizationProductIds.isLifetime(
+        MonetizationProductIds.androidProLifetime,
+      ),
+      isTrue,
+    );
+    expect(
+      MonetizationProductIds.isLifetime(
+        MonetizationProductIds.iosProLifetimeProd,
+      ),
+      isTrue,
+    );
+    expect(
+      MonetizationProductIds.isLifetime(MonetizationProductIds.androidPro),
+      isFalse,
+    );
+    expect(MonetizationProductIds.isLifetime(null), isFalse);
+  });
 
   group('buildMonetizationOffers', () {
     test('deduplicates Google Play base plans and keeps trial offers', () {
@@ -362,6 +373,13 @@ void main() {
       inAppPurchase = MockInAppPurchase();
       androidPlatformAddition = MockInAppPurchaseAndroidPlatformAddition();
       purchaseController = StreamController<List<PurchaseDetails>>.broadcast();
+      PackageInfo.setMockInitialValues(
+        appName: 'MonkeySSH',
+        packageName: 'xyz.depollsoft.monkeyssh',
+        version: '0.1.1',
+        buildNumber: '1',
+        buildSignature: '',
+      );
 
       when(
         () => inAppPurchase.purchaseStream,
@@ -472,6 +490,81 @@ void main() {
         );
       },
     );
+
+    test(
+      'production App Store builds query only production product IDs',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: const [],
+            notFoundIDs: const [],
+          ),
+        );
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+          packageNameLoader: () async => 'xyz.depollsoft.monkeyssh',
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+
+        final queriedProductIds =
+            verify(
+                  () => inAppPurchase.queryProductDetails(captureAny()),
+                ).captured.single
+                as Set<String>;
+        expect(
+          queriedProductIds,
+          unorderedEquals([
+            MonetizationProductIds.iosMonthlyProd,
+            MonetizationProductIds.iosAnnualProd,
+            MonetizationProductIds.iosProLifetimeProd,
+          ]),
+        );
+      },
+    );
+
+    test('private App Store builds query only private product IDs', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+      when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+        (_) async => ProductDetailsResponse(
+          productDetails: const [],
+          notFoundIDs: const [],
+        ),
+      );
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+        packageNameLoader: () async => 'xyz.depollsoft.monkeyssh.private',
+      );
+      addTearDown(service.dispose);
+
+      await service.initialize();
+
+      final queriedProductIds =
+          verify(
+                () => inAppPurchase.queryProductDetails(captureAny()),
+              ).captured.single
+              as Set<String>;
+      expect(
+        queriedProductIds,
+        unorderedEquals([
+          MonetizationProductIds.iosMonthly,
+          MonetizationProductIds.iosAnnual,
+          MonetizationProductIds.iosProLifetime,
+        ]),
+      );
+    });
 
     test(
       'concurrent initialize calls wait for the same in-flight work',
