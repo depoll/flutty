@@ -24,6 +24,7 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
+import 'package:xterm/src/utils/unicode_v11.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
@@ -106,6 +107,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
+  bool _consumeKittyPlaceholderDiacritics = false;
 
   late var _buffer = _mainBuffer;
 
@@ -462,6 +464,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void writeChar(int char) {
+    if (_consumeKittyPlaceholderDiacritics) {
+      if (_isKittyPlaceholderDiacritic(char)) {
+        return;
+      }
+      _consumeKittyPlaceholderDiacritics = false;
+    }
+    if (char == kittyGraphicsPlaceholderCodePoint) {
+      _consumeKittyPlaceholderDiacritics = true;
+    }
     _precedingCodepoint = char;
     _buffer.writeChar(char);
   }
@@ -1065,22 +1076,36 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    // Only transmit-and-display (a=T) is rendered; other actions are ignored.
-    if ((args['a'] ?? 't') != 'T' || data.isEmpty) {
+    final action = args['a'] ?? 't';
+    final virtualPlacement = args['U'] == '1';
+    if (action == 'p') {
+      if (!virtualPlacement) {
+        _placeStoredGraphics(args);
+      }
       return;
     }
+
+    // Only transmit (a=t) and transmit-and-display (a=T) are rendered; other
+    // actions are ignored.
+    if ((action != 't' && action != 'T') || data.isEmpty) {
+      return;
+    }
+    final shouldPlace = action == 'T' && !virtualPlacement;
 
     // Anchor the placement to the cursor cell now, before the async decode or
     // any further output can move the cursor. Bind it to the buffer that is
     // active at command time so a later buffer switch can't misplace it.
     final buffer = _buffer;
-    final anchor = buffer.currentLine.createAnchor(buffer.cursorX);
-    final generation = buffer.graphics.generation;
+    final anchor =
+        shouldPlace ? buffer.currentLine.createAnchor(buffer.cursorX) : null;
+    final generation = shouldPlace ? buffer.graphics.generation : null;
 
     // Move the cursor below the image so following output does not overlap it.
     final rows = int.tryParse(args['r'] ?? '') ?? 0;
-    for (var i = 0; i < rows; i++) {
-      buffer.index();
+    if (shouldPlace) {
+      for (var i = 0; i < rows; i++) {
+        buffer.index();
+      }
     }
 
     unawaited(
@@ -1091,9 +1116,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   Future<void> _finalizeGraphics(
     Map<String, String> args,
     Uint8List data,
-    CellAnchor anchor,
+    CellAnchor? anchor,
     GraphicsManager manager,
-    int generation,
+    int? generation,
   ) async {
     final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
@@ -1109,18 +1134,46 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Skip placing if the decode failed, the anchored cell is gone, or the
     // screen was cleared while we were decoding (e.g. a MonkeyMux replay clear
     // racing this decode — placing now would leave a duplicate/stale image).
-    if (image == null || !anchor.attached || manager.generation != generation) {
-      anchor.dispose();
+    if (image == null) {
+      anchor?.dispose();
       return;
     }
 
-    final imageId = manager.storeImage(image);
-    manager.placeImage(
+    final imageId = int.tryParse(args['i'] ?? '');
+    final storedImageId = imageId == null
+        ? manager.storeImage(image)
+        : manager.storeImageWithId(imageId, image);
+    if (anchor != null) {
+      if (!anchor.attached || manager.generation != generation) {
+        anchor.dispose();
+        return;
+      }
+      manager.placeImage(
+        storedImageId,
+        anchor,
+        cols: int.tryParse(args['c'] ?? '') ?? 0,
+        rows: int.tryParse(args['r'] ?? '') ?? 0,
+      );
+    }
+    notifyListeners();
+  }
+
+  void _placeStoredGraphics(Map<String, String> args) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId == null || _buffer.graphics.imageById(imageId) == null) {
+      return;
+    }
+    final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
+    _buffer.graphics.placeImage(
       imageId,
       anchor,
       cols: int.tryParse(args['c'] ?? '') ?? 0,
       rows: int.tryParse(args['r'] ?? '') ?? 0,
     );
+    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    for (var i = 0; i < rows; i++) {
+      _buffer.index();
+    }
     notifyListeners();
   }
 
@@ -1193,4 +1246,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       data[5] == 0x0A &&
       data[6] == 0x1A &&
       data[7] == 0x0A;
+
+  bool _isKittyPlaceholderDiacritic(int char) => unicodeV11.wcwidth(char) == 0;
 }
+
+/// Unicode code point used by Kitty graphics placeholder mode.
+const kittyGraphicsPlaceholderCodePoint = 0x10EEEE;

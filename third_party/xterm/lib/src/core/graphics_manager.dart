@@ -123,6 +123,24 @@ class GraphicsManager {
     return id;
   }
 
+  /// Stores [image] using an id supplied by the Kitty graphics protocol.
+  int storeImageWithId(int id, ui.Image image) {
+    if (id <= 0) {
+      return storeImage(image);
+    }
+
+    final sizeBytes = image.width * image.height * 4;
+    _dropImage(id);
+    _evictIfNeeded(sizeBytes);
+
+    _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _currentMemoryBytes += sizeBytes;
+    if (id >= _nextImageId) {
+      _nextImageId = id + 1;
+    }
+    return id;
+  }
+
   /// Creates a placement of [imageId] anchored at [anchor], optionally spanning
   /// [cols] x [rows] cells.
   TerminalImagePlacement placeImage(
