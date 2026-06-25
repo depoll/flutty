@@ -9,6 +9,7 @@ import 'package:in_app_purchase_android/in_app_purchase_android.dart';
 import 'package:in_app_purchase_storekit/in_app_purchase_storekit.dart';
 import 'package:in_app_purchase_storekit/store_kit_2_wrappers.dart';
 import 'package:in_app_purchase_storekit/store_kit_wrappers.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/monetization.dart';
 import 'settings_service.dart';
@@ -29,11 +30,13 @@ class MonetizationService {
     bool? allowDebugUnlock,
     Duration purchaseTimeout = const Duration(seconds: 60),
     Duration restoreTimeout = const Duration(seconds: 45),
+    Future<String> Function()? packageNameLoader,
   }) : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance,
        _androidPlatformAddition = androidPlatformAddition,
        _allowDebugUnlock = allowDebugUnlock ?? kDebugMode,
        _purchaseTimeout = purchaseTimeout,
-       _restoreTimeout = restoreTimeout;
+       _restoreTimeout = restoreTimeout,
+       _packageNameLoader = packageNameLoader ?? _loadPackageName;
 
   final SettingsService _settings;
   final InAppPurchase _inAppPurchase;
@@ -41,6 +44,7 @@ class MonetizationService {
   final bool _allowDebugUnlock;
   final Duration _purchaseTimeout;
   final Duration _restoreTimeout;
+  final Future<String> Function() _packageNameLoader;
   final _controller = StreamController<MonetizationState>.broadcast();
   final _purchaseOptionsByOfferId = <String, _MonetizationPurchaseOption>{};
 
@@ -180,7 +184,7 @@ class MonetizationService {
     }
 
     final response = await _inAppPurchase.queryProductDetails(
-      MonetizationProductIds.forPlatform(defaultTargetPlatform),
+      await _productIdsForCurrentStorefront(),
     );
     final catalog = _buildMonetizationCatalog(response.productDetails);
     _purchaseOptionsByOfferId
@@ -196,6 +200,17 @@ class MonetizationService {
             ? null
             : 'Could not load purchase options. Try again.',
       ),
+    );
+  }
+
+  Future<Set<String>> _productIdsForCurrentStorefront() async {
+    final packageName = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS => await _packageNameLoader(),
+      _ => null,
+    };
+    return MonetizationProductIds.forPlatform(
+      defaultTargetPlatform,
+      packageName: packageName,
     );
   }
 
@@ -738,6 +753,11 @@ final monetizationServiceProvider = Provider<MonetizationService>((ref) {
   unawaited(service.initialize());
   return service;
 });
+
+Future<String> _loadPackageName() async {
+  final packageInfo = await PackageInfo.fromPlatform();
+  return packageInfo.packageName;
+}
 
 /// Stream provider for the latest [MonetizationState].
 final monetizationStateProvider = StreamProvider<MonetizationState>((ref) {
