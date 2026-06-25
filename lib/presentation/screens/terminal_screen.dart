@@ -12774,6 +12774,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+            _terminalViewKey.currentState?.forceFullRepaint();
           }
 
           if (mounted && result != null) {
