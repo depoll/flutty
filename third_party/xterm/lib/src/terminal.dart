@@ -24,7 +24,6 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
-import 'package:xterm/src/utils/unicode_v11.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
@@ -107,7 +106,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
-  bool _consumeKittyPlaceholderDiacritics = false;
+  _PendingKittyPlaceholder? _pendingKittyPlaceholder;
+  _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
   late var _buffer = _mainBuffer;
 
@@ -464,14 +464,32 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void writeChar(int char) {
-    if (_consumeKittyPlaceholderDiacritics) {
-      if (_isKittyPlaceholderDiacritic(char)) {
+    if (_pendingKittyPlaceholder != null) {
+      final diacriticValue = _kittyPlaceholderDiacriticValue(char);
+      if (diacriticValue != null) {
+        _pendingKittyPlaceholder!.addDiacritic(diacriticValue);
+        _lastKittyPlaceholder = _pendingKittyPlaceholder;
         return;
       }
-      _consumeKittyPlaceholderDiacritics = false;
+      _pendingKittyPlaceholder = null;
     }
     if (char == kittyGraphicsPlaceholderCodePoint) {
-      _consumeKittyPlaceholderDiacritics = true;
+      final pending = _PendingKittyPlaceholder(
+        foreground: _buffer.terminal.cursor.foreground,
+        underlineColor: _buffer.terminal.cursor.underlineColor,
+        anchor: _buffer.currentLine.createAnchor(_buffer.cursorX),
+        previous: _lastKittyPlaceholder,
+      );
+      _buffer.graphics.addPlaceholder(
+        imageId: pending.imageId,
+        imageIdBitWidth: pending.imageIdBitWidth,
+        anchor: pending.anchor,
+        row: pending.row,
+        col: pending.col,
+      );
+      pending.bind(_buffer.graphics.placeholders.last);
+      _pendingKittyPlaceholder = pending;
+      _lastKittyPlaceholder = pending;
     }
     _precedingCodepoint = char;
     _buffer.writeChar(char);
@@ -1079,7 +1097,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final action = args['a'] ?? 't';
     final virtualPlacement = args['U'] == '1';
     if (action == 'p') {
-      if (!virtualPlacement) {
+      if (virtualPlacement) {
+        _setVirtualGraphicsPlacement(args);
+      } else {
         _placeStoredGraphics(args);
       }
       return;
@@ -1091,6 +1111,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
     final shouldPlace = action == 'T' && !virtualPlacement;
+    if (virtualPlacement) {
+      _setVirtualGraphicsPlacement(args);
+    }
 
     // Anchor the placement to the cursor cell now, before the async decode or
     // any further output can move the cursor. Bind it to the buffer that is
@@ -1177,6 +1200,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     notifyListeners();
   }
 
+  void _setVirtualGraphicsPlacement(Map<String, String> args) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId == null) {
+      return;
+    }
+    _buffer.graphics.setVirtualPlacement(
+      imageId,
+      cols: int.tryParse(args['c'] ?? '') ?? 0,
+      rows: int.tryParse(args['r'] ?? '') ?? 0,
+    );
+  }
+
   void _respondToGraphicsQuery(Map<String, String> args, Uint8List data) {
     final error = _graphicsQueryError(args, data);
     final success = error == null;
@@ -1247,8 +1282,203 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       data[6] == 0x1A &&
       data[7] == 0x0A;
 
-  bool _isKittyPlaceholderDiacritic(int char) => unicodeV11.wcwidth(char) == 0;
+  int? _kittyPlaceholderDiacriticValue(int char) {
+    final index = _kittyPlaceholderDiacritics.indexOf(char);
+    return index < 0 ? null : index;
+  }
 }
 
 /// Unicode code point used by Kitty graphics placeholder mode.
 const kittyGraphicsPlaceholderCodePoint = 0x10EEEE;
+
+const _kittyPlaceholderDiacritics = <int>[
+  0x0305,
+  0x030D,
+  0x030E,
+  0x0310,
+  0x0312,
+  0x033D,
+  0x033E,
+  0x033F,
+  0x0346,
+  0x034A,
+  0x034B,
+  0x034C,
+  0x0350,
+  0x0351,
+  0x0352,
+  0x0357,
+  0x035B,
+  0x0363,
+  0x0364,
+  0x0365,
+  0x0366,
+  0x0367,
+  0x0368,
+  0x0369,
+  0x036A,
+  0x036B,
+  0x036C,
+  0x036D,
+  0x036E,
+  0x036F,
+  0x0483,
+  0x0484,
+  0x0485,
+  0x0486,
+  0x0487,
+  0x0592,
+  0x0593,
+  0x0594,
+  0x0595,
+  0x0597,
+  0x0598,
+  0x0599,
+  0x059C,
+  0x059D,
+  0x059E,
+  0x059F,
+  0x05A0,
+  0x05A1,
+  0x05A8,
+  0x05A9,
+  0x05AB,
+  0x05AC,
+  0x05AF,
+  0x05C4,
+  0x0610,
+  0x0611,
+  0x0612,
+  0x0613,
+  0x0614,
+  0x0615,
+  0x0616,
+  0x0617,
+  0x0657,
+  0x0658,
+  0x0659,
+  0x065A,
+  0x065B,
+  0x065D,
+  0x065E,
+  0x06D6,
+  0x06D7,
+  0x06D8,
+  0x06D9,
+  0x06DA,
+  0x06DB,
+  0x06DC,
+  0x06DF,
+  0x06E0,
+  0x06E1,
+  0x06E2,
+  0x06E4,
+  0x06E7,
+  0x06E8,
+  0x06EB,
+  0x06EC,
+  0x0730,
+  0x0732,
+  0x0733,
+  0x0735,
+  0x0736,
+  0x073A,
+  0x073D,
+  0x073F,
+  0x0740,
+  0x0741,
+  0x0743,
+  0x0745,
+  0x0747,
+  0x0749,
+  0x074A,
+  0x07EB,
+  0x07EC,
+  0x07ED,
+  0x07EE,
+  0x07EF,
+  0x07F0,
+  0x07F1,
+  0x07F3,
+  0x0816,
+  0x0817,
+  0x0818,
+  0x0819,
+  0x081B,
+  0x081C,
+  0x081D,
+  0x081E,
+  0x081F,
+  0x0820,
+  0x0821,
+  0x0822,
+  0x0823,
+  0x0825,
+  0x0826,
+  0x0827,
+  0x0829,
+  0x082A,
+  0x082B,
+  0x082C,
+];
+
+class _PendingKittyPlaceholder {
+  _PendingKittyPlaceholder({
+    required this.foreground,
+    required this.underlineColor,
+    required this.anchor,
+    required _PendingKittyPlaceholder? previous,
+  }) {
+    final sameImage = previous != null &&
+        previous.foreground == foreground &&
+        previous.underlineColor == underlineColor;
+    row = sameImage ? previous.row : 0;
+    col = sameImage ? previous.col + 1 : 0;
+    highByte = sameImage ? previous.highByte : 0;
+  }
+
+  final int foreground;
+  final int underlineColor;
+  final CellAnchor anchor;
+  late int row;
+  late int col;
+  late int highByte;
+  var _diacriticCount = 0;
+  TerminalImagePlaceholder? _placeholder;
+
+  int get imageIdBitWidth =>
+      (foreground & CellColor.typeMask) == CellColor.rgb ? 24 : 8;
+
+  int get imageId {
+    final lowBits = foreground & CellColor.valueMask;
+    final low = imageIdBitWidth == 8 ? lowBits & 0xFF : lowBits;
+    return low | (highByte << 24);
+  }
+
+  void bind(TerminalImagePlaceholder placeholder) {
+    _placeholder = placeholder;
+  }
+
+  void addDiacritic(int value) {
+    switch (_diacriticCount) {
+      case 0:
+        row = value;
+        break;
+      case 1:
+        col = value;
+        break;
+      case 2:
+        highByte = value;
+        break;
+    }
+    _diacriticCount += 1;
+    final placeholder = _placeholder;
+    if (placeholder != null) {
+      placeholder
+        ..imageId = imageId
+        ..imageIdBitWidth = imageIdBitWidth
+        ..row = row
+        ..col = col;
+    }
+  }
+}

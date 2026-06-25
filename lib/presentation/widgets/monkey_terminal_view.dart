@@ -28,6 +28,7 @@ import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/cell.dart';
+import 'package:xterm/src/core/graphics_manager.dart';
 import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
@@ -86,11 +87,21 @@ class _KittyGraphicsPlaceholderImageRef {
 }
 
 class _KittyGraphicsPlaceholderRegion {
-  _KittyGraphicsPlaceholderRegion(this.imageRef, int row, int col)
-    : firstRow = row,
-      lastRow = row,
-      firstCol = col,
-      lastCol = col;
+  _KittyGraphicsPlaceholderRegion.fromPlaceholder(
+    TerminalImagePlaceholder placeholder,
+    TerminalImageVirtualPlacement? virtualPlacement,
+  ) : imageRef = _KittyGraphicsPlaceholderImageRef(
+        placeholder.imageId,
+        placeholder.imageIdBitWidth,
+      ),
+      firstRow = placeholder.cellRow - placeholder.row,
+      firstCol = placeholder.cellCol - placeholder.col,
+      lastRow = virtualPlacement == null
+          ? placeholder.cellRow
+          : placeholder.cellRow - placeholder.row + virtualPlacement.rows - 1,
+      lastCol = virtualPlacement == null
+          ? placeholder.cellCol
+          : placeholder.cellCol - placeholder.col + virtualPlacement.cols - 1;
 
   final _KittyGraphicsPlaceholderImageRef imageRef;
   int get imageId => imageRef.id;
@@ -3897,27 +3908,22 @@ class MonkeyRenderTerminal extends RenderBox
     double cellHeight,
   ) {
     final regions = <String, _KittyGraphicsPlaceholderRegion>{};
-    final cellData = CellData.empty();
-    final lines = _terminal.buffer.lines;
-    for (var row = 0; row < lines.length; row++) {
-      final line = lines[row];
-      final maxCol = math.min(line.length, _terminal.viewWidth);
-      for (var col = 0; col < maxCol; col++) {
-        if (line.getCodePoint(col) != kittyGraphicsPlaceholderCodePoint) {
-          continue;
-        }
-        line.getCellData(col, cellData);
-        final imageRef = _kittyPlaceholderImageRef(cellData.foreground);
-        if (imageRef == null) {
-          continue;
-        }
-        regions
-            .putIfAbsent(
-              imageRef.key,
-              () => _KittyGraphicsPlaceholderRegion(imageRef, row, col),
-            )
-            .include(row, col);
+    final graphics = _terminal.graphics..pruneDetachedPlaceholders();
+    for (final placeholder in graphics.placeholders) {
+      if (!placeholder.attached) {
+        continue;
       }
+      final virtualPlacement = graphics.virtualPlacementById(
+        placeholder.imageId,
+      );
+      final region = regions.putIfAbsent(
+        '${placeholder.imageId}:${placeholder.imageIdBitWidth}',
+        () => _KittyGraphicsPlaceholderRegion.fromPlaceholder(
+          placeholder,
+          virtualPlacement,
+        ),
+      );
+      region.include(placeholder.cellRow, placeholder.cellCol);
     }
 
     for (final region in regions.values) {
@@ -3958,18 +3964,6 @@ class MonkeyRenderTerminal extends RenderBox
         // failed image draw tear down the interactive session.
       }
     }
-  }
-
-  _KittyGraphicsPlaceholderImageRef? _kittyPlaceholderImageRef(int foreground) {
-    final type = foreground & CellColor.typeMask;
-    final value = foreground & CellColor.valueMask;
-    if (type == CellColor.rgb) {
-      return _KittyGraphicsPlaceholderImageRef(value, 24);
-    }
-    if (type == CellColor.palette) {
-      return _KittyGraphicsPlaceholderImageRef(value & 0xFF, 8);
-    }
-    return null;
   }
 
   void _paintCursor(Canvas canvas, Offset offset) {

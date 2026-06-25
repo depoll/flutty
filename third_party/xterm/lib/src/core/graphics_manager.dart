@@ -63,6 +63,55 @@ class TerminalImagePlacement {
   void dispose() => anchor.dispose();
 }
 
+/// A Kitty Unicode-placeholder cell that references a stored image.
+class TerminalImagePlaceholder {
+  TerminalImagePlaceholder({
+    required this.imageId,
+    required this.imageIdBitWidth,
+    required this.anchor,
+    required this.row,
+    required this.col,
+  });
+
+  /// The referenced Kitty graphics image id.
+  int imageId;
+
+  /// Number of image-id bits encoded directly in the foreground color.
+  int imageIdBitWidth;
+
+  /// Anchor for this placeholder cell.
+  final CellAnchor anchor;
+
+  /// Row within the virtual image placement.
+  int row;
+
+  /// Column within the virtual image placement.
+  int col;
+
+  /// Column of the placeholder cell.
+  int get cellCol => anchor.x;
+
+  /// Absolute buffer row of the placeholder cell.
+  int get cellRow => anchor.y;
+
+  /// Whether the anchored cell is still present in the buffer.
+  bool get attached => anchor.attached;
+
+  /// Releases the underlying anchor.
+  void dispose() => anchor.dispose();
+}
+
+/// A virtual Kitty Unicode-placeholder placement prototype.
+class TerminalImageVirtualPlacement {
+  TerminalImageVirtualPlacement({required this.cols, required this.rows});
+
+  /// Number of columns the image should occupy.
+  final int cols;
+
+  /// Number of rows the image should occupy.
+  final int rows;
+}
+
 /// Stores decoded terminal images and their placements with count and memory
 /// caps.
 class GraphicsManager {
@@ -79,6 +128,8 @@ class GraphicsManager {
 
   final Map<int, TerminalImage> _images = {};
   final List<TerminalImagePlacement> _placements = [];
+  final List<TerminalImagePlaceholder> _placeholders = [];
+  final Map<int, TerminalImageVirtualPlacement> _virtualPlacements = {};
   final Set<int> _retainedImageIds = {};
 
   int _nextImageId = 1;
@@ -89,6 +140,9 @@ class GraphicsManager {
 
   /// Active placements, oldest first.
   List<TerminalImagePlacement> get placements => _placements;
+
+  /// Active Unicode-placeholder cells, oldest first.
+  List<TerminalImagePlaceholder> get placeholders => _placeholders;
 
   /// Approximate decoded image memory currently retained.
   int get currentMemoryBytes => _currentMemoryBytes;
@@ -112,6 +166,10 @@ class GraphicsManager {
     }
     return image;
   }
+
+  /// Looks up virtual placement dimensions for [imageId].
+  TerminalImageVirtualPlacement? virtualPlacementById(int imageId) =>
+      _virtualPlacements[imageId];
 
   /// Looks up an image referenced by a Kitty Unicode placeholder color.
   ///
@@ -193,6 +251,38 @@ class GraphicsManager {
     return placement;
   }
 
+  /// Records a virtual placement prototype for [imageId].
+  void setVirtualPlacement(int imageId,
+      {required int cols, required int rows}) {
+    if (imageId <= 0 || cols <= 0 || rows <= 0) {
+      return;
+    }
+    _virtualPlacements[imageId] = TerminalImageVirtualPlacement(
+      cols: cols,
+      rows: rows,
+    );
+    _retainedImageIds.add(imageId);
+  }
+
+  /// Adds a Kitty Unicode-placeholder cell.
+  TerminalImagePlaceholder addPlaceholder({
+    required int imageId,
+    required int imageIdBitWidth,
+    required CellAnchor anchor,
+    required int row,
+    required int col,
+  }) {
+    final placeholder = TerminalImagePlaceholder(
+      imageId: imageId,
+      imageIdBitWidth: imageIdBitWidth,
+      anchor: anchor,
+      row: row,
+      col: col,
+    );
+    _placeholders.add(placeholder);
+    return placeholder;
+  }
+
   /// Drops placements whose anchor cell has been evicted from the buffer.
   ///
   /// Returns true if any placement was removed.
@@ -204,6 +294,17 @@ class GraphicsManager {
       return true;
     });
     return _placements.length != before;
+  }
+
+  /// Drops placeholder cells whose anchors have been evicted.
+  bool pruneDetachedPlaceholders() {
+    final before = _placeholders.length;
+    _placeholders.removeWhere((placeholder) {
+      if (placeholder.attached) return false;
+      placeholder.dispose();
+      return true;
+    });
+    return _placeholders.length != before;
   }
 
   /// Removes placements anchored within rows `[firstRow, lastRow]` (inclusive),
@@ -228,6 +329,7 @@ class GraphicsManager {
     if (_placements.length != before) {
       _generation++;
     }
+    pruneDetachedPlaceholders();
     _dropUnreferencedImages();
   }
 
@@ -253,6 +355,7 @@ class GraphicsManager {
     if (_placements.length != before) {
       _generation++;
     }
+    pruneDetachedPlaceholders();
     _dropUnreferencedImages();
   }
 
@@ -264,7 +367,12 @@ class GraphicsManager {
     for (final placement in _placements) {
       placement.dispose();
     }
+    for (final placeholder in _placeholders) {
+      placeholder.dispose();
+    }
     _placements.clear();
+    _placeholders.clear();
+    _virtualPlacements.clear();
     for (final id in _images.keys.toList()) {
       if (!_retainedImageIds.contains(id)) {
         _dropImage(id);
@@ -275,7 +383,11 @@ class GraphicsManager {
   /// Drops stored images that no longer have a placement referencing them.
   void _dropUnreferencedImages() {
     if (_images.isEmpty) return;
-    final referenced = _placements.map((p) => p.imageId).toSet();
+    pruneDetachedPlaceholders();
+    final referenced = {
+      ..._placements.map((p) => p.imageId),
+      ..._placeholders.map((p) => p.imageId),
+    };
     for (final id in _images.keys.toList()) {
       if (!referenced.contains(id) && !_retainedImageIds.contains(id)) {
         _dropImage(id);
@@ -331,9 +443,15 @@ class GraphicsManager {
       _currentMemoryBytes -= image.sizeBytes;
     }
     _retainedImageIds.remove(imageId);
+    _virtualPlacements.remove(imageId);
     _placements.removeWhere((placement) {
       if (placement.imageId != imageId) return false;
       placement.dispose();
+      return true;
+    });
+    _placeholders.removeWhere((placeholder) {
+      if (placeholder.imageId != imageId) return false;
+      placeholder.dispose();
       return true;
     });
   }
