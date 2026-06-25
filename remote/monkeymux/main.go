@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.71"
+	monkeyMuxVersion                  = "0.1.72"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -5637,6 +5637,8 @@ func terminalEnvironment(base []string) []string {
 	env := inheritedEnvironment(base)
 	env = appendEnvironmentDefault(env, "TERM", "xterm-256color", terminalTermIsUsable)
 	env = appendEnvironmentDefault(env, "COLORTERM", "truecolor", terminalColorTermIsTrueColor)
+	env = appendEnvironmentDefault(env, "TERM_PROGRAM", "kitty", terminalProgramSupportsInlineImages)
+	env = appendEnvironmentDefault(env, "KITTY_WINDOW_ID", "1", terminalEnvironmentValueIsPresent)
 	return env
 }
 
@@ -5682,6 +5684,20 @@ func terminalColorTermIsTrueColor(value string) bool {
 func terminalTermIsUsable(value string) bool {
 	normalized := strings.TrimSpace(strings.ToLower(value))
 	return normalized != "" && normalized != "dumb"
+}
+
+func terminalProgramSupportsInlineImages(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	switch normalized {
+	case "kitty", "wezterm", "ghostty":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalEnvironmentValueIsPresent(value string) bool {
+	return strings.TrimSpace(value) != ""
 }
 
 func expandHomePath(path string) (string, error) {
