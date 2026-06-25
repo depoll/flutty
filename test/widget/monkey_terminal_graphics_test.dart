@@ -130,14 +130,17 @@ void main() {
 
       await tester.runAsync(() async {
         final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
-        terminal.write('\x1b_Ga=t,i=42,f=100;$png\x1b\\');
+        terminal.write('\x1b_Ga=T,i=42,f=100,c=8,r=4;$png\x1b\\');
 
         var waited = 0;
-        while (terminal.graphics.imageById(42) == null && waited < 2000) {
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
           await Future<void>.delayed(const Duration(milliseconds: 20));
           waited += 20;
         }
       });
+      terminal.write('\x1b[H\x1b[2J');
+      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(terminal.graphics.imageById(42), isNotNull);
 
       final placeholder = String.fromCharCode(
         kittyGraphicsPlaceholderCodePoint,

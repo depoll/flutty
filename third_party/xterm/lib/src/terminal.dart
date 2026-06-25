@@ -1233,7 +1233,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     required bool success,
   }) {
     final quiet = args['q'];
-    return success ? quiet == '1' : quiet == '2';
+    return success ? quiet == '1' || quiet == '2' : quiet == '2';
   }
 
   bool _looksLikePng(Uint8List data) =>
