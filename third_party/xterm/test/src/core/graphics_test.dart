@@ -188,18 +188,17 @@ void main() {
     });
   });
 
-  testWidgets('Kitty virtual transmit-and-place stores without physical cells',
-      (
+  testWidgets('Kitty virtual transmit-and-place also places a fallback image', (
     tester,
   ) async {
     await tester.runAsync(() async {
       final pngBase64 = await _buildPngBase64(3, 2);
 
       final terminal = Terminal();
-      terminal.write('\x1b_Ga=T,U=1,i=43,f=100;$pngBase64\x1b\\');
+      terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=3,r=2;$pngBase64\x1b\\');
 
       var waited = 0;
-      while (terminal.graphics.imageById(43) == null && waited < 2000) {
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
         waited += 20;
       }
@@ -208,7 +207,12 @@ void main() {
       expect(stored, isNotNull);
       expect(stored!.image.width, 3);
       expect(stored.image.height, 2);
-      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(terminal.graphics.hasPlacements, isTrue);
+      expect(
+        terminal.graphics.virtualPlacementById(43),
+        isNotNull,
+        reason: 'Unicode placeholder clients can still redraw the image later',
+      );
     });
   });
 

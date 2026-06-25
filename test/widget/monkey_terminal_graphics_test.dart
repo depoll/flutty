@@ -166,6 +166,50 @@ void main() {
     },
   );
 
+  testWidgets('Kitty virtual image renders before placeholders arrive', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: RepaintBoundary(
+                key: boundaryKey,
+                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      terminal.write('\x1b_Ga=T,U=1,i=42,f=100,c=8,r=4,q=2;$png\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isTrue,
+      reason:
+          'Copilot can emit a virtual image before/without placeholder cells',
+    );
+  });
+
   testWidgets('Kitty Unicode placeholder resolves high-byte image ids', (
     tester,
   ) async {

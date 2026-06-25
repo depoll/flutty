@@ -1110,7 +1110,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if ((action != 't' && action != 'T') || data.isEmpty) {
       return;
     }
-    final shouldPlace = action == 'T' && !virtualPlacement;
+    final shouldPlace = action == 'T';
     if (virtualPlacement) {
       _setVirtualGraphicsPlacement(args);
     }
@@ -1166,6 +1166,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final storedImageId = imageId == null
         ? manager.storeImage(image)
         : manager.storeImageWithId(imageId, image);
+    if (args['U'] == '1') {
+      manager.setVirtualPlacement(
+        storedImageId,
+        cols: int.tryParse(args['c'] ?? '') ?? 0,
+        rows: int.tryParse(args['r'] ?? '') ?? 0,
+      );
+    }
     if (anchor != null) {
       if (!anchor.attached || manager.generation != generation) {
         anchor.dispose();
