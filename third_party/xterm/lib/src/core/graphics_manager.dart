@@ -79,6 +79,7 @@ class GraphicsManager {
 
   final Map<int, TerminalImage> _images = {};
   final List<TerminalImagePlacement> _placements = [];
+  final Set<int> _retainedImageIds = {};
 
   int _nextImageId = 1;
   int _nextPlacementId = 1;
@@ -134,6 +135,7 @@ class GraphicsManager {
     _evictIfNeeded(sizeBytes);
 
     _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _retainedImageIds.add(id);
     _currentMemoryBytes += sizeBytes;
     if (id >= _nextImageId) {
       _nextImageId = id + 1;
@@ -223,16 +225,20 @@ class GraphicsManager {
     _dropUnreferencedImages();
   }
 
-  /// Removes every image and placement. The decoded images are dropped rather
-  /// than disposed; see [removePlacementsInRows] for why.
+  /// Removes every physical placement and drops placement-only images. Images
+  /// with protocol ids are retained so Unicode-placeholder redraws can reuse
+  /// them after a clear.
   void clear() {
     _generation++;
     for (final placement in _placements) {
       placement.dispose();
     }
     _placements.clear();
-    _images.clear();
-    _currentMemoryBytes = 0;
+    for (final id in _images.keys.toList()) {
+      if (!_retainedImageIds.contains(id)) {
+        _dropImage(id);
+      }
+    }
   }
 
   /// Drops stored images that no longer have a placement referencing them.
@@ -240,7 +246,7 @@ class GraphicsManager {
     if (_images.isEmpty) return;
     final referenced = _placements.map((p) => p.imageId).toSet();
     for (final id in _images.keys.toList()) {
-      if (!referenced.contains(id)) {
+      if (!referenced.contains(id) && !_retainedImageIds.contains(id)) {
         _dropImage(id);
       }
     }
@@ -293,6 +299,7 @@ class GraphicsManager {
     if (image != null) {
       _currentMemoryBytes -= image.sizeBytes;
     }
+    _retainedImageIds.remove(imageId);
     _placements.removeWhere((placement) {
       if (placement.imageId != imageId) return false;
       placement.dispose();

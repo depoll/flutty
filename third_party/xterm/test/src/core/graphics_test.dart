@@ -124,6 +124,22 @@ void main() {
     expect(terminal.graphics.hasPlacements, isFalse);
   });
 
+  testWidgets('Kitty graphics query q=2 suppresses successful responses', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,q=2,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\',
+    );
+
+    expect(output, isEmpty);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
   testWidgets('Kitty transmit-only images are stored by protocol id', (
     tester,
   ) async {
@@ -168,6 +184,35 @@ void main() {
       expect(stored!.image.width, 3);
       expect(stored.image.height, 2);
       expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('Kitty protocol-id image survives clear for placeholder redraw', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,i=44,f=100,c=3,r=2;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(44), isNotNull);
+      expect(terminal.graphics.hasPlacements, isTrue);
+
+      terminal.write('\x1b[2J');
+
+      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(
+        terminal.graphics.imageById(44),
+        isNotNull,
+        reason: 'placeholder redraws can follow a screen clear',
+      );
     });
   });
 
