@@ -162,6 +162,60 @@ void main() {
     },
   );
 
+  testWidgets('Kitty Unicode placeholder resolves high-byte image ids', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: RepaintBoundary(
+                key: boundaryKey,
+                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      const imageId = 42 + (2 << 24);
+      terminal.write('\x1b_Ga=t,i=$imageId,f=100;$png\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+    final row = List.filled(8, '$placeholder\u0305\u0305\u030E').join();
+    terminal.write('\x1b[38;5;42m$row\r\n$row\r\n$row\r\n$row\x1b[39m');
+    await tester.pump();
+
+    var hasRed = false;
+    await tester.runAsync(() async {
+      hasRed = await _boundaryHasRed(boundaryKey);
+    });
+
+    expect(
+      hasRed,
+      isTrue,
+      reason:
+          'the placeholder color should resolve the retained high-byte image',
+    );
+  });
+
   testWidgets('Kitty Unicode placeholders are hidden when image is missing', (
     tester,
   ) async {

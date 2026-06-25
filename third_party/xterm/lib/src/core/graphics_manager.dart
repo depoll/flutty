@@ -113,6 +113,37 @@ class GraphicsManager {
     return image;
   }
 
+  /// Looks up an image referenced by a Kitty Unicode placeholder color.
+  ///
+  /// Placeholders encode the low 8 or 24 bits of the protocol image id in the
+  /// foreground color, with higher bits optionally carried by combining
+  /// diacritics. When that high-byte metadata is not available, fall back to the
+  /// retained protocol image whose low bits match the color value.
+  TerminalImage? imageByPlaceholderColorId(int id, {required int bitWidth}) {
+    final direct = imageById(id);
+    if (direct != null) {
+      return direct;
+    }
+
+    final mask = bitWidth >= 24 ? 0xFFFFFF : 0xFF;
+    TerminalImage? best;
+    for (final entry in _images.entries) {
+      if (!_retainedImageIds.contains(entry.key)) {
+        continue;
+      }
+      if ((entry.key & mask) != id) {
+        continue;
+      }
+      if (best == null || entry.value._lastAccess >= best._lastAccess) {
+        best = entry.value;
+      }
+    }
+    if (best != null) {
+      best._lastAccess = ++_accessClock;
+    }
+    return best;
+  }
+
   /// Stores [image] and returns its new id.
   int storeImage(ui.Image image) {
     final sizeBytes = image.width * image.height * 4;
