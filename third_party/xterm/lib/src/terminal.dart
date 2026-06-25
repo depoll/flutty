@@ -1060,6 +1060,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final data = Uint8List.fromList(_graphicsData);
     _graphicsData.clear();
 
+    if (args['a'] == 'q') {
+      _respondToGraphicsQuery(args, data);
+      return;
+    }
+
     // Only transmit-and-display (a=T) is rendered; other actions are ignored.
     if ((args['a'] ?? 't') != 'T' || data.isEmpty) {
       return;
@@ -1090,7 +1095,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     GraphicsManager manager,
     int generation,
   ) async {
-    final format = int.tryParse(args['f'] ?? '') ?? 100;
+    final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
 
@@ -1118,4 +1123,74 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     );
     notifyListeners();
   }
+
+  void _respondToGraphicsQuery(Map<String, String> args, Uint8List data) {
+    final error = _graphicsQueryError(args, data);
+    final success = error == null;
+    if (_graphicsResponseSuppressed(args, success: success)) {
+      return;
+    }
+
+    final control = <String>[];
+    if (args['i'] case final imageId? when imageId.isNotEmpty) {
+      control.add('i=$imageId');
+    }
+    onOutput?.call(
+      '\x1b_G${control.join(',')};${success ? 'OK' : error}\x1b\\',
+    );
+  }
+
+  String? _graphicsQueryError(Map<String, String> args, Uint8List data) {
+    if ((args['t'] ?? 'd') != 'd') {
+      return 'EINVAL: unsupported transmission medium';
+    }
+    if (args.containsKey('o')) {
+      return 'EINVAL: unsupported compression';
+    }
+    if (data.isEmpty) {
+      return 'EINVAL: missing image data';
+    }
+
+    final format = _graphicsFormat(args);
+    if (format == 24 || format == 32) {
+      final width = int.tryParse(args['s'] ?? '') ?? 0;
+      final height = int.tryParse(args['v'] ?? '') ?? 0;
+      if (width <= 0 || height <= 0) {
+        return 'EINVAL: missing image dimensions';
+      }
+      final bytesPerPixel = format == 24 ? 3 : 4;
+      if (data.length < width * height * bytesPerPixel) {
+        return 'EINVAL: invalid image data';
+      }
+      return null;
+    }
+
+    if (format == 100) {
+      return _looksLikePng(data) ? null : 'EINVAL: invalid PNG data';
+    }
+
+    return 'EINVAL: unsupported image format';
+  }
+
+  int _graphicsFormat(Map<String, String> args) =>
+      int.tryParse(args['f'] ?? '') ?? 32;
+
+  bool _graphicsResponseSuppressed(
+    Map<String, String> args, {
+    required bool success,
+  }) {
+    final quiet = args['q'];
+    return success ? quiet == '1' : quiet == '2';
+  }
+
+  bool _looksLikePng(Uint8List data) =>
+      data.length >= 8 &&
+      data[0] == 0x89 &&
+      data[1] == 0x50 &&
+      data[2] == 0x4E &&
+      data[3] == 0x47 &&
+      data[4] == 0x0D &&
+      data[5] == 0x0A &&
+      data[6] == 0x1A &&
+      data[7] == 0x0A;
 }

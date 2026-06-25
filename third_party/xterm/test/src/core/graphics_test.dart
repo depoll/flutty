@@ -51,6 +51,79 @@ void main() {
     });
   });
 
+  testWidgets('Kitty graphics omitted format defaults to RGBA', (tester) async {
+    await tester.runAsync(() async {
+      final rgbaBase64 = base64.encode([0xFF, 0x00, 0x00, 0xFF]);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,s=1,v=1;$rgbaBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final placement = terminal.graphics.placements.single;
+      final stored = terminal.graphics.imageById(placement.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 1);
+      expect(stored.image.height, 1);
+    });
+  });
+
+  testWidgets('Kitty graphics query responds before following DA1', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\\x1b[c',
+    );
+
+    expect(output, ['\x1b_Gi=31;OK\x1b\\', '\x1b[?1;2c']);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  testWidgets('Kitty graphics query rejects unsupported transmission media', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,a=q,t=f;${base64.encode('/tmp/image.png'.codeUnits)}'
+      '\x1b\\',
+    );
+
+    expect(
+      output,
+      ['\x1b_Gi=31;EINVAL: unsupported transmission medium\x1b\\'],
+    );
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  testWidgets('Kitty graphics query honors quiet OK suppression', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,q=1,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\',
+    );
+
+    expect(output, isEmpty);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
   testWidgets('a=T advances the cursor below the image by r rows', (
     tester,
   ) async {
