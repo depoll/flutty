@@ -124,6 +124,67 @@ void main() {
     expect(terminal.graphics.hasPlacements, isFalse);
   });
 
+  testWidgets('Kitty transmit-only images are stored by protocol id', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=t,i=42,f=100;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(42) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final stored = terminal.graphics.imageById(42);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+      expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('Kitty virtual transmit-and-place stores without physical cells',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,U=1,i=43,f=100;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(43) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final stored = terminal.graphics.imageById(43);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+      expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('Kitty Unicode placeholder diacritics do not consume cells', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    terminal.write('\x1b[38;5;42m$placeholder\u0305\u0305X');
+
+    final line = terminal.buffer.lines[terminal.buffer.absoluteCursorY];
+    expect(line.getCodePoint(0), kittyGraphicsPlaceholderCodePoint);
+    expect(line.getCodePoint(1), 'X'.codeUnitAt(0));
+    expect(line.getText(0, 2), '${placeholder}X');
+  });
+
   testWidgets('a=T advances the cursor below the image by r rows', (
     tester,
   ) async {

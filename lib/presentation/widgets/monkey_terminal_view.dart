@@ -76,6 +76,27 @@ const _backgroundAlphaCandidates = <int>[
   0xCC,
 ];
 
+class _KittyGraphicsPlaceholderRegion {
+  _KittyGraphicsPlaceholderRegion(this.imageId, int row, int col)
+    : firstRow = row,
+      lastRow = row,
+      firstCol = col,
+      lastCol = col;
+
+  final int imageId;
+  int firstRow;
+  int lastRow;
+  int firstCol;
+  int lastCol;
+
+  void include(int row, int col) {
+    firstRow = math.min(firstRow, row);
+    lastRow = math.max(lastRow, row);
+    firstCol = math.min(firstCol, col);
+    lastCol = math.max(lastCol, col);
+  }
+}
+
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
   final luminanceB = b.computeLuminance();
@@ -3766,7 +3787,7 @@ class MonkeyRenderTerminal extends RenderBox
     int lastLine,
   ) {
     final graphics = _terminal.graphics;
-    if (!graphics.hasPlacements) {
+    if (!graphics.hasPlacements && graphics.imageCount == 0) {
       return;
     }
 
@@ -3845,6 +3866,92 @@ class MonkeyRenderTerminal extends RenderBox
         // terminal. The next frame re-attempts with fresh metrics.
       }
     }
+    _paintKittyPlaceholderGraphics(
+      canvas,
+      offset,
+      firstLine,
+      lastLine,
+      cellWidth,
+      cellHeight,
+    );
+  }
+
+  void _paintKittyPlaceholderGraphics(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+    double cellWidth,
+    double cellHeight,
+  ) {
+    final regions = <int, _KittyGraphicsPlaceholderRegion>{};
+    final cellData = CellData.empty();
+    final lines = _terminal.buffer.lines;
+    for (var row = firstLine; row <= lastLine && row < lines.length; row++) {
+      if (row < 0) {
+        continue;
+      }
+      final line = lines[row];
+      final maxCol = math.min(line.length, _terminal.viewWidth);
+      for (var col = 0; col < maxCol; col++) {
+        if (line.getCodePoint(col) != kittyGraphicsPlaceholderCodePoint) {
+          continue;
+        }
+        line.getCellData(col, cellData);
+        final imageId = _kittyPlaceholderImageId(cellData.foreground);
+        if (imageId == null) {
+          continue;
+        }
+        regions
+            .putIfAbsent(
+              imageId,
+              () => _KittyGraphicsPlaceholderRegion(imageId, row, col),
+            )
+            .include(row, col);
+      }
+    }
+
+    for (final region in regions.values) {
+      final stored = _terminal.graphics.imageById(region.imageId);
+      if (stored == null) {
+        continue;
+      }
+      final image = stored.image;
+      final topLeft = _linePaintOffset(
+        offset,
+        region.firstRow,
+      ).translate(region.firstCol * cellWidth, 0);
+      final dstWidth = (region.lastCol - region.firstCol + 1) * cellWidth;
+      final dstHeight = (region.lastRow - region.firstRow + 1) * cellHeight;
+      if (!topLeft.dx.isFinite ||
+          !topLeft.dy.isFinite ||
+          !dstWidth.isFinite ||
+          !dstHeight.isFinite ||
+          dstWidth <= 0 ||
+          dstHeight <= 0) {
+        continue;
+      }
+      try {
+        canvas.drawImageRect(
+          image,
+          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
+          Paint()..filterQuality = FilterQuality.medium,
+        );
+      } on Object catch (_) {
+        // Placeholder graphics are optional terminal adornment; never let a
+        // failed image draw tear down the interactive session.
+      }
+    }
+  }
+
+  int? _kittyPlaceholderImageId(int foreground) {
+    final type = foreground & CellColor.typeMask;
+    final value = foreground & CellColor.valueMask;
+    if (type == CellColor.rgb || type == CellColor.palette) {
+      return value == 0 ? null : value;
+    }
+    return null;
   }
 
   void _paintCursor(Canvas canvas, Offset offset) {
