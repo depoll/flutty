@@ -163,6 +163,31 @@ void main() {
     });
   });
 
+  testWidgets('Kitty placeholder color can resolve high-byte image ids', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      const imageId = 42 + (2 << 24);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=t,i=$imageId,f=100;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final stored = terminal.graphics.imageByPlaceholderColorId(
+        42,
+        bitWidth: 8,
+      );
+      expect(stored, isNotNull);
+      expect(stored!.id, imageId);
+    });
+  });
+
   testWidgets('Kitty virtual transmit-and-place stores without physical cells',
       (
     tester,

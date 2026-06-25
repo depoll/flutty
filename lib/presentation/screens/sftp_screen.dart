@@ -57,6 +57,16 @@ final StateProvider<Map<SftpBrowserLocationKey, String>>
 sftpBrowserLastPathsProvider =
     StateProvider<Map<SftpBrowserLocationKey, String>>((ref) => const {});
 
+class _NoSnapshotMaterialPageRoute<T> extends MaterialPageRoute<T> {
+  _NoSnapshotMaterialPageRoute({
+    required super.builder,
+    super.fullscreenDialog,
+  });
+
+  @override
+  bool get allowSnapshotting => false;
+}
+
 /// Bounds SFTP operations so stale SSH channels don't leave the browser loading
 /// forever.
 @visibleForTesting
@@ -2066,7 +2076,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
 
       await Navigator.of(context).push<void>(
-        MaterialPageRoute(
+        _NoSnapshotMaterialPageRoute(
           fullscreenDialog: true,
           builder: (context) => _RemoteImageViewerScreen(
             remotePath: remotePath,
@@ -2170,7 +2180,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     await Navigator.of(context).push<void>(
-      MaterialPageRoute(
+      _NoSnapshotMaterialPageRoute(
         fullscreenDialog: true,
         builder: (context) => _RemoteVideoViewerScreen(
           fileName: file.filename,

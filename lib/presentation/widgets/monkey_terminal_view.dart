@@ -76,14 +76,25 @@ const _backgroundAlphaCandidates = <int>[
   0xCC,
 ];
 
+class _KittyGraphicsPlaceholderImageRef {
+  const _KittyGraphicsPlaceholderImageRef(this.id, this.bitWidth);
+
+  final int id;
+  final int bitWidth;
+
+  String get key => '$bitWidth:$id';
+}
+
 class _KittyGraphicsPlaceholderRegion {
-  _KittyGraphicsPlaceholderRegion(this.imageId, int row, int col)
+  _KittyGraphicsPlaceholderRegion(this.imageRef, int row, int col)
     : firstRow = row,
       lastRow = row,
       firstCol = col,
       lastCol = col;
 
-  final int imageId;
+  final _KittyGraphicsPlaceholderImageRef imageRef;
+  int get imageId => imageRef.id;
+  int get imageIdBitWidth => imageRef.bitWidth;
   int firstRow;
   int lastRow;
   int firstCol;
@@ -3885,7 +3896,7 @@ class MonkeyRenderTerminal extends RenderBox
     double cellWidth,
     double cellHeight,
   ) {
-    final regions = <int, _KittyGraphicsPlaceholderRegion>{};
+    final regions = <String, _KittyGraphicsPlaceholderRegion>{};
     final cellData = CellData.empty();
     final lines = _terminal.buffer.lines;
     for (var row = firstLine; row <= lastLine && row < lines.length; row++) {
@@ -3899,21 +3910,24 @@ class MonkeyRenderTerminal extends RenderBox
           continue;
         }
         line.getCellData(col, cellData);
-        final imageId = _kittyPlaceholderImageId(cellData.foreground);
-        if (imageId == null) {
+        final imageRef = _kittyPlaceholderImageRef(cellData.foreground);
+        if (imageRef == null) {
           continue;
         }
         regions
             .putIfAbsent(
-              imageId,
-              () => _KittyGraphicsPlaceholderRegion(imageId, row, col),
+              imageRef.key,
+              () => _KittyGraphicsPlaceholderRegion(imageRef, row, col),
             )
             .include(row, col);
       }
     }
 
     for (final region in regions.values) {
-      final stored = _terminal.graphics.imageById(region.imageId);
+      final stored = _terminal.graphics.imageByPlaceholderColorId(
+        region.imageId,
+        bitWidth: region.imageIdBitWidth,
+      );
       if (stored == null) {
         continue;
       }
@@ -3946,11 +3960,14 @@ class MonkeyRenderTerminal extends RenderBox
     }
   }
 
-  int? _kittyPlaceholderImageId(int foreground) {
+  _KittyGraphicsPlaceholderImageRef? _kittyPlaceholderImageRef(int foreground) {
     final type = foreground & CellColor.typeMask;
     final value = foreground & CellColor.valueMask;
-    if (type == CellColor.rgb || type == CellColor.palette) {
-      return value == 0 ? null : value;
+    if (type == CellColor.rgb) {
+      return _KittyGraphicsPlaceholderImageRef(value, 24);
+    }
+    if (type == CellColor.palette) {
+      return _KittyGraphicsPlaceholderImageRef(value & 0xFF, 8);
     }
     return null;
   }
