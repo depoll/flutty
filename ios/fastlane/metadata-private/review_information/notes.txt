@@ -1,0 +1,10 @@
+MonkeySSH Pro is available from Settings > MonkeySSH Pro and from Pro-gated feature prompts.
+
+The purchase flow shows the subscription title, monthly/annual renewal lengths, App Store-loaded prices, and functional links to:
+- Terms of Use (EULA): https://www.apple.com/legal/internet-services/itunes/dev/stdeula/
+- Privacy Policy: https://github.com/depollsoft/MonkeySSH/blob/main/docs/privacy-policy.md
+
+The private beta app queries only the private App Store product IDs:
+- monkeyssh_pro_monthly
+- monkeyssh_pro_annual
+- monkeyssh_pro_lifetime
