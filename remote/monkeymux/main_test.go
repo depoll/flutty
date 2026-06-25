@@ -129,7 +129,7 @@ func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
 	}
 }
 
-func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
+func TestTerminalEnvironmentAddsTerminalCapabilityDefaults(t *testing.T) {
 	base := []string{"USER=test"}
 
 	env := terminalEnvironment(base)
@@ -139,6 +139,12 @@ func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
 	}
 	if !containsEnv(env, "COLORTERM=truecolor") {
 		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
+	}
+	if !containsEnv(env, "TERM_PROGRAM=kitty") {
+		t.Fatalf("terminal environment = %#v, want TERM_PROGRAM=kitty", env)
+	}
+	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
+		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
 	if !reflect.DeepEqual(base, []string{"USER=test"}) {
 		t.Fatalf("terminal environment mutated base = %#v", base)
@@ -154,8 +160,17 @@ func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
 
 	env := terminalEnvironment(base)
 
-	if !reflect.DeepEqual(env, base) {
-		t.Fatalf("terminal environment = %#v, want existing hints preserved", env)
+	if !containsEnv(env, "TERM=screen-256color") {
+		t.Fatalf("terminal environment = %#v, want existing TERM preserved", env)
+	}
+	if !containsEnv(env, "COLORTERM=24bit") {
+		t.Fatalf("terminal environment = %#v, want existing COLORTERM preserved", env)
+	}
+	if !containsEnv(env, "TERM_PROGRAM=kitty") {
+		t.Fatalf("terminal environment = %#v, want TERM_PROGRAM=kitty", env)
+	}
+	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
+		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
 }
 
@@ -173,6 +188,12 @@ func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
 	}
 	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"truecolor"}) {
 		t.Fatalf("COLORTERM values = %#v in %#v, want only truecolor", got, env)
+	}
+	if got := envValues(env, "TERM_PROGRAM"); !reflect.DeepEqual(got, []string{"kitty"}) {
+		t.Fatalf("TERM_PROGRAM values = %#v in %#v, want only kitty", got, env)
+	}
+	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want only 1", got, env)
 	}
 	if !containsEnv(env, "USER=test") {
 		t.Fatalf("terminal environment = %#v, want USER preserved", env)
@@ -193,6 +214,27 @@ func TestTerminalEnvironmentKeepsExistingUsableTerminalHints(t *testing.T) {
 	}
 	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"24bit"}) {
 		t.Fatalf("COLORTERM values = %#v in %#v, want only 24bit", got, env)
+	}
+	if got := envValues(env, "TERM_PROGRAM"); !reflect.DeepEqual(got, []string{"kitty"}) {
+		t.Fatalf("TERM_PROGRAM values = %#v in %#v, want only kitty", got, env)
+	}
+	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want only 1", got, env)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingKittyCompatibleHints(t *testing.T) {
+	env := terminalEnvironment([]string{
+		"TERM_PROGRAM=WezTerm",
+		"KITTY_WINDOW_ID=99",
+		"USER=test",
+	})
+
+	if got := envValues(env, "TERM_PROGRAM"); !reflect.DeepEqual(got, []string{"WezTerm"}) {
+		t.Fatalf("TERM_PROGRAM values = %#v in %#v, want existing WezTerm", got, env)
+	}
+	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"99"}) {
+		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want existing 99", got, env)
 	}
 }
 
