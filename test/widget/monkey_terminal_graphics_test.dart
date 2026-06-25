@@ -18,20 +18,24 @@ Future<String> _buildSolidPngBase64(Color color, int size) async {
   return base64.encode(bytes!.buffer.asUint8List());
 }
 
-Future<bool> _boundaryHasRed(GlobalKey key) async {
+Future<bool> _boundaryHasRed(GlobalKey key) async =>
+    await _boundaryRedPixelCount(key) > 0;
+
+Future<int> _boundaryRedPixelCount(GlobalKey key) async {
   final boundary =
       key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
   final shot = await boundary.toImage();
   final data = (await shot.toByteData())!;
+  var count = 0;
   for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
     final r = data.getUint8(i);
     final g = data.getUint8(i + 1);
     final b = data.getUint8(i + 2);
     if (r > 150 && g < 90 && b < 90) {
-      return true;
+      count += 1;
     }
   }
-  return false;
+  return count;
 }
 
 void main() {

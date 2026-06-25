@@ -3899,10 +3899,7 @@ class MonkeyRenderTerminal extends RenderBox
     final regions = <String, _KittyGraphicsPlaceholderRegion>{};
     final cellData = CellData.empty();
     final lines = _terminal.buffer.lines;
-    for (var row = firstLine; row <= lastLine && row < lines.length; row++) {
-      if (row < 0) {
-        continue;
-      }
+    for (var row = 0; row < lines.length; row++) {
       final line = lines[row];
       final maxCol = math.min(line.length, _terminal.viewWidth);
       for (var col = 0; col < maxCol; col++) {
@@ -3924,6 +3921,9 @@ class MonkeyRenderTerminal extends RenderBox
     }
 
     for (final region in regions.values) {
+      if (region.lastRow < firstLine || region.firstRow > lastLine) {
+        continue;
+      }
       final stored = _terminal.graphics.imageByPlaceholderColorId(
         region.imageId,
         bitWidth: region.imageIdBitWidth,
