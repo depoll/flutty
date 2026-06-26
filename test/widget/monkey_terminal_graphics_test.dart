@@ -208,6 +208,14 @@ void main() {
       reason:
           'Copilot can emit a virtual image before/without placeholder cells',
     );
+
+    terminal.write('\x1b[2J');
+    await tester.pump();
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isTrue,
+      reason: 'Copilot virtual fallback image should survive redraw clears',
+    );
   });
 
   testWidgets('Kitty Unicode placeholder resolves high-byte image ids', (
