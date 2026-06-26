@@ -1711,6 +1711,103 @@ func TestReplayStripRemovesDesktopNotifications(t *testing.T) {
 	}
 }
 
+func TestExtractKittyGraphicsTransmissionsRestoresImage(t *testing.T) {
+	// A placeholder-protocol transmission: display action a=T with a virtual
+	// placement (U=1), surrounded by ordinary TUI output and the placeholder
+	// cells that display it.
+	history := []byte("some tui output\r\n" +
+		"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\" +
+		"\x1b[38;2;165;227;11m\U0010eeee\u0305\u0305 placeholders\r\n" +
+		"more output")
+
+	out := string(extractKittyGraphicsTransmissions(history))
+
+	if out == "" {
+		t.Fatal("no transmission extracted; image would be lost on reattach")
+	}
+	if !strings.Contains(out, "i=10871563") || !strings.Contains(out, "iVBORw0KGgo=") {
+		t.Fatalf("extracted transmission missing image id/payload: %q", out)
+	}
+	// The display action must be downgraded so replay never draws or moves the
+	// cursor.
+	if strings.Contains(out, "a=T") {
+		t.Fatalf("a=T not downgraded to a=t, replay would place image: %q", out)
+	}
+	if !strings.Contains(out, "a=t") {
+		t.Fatalf("expected store-only transmit a=t: %q", out)
+	}
+	// Only the transmission is replayed, never the visible TUI output or the
+	// placeholder cells.
+	if strings.Contains(out, "tui output") ||
+		strings.Contains(out, "placeholders") ||
+		strings.Contains(out, "\U0010eeee") {
+		t.Fatalf("replay leaked visible output (would double-draw): %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsChunked(t *testing.T) {
+	// A chunked transmission: first chunk carries the control + m=1, the rest
+	// carry only m=1/m=0. All chunks must be replayed so the payload decodes.
+	history := []byte(
+		"\x1b_Ga=T,U=1,i=42,c=8,r=4,f=100,m=1;AAAA\x1b\\" +
+			"\x1b_Gm=1;BBBB\x1b\\" +
+			"\x1b_Gm=0;CCCC\x1b\\" +
+			"trailing")
+
+	out := string(extractKittyGraphicsTransmissions(history))
+
+	for _, want := range []string{"AAAA", "BBBB", "CCCC", "i=42"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("chunked transmission missing %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "trailing") {
+		t.Fatalf("replay leaked trailing output: %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsDedupesById(t *testing.T) {
+	history := []byte(
+		"\x1b_Ga=T,U=1,i=7,f=100;OLD\x1b\\" +
+			"\x1b_Ga=T,U=1,i=7,f=100;NEW\x1b\\")
+
+	out := string(extractKittyGraphicsTransmissions(history))
+
+	if strings.Contains(out, "OLD") {
+		t.Fatalf("superseded transmission for id=7 was replayed: %q", out)
+	}
+	if !strings.Contains(out, "NEW") {
+		t.Fatalf("latest transmission for id=7 missing: %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsIgnoresNonTransmissions(t *testing.T) {
+	history := []byte(
+		"\x1b_Ga=q,i=1;\x1b\\" + // query
+			"\x1b_Ga=d,d=A;\x1b\\" + // delete
+			"\x1b_Ga=p,i=2;\x1b\\") // placement only
+
+	if out := extractKittyGraphicsTransmissions(history); len(out) != 0 {
+		t.Fatalf("non-transmission graphics commands were replayed: %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsNone(t *testing.T) {
+	if out := extractKittyGraphicsTransmissions([]byte("plain output\r\n")); out != nil {
+		t.Fatalf("expected nil for history without graphics, got %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsSkipsTruncated(t *testing.T) {
+	// A transmission whose continuation chunks were trimmed out of history must
+	// not be replayed half-formed (it would never decode).
+	history := []byte("\x1b_Ga=T,U=1,i=9,f=100,m=1;AAAA\x1b\\")
+
+	if out := extractKittyGraphicsTransmissions(history); len(out) != 0 {
+		t.Fatalf("incomplete chunked transmission was replayed: %q", out)
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -2383,6 +2480,45 @@ func TestActiveReplaySetsWindowTitle(t *testing.T) {
 		if !strings.Contains(replay, sequence) {
 			t.Fatalf("replay = %q, want title sequence %q", replay, sequence)
 		}
+	}
+}
+
+func TestAltScreenReplayRestoresKittyImageButNotHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Copilot CLI",
+		paneTitle:    "Copilot CLI",
+		privateModes: map[string]bool{"1049": true},
+		history: []byte("visible tui frame\r\n" +
+			"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\" +
+			"\x1b[38;2;165;227;11m\U0010eeee\u0305\u0305 cells"),
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	if !window.usesForegroundRedrawReplayLocked() {
+		t.Fatal("alt-screen window should use foreground-redraw replay")
+	}
+
+	replay := string(server.replayBytesLocked(window))
+
+	// The image bytes are restored so redrawn placeholders have something to
+	// composite, but as a store-only transmit (a=t, not a=T).
+	if !strings.Contains(replay, "i=10871563") ||
+		!strings.Contains(replay, "iVBORw0KGgo=") {
+		t.Fatalf("replay dropped the Kitty image transmission: %q", replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("replay kept display action a=T (would place image): %q", replay)
+	}
+	// The visible TUI history and placeholder cells are NOT replayed; the app
+	// redraws them itself.
+	if strings.Contains(replay, "visible tui frame") ||
+		strings.Contains(replay, "\U0010eeee") {
+		t.Fatalf("alt-screen replay leaked visible history (double-draw): %q", replay)
 	}
 }
 
