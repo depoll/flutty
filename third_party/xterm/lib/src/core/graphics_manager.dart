@@ -29,9 +29,13 @@ class TerminalImagePlacement {
     required this.placementId,
     required this.imageId,
     required this.anchor,
+    required int fallbackCol,
+    required int fallbackRow,
     this.cols = 0,
     this.rows = 0,
-  });
+    this.retainOnErase = false,
+  })  : _fallbackCol = fallbackCol,
+        _fallbackRow = fallbackRow;
 
   /// Placement id assigned by the [GraphicsManager].
   final int placementId;
@@ -42,6 +46,9 @@ class TerminalImagePlacement {
   /// Anchor for the top-left cell of the placement.
   final CellAnchor anchor;
 
+  final int _fallbackCol;
+  final int _fallbackRow;
+
   /// Number of columns the image should occupy (from `c=`), or `0` to size the
   /// image from its own pixel dimensions.
   final int cols;
@@ -50,14 +57,17 @@ class TerminalImagePlacement {
   /// image from its own pixel dimensions.
   final int rows;
 
+  /// Whether this placement should survive normal terminal erases.
+  final bool retainOnErase;
+
   /// Column of the top-left cell.
-  int get col => anchor.x;
+  int get col => anchor.attached ? anchor.x : _fallbackCol;
 
   /// Absolute buffer row of the top-left cell.
-  int get row => anchor.y;
+  int get row => anchor.attached ? anchor.y : _fallbackRow;
 
   /// Whether the anchored cell is still present in the buffer.
-  bool get attached => anchor.attached;
+  bool get attached => retainOnErase || anchor.attached;
 
   /// Releases the underlying anchor.
   void dispose() => anchor.dispose();
@@ -239,13 +249,17 @@ class GraphicsManager {
     CellAnchor anchor, {
     int cols = 0,
     int rows = 0,
+    bool retainOnErase = false,
   }) {
     final placement = TerminalImagePlacement(
       placementId: _nextPlacementId++,
       imageId: imageId,
       anchor: anchor,
+      fallbackCol: anchor.x,
+      fallbackRow: anchor.y,
       cols: cols,
       rows: rows,
+      retainOnErase: retainOnErase,
     );
     _placements.add(placement);
     return placement;
@@ -319,6 +333,9 @@ class GraphicsManager {
   void removePlacementsInRows(int firstRow, int lastRow) {
     final before = _placements.length;
     _placements.removeWhere((placement) {
+      if (placement.retainOnErase) {
+        return false;
+      }
       final remove = !placement.attached ||
           _placementIntersectsRows(placement, firstRow, lastRow);
       if (remove) {
@@ -344,6 +361,9 @@ class GraphicsManager {
   ) {
     final before = _placements.length;
     _placements.removeWhere((placement) {
+      if (placement.retainOnErase) {
+        return false;
+      }
       final remove = !placement.attached ||
           (_placementIntersectsRows(placement, firstRow, lastRow) &&
               _placementIntersectsCols(placement, firstCol, lastCol));

@@ -213,6 +213,14 @@ void main() {
         isNotNull,
         reason: 'Unicode placeholder clients can still redraw the image later',
       );
+
+      terminal.write('\x1b[2J');
+      expect(
+        terminal.graphics.hasPlacements,
+        isTrue,
+        reason:
+            'Copilot-style virtual fallback image should survive redraw clears',
+      );
     });
   });
 
