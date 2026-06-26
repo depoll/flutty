@@ -344,6 +344,79 @@ void main() {
     );
   });
 
+  testWidgets(
+    'Kitty image renders when delivered in chunked, stream-decoded bytes',
+    (tester) async {
+      final boundaryKey = GlobalKey();
+      final terminal = Terminal();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 300,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.runAsync(() async {
+        const imageId = 0xA5E30B;
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        final stream =
+            '\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\'
+            '${_placeholderGrid(imageId, cols: 8, rows: 4)}';
+
+        // Mirror the live SSH path: split the UTF-8 *bytes* into small chunks
+        // (which can land mid-code-point, e.g. inside a 4-byte U+10EEEE cell or
+        // the large APC payload) and run them through a streaming UTF-8 decoder
+        // before writing, exactly like Stream.transform(Utf8Decoder) does.
+        final bytes = utf8.encode(stream);
+        final decoder = const Utf8Decoder(allowMalformed: true)
+            .startChunkedConversion(
+              ChunkedConversionSink<String>.withCallback((pieces) {
+                for (final piece in pieces) {
+                  if (piece.isNotEmpty) {
+                    terminal.write(piece);
+                  }
+                }
+              }),
+            );
+        const chunkSize = 7;
+        for (var i = 0; i < bytes.length; i += chunkSize) {
+          final end = (i + chunkSize).clamp(0, bytes.length);
+          decoder.add(bytes.sublist(i, end));
+        }
+        decoder.close();
+
+        var waited = 0;
+        while (terminal.graphics.imageById(0xA5E30B) == null && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason:
+            'chunked, stream-decoded delivery must still composite the image',
+      );
+    },
+  );
+
   testWidgets('Kitty Unicode placeholder resolves high-byte image ids', (
     tester,
   ) async {
