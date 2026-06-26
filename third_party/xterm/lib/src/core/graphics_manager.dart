@@ -33,7 +33,6 @@ class TerminalImagePlacement {
     required int fallbackRow,
     this.cols = 0,
     this.rows = 0,
-    this.retainOnErase = false,
   })  : _fallbackCol = fallbackCol,
         _fallbackRow = fallbackRow;
 
@@ -57,9 +56,6 @@ class TerminalImagePlacement {
   /// image from its own pixel dimensions.
   final int rows;
 
-  /// Whether this placement should survive normal terminal erases.
-  final bool retainOnErase;
-
   /// Column of the top-left cell.
   int get col => anchor.attached ? anchor.x : _fallbackCol;
 
@@ -67,7 +63,7 @@ class TerminalImagePlacement {
   int get row => anchor.attached ? anchor.y : _fallbackRow;
 
   /// Whether the anchored cell is still present in the buffer.
-  bool get attached => retainOnErase || anchor.attached;
+  bool get attached => anchor.attached;
 
   /// Releases the underlying anchor.
   void dispose() => anchor.dispose();
@@ -249,7 +245,6 @@ class GraphicsManager {
     CellAnchor anchor, {
     int cols = 0,
     int rows = 0,
-    bool retainOnErase = false,
   }) {
     final placement = TerminalImagePlacement(
       placementId: _nextPlacementId++,
@@ -259,7 +254,6 @@ class GraphicsManager {
       fallbackRow: anchor.y,
       cols: cols,
       rows: rows,
-      retainOnErase: retainOnErase,
     );
     _placements.add(placement);
     return placement;
@@ -333,9 +327,6 @@ class GraphicsManager {
   void removePlacementsInRows(int firstRow, int lastRow) {
     final before = _placements.length;
     _placements.removeWhere((placement) {
-      if (placement.retainOnErase) {
-        return false;
-      }
       final remove = !placement.attached ||
           _placementIntersectsRows(placement, firstRow, lastRow);
       if (remove) {
@@ -361,9 +352,6 @@ class GraphicsManager {
   ) {
     final before = _placements.length;
     _placements.removeWhere((placement) {
-      if (placement.retainOnErase) {
-        return false;
-      }
       final remove = !placement.attached ||
           (_placementIntersectsRows(placement, firstRow, lastRow) &&
               _placementIntersectsCols(placement, firstCol, lastCol));

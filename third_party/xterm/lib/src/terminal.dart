@@ -1183,7 +1183,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         anchor,
         cols: int.tryParse(args['c'] ?? '') ?? 0,
         rows: int.tryParse(args['r'] ?? '') ?? 0,
-        retainOnErase: args['U'] == '1',
       );
     }
     notifyListeners();
@@ -1470,6 +1469,9 @@ class _PendingKittyPlaceholder {
   void addDiacritic(int value) {
     switch (_diacriticCount) {
       case 0:
+        if (value != row) {
+          col = 0;
+        }
         row = value;
         break;
       case 1:

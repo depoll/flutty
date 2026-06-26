@@ -213,8 +213,13 @@ void main() {
     await tester.pump();
     expect(
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
-      isTrue,
-      reason: 'Copilot virtual fallback image should survive redraw clears',
+      isFalse,
+      reason: 'redraw clears should dismiss the physical fallback image',
+    );
+    expect(
+      terminal.graphics.imageById(42),
+      isNotNull,
+      reason: 'placeholder redraws can still reuse the image bytes',
     );
   });
 
