@@ -344,6 +344,70 @@ void main() {
     );
   });
 
+  testWidgets('Kitty placeholder image is dismissed once mostly overwritten', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: RepaintBoundary(
+                key: boundaryKey,
+                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    const imageId = 0xA5E30B;
+    await tester.runAsync(() async {
+      final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      terminal
+        ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
+        ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
+
+      var waited = 0;
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isTrue,
+      reason: 'the fully present image must render',
+    );
+
+    // Simulate the way a TUI (e.g. Copilot CLI) tears the image down: it
+    // overwrites most of the grid's cells with other content but, relying on
+    // cursor-forward movement, leaves a few untouched. Those survivors must
+    // not be painted as stale fragments/stripes of the image.
+    terminal.write('\x1b[H'); // cursor home (top-left of the 8x4 grid)
+    for (var row = 0; row < 3; row++) {
+      terminal.write('${' ' * 8}\r\n'); // blank the first three grid rows
+    }
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isFalse,
+      reason:
+          'with most of the grid overwritten the image must be dismissed, '
+          'not left as fragments of the remaining cells',
+    );
+  });
+
   testWidgets(
     'Kitty image renders when delivered in chunked, stream-decoded bytes',
     (tester) async {
