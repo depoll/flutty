@@ -1808,6 +1808,86 @@ func TestExtractKittyGraphicsTransmissionsSkipsTruncated(t *testing.T) {
 	}
 }
 
+func TestObserveKittyGraphicsRetainsImageAcrossHistoryEviction(t *testing.T) {
+	window := &muxWindow{}
+
+	transmit := []byte(
+		"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\")
+	window.observeKittyGraphicsLocked(transmit)
+	// Flood with later output that would evict the transmit from any rolling
+	// history; the retained cache must be unaffected.
+	window.observeKittyGraphicsLocked(
+		bytes.Repeat([]byte("placeholder frame "), 100000))
+
+	replay := string(window.kittyImageReplayLocked())
+	if !strings.Contains(replay, "i=10871563") ||
+		!strings.Contains(replay, "iVBORw0KGgo=") {
+		t.Fatalf("retained image lost after eviction-scale output: %q", replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("retained transmit not downgraded to store-only: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
+	window := &muxWindow{}
+
+	// Split a single transmission across several observe calls, including a
+	// break inside the base64 payload and between continuation chunks.
+	full := "\x1b_Ga=T,U=1,i=5,c=8,r=4,f=100,m=1;AAAA\x1b\\" +
+		"\x1b_Gm=1;BBBB\x1b\\" +
+		"\x1b_Gm=0;CCCC\x1b\\"
+	// Feed byte-by-byte to stress chunk-boundary handling.
+	for i := 0; i < len(full); i++ {
+		window.observeKittyGraphicsLocked([]byte{full[i]})
+	}
+
+	replay := string(window.kittyImageReplayLocked())
+	for _, want := range []string{"AAAA", "BBBB", "CCCC", "i=5"} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("split transmission missing %q: %q", want, replay)
+		}
+	}
+}
+
+func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+	if got := window.kittyImageReplayLocked(); !strings.Contains(string(got), "PAYLOAD") {
+		t.Fatalf("image id=7 not retained: %q", got)
+	}
+
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
+	if got := window.kittyImageReplayLocked(); len(got) != 0 {
+		t.Fatalf("deleted image id=7 still retained: %q", got)
+	}
+}
+
+func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
+	window := &muxWindow{}
+
+	for i := 0; i < maxRetainedKittyImages+5; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;DATA%d\x1b\\", i, i)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	if len(window.kittyImageOrder) > maxRetainedKittyImages {
+		t.Fatalf("retained %d images, want <= %d",
+			len(window.kittyImageOrder), maxRetainedKittyImages)
+	}
+	// The oldest images are evicted; the most recent are kept.
+	replay := string(window.kittyImageReplayLocked())
+	if strings.Contains(replay, "DATA0") {
+		t.Fatalf("oldest image should have been evicted: %q", replay)
+	}
+	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
+	if !strings.Contains(replay, newest) {
+		t.Fatalf("newest image %q missing: %q", newest, replay)
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -2491,13 +2571,29 @@ func TestAltScreenReplayRestoresKittyImageButNotHistory(t *testing.T) {
 		name:         "Copilot CLI",
 		paneTitle:    "Copilot CLI",
 		privateModes: map[string]bool{"1049": true},
-		history: []byte("visible tui frame\r\n" +
-			"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\" +
-			"\x1b[38;2;165;227;11m\U0010eeee\u0305\u0305 cells"),
 		lastActivity: time.Now(),
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
+
+	// Stream the window output as the live path does: the image is transmitted
+	// once and retained, followed by a flood of other output that evicts it
+	// from the rolling visible history. The retained image must still replay.
+	window.appendHistoryLocked([]byte("visible tui frame\r\n"))
+	transmit := []byte(
+		"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\")
+	window.appendHistoryLocked(transmit)
+	window.observeKittyGraphicsLocked(transmit)
+	placeholders := []byte("\x1b[38;2;165;227;11m\U0010eeee\u0305\u0305 cells")
+	window.appendHistoryLocked(placeholders)
+	window.observeKittyGraphicsLocked(placeholders)
+	// Evict the transmit from the rolling history with newer output.
+	flood := bytes.Repeat([]byte("x"), windowFullReplayHistoryLimitBytes+1024)
+	window.appendHistoryLocked(flood)
+	window.observeKittyGraphicsLocked(flood)
+	if bytes.Contains(window.historyTailLocked(), transmit) {
+		t.Fatal("precondition failed: transmit should have been evicted from history")
+	}
 
 	if !window.usesForegroundRedrawReplayLocked() {
 		t.Fatal("alt-screen window should use foreground-redraw replay")
@@ -2505,8 +2601,9 @@ func TestAltScreenReplayRestoresKittyImageButNotHistory(t *testing.T) {
 
 	replay := string(server.replayBytesLocked(window))
 
-	// The image bytes are restored so redrawn placeholders have something to
-	// composite, but as a store-only transmit (a=t, not a=T).
+	// The image bytes are restored from the retained cache (surviving history
+	// eviction) so redrawn placeholders have something to composite, but as a
+	// store-only transmit (a=t, not a=T).
 	if !strings.Contains(replay, "i=10871563") ||
 		!strings.Contains(replay, "iVBORw0KGgo=") {
 		t.Fatalf("replay dropped the Kitty image transmission: %q", replay)
