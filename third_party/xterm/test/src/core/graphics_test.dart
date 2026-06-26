@@ -217,9 +217,13 @@ void main() {
       terminal.write('\x1b[2J');
       expect(
         terminal.graphics.hasPlacements,
-        isTrue,
-        reason:
-            'Copilot-style virtual fallback image should survive redraw clears',
+        isFalse,
+        reason: 'redraw clears should dismiss the physical fallback image',
+      );
+      expect(
+        terminal.graphics.imageById(43),
+        isNotNull,
+        reason: 'virtual placeholder redraws can still reuse the image bytes',
       );
     });
   });
@@ -265,6 +269,29 @@ void main() {
     expect(line.getCodePoint(0), kittyGraphicsPlaceholderCodePoint);
     expect(line.getCodePoint(1), 'X'.codeUnitAt(0));
     expect(line.getText(0, 2), '${placeholder}X');
+  });
+
+  testWidgets('Kitty Unicode row-only placeholders reset columns per row', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    terminal.write(
+      '\x1b[38;5;42m'
+      '$placeholder\u0305$placeholder$placeholder\r\n'
+      '$placeholder\u030D$placeholder$placeholder',
+    );
+
+    final placeholders = terminal.graphics.placeholders;
+    expect(placeholders.map((p) => (p.row, p.col)).toList(), [
+      (0, 0),
+      (0, 1),
+      (0, 2),
+      (1, 0),
+      (1, 1),
+      (1, 2),
+    ]);
   });
 
   testWidgets('a=T advances the cursor below the image by r rows', (
