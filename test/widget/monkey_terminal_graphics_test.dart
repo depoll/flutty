@@ -38,8 +38,8 @@ Future<int> _boundaryRedPixelCount(GlobalKey key) async {
   return count;
 }
 
-/// Kitty row/column placeholder diacritics for values 0..7 (rowcolumn-diacritics
-/// order). Enough to drive a small placeholder grid in tests.
+/// Kitty row/column placeholder diacritics (rowcolumn-diacritics order),
+/// enough to drive placeholder grids up to 24 cells tall/wide in tests.
 const _kittyDiacritics = <int>[
   0x0305,
   0x030D,
@@ -49,7 +49,40 @@ const _kittyDiacritics = <int>[
   0x033D,
   0x033E,
   0x033F,
+  0x0346,
+  0x034A,
+  0x034B,
+  0x034C,
+  0x0350,
+  0x0351,
+  0x0352,
+  0x0357,
+  0x035B,
+  0x0363,
+  0x0364,
+  0x0365,
+  0x0366,
+  0x0367,
+  0x0368,
+  0x0369,
 ];
+
+/// Writes the placeholder cells for a single image [row] (all [cols] columns) at
+/// the current cursor position, used to redraw individual rows in tests.
+String _placeholderRow(int imageId, {required int row, required int cols}) {
+  final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+  final r = (imageId >> 16) & 0xFF;
+  final g = (imageId >> 8) & 0xFF;
+  final b = imageId & 0xFF;
+  final buffer = StringBuffer()..write('\x1b[38;2;$r;$g;${b}m');
+  for (var col = 0; col < cols; col++) {
+    buffer
+      ..write(placeholder)
+      ..writeCharCode(_kittyDiacritics[row])
+      ..writeCharCode(_kittyDiacritics[col]);
+  }
+  return (buffer..write('\x1b[39m')).toString();
+}
 
 /// Builds the Kitty Unicode-placeholder cells for an [imageId] laid out across
 /// [rows] x [cols] cells, exactly as a kitty-aware client (e.g. Copilot CLI)
@@ -390,12 +423,16 @@ void main() {
     );
 
     // Simulate the way a TUI (e.g. Copilot CLI) tears the image down: it
-    // overwrites most of the grid's cells with other content but, relying on
-    // cursor-forward movement, leaves a few untouched. Those survivors must
-    // not be painted as stale fragments/stripes of the image.
-    terminal.write('\x1b[H'); // cursor home (top-left of the 8x4 grid)
-    for (var row = 0; row < 3; row++) {
-      terminal.write('${' ' * 8}\r\n'); // blank the first three grid rows
+    // overwrites the grid's cells with other content but, relying on
+    // cursor-forward movement, leaves a *scattered* subset untouched (real
+    // tear-downs punch holes through the grid rather than cleanly cropping it).
+    // Those scattered survivors must not be painted as stale fragments/stripes.
+    // Blank a hole out of every grid row so no row stays column-complete and the
+    // remaining cells are sparse within their bounding box.
+    for (var row = 0; row < 4; row++) {
+      terminal
+        ..write('\x1b[${row + 1};3H') // mid-row of the 8-wide grid
+        ..write('    '); // punch a 4-cell hole
     }
     await tester.pump();
 
@@ -403,10 +440,160 @@ void main() {
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
       isFalse,
       reason:
-          'with most of the grid overwritten the image must be dismissed, '
-          'not left as fragments of the remaining cells',
+          'a scattered, holey remnant must be dismissed, not left as '
+          'fragments/stripes of the image',
     );
   });
+
+  testWidgets(
+    'Kitty placeholder image keeps rendering as it scrolls off the alt-screen',
+    (tester) async {
+      final boundaryKey = GlobalKey();
+      // A short alt-screen (no scrollback): scrolling discards whole rows, so a
+      // surviving crop is a smaller but solid rectangle that must keep showing.
+      final terminal = Terminal(maxLines: 100);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 360,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const imageId = 0xA5E30B;
+      terminal
+        ..resize(8, 16)
+        ..write('\x1b[?1049h'); // enter the alternate screen
+      await tester.runAsync(() async {
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        terminal
+          ..write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=12,f=100,q=2;$png\x1b\\')
+          ..write(_placeholderGrid(imageId, cols: 8, rows: 12));
+
+        var waited = 0;
+        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason: 'the full image renders',
+      );
+
+      // Scroll the image more than halfway off the top: only its bottom rows
+      // remain, as a clean contiguous crop.
+      terminal.write('\x1b[16;1H');
+      for (var i = 0; i < 8; i++) {
+        terminal.write('\n');
+      }
+      await tester.pump();
+
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason:
+            'a clean scroll crop must keep rendering even when most of the '
+            'image has scrolled off',
+      );
+    },
+  );
+
+  testWidgets(
+    'Kitty same-id image: stale holey copy is dismissed, fresh copy renders',
+    (tester) async {
+      final boundaryKey = GlobalKey();
+      final terminal = Terminal(maxLines: 100);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 520,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const imageId = 0xA5E30B;
+      terminal
+        ..resize(8, 22)
+        ..write('\x1b[?1049h');
+      await tester.runAsync(() async {
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        terminal.write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=4,f=100,q=2;$png\x1b\\');
+        // Draw one display of the image near the top (rows 1-4)...
+        for (var row = 0; row < 4; row++) {
+          terminal
+            ..write('\x1b[${row + 1};1H')
+            ..write(_placeholderRow(imageId, row: row, cols: 8));
+        }
+        // ...then a second, fresh display lower down (rows 12-15).
+        for (var row = 0; row < 4; row++) {
+          terminal
+            ..write('\x1b[${row + 12};1H')
+            ..write(_placeholderRow(imageId, row: row, cols: 8));
+        }
+        var waited = 0;
+        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+      expect(
+        await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
+        greaterThan(0),
+        reason: 'both displays of the image render initially',
+      );
+
+      // Tear down only the top display (the "closed" one): punch holes through
+      // its rows so it becomes a sparse ghost, while the lower display stays
+      // intact. The ghost must be dismissed; the fresh copy must still render.
+      for (var row = 0; row < 4; row++) {
+        terminal
+          ..write('\x1b[${row + 1};3H')
+          ..write('    ');
+      }
+      await tester.pump();
+
+      // The lower, intact display is a separate placement instance and must
+      // still render — proving the ghost is dismissed per-instance, not by
+      // hiding the whole image id.
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason: 'the intact lower copy must keep rendering',
+      );
+    },
+  );
 
   testWidgets(
     'Kitty image renders when delivered in chunked, stream-decoded bytes',
