@@ -3932,28 +3932,36 @@ class MonkeyRenderTerminal extends RenderBox
     }
 
     // Pass 1: group live placeholder cells into display *instances* and decide
-    // which instances are coherent enough to paint.
+    // which instances are coherent and current enough to paint.
     //
     // A Kitty Unicode-placeholder image is conceptually a solid rectangle:
     // clients (e.g. Copilot CLI) emit every cell of the grid. The same image id
     // can be displayed several times at different screen positions, and an image
-    // can be partially scrolled off or partially overwritten. To tell a real
-    // display from stale leftovers we group cells by the placement offset they
-    // share — every cell of one on-screen placement has the same
-    // `cellRow - imgRow` and `cellCol - imgCol`. Distinct placements (and the
-    // holes punched by an app overwriting an image) therefore fall into separate
-    // groups, which we evaluate independently:
+    // can be partially scrolled off or partially overwritten. We group cells by
+    // the placement offset they share — every cell of one on-screen placement
+    // has the same `cellRow - imgRow` and `cellCol - imgCol` — so distinct
+    // placements (and the holes punched by an app overwriting an image) fall
+    // into separate groups. Each group is then judged on two axes:
     //
-    //  * A solidly displayed image or a clean scroll crop (whole rows scrolled
-    //    off) fills its bounding box (~1.0 density) → render.
-    //  * A torn-down or ghosted remnant, whose cells are overwritten in a
-    //    scattered pattern, leaves a box full of holes (low density) → dismiss,
-    //    so stale fragments/stripes and ghost copies are not painted.
+    //  * Density — a solid image or a clean scroll crop (whole rows scrolled
+    //    off) fills its bounding box (~1.0); a torn remnant overwritten in a
+    //    scattered pattern leaves a box full of holes. Sparse groups are
+    //    dropped so stale fragments/stripes are not painted.
+    //  * Recency — when an app re-displays an image (e.g. closing its full-screen
+    //    viewer and redrawing) without clearing the previous copy's cells, the
+    //    old copy lingers as a ghost. Among the surviving dense groups of one
+    //    image id we keep only the most recently written placement.
     final gridCols = <String, int>{};
     final gridRows = <String, int>{};
     final instanceCellCount = <String, int>{};
     final instanceRowBounds = <String, List<int>>{};
     final instanceColBounds = <String, List<int>>{};
+    // Recency of each instance: the highest placeholder index (placeholders are
+    // appended in write order) seen for it. A redraw that re-displays an image
+    // elsewhere appends fresh placeholders, so the current placement has a
+    // higher recency than a stale leftover (ghost) of the same image.
+    final instanceRecency = <String, int>{};
+    final instanceImageKey = <String, String>{};
 
     String instanceKeyFor(TerminalImagePlaceholder p, String imageKey) {
       final offsetRow = p.cellRow - p.row;
@@ -3961,7 +3969,8 @@ class MonkeyRenderTerminal extends RenderBox
       return '$imageKey@$offsetRow,$offsetCol';
     }
 
-    for (final placeholder in placeholders) {
+    for (var index = 0; index < placeholders.length; index++) {
+      final placeholder = placeholders[index];
       if (!placeholder.attached) {
         continue;
       }
@@ -3982,8 +3991,10 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
       final instanceKey = instanceKeyFor(placeholder, key);
+      instanceImageKey[instanceKey] = key;
       instanceCellCount[instanceKey] =
           (instanceCellCount[instanceKey] ?? 0) + 1;
+      instanceRecency[instanceKey] = index;
       final rowBounds = instanceRowBounds[instanceKey] ??= <int>[
         placeholder.row,
         placeholder.row,
@@ -3998,7 +4009,9 @@ class MonkeyRenderTerminal extends RenderBox
       colBounds[1] = math.max(colBounds[1], placeholder.col);
     }
 
-    final renderableInstances = <String>{};
+    // Filter to instances that are dense enough to be a real display (not a
+    // scattered torn remnant).
+    final denseInstances = <String>[];
     for (final entry in instanceCellCount.entries) {
       final rowBounds = instanceRowBounds[entry.key];
       final colBounds = instanceColBounds[entry.key];
@@ -4012,9 +4025,28 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
       if (entry.value >= boxArea * _kittyPlaceholderRenderThreshold) {
-        renderableInstances.add(entry.key);
+        denseInstances.add(entry.key);
       }
     }
+    if (denseInstances.isEmpty) {
+      return;
+    }
+
+    // Among dense instances of the same image id, keep only the most recently
+    // drawn one. When the app re-displays an image (e.g. closing its full-screen
+    // viewer and redrawing the conversation) without clearing the previous
+    // copy's cells, the older copy lingers as a ghost; its placeholders were
+    // written earlier, so it loses to the current placement here.
+    final newestInstanceForImage = <String, String>{};
+    for (final instanceKey in denseInstances) {
+      final imageKey = instanceImageKey[instanceKey]!;
+      final current = newestInstanceForImage[imageKey];
+      if (current == null ||
+          instanceRecency[instanceKey]! > instanceRecency[current]!) {
+        newestInstanceForImage[imageKey] = instanceKey;
+      }
+    }
+    final renderableInstances = newestInstanceForImage.values.toSet();
     if (renderableInstances.isEmpty) {
       return;
     }
