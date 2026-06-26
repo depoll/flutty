@@ -38,6 +38,35 @@ Future<int> _boundaryRedPixelCount(GlobalKey key) async {
   return count;
 }
 
+/// Counts red pixels within the vertical pixel band [topY, bottomY).
+Future<int> _boundaryRedPixelCountInBand(
+  GlobalKey key,
+  int topY,
+  int bottomY,
+) async {
+  final boundary =
+      key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+  final shot = await boundary.toImage();
+  final width = shot.width;
+  final data = (await shot.toByteData())!;
+  var count = 0;
+  for (var y = topY; y < bottomY; y++) {
+    for (var x = 0; x < width; x++) {
+      final i = (y * width + x) * 4;
+      if (i + 4 > data.lengthInBytes) {
+        continue;
+      }
+      final r = data.getUint8(i);
+      final g = data.getUint8(i + 1);
+      final b = data.getUint8(i + 2);
+      if (r > 150 && g < 90 && b < 90) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
 /// Kitty row/column placeholder diacritics (rowcolumn-diacritics order),
 /// enough to drive placeholder grids up to 24 cells tall/wide in tests.
 const _kittyDiacritics = <int>[
@@ -591,6 +620,92 @@ void main() {
         await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
         isTrue,
         reason: 'the intact lower copy must keep rendering',
+      );
+    },
+  );
+
+  testWidgets(
+    'Kitty same-id image: only the most recent dense copy renders (ghost gone)',
+    (tester) async {
+      // Reproduces the full-screen-viewer ghost: an image is shown, then the
+      // app redraws it at a new position without clearing the old copy. Both
+      // copies are fully intact (dense), so density alone cannot tell them
+      // apart — only the most recently drawn one should render.
+      final boundaryKey = GlobalKey();
+      const height = 520.0;
+      final terminal = Terminal(maxLines: 100);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: height,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const imageId = 0xA5E30B;
+      const viewRows = 22;
+      terminal
+        ..resize(8, viewRows)
+        ..write('\x1b[?1049h');
+      await tester.runAsync(() async {
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        terminal.write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=4,f=100,q=2;$png\x1b\\');
+        // Older copy near the top (screen rows 1-4).
+        for (var row = 0; row < 4; row++) {
+          terminal
+            ..write('\x1b[${row + 1};1H')
+            ..write(_placeholderRow(imageId, row: row, cols: 8));
+        }
+        // Newer copy lower down (screen rows 14-17), written afterwards. The
+        // old copy's cells are left intact (no clear) — exactly the ghost case.
+        for (var row = 0; row < 4; row++) {
+          terminal
+            ..write('\x1b[${row + 14};1H')
+            ..write(_placeholderRow(imageId, row: row, cols: 8));
+        }
+        var waited = 0;
+        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+
+      // Terminal content has top padding, so check generous bands rather than
+      // exact cell rows. The older copy sits in the top ~quarter; the current
+      // copy lower down.
+      final topBandBottom = (height * 0.32).round();
+
+      final totalRed = await tester.runAsync(
+        () => _boundaryRedPixelCount(boundaryKey),
+      );
+      final ghostRed = await tester.runAsync(
+        () => _boundaryRedPixelCountInBand(boundaryKey, 0, topBandBottom),
+      );
+
+      expect(
+        totalRed,
+        greaterThan(100),
+        reason: 'the most recent copy must render',
+      );
+      expect(
+        ghostRed,
+        lessThan(100),
+        reason: 'the older ghost copy of the same image must be dismissed',
       );
     },
   );
