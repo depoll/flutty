@@ -188,7 +188,7 @@ void main() {
     });
   });
 
-  testWidgets('Kitty virtual transmit-and-place also places a fallback image', (
+  testWidgets('Kitty virtual transmit-and-place uses a virtual placement', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -198,7 +198,7 @@ void main() {
       terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=3,r=2;$pngBase64\x1b\\');
 
       var waited = 0;
-      while (!terminal.graphics.hasPlacements && waited < 2000) {
+      while (terminal.graphics.imageById(43) == null && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
         waited += 20;
       }
@@ -207,19 +207,17 @@ void main() {
       expect(stored, isNotNull);
       expect(stored!.image.width, 3);
       expect(stored.image.height, 2);
-      expect(terminal.graphics.hasPlacements, isTrue);
+      // U=1 means the client displays the image through Unicode placeholder
+      // cells, so the terminal must not create a physical placement (that would
+      // draw a duplicate image at the cursor).
+      expect(terminal.graphics.hasPlacements, isFalse);
       expect(
         terminal.graphics.virtualPlacementById(43),
         isNotNull,
-        reason: 'Unicode placeholder clients can still redraw the image later',
+        reason: 'Unicode placeholder clients reference the virtual placement',
       );
 
       terminal.write('\x1b[2J');
-      expect(
-        terminal.graphics.hasPlacements,
-        isFalse,
-        reason: 'redraw clears should dismiss the physical fallback image',
-      );
       expect(
         terminal.graphics.imageById(43),
         isNotNull,
@@ -292,6 +290,66 @@ void main() {
       (1, 1),
       (1, 2),
     ]);
+  });
+
+  testWidgets('placeholders survive the image decode that backs them', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+      final placeholder =
+          String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+      // The image transmit and the placeholder cells that reference it arrive
+      // together, but the PNG decode completes asynchronously afterwards. The
+      // decode must not drop the placeholder cells waiting on that image.
+      terminal
+        ..write('\x1b_Ga=T,U=1,i=77,f=100,c=3,r=2;$pngBase64\x1b\\')
+        ..write('\x1b[38;2;0;0;77m'
+            '$placeholder\u0305\u0305$placeholder\u0305\u030D'
+            '$placeholder\u0305\u030E');
+
+      expect(terminal.graphics.placeholders, isNotEmpty);
+      final before = terminal.graphics.placeholders.length;
+
+      var waited = 0;
+      while (terminal.graphics.imageById(77) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(77), isNotNull);
+      expect(
+        terminal.graphics.placeholders.length,
+        before,
+        reason: 'storing the decoded image must not drop its placeholder cells',
+      );
+    });
+  });
+
+  testWidgets('Kitty Unicode placeholders stay attached across a scroll', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 100)..resize(20, 4);
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    terminal.write('\x1b[38;5;42m$placeholder\u0305\u0305');
+    final placeholdersBefore = terminal.graphics.placeholders.length;
+    expect(placeholdersBefore, greaterThan(0));
+
+    // Emit far more lines than the 4-row viewport so the buffer scrolls. This
+    // used to detach the line that owns the placeholder anchor, dropping it.
+    for (var i = 0; i < 20; i++) {
+      terminal.write('row $i\r\n');
+    }
+
+    expect(
+      terminal.graphics.placeholders.every((p) => p.attached),
+      isTrue,
+      reason: 'scrolling must not orphan placeholder anchors',
+    );
+    expect(terminal.graphics.placeholders.length, placeholdersBefore);
   });
 
   testWidgets(

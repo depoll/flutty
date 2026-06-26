@@ -77,46 +77,31 @@ const _backgroundAlphaCandidates = <int>[
   0xCC,
 ];
 
-class _KittyGraphicsPlaceholderImageRef {
-  const _KittyGraphicsPlaceholderImageRef(this.id, this.bitWidth);
+/// A single Kitty Unicode-placeholder cell resolved for compositing.
+///
+/// Each cell carries both its on-screen position ([cellRow]/[cellCol]) and the
+/// position it represents *within the source image* ([imgRow]/[imgCol], decoded
+/// from the Kitty row/column diacritics). Painting per cell — rather than over a
+/// single bounding region — keeps the image aligned even when it is partially
+/// scrolled off, wrapped, or only sparsely redrawn by the application.
+class _KittyPlaceholderCell {
+  const _KittyPlaceholderCell({
+    required this.imageKey,
+    required this.imageId,
+    required this.bitWidth,
+    required this.cellRow,
+    required this.cellCol,
+    required this.imgRow,
+    required this.imgCol,
+  });
 
-  final int id;
+  final String imageKey;
+  final int imageId;
   final int bitWidth;
-
-  String get key => '$bitWidth:$id';
-}
-
-class _KittyGraphicsPlaceholderRegion {
-  _KittyGraphicsPlaceholderRegion.fromPlaceholder(
-    TerminalImagePlaceholder placeholder,
-    TerminalImageVirtualPlacement? virtualPlacement,
-  ) : imageRef = _KittyGraphicsPlaceholderImageRef(
-        placeholder.imageId,
-        placeholder.imageIdBitWidth,
-      ),
-      firstRow = placeholder.cellRow - placeholder.row,
-      firstCol = placeholder.cellCol - placeholder.col,
-      lastRow = virtualPlacement == null
-          ? placeholder.cellRow
-          : placeholder.cellRow - placeholder.row + virtualPlacement.rows - 1,
-      lastCol = virtualPlacement == null
-          ? placeholder.cellCol
-          : placeholder.cellCol - placeholder.col + virtualPlacement.cols - 1;
-
-  final _KittyGraphicsPlaceholderImageRef imageRef;
-  int get imageId => imageRef.id;
-  int get imageIdBitWidth => imageRef.bitWidth;
-  int firstRow;
-  int lastRow;
-  int firstCol;
-  int lastCol;
-
-  void include(int row, int col) {
-    firstRow = math.min(firstRow, row);
-    lastRow = math.max(lastRow, row);
-    firstCol = math.min(firstCol, col);
-    lastCol = math.max(lastCol, col);
-  }
+  final int cellRow;
+  final int cellCol;
+  final int imgRow;
+  final int imgCol;
 }
 
 double _contrastRatio(Color a, Color b) {
@@ -2124,6 +2109,14 @@ class MonkeyTerminalPainter extends TerminalPainter {
     if (charCode == 0) {
       return;
     }
+    // Kitty Unicode-placeholder cells are not real glyphs: they mark where a
+    // graphics image is composited over the grid (see
+    // `_paintKittyPlaceholderGraphics`). Drawing the placeholder code point as
+    // text would show a box that bleeds through the image's transparent edges,
+    // so never render it as a glyph.
+    if (charCode == kittyGraphicsPlaceholderCodePoint) {
+      return;
+    }
 
     final cellFlags = cellData.flags;
     // Conceal (SGR 8): keep the cell content for selection/copy but do not
@@ -3906,57 +3899,150 @@ class MonkeyRenderTerminal extends RenderBox
     double cellWidth,
     double cellHeight,
   ) {
-    final regions = <String, _KittyGraphicsPlaceholderRegion>{};
     final graphics = _terminal.graphics..pruneDetachedPlaceholders();
-    for (final placeholder in graphics.placeholders) {
+    final placeholders = graphics.placeholders;
+    if (placeholders.isEmpty) {
+      return;
+    }
+
+    // Resolve the cell grid each image occupies. Prefer the protocol's virtual
+    // placement size; otherwise fall back to the largest row/column seen so a
+    // partially transmitted grid still scales sensibly.
+    final gridCols = <String, int>{};
+    final gridRows = <String, int>{};
+    final buffer = _terminal.buffer;
+    final lineCount = buffer.lines.length;
+    // Keep at most one live cell per on-screen position. Application redraws and
+    // scrolling can leave several placeholders anchored to the same cell; the
+    // most recently written one (last in insertion order) reflects what the
+    // cell currently shows, and we additionally require the live buffer cell to
+    // still hold a placeholder glyph so cells overwritten by ordinary text are
+    // not painted over.
+    final cellByPosition = <int, _KittyPlaceholderCell>{};
+    for (final placeholder in placeholders) {
       if (!placeholder.attached) {
         continue;
       }
+      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
       final virtualPlacement = graphics.virtualPlacementById(
         placeholder.imageId,
       );
-      final region = regions.putIfAbsent(
-        '${placeholder.imageId}:${placeholder.imageIdBitWidth}',
-        () => _KittyGraphicsPlaceholderRegion.fromPlaceholder(
-          placeholder,
-          virtualPlacement,
-        ),
-      );
-      region.include(placeholder.cellRow, placeholder.cellCol);
-    }
+      final cols = (virtualPlacement?.cols ?? 0) > 0
+          ? virtualPlacement!.cols
+          : math.max(gridCols[key] ?? 1, placeholder.col + 1);
+      final rows = (virtualPlacement?.rows ?? 0) > 0
+          ? virtualPlacement!.rows
+          : math.max(gridRows[key] ?? 1, placeholder.row + 1);
+      gridCols[key] = cols;
+      gridRows[key] = rows;
 
-    for (final region in regions.values) {
-      if (region.lastRow < firstLine || region.firstRow > lastLine) {
+      final cellRow = placeholder.cellRow;
+      if (cellRow < firstLine ||
+          cellRow > lastLine ||
+          cellRow < 0 ||
+          cellRow >= lineCount) {
         continue;
       }
-      final stored = _terminal.graphics.imageByPlaceholderColorId(
-        region.imageId,
-        bitWidth: region.imageIdBitWidth,
+      final line = buffer.lines[cellRow];
+      final cellCol = placeholder.cellCol;
+      if (cellCol < 0 || cellCol >= line.length) {
+        continue;
+      }
+      if (line.getCodePoint(cellCol) != kittyGraphicsPlaceholderCodePoint) {
+        continue;
+      }
+      cellByPosition[cellRow * 100003 + cellCol] = _KittyPlaceholderCell(
+        imageKey: key,
+        imageId: placeholder.imageId,
+        bitWidth: placeholder.imageIdBitWidth,
+        cellRow: cellRow,
+        cellCol: cellCol,
+        imgRow: placeholder.row,
+        imgCol: placeholder.col,
+      );
+    }
+    final visible = cellByPosition.values.toList();
+    if (visible.isEmpty) {
+      return;
+    }
+
+    // Sort so contiguous cells in the same screen row can be merged into a
+    // single draw, then composite the matching slice of each source image.
+    visible.sort((a, b) {
+      final byImage = a.imageKey.compareTo(b.imageKey);
+      if (byImage != 0) return byImage;
+      if (a.cellRow != b.cellRow) return a.cellRow - b.cellRow;
+      return a.cellCol - b.cellCol;
+    });
+
+    final paint = Paint()..filterQuality = FilterQuality.medium;
+    final imageCache = <String, TerminalImage?>{};
+
+    var i = 0;
+    while (i < visible.length) {
+      final start = visible[i];
+      var end = i;
+      while (end + 1 < visible.length) {
+        final cur = visible[end];
+        final next = visible[end + 1];
+        if (next.imageKey == cur.imageKey &&
+            next.cellRow == cur.cellRow &&
+            next.cellCol == cur.cellCol + 1 &&
+            next.imgRow == cur.imgRow &&
+            next.imgCol == cur.imgCol + 1) {
+          end++;
+        } else {
+          break;
+        }
+      }
+      final last = visible[end];
+      i = end + 1;
+
+      final stored = imageCache.putIfAbsent(
+        start.imageKey,
+        () => graphics.imageByPlaceholderColorId(
+          start.imageId,
+          bitWidth: start.bitWidth,
+        ),
       );
       if (stored == null) {
         continue;
       }
+      final cols = gridCols[start.imageKey] ?? 1;
+      final rows = gridRows[start.imageKey] ?? 1;
+      if (cols <= 0 || rows <= 0) {
+        continue;
+      }
+
       final image = stored.image;
+      final srcCellWidth = image.width / cols;
+      final srcCellHeight = image.height / rows;
+      final srcRect = Rect.fromLTWH(
+        start.imgCol * srcCellWidth,
+        start.imgRow * srcCellHeight,
+        (last.imgCol - start.imgCol + 1) * srcCellWidth,
+        srcCellHeight,
+      );
+
       final topLeft = _linePaintOffset(
         offset,
-        region.firstRow,
-      ).translate(region.firstCol * cellWidth, 0);
-      final dstWidth = (region.lastCol - region.firstCol + 1) * cellWidth;
-      final dstHeight = (region.lastRow - region.firstRow + 1) * cellHeight;
+        start.cellRow,
+      ).translate(start.cellCol * cellWidth, 0);
+      final dstWidth = (last.cellCol - start.cellCol + 1) * cellWidth;
       if (!topLeft.dx.isFinite ||
           !topLeft.dy.isFinite ||
           !dstWidth.isFinite ||
-          !dstHeight.isFinite ||
           dstWidth <= 0 ||
-          dstHeight <= 0) {
+          srcRect.width <= 0 ||
+          srcRect.height <= 0) {
         continue;
       }
       try {
         canvas.drawImageRect(
           image,
-          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
-          Paint()..filterQuality = FilterQuality.medium,
+          srcRect,
+          Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, cellHeight),
+          paint,
         );
       } on Object catch (_) {
         // Placeholder graphics are optional terminal adornment; never let a
