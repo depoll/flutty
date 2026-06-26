@@ -294,6 +294,30 @@ void main() {
     ]);
   });
 
+  testWidgets(
+      'Kitty Unicode placeholders support high-byte diacritics above 127', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+    const imageId = 42 + (200 << 24);
+
+    terminal
+      ..graphics.storeImageWithId(imageId, await _buildImage(1, 1))
+      ..write('\x1b[38;5;42m$placeholder\u0305\u0305\u20D4');
+
+    final placeholders = terminal.graphics.placeholders;
+    expect(placeholders, hasLength(1));
+    expect(placeholders.single.imageId, imageId);
+    expect(
+      terminal.graphics.imageByPlaceholderColorId(
+        placeholders.single.imageId,
+        bitWidth: placeholders.single.imageIdBitWidth,
+      ),
+      isNotNull,
+    );
+  });
+
   testWidgets('a=T advances the cursor below the image by r rows', (
     tester,
   ) async {
