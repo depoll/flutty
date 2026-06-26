@@ -1110,7 +1110,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if ((action != 't' && action != 'T') || data.isEmpty) {
       return;
     }
-    final shouldPlace = action == 'T';
+    // a=T transmits and displays at the cursor. When U=1 is also set the client
+    // is using the Unicode placeholder protocol: the image is displayed by
+    // U+10EEEE placeholder cells (see `_paintKittyPlaceholderGraphics`), not a
+    // physical placement, so creating one here would draw a second, misplaced
+    // copy. Only place — and advance the cursor — for a non-virtual a=T.
+    final shouldPlace = action == 'T' && !virtualPlacement;
     if (virtualPlacement) {
       _setVirtualGraphicsPlacement(args);
     }

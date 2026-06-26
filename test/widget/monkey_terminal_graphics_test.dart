@@ -38,6 +38,45 @@ Future<int> _boundaryRedPixelCount(GlobalKey key) async {
   return count;
 }
 
+/// Kitty row/column placeholder diacritics for values 0..7 (rowcolumn-diacritics
+/// order). Enough to drive a small placeholder grid in tests.
+const _kittyDiacritics = <int>[
+  0x0305,
+  0x030D,
+  0x030E,
+  0x0310,
+  0x0312,
+  0x033D,
+  0x033E,
+  0x033F,
+];
+
+/// Builds the Kitty Unicode-placeholder cells for an [imageId] laid out across
+/// [rows] x [cols] cells, exactly as a kitty-aware client (e.g. Copilot CLI)
+/// emits them: a 24-bit foreground color carrying the image id, then a
+/// U+10EEEE cell per position carrying its row/column diacritics.
+String _placeholderGrid(int imageId, {required int cols, required int rows}) {
+  final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+  final r = (imageId >> 16) & 0xFF;
+  final g = (imageId >> 8) & 0xFF;
+  final b = imageId & 0xFF;
+  final buffer = StringBuffer();
+  for (var row = 0; row < rows; row++) {
+    buffer.write('\x1b[38;2;$r;$g;${b}m');
+    for (var col = 0; col < cols; col++) {
+      buffer
+        ..write(placeholder)
+        ..writeCharCode(_kittyDiacritics[row])
+        ..writeCharCode(_kittyDiacritics[col]);
+    }
+    buffer.write('\x1b[39m');
+    if (row < rows - 1) {
+      buffer.write('\r\n');
+    }
+  }
+  return buffer.toString();
+}
+
 void main() {
   testWidgets('Kitty graphics image is composited into the terminal', (
     tester,
@@ -166,11 +205,84 @@ void main() {
     },
   );
 
-  testWidgets('Kitty virtual image renders before placeholders arrive', (
+  testWidgets(
+    'Kitty virtual placeholder image renders, then dismisses on redraw',
+    (tester) async {
+      final boundaryKey = GlobalKey();
+      final terminal = Terminal();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 300,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Copilot CLI emits the image with a virtual placement (U=1) and then
+      // draws U+10EEEE placeholder cells to display it — frequently before the
+      // image has finished decoding.
+      const imageId = 0xA5E30B;
+      await tester.runAsync(() async {
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        terminal
+          ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
+          ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
+
+        var waited = 0;
+        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+      });
+      await tester.pump();
+
+      // U=1 must not create a physical placement; the placeholders display it.
+      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason: 'the image must composite over the Unicode placeholder cells',
+      );
+
+      // Redrawing over the placeholder cells (here, clearing the screen) must
+      // dismiss the image immediately rather than leaving it painted until an
+      // unrelated repaint.
+      terminal.write('\x1b[H\x1b[2J');
+      await tester.pump();
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isFalse,
+        reason: 'clearing the placeholder cells must dismiss the image',
+      );
+      expect(
+        terminal.graphics.imageById(imageId),
+        isNotNull,
+        reason: 'the retained image bytes can back a later placeholder redraw',
+      );
+    },
+  );
+
+  testWidgets('Kitty Unicode placeholder image survives a scroll', (
     tester,
   ) async {
     final boundaryKey = GlobalKey();
-    final terminal = Terminal();
+    // A short viewport so writing several rows of output scrolls the buffer,
+    // which historically detached the placeholder anchors and dropped the image.
+    final terminal = Terminal(maxLines: 200);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -178,7 +290,7 @@ void main() {
           body: Center(
             child: SizedBox(
               width: 400,
-              height: 300,
+              height: 120,
               child: RepaintBoundary(
                 key: boundaryKey,
                 child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
@@ -190,36 +302,45 @@ void main() {
     );
     await tester.pump();
 
+    const imageId = 0xA5E30B;
     await tester.runAsync(() async {
       final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
-      terminal.write('\x1b_Ga=T,U=1,i=42,f=100,c=8,r=4,q=2;$png\x1b\\');
+      terminal
+        ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
+        ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
 
       var waited = 0;
-      while (!terminal.graphics.hasPlacements && waited < 2000) {
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
         waited += 20;
       }
     });
     await tester.pump();
 
+    final placeholdersBeforeScroll = terminal.graphics.placeholders.length;
     expect(
-      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
-      isTrue,
-      reason:
-          'Copilot can emit a virtual image before/without placeholder cells',
+      placeholdersBeforeScroll,
+      greaterThan(0),
+      reason: 'placeholder cells should be tracked after the image is drawn',
     );
 
-    terminal.write('\x1b[2J');
+    // Emit more lines than the viewport holds so the buffer scrolls.
+    for (var i = 0; i < 20; i++) {
+      terminal.write('line $i\r\n');
+    }
     await tester.pump();
+
     expect(
-      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
-      isFalse,
-      reason: 'redraw clears should dismiss the physical fallback image',
+      terminal.graphics.placeholders.every((p) => p.attached),
+      isTrue,
+      reason:
+          'scrolling must keep placeholder anchors attached, not orphan '
+          'them (otherwise the image is pruned and never renders)',
     );
     expect(
-      terminal.graphics.imageById(42),
-      isNotNull,
-      reason: 'placeholder redraws can still reuse the image bytes',
+      terminal.graphics.placeholders.length,
+      placeholdersBeforeScroll,
+      reason: 'no placeholder should be spuriously dropped by the scroll',
     );
   });
 

@@ -220,13 +220,23 @@ class GraphicsManager {
   }
 
   /// Stores [image] using an id supplied by the Kitty graphics protocol.
+  ///
+  /// Any existing image with [id] is replaced in place. Crucially, placements,
+  /// placeholders and the virtual placement that already reference [id] are
+  /// preserved: Kitty Unicode placeholders are frequently written *before* the
+  /// referenced image finishes decoding, so dropping them here (as a full
+  /// [_dropImage] would) leaves the freshly stored image with nothing to paint
+  /// over — the cells render as bare placeholder glyphs instead of the image.
   int storeImageWithId(int id, ui.Image image) {
     if (id <= 0) {
       return storeImage(image);
     }
 
     final sizeBytes = image.width * image.height * 4;
-    _dropImage(id);
+    final existing = _images.remove(id);
+    if (existing != null) {
+      _currentMemoryBytes -= existing.sizeBytes;
+    }
     _evictIfNeeded(sizeBytes);
 
     _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
