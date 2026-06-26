@@ -272,48 +272,6 @@ void main() {
     );
   });
 
-  testWidgets('Kitty Unicode placeholders are hidden when image is missing', (
-    tester,
-  ) async {
-    final boundaryKey = GlobalKey();
-    final terminal = Terminal();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: SizedBox(
-              width: 400,
-              height: 300,
-              child: RepaintBoundary(
-                key: boundaryKey,
-                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pump();
-
-    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
-    final row = List.filled(8, '$placeholder\u0305\u0305').join();
-    terminal.write('\x1b[38;2;255;0;0m$row\r\n$row\r\n$row\r\n$row\x1b[39m');
-    await tester.pump();
-
-    var hasPlaceholderRed = false;
-    await tester.runAsync(() async {
-      hasPlaceholderRed = await _boundaryHasRed(boundaryKey);
-    });
-
-    expect(
-      hasPlaceholderRed,
-      isFalse,
-      reason:
-          'missing image placeholders should not paint fallback glyph boxes',
-    );
-  });
-
   testWidgets('zoom, clear and re-place an image without crashing', (
     tester,
   ) async {

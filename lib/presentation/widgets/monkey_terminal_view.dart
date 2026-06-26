@@ -1750,7 +1750,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     final charCode = cellData.content & CellContent.codepointMask;
-    if (charCode == 0 || charCode == kittyGraphicsPlaceholderCodePoint) {
+    if (charCode == 0) {
       return;
     }
 
@@ -1867,7 +1867,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
       final charCode = cellData.content & CellContent.codepointMask;
       final flags = cellData.flags;
       if (charCode != 0 &&
-          charCode != kittyGraphicsPlaceholderCodePoint &&
           flags & CellFlags.invisible == 0 &&
           flags & CellFlags.underline != 0) {
         final styleIndex =
@@ -2083,7 +2082,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     CellData cellData,
   ) {
     final charCode = cellData.content & CellContent.codepointMask;
-    if (charCode == 0 || charCode == kittyGraphicsPlaceholderCodePoint) {
+    if (charCode == 0) {
       return;
     }
 
@@ -2122,7 +2121,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
   @override
   void paintCellForeground(Canvas canvas, Offset offset, CellData cellData) {
     final charCode = cellData.content & CellContent.codepointMask;
-    if (charCode == 0 || charCode == kittyGraphicsPlaceholderCodePoint) {
+    if (charCode == 0) {
       return;
     }
 
