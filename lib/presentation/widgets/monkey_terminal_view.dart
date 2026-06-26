@@ -104,6 +104,16 @@ class _KittyPlaceholderCell {
   final int imgCol;
 }
 
+/// Stride used to fold a (row, column) pair into a single int key. Larger than
+/// any realistic terminal width or image column count so pairs never collide.
+const _kittyGridStride = 100003;
+
+/// Minimum fraction of a Kitty Unicode-placeholder image's grid cells that must
+/// still be present for it to be composited. Below this the image is treated as
+/// being torn down (its cells progressively overwritten) and is not drawn, which
+/// avoids leaving stale fragments/stripes of a stale image on screen.
+const _kittyPlaceholderRenderThreshold = 0.7;
+
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
   final luminanceB = b.computeLuminance();
@@ -3905,20 +3915,33 @@ class MonkeyRenderTerminal extends RenderBox
       return;
     }
 
-    // Resolve the cell grid each image occupies. Prefer the protocol's virtual
-    // placement size; otherwise fall back to the largest row/column seen so a
-    // partially transmitted grid still scales sensibly.
-    final gridCols = <String, int>{};
-    final gridRows = <String, int>{};
     final buffer = _terminal.buffer;
     final lineCount = buffer.lines.length;
-    // Keep at most one live cell per on-screen position. Application redraws and
-    // scrolling can leave several placeholders anchored to the same cell; the
-    // most recently written one (last in insertion order) reflects what the
-    // cell currently shows, and we additionally require the live buffer cell to
-    // still hold a placeholder glyph so cells overwritten by ordinary text are
-    // not painted over.
-    final cellByPosition = <int, _KittyPlaceholderCell>{};
+
+    bool cellIsLivePlaceholder(int cellRow, int cellCol) {
+      if (cellRow < 0 || cellRow >= lineCount) {
+        return false;
+      }
+      final line = buffer.lines[cellRow];
+      if (cellCol < 0 || cellCol >= line.length) {
+        return false;
+      }
+      return line.getCodePoint(cellCol) == kittyGraphicsPlaceholderCodePoint;
+    }
+
+    // Pass 1: resolve each image's grid size and count how many distinct grid
+    // positions are still backed by a live placeholder cell anywhere in the
+    // buffer. A Kitty Unicode-placeholder image is conceptually an all-or-
+    // nothing rectangle: clients (e.g. Copilot CLI) emit every cell of the
+    // grid. When the image is torn down they overwrite those cells with other
+    // content — but, relying on cursor-forward movement, they leave some cells
+    // untouched. Rendering those survivors paints torn fragments/stripes of a
+    // stale image. Requiring most of the grid to still be present lets a fully
+    // displayed (or merely scrolled) image render while a half-overwritten one
+    // is dismissed cleanly.
+    final gridCols = <String, int>{};
+    final gridRows = <String, int>{};
+    final liveGridPositions = <String, Set<int>>{};
     for (final placeholder in placeholders) {
       if (!placeholder.attached) {
         continue;
@@ -3936,22 +3959,51 @@ class MonkeyRenderTerminal extends RenderBox
       gridCols[key] = cols;
       gridRows[key] = rows;
 
+      if (cellIsLivePlaceholder(placeholder.cellRow, placeholder.cellCol)) {
+        (liveGridPositions[key] ??= <int>{}).add(
+          placeholder.row * _kittyGridStride + placeholder.col,
+        );
+      }
+    }
+
+    final renderableImages = <String>{};
+    for (final entry in liveGridPositions.entries) {
+      final cols = gridCols[entry.key] ?? 1;
+      final rows = gridRows[entry.key] ?? 1;
+      final expected = cols * rows;
+      if (expected <= 0) {
+        continue;
+      }
+      if (entry.value.length >= expected * _kittyPlaceholderRenderThreshold) {
+        renderableImages.add(entry.key);
+      }
+    }
+    if (renderableImages.isEmpty) {
+      return;
+    }
+
+    // Pass 2: collect the visible cells of renderable images. Keep at most one
+    // live cell per on-screen position; the most recently written placeholder
+    // (last in insertion order) reflects what the cell currently shows.
+    final cellByPosition = <int, _KittyPlaceholderCell>{};
+    for (final placeholder in placeholders) {
+      if (!placeholder.attached) {
+        continue;
+      }
+      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
+      if (!renderableImages.contains(key)) {
+        continue;
+      }
       final cellRow = placeholder.cellRow;
-      if (cellRow < firstLine ||
-          cellRow > lastLine ||
-          cellRow < 0 ||
-          cellRow >= lineCount) {
+      if (cellRow < firstLine || cellRow > lastLine) {
         continue;
       }
-      final line = buffer.lines[cellRow];
       final cellCol = placeholder.cellCol;
-      if (cellCol < 0 || cellCol >= line.length) {
+      if (!cellIsLivePlaceholder(cellRow, cellCol)) {
         continue;
       }
-      if (line.getCodePoint(cellCol) != kittyGraphicsPlaceholderCodePoint) {
-        continue;
-      }
-      cellByPosition[cellRow * 100003 + cellCol] = _KittyPlaceholderCell(
+      cellByPosition[cellRow * _kittyGridStride +
+          cellCol] = _KittyPlaceholderCell(
         imageKey: key,
         imageId: placeholder.imageId,
         bitWidth: placeholder.imageIdBitWidth,
