@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.72"
+	monkeyMuxVersion                  = "0.1.73"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -3691,7 +3691,15 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	if window.usesForegroundRedrawReplayLocked() {
-		history = nil
+		// The foreground app redraws its own cells on reattach (driven by a
+		// resize), so we must not replay the visible history or it would draw
+		// twice. We do, however, replay any Kitty graphics image transmissions:
+		// placeholder-protocol clients (e.g. Copilot CLI) transmit an image once
+		// and then only re-emit the placeholder cells, so without restoring the
+		// image bytes the redrawn placeholders would have nothing to composite
+		// and render blank. The transmissions are store-only (a=T downgraded to
+		// a=t) so they produce no visible output themselves.
+		history = extractKittyGraphicsTransmissions(history)
 	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
@@ -4381,6 +4389,172 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	}
 	output = append(output, data[copyStart:]...)
 	return output
+}
+
+// extractKittyGraphicsTransmissions scans replay history for Kitty graphics
+// image transmissions (APC "_G" sequences with action t or T) and returns them
+// re-serialized so a reattaching client can repopulate its image store.
+//
+// Unicode-placeholder clients such as Copilot CLI transmit an image exactly
+// once and thereafter only re-emit the U+10EEEE placeholder cells that display
+// it. Alt-screen replay does not resend history (it relies on the foreground
+// app redrawing), so that one-time transmission would otherwise be lost on
+// reattach and every placeholder would render blank.
+//
+// The display action a=T is rewritten to a=t so replaying never places an image
+// or moves the cursor — only the image bytes (and any virtual placement) are
+// restored; the app redraws the placeholder cells that position it.
+// Transmissions are de-duplicated by image id (keeping the most recent) to
+// bound replay size. Queries (a=q), deletes (a=d) and placements (a=p) are
+// ignored. Only complete transmissions (all chunks present) are emitted.
+func extractKittyGraphicsTransmissions(history []byte) []byte {
+	if len(history) == 0 {
+		return nil
+	}
+
+	type transmission struct {
+		id  string
+		buf []byte
+	}
+	var transmissions []transmission
+
+	i := 0
+	for i < len(history) {
+		if !(history[i] == '\x1b' && i+2 < len(history) &&
+			history[i+1] == '_' && history[i+2] == 'G') {
+			i++
+			continue
+		}
+
+		end := kittyApcEnd(history, i)
+		if end < 0 {
+			// Incomplete trailing APC (history trimmed mid-sequence). Stop:
+			// anything after this is unparseable.
+			break
+		}
+		control := kittyControl(history, i, end)
+		args := parseKittyControl(control)
+		action := args["a"]
+		if action == "" {
+			action = "t"
+		}
+		if action != "t" && action != "T" {
+			// Not an image transmission.
+			i = end
+			continue
+		}
+
+		var buf []byte
+		buf = append(buf, rewriteKittyTransmitAction(history[i:end])...)
+		more := args["m"] == "1"
+		next := end
+		complete := true
+		for more {
+			if !(next+2 < len(history) && history[next] == '\x1b' &&
+				history[next+1] == '_' && history[next+2] == 'G') {
+				complete = false
+				break
+			}
+			chunkEnd := kittyApcEnd(history, next)
+			if chunkEnd < 0 {
+				complete = false
+				break
+			}
+			chunkArgs := parseKittyControl(kittyControl(history, next, chunkEnd))
+			buf = append(buf, history[next:chunkEnd]...)
+			more = chunkArgs["m"] == "1"
+			next = chunkEnd
+		}
+		i = next
+		if complete {
+			transmissions = append(transmissions, transmission{id: args["i"], buf: buf})
+		}
+	}
+
+	if len(transmissions) == 0 {
+		return nil
+	}
+
+	// Keep only the most recent transmission for each image id (ids may be
+	// re-transmitted), preserving the order of last occurrence.
+	lastIndex := map[string]int{}
+	for idx, t := range transmissions {
+		if t.id != "" {
+			lastIndex[t.id] = idx
+		}
+	}
+	var out []byte
+	for idx, t := range transmissions {
+		if t.id != "" && lastIndex[t.id] != idx {
+			continue
+		}
+		out = append(out, t.buf...)
+	}
+	return out
+}
+
+// kittyApcEnd returns the index just past the ST (ESC \) that terminates the
+// Kitty APC sequence beginning at start, or -1 if it is incomplete. The base64
+// payload never contains ESC, so the first ESC \ after the introducer is the
+// terminator.
+func kittyApcEnd(data []byte, start int) int {
+	for i := start + 3; i+1 < len(data); i++ {
+		if data[i] == '\x1b' && data[i+1] == '\\' {
+			return i + 2
+		}
+	}
+	return -1
+}
+
+// kittyControl returns the control portion (the bytes between "_G" and the ';'
+// payload separator, or the ST if there is no payload) of the APC sequence that
+// spans [start, end).
+func kittyControl(data []byte, start, end int) string {
+	from := start + 3
+	to := end - 2 // before the terminating ESC \
+	if to > len(data) {
+		to = len(data)
+	}
+	if semi := bytes.IndexByte(data[from:to], ';'); semi >= 0 {
+		to = from + semi
+	}
+	if from > to {
+		return ""
+	}
+	return string(data[from:to])
+}
+
+// parseKittyControl parses a comma-separated key=value Kitty control string.
+func parseKittyControl(control string) map[string]string {
+	args := map[string]string{}
+	if control == "" {
+		return args
+	}
+	for _, pair := range strings.Split(control, ",") {
+		if eq := strings.IndexByte(pair, '='); eq >= 0 {
+			args[pair[:eq]] = pair[eq+1:]
+		}
+	}
+	return args
+}
+
+// rewriteKittyTransmitAction returns a copy of a single Kitty APC sequence with
+// a display transmit (a=T) downgraded to a store-only transmit (a=t) so replay
+// never draws or moves the cursor. Other sequences are returned unchanged.
+func rewriteKittyTransmitAction(seq []byte) []byte {
+	from := 3 // past ESC _ G
+	to := len(seq)
+	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < to {
+		to = semi
+	}
+	idx := bytes.Index(seq[from:to], []byte("a=T"))
+	if idx < 0 {
+		return seq
+	}
+	out := make([]byte, len(seq))
+	copy(out, seq)
+	out[from+idx+2] = 't'
+	return out
 }
 
 func csiSequenceEnd(data []byte, start int) int {
