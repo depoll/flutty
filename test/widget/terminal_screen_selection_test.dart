@@ -642,6 +642,71 @@ void main() {
       );
     });
 
+    test('detects paths split across lines ending with a scrollbar glyph', () {
+      const text =
+          'Read ~/Code/flutty/lib/presentation/screens/   █\n'
+          'terminal_screen.dart for the link logic.       █';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('detects absolute paths split before a right-edge scrollbar', () {
+      const text =
+          'Open /srv/app/lib/presentation/                ▐\n'
+          'screens/terminal_screen.dart next.            ▐';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('screens'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('detects paths split across three scrollbar-padded rows', () {
+      const text =
+          'Read ~/Code/flutty/lib/                        ▌\n'
+          'presentation/widgets/terminal_text_input_handl ▌\n'
+          'er.dart for review.                            ▌';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('er.dart'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty/lib/presentation/widgets/terminal_text_input_handler.dart',
+      );
+    });
+
+    test('detects paths split across mixed scrollbar thumb and track rows', () {
+      const text =
+          'Read /srv/app/lib/presentation/screens/        ░\n'
+          'terminal_screen.dart for the link logic.       █';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
     test('drops wrapped result counts from grep-style file path matches', () {
       const text =
           '(~/Code/flutty.worktrees/fix-swipe-keyboard-typing/test/\n'

@@ -1736,10 +1736,22 @@ bool _isTerminalFilePathBodyCharacter(String character) =>
     !RegExp(r'''[\s<>"'$#]''').hasMatch(character) &&
     !_isTerminalPathContinuationDecorationCharacter(character);
 
-bool _isTerminalPathContinuationDecorationCharacter(String character) =>
-    character == ' ' ||
-    character == '\t' ||
-    '│┃║╎┆┊|├┤┬┴┼└┘┌┐╭╮╯╰─━═'.contains(character);
+bool _isTerminalPathContinuationDecorationCharacter(String character) {
+  if (character.isEmpty) {
+    return false;
+  }
+  if (character == ' ' || character == '\t' || character == '|') {
+    return true;
+  }
+  // The Unicode "Box Drawing" (U+2500–U+257F) and "Block Elements"
+  // (U+2580–U+259F) ranges cover the borders, separators, gutters, and
+  // scrollbar glyphs that terminal UIs paint around their content. None of
+  // these characters appear inside a file path, so treating them as decoration
+  // lets a path span a rendered line break even when a tool draws chrome (such
+  // as a right-edge scrollbar) between the fragments.
+  final codeUnit = character.codeUnitAt(0);
+  return codeUnit >= 0x2500 && codeUnit <= 0x259F;
+}
 
 String _trimTerminalPathContinuationPrefix(String text) {
   var index = 0;
@@ -1748,6 +1760,15 @@ String _trimTerminalPathContinuationPrefix(String text) {
     index++;
   }
   return text.substring(index);
+}
+
+String _trimTerminalPathContinuationSuffix(String text) {
+  var end = text.length;
+  while (end > 0 &&
+      _isTerminalPathContinuationDecorationCharacter(text[end - 1])) {
+    end--;
+  }
+  return text.substring(0, end);
 }
 
 bool _startsFreshTerminalFilePathLine(String text) =>
@@ -1784,7 +1805,7 @@ bool _looksLikeTerminalPathContinuationAcrossRenderedLines({
   required String previousText,
   required String nextText,
 }) {
-  final trimmedPreviousText = trimTerminalLinePadding(previousText);
+  final trimmedPreviousText = _trimTerminalPathContinuationSuffix(previousText);
   final trimmedNextText = trimTerminalLinePadding(nextText);
   if (trimmedPreviousText.isEmpty || trimmedNextText.isEmpty) {
     return false;
@@ -1893,15 +1914,43 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
         nextLineEnd++;
       }
 
+      // Walk back over trailing decoration on the previous line (padding plus
+      // any gutter or scrollbar glyph painted in its rightmost columns) so a
+      // fragment that ends before the chrome can still join its continuation.
+      var trailingGapStart = index;
+      while (trailingGapStart > lineStart &&
+          _isTerminalPathContinuationDecorationCharacter(
+            text[trailingGapStart - 1],
+          )) {
+        trailingGapStart--;
+      }
+
       final isPathContinuation =
           continuationEnd < text.length &&
           _looksLikeTerminalPathContinuationAcrossRenderedLines(
-            previousText: text.substring(lineStart, index),
+            previousText: text.substring(lineStart, trailingGapStart),
             nextText: text.substring(continuationEnd, nextLineEnd),
           );
       if (isPathContinuation) {
+        // Drop the trailing gap characters already emitted for the previous
+        // line so the joined path stays contiguous in the normalized text.
+        final trailingGapLength = index - trailingGapStart;
+        if (trailingGapLength > 0) {
+          normalizedCharacters.removeRange(
+            normalizedCharacters.length - trailingGapLength,
+            normalizedCharacters.length,
+          );
+          normalizedToOriginalStarts.removeRange(
+            normalizedToOriginalStarts.length - trailingGapLength,
+            normalizedToOriginalStarts.length,
+          );
+          normalizedToOriginalEnds.removeRange(
+            normalizedToOriginalEnds.length - trailingGapLength,
+            normalizedToOriginalEnds.length,
+          );
+        }
         for (
-          var skippedIndex = index;
+          var skippedIndex = trailingGapStart;
           skippedIndex < continuationEnd;
           skippedIndex++
         ) {
