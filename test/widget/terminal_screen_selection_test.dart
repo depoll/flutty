@@ -479,6 +479,91 @@ void main() {
       expect(detectedLink, isNotNull);
       expect(detectedLink!.uri.toString(), 'file:///srv/app/main.dart');
     });
+
+    test('reconstructs a URL split across rendered lines', () {
+      const text =
+          'See PR https://github.com/depoll-personal/LANbu-Han\n'
+          'dy/pull/187 for details';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depoll-personal/LANbu-Handy/pull/187',
+      );
+    });
+
+    test('resolves a tap on a URL continuation line to the full URL', () {
+      const text =
+          'See PR https://github.com/depoll-personal/LANbu-Han\n'
+          'dy/pull/187 for details';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('dy/pull'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depoll-personal/LANbu-Handy/pull/187',
+      );
+    });
+
+    test('reconstructs a URL wrapped past a TUI gutter and scrollbar', () {
+      const text =
+          'See https://github.com/depoll-personal/LANbu-Han █\n'
+          '  dy/pull/187 done                              █';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depoll-personal/LANbu-Handy/pull/187',
+      );
+    });
+
+    test('reconstructs a URL wrapped after a trailing slash (Copilot)', () {
+      const text =
+          'See PR #590 at https://github.com/\n'
+          'depollsoft/MonkeySSH/pull/590 done';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('depollsoft'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depollsoft/MonkeySSH/pull/590',
+      );
+    });
+
+    test('does not merge adjacent bare-URL list items', () {
+      const text =
+          '- https://github.com/depoll/a/pull/1\n'
+          '- https://github.com/depoll/b/pull/2';
+
+      expect(
+        detectTerminalLinkAtTextOffset(
+          text,
+          text.indexOf('github.com/depoll/a'),
+        )?.uri.toString(),
+        'https://github.com/depoll/a/pull/1',
+      );
+      expect(
+        detectTerminalLinkAtTextOffset(
+          text,
+          text.indexOf('github.com/depoll/b'),
+        )?.uri.toString(),
+        'https://github.com/depoll/b/pull/2',
+      );
+    });
   });
 
   group('resolveTerminalFileUriPath', () {
