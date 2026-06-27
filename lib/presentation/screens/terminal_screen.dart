@@ -11621,7 +11621,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    final externalLink = _resolveTerminalExternalLinkAtOffset(offset);
+    final externalLink = _resolveTerminalExternalLinkAtOffset(
+      offset,
+      forgiving: _isMobilePlatform,
+    );
     if (externalLink != null) {
       _pendingTerminalPathTap = null;
       if (_consumeRecentlyOpenedTerminalLinkTap(externalLink)) {
@@ -11658,39 +11661,65 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return '$_terminalSftpPathPrefix$detectedPath';
   }
 
-  String? _resolveTerminalExternalLinkAtOffset(CellOffset offset) {
+  String? _resolveTerminalExternalLinkAtOffset(
+    CellOffset offset, {
+    bool forgiving = false,
+  }) {
     if (!shouldResolveTerminalTapLinks(
       showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
     )) {
       return null;
     }
 
-    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
-    if (trackedHyperlink != null) {
-      return trackedHyperlink;
+    final candidateOffsets = forgiving
+        ? resolveForgivingTerminalTapOffsets(offset)
+        : <CellOffset>[offset];
+    for (final candidateOffset in candidateOffsets) {
+      final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(
+        candidateOffset,
+      );
+      if (trackedHyperlink != null) {
+        return trackedHyperlink;
+      }
+
+      final row = candidateOffset.y.clamp(0, _terminal.buffer.height - 1);
+      final column = candidateOffset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+      final line = _terminal.buffer.lines[row];
+      if (line.getCodePoint(column) == 0) {
+        continue;
+      }
+
+      final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
+      if (wrappedSnapshot == null) {
+        continue;
+      }
+
+      final rowIndex = row - wrappedSnapshot.startRow;
+      final textOffset =
+          wrappedSnapshot.rowStarts[rowIndex] +
+          wrappedSnapshot.columnOffsets[rowIndex][column];
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        wrappedSnapshot.text,
+        textOffset,
+      );
+      if (detectedLink != null) {
+        return detectedLink.uri.toString();
+      }
     }
 
-    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
-    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
-    final line = _terminal.buffer.lines[row];
-    if (line.getCodePoint(column) == 0) {
-      return null;
+    // Forgiving touch fallback: a short OSC 8 label such as `#587` is easy to
+    // miss with a finger, so open the link when the tapped row carries exactly
+    // one tracked hyperlink.
+    if (forgiving) {
+      final rowLink = _terminalHyperlinkTracker?.resolveLinkOnRow(
+        offset.y.clamp(0, _terminal.buffer.height - 1),
+      );
+      if (rowLink != null) {
+        return rowLink;
+      }
     }
 
-    final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
-    if (wrappedSnapshot == null) {
-      return null;
-    }
-
-    final rowIndex = row - wrappedSnapshot.startRow;
-    final textOffset =
-        wrappedSnapshot.rowStarts[rowIndex] +
-        wrappedSnapshot.columnOffsets[rowIndex][column];
-    final detectedLink = detectTerminalLinkAtTextOffset(
-      wrappedSnapshot.text,
-      textOffset,
-    );
-    return detectedLink?.uri.toString();
+    return null;
   }
 
   String? _resolveTerminalFilePathAtOffset(
@@ -12101,7 +12130,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final offset = terminalViewState.renderTerminal.getCellOffset(
       terminalLocalPosition,
     );
-    final tappedLink = _resolveTerminalExternalLinkAtOffset(offset);
+    final tappedLink = _resolveTerminalExternalLinkAtOffset(
+      offset,
+      forgiving: true,
+    );
     if (tappedLink == null) {
       return;
     }

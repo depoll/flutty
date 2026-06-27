@@ -103,6 +103,53 @@ class TerminalHyperlinkTracker {
     return null;
   }
 
+  /// Resolves the hyperlink anchored on [row] when exactly one distinct
+  /// destination spans that row.
+  ///
+  /// Touch taps rarely land on the exact cell of a short label like `#587`, so
+  /// this acts as a forgiving fallback: if a rendered row carries a single
+  /// hyperlink, a tap anywhere on it opens that link. Rows with two or more
+  /// distinct destinations stay ambiguous and resolve to `null`.
+  String? resolveLinkOnRow(int row) {
+    final terminal = _terminal;
+    if (terminal == null) {
+      return null;
+    }
+
+    _pruneDetachedHyperlinks();
+
+    final destinations = <String>{};
+    String? lastDestination;
+
+    void consider(CellOffset start, CellOffset end, Uri uri) {
+      if (row >= start.y && row <= end.y) {
+        final destination = uri.toString();
+        destinations.add(destination);
+        lastDestination = destination;
+      }
+    }
+
+    final activeHyperlink = _pendingHyperlink;
+    if (activeHyperlink != null) {
+      consider(
+        activeHyperlink.startAnchor.offset,
+        _currentCursorOffset(terminal),
+        activeHyperlink.uri,
+      );
+    }
+    for (final hyperlink in _trackedHyperlinks) {
+      if (hyperlink.attached) {
+        consider(
+          hyperlink.startAnchor.offset,
+          hyperlink.endAnchor.offset,
+          hyperlink.uri,
+        );
+      }
+    }
+
+    return destinations.length == 1 ? lastDestination : null;
+  }
+
   /// Number of fully tracked hyperlinks currently retained in memory.
   @visibleForTesting
   int get trackedHyperlinkCount => _trackedHyperlinks.length;
