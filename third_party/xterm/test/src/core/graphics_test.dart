@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:archive/archive.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/xterm.dart';
@@ -729,6 +731,85 @@ void main() {
         isNull,
         reason: 'an uppercase d=I must also free the image data',
       );
+    });
+  });
+
+  testWidgets('Kitty graphics o=z inflates a zlib-compressed RGBA payload', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      // A 2x2 solid red RGBA image, zlib-compressed (o=z).
+      final raw = Uint8List.fromList(
+        List<int>.generate(
+            2 * 2 * 4, (i) => i % 4 == 3 ? 0xFF : (i % 4 == 0 ? 0xFF : 0)),
+      );
+      final compressed = ZLibEncoder().encode(raw);
+      final payload = base64.encode(compressed);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=32,o=z,s=2,v=2;$payload\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final stored = terminal.graphics
+          .imageById(terminal.graphics.placements.single.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 2);
+      expect(stored.image.height, 2);
+    });
+  });
+
+  testWidgets('Kitty graphics o=z inflates a zlib-compressed PNG payload', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(3, 2));
+      final compressed = ZLibEncoder().encode(pngBytes);
+      final payload = base64.encode(compressed);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100,o=z;$payload\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final stored = terminal.graphics
+          .imageById(terminal.graphics.placements.single.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+    });
+  });
+
+  testWidgets('Kitty graphics query accepts o=z and rejects other o values', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(3, 2));
+      final compressed = base64.encode(ZLibEncoder().encode(pngBytes));
+
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      // q=0 so success responses are emitted; o=z must validate OK.
+      terminal.write('\x1b_Ga=q,i=1,f=100,o=z,q=0;$compressed\x1b\\');
+      expect(responses.single, contains('OK'));
+
+      responses.clear();
+      // An unknown compression value must still be rejected.
+      terminal.write(
+        '\x1b_Ga=q,i=2,f=100,o=w,q=0;${base64.encode(pngBytes)}\x1b\\',
+      );
+      expect(responses.single, contains('EINVAL'));
     });
   });
 }

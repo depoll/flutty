@@ -1161,8 +1161,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
 
+    // Inflate zlib-compressed payloads (o=z) before decoding.
+    var payload = data;
+    if (args['o'] == 'z') {
+      final inflated = inflateZlibData(data);
+      if (inflated == null) {
+        anchor?.dispose();
+        return;
+      }
+      payload = inflated;
+    }
+
     final image = await decodeTerminalImage(
-      data,
+      payload,
       format: format,
       width: width,
       height: height,
@@ -1284,11 +1295,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if ((args['t'] ?? 'd') != 'd') {
       return 'EINVAL: unsupported transmission medium';
     }
-    if (args.containsKey('o')) {
+    final compression = args['o'];
+    if (compression != null && compression != 'z') {
       return 'EINVAL: unsupported compression';
     }
     if (data.isEmpty) {
       return 'EINVAL: missing image data';
+    }
+
+    var payload = data;
+    if (compression == 'z') {
+      final inflated = inflateZlibData(data);
+      if (inflated == null) {
+        return 'EINVAL: invalid compressed data';
+      }
+      payload = inflated;
     }
 
     final format = _graphicsFormat(args);
@@ -1299,14 +1320,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         return 'EINVAL: missing image dimensions';
       }
       final bytesPerPixel = format == 24 ? 3 : 4;
-      if (data.length < width * height * bytesPerPixel) {
+      if (payload.length < width * height * bytesPerPixel) {
         return 'EINVAL: invalid image data';
       }
       return null;
     }
 
     if (format == 100) {
-      return _looksLikePng(data) ? null : 'EINVAL: invalid PNG data';
+      return _looksLikePng(payload) ? null : 'EINVAL: invalid PNG data';
     }
 
     return 'EINVAL: unsupported image format';
