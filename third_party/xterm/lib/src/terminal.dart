@@ -1133,9 +1133,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         shouldPlace ? buffer.currentLine.createAnchor(buffer.cursorX) : null;
     final generation = shouldPlace ? buffer.graphics.generation : null;
 
-    // Move the cursor below the image so following output does not overlap it.
+    // Move the cursor below the image so following output does not overlap it,
+    // unless the client set the no-cursor-movement policy (C=1) — e.g. a client
+    // redrawing a full-screen image in place keeps the cursor where it is, and
+    // advancing it past the bottom margin would scroll the screen.
+    final keepCursor = args['C'] == '1';
     final rows = int.tryParse(args['r'] ?? '') ?? 0;
-    if (shouldPlace) {
+    if (shouldPlace && !keepCursor) {
       for (var i = 0; i < rows; i++) {
         buffer.index();
       }
@@ -1210,9 +1214,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       cols: int.tryParse(args['c'] ?? '') ?? 0,
       rows: int.tryParse(args['r'] ?? '') ?? 0,
     );
+    // Respect the no-cursor-movement policy (C=1); otherwise drop below the
+    // image so subsequent output does not overlap it.
+    final keepCursor = args['C'] == '1';
     final rows = int.tryParse(args['r'] ?? '') ?? 0;
-    for (var i = 0; i < rows; i++) {
-      _buffer.index();
+    if (!keepCursor) {
+      for (var i = 0; i < rows; i++) {
+        _buffer.index();
+      }
     }
     notifyListeners();
   }
