@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../domain/services/ssh_service.dart';
+import 'connection_status_dot.dart';
 
 /// An immutable, value-equal snapshot of the active session tab entries.
 ///
@@ -144,14 +145,7 @@ class _TerminalTab extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isConnected ? colorScheme.primary : colorScheme.tertiary,
-              ),
-            ),
+            ConnectionStatusDot(isConnected: isConnected, size: 8),
             const SizedBox(width: 8),
             Flexible(
               child: Text(
