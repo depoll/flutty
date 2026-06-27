@@ -1947,8 +1947,13 @@ bool terminalRowMayContainPath(BufferLine line, int viewWidth) {
 }
 
 _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
-  String text,
-) {
+  String text, {
+  bool Function({required String previousText, required String nextText})?
+  continuationPredicate,
+}) {
+  final isContinuation =
+      continuationPredicate ??
+      _looksLikeTerminalPathContinuationAcrossRenderedLines;
   final normalizedCharacters = <String>[];
   final originalToNormalizedOffsets = List<int>.filled(text.length + 1, 0);
   final normalizedToOriginalStarts = <int>[];
@@ -1994,7 +1999,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
 
       final isPathContinuation =
           continuationEnd < text.length &&
-          _looksLikeTerminalPathContinuationAcrossRenderedLines(
+          isContinuation(
             previousText: text.substring(lineStart, trailingGapStart),
             nextText: text.substring(continuationEnd, nextLineEnd),
           );
@@ -2225,13 +2230,62 @@ List<({String path, int start, int end})> detectTerminalFilePaths(
   return null;
 }
 
+/// Matches a terminal list-item marker (e.g. `- `, `* `, `+ `, `1. `) so a
+/// wrapped URL is not joined to the next bullet.
+final _terminalListMarkerPattern = RegExp(r'^(?:[-*+]\s|\d+[.)]\s)');
+
+/// Whether [text] ends inside an unterminated terminal link token.
+///
+/// True when the last whitespace-delimited token carries a link scheme (so the
+/// URL runs to the end of the rendered line and likely continues on the next).
+bool _endsInsideTerminalLinkToken(String text) {
+  final trimmed = _trimTerminalPathContinuationSuffix(text);
+  if (trimmed.isEmpty) {
+    return false;
+  }
+  final lastToken = trimmed.split(RegExp(r'\s')).last;
+  return _terminalLinkPattern.matchAsPrefix(lastToken) != null;
+}
+
+/// Continuation rule for terminal links: only rejoin a wrapped URL fragment,
+/// never two separate links or a link and a following list item.
+bool _looksLikeTerminalLinkContinuationAcrossRenderedLines({
+  required String previousText,
+  required String nextText,
+}) {
+  if (!_endsInsideTerminalLinkToken(previousText)) {
+    return false;
+  }
+  final trimmedNext = _trimTerminalPathContinuationPrefix(nextText);
+  if (trimmedNext.isEmpty ||
+      _terminalListMarkerPattern.hasMatch(trimmedNext) ||
+      _terminalLinkPattern.matchAsPrefix(trimmedNext) != null) {
+    return false;
+  }
+  return _isTerminalFilePathBodyCharacter(trimmedNext[0]);
+}
+
 /// Resolves a tappable terminal link at the given text offset, if present.
+///
+/// The text is first normalized so a URL split across rendered lines (e.g. a
+/// long URL wrapped inside a program's bordered TUI, with gutter/scrollbar
+/// decoration between fragments) is rejoined before matching — mirroring the
+/// cross-line reconstruction used for file paths.
 @visibleForTesting
 ({Uri uri, int start, int end})? detectTerminalLinkAtTextOffset(
   String text,
   int offset,
 ) {
-  for (final match in _terminalLinkPattern.allMatches(text)) {
+  final normalized = _normalizeTerminalFilePathDetectionText(
+    text,
+    continuationPredicate:
+        _looksLikeTerminalLinkContinuationAcrossRenderedLines,
+  );
+  final clampedOffset = offset.clamp(0, text.length);
+  final normalizedOffset =
+      normalized.originalToNormalizedOffsets[clampedOffset];
+
+  for (final match in _terminalLinkPattern.allMatches(normalized.text)) {
     final candidate = trimTerminalLinkCandidate(match.group(0)!);
     if (candidate.isEmpty) {
       continue;
@@ -2243,9 +2297,13 @@ List<({String path, int start, int end})> detectTerminalFilePaths(
       continue;
     }
 
-    final end = match.start + candidate.length;
-    if (offset >= match.start && offset < end) {
-      return (uri: uri, start: match.start, end: end);
+    final normalizedEnd = match.start + candidate.length;
+    if (normalizedOffset >= match.start && normalizedOffset < normalizedEnd) {
+      return (
+        uri: uri,
+        start: normalized.normalizedToOriginalStarts[match.start],
+        end: normalized.normalizedToOriginalEnds[normalizedEnd - 1],
+      );
     }
   }
 
@@ -11721,17 +11779,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         continue;
       }
 
-      final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
-      if (wrappedSnapshot == null) {
+      // Use the cross-rendered-line snapshot (the same one that reconstructs
+      // wrapped file paths) so a URL split across a program's bordered TUI
+      // lines is rejoined before detection.
+      final linkSnapshot = _buildTerminalPathTapSnapshot(row);
+      if (linkSnapshot == null) {
         continue;
       }
 
-      final rowIndex = row - wrappedSnapshot.startRow;
+      final rowIndex = row - linkSnapshot.startRow;
+      if (rowIndex < 0 || rowIndex >= linkSnapshot.columnOffsets.length) {
+        continue;
+      }
       final textOffset =
-          wrappedSnapshot.rowStarts[rowIndex] +
-          wrappedSnapshot.columnOffsets[rowIndex][column];
+          linkSnapshot.rowStarts[rowIndex] +
+          linkSnapshot.columnOffsets[rowIndex][column];
       final detectedLink = detectTerminalLinkAtTextOffset(
-        wrappedSnapshot.text,
+        linkSnapshot.text,
         textOffset,
       );
       if (detectedLink != null) {
@@ -11856,43 +11920,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     return null;
-  }
-
-  _TerminalPathTapSnapshot? _buildWrappedTerminalLinkSnapshot(int row) {
-    final buffer = _terminal.buffer;
-    if (row < 0 || row >= buffer.height) {
-      return null;
-    }
-
-    var startRow = row;
-    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
-      startRow--;
-    }
-
-    var endRow = row;
-    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
-      endRow++;
-    }
-
-    final builder = StringBuffer();
-    final rowStarts = <int>[];
-    final columnOffsets = <List<int>>[];
-    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
-      rowStarts.add(builder.length);
-      final lineSnapshot = _buildNativeSelectionLineSnapshot(
-        buffer.lines[lineIndex],
-        buffer.viewWidth,
-      );
-      builder.write(lineSnapshot.text);
-      columnOffsets.add(lineSnapshot.columnOffsets);
-    }
-
-    return (
-      text: builder.toString(),
-      startRow: startRow,
-      rowStarts: rowStarts,
-      columnOffsets: columnOffsets,
-    );
   }
 
   _TerminalPathTapSnapshot? _buildTerminalPathTapSnapshot(int row) {
