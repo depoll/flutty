@@ -563,6 +563,12 @@ class GraphicsManager {
   }
 
   /// Drops stored images that no longer have a placement referencing them.
+  ///
+  /// Retained protocol-id images (Unicode-placeholder backing) and images still
+  /// referenced by a placement or placeholder cell are kept.
+  void pruneUnreferencedImages() => _dropUnreferencedImages();
+
+  /// Drops stored images that no longer have a placement referencing them.
   void _dropUnreferencedImages() {
     if (_images.isEmpty) return;
     pruneDetachedPlaceholders();

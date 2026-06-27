@@ -126,7 +126,12 @@ String sanitizeRemoteUploadFileName(String name) {
       .replaceAll(RegExp('[^A-Za-z0-9._-]'), '-')
       .replaceAll(RegExp('-+'), '-')
       .replaceAll(RegExp(r'^-+|-+$'), '');
-  return sanitized.isEmpty ? 'file' : sanitized;
+  // A name made only of dots (`.`, `..`) is a path-traversal token rather than a
+  // file, so fall back to a literal name even though it survives the allowlist.
+  if (sanitized.isEmpty || RegExp(r'^\.+$').hasMatch(sanitized)) {
+    return 'file';
+  }
+  return sanitized;
 }
 
 /// Creates a unique remote filename for clipboard uploads.
@@ -170,23 +175,32 @@ String shellEscapePosix(String value) => "'${value.replaceAll("'", r"'\''")}'";
 const _bracketedPasteStart = '\x1b[200~';
 const _bracketedPasteEnd = '\x1b[201~';
 
+/// Whether [path] is safe to paste unquoted (only path separators and the
+/// strict upload-filename allowlist). Uploaded filenames are sanitized, but the
+/// directory prefix derives from the remote home directory, which a hostile or
+/// misconfigured server could fill with spaces or shell metacharacters.
+bool _isUnquotedSafeAttachmentPath(String path) =>
+    RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path);
+
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [bracketedPasteMode] is enabled, each path is returned as its own
-/// bracketed-paste segment (`CSI 200~ <path> CSI 201~ ` with a trailing space).
-/// The caller must write these segments sequentially with a short delay between
-/// them: an agent CLI such as Copilot CLI only recognises each path as a
-/// separate attachment — rendering a preview chip per file — when the bracketed
-/// pastes arrive as distinct reads. The trailing space also keeps the paths
-/// usable as distinct shell arguments.
+/// When [bracketedPasteMode] is enabled *and* every path is safe to paste
+/// unquoted, each path is returned as its own bracketed-paste segment
+/// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
+/// these segments sequentially with a short delay between them: an agent CLI
+/// such as Copilot CLI only recognises each path as a separate attachment —
+/// rendering a preview chip per file — when the bracketed pastes arrive as
+/// distinct reads. The trailing space also keeps the paths usable as distinct
+/// shell arguments.
 ///
-/// When [bracketedPasteMode] is disabled, all paths are returned as a single
-/// space-separated segment (a plain prompt shows no preview either way).
+/// Otherwise — bracketed paste mode is off, or a path contains characters that
+/// would be unsafe unquoted (e.g. a remote home directory with spaces or shell
+/// metacharacters) — the paths are shell-escaped and returned as a single
+/// segment. That form shows no preview (a path with spaces would not produce a
+/// chip anyway) but can never break the shell or inject commands.
 ///
-/// Uploaded remote paths come from [sanitizeRemoteUploadFileName] inside a fixed
-/// cache directory, so they contain no shell metacharacters and need no
-/// quoting. Segments must be written straight to the session input sink (e.g.
+/// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
 /// bracketed-paste control sequences.
 List<String> buildTerminalAttachmentPasteSegments(
@@ -199,8 +213,10 @@ List<String> buildTerminalAttachmentPasteSegments(
   if (paths.isEmpty) {
     return const [];
   }
-  if (!bracketedPasteMode) {
-    return ['${paths.join(' ')} '];
+  final canRenderChips =
+      bracketedPasteMode && paths.every(_isUnquotedSafeAttachmentPath);
+  if (!canRenderChips) {
+    return ['${paths.map(shellEscapePosix).join(' ')} '];
   }
   return [
     for (final remotePath in paths)

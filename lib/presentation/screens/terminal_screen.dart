@@ -14004,6 +14004,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _followLiveOutput();
     await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14050,6 +14053,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
     _followLiveOutput();
     await _insertUploadedFileReferences([remotePath]);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14136,6 +14142,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _followLiveOutput();
     await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)

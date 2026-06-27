@@ -3834,13 +3834,16 @@ class MonkeyRenderTerminal extends RenderBox
 
     final cellWidth = _painter.cellSize.width;
     final cellHeight = _painter.cellSize.height;
-    // Guard against transient degenerate cell metrics (zero or non-finite) that
-    // can occur during a relayout/pinch-zoom: cell-size arithmetic and
-    // drawImageRect with those values crash the engine.
+    // Guard against transient degenerate metrics (zero/non-finite cell size, or
+    // a zero view width) that can occur during a relayout/pinch-zoom. Besides
+    // the unsafe cell-size arithmetic, an auto-sized placement below computes
+    // `(viewWidth - col).clamp(1, viewWidth)`, which throws when viewWidth <= 0
+    // (lower limit above upper limit) — and that runs outside the draw try/catch.
     if (!cellWidth.isFinite ||
         !cellHeight.isFinite ||
         cellWidth <= 0 ||
-        cellHeight <= 0) {
+        cellHeight <= 0 ||
+        _terminal.viewWidth <= 0) {
       return;
     }
 
