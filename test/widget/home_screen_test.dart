@@ -876,14 +876,16 @@ void main() {
         Finder connectionsHeader() => find.byWidgetPredicate(
           (widget) =>
               widget is Text &&
-              widget.data == 'Connections' &&
-              widget.style?.fontWeight == FontWeight.w600,
+              (widget.textSpan?.toPlainText().startsWith('connections') ??
+                  false),
         );
+        Color? connectionsHeaderColor() {
+          final span =
+              tester.widget<Text>(connectionsHeader()).textSpan! as TextSpan;
+          return span.children!.first.style?.color;
+        }
 
-        expect(
-          tester.widget<Text>(connectionsHeader()).style?.color,
-          Colors.black,
-        );
+        expect(connectionsHeaderColor(), Colors.black);
         final container = ProviderScope.containerOf(
           tester.element(find.byType(HomeScreen)),
         );
@@ -904,10 +906,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(container.read(terminalAppThemeOverrideProvider), isNull);
-        expect(
-          tester.widget<Text>(connectionsHeader()).style?.color,
-          Colors.black,
-        );
+        expect(connectionsHeaderColor(), Colors.black);
       },
     );
 
