@@ -39,9 +39,12 @@ import '../providers/entity_list_providers.dart';
 import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/brand_empty_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/cursor_block.dart';
 import '../widgets/file_picker_helpers.dart';
+import '../widgets/panel_header.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import '../widgets/snippet_folder_dialog.dart';
@@ -544,10 +547,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                           ),
                         ),
                         const SizedBox(width: 12),
-                        Text(
-                          appName,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
+                        Flexible(
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: appName,
+                                  style: FluttyTheme.displayMono(
+                                    fontSize: 16,
+                                    color: colorScheme.onSurface,
+                                  ),
+                                ),
+                                WidgetSpan(
+                                  alignment: PlaceholderAlignment.baseline,
+                                  baseline: TextBaseline.alphabetic,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 4),
+                                    child: CursorBlock(
+                                      size: 16,
+                                      color: colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -839,72 +863,6 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
   }
 }
 
-class _EmptyStateAction {
-  const _EmptyStateAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-}
-
-class _GuidedEmptyState extends StatelessWidget {
-  const _GuidedEmptyState({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.primaryLabel,
-    required this.onPrimary,
-    this.primaryIcon = Icons.add,
-    this.secondaryActions = const [],
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String primaryLabel;
-  final IconData primaryIcon;
-  final VoidCallback onPrimary;
-  final List<_EmptyStateAction> secondaryActions;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      FluttyTheme.buildEmptyState(
-        context: context,
-        icon: icon,
-        title: title,
-        subtitle: subtitle,
-        onAction: onPrimary,
-        actionLabel: primaryLabel,
-        actionIcon: primaryIcon,
-        centered: false,
-        padded: false,
-      ),
-      if (secondaryActions.isNotEmpty) ...[
-        const SizedBox(height: FluttyTheme.spacingMd),
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: FluttyTheme.spacingSm,
-          runSpacing: FluttyTheme.spacingSm,
-          children: [
-            for (final action in secondaryActions)
-              OutlinedButton.icon(
-                onPressed: action.onTap,
-                icon: Icon(action.icon, size: 18),
-                label: Text(action.label),
-              ),
-          ],
-        ),
-      ],
-    ],
-  );
-}
-
 /// Panel for displaying and managing hosts inline.
 class HostsPanel extends ConsumerWidget {
   /// Creates a [HostsPanel].
@@ -912,38 +870,22 @@ class HostsPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'hosts',
+          actions: [
+            _ActionButton(
+              icon: Icons.add,
+              label: 'New Host',
+              onTap: () => context.push('/hosts/add'),
+              primary: true,
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Hosts',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'New Host',
-                onTap: () => context.push('/hosts/add'),
-                primary: true,
-              ),
-            ],
-          ),
+          ],
         ),
 
         Expanded(child: _buildHostsBody(context, ref, hostsAsync)),
@@ -979,14 +921,13 @@ class HostsPanel extends ConsumerWidget {
   );
 
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
-    child: _GuidedEmptyState(
-      icon: Icons.dns_outlined,
-      title: 'No hosts yet',
-      subtitle: 'Add an SSH server or paste an ssh:// URL to get started.',
+    child: BrandEmptyState(
+      title: 'no hosts yet',
+      message: "Nothing to connect to — let's fix that.",
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
-        _EmptyStateAction(
+        BrandEmptyAction(
           icon: Icons.content_paste_go_outlined,
           label: 'Paste SSH URL',
           onTap: () => unawaited(_openPastedSshUrl(context)),
@@ -1842,20 +1783,7 @@ class _ConnectionsPanel extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Text(
-            'Connections',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
+        const PanelHeader(title: 'connections'),
         Expanded(
           child: connections.isEmpty
               ? _buildEmptyState(context)
@@ -1982,13 +1910,14 @@ class _ConnectionsPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) => FluttyTheme.buildEmptyState(
-    context: context,
-    icon: Icons.link_off,
-    title: 'No active connections',
-    subtitle:
-        'Connections appear here while terminals are open. Choose a host to '
-        'connect, then jump back to live sessions from this tab.',
+  Widget _buildEmptyState(BuildContext context) => const Center(
+    child: Padding(
+      padding: EdgeInsets.symmetric(horizontal: 24),
+      child: BrandEmptyState(
+        title: 'no active sessions',
+        message: 'Open a host and your live terminals show up here.',
+      ),
+    ),
   );
 }
 
@@ -2128,38 +2057,22 @@ class _KeysPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final keysAsync = ref.watch(allKeysProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'keys',
+          actions: [
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Key',
+              onTap: () => context.push('/keys/add'),
+              primary: true,
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'SSH Keys',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Key',
-                onTap: () => context.push('/keys/add'),
-                primary: true,
-              ),
-            ],
-          ),
+          ],
         ),
 
         // Keys list
@@ -2181,17 +2094,14 @@ class _KeysPanel extends ConsumerWidget {
   Widget _buildEmptyState(BuildContext context) => Center(
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: _GuidedEmptyState(
-        icon: Icons.key_outlined,
-        title: 'No SSH keys yet',
-        subtitle:
-            'Keys let you sign in without saving server passwords. Generate a '
-            'new Ed25519 key or import an existing private key.',
+      child: BrandEmptyState(
+        title: 'no keys yet',
+        message: 'Generate a key and stop saving server passwords.',
         primaryLabel: 'Generate Key',
         primaryIcon: Icons.enhanced_encryption,
         onPrimary: () => context.push('/keys/add'),
         secondaryActions: [
-          _EmptyStateAction(
+          BrandEmptyAction(
             icon: Icons.upload_file_outlined,
             label: 'Import Key',
             onTap: () => context.push('/keys/add?tab=import'),
@@ -2484,8 +2394,6 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final snippetsAsync = ref.watch(allSnippetsProvider);
     final foldersAsync = ref.watch(allSnippetFoldersProvider);
 
@@ -2493,36 +2401,22 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'snippets',
+          actions: [
+            _ActionButton(
+              icon: Icons.create_new_folder_outlined,
+              label: 'New Folder',
+              onTap: () => unawaited(_createFolder(context)),
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Snippets',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.create_new_folder_outlined,
-                label: 'New Folder',
-                onTap: () => unawaited(_createFolder(context)),
-              ),
-              const SizedBox(width: 8),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Snippet',
-                onTap: () => _addSnippet(context),
-                primary: true,
-              ),
-            ],
-          ),
+            const SizedBox(width: 8),
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Snippet',
+              onTap: () => _addSnippet(context),
+              primary: true,
+            ),
+          ],
         ),
 
         // Snippets list
@@ -2837,19 +2731,20 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
   }
 
   Widget _buildEmptyState(BuildContext context, String? selectedFolderName) =>
-      FluttyTheme.buildEmptyState(
-        context: context,
-        icon: Icons.code_outlined,
-        title: selectedFolderName == null
-            ? 'No snippets yet'
-            : 'No snippets in $selectedFolderName',
-        subtitle: selectedFolderName == null
-            ? 'Save commands you run often. Try templates such as '
-                  '`tail -f {{log_file}}`, `docker restart {{container}}`, or '
-                  '`git pull && {{restart_command}}`.'
-            : 'Add a snippet to this folder or pick another folder above.',
-        onAction: () => _addSnippet(context),
-        actionLabel: 'Add Snippet',
+      Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: BrandEmptyState(
+            title: selectedFolderName == null
+                ? 'no snippets yet'
+                : 'empty folder',
+            message: selectedFolderName == null
+                ? 'Save commands you keep retyping — {{variables}} and all.'
+                : 'Nothing in this folder yet — add one or pick another above.',
+            primaryLabel: 'Add Snippet',
+            onPrimary: () => _addSnippet(context),
+          ),
+        ),
       );
 
   Widget _buildSnippetsList(

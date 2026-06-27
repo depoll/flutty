@@ -11,6 +11,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/brand_empty_state.dart';
 
 /// Screen displaying list of port forwards grouped by host.
 class PortForwardsScreen extends ConsumerWidget {
@@ -69,11 +70,14 @@ class PortForwardsScreen extends ConsumerWidget {
     List<Host> hosts,
   ) {
     if (portForwards.isEmpty) {
-      return FluttyTheme.buildEmptyState(
-        context: context,
-        icon: Icons.swap_horiz,
-        title: 'No port forwards yet',
-        subtitle: 'Tap + to create a port forward rule',
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 24),
+          child: BrandEmptyState(
+            title: 'no forwards yet',
+            message: 'Tunnel a port when you need one — tap + to add a rule.',
+          ),
+        ),
       );
     }
 
