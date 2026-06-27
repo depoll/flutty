@@ -3746,6 +3746,15 @@ class MonkeyRenderTerminal extends RenderBox
       );
     }
 
+    // Images with a negative z-index render behind the terminal text.
+    _paintGraphics(
+      canvas,
+      offset,
+      effectFirstLine,
+      effectLastLine,
+      belowText: true,
+    );
+
     // Glyphs are drawn in a pass after every line's opaque background so a
     // descender (the bottom of "g"/"y"/"p") that extends past its cell box is
     // not clipped by the next line's background.
@@ -3807,12 +3816,17 @@ class MonkeyRenderTerminal extends RenderBox
 
   /// Composites Kitty-graphics-protocol images over the cell grid for the
   /// visible rows ([firstLine]..[lastLine], inclusive).
+  ///
+  /// When [belowText] is true only placements with a negative z-index are drawn
+  /// (these sit behind the terminal text); otherwise placements with a
+  /// non-negative z-index and the Unicode placeholders are drawn on top.
   void _paintGraphics(
     Canvas canvas,
     Offset offset,
     int firstLine,
-    int lastLine,
-  ) {
+    int lastLine, {
+    bool belowText = false,
+  }) {
     final graphics = _terminal.graphics;
     if (!graphics.hasPlacements && graphics.imageCount == 0) {
       return;
@@ -3830,7 +3844,18 @@ class MonkeyRenderTerminal extends RenderBox
       return;
     }
 
-    for (final placement in graphics.placements) {
+    // Draw lower z-indices first so higher ones stack on top; ties keep
+    // insertion order (placement id increases monotonically).
+    final placements =
+        graphics.placements
+            .where((p) => belowText ? p.z < 0 : p.z >= 0)
+            .toList()
+          ..sort((a, b) {
+            final byZ = a.z.compareTo(b.z);
+            return byZ != 0 ? byZ : a.placementId.compareTo(b.placementId);
+          });
+
+    for (final placement in placements) {
       if (!placement.attached) {
         continue;
       }
@@ -3839,6 +3864,25 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
       final image = stored.image;
+      final imageWidth = image.width.toDouble();
+      final imageHeight = image.height.toDouble();
+
+      // Source rectangle: the optional crop (x=,y=,w=,h=), clamped to the image.
+      final srcLeft = placement.srcX.toDouble().clamp(0.0, imageWidth);
+      final srcTop = placement.srcY.toDouble().clamp(0.0, imageHeight);
+      final srcWidth =
+          (placement.srcWidth > 0
+                  ? placement.srcWidth.toDouble()
+                  : imageWidth - srcLeft)
+              .clamp(0.0, imageWidth - srcLeft);
+      final srcHeight =
+          (placement.srcHeight > 0
+                  ? placement.srcHeight.toDouble()
+                  : imageHeight - srcTop)
+              .clamp(0.0, imageHeight - srcTop);
+      if (srcWidth <= 0 || srcHeight <= 0) {
+        continue;
+      }
 
       final double dstWidth;
       final double dstHeight;
@@ -3846,16 +3890,16 @@ class MonkeyRenderTerminal extends RenderBox
         dstWidth = placement.cols * cellWidth;
         dstHeight = placement.rows * cellHeight;
       } else {
-        // No explicit cell span: fit the image width within the remaining row.
+        // No explicit cell span: fit the (cropped) source width within the row.
         final maxWidth =
             (_terminal.viewWidth - placement.col).clamp(
               1,
               _terminal.viewWidth,
             ) *
             cellWidth;
-        final scale = image.width > maxWidth ? maxWidth / image.width : 1.0;
-        dstWidth = image.width * scale;
-        dstHeight = image.height * scale;
+        final scale = srcWidth > maxWidth ? maxWidth / srcWidth : 1.0;
+        dstWidth = srcWidth * scale;
+        dstHeight = srcHeight * scale;
       }
       if (!dstWidth.isFinite ||
           !dstHeight.isFinite ||
@@ -3869,10 +3913,11 @@ class MonkeyRenderTerminal extends RenderBox
         continue;
       }
 
-      final topLeft = _linePaintOffset(
-        offset,
-        placement.row,
-      ).translate(placement.col * cellWidth, 0);
+      // Apply the in-cell pixel offset (X=,Y=) to the destination top-left.
+      final topLeft = _linePaintOffset(offset, placement.row).translate(
+        placement.col * cellWidth + placement.xOffset,
+        placement.yOffset.toDouble(),
+      );
       if (!topLeft.dx.isFinite || !topLeft.dy.isFinite) {
         continue;
       }
@@ -3884,7 +3929,7 @@ class MonkeyRenderTerminal extends RenderBox
       try {
         canvas.drawImageRect(
           image,
-          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+          Rect.fromLTWH(srcLeft, srcTop, srcWidth, srcHeight),
           Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, dstHeight),
           Paint()..filterQuality = FilterQuality.medium,
         );
@@ -3892,6 +3937,10 @@ class MonkeyRenderTerminal extends RenderBox
         // Intentionally swallowed: a failed image draw must never crash the
         // terminal. The next frame re-attempts with fresh metrics.
       }
+    }
+
+    if (belowText) {
+      return;
     }
     _paintKittyPlaceholderGraphics(
       canvas,
