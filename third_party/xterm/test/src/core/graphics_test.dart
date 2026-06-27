@@ -390,6 +390,20 @@ void main() {
     });
   });
 
+  testWidgets('a=T with C=1 leaves the cursor where it is', (tester) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(2, 2);
+      final terminal = Terminal();
+
+      // C=1 is the Kitty "do not move the cursor" policy: the following 'X' must
+      // stay on the same row as the image anchor rather than dropping r rows.
+      terminal.write('\x1b_Ga=T,f=100,r=3,C=1;$pngBase64\x1b\\X');
+
+      expect(terminal.buffer.lines[0].getText().trimRight(), 'X');
+      expect(terminal.buffer.lines[3].getText().trimRight(), isEmpty);
+    });
+  });
+
   testWidgets('invalid graphics payload is ignored without placing', (
     tester,
   ) async {
