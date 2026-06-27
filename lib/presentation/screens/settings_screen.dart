@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
+import '../../app/theme.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
@@ -102,10 +103,10 @@ class _SectionHeader extends StatelessWidget {
         children: [
           Text(
             title,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.primary,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.5,
+            style: FluttyTheme.displayMono(
+              fontSize: 13,
+              color: theme.colorScheme.onSurface,
+              letterSpacing: 0,
             ),
           ),
           if (subtitle case final subtitle?) ...[
@@ -1080,7 +1081,7 @@ class _TerminalSection extends ConsumerWidget {
         title: const Text('Font family'),
         content: SizedBox(
           width: double.maxFinite,
-          height: 450,
+          height: MediaQuery.of(context).size.height * 0.6,
           child: Column(
             children: [
               // Current selection preview

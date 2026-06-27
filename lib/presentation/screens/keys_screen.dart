@@ -33,7 +33,7 @@ class KeysScreen extends ConsumerWidget {
                 color: theme.colorScheme.error,
               ),
               const SizedBox(height: FluttyTheme.spacingMd),
-              const Text('Could not load SSH keys.'),
+              const Text('Couldn’t load your SSH keys.'),
               const SizedBox(height: FluttyTheme.spacingMd),
               FilledButton.icon(
                 onPressed: () => ref.invalidate(allKeysProvider),
@@ -167,17 +167,17 @@ class _KeyListTile extends StatelessWidget {
       leading: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
+          color: theme.colorScheme.primary.withAlpha(isDark ? 25 : 15),
           borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
         ),
-        child: Icon(_getKeyIcon(), size: 20, color: const Color(0xFF00C9FF)),
+        child: Icon(_getKeyIcon(), size: 20, color: theme.colorScheme.primary),
       ),
       title: Text(sshKey.name),
       subtitle: Text(
         _getKeyTypeLabel(),
         style: FluttyTheme.monoStyle.copyWith(
           fontSize: 11,
-          color: theme.colorScheme.onSurface.withAlpha(120),
+          color: theme.colorScheme.onSurface.withAlpha(160),
         ),
       ),
       trailing: PopupMenuButton<String>(

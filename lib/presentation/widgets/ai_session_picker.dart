@@ -572,8 +572,8 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
                 ],
               ),
             )
-          : SizedBox(
-              width: 420,
+          : ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
