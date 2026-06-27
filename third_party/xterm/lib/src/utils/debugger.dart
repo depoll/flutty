@@ -237,6 +237,11 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void sendTerminalVersion() {
+    onCommand('sendTerminalVersion');
+  }
+
+  @override
   void sendOperatingStatus() {
     onCommand('sendOperatingStatus');
   }
