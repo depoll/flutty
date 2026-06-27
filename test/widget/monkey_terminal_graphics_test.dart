@@ -474,6 +474,134 @@ void main() {
     );
   });
 
+  testWidgets('Kitty placeholder image is dismissed when text is redrawn across its '
+      'rows (cursor-forward background leftover)', (tester) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: RepaintBoundary(
+                key: boundaryKey,
+                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    const imageId = 0xA5E30B;
+    const cols = 8;
+    const rows = 6;
+    await tester.runAsync(() async {
+      final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      terminal
+        ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=$cols,r=$rows,q=2;$png\x1b\\')
+        ..write(_placeholderGrid(imageId, cols: cols, rows: rows));
+
+      var waited = 0;
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isTrue,
+      reason: 'the fully present image must render',
+    );
+
+    // Reproduce the way a TUI such as Copilot CLI redraws a sparse line over
+    // the rows that previously held an image: it repositions the cursor to the
+    // start of each row and writes a little text, then relies on cursor-forward
+    // movement for the rest, never erasing. The trailing cells keep their
+    // placeholder code point, so the image's surviving cells still form a solid
+    // block (cols 4-7 here) and would otherwise linger as a dense background
+    // *behind* the freshly written text.
+    for (var row = 0; row < rows; row++) {
+      terminal
+        ..write('\x1b[${row + 1};1H')
+        ..write('Read');
+    }
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isFalse,
+      reason:
+          'an image whose rows have been written through with text is a stale '
+          'background leftover and must be dismissed, not painted behind the '
+          'text',
+    );
+  });
+
+  testWidgets('Kitty placeholder image with a caption below it still renders', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: RepaintBoundary(
+                key: boundaryKey,
+                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    const imageId = 0xA5E30B;
+    const cols = 8;
+    const rows = 6;
+    await tester.runAsync(() async {
+      final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+      terminal
+        ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=$cols,r=$rows,q=2;$png\x1b\\')
+        ..write(_placeholderGrid(imageId, cols: cols, rows: rows));
+
+      var waited = 0;
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    // Text written *outside* the image's footprint (a caption on the row below
+    // it) must not be mistaken for the image being written through. The image
+    // is otherwise untouched and must keep rendering.
+    terminal
+      ..write('\x1b[${rows + 1};1H')
+      ..write('Figure 1: the rendered image');
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+      isTrue,
+      reason:
+          'a clean image with a caption on a separate row below it must keep '
+          'rendering',
+    );
+  });
+
   testWidgets(
     'Kitty placeholder image keeps rendering as it scrolls off the alt-screen',
     (tester) async {

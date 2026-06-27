@@ -116,6 +116,22 @@ const _kittyGridStride = 100003;
 /// rather than drawn as stale fragments/stripes.
 const _kittyPlaceholderRenderThreshold = 0.85;
 
+/// Fraction of an image placement's rows that must be *interleaved* with real
+/// text (a row holding both live placeholder cells and printable glyphs within
+/// the image's intended column span) for the placement to be treated as a stale
+/// background leftover rather than a live image.
+///
+/// Clients such as Copilot CLI redraw their TUI by repositioning the cursor and
+/// moving past old cells with cursor-forward (`ESC[<n>C`), rarely erasing. When
+/// a sparse line of text is redrawn over the rows that previously held a large
+/// image, the untouched cells keep their placeholder code point, so the image
+/// lingers as a dense field *behind* the new text. A genuine image occupies its
+/// rows by itself (no text mixed into the same rows within its footprint); a
+/// leftover has text threaded through most of its rows. Dismissing instances
+/// above this fraction removes the background ghost while leaving clean images
+/// and whole-row scroll crops untouched.
+const _kittyPlaceholderInterleaveThreshold = 0.5;
+
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
   final luminanceB = b.computeLuminance();
@@ -3931,6 +3947,21 @@ class MonkeyRenderTerminal extends RenderBox
       return line.getCodePoint(cellCol) == kittyGraphicsPlaceholderCodePoint;
     }
 
+    bool cellHasRealText(int cellRow, int cellCol) {
+      if (cellRow < 0 || cellRow >= lineCount) {
+        return false;
+      }
+      final line = buffer.lines[cellRow];
+      if (cellCol < 0 || cellCol >= line.length) {
+        return false;
+      }
+      final codePoint = line.getCodePoint(cellCol);
+      // A printable glyph that is neither a blank/space nor a placeholder. Cells
+      // an image owns hold the placeholder code point; empty cells hold 0 or a
+      // space. Anything else is text the app has written into this position.
+      return codePoint > 0x20 && codePoint != kittyGraphicsPlaceholderCodePoint;
+    }
+
     // Pass 1: group live placeholder cells into display *instances* and decide
     // which instances are coherent and current enough to paint.
     //
@@ -3962,6 +3993,11 @@ class MonkeyRenderTerminal extends RenderBox
     // higher recency than a stale leftover (ghost) of the same image.
     final instanceRecency = <String, int>{};
     final instanceImageKey = <String, String>{};
+    // Screen-space placement offset of each instance: screenRow = imgRow +
+    // offsetRow, screenCol = imgCol + offsetCol. Used to reconstruct the image's
+    // full intended footprint when checking for interleaved text.
+    final instanceOffsetRow = <String, int>{};
+    final instanceOffsetCol = <String, int>{};
 
     String instanceKeyFor(TerminalImagePlaceholder p, String imageKey) {
       final offsetRow = p.cellRow - p.row;
@@ -3992,6 +4028,8 @@ class MonkeyRenderTerminal extends RenderBox
       }
       final instanceKey = instanceKeyFor(placeholder, key);
       instanceImageKey[instanceKey] = key;
+      instanceOffsetRow[instanceKey] = placeholder.cellRow - placeholder.row;
+      instanceOffsetCol[instanceKey] = placeholder.cellCol - placeholder.col;
       instanceCellCount[instanceKey] =
           (instanceCellCount[instanceKey] ?? 0) + 1;
       instanceRecency[instanceKey] = index;
@@ -4032,13 +4070,67 @@ class MonkeyRenderTerminal extends RenderBox
       return;
     }
 
+    // Drop instances whose footprint has been written through with text. A
+    // client redrawing its TUI with cursor-forward (no erase) leaves the cells
+    // of a previously drawn image untouched while writing fresh text across the
+    // same rows, so a large image lingers as a dense background behind the new
+    // content. Such a leftover has real text threaded through most of the rows
+    // of the image's intended placement; a live image (or a whole-row scroll
+    // crop) occupies its rows by itself. Measuring interleaving over the full
+    // intended footprint — not just the surviving placeholder cells — is what
+    // lets us tell the two apart, because the text sits in the columns the image
+    // no longer covers.
+    final liveInstances = <String>[];
+    for (final instanceKey in denseInstances) {
+      final imageKey = instanceImageKey[instanceKey]!;
+      final offsetRow = instanceOffsetRow[instanceKey]!;
+      final offsetCol = instanceOffsetCol[instanceKey]!;
+      final cols = gridCols[imageKey] ?? 1;
+      final rows = gridRows[imageKey] ?? 1;
+      final leftCol = offsetCol;
+      final rightCol = offsetCol + cols - 1;
+      var onScreenRows = 0;
+      var interleavedRows = 0;
+      for (var imgRow = 0; imgRow < rows; imgRow++) {
+        final screenRow = offsetRow + imgRow;
+        if (screenRow < firstLine || screenRow > lastLine) {
+          continue;
+        }
+        onScreenRows++;
+        var hasLive = false;
+        var hasText = false;
+        for (var screenCol = leftCol; screenCol <= rightCol; screenCol++) {
+          if (!hasLive && cellIsLivePlaceholder(screenRow, screenCol)) {
+            hasLive = true;
+          } else if (!hasText && cellHasRealText(screenRow, screenCol)) {
+            hasText = true;
+          }
+          if (hasLive && hasText) {
+            break;
+          }
+        }
+        if (hasLive && hasText) {
+          interleavedRows++;
+        }
+      }
+      if (onScreenRows > 0 &&
+          interleavedRows >=
+              onScreenRows * _kittyPlaceholderInterleaveThreshold) {
+        continue;
+      }
+      liveInstances.add(instanceKey);
+    }
+    if (liveInstances.isEmpty) {
+      return;
+    }
+
     // Among dense instances of the same image id, keep only the most recently
     // drawn one. When the app re-displays an image (e.g. closing its full-screen
     // viewer and redrawing the conversation) without clearing the previous
     // copy's cells, the older copy lingers as a ghost; its placeholders were
     // written earlier, so it loses to the current placement here.
     final newestInstanceForImage = <String, String>{};
-    for (final instanceKey in denseInstances) {
+    for (final instanceKey in liveInstances) {
       final imageKey = instanceImageKey[instanceKey]!;
       final current = newestInstanceForImage[imageKey];
       if (current == null ||
