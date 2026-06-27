@@ -64,6 +64,8 @@ abstract class EscapeHandler {
 
   void sendTertiaryDeviceAttributes();
 
+  void sendTerminalVersion();
+
   void sendOperatingStatus();
 
   void sendCursorPosition();
