@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:archive/archive.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 
 /// A decoded image retained for the Kitty graphics protocol.
@@ -602,6 +603,24 @@ Future<ui.Image?> decodeTerminalImage(
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
     return frame.image;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Inflates a zlib-compressed (`o=z`) Kitty graphics payload.
+///
+/// Returns null if [bytes] is empty or not valid zlib data. Uses
+/// `package:archive`, whose decoder works on both `dart:io` and web targets.
+Uint8List? inflateZlibData(Uint8List bytes) {
+  if (bytes.isEmpty) {
+    return null;
+  }
+  try {
+    // archive 3.x returns List<int>, 4.x returns Uint8List; widen to List<int>
+    // and copy so this compiles cleanly against both without a type check.
+    final List<int> inflated = const ZLibDecoder().decodeBytes(bytes);
+    return Uint8List.fromList(inflated);
   } catch (_) {
     return null;
   }
