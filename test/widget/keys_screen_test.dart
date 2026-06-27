@@ -41,11 +41,8 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('No SSH keys yet'), findsOneWidget);
-      expect(
-        find.textContaining('without saving server passwords'),
-        findsOneWidget,
-      );
+      expect(find.text('no keys yet'), findsOneWidget);
+      expect(find.textContaining('saving server passwords'), findsOneWidget);
       expect(find.text('Generate Key'), findsOneWidget);
       expect(find.text('Import Key'), findsOneWidget);
     });
