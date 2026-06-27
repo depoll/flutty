@@ -86,7 +86,7 @@ class _CursorBlockState extends State<CursorBlock> {
     return ExcludeSemantics(
       child: _CursorBox(
         width: fontSize * 0.5,
-        height: fontSize * 0.72,
+        height: fontSize * 0.92,
         radius: fontSize * 0.06,
         color: color,
         visible: _on,
@@ -217,15 +217,21 @@ class _RenderCursorBox extends RenderBox {
   Size computeDryLayout(BoxConstraints constraints) =>
       constraints.constrain(_boxSize);
 
-  // The block sits on the alphabetic baseline: its baseline is its bottom edge.
+  // The cursor straddles the baseline like a real terminal cell: most of the
+  // block sits above the baseline (up to the cap height), with a small part
+  // below it (the descender). Reporting the baseline ~78% down the box gives
+  // that proportion.
+  static const double _baselineFraction = 0.78;
+
   @override
-  double? computeDistanceToActualBaseline(TextBaseline baseline) => size.height;
+  double? computeDistanceToActualBaseline(TextBaseline baseline) =>
+      size.height * _baselineFraction;
 
   @override
   double? computeDryBaseline(
     BoxConstraints constraints,
     TextBaseline baseline,
-  ) => constraints.constrain(_boxSize).height;
+  ) => constraints.constrain(_boxSize).height * _baselineFraction;
 
   @override
   void performLayout() {
