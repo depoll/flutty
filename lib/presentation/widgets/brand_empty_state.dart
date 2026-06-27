@@ -70,28 +70,39 @@ class BrandEmptyState extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         // Crafted mono mark: a faux shell prompt with a live cursor.
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'monkey@ssh',
-              style: FluttyTheme.displayMono(
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-                color: colorScheme.onSurface.withAlpha(160),
-                letterSpacing: 0,
+        Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: 'monkey@ssh',
+                style: FluttyTheme.displayMono(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                  color: colorScheme.onSurface.withAlpha(160),
+                  letterSpacing: 0,
+                ),
               ),
-            ),
-            Text(
-              r':~$ ',
-              style: FluttyTheme.displayMono(
-                fontSize: 15,
-                color: colorScheme.onSurface.withAlpha(110),
-                letterSpacing: 0,
+              TextSpan(
+                text: r':~$',
+                style: FluttyTheme.displayMono(
+                  fontSize: 15,
+                  color: colorScheme.onSurface.withAlpha(110),
+                  letterSpacing: 0,
+                ),
               ),
-            ),
-            CursorBlock(size: 16, color: colorScheme.onSurface.withAlpha(170)),
-          ],
+              WidgetSpan(
+                alignment: PlaceholderAlignment.baseline,
+                baseline: TextBaseline.alphabetic,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: CursorBlock(
+                    size: 16,
+                    color: colorScheme.onSurface.withAlpha(170),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: FluttyTheme.spacingLg),
         Text(

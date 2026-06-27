@@ -44,6 +44,7 @@ import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/cursor_block.dart';
 import '../widgets/file_picker_helpers.dart';
+import '../widgets/panel_header.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import '../widgets/snippet_folder_dialog.dart';
@@ -547,17 +548,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         ),
                         const SizedBox(width: 12),
                         Flexible(
-                          child: Text(
-                            appName,
-                            overflow: TextOverflow.ellipsis,
-                            style: FluttyTheme.displayMono(
-                              fontSize: 16,
-                              color: colorScheme.onSurface,
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: appName,
+                                  style: FluttyTheme.displayMono(
+                                    fontSize: 16,
+                                    color: colorScheme.onSurface,
+                                  ),
+                                ),
+                                WidgetSpan(
+                                  alignment: PlaceholderAlignment.baseline,
+                                  baseline: TextBaseline.alphabetic,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 4),
+                                    child: CursorBlock(
+                                      size: 16,
+                                      color: colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        const SizedBox(width: 4),
-                        CursorBlock(size: 15, color: colorScheme.primary),
                       ],
                     ),
                   ),
@@ -854,38 +870,22 @@ class HostsPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'hosts',
+          actions: [
+            _ActionButton(
+              icon: Icons.add,
+              label: 'New Host',
+              onTap: () => context.push('/hosts/add'),
+              primary: true,
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'hosts',
-                style: FluttyTheme.displayMono(color: colorScheme.onSurface),
-              ),
-              const SizedBox(width: 3),
-              CursorBlock(size: 20, color: colorScheme.primary),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'New Host',
-                onTap: () => context.push('/hosts/add'),
-                primary: true,
-              ),
-            ],
-          ),
+          ],
         ),
 
         Expanded(child: _buildHostsBody(context, ref, hostsAsync)),
@@ -1783,20 +1783,7 @@ class _ConnectionsPanel extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Text(
-            'Connections',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
+        const PanelHeader(title: 'connections'),
         Expanded(
           child: connections.isEmpty
               ? _buildEmptyState(context)
@@ -2070,38 +2057,22 @@ class _KeysPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final keysAsync = ref.watch(allKeysProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'keys',
+          actions: [
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Key',
+              onTap: () => context.push('/keys/add'),
+              primary: true,
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'SSH Keys',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Key',
-                onTap: () => context.push('/keys/add'),
-                primary: true,
-              ),
-            ],
-          ),
+          ],
         ),
 
         // Keys list
@@ -2423,8 +2394,6 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final snippetsAsync = ref.watch(allSnippetsProvider);
     final foldersAsync = ref.watch(allSnippetFoldersProvider);
 
@@ -2432,36 +2401,22 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'snippets',
+          actions: [
+            _ActionButton(
+              icon: Icons.create_new_folder_outlined,
+              label: 'New Folder',
+              onTap: () => unawaited(_createFolder(context)),
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Snippets',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.create_new_folder_outlined,
-                label: 'New Folder',
-                onTap: () => unawaited(_createFolder(context)),
-              ),
-              const SizedBox(width: 8),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Snippet',
-                onTap: () => _addSnippet(context),
-                primary: true,
-              ),
-            ],
-          ),
+            const SizedBox(width: 8),
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Snippet',
+              onTap: () => _addSnippet(context),
+              primary: true,
+            ),
+          ],
         ),
 
         // Snippets list

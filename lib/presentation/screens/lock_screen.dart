@@ -169,23 +169,30 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                         ),
                       ),
                       const SizedBox(height: 32),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              appName,
-                              overflow: TextOverflow.ellipsis,
+                      Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: appName,
                               style: FluttyTheme.displayMono(
                                 fontSize: 24,
                                 color: colorScheme.onSurface,
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 6),
-                          const CursorBlock(size: 22),
-                        ],
+                            WidgetSpan(
+                              alignment: PlaceholderAlignment.baseline,
+                              baseline: TextBaseline.alphabetic,
+                              child: Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: CursorBlock(
+                                  size: 24,
+                                  color: colorScheme.primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
                       Text(
