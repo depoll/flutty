@@ -243,23 +243,31 @@ class Buffer {
   }
 
   void scrollDown(int lines) {
-    for (var i = absoluteMarginBottom; i >= absoluteMarginTop; i--) {
-      if (i >= absoluteMarginTop + lines) {
-        this.lines[i] = this.lines[i - lines];
-      } else {
-        this.lines[i] = _newEmptyLine();
-      }
-    }
+    final top = absoluteMarginTop;
+    final bottom = absoluteMarginBottom;
+    final regionHeight = bottom - top + 1;
+    if (regionHeight <= 0) return;
+    final count = lines < regionHeight ? lines : regionHeight;
+    if (count <= 0) return;
+    final reordered = <BufferLine>[
+      for (var i = 0; i < count; i++) _newEmptyLine(),
+      for (var i = top; i <= bottom - count; i++) this.lines[i],
+    ];
+    this.lines.reassignRange(top, reordered);
   }
 
   void scrollUp(int lines) {
-    for (var i = absoluteMarginTop; i <= absoluteMarginBottom; i++) {
-      if (i <= absoluteMarginBottom - lines) {
-        this.lines[i] = this.lines[i + lines];
-      } else {
-        this.lines[i] = _newEmptyLine();
-      }
-    }
+    final top = absoluteMarginTop;
+    final bottom = absoluteMarginBottom;
+    final regionHeight = bottom - top + 1;
+    if (regionHeight <= 0) return;
+    final count = lines < regionHeight ? lines : regionHeight;
+    if (count <= 0) return;
+    final reordered = <BufferLine>[
+      for (var i = top + count; i <= bottom; i++) this.lines[i],
+      for (var i = 0; i < count; i++) _newEmptyLine(),
+    ];
+    this.lines.reassignRange(top, reordered);
   }
 
   /// https://vt100.net/docs/vt100-ug/chapter3.html#IND IND – Index
@@ -461,16 +469,12 @@ class Buffer {
 
     count = min(count, absoluteMarginBottom - absoluteCursorY + 1);
 
-    final linesToMove = absoluteMarginBottom - absoluteCursorY + 1 - count;
-
-    for (var i = 0; i < linesToMove; i++) {
-      final index = absoluteCursorY + i;
-      lines[index] = lines[index + count];
-    }
-
-    for (var i = 0; i < count; i++) {
-      lines[absoluteMarginBottom - i] = _newEmptyLine();
-    }
+    final reordered = <BufferLine>[
+      for (var i = absoluteCursorY + count; i <= absoluteMarginBottom; i++)
+        lines[i],
+      for (var i = 0; i < count; i++) _newEmptyLine(),
+    ];
+    lines.reassignRange(absoluteCursorY, reordered);
   }
 
   void resize(int oldWidth, int oldHeight, int newWidth, int newHeight) {
