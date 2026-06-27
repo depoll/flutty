@@ -564,6 +564,45 @@ void main() {
         'https://github.com/depoll/b/pull/2',
       );
     });
+
+    test('excludes a box border flush against the end of a URL', () {
+      // A TUI (e.g. Copilot CLI) char-wraps a URL against its right box border
+      // with no separating space, so the border glyph sits immediately after
+      // the URL. The border must not be swallowed into the link.
+      const text =
+          '\u2502https://github.com/depollsoft/MonkeySSH/pull/590\u2502';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depollsoft/MonkeySSH/pull/590',
+      );
+    });
+
+    test('reconstructs a URL char-wrapped flush against box borders', () {
+      // Copilot CLI on a narrow screen char-wraps a URL flush against the box
+      // borders on both rendered lines, with no spaces separating the URL
+      // fragments from the U+2502 borders.
+      const text =
+          '\u2502https://github.com/depollsoft/Mon\u2502\n'
+          '\u2502keySSH/pull/592 ok\u2502';
+      final detectedFirstHalf = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+      final detectedSecondHalf = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('keySSH'),
+      );
+
+      const expected = 'https://github.com/depollsoft/MonkeySSH/pull/592';
+      expect(detectedFirstHalf?.uri.toString(), expected);
+      expect(detectedSecondHalf?.uri.toString(), expected);
+    });
   });
 
   group('resolveTerminalFileUriPath', () {
