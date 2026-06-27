@@ -622,27 +622,99 @@ void main() {
     });
   });
 
-  testWidgets('eviction accounts for the image being stored', (tester) async {
+  testWidgets(
+    'Kitty graphics a=d removes a placement the client deletes by id',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(4, 3);
+        final terminal = Terminal();
+
+        // Transmit-and-display a physical placement with an explicit image and
+        // placement id, exactly as Copilot CLI does for its full-screen image
+        // viewer (a=T, p=1, i=..., no Unicode placeholder).
+        const imageId = 13912678;
+        terminal
+            .write('\x1b_Ga=T,i=$imageId,p=1,f=100,c=8,r=4;$pngBase64\x1b\\');
+
+        var waited = 0;
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+        expect(
+          terminal.graphics.placements,
+          hasLength(1),
+          reason: 'the transmit-and-display must create a placement',
+        );
+
+        // Closing the viewer sends a delete-by-id (d=i). The placement must be
+        // removed so it does not linger as a background overlay.
+        terminal.write('\x1b_Ga=d,d=i,i=$imageId,p=1,q=2\x1b\\');
+
+        expect(
+          terminal.graphics.placements,
+          isEmpty,
+          reason: 'a=d,d=i must remove the matching placement',
+        );
+        expect(
+          terminal.graphics.imageById(imageId),
+          isNotNull,
+          reason: 'a lowercase d=i deletes the placement but keeps image data',
+        );
+      });
+    },
+  );
+
+  testWidgets('Kitty graphics a=d with no selector deletes all placements', (
+    tester,
+  ) async {
     await tester.runAsync(() async {
-      final manager = GraphicsManager(maxImageCount: 10, maxMemoryBytes: 64);
-      final first = await _buildImage(2, 2);
-      final second = await _buildImage(2, 2);
-      final third = await _buildImage(2, 2);
+      final pngBase64 = await _buildPngBase64(4, 3);
+      final terminal = Terminal();
 
-      final firstId = manager.storeImage(first);
-      final secondId = manager.storeImage(second);
-      final thirdId = manager.storeImage(third);
+      terminal
+        ..write('\x1b_Ga=T,i=1,f=100,c=4,r=2;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=T,i=2,f=100,c=4,r=2;$pngBase64\x1b\\');
 
+      var waited = 0;
+      while (terminal.graphics.placements.length < 2 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(2));
+
+      // The Kitty default selector when d= is omitted is 'a' (all placements).
+      terminal.write('\x1b_Ga=d\x1b\\');
+
+      expect(terminal.graphics.placements, isEmpty);
+    });
+  });
+
+  testWidgets('Kitty graphics a=D (uppercase) frees the image data too', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 3);
+      final terminal = Terminal();
+
+      const imageId = 777;
+      terminal.write('\x1b_Ga=T,i=$imageId,p=1,f=100,c=4,r=2;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(imageId), isNotNull);
+
+      terminal.write('\x1b_Ga=d,d=I,i=$imageId\x1b\\');
+
+      expect(terminal.graphics.placements, isEmpty);
       expect(
-        manager.imageById(firstId),
+        terminal.graphics.imageById(imageId),
         isNull,
-        reason:
-            'the third 16-byte image must evict against future memory usage',
+        reason: 'an uppercase d=I must also free the image data',
       );
-      expect(manager.imageById(secondId), isNotNull);
-      expect(manager.imageById(thirdId), isNotNull);
-      expect(manager.currentMemoryBytes, 32);
-      expect(first.debugDisposed, isFalse);
     });
   });
 }

@@ -377,6 +377,100 @@ class GraphicsManager {
     _dropUnreferencedImages();
   }
 
+  /// Deletes physical image placements in response to a Kitty graphics delete
+  /// command (`a=d`).
+  ///
+  /// [what] is the `d=` selector. The Kitty default, when `d=` is omitted, is
+  /// `a` — every placement currently on screen. Lowercase selectors remove the
+  /// matching placement(s) only; uppercase selectors additionally free the
+  /// underlying image data (and, for the id form, its Unicode placeholders).
+  /// Selectors target placements by image/placement id ([imageId]/[placementId]
+  /// for `i`/`I`), the cursor cell ([cursorCol]/[cursorRow] for `c`/`C`), or an
+  /// explicit cell, column or row ([cellCol]/[cellRow] for `p`/`P`, `x`/`X`,
+  /// `y`/`Y`). Unsupported selectors delete nothing.
+  ///
+  /// Returns true if anything was removed.
+  bool deletePlacements({
+    String what = 'a',
+    int? imageId,
+    int? placementId,
+    int? cursorCol,
+    int? cursorRow,
+    int? cellCol,
+    int? cellRow,
+  }) {
+    final selector = what.isEmpty ? 'a' : what;
+    final mode = selector.toLowerCase();
+    final freeImages = selector != mode; // an uppercase selector frees data
+
+    bool matches(TerminalImagePlacement placement) {
+      switch (mode) {
+        case 'a':
+          return true;
+        case 'i':
+          if (imageId != null && placement.imageId != imageId) return false;
+          if (placementId != null && placement.placementId != placementId) {
+            return false;
+          }
+          return true;
+        case 'c':
+          return cursorCol != null &&
+              cursorRow != null &&
+              _placementIntersectsRows(placement, cursorRow, cursorRow) &&
+              _placementIntersectsCols(placement, cursorCol, cursorCol);
+        case 'p':
+          return cellCol != null &&
+              cellRow != null &&
+              _placementIntersectsRows(placement, cellRow, cellRow) &&
+              _placementIntersectsCols(placement, cellCol, cellCol);
+        case 'x':
+          return cellCol != null &&
+              _placementIntersectsCols(placement, cellCol, cellCol);
+        case 'y':
+          return cellRow != null &&
+              _placementIntersectsRows(placement, cellRow, cellRow);
+        default:
+          // Unsupported selector (image number, z-index, animation frames,
+          // ranges): delete nothing rather than risk wiping live images.
+          return false;
+      }
+    }
+
+    final freedImageIds = <int>{};
+    final before = _placements.length;
+    _placements.removeWhere((placement) {
+      if (!matches(placement)) return false;
+      freedImageIds.add(placement.imageId);
+      placement.dispose();
+      return true;
+    });
+    var changed = _placements.length != before;
+
+    if (freeImages) {
+      // The client explicitly asked to free the image data, so allow even
+      // images retained for Unicode-placeholder reuse to be reclaimed.
+      for (final id in freedImageIds) {
+        _retainedImageIds.remove(id);
+      }
+      if (mode == 'i' && imageId != null) {
+        // `d=I` with an id frees the image and all of its placements and
+        // placeholders, whether or not a physical placement was on screen.
+        if (_images.containsKey(imageId) ||
+            _placeholders.any((p) => p.imageId == imageId)) {
+          _dropImage(imageId);
+          changed = true;
+        }
+      } else {
+        _dropUnreferencedImages();
+      }
+    }
+
+    if (changed) {
+      _generation++;
+    }
+    return changed;
+  }
+
   /// Removes every physical placement and drops placement-only images. Images
   /// with protocol ids are retained so Unicode-placeholder redraws can reuse
   /// them after a clear.
