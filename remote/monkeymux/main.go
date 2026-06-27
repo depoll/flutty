@@ -4516,35 +4516,6 @@ func assembleKittyTransmission(
 	return next, buf, args["i"], false, true
 }
 
-// extractKittyGraphicsTransmissions scans data for Kitty graphics image
-// transmissions and returns them re-serialized (store-only, a=T -> a=t,
-// de-duplicated by image id keeping the most recent) so a reattaching client can
-// repopulate its image store. See [muxWindow.observeKittyGraphicsLocked] for the
-// streaming retention used in the live path.
-func extractKittyGraphicsTransmissions(data []byte) []byte {
-	if len(data) == 0 {
-		return nil
-	}
-	txs, _, _ := scanKittyTransmissions(data)
-	if len(txs) == 0 {
-		return nil
-	}
-	lastIndex := map[string]int{}
-	for idx, t := range txs {
-		if t.id != "" {
-			lastIndex[t.id] = idx
-		}
-	}
-	var out []byte
-	for idx, t := range txs {
-		if t.id != "" && lastIndex[t.id] != idx {
-			continue
-		}
-		out = append(out, t.buf...)
-	}
-	return out
-}
-
 // observeKittyGraphicsLocked retains the Kitty image transmissions seen in chunk
 // so they can be replayed on reattach regardless of how much later output has
 // evicted them from the rolling visible history. Partial transmissions split
