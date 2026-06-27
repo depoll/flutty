@@ -113,12 +113,17 @@ String? resolveRequestedSftpPath(
 }
 
 /// Sanitizes a filename for remote uploads.
+///
+/// Restricts the name to a strict shell-safe allowlist (letters, digits, `.`,
+/// `_`, `-`) so the resulting remote path can be pasted into the terminal
+/// unquoted. Unquoted paths are required for agent CLIs (e.g. Copilot CLI) to
+/// recognise a pasted path as an attachment, and the allowlist keeps the file
+/// extension intact so image previews still resolve.
 String sanitizeRemoteUploadFileName(String name) {
   final sanitized = path
       .basename(name)
       .trim()
-      .replaceAll(RegExp(r'[\\/\x00-\x1F]'), '-')
-      .replaceAll(RegExp(r'\s+'), '-')
+      .replaceAll(RegExp('[^A-Za-z0-9._-]'), '-')
       .replaceAll(RegExp('-+'), '-')
       .replaceAll(RegExp(r'^-+|-+$'), '');
   return sanitized.isEmpty ? 'file' : sanitized;
@@ -161,9 +166,47 @@ bool looksLikeBinaryContent(Uint8List bytes) {
 /// Escapes a path so it can be pasted directly into a POSIX shell.
 String shellEscapePosix(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
-/// Builds the shell text inserted into the terminal after file uploads.
-String buildTerminalUploadInsertion(Iterable<String> remotePaths) =>
-    remotePaths.map(shellEscapePosix).join(' ');
+/// Bracketed-paste introducer and terminator (`CSI 200~` / `CSI 201~`).
+const _bracketedPasteStart = '\x1b[200~';
+const _bracketedPasteEnd = '\x1b[201~';
+
+/// Builds the terminal-input segments that reference uploaded [remotePaths]
+/// after a paste upload.
+///
+/// When [bracketedPasteMode] is enabled, each path is returned as its own
+/// bracketed-paste segment (`CSI 200~ <path> CSI 201~ ` with a trailing space).
+/// The caller must write these segments sequentially with a short delay between
+/// them: an agent CLI such as Copilot CLI only recognises each path as a
+/// separate attachment — rendering a preview chip per file — when the bracketed
+/// pastes arrive as distinct reads. The trailing space also keeps the paths
+/// usable as distinct shell arguments.
+///
+/// When [bracketedPasteMode] is disabled, all paths are returned as a single
+/// space-separated segment (a plain prompt shows no preview either way).
+///
+/// Uploaded remote paths come from [sanitizeRemoteUploadFileName] inside a fixed
+/// cache directory, so they contain no shell metacharacters and need no
+/// quoting. Segments must be written straight to the session input sink (e.g.
+/// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
+/// bracketed-paste control sequences.
+List<String> buildTerminalAttachmentPasteSegments(
+  Iterable<String> remotePaths, {
+  required bool bracketedPasteMode,
+}) {
+  final paths = remotePaths
+      .where((remotePath) => remotePath.isNotEmpty)
+      .toList();
+  if (paths.isEmpty) {
+    return const [];
+  }
+  if (!bracketedPasteMode) {
+    return ['${paths.join(' ')} '];
+  }
+  return [
+    for (final remotePath in paths)
+      '$_bracketedPasteStart$remotePath$_bracketedPasteEnd ',
+  ];
+}
 
 /// Shared helpers for remote file transfers over SFTP.
 final remoteFileServiceProvider = Provider<RemoteFileService>(
