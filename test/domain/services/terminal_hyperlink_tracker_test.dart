@@ -142,6 +142,36 @@ void main() {
       });
     });
 
+    group('hasLinkInRowRange', () {
+      setUp(() {
+        // `#587` occupies columns 7-10 ("See PR " is 7 characters).
+        terminal.write(
+          [
+            'See PR ',
+            '\u001b]8;;https://github.com/o/r/pull/587\u0007',
+            '#587',
+            '\u001b]8;;\u0007',
+            ' done',
+          ].join(),
+        );
+      });
+
+      test('reports overlap with the hyperlink columns', () {
+        expect(tracker.hasLinkInRowRange(0, 7, 10), isTrue);
+        expect(tracker.hasLinkInRowRange(0, 5, 8), isTrue);
+        expect(tracker.hasLinkInRowRange(0, 10, 14), isTrue);
+      });
+
+      test('reports no overlap before or after the hyperlink', () {
+        expect(tracker.hasLinkInRowRange(0, 0, 6), isFalse);
+        expect(tracker.hasLinkInRowRange(0, 11, 20), isFalse);
+      });
+
+      test('does not match a different row', () {
+        expect(tracker.hasLinkInRowRange(1, 7, 10), isFalse);
+      });
+    });
+
     group('retained-link cap / LRU eviction', () {
       test('caps retained hyperlinks at maxRetainedLinks', () {
         const cap = 3;
