@@ -550,7 +550,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                         // Authentication section
                         Text(
-                          'Authentication',
+                          'authentication',
                           style: FluttyTheme.displayMono(
                             fontSize: 15,
                             color: Theme.of(context).colorScheme.onSurface,
@@ -719,7 +719,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             Row(
                               children: [
                                 Text(
-                                  'Terminal Theme',
+                                  'terminal theme',
                                   style: FluttyTheme.displayMono(
                                     fontSize: 14,
                                     color: Theme.of(

@@ -149,40 +149,40 @@ void main() {
       await _pumpSettingsScreen(tester, db: db);
 
       expect(find.text('Settings'), findsOneWidget);
-      expect(find.text('Appearance'), findsOneWidget);
-      expect(find.text('Security'), findsOneWidget);
+      expect(find.text('appearance'), findsOneWidget);
+      expect(find.text('security'), findsOneWidget);
 
       await tester.scrollUntilVisible(
-        find.text('Terminal'),
+        find.text('terminal'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      expect(find.text('Terminal'), findsOneWidget);
+      expect(find.text('terminal'), findsOneWidget);
 
       await tester.scrollUntilVisible(
-        find.text('Import & Export'),
+        find.text('import & export'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      expect(find.text('Import & Export'), findsOneWidget);
+      expect(find.text('import & export'), findsOneWidget);
 
       await tester.scrollUntilVisible(
-        find.text('Background SSH'),
+        find.text('background ssh'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      expect(find.text('Background SSH'), findsOneWidget);
+      expect(find.text('background ssh'), findsOneWidget);
 
       await tester.scrollUntilVisible(
-        find.text('About'),
+        find.text('about'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      expect(find.text('About'), findsOneWidget);
+      expect(find.text('about'), findsOneWidget);
     });
 
     testWidgets('displays MonkeySSH Pro subscription section', (tester) async {
@@ -839,7 +839,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Background SSH'), findsOneWidget);
+      expect(find.text('background ssh'), findsOneWidget);
       expect(find.text('Battery optimization'), findsOneWidget);
       expect(find.text('Enabled'), findsOneWidget);
       expect(
