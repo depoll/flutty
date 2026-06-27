@@ -1110,8 +1110,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    // Only transmit (a=t) and transmit-and-display (a=T) are rendered; other
-    // actions are ignored.
+    // Only transmit (a=t) and transmit-and-display (a=T) are rendered here.
+    // Animation actions (a=f transmit-frame, a=a control, a=c compose) are
+    // intentionally not supported — no client we target uses protocol-level
+    // animation, and it requires a frame-advancing ticker in the render widget.
+    // They are ignored safely: the chunk state was already reset above, so the
+    // payload is simply discarded.
     if ((action != 't' && action != 'T') || data.isEmpty) {
       return;
     }
