@@ -1051,7 +1051,7 @@ class _ExtraKeysToggleKeycap extends StatelessWidget {
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
 final _terminalLinkPattern = RegExp(
-  r'''(?:(?:https?:\/\/)|(?:file:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
+  r'''(?:(?:https?:\/\/)|(?:file:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"'\u2500-\u259f]+''',
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
@@ -2243,7 +2243,12 @@ bool _endsInsideTerminalLinkToken(String text) {
   if (trimmed.isEmpty) {
     return false;
   }
-  final lastToken = trimmed.split(RegExp(r'\s')).last;
+  // Strip any leading decoration (e.g. a box border flush against the URL with
+  // no separating space, as a TUI char-wraps a URL against its right edge) so
+  // the token is recognized as a link rather than starting with the border.
+  final lastToken = _trimTerminalPathContinuationPrefix(
+    trimmed.split(RegExp(r'\s')).last,
+  );
   return _terminalLinkPattern.matchAsPrefix(lastToken) != null;
 }
 

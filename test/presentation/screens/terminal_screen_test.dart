@@ -1308,6 +1308,96 @@ void main() {
     }
 
     testWidgets(
+      'opens a Copilot-style underlined URL when tapped',
+      (tester) async {
+        const url = 'https://github.com/depollsoft/MonkeySSH/pull/590';
+        const urlLauncherChannel = MethodChannel(
+          'plugins.flutter.io/url_launcher',
+        );
+        final launchedUrls = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          urlLauncherChannel,
+          (call) async {
+            if (call.method == 'launch') {
+              final arguments = call.arguments! as Map<Object?, Object?>;
+              launchedUrls.add(arguments['url']! as String);
+              return true;
+            }
+            return false;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            urlLauncherChannel,
+            null,
+          ),
+        );
+
+        await pumpScreen(tester);
+        // How Copilot CLI renders links: plain text with an SGR underline and
+        // no OSC 8 hyperlink. A tap must still launch the visible URL.
+        final term = session.terminal!..write('See \x1b[4m$url\x1b[24m ok\r\n');
+        await tester.pumpAndSettle();
+
+        final buffer = term.buffer;
+        var urlRow = -1;
+        var urlCol = -1;
+        for (var r = 0; r < buffer.height; r++) {
+          final idx = buffer.lines[r].getText().indexOf('https://');
+          if (idx >= 0) {
+            urlRow = r;
+            urlCol = idx + (url.length ~/ 2);
+            break;
+          }
+        }
+        expect(urlRow, isNonNegative);
+
+        final render = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        await tester.tapAt(
+          render.localToGlobal(
+            render.getOffset(CellOffset(urlCol, urlRow)) +
+                render.cellSize.center(Offset.zero),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(launchedUrls, [url]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'resolves a URL char-wrapped flush against TUI box borders',
+      (tester) async {
+        await pumpScreen(tester);
+        // Copilot CLI on a narrow screen char-wraps a URL flush against its box
+        // borders across two absolutely positioned (non-wrapped) rendered
+        // lines. Tapping either fragment must resolve the whole URL, and the
+        // U+2502 borders must not leak into it.
+        session.terminal!
+          ..write('\x1b[2J')
+          ..write('\x1b[14;1H\u2502https://github.com/depollsoft/Mon\u2502')
+          ..write('\x1b[15;1H\u2502keySSH/pull/592 ok\u2502');
+        await tester.pumpAndSettle();
+
+        final view = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        const expected = 'https://github.com/depollsoft/MonkeySSH/pull/592';
+        // Tap the first fragment (row 13, after the leading border).
+        final firstHalf = view.resolveLinkTap!(const CellOffset(3, 13));
+        // Tap the second fragment (row 14, after the leading border).
+        final secondHalf = view.resolveLinkTap!(const CellOffset(3, 14));
+
+        expect(firstHalf, expected);
+        expect(secondHalf, expected);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'offers reconnect when the active session disappears unexpectedly',
       (tester) async {
         final reconnectClient = _MockSshClient();
