@@ -877,7 +877,6 @@ class _TerminalPreviewPainter extends CustomPainter {
       canvas
         ..save()
         ..clipRect(Rect.fromLTWH(0, y, size.width, lineHeight));
-      painter.paintLineTrailingBackgroundFill(canvas, Offset(0, y), line);
       for (
         var column = 0;
         column < line.length && column < visibleColumns;

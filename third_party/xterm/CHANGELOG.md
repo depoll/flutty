@@ -50,6 +50,16 @@ out of scope.
   cursor alignment depending on the host's own `wcwidth`, so it is left as a
   separate, deliberate change.
 
+### MonkeySSH-local additions (preserve across kterm syncs)
+* XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
+  implements the kitty graphics + keyboard protocols, so it reports a
+  kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer
+  rendering (full-width prompt/composer backgrounds, painted with real cells)
+  on a recognized XTVERSION name; without it they fall back to a tight,
+  text-width background. Upstream kterm does not answer XTVERSION yet, so keep
+  `EscapeEmitter.terminalVersion()` and the `CSI q` parser dispatch when
+  re-syncing. Consider upstreaming.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback
