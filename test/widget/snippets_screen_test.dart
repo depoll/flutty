@@ -84,7 +84,7 @@ void main() {
       snippetsController.add(const <Snippet>[]);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      expect(find.text('No snippets yet'), findsOneWidget);
+      expect(find.text('no snippets yet'), findsOneWidget);
 
       snippetsController.add([
         _buildSnippet(id: 1, name: 'Imported snippet', sortOrder: 0),
@@ -168,8 +168,8 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('No snippets yet'), findsOneWidget);
-      expect(find.textContaining('tail -f {{log_file}}'), findsOneWidget);
+      expect(find.text('no snippets yet'), findsOneWidget);
+      expect(find.textContaining('keep retyping'), findsOneWidget);
 
       await tester.tap(find.text('Add Snippet').last);
       await tester.pumpAndSettle();

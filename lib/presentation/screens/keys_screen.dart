@@ -7,6 +7,7 @@ import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/brand_empty_state.dart';
 
 /// Screen displaying list of SSH keys.
 class KeysScreen extends ConsumerWidget {
@@ -61,28 +62,17 @@ class KeysScreen extends ConsumerWidget {
       return Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              FluttyTheme.buildEmptyState(
-                context: context,
-                icon: Icons.vpn_key_outlined,
-                title: 'No SSH keys yet',
-                subtitle:
-                    'Keys let you sign in without saving server passwords. '
-                    'Generate a new Ed25519 key or import an existing private '
-                    'key.',
-                onAction: () => context.push('/keys/add'),
-                actionLabel: 'Generate Key',
-                actionIcon: Icons.enhanced_encryption,
-                centered: false,
-                padded: false,
-              ),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              OutlinedButton.icon(
-                onPressed: () => context.push('/keys/add?tab=import'),
-                icon: const Icon(Icons.upload_file_outlined, size: 18),
-                label: const Text('Import Key'),
+          child: BrandEmptyState(
+            title: 'no keys yet',
+            message: 'Generate a key and stop saving server passwords.',
+            primaryLabel: 'Generate Key',
+            primaryIcon: Icons.enhanced_encryption,
+            onPrimary: () => context.push('/keys/add'),
+            secondaryActions: [
+              BrandEmptyAction(
+                icon: Icons.upload_file_outlined,
+                label: 'Import Key',
+                onTap: () => context.push('/keys/add?tab=import'),
               ),
             ],
           ),

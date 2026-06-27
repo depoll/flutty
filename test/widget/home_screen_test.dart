@@ -569,9 +569,9 @@ void main() {
       await tester.tap(find.text('Connections').first);
       await tester.pump();
 
-      expect(find.text('No active connections'), findsOneWidget);
+      expect(find.text('no active sessions'), findsOneWidget);
       expect(
-        find.textContaining('Connections appear here while terminals are open'),
+        find.textContaining('live terminals show up here'),
         findsOneWidget,
       );
     });
@@ -1654,13 +1654,13 @@ void main() {
 
     await tester.tap(find.text('Connections').first);
     await tester.pump();
-    expect(find.text('No active connections'), findsNothing);
+    expect(find.text('no active sessions'), findsNothing);
 
     sessionsNotifier.setActiveConnections(const <ActiveConnection>[]);
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('No active connections'), findsNothing);
+    expect(find.text('no active sessions'), findsNothing);
   });
 
   group('HostRowData value equality', () {
