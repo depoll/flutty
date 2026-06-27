@@ -361,6 +361,7 @@ class EscapeParser {
     'l'.codeUnitAt(0): _csiHandleMode,
     'm'.codeUnitAt(0): _csiHandleSgr,
     'n'.codeUnitAt(0): _csiHandleDeviceStatusReport,
+    'q'.codeUnitAt(0): _csiHandleRequestTerminalVersion,
     'r'.codeUnitAt(0): _csiHandleSetMargins,
     't'.codeUnitAt(0): _csiWindowManipulation,
     'A'.codeUnitAt(0): _csiHandleCursorUp,
@@ -418,6 +419,18 @@ class EscapeParser {
         return handler.sendTertiaryDeviceAttributes();
       default:
         handler.sendPrimaryDeviceAttributes();
+    }
+  }
+
+  /// `ESC [ > q` Request Terminal Name and Version (XTVERSION)
+  ///
+  /// https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+  void _csiHandleRequestTerminalVersion() {
+    // Only the `>` form is XTVERSION. Other `q` finals (DECSCUSR cursor style
+    // with a space intermediate, DECSCA with a `"` intermediate) are not
+    // handled here.
+    if (_csi.prefix == Ascii.greaterThan) {
+      handler.sendTerminalVersion();
     }
   }
 

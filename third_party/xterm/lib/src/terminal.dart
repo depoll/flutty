@@ -651,6 +651,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void sendTerminalVersion() {
+    onOutput?.call(_emitter.terminalVersion());
+  }
+
+  @override
   void sendOperatingStatus() {
     onOutput?.call(_emitter.operatingStatus());
   }
