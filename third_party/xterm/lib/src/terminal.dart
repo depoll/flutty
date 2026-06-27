@@ -1203,14 +1203,33 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         anchor.dispose();
         return;
       }
-      manager.placeImage(
-        storedImageId,
-        anchor,
-        cols: int.tryParse(args['c'] ?? '') ?? 0,
-        rows: int.tryParse(args['r'] ?? '') ?? 0,
-      );
+      _placeImageWithDisplayArgs(manager, storedImageId, anchor, args);
     }
     notifyListeners();
+  }
+
+  /// Creates a placement from the display-related Kitty graphics keys: cell span
+  /// (`c`/`r`), z-index (`z`), source crop (`x`/`y`/`w`/`h`) and in-cell pixel
+  /// offset (`X`/`Y`).
+  void _placeImageWithDisplayArgs(
+    GraphicsManager manager,
+    int imageId,
+    CellAnchor anchor,
+    Map<String, String> args,
+  ) {
+    manager.placeImage(
+      imageId,
+      anchor,
+      cols: int.tryParse(args['c'] ?? '') ?? 0,
+      rows: int.tryParse(args['r'] ?? '') ?? 0,
+      z: int.tryParse(args['z'] ?? '') ?? 0,
+      srcX: int.tryParse(args['x'] ?? '') ?? 0,
+      srcY: int.tryParse(args['y'] ?? '') ?? 0,
+      srcWidth: int.tryParse(args['w'] ?? '') ?? 0,
+      srcHeight: int.tryParse(args['h'] ?? '') ?? 0,
+      xOffset: int.tryParse(args['X'] ?? '') ?? 0,
+      yOffset: int.tryParse(args['Y'] ?? '') ?? 0,
+    );
   }
 
   void _placeStoredGraphics(Map<String, String> args) {
@@ -1219,12 +1238,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
     final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
-    _buffer.graphics.placeImage(
-      imageId,
-      anchor,
-      cols: int.tryParse(args['c'] ?? '') ?? 0,
-      rows: int.tryParse(args['r'] ?? '') ?? 0,
-    );
+    _placeImageWithDisplayArgs(_buffer.graphics, imageId, anchor, args);
     // Respect the no-cursor-movement policy (C=1); otherwise drop below the
     // image so subsequent output does not overlap it.
     final keepCursor = args['C'] == '1';

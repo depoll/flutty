@@ -67,6 +67,52 @@ Future<int> _boundaryRedPixelCountInBand(
   return count;
 }
 
+/// Counts boundary pixels matching [predicate] (r, g, b).
+Future<int> _boundaryPixelCount(
+  GlobalKey key,
+  bool Function(int r, int g, int b) predicate,
+) async {
+  final boundary =
+      key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+  final shot = await boundary.toImage();
+  final data = (await shot.toByteData())!;
+  var count = 0;
+  for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
+    if (predicate(
+      data.getUint8(i),
+      data.getUint8(i + 1),
+      data.getUint8(i + 2),
+    )) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+bool _isBlue(int r, int g, int b) => b > 150 && r < 90 && g < 90;
+
+bool _isLight(int r, int g, int b) => r > 150 && g > 150 && b > 150;
+
+/// Builds a PNG whose left half is [left] and right half is [right], used to
+/// verify source-rectangle cropping selects the requested region.
+Future<String> _buildSplitPngBase64(Color left, Color right, int size) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  final half = size / 2;
+  canvas
+    ..drawRect(
+      Rect.fromLTWH(0, 0, half, size.toDouble()),
+      Paint()..color = left,
+    )
+    ..drawRect(
+      Rect.fromLTWH(half, 0, half, size.toDouble()),
+      Paint()..color = right,
+    );
+  final image = await recorder.endRecording().toImage(size, size);
+  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+  return base64.encode(bytes!.buffer.asUint8List());
+}
+
 /// Kitty row/column placeholder diacritics (rowcolumn-diacritics order),
 /// enough to drive placeholder grids up to 24 cells tall/wide in tests.
 const _kittyDiacritics = <int>[
@@ -994,4 +1040,132 @@ void main() {
       );
     }
   });
+
+  testWidgets('Kitty placement source crop (x,w) selects the region', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      // 16px image: left half red, right half blue.
+      final png = await _buildSplitPngBase64(
+        const Color(0xFFFF0000),
+        const Color(0xFF0000FF),
+        16,
+      );
+      // Display only the left (red) half via the source crop x=0,w=8.
+      terminal.write('\x1b_Ga=T,i=1,f=100,c=6,r=3,x=0,y=0,w=8,h=16;$png\x1b\\');
+      var waited = 0;
+      while (terminal.graphics.imageById(1) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+    });
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
+      greaterThan(0),
+      reason: 'the cropped-in red half must render',
+    );
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      0,
+      reason: 'cropping to the left half must exclude the blue right half',
+    );
+  });
+
+  testWidgets('Kitty placement z-index orders images, ignoring write order', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      final red = await _buildSolidPngBase64(const Color(0xFFFF0000), 16);
+      final blue = await _buildSolidPngBase64(const Color(0xFF0000FF), 16);
+      terminal
+        ..write('\x1b_Ga=t,i=1,f=100;$red\x1b\\')
+        ..write('\x1b_Ga=t,i=2,f=100;$blue\x1b\\');
+      var waited = 0;
+      while ((terminal.graphics.imageById(1) == null ||
+              terminal.graphics.imageById(2) == null) &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      // Place blue (z=1) first, then red (z=0) at the same spot. Z-order, not
+      // write order, must decide: blue stays on top.
+      terminal
+        ..write('\x1b[H\x1b_Ga=p,i=2,c=6,r=3,z=1,C=1\x1b\\')
+        ..write('\x1b[H\x1b_Ga=p,i=1,c=6,r=3,z=0,C=1\x1b\\');
+    });
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),
+      greaterThan(0),
+      reason: 'the higher z-index (blue) must be visible on top',
+    );
+    expect(
+      await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
+      0,
+      reason: 'the lower z-index (red) must be fully covered by blue',
+    );
+  });
+
+  testWidgets('Kitty placement with negative z renders behind the text', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    final terminal = Terminal();
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
+    await tester.pump();
+
+    await tester.runAsync(() async {
+      final red = await _buildSolidPngBase64(const Color(0xFFFF0000), 16);
+      // z=-1 draws behind text; keep the cursor home (C=1) so the text lands on
+      // the same cells the image covers.
+      terminal.write('\x1b_Ga=T,i=1,f=100,c=6,r=1,z=-1,C=1;$red\x1b\\');
+      var waited = 0;
+      while (terminal.graphics.imageById(1) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      // Bright white glyphs over the image's cells.
+      terminal.write('\x1b[97mWWWW');
+    });
+    await tester.pump();
+
+    expect(
+      await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
+      greaterThan(0),
+      reason: 'the behind-text image must still render',
+    );
+    expect(
+      await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isLight)),
+      greaterThan(0),
+      reason: 'the text must paint on top of a negative-z image',
+    );
+  });
 }
+
+Widget _graphicsHost(GlobalKey key, Terminal terminal) => MaterialApp(
+  home: Scaffold(
+    body: Center(
+      child: SizedBox(
+        width: 400,
+        height: 300,
+        child: RepaintBoundary(
+          key: key,
+          child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
+        ),
+      ),
+    ),
+  ),
+);

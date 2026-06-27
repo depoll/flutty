@@ -34,6 +34,13 @@ class TerminalImagePlacement {
     required int fallbackRow,
     this.cols = 0,
     this.rows = 0,
+    this.z = 0,
+    this.srcX = 0,
+    this.srcY = 0,
+    this.srcWidth = 0,
+    this.srcHeight = 0,
+    this.xOffset = 0,
+    this.yOffset = 0,
   })  : _fallbackCol = fallbackCol,
         _fallbackRow = fallbackRow;
 
@@ -56,6 +63,30 @@ class TerminalImagePlacement {
   /// Number of rows the image should occupy (from `r=`), or `0` to size the
   /// image from its own pixel dimensions.
   final int rows;
+
+  /// Z-index (`z=`). Higher values stack above lower ones; negative values are
+  /// drawn behind the terminal text.
+  final int z;
+
+  /// Left edge of the source rectangle within the image, in pixels (`x=`).
+  final int srcX;
+
+  /// Top edge of the source rectangle within the image, in pixels (`y=`).
+  final int srcY;
+
+  /// Width of the source rectangle in pixels (`w=`), or `0` for the full width
+  /// from [srcX].
+  final int srcWidth;
+
+  /// Height of the source rectangle in pixels (`h=`), or `0` for the full height
+  /// from [srcY].
+  final int srcHeight;
+
+  /// Horizontal pixel offset within the top-left cell (`X=`).
+  final int xOffset;
+
+  /// Vertical pixel offset within the top-left cell (`Y=`).
+  final int yOffset;
 
   /// Column of the top-left cell.
   int get col => anchor.attached ? anchor.x : _fallbackCol;
@@ -250,12 +281,20 @@ class GraphicsManager {
   }
 
   /// Creates a placement of [imageId] anchored at [anchor], optionally spanning
-  /// [cols] x [rows] cells.
+  /// [cols] x [rows] cells, with an optional source crop, cell pixel offset and
+  /// z-index.
   TerminalImagePlacement placeImage(
     int imageId,
     CellAnchor anchor, {
     int cols = 0,
     int rows = 0,
+    int z = 0,
+    int srcX = 0,
+    int srcY = 0,
+    int srcWidth = 0,
+    int srcHeight = 0,
+    int xOffset = 0,
+    int yOffset = 0,
   }) {
     final placement = TerminalImagePlacement(
       placementId: _nextPlacementId++,
@@ -265,6 +304,13 @@ class GraphicsManager {
       fallbackRow: anchor.y,
       cols: cols,
       rows: rows,
+      z: z,
+      srcX: srcX,
+      srcY: srcY,
+      srcWidth: srcWidth,
+      srcHeight: srcHeight,
+      xOffset: xOffset,
+      yOffset: yOffset,
     );
     _placements.add(placement);
     return placement;
