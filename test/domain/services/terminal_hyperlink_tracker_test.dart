@@ -95,6 +95,53 @@ void main() {
       expect(resolvedLink, 'https://example.com/two');
     });
 
+    group('resolveLinkOnRow', () {
+      test('resolves a row carrying a single hyperlink from any column', () {
+        terminal.write(
+          [
+            'See PR ',
+            '\u001b]8;;https://github.com/o/r/pull/587\u0007',
+            '#587',
+            '\u001b]8;;\u0007',
+            ' for details',
+          ].join(),
+        );
+
+        // A precise tap off the label does not resolve...
+        expect(tracker.resolveLinkAt(const CellOffset(20, 0)), isNull);
+        // ...but the row-level fallback opens the row's only hyperlink.
+        expect(tracker.resolveLinkOnRow(0), 'https://github.com/o/r/pull/587');
+      });
+
+      test('stays ambiguous when a row carries multiple destinations', () {
+        terminal.write(
+          [
+            '\u001b]8;;https://example.com/a\u0007',
+            'A',
+            '\u001b]8;;\u0007',
+            ' and ',
+            '\u001b]8;;https://example.com/b\u0007',
+            'B',
+            '\u001b]8;;\u0007',
+          ].join(),
+        );
+
+        expect(tracker.resolveLinkOnRow(0), isNull);
+      });
+
+      test('returns null for rows without any hyperlink', () {
+        terminal.write(
+          [
+            '\u001b]8;;https://example.com/a\u0007',
+            'A',
+            '\u001b]8;;\u0007',
+          ].join(),
+        );
+
+        expect(tracker.resolveLinkOnRow(5), isNull);
+      });
+    });
+
     group('retained-link cap / LRU eviction', () {
       test('caps retained hyperlinks at maxRetainedLinks', () {
         const cap = 3;
