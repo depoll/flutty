@@ -32,6 +32,7 @@ class TerminalImagePlacement {
     required this.anchor,
     required int fallbackCol,
     required int fallbackRow,
+    this.clientPlacementId = 0,
     this.cols = 0,
     this.rows = 0,
     this.z = 0,
@@ -44,11 +45,16 @@ class TerminalImagePlacement {
   })  : _fallbackCol = fallbackCol,
         _fallbackRow = fallbackRow;
 
-  /// Placement id assigned by the [GraphicsManager].
+  /// Internal placement id assigned by the [GraphicsManager], unique per
+  /// placement and monotonically increasing (used for stable paint ordering).
   final int placementId;
 
   /// The id of the placed [TerminalImage].
   final int imageId;
+
+  /// Client-assigned placement id (the Kitty `p=` key, 0 when unspecified). This
+  /// — not [placementId] — is what a delete command (`a=d` with `p=`) targets.
+  final int clientPlacementId;
 
   /// Anchor for the top-left cell of the placement.
   final CellAnchor anchor;
@@ -303,6 +309,7 @@ class GraphicsManager {
     int cols = 0,
     int rows = 0,
     int z = 0,
+    int clientPlacementId = 0,
     int srcX = 0,
     int srcY = 0,
     int srcWidth = 0,
@@ -316,6 +323,7 @@ class GraphicsManager {
       anchor: anchor,
       fallbackCol: anchor.x,
       fallbackRow: anchor.y,
+      clientPlacementId: clientPlacementId,
       cols: cols,
       rows: rows,
       z: z,
@@ -470,7 +478,8 @@ class GraphicsManager {
           return true;
         case 'i':
           if (imageId != null && placement.imageId != imageId) return false;
-          if (placementId != null && placement.placementId != placementId) {
+          if (placementId != null &&
+              placement.clientPlacementId != placementId) {
             return false;
           }
           return true;
