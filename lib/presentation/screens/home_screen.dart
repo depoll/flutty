@@ -41,6 +41,7 @@ import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/cursor_block.dart';
 import '../widgets/file_picker_helpers.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
@@ -544,12 +545,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                           ),
                         ),
                         const SizedBox(width: 12),
-                        Text(
-                          appName,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
+                        Flexible(
+                          child: Text(
+                            appName,
+                            overflow: TextOverflow.ellipsis,
+                            style: FluttyTheme.displayMono(
+                              fontSize: 16,
+                              color: colorScheme.onSurface,
+                            ),
                           ),
                         ),
+                        const SizedBox(width: 4),
+                        CursorBlock(size: 15, color: colorScheme.primary),
                       ],
                     ),
                   ),
@@ -851,6 +858,75 @@ class _EmptyStateAction {
   final VoidCallback onTap;
 }
 
+class _HostsEmptyState extends StatelessWidget {
+  const _HostsEmptyState({required this.onAddHost, required this.onPasteUrl});
+
+  final VoidCallback onAddHost;
+  final VoidCallback onPasteUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final muted = colorScheme.onSurface.withAlpha(140);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Crafted mono mark: a faux shell prompt with a live cursor.
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'monkey@ssh',
+              style: FluttyTheme.displayMono(
+                fontSize: 15,
+                fontWeight: FontWeight.w500,
+                color: colorScheme.onSurface.withAlpha(160),
+                letterSpacing: 0,
+              ),
+            ),
+            Text(
+              r':~$ ',
+              style: FluttyTheme.displayMono(
+                fontSize: 15,
+                color: colorScheme.onSurface.withAlpha(110),
+                letterSpacing: 0,
+              ),
+            ),
+            CursorBlock(size: 16, color: colorScheme.onSurface.withAlpha(170)),
+          ],
+        ),
+        const SizedBox(height: FluttyTheme.spacingLg),
+        Text(
+          'no hosts yet',
+          style: FluttyTheme.displayMono(
+            color: colorScheme.onSurface.withAlpha(230),
+          ),
+        ),
+        const SizedBox(height: FluttyTheme.spacingSm),
+        Text(
+          "Nothing to connect to — let's fix that.",
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyMedium?.copyWith(color: muted),
+        ),
+        const SizedBox(height: FluttyTheme.spacingXl),
+        FilledButton.icon(
+          onPressed: onAddHost,
+          icon: const Icon(Icons.add, size: 18),
+          label: const Text('Add Host'),
+        ),
+        const SizedBox(height: FluttyTheme.spacingSm),
+        TextButton.icon(
+          onPressed: onPasteUrl,
+          icon: const Icon(Icons.content_paste_go_outlined, size: 18),
+          label: const Text('Paste SSH URL'),
+        ),
+      ],
+    );
+  }
+}
+
 class _GuidedEmptyState extends StatelessWidget {
   const _GuidedEmptyState({
     required this.icon,
@@ -930,11 +1006,11 @@ class HostsPanel extends ConsumerWidget {
           child: Row(
             children: [
               Text(
-                'Hosts',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+                'hosts',
+                style: FluttyTheme.displayMono(color: colorScheme.onSurface),
               ),
+              const SizedBox(width: 3),
+              CursorBlock(size: 20, color: colorScheme.primary),
               const Spacer(),
               _ActionButton(
                 icon: Icons.add,
@@ -979,19 +1055,9 @@ class HostsPanel extends ConsumerWidget {
   );
 
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
-    child: _GuidedEmptyState(
-      icon: Icons.dns_outlined,
-      title: 'No hosts yet',
-      subtitle: 'Add an SSH server or paste an ssh:// URL to get started.',
-      primaryLabel: 'Add Host',
-      onPrimary: () => context.push('/hosts/add'),
-      secondaryActions: [
-        _EmptyStateAction(
-          icon: Icons.content_paste_go_outlined,
-          label: 'Paste SSH URL',
-          onTap: () => unawaited(_openPastedSshUrl(context)),
-        ),
-      ],
+    child: _HostsEmptyState(
+      onAddHost: () => context.push('/hosts/add'),
+      onPasteUrl: () => unawaited(_openPastedSshUrl(context)),
     ),
   );
 

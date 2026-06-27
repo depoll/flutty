@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_metadata.dart';
+import '../../app/theme.dart';
 import '../../domain/services/auth_service.dart';
+import '../widgets/cursor_block.dart';
 
 /// Lock screen for PIN/biometric authentication.
 class LockScreen extends ConsumerStatefulWidget {
@@ -167,11 +169,23 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                         ),
                       ),
                       const SizedBox(height: 32),
-                      Text(
-                        appName,
-                        style: theme.textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              appName,
+                              overflow: TextOverflow.ellipsis,
+                              style: FluttyTheme.displayMono(
+                                fontSize: 24,
+                                color: colorScheme.onSurface,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const CursorBlock(size: 22),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       Text(
