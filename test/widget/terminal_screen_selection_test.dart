@@ -170,6 +170,50 @@ void main() {
     );
   });
 
+  group('resolveTerminalFilePathExistenceCandidates', () {
+    test('walks back directory prefixes for an absolute path', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates('/srv/app/lib/main.dart'),
+        ['/srv/app/lib/main.dart', '/srv/app/lib', '/srv/app', '/srv'],
+      );
+    });
+
+    test('walks back directory prefixes for a relative path', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates(
+          'lib/presentation/screens/terminal_screen.dart',
+        ),
+        [
+          'lib/presentation/screens/terminal_screen.dart',
+          'lib/presentation/screens',
+          'lib/presentation',
+        ],
+      );
+    });
+
+    test('stops directory walk-back before the bare home directory', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates('~/Code/app/main.dart'),
+        ['~/Code/app/main.dart', '~/Code/app', '~/Code'],
+      );
+    });
+
+    test('orders ambiguous parses and prefixes longest first', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates(
+          '/srv/app/archive.tar.gzbackup',
+        ),
+        [
+          '/srv/app/archive.tar.gzbackup',
+          '/srv/app/archive.tar.gz',
+          '/srv/app/archive.tar',
+          '/srv/app',
+          '/srv',
+        ],
+      );
+    });
+  });
+
   group('hasAmbiguousTerminalFilePathParsing', () {
     test(
       'returns false for ordinary explicit paths with a final known extension',

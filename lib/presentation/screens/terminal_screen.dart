@@ -1099,7 +1099,11 @@ typedef _TerminalPathSnapshotAnalysis = ({
   List<_TerminalPathMatch> detectedPaths,
   _NormalizedTerminalPathSnapshot normalizedSnapshot,
 });
-typedef _VerifiedTerminalPath = ({String terminalPath, String resolvedPath});
+typedef _VerifiedTerminalPath = ({
+  String terminalPath,
+  String resolvedPath,
+  bool exists,
+});
 typedef _PreparedRemoteMuxCommand = ({
   RemoteMuxBackend backend,
   String command,
@@ -1592,6 +1596,69 @@ List<String> resolveTerminalFilePathVerificationCandidates(String path) {
   }
 
   return candidates;
+}
+
+/// Whether [candidate] is worth probing for existence on the remote host.
+///
+/// More permissive than [isSupportedTerminalFilePath] so directory prefixes
+/// of a detected path (e.g. `lib/foo` from `lib/foo/bar.dart`) can be probed:
+/// because every candidate is confirmed with a remote `stat`, the stricter
+/// "looks like a file" heuristics used during detection are unnecessary here.
+bool _isProbableTerminalPathExistenceCandidate(String candidate) {
+  if (candidate.isEmpty ||
+      candidate == '~' ||
+      candidate == '.' ||
+      candidate == '..' ||
+      candidate.startsWith('//')) {
+    return false;
+  }
+  if (isExplicitTerminalFilePath(candidate)) {
+    return true;
+  }
+  final segments = candidate.split('/');
+  return segments.length >= 2 &&
+      segments.every((segment) => segment.isNotEmpty);
+}
+
+/// Substrings of [path] to probe for existence, ordered longest first.
+///
+/// Combines the alternative parses from
+/// [resolveTerminalFilePathVerificationCandidates] with directory-prefix
+/// walk-backs of each (`a/b/c/d` -> `a/b/c` -> `a/b`), so the verifier can
+/// linkify only the longest substring of the path that actually exists on the
+/// remote host. Candidates are de-duplicated, restricted to probable paths,
+/// and capped so a single path cannot trigger an unbounded number of remote
+/// `stat` probes.
+@visibleForTesting
+List<String> resolveTerminalFilePathExistenceCandidates(String path) {
+  final ordered = <String>[];
+  final seen = <String>{};
+
+  void add(String candidate) {
+    final normalized = trimTerminalFilePathCandidate(candidate);
+    if (!_isProbableTerminalPathExistenceCandidate(normalized) ||
+        !seen.add(normalized)) {
+      return;
+    }
+    ordered.add(normalized);
+  }
+
+  for (final parse in resolveTerminalFilePathVerificationCandidates(path)) {
+    add(parse);
+    var prefix = parse;
+    var slashIndex = prefix.lastIndexOf('/');
+    while (slashIndex > 0) {
+      prefix = prefix.substring(0, slashIndex);
+      add(prefix);
+      slashIndex = prefix.lastIndexOf('/');
+    }
+  }
+
+  ordered.sort((left, right) => right.length.compareTo(left.length));
+  if (ordered.length > _maxTerminalFilePathVerificationCandidates) {
+    return ordered.sublist(0, _maxTerminalFilePathVerificationCandidates);
+  }
+  return ordered;
 }
 
 /// Candidate terminal cells to probe for a touch-friendly path hit test.
@@ -3029,6 +3096,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   DateTime? _terminalPathVerificationBackoffUntil;
   final Map<String, String> _pendingTerminalPathVerifications = {};
   bool _isTerminalPathVerificationBatchScheduled = false;
+  Timer? _terminalPathVerificationBatchTimer;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   late final ProviderSubscription<bool> _terminalWakeLockSubscription;
@@ -9615,6 +9683,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
+    _terminalPathVerificationBatchTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
@@ -11636,12 +11705,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    if (_isInteractiveTerminalFilePath(detectedPath)) {
-      return detectedPath;
-    }
-
+    // Prime verification even for optimistically active paths so the link can
+    // shrink to (or drop below) the longest existing substring once resolved.
     _primeTerminalFilePathVerification(detectedPath);
-    return null;
+    return _isInteractiveTerminalFilePath(detectedPath) ? detectedPath : null;
   }
 
   String? _detectTerminalFilePathAtOffset(
@@ -12567,7 +12634,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .originalToNormalizedOffsets[rowStart];
     final rowNormalizedEnd =
         snapshotAnalysis.normalizedSnapshot.originalToNormalizedOffsets[rowEnd];
-    final relativeCandidatesToPrime = <String>{};
+    final candidatesToPrime = <String>{};
     final segments =
         <({String path, String text, int startColumn, int endColumn})>[];
     for (final detectedPath in snapshotAnalysis.detectedPaths) {
@@ -12577,6 +12644,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       final path = detectedPath.path;
+      // Verify every detected path so its link is trimmed to the longest
+      // existing substring (and dropped if no substring exists remotely).
+      candidatesToPrime.add(path);
       final activePath = _interactiveTerminalFilePathCandidate(path);
       if (activePath != null) {
         final visibleSegment = resolveTerminalFilePathSegmentOnRow(
@@ -12597,12 +12667,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           startColumn: visibleSegment.startColumn,
           endColumn: visibleSegment.endColumn,
         ));
-      } else if (requiresTerminalFilePathVerification(path)) {
-        relativeCandidatesToPrime.add(path);
       }
     }
 
-    for (final path in relativeCandidatesToPrime) {
+    for (final path in candidatesToPrime) {
       _primeTerminalFilePathVerification(path);
     }
 
@@ -13023,12 +13091,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String cacheKey, {
     required String terminalPath,
     required String resolvedPath,
-  }) {
+  }) => _storeVerifiedTerminalPath(cacheKey, (
+    terminalPath: terminalPath,
+    resolvedPath: resolvedPath,
+    exists: true,
+  ));
+
+  /// Remembers that no substring of the path at [cacheKey] exists remotely, so
+  /// the link is dropped and the dead path is not repeatedly re-probed.
+  void _cacheNonexistentTerminalPath(
+    String cacheKey, {
+    required String terminalPath,
+  }) => _storeVerifiedTerminalPath(cacheKey, (
+    terminalPath: terminalPath,
+    resolvedPath: '',
+    exists: false,
+  ));
+
+  void _storeVerifiedTerminalPath(
+    String cacheKey,
+    _VerifiedTerminalPath verifiedPath,
+  ) {
     _verifiedTerminalPathCache.remove(cacheKey);
-    _verifiedTerminalPathCache[cacheKey] = (
-      terminalPath: terminalPath,
-      resolvedPath: resolvedPath,
-    );
+    _verifiedTerminalPathCache[cacheKey] = verifiedPath;
     _verifiedTerminalPathCacheOrder
       ..remove(cacheKey)
       ..addLast(cacheKey);
@@ -13229,22 +13314,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _interactiveTerminalFilePathCandidate(String terminalPath) {
     final verifiedPath = _verifiedTerminalPath(terminalPath);
     if (verifiedPath != null) {
-      return verifiedPath.terminalPath;
+      // Verification has resolved: link the longest existing substring, or
+      // nothing if no substring of the path exists remotely.
+      return verifiedPath.exists ? verifiedPath.terminalPath : null;
     }
-    if (!_isInteractiveTerminalFilePath(terminalPath)) {
-      return null;
-    }
-    return terminalPath;
+    // Verification is still pending: optimistically link explicit paths so the
+    // link appears immediately, then it shrinks (or drops) once `stat` lands.
+    return _isOptimisticTerminalFilePath(terminalPath) ? terminalPath : null;
   }
 
-  bool _isInteractiveTerminalFilePath(String terminalPath) =>
-      shouldActivateTerminalFilePath(
-        terminalPath,
-        hasVerifiedPath: _verifiedTerminalPath(terminalPath) != null,
-      );
+  bool _isInteractiveTerminalFilePath(String terminalPath) {
+    final verifiedPath = _verifiedTerminalPath(terminalPath);
+    if (verifiedPath != null) {
+      return verifiedPath.exists;
+    }
+    return _isOptimisticTerminalFilePath(terminalPath);
+  }
+
+  /// Whether a not-yet-verified path should behave like a link in the meantime.
+  bool _isOptimisticTerminalFilePath(String terminalPath) =>
+      shouldActivateTerminalFilePath(terminalPath, hasVerifiedPath: false);
 
   void _primeTerminalFilePathVerification(String terminalPath) {
-    if (!requiresTerminalFilePathVerification(terminalPath)) {
+    if (!isSupportedTerminalFilePath(terminalPath)) {
       return;
     }
 
@@ -13267,10 +13359,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _isTerminalPathVerificationBatchScheduled = true;
-    unawaited(() async {
+    // Use a cancelable timer (not Future.delayed) so the pending batch is torn
+    // down in dispose() rather than lingering until it fires.
+    _terminalPathVerificationBatchTimer = Timer(delay, () async {
+      _terminalPathVerificationBatchTimer = null;
       Duration? nextDelay;
       try {
-        await Future<void>.delayed(delay);
         if (!mounted) {
           _pendingTerminalPathVerifications.clear();
           _verifyingTerminalPathCacheKeys.clear();
@@ -13285,7 +13379,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         }
       }
-    }());
+    });
   }
 
   Future<Duration?> _verifyPendingTerminalFilePaths() async {
@@ -13313,7 +13407,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final batch = Map<String, String>.from(_pendingTerminalPathVerifications);
     _pendingTerminalPathVerifications.clear();
-    var verifiedAny = false;
+    var cacheChanged = false;
     try {
       final sftp = await _resolveTerminalPathVerificationSftp(
         session,
@@ -13328,12 +13422,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           continue;
         }
         try {
-          final verifiedPath = await _resolveVerifiedTerminalFilePathWithSftp(
+          await _resolveVerifiedTerminalFilePathWithSftp(
             sftp,
             entry.value,
             showErrors: false,
           );
-          verifiedAny = verifiedAny || verifiedPath != null;
+          // A positive or negative result was cached: refresh underlines so an
+          // optimistic link shrinks to (or drops below) the verified extent.
+          cacheChanged = true;
         } on TimeoutException {
           rethrow;
         } on SftpStatusError {
@@ -13377,7 +13473,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    if (verifiedAny && mounted) {
+    if (cacheChanged && mounted) {
       setState(() {
         _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
       });
@@ -13394,14 +13490,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
-      return cachedPath.resolvedPath;
+      return cachedPath.exists ? cachedPath.resolvedPath : null;
     }
 
     final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
-    final verificationCandidates =
-        requiresTerminalFilePathVerification(terminalPath)
-        ? resolveTerminalFilePathVerificationCandidates(terminalPath)
-        : <String>[terminalPath];
+    // Probe from the full path down through its directory prefixes so the
+    // longest substring that actually exists wins (candidates are ordered
+    // longest first).
+    final verificationCandidates = resolveTerminalFilePathExistenceCandidates(
+      terminalPath,
+    );
     for (final candidate in verificationCandidates) {
       final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
         sftp,
@@ -13436,6 +13534,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return resolvedPath;
     }
 
+    _cacheNonexistentTerminalPath(cacheKey, terminalPath: terminalPath);
     if (showErrors && isExplicitPath) {
       _showTerminalLinkMessage(
         'Could not open "$terminalPath" in SFTP: path does not exist',
@@ -13452,7 +13551,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
-      return cachedPath.resolvedPath;
+      return cachedPath.exists ? cachedPath.resolvedPath : null;
     }
 
     final session = _activeSession();

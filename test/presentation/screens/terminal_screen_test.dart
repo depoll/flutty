@@ -7339,6 +7339,52 @@ void main() {
     );
 
     testWidgets(
+      'links the longest existing directory when the file is missing',
+      (tester) async {
+        const missingPath = 'lib/presentation/screens/missing_screen.dart';
+        const existingDir = 'lib/presentation/screens';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(() => sftp.stat('$workingDirectory/$missingPath')).thenAnswer(
+          (_) => Future<SftpFileAttrs>.error(
+            SftpStatusError(SftpStatusCode.noSuchFile, 'no such file'),
+          ),
+        );
+        when(() => sftp.stat('$workingDirectory/$existingDir')).thenAnswer(
+          (_) async => SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+        );
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('cat $missingPath');
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pumpAndSettle();
+
+        // The missing file is probed first, then its parent directory, which
+        // exists and becomes the linkified substring.
+        verify(() => sftp.stat('$workingDirectory/$missingPath')).called(1);
+        verify(() => sftp.stat('$workingDirectory/$existingDir')).called(1);
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .inlineUnderlines,
+          hasLength(1),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'background path verification batches relative path stats',
       (tester) async {
         const firstPath = 'lib/presentation/screens/terminal_screen.dart';
