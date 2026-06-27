@@ -1214,6 +1214,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     if (anchor != null) {
       if (!anchor.attached || manager.generation != generation) {
         anchor.dispose();
+        // The screen was cleared or the anchor cell evicted while this image
+        // decoded, so it will never get a placement. Reclaim it now unless it is
+        // retained for Unicode-placeholder reuse, rather than leaving it in the
+        // cache until the next erase or memory-pressure eviction.
+        manager.pruneUnreferencedImages();
         return;
       }
       _placeImageWithDisplayArgs(manager, storedImageId, anchor, args);
@@ -1408,14 +1413,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       data[6] == 0x1A &&
       data[7] == 0x0A;
 
-  int? _kittyPlaceholderDiacriticValue(int char) {
-    final index = _kittyPlaceholderDiacritics.indexOf(char);
-    return index < 0 ? null : index;
-  }
+  int? _kittyPlaceholderDiacriticValue(int char) =>
+      _kittyPlaceholderDiacriticIndex[char];
 }
 
 /// Unicode code point used by Kitty graphics placeholder mode.
 const kittyGraphicsPlaceholderCodePoint = 0x10EEEE;
+
+/// Reverse lookup from a placeholder diacritic code point to its row/column
+/// index. Placeholder-protocol clients (e.g. Copilot CLI) re-emit their full
+/// placeholder grid on essentially every frame, so this O(1) map replaces a
+/// linear scan of [_kittyPlaceholderDiacritics] for each placeholder cell.
+final Map<int, int> _kittyPlaceholderDiacriticIndex = {
+  for (var i = 0; i < _kittyPlaceholderDiacritics.length; i++)
+    _kittyPlaceholderDiacritics[i]: i,
+};
 
 const _kittyPlaceholderDiacritics = <int>[
   0x0305,
