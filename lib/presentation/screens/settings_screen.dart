@@ -180,7 +180,7 @@ class _AppearanceSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Appearance',
+          title: 'appearance',
           subtitle: 'App-wide color mode',
         ),
         ListTile(
@@ -270,7 +270,7 @@ class _SecuritySection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Security',
+          title: 'security',
           subtitle: 'PIN, biometrics, and automatic locking',
         ),
         if (isAuthConfigured)
@@ -623,7 +623,7 @@ class _PrivacySection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Privacy',
+          title: 'privacy',
           subtitle: 'Anonymous usage analytics and crash reporting',
         ),
         SwitchListTile(
@@ -718,7 +718,7 @@ class _TerminalSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Terminal',
+          title: 'terminal',
           subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
         ),
         ListTile(
@@ -1238,7 +1238,7 @@ class _DiagnosticsSectionState extends ConsumerState<_DiagnosticsSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Diagnostics',
+          title: 'diagnostics',
           subtitle: 'Preview-only troubleshooting logs',
         ),
         ListTile(
@@ -1299,7 +1299,7 @@ class _AboutSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'About',
+          title: 'about',
           subtitle: 'Version, source, and licenses',
         ),
         ListTile(
@@ -1440,7 +1440,7 @@ class _AndroidBackgroundSectionState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const _SectionHeader(
-            title: 'Background SSH',
+            title: 'background ssh',
             subtitle: 'Keep sessions alive while MonkeySSH is backgrounded',
           ),
           ListTile(
@@ -1469,7 +1469,7 @@ class _ImportExportSection extends ConsumerWidget {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       const _SectionHeader(
-        title: 'Import & Export',
+        title: 'import & export',
         subtitle: 'Encrypted migration packages for moving devices',
       ),
       ListTile(
