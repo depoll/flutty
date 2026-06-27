@@ -146,8 +146,22 @@ func TestTerminalEnvironmentAddsTerminalCapabilityDefaults(t *testing.T) {
 	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
 		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
+	if !containsEnv(env, "FORCE_HYPERLINK=1") {
+		t.Fatalf("terminal environment = %#v, want FORCE_HYPERLINK=1", env)
+	}
 	if !reflect.DeepEqual(base, []string{"USER=test"}) {
 		t.Fatalf("terminal environment mutated base = %#v", base)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingForceHyperlink(t *testing.T) {
+	env := terminalEnvironment([]string{"FORCE_HYPERLINK=0", "USER=test"})
+
+	if !containsEnv(env, "FORCE_HYPERLINK=0") {
+		t.Fatalf(
+			"terminal environment = %#v, want existing FORCE_HYPERLINK=0 preserved",
+			env,
+		)
 	}
 }
 

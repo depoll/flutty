@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.74"
+	monkeyMuxVersion                  = "0.1.75"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -5933,6 +5933,7 @@ func terminalEnvironment(base []string) []string {
 	env = appendEnvironmentDefault(env, "COLORTERM", "truecolor", terminalColorTermIsTrueColor)
 	env = appendEnvironmentDefault(env, "TERM_PROGRAM", "kitty", terminalProgramSupportsInlineImages)
 	env = appendEnvironmentDefault(env, "KITTY_WINDOW_ID", "1", terminalEnvironmentValueIsPresent)
+	env = appendEnvironmentDefault(env, "FORCE_HYPERLINK", "1", terminalEnvironmentValueIsPresent)
 	return env
 }
 
