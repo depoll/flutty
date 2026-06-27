@@ -39,6 +39,7 @@ import '../providers/entity_list_providers.dart';
 import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/brand_empty_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/cursor_block.dart';
@@ -846,141 +847,6 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
   }
 }
 
-class _EmptyStateAction {
-  const _EmptyStateAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-}
-
-class _HostsEmptyState extends StatelessWidget {
-  const _HostsEmptyState({required this.onAddHost, required this.onPasteUrl});
-
-  final VoidCallback onAddHost;
-  final VoidCallback onPasteUrl;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final muted = colorScheme.onSurface.withAlpha(140);
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // Crafted mono mark: a faux shell prompt with a live cursor.
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'monkey@ssh',
-              style: FluttyTheme.displayMono(
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-                color: colorScheme.onSurface.withAlpha(160),
-                letterSpacing: 0,
-              ),
-            ),
-            Text(
-              r':~$ ',
-              style: FluttyTheme.displayMono(
-                fontSize: 15,
-                color: colorScheme.onSurface.withAlpha(110),
-                letterSpacing: 0,
-              ),
-            ),
-            CursorBlock(size: 16, color: colorScheme.onSurface.withAlpha(170)),
-          ],
-        ),
-        const SizedBox(height: FluttyTheme.spacingLg),
-        Text(
-          'no hosts yet',
-          style: FluttyTheme.displayMono(
-            color: colorScheme.onSurface.withAlpha(230),
-          ),
-        ),
-        const SizedBox(height: FluttyTheme.spacingSm),
-        Text(
-          "Nothing to connect to — let's fix that.",
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodyMedium?.copyWith(color: muted),
-        ),
-        const SizedBox(height: FluttyTheme.spacingXl),
-        FilledButton.icon(
-          onPressed: onAddHost,
-          icon: const Icon(Icons.add, size: 18),
-          label: const Text('Add Host'),
-        ),
-        const SizedBox(height: FluttyTheme.spacingSm),
-        TextButton.icon(
-          onPressed: onPasteUrl,
-          icon: const Icon(Icons.content_paste_go_outlined, size: 18),
-          label: const Text('Paste SSH URL'),
-        ),
-      ],
-    );
-  }
-}
-
-class _GuidedEmptyState extends StatelessWidget {
-  const _GuidedEmptyState({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.primaryLabel,
-    required this.onPrimary,
-    this.primaryIcon = Icons.add,
-    this.secondaryActions = const [],
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String primaryLabel;
-  final IconData primaryIcon;
-  final VoidCallback onPrimary;
-  final List<_EmptyStateAction> secondaryActions;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      FluttyTheme.buildEmptyState(
-        context: context,
-        icon: icon,
-        title: title,
-        subtitle: subtitle,
-        onAction: onPrimary,
-        actionLabel: primaryLabel,
-        actionIcon: primaryIcon,
-        centered: false,
-        padded: false,
-      ),
-      if (secondaryActions.isNotEmpty) ...[
-        const SizedBox(height: FluttyTheme.spacingMd),
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: FluttyTheme.spacingSm,
-          runSpacing: FluttyTheme.spacingSm,
-          children: [
-            for (final action in secondaryActions)
-              OutlinedButton.icon(
-                onPressed: action.onTap,
-                icon: Icon(action.icon, size: 18),
-                label: Text(action.label),
-              ),
-          ],
-        ),
-      ],
-    ],
-  );
-}
-
 /// Panel for displaying and managing hosts inline.
 class HostsPanel extends ConsumerWidget {
   /// Creates a [HostsPanel].
@@ -1055,9 +921,18 @@ class HostsPanel extends ConsumerWidget {
   );
 
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
-    child: _HostsEmptyState(
-      onAddHost: () => context.push('/hosts/add'),
-      onPasteUrl: () => unawaited(_openPastedSshUrl(context)),
+    child: BrandEmptyState(
+      title: 'no hosts yet',
+      message: "Nothing to connect to — let's fix that.",
+      primaryLabel: 'Add Host',
+      onPrimary: () => context.push('/hosts/add'),
+      secondaryActions: [
+        BrandEmptyAction(
+          icon: Icons.content_paste_go_outlined,
+          label: 'Paste SSH URL',
+          onTap: () => unawaited(_openPastedSshUrl(context)),
+        ),
+      ],
     ),
   );
 
@@ -2048,13 +1923,14 @@ class _ConnectionsPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) => FluttyTheme.buildEmptyState(
-    context: context,
-    icon: Icons.link_off,
-    title: 'No active connections',
-    subtitle:
-        'Connections appear here while terminals are open. Choose a host to '
-        'connect, then jump back to live sessions from this tab.',
+  Widget _buildEmptyState(BuildContext context) => const Center(
+    child: Padding(
+      padding: EdgeInsets.symmetric(horizontal: 24),
+      child: BrandEmptyState(
+        title: 'no active sessions',
+        message: 'Open a host and your live terminals show up here.',
+      ),
+    ),
   );
 }
 
@@ -2247,17 +2123,14 @@ class _KeysPanel extends ConsumerWidget {
   Widget _buildEmptyState(BuildContext context) => Center(
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: _GuidedEmptyState(
-        icon: Icons.key_outlined,
-        title: 'No SSH keys yet',
-        subtitle:
-            'Keys let you sign in without saving server passwords. Generate a '
-            'new Ed25519 key or import an existing private key.',
+      child: BrandEmptyState(
+        title: 'no keys yet',
+        message: 'Generate a key and stop saving server passwords.',
         primaryLabel: 'Generate Key',
         primaryIcon: Icons.enhanced_encryption,
         onPrimary: () => context.push('/keys/add'),
         secondaryActions: [
-          _EmptyStateAction(
+          BrandEmptyAction(
             icon: Icons.upload_file_outlined,
             label: 'Import Key',
             onTap: () => context.push('/keys/add?tab=import'),
@@ -2903,19 +2776,20 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
   }
 
   Widget _buildEmptyState(BuildContext context, String? selectedFolderName) =>
-      FluttyTheme.buildEmptyState(
-        context: context,
-        icon: Icons.code_outlined,
-        title: selectedFolderName == null
-            ? 'No snippets yet'
-            : 'No snippets in $selectedFolderName',
-        subtitle: selectedFolderName == null
-            ? 'Save commands you run often. Try templates such as '
-                  '`tail -f {{log_file}}`, `docker restart {{container}}`, or '
-                  '`git pull && {{restart_command}}`.'
-            : 'Add a snippet to this folder or pick another folder above.',
-        onAction: () => _addSnippet(context),
-        actionLabel: 'Add Snippet',
+      Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: BrandEmptyState(
+            title: selectedFolderName == null
+                ? 'no snippets yet'
+                : 'empty folder',
+            message: selectedFolderName == null
+                ? 'Save commands you keep retyping — {{variables}} and all.'
+                : 'Nothing in this folder yet — add one or pick another above.',
+            primaryLabel: 'Add Snippet',
+            onPrimary: () => _addSnippet(context),
+          ),
+        ),
       );
 
   Widget _buildSnippetsList(
