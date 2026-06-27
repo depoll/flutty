@@ -129,7 +129,7 @@ func TestInheritedEnvironmentDoesNotAddMissingValues(t *testing.T) {
 	}
 }
 
-func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
+func TestTerminalEnvironmentAddsTerminalCapabilityDefaults(t *testing.T) {
 	base := []string{"USER=test"}
 
 	env := terminalEnvironment(base)
@@ -139,6 +139,12 @@ func TestTerminalEnvironmentAddsTrueColorDefaults(t *testing.T) {
 	}
 	if !containsEnv(env, "COLORTERM=truecolor") {
 		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
+	}
+	if !containsEnv(env, "TERM_PROGRAM=kitty") {
+		t.Fatalf("terminal environment = %#v, want TERM_PROGRAM=kitty", env)
+	}
+	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
+		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
 	if !reflect.DeepEqual(base, []string{"USER=test"}) {
 		t.Fatalf("terminal environment mutated base = %#v", base)
@@ -154,8 +160,17 @@ func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
 
 	env := terminalEnvironment(base)
 
-	if !reflect.DeepEqual(env, base) {
-		t.Fatalf("terminal environment = %#v, want existing hints preserved", env)
+	if !containsEnv(env, "TERM=screen-256color") {
+		t.Fatalf("terminal environment = %#v, want existing TERM preserved", env)
+	}
+	if !containsEnv(env, "COLORTERM=24bit") {
+		t.Fatalf("terminal environment = %#v, want existing COLORTERM preserved", env)
+	}
+	if !containsEnv(env, "TERM_PROGRAM=kitty") {
+		t.Fatalf("terminal environment = %#v, want TERM_PROGRAM=kitty", env)
+	}
+	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
+		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
 }
 
@@ -173,6 +188,12 @@ func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
 	}
 	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"truecolor"}) {
 		t.Fatalf("COLORTERM values = %#v in %#v, want only truecolor", got, env)
+	}
+	if got := envValues(env, "TERM_PROGRAM"); !reflect.DeepEqual(got, []string{"kitty"}) {
+		t.Fatalf("TERM_PROGRAM values = %#v in %#v, want only kitty", got, env)
+	}
+	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want only 1", got, env)
 	}
 	if !containsEnv(env, "USER=test") {
 		t.Fatalf("terminal environment = %#v, want USER preserved", env)
@@ -193,6 +214,27 @@ func TestTerminalEnvironmentKeepsExistingUsableTerminalHints(t *testing.T) {
 	}
 	if got := envValues(env, "COLORTERM"); !reflect.DeepEqual(got, []string{"24bit"}) {
 		t.Fatalf("COLORTERM values = %#v in %#v, want only 24bit", got, env)
+	}
+	if got := envValues(env, "TERM_PROGRAM"); !reflect.DeepEqual(got, []string{"kitty"}) {
+		t.Fatalf("TERM_PROGRAM values = %#v in %#v, want only kitty", got, env)
+	}
+	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want only 1", got, env)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingKittyCompatibleHints(t *testing.T) {
+	env := terminalEnvironment([]string{
+		"TERM_PROGRAM=WezTerm",
+		"KITTY_WINDOW_ID=99",
+		"USER=test",
+	})
+
+	if got := envValues(env, "TERM_PROGRAM"); !reflect.DeepEqual(got, []string{"WezTerm"}) {
+		t.Fatalf("TERM_PROGRAM values = %#v in %#v, want existing WezTerm", got, env)
+	}
+	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"99"}) {
+		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want existing 99", got, env)
 	}
 }
 
@@ -1669,6 +1711,183 @@ func TestReplayStripRemovesDesktopNotifications(t *testing.T) {
 	}
 }
 
+func TestExtractKittyGraphicsTransmissionsRestoresImage(t *testing.T) {
+	// A placeholder-protocol transmission: display action a=T with a virtual
+	// placement (U=1), surrounded by ordinary TUI output and the placeholder
+	// cells that display it.
+	history := []byte("some tui output\r\n" +
+		"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\" +
+		"\x1b[38;2;165;227;11m\U0010eeee\u0305\u0305 placeholders\r\n" +
+		"more output")
+
+	out := string(extractKittyGraphicsTransmissions(history))
+
+	if out == "" {
+		t.Fatal("no transmission extracted; image would be lost on reattach")
+	}
+	if !strings.Contains(out, "i=10871563") || !strings.Contains(out, "iVBORw0KGgo=") {
+		t.Fatalf("extracted transmission missing image id/payload: %q", out)
+	}
+	// The display action must be downgraded so replay never draws or moves the
+	// cursor.
+	if strings.Contains(out, "a=T") {
+		t.Fatalf("a=T not downgraded to a=t, replay would place image: %q", out)
+	}
+	if !strings.Contains(out, "a=t") {
+		t.Fatalf("expected store-only transmit a=t: %q", out)
+	}
+	// Only the transmission is replayed, never the visible TUI output or the
+	// placeholder cells.
+	if strings.Contains(out, "tui output") ||
+		strings.Contains(out, "placeholders") ||
+		strings.Contains(out, "\U0010eeee") {
+		t.Fatalf("replay leaked visible output (would double-draw): %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsChunked(t *testing.T) {
+	// A chunked transmission: first chunk carries the control + m=1, the rest
+	// carry only m=1/m=0. All chunks must be replayed so the payload decodes.
+	history := []byte(
+		"\x1b_Ga=T,U=1,i=42,c=8,r=4,f=100,m=1;AAAA\x1b\\" +
+			"\x1b_Gm=1;BBBB\x1b\\" +
+			"\x1b_Gm=0;CCCC\x1b\\" +
+			"trailing")
+
+	out := string(extractKittyGraphicsTransmissions(history))
+
+	for _, want := range []string{"AAAA", "BBBB", "CCCC", "i=42"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("chunked transmission missing %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "trailing") {
+		t.Fatalf("replay leaked trailing output: %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsDedupesById(t *testing.T) {
+	history := []byte(
+		"\x1b_Ga=T,U=1,i=7,f=100;OLD\x1b\\" +
+			"\x1b_Ga=T,U=1,i=7,f=100;NEW\x1b\\")
+
+	out := string(extractKittyGraphicsTransmissions(history))
+
+	if strings.Contains(out, "OLD") {
+		t.Fatalf("superseded transmission for id=7 was replayed: %q", out)
+	}
+	if !strings.Contains(out, "NEW") {
+		t.Fatalf("latest transmission for id=7 missing: %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsIgnoresNonTransmissions(t *testing.T) {
+	history := []byte(
+		"\x1b_Ga=q,i=1;\x1b\\" + // query
+			"\x1b_Ga=d,d=A;\x1b\\" + // delete
+			"\x1b_Ga=p,i=2;\x1b\\") // placement only
+
+	if out := extractKittyGraphicsTransmissions(history); len(out) != 0 {
+		t.Fatalf("non-transmission graphics commands were replayed: %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsNone(t *testing.T) {
+	if out := extractKittyGraphicsTransmissions([]byte("plain output\r\n")); out != nil {
+		t.Fatalf("expected nil for history without graphics, got %q", out)
+	}
+}
+
+func TestExtractKittyGraphicsTransmissionsSkipsTruncated(t *testing.T) {
+	// A transmission whose continuation chunks were trimmed out of history must
+	// not be replayed half-formed (it would never decode).
+	history := []byte("\x1b_Ga=T,U=1,i=9,f=100,m=1;AAAA\x1b\\")
+
+	if out := extractKittyGraphicsTransmissions(history); len(out) != 0 {
+		t.Fatalf("incomplete chunked transmission was replayed: %q", out)
+	}
+}
+
+func TestObserveKittyGraphicsRetainsImageAcrossHistoryEviction(t *testing.T) {
+	window := &muxWindow{}
+
+	transmit := []byte(
+		"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\")
+	window.observeKittyGraphicsLocked(transmit)
+	// Flood with later output that would evict the transmit from any rolling
+	// history; the retained cache must be unaffected.
+	window.observeKittyGraphicsLocked(
+		bytes.Repeat([]byte("placeholder frame "), 100000))
+
+	replay := string(window.kittyImageReplayLocked())
+	if !strings.Contains(replay, "i=10871563") ||
+		!strings.Contains(replay, "iVBORw0KGgo=") {
+		t.Fatalf("retained image lost after eviction-scale output: %q", replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("retained transmit not downgraded to store-only: %q", replay)
+	}
+}
+
+func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
+	window := &muxWindow{}
+
+	// Split a single transmission across several observe calls, including a
+	// break inside the base64 payload and between continuation chunks.
+	full := "\x1b_Ga=T,U=1,i=5,c=8,r=4,f=100,m=1;AAAA\x1b\\" +
+		"\x1b_Gm=1;BBBB\x1b\\" +
+		"\x1b_Gm=0;CCCC\x1b\\"
+	// Feed byte-by-byte to stress chunk-boundary handling.
+	for i := 0; i < len(full); i++ {
+		window.observeKittyGraphicsLocked([]byte{full[i]})
+	}
+
+	replay := string(window.kittyImageReplayLocked())
+	for _, want := range []string{"AAAA", "BBBB", "CCCC", "i=5"} {
+		if !strings.Contains(replay, want) {
+			t.Fatalf("split transmission missing %q: %q", want, replay)
+		}
+	}
+}
+
+func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
+	window := &muxWindow{}
+
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
+	if got := window.kittyImageReplayLocked(); !strings.Contains(string(got), "PAYLOAD") {
+		t.Fatalf("image id=7 not retained: %q", got)
+	}
+
+	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
+	if got := window.kittyImageReplayLocked(); len(got) != 0 {
+		t.Fatalf("deleted image id=7 still retained: %q", got)
+	}
+}
+
+func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
+	window := &muxWindow{}
+
+	for i := 0; i < maxRetainedKittyImages+5; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;DATA%d\x1b\\", i, i)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	if len(window.kittyImageOrder) > maxRetainedKittyImages {
+		t.Fatalf("retained %d images, want <= %d",
+			len(window.kittyImageOrder), maxRetainedKittyImages)
+	}
+	// The oldest images are evicted; the most recent are kept.
+	replay := string(window.kittyImageReplayLocked())
+	if strings.Contains(replay, "DATA0") {
+		t.Fatalf("oldest image should have been evicted: %q", replay)
+	}
+	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
+	if !strings.Contains(replay, newest) {
+		t.Fatalf("newest image %q missing: %q", newest, replay)
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -2341,6 +2560,62 @@ func TestActiveReplaySetsWindowTitle(t *testing.T) {
 		if !strings.Contains(replay, sequence) {
 			t.Fatalf("replay = %q, want title sequence %q", replay, sequence)
 		}
+	}
+}
+
+func TestAltScreenReplayRestoresKittyImageButNotHistory(t *testing.T) {
+	server := newMuxServer("test")
+	window := &muxWindow{
+		id:           "@1",
+		index:        0,
+		name:         "Copilot CLI",
+		paneTitle:    "Copilot CLI",
+		privateModes: map[string]bool{"1049": true},
+		lastActivity: time.Now(),
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = "@1"
+
+	// Stream the window output as the live path does: the image is transmitted
+	// once and retained, followed by a flood of other output that evicts it
+	// from the rolling visible history. The retained image must still replay.
+	window.appendHistoryLocked([]byte("visible tui frame\r\n"))
+	transmit := []byte(
+		"\x1b_Ga=T,U=1,i=10871563,c=8,r=4,f=100,q=2;iVBORw0KGgo=\x1b\\")
+	window.appendHistoryLocked(transmit)
+	window.observeKittyGraphicsLocked(transmit)
+	placeholders := []byte("\x1b[38;2;165;227;11m\U0010eeee\u0305\u0305 cells")
+	window.appendHistoryLocked(placeholders)
+	window.observeKittyGraphicsLocked(placeholders)
+	// Evict the transmit from the rolling history with newer output.
+	flood := bytes.Repeat([]byte("x"), windowFullReplayHistoryLimitBytes+1024)
+	window.appendHistoryLocked(flood)
+	window.observeKittyGraphicsLocked(flood)
+	if bytes.Contains(window.historyTailLocked(), transmit) {
+		t.Fatal("precondition failed: transmit should have been evicted from history")
+	}
+
+	if !window.usesForegroundRedrawReplayLocked() {
+		t.Fatal("alt-screen window should use foreground-redraw replay")
+	}
+
+	replay := string(server.replayBytesLocked(window))
+
+	// The image bytes are restored from the retained cache (surviving history
+	// eviction) so redrawn placeholders have something to composite, but as a
+	// store-only transmit (a=t, not a=T).
+	if !strings.Contains(replay, "i=10871563") ||
+		!strings.Contains(replay, "iVBORw0KGgo=") {
+		t.Fatalf("replay dropped the Kitty image transmission: %q", replay)
+	}
+	if strings.Contains(replay, "a=T") {
+		t.Fatalf("replay kept display action a=T (would place image): %q", replay)
+	}
+	// The visible TUI history and placeholder cells are NOT replayed; the app
+	// redraws them itself.
+	if strings.Contains(replay, "visible tui frame") ||
+		strings.Contains(replay, "\U0010eeee") {
+		t.Fatalf("alt-screen replay leaked visible history (double-draw): %q", replay)
 	}
 }
 

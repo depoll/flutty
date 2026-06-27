@@ -11503,7 +11503,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    final externalLink = _resolveTerminalExternalLinkAtOffset(offset);
+    final externalLink = _resolveTerminalExternalLinkAtOffset(
+      offset,
+      forgiving: _isMobilePlatform,
+    );
     if (externalLink != null) {
       _pendingTerminalPathTap = null;
       if (_consumeRecentlyOpenedTerminalLinkTap(externalLink)) {
@@ -11540,39 +11543,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return '$_terminalSftpPathPrefix$detectedPath';
   }
 
-  String? _resolveTerminalExternalLinkAtOffset(CellOffset offset) {
+  String? _resolveTerminalExternalLinkAtOffset(
+    CellOffset offset, {
+    bool forgiving = false,
+  }) {
     if (!shouldResolveTerminalTapLinks(
       showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
     )) {
       return null;
     }
 
-    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
-    if (trackedHyperlink != null) {
-      return trackedHyperlink;
-    }
+    final candidateOffsets = forgiving
+        ? resolveForgivingTerminalTapOffsets(offset)
+        : <CellOffset>[offset];
+    for (final candidateOffset in candidateOffsets) {
+      final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(
+        candidateOffset,
+      );
+      if (trackedHyperlink != null) {
+        return trackedHyperlink;
+      }
 
-    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
-    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
-    final line = _terminal.buffer.lines[row];
-    if (line.getCodePoint(column) == 0) {
-      return null;
-    }
+      final row = candidateOffset.y.clamp(0, _terminal.buffer.height - 1);
+      final column = candidateOffset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+      final line = _terminal.buffer.lines[row];
+      if (line.getCodePoint(column) == 0) {
+        continue;
+      }
 
-    final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
-    if (wrappedSnapshot == null) {
-      return null;
-    }
+      final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
+      if (wrappedSnapshot == null) {
+        continue;
+      }
 
-    final rowIndex = row - wrappedSnapshot.startRow;
-    final textOffset =
-        wrappedSnapshot.rowStarts[rowIndex] +
-        wrappedSnapshot.columnOffsets[rowIndex][column];
-    final detectedLink = detectTerminalLinkAtTextOffset(
-      wrappedSnapshot.text,
-      textOffset,
-    );
-    return detectedLink?.uri.toString();
+      final rowIndex = row - wrappedSnapshot.startRow;
+      final textOffset =
+          wrappedSnapshot.rowStarts[rowIndex] +
+          wrappedSnapshot.columnOffsets[rowIndex][column];
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        wrappedSnapshot.text,
+        textOffset,
+      );
+      if (detectedLink != null) {
+        return detectedLink.uri.toString();
+      }
+    }
+    return null;
   }
 
   String? _resolveTerminalFilePathAtOffset(
@@ -11985,7 +12001,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final offset = terminalViewState.renderTerminal.getCellOffset(
       terminalLocalPosition,
     );
-    final tappedLink = _resolveTerminalExternalLinkAtOffset(offset);
+    final tappedLink = _resolveTerminalExternalLinkAtOffset(
+      offset,
+      forgiving: true,
+    );
     if (tappedLink == null) {
       return;
     }
@@ -12774,6 +12793,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+            _terminalViewKey.currentState?.forceFullRepaint();
           }
 
           if (mounted && result != null) {
@@ -13872,6 +13892,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return confirmed ?? false;
   }
 
+  /// Minimum delay between consecutive uploaded-file bracketed pastes.
+  ///
+  /// Agent CLIs such as Copilot CLI only register each pasted path as a separate
+  /// attachment (one preview chip per file) when its bracketed pastes arrive as
+  /// distinct input events; pastes delivered closer together are coalesced and
+  /// shown as plain text. Empirically the coalescing window is ~200ms, so a
+  /// single file is sent immediately and additional files are staggered by this
+  /// margin above that threshold.
+  static const _uploadedAttachmentPasteStagger = Duration(milliseconds: 300);
+
+  /// Inserts references to just-uploaded [remotePaths] into the terminal.
+  ///
+  /// Each path is sent as its own bracketed paste so an agent CLI such as
+  /// Copilot CLI shows a preview chip per file (and so plain shells receive the
+  /// paths as distinct, space-separated arguments). Multiple files are staggered
+  /// by [_uploadedAttachmentPasteStagger] so each registers as its own
+  /// attachment. The pre-built segments are written straight to the session
+  /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
+  /// which would strip the bracketed-paste markers.
+  Future<void> _insertUploadedFileReferences(List<String> remotePaths) async {
+    final segments = buildTerminalAttachmentPasteSegments(
+      remotePaths,
+      bracketedPasteMode: _terminal.bracketedPasteMode,
+    );
+    for (var i = 0; i < segments.length; i++) {
+      if (!mounted) {
+        return;
+      }
+      _terminal.onOutput?.call(segments[i]);
+      if (i < segments.length - 1) {
+        await Future<void>.delayed(_uploadedAttachmentPasteStagger);
+      }
+    }
+  }
+
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard files?',
@@ -13948,7 +14003,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -13994,7 +14052,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return remotePath;
     });
     _followLiveOutput();
-    _terminal.paste('${shellEscapePosix(remotePath)} ');
+    await _insertUploadedFileReferences([remotePath]);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14080,7 +14141,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)

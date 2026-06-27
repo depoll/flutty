@@ -267,6 +267,29 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     return result!;
   }
 
+  /// Replaces the [items.length] elements starting at [start] with [items],
+  /// preserving the attachment of any element that is reused.
+  ///
+  /// Unlike a sequence of `list[i] = list[j]` assignments, this first detaches
+  /// and clears every target slot, then adopts the replacements. That ordering
+  /// avoids the trap where an element is transiently referenced by both its old
+  /// and new slot: a later adopt would otherwise detach an element that was
+  /// already re-homed, silently orphaning it (and any [CellAnchor]s pointing at
+  /// it) even though it is still logically present. Used by region scrolling so
+  /// anchored content — such as Kitty graphics placements and placeholders —
+  /// survives a scroll instead of being spuriously pruned.
+  void reassignRange(int start, List<T> items) {
+    assert(start >= 0 && start + items.length <= _length);
+    for (var i = 0; i < items.length; i++) {
+      final cyclicIndex = _getCyclicIndex(start + i);
+      _array[cyclicIndex]?._detach();
+      _array[cyclicIndex] = null;
+    }
+    for (var i = 0; i < items.length; i++) {
+      _adoptChild(start + i, items[i]);
+    }
+  }
+
   /// Whether adding another element would cause the first element to be
   /// trimmed.
   bool get isFull => length == maxLength;
