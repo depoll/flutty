@@ -1398,6 +1398,70 @@ void main() {
     );
 
     testWidgets(
+      'tapping an OSC 8 hyperlink opens locally without forwarding a mouse '
+      'click to the host',
+      (tester) async {
+        const url = 'https://github.com/depollsoft/MonkeySSH/issues/1';
+        const urlLauncherChannel = MethodChannel(
+          'plugins.flutter.io/url_launcher',
+        );
+        final launchedUrls = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          urlLauncherChannel,
+          (call) async {
+            if (call.method == 'launch') {
+              launchedUrls.add((call.arguments! as Map)['url']! as String);
+              return true;
+            }
+            return false;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            urlLauncherChannel,
+            null,
+          ),
+        );
+
+        await pumpScreen(tester);
+        // A real CLI (gh, `ls --hyperlink`, build tools, …) emits an OSC 8
+        // hyperlink whose label is plain text and whose URL is hidden, and its
+        // TUI enables SGR mouse tracking. Tapping the label must open the URL
+        // locally rather than forwarding a mouse click to the host (which would
+        // make the remote process open it server-side over SSH).
+        session.terminal!
+          ..write('\x1b[?1003h\x1b[?1006h')
+          ..write('\x1b]8;;$url\x07Issue #1\x1b]8;;\x07');
+        await tester.pumpAndSettle();
+
+        final render = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        Offset cellCenter(CellOffset offset) => render.localToGlobal(
+          render.getOffset(offset) + render.cellSize.center(Offset.zero),
+        );
+
+        // Control: tapping an empty cell forwards an SGR mouse report, proving
+        // mouse tracking is genuinely active.
+        shellWrites.clear();
+        await tester.tapAt(cellCenter(const CellOffset(40, 5)));
+        await tester.pumpAndSettle();
+        final emptyForward = shellWrites.map(String.fromCharCodes).join();
+        expect(emptyForward, contains('\x1b[<'));
+
+        // Tapping the hyperlink label opens locally and forwards nothing.
+        shellWrites.clear();
+        await tester.tapAt(cellCenter(const CellOffset(3, 0)));
+        await tester.pumpAndSettle();
+
+        expect(launchedUrls, [url]);
+        final linkForward = shellWrites.map(String.fromCharCodes).join();
+        expect(linkForward, isNot(contains('\x1b[<')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'offers reconnect when the active session disappears unexpectedly',
       (tester) async {
         final reconnectClient = _MockSshClient();
