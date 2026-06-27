@@ -1169,7 +1169,7 @@ void main() {
       expect(result, same(shell));
       verify(
         () => client.execute(
-          r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
+          r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
           pty: pty,
         ),
       ).called(1);
@@ -1209,7 +1209,7 @@ void main() {
         expect(result, same(shell));
         verify(
           () => client.execute(
-            r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
+            r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
             pty: pty,
           ),
         ).called(1);
