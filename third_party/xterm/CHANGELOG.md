@@ -59,6 +59,28 @@ out of scope.
   text-width background. Upstream kterm does not answer XTVERSION yet, so keep
   `EscapeEmitter.terminalVersion()` and the `CSI q` parser dispatch when
   re-syncing. Consider upstreaming.
+* DECRQM replies (`CSI Ps $ p` / `CSI ? Ps $ p` -> `... $ y`). The parser now
+  retains the last CSI intermediate (`_Csi.intermediate`) to distinguish DECRQM
+  (`$`) from the other `p` finals (DECSTR `!`, DECSCL `"`), which still fall
+  through to `unknownCSI`. Tracked ANSI/DEC-private modes report their real
+  set/reset state; everything else reports "not recognized" (0). Synchronized
+  output (`2026`) is intentionally reported as not recognized, matching the
+  "evaluated but intentionally not ported" note above. Keep
+  `EscapeEmitter.modeReport`/`privateModeReport`, the `CSI p` parser dispatch,
+  and `Terminal._ansiModeValue`/`_decPrivateModeValue` on re-sync.
+* XTGETTCAP replies (`DCS + q <hex> ST` -> `DCS 1+r <hex>=<hex> ST` /
+  `DCS 0+r <hex> ST`). A new `ESC P` (DCS) parser branch buffers the string to
+  ST; XTGETTCAP requests are answered for theme-independent caps (`Co`/`colors`
+  -> 256, `RGB` -> 8/8/8) and reported invalid otherwise (including `TN`, since
+  TERM is host-defined). As a side effect this also stops unrecognized DCS
+  payloads (Sixel, DECRQSS) from leaking into the buffer as text. Keep
+  `EscapeEmitter.termcapReport`, the `ESC P` dispatch, and
+  `Terminal.sendTermcapReport`/`_termcapValue` on re-sync.
+* Modernized Device Attributes: DA1 reports VT220 + ANSI colour (`CSI ?62;22c`,
+  was `?1;2c`) and DA2 a VT220-class identity (`CSI >1;0;0c`, was `>0;0;0c`),
+  consistent with the kitty XTVERSION identity. Keep
+  `EscapeEmitter.primaryDeviceAttributes`/`secondaryDeviceAttributes` on
+  re-sync.
 
 
 ## [3.6.1-pre] - 2023-04-28

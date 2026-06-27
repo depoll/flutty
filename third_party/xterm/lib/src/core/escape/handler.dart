@@ -66,6 +66,16 @@ abstract class EscapeHandler {
 
   void sendTerminalVersion();
 
+  /// Answers DECRQM for an ANSI mode (`CSI Ps $ p`).
+  void sendModeReport(int mode);
+
+  /// Answers DECRQM for a DEC private mode (`CSI ? Ps $ p`).
+  void sendPrivateModeReport(int mode);
+
+  /// Answers XTGETTCAP (`DCS + q <hex> ST`) for the given hex-encoded
+  /// terminfo/termcap capability names.
+  void sendTermcapReport(List<String> capabilities);
+
   void sendOperatingStatus();
 
   void sendCursorPosition();
