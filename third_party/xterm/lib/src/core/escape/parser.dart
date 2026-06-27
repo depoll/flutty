@@ -103,7 +103,7 @@ class EscapeParser {
     'E'.charCode: _escHandleNextLine,
     'H'.charCode: _escHandleTabSet,
     'M'.charCode: _escHandleReverseIndex,
-    // 'P'.charCode: _unsupportedHandler, // Sixel
+    'P'.charCode: _escHandleDCS, // DCS - XTGETTCAP (others skipped to ST)
     // 'c'.charCode: _unsupportedHandler,
     // '#'.charCode: _unsupportedHandler,
     '('.charCode: _escHandleDesignateCharset0, //  SCS - G0
@@ -272,6 +272,8 @@ class EscapeParser {
       _csi.prefix = null;
     }
 
+    _csi.intermediate = null;
+
     var param = 0;
     var hasParam = false;
     var pendingEmptyParam = false;
@@ -337,7 +339,9 @@ class EscapeParser {
       }
 
       if (char > Ascii.NULL && char < Ascii.num0) {
-        // intermediates.add(char);
+        // Intermediate byte (0x20-0x2F). Only the last one is retained; it
+        // disambiguates finals such as `p` (DECRQM `$p` vs DECSTR `!p`).
+        _csi.intermediate = char;
         continue;
       }
 
@@ -362,6 +366,7 @@ class EscapeParser {
     'm'.codeUnitAt(0): _csiHandleSgr,
     'n'.codeUnitAt(0): _csiHandleDeviceStatusReport,
     'q'.codeUnitAt(0): _csiHandleRequestTerminalVersion,
+    'p'.codeUnitAt(0): _csiHandleRequestMode,
     'r'.codeUnitAt(0): _csiHandleSetMargins,
     't'.codeUnitAt(0): _csiWindowManipulation,
     'A'.codeUnitAt(0): _csiHandleCursorUp,
@@ -431,6 +436,31 @@ class EscapeParser {
     // handled here.
     if (_csi.prefix == Ascii.greaterThan) {
       handler.sendTerminalVersion();
+    }
+  }
+
+  /// `ESC [ Ps $ p` Request ANSI Mode (DECRQM) and
+  /// `ESC [ ? Ps $ p` Request DEC Private Mode (DECRQM).
+  ///
+  /// The `$` intermediate is what distinguishes DECRQM from the other `p`
+  /// finals (`CSI ! p` DECSTR soft reset, `CSI Ps " p` DECSCL, `CSI > Ps p`
+  /// XTSMPOINTER), none of which are handled here — they fall through to
+  /// [EscapeHandler.unknownCSI] exactly as before.
+  ///
+  /// https://vt100.net/docs/vt510-rm/DECRQM.html
+  void _csiHandleRequestMode() {
+    if (_csi.intermediate != Ascii.dollarSign) {
+      handler.unknownCSI(_csi.finalByte);
+      return;
+    }
+
+    final mode = _csi.params.isEmpty ? 0 : _csi.params[0];
+    if (_csi.prefix == Ascii.questionMark) {
+      handler.sendPrivateModeReport(mode);
+    } else if (_csi.prefix == null) {
+      handler.sendModeReport(mode);
+    } else {
+      handler.unknownCSI(_csi.finalByte);
     }
   }
 
@@ -1299,6 +1329,43 @@ class EscapeParser {
     }
   }
 
+  /// `ESC P ... ST` Device Control String (DCS).
+  ///
+  /// Only XTGETTCAP (`ESC P + q <hex> ; <hex> ... ST`, a terminfo/termcap
+  /// capability query) is understood; any other DCS string (DECRQSS `$q`,
+  /// Sixel `q`, ...) is consumed and ignored so its payload is not rendered as
+  /// text. Returns false when the sequence is incomplete so the caller can wait
+  /// for more data.
+  ///
+  /// https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+  bool _escHandleDCS() {
+    final body = StringBuffer();
+
+    while (true) {
+      if (_queue.isEmpty) return false;
+      final char = _queue.consume();
+
+      // DCS terminates with ST (`ESC \`).
+      if (char == Ascii.ESC) {
+        if (_queue.isEmpty) return false;
+        if (_queue.consume() == Ascii.backslash) break;
+        continue;
+      }
+      // BEL is tolerated as a terminator for robustness.
+      if (char == Ascii.BEL) break;
+
+      body.writeCharCode(char);
+    }
+
+    final payload = body.toString();
+    // XTGETTCAP request: `+ q <hexcap> [ ; <hexcap> ]...`.
+    if (payload.length >= 2 && payload[0] == '+' && payload[1] == 'q') {
+      final caps = payload.substring(2).split(';');
+      handler.sendTermcapReport(caps);
+    }
+    return true;
+  }
+
   /// `ESC _ ... ST` Application Program Command (APC).
   ///
   /// Only the Kitty graphics protocol (`ESC _ G <args> ; <payload> ST`) is
@@ -1449,6 +1516,13 @@ class _Csi {
   });
 
   int? prefix;
+
+  /// The last intermediate byte (range `0x20`-`0x2F`) seen before the final
+  /// byte, or `null` when the sequence had no intermediate. Most sequences
+  /// ignore intermediates, but a few finals are disambiguated by them — for
+  /// example `CSI Ps $ p` (DECRQM) versus `CSI ! p` (DECSTR), which share the
+  /// `p` final but differ by their `$` / `!` intermediate.
+  int? intermediate;
 
   List<int> params;
 

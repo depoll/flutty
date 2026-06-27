@@ -87,7 +87,7 @@ void main() {
       '\x1b\\\x1b[c',
     );
 
-    expect(output, ['\x1b_Gi=31;OK\x1b\\', '\x1b[?1;2c']);
+    expect(output, ['\x1b_Gi=31;OK\x1b\\', '\x1b[?62;22c']);
     expect(terminal.graphics.hasPlacements, isFalse);
   });
 

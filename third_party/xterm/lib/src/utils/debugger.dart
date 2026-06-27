@@ -242,6 +242,21 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void sendModeReport(int mode) {
+    onCommand('sendModeReport($mode)');
+  }
+
+  @override
+  void sendPrivateModeReport(int mode) {
+    onCommand('sendPrivateModeReport($mode)');
+  }
+
+  @override
+  void sendTermcapReport(List<String> capabilities) {
+    onCommand('sendTermcapReport(${capabilities.join(';')})');
+  }
+
+  @override
   void sendOperatingStatus() {
     onCommand('sendOperatingStatus');
   }

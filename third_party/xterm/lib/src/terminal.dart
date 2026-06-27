@@ -656,6 +656,155 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void sendModeReport(int mode) {
+    onOutput?.call(_emitter.modeReport(mode, _ansiModeValue(mode)));
+  }
+
+  @override
+  void sendPrivateModeReport(int mode) {
+    onOutput
+        ?.call(_emitter.privateModeReport(mode, _decPrivateModeValue(mode)));
+  }
+
+  /// DECRQM state value for an ANSI mode: 1 set, 2 reset, 0 not recognized.
+  int _ansiModeValue(int mode) {
+    switch (mode) {
+      case 4: // IRM - Insert/Replace
+        return _insertMode ? 1 : 2;
+      case 20: // LNM - Line Feed/New Line
+        return _lineFeedMode ? 1 : 2;
+      default:
+        return 0;
+    }
+  }
+
+  /// DECRQM state value for a DEC private mode: 1 set, 2 reset, 0 not
+  /// recognized.
+  ///
+  /// Only modes whose state the terminal actually tracks report 1/2; everything
+  /// else reports 0 (not recognized) rather than guess. In particular mode 2026
+  /// (synchronized output) is deliberately reported as not recognized because
+  /// this terminal does not implement it.
+  int _decPrivateModeValue(int mode) {
+    bool? enabled;
+    switch (mode) {
+      case 1: // DECCKM - Cursor Keys
+        enabled = _cursorKeysMode;
+        break;
+      case 5: // DECSCNM - Reverse Video
+        enabled = _reverseDisplayMode;
+        break;
+      case 6: // DECOM - Origin
+        enabled = _originMode;
+        break;
+      case 7: // DECAWM - Auto Wrap
+        enabled = _autoWrapMode;
+        break;
+      case 9: // X10 mouse reporting
+        enabled = _mouseMode == MouseMode.clickOnly;
+        break;
+      case 12: // att610 - Cursor Blink
+        enabled = _cursorBlinkMode;
+        break;
+      case 25: // DECTCEM - Text Cursor Enable
+        enabled = _cursorVisibleMode;
+        break;
+      case 47:
+      case 1047:
+      case 1049: // Alternate screen buffer
+        enabled = _buffer.isAltBuffer;
+        break;
+      case 66: // DECNKM - Numeric Keypad
+        enabled = _appKeypadMode;
+        break;
+      case 1000: // VT200 mouse reporting
+        enabled = _mouseMode == MouseMode.upDownScroll;
+        break;
+      case 1002: // Button-event mouse tracking
+        enabled = _mouseMode == MouseMode.upDownScrollDrag;
+        break;
+      case 1003: // Any-event mouse tracking
+        enabled = _mouseMode == MouseMode.upDownScrollMove;
+        break;
+      case 1004: // Focus reporting
+        enabled = _reportFocusMode;
+        break;
+      case 1005: // UTF-8 mouse extension
+        enabled = _mouseReportMode == MouseReportMode.utf;
+        break;
+      case 1006: // SGR mouse extension
+        enabled = _mouseReportMode == MouseReportMode.sgr;
+        break;
+      case 1007: // Alternate scroll
+        enabled = _altBufferMouseScrollMode;
+        break;
+      case 1015: // urxvt mouse extension
+        enabled = _mouseReportMode == MouseReportMode.urxvt;
+        break;
+      case 2004: // Bracketed paste
+        enabled = _bracketedPasteMode;
+        break;
+    }
+    if (enabled == null) return 0;
+    return enabled ? 1 : 2;
+  }
+
+  @override
+  void sendTermcapReport(List<String> capabilities) {
+    final output = onOutput;
+    if (output == null) return;
+    for (final hexName in capabilities) {
+      if (hexName.isEmpty) continue;
+      final name = _decodeHex(hexName);
+      final value = name == null ? null : _termcapValue(name);
+      output(
+        _emitter.termcapReport(
+          hexName,
+          value == null ? null : _encodeHex(value),
+        ),
+      );
+    }
+  }
+
+  /// Resolves a terminfo/termcap capability value for XTGETTCAP, or null when
+  /// the capability is unknown/unsupported.
+  ///
+  /// Only unambiguous, theme-independent capabilities are answered. The
+  /// terminal name (`TN`) is intentionally not reported: TERM is host-defined
+  /// (MonkeySSH leaves it unchanged, often `xterm-256color`), so answering a
+  /// fixed name here would risk a mismatch with the negotiated TERM.
+  String? _termcapValue(String name) {
+    switch (name) {
+      case 'Co': // termcap: maximum colors
+      case 'colors': // terminfo: maximum colors
+        return '256';
+      case 'RGB': // direct-color support, bits per channel
+        return '8/8/8';
+      default:
+        return null;
+    }
+  }
+
+  String? _decodeHex(String hex) {
+    if (hex.isEmpty || hex.length.isOdd) return null;
+    final units = <int>[];
+    for (var i = 0; i < hex.length; i += 2) {
+      final byte = int.tryParse(hex.substring(i, i + 2), radix: 16);
+      if (byte == null) return null;
+      units.add(byte);
+    }
+    return String.fromCharCodes(units);
+  }
+
+  String _encodeHex(String value) {
+    final buffer = StringBuffer();
+    for (final unit in value.codeUnits) {
+      buffer.write(unit.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
+  }
+
+  @override
   void sendOperatingStatus() {
     onOutput?.call(_emitter.operatingStatus());
   }
