@@ -1236,6 +1236,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       cols: int.tryParse(args['c'] ?? '') ?? 0,
       rows: int.tryParse(args['r'] ?? '') ?? 0,
       z: int.tryParse(args['z'] ?? '') ?? 0,
+      clientPlacementId: int.tryParse(args['p'] ?? '') ?? 0,
       srcX: int.tryParse(args['x'] ?? '') ?? 0,
       srcY: int.tryParse(args['y'] ?? '') ?? 0,
       srcWidth: int.tryParse(args['w'] ?? '') ?? 0,

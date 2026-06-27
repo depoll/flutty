@@ -681,6 +681,54 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Kitty graphics a=d,d=i matches the client placement id, not paint order',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(4, 3);
+        final terminal = Terminal();
+
+        // A first physical placement of a different image. Its decode finishes
+        // before the next, so it takes the first internal placement slot.
+        terminal.write('\x1b_Ga=T,i=999,p=7,f=100,c=4,r=2;$pngBase64\x1b\\');
+        var waited = 0;
+        while (terminal.graphics.placements.length < 1 && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+
+        // The full-screen image, transmitted later, with client placement id 1.
+        // Its internal placement id therefore differs from its p= value.
+        const imageId = 13912678;
+        terminal
+            .write('\x1b_Ga=T,i=$imageId,p=1,f=100,c=8,r=4;$pngBase64\x1b\\');
+        waited = 0;
+        while (terminal.graphics.placements.length < 2 && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+
+        // Closing the viewer deletes by image id + client placement id 1. The
+        // match must be on the client p= value, not the internal ordering, or
+        // the image lingers as a background ghost.
+        terminal.write('\x1b_Ga=d,d=i,i=$imageId,p=1,q=2\x1b\\');
+
+        final remaining =
+            terminal.graphics.placements.map((p) => p.imageId).toList();
+        expect(
+          remaining,
+          isNot(contains(imageId)),
+          reason: 'the targeted placement must be deleted by its client p=',
+        );
+        expect(
+          remaining,
+          contains(999),
+          reason: 'the unrelated placement must survive',
+        );
+      });
+    },
+  );
+
   testWidgets('Kitty graphics a=d with no selector deletes all placements', (
     tester,
   ) async {
