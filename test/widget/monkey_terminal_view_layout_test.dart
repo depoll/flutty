@@ -662,271 +662,14 @@ void main() {
       },
     );
 
-    test('extends left-edge highlighted rows to line end', () {
+    test('does not paint an inline code-span background past the span', () async {
+      const codeBackground = Color(0xFFD0DAD9);
+      // A neutral inline code span (Copilot-style padding spaces) followed by
+      // normal text. The span background must stay within its own cells and
+      // never bleed to the end of the row.
       final terminal = Terminal()
-        ..resize(24, 2)
-        ..write('\x1b[100m> fix contrast\x1b[49m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, '> fix contrast'.length);
-      expect(
-        _contrastRatio(TerminalThemes.defaultLightTheme.foreground, fill.color),
-        greaterThanOrEqualTo(4.5),
-      );
-    });
-
-    test('extends neutral truecolor composer rows to line end', () {
-      const neutralBackground = Color(0xFF5F5F5F);
-      final terminal = Terminal()
-        ..resize(32, 2)
-        ..write('\x1b[48;2;95;95;95mAsk Codex\x1b[49m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, 'Ask Codex'.length);
-      expect(fill.color, isNot(neutralBackground));
-      expect(
-        _contrastRatio(fill.color, TerminalThemes.defaultDarkTheme.background),
-        inInclusiveRange(1.04, 1.75),
-      );
-    });
-
-    test('extends Copilot prompt rows across trailing normal spaces', () {
-      const copilotPromptStyle = '\x1b[38;2;180;180;180;48;2;32;32;32m';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write(
-          '$copilotPromptStyle❯\x1b[39m once everything is addressed\x1b[m     ',
-        );
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, '❯ once everything is addressed'.length);
-      expect(
-        _contrastRatio(fill.color, TerminalThemes.defaultDarkTheme.background),
-        inInclusiveRange(1.04, 1.75),
-      );
-    });
-
-    test('counts prompt-background spaces as prompt row content', () {
-      const promptBackground = Color(0xFFD0DAD9);
-      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write('$promptBackgroundSequence❯ \x1b[m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, '❯ '.length);
-      expect(fill.color, promptBackground);
-    });
-
-    test('starts Copilot prompt tail fill after full double-width glyphs', () {
-      const promptBackground = Color(0xFFD0DAD9);
-      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write('$promptBackgroundSequence❯ 中\x1b[m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, 4);
-      expect(fill.color, promptBackground);
-    });
-
-    test('extends inverse Copilot prompt rows on light themes', () {
-      const copilotPromptStyle = '\x1b[38;2;180;180;180;7m';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write('$copilotPromptStyle❯ what is the easiest way?\x1b[m     ');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, '❯ what is the easiest way?'.length);
-      expect(fill.color, const Color(0xFFB4B4B4));
-    });
-
-    test(
-      'paints Copilot prompt marker background through normal text rows',
-      () async {
-        const promptBackground = Color(0xFFD0DAD9);
-        const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-        const promptText = '❯ did it work?';
-        final terminal = Terminal()
-          ..resize(48, 2)
-          ..write(
-            '\x1b[2;4m\x1b[K\r'
-            '$promptBackgroundSequence❯ \x1b[mdid it work?',
-          );
-        final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
-        final painter = MonkeyTerminalPainter(
-          theme: theme,
-          textStyle: const TerminalStyle(),
-          textScaler: TextScaler.noScaling,
-        );
-        final cellSize = painter.cellSize;
-        final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
-        final imageHeight = cellSize.height.ceil();
-        final recorder = ui.PictureRecorder();
-        final canvas = Canvas(recorder);
-
-        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
-
-        final image = await recorder.endRecording().toImage(
-          imageWidth,
-          imageHeight,
-        );
-        final byteData = await image.toByteData();
-        expect(byteData, isNotNull);
-
-        final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-          terminal.buffer.lines[0],
-        );
-        expect(fill, isNotNull);
-        expect(fill!.startColumn, promptText.length);
-        expect(fill.color, promptBackground);
-        expect(
-          _rawRgbaPixel(
-            byteData!,
-            imageWidth,
-            ((promptText.length + 4) * cellSize.width).round(),
-            (cellSize.height / 2).round(),
-          ),
-          promptBackground,
-        );
-      },
-    );
-
-    test(
-      'paints Copilot prompts over explicit terminal-background tails',
-      () async {
-        const promptBackground = Color(0xFFD0DAD9);
-        const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-        const terminalBackgroundSequence = '\x1b[48;2;235;243;242m';
-        const promptText = '❯ did it work';
-        final terminal = Terminal()
-          ..resize(48, 2)
-          ..write(
-            '$promptBackgroundSequence❯ \x1b[mdid it work'
-            '$terminalBackgroundSequence     \x1b[m',
-          );
-        final painter = MonkeyTerminalPainter(
-          theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-          textStyle: const TerminalStyle(),
-          textScaler: TextScaler.noScaling,
-        );
-        final cellSize = painter.cellSize;
-        final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
-        final imageHeight = cellSize.height.ceil();
-        final recorder = ui.PictureRecorder();
-        final canvas = Canvas(recorder);
-
-        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
-
-        final image = await recorder.endRecording().toImage(
-          imageWidth,
-          imageHeight,
-        );
-        final byteData = await image.toByteData();
-        expect(byteData, isNotNull);
-
-        final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-          terminal.buffer.lines[0],
-        );
-        expect(fill, isNotNull);
-        expect(fill!.startColumn, promptText.length);
-        expect(fill.color, promptBackground);
-        expect(
-          _rawRgbaPixel(
-            byteData!,
-            imageWidth,
-            ((promptText.length + 4) * cellSize.width).round(),
-            (cellSize.height / 2).round(),
-          ),
-          promptBackground,
-        );
-      },
-    );
-
-    test('extends Copilot prompts past right-edge scrollbar glyphs', () {
-      const promptBackground = Color(0xFFD0DAD9);
-      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-      const promptText = '❯ test';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write(
-          '\x1b[2;4m\x1b[K\r'
-          '$promptBackgroundSequence❯ test\x1b[m\x1b[48G│',
-        );
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-        terminal.buffer.lines[0],
-      );
-
-      expect(fill, isNotNull);
-      expect(fill!.startColumn, promptText.length);
-      expect(fill.color, promptBackground);
-    });
-
-    test('keeps right-edge scrollbar glyphs over prompt tail fills', () async {
-      const promptBackgroundSequence = '\x1b[48;2;208;218;217m';
-      final terminal = Terminal()
-        ..resize(48, 2)
-        ..write('$promptBackgroundSequence❯ test\x1b[m\x1b[48G█');
+        ..resize(40, 2)
+        ..write('\x1b[48;2;208;218;217m main \x1b[49m and more text');
       final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
       final painter = MonkeyTerminalPainter(
         theme: theme,
@@ -937,7 +680,11 @@ void main() {
       final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
       final imageHeight = cellSize.height.ceil();
       final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
+      final canvas = Canvas(recorder)
+        ..drawRect(
+          Rect.fromLTWH(0, 0, imageWidth.toDouble(), imageHeight.toDouble()),
+          Paint()..color = theme.background,
+        );
 
       painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
 
@@ -947,91 +694,69 @@ void main() {
       );
       final byteData = await image.toByteData();
       expect(byteData, isNotNull);
-      expect(
-        _rawRgbaPixel(
-          byteData!,
-          imageWidth,
-          ((terminal.viewWidth - 0.5) * cellSize.width).round(),
-          (cellSize.height / 2).round(),
-        ),
-        theme.foreground,
+
+      Color sample(int column) => _rawRgbaPixel(
+        byteData!,
+        imageWidth,
+        ((column + 0.5) * cellSize.width).round(),
+        (cellSize.height / 2).round(),
       );
+
+      // The leading padding space of the code span carries the code background.
+      expect(sample(0), codeBackground);
+      // The empty tail of the row keeps the terminal background (no bleed).
+      expect(sample(35), theme.background);
     });
 
     test(
-      'extends neutral truecolor composer rows after blank leading cells',
-      () {
+      'renders a full-width prompt background painted with real cells',
+      () async {
+        // When a CLI detects a capable terminal (via XTVERSION) it paints the
+        // prompt row background across the whole width with real bg-coloured
+        // space cells. This must render edge to edge with no help from any fill
+        // heuristic. Models the captured Copilot rich-mode prompt.
+        final promptRow = '\x1b[48;2;20;27;34m\u276F ok${' ' * 36}\x1b[m';
         final terminal = Terminal()
-          ..resize(32, 2)
-          ..write('\x1b[2C\x1b[48;2;95;95;95mAsk Codex\x1b[49m');
+          ..resize(40, 2)
+          ..write(promptRow);
+        final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
         final painter = MonkeyTerminalPainter(
-          theme: TerminalThemes.defaultDarkTheme.toXtermTheme(),
+          theme: theme,
           textStyle: const TerminalStyle(),
           textScaler: TextScaler.noScaling,
         );
+        final cellSize = painter.cellSize;
+        final imageWidth = (cellSize.width * terminal.viewWidth).ceil();
+        final imageHeight = cellSize.height.ceil();
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, imageWidth.toDouble(), imageHeight.toDouble()),
+            Paint()..color = theme.background,
+          );
 
-        final fill = painter.resolveMonkeyTerminalTrailingBackgroundFill(
-          terminal.buffer.lines[0],
+        painter.paintLine(canvas, Offset.zero, terminal.buffer.lines[0]);
+
+        final image = await recorder.endRecording().toImage(
+          imageWidth,
+          imageHeight,
+        );
+        final byteData = await image.toByteData();
+        expect(byteData, isNotNull);
+
+        Color sample(int column) => _rawRgbaPixel(
+          byteData!,
+          imageWidth,
+          ((column + 0.5) * cellSize.width).round(),
+          (cellSize.height / 2).round(),
         );
 
-        expect(fill, isNotNull);
-        expect(fill!.startColumn, 2 + 'Ask Codex'.length);
+        // Both an early fill cell and a far-right fill cell share the same
+        // explicit prompt background, distinct from the terminal background.
+        expect(sample(10), isNot(theme.background));
+        expect(sample(35), sample(10));
       },
     );
-
-    test('does not extend inset highlighted runs', () {
-      final terminal = Terminal()
-        ..resize(24, 2)
-        ..write('x \x1b[100mstatus\x1b[49m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      expect(
-        painter.resolveMonkeyTerminalTrailingBackgroundFill(
-          terminal.buffer.lines[0],
-        ),
-        isNull,
-      );
-    });
-
-    test('does not extend semantic color labels', () {
-      final terminal = Terminal()
-        ..resize(24, 2)
-        ..write('\x1b[41mERROR\x1b[49m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      expect(
-        painter.resolveMonkeyTerminalTrailingBackgroundFill(
-          terminal.buffer.lines[0],
-        ),
-        isNull,
-      );
-    });
-
-    test('does not extend saturated truecolor labels', () {
-      final terminal = Terminal()
-        ..resize(24, 2)
-        ..write('\x1b[48;2;168;47;69mERROR\x1b[49m');
-      final painter = MonkeyTerminalPainter(
-        theme: TerminalThemes.defaultLightTheme.toXtermTheme(),
-        textStyle: const TerminalStyle(),
-        textScaler: TextScaler.noScaling,
-      );
-
-      expect(
-        painter.resolveMonkeyTerminalTrailingBackgroundFill(
-          terminal.buffer.lines[0],
-        ),
-        isNull,
-      );
-    });
 
     test('lifts low-contrast foreground-only ANSI colors', () {
       final terminal = Terminal()
