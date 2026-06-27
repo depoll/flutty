@@ -1105,6 +1105,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
+    if (action == 'd') {
+      _deleteGraphics(args);
+      return;
+    }
+
     // Only transmit (a=t) and transmit-and-display (a=T) are rendered; other
     // actions are ignored.
     if ((action != 't' && action != 'T') || data.isEmpty) {
@@ -1210,6 +1215,32 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       _buffer.index();
     }
     notifyListeners();
+  }
+
+  /// Handles a Kitty graphics delete command (`a=d`). Without this the image a
+  /// client placed and then explicitly asked to remove (e.g. Copilot CLI closing
+  /// its full-screen image viewer) would linger as a stale overlay behind later
+  /// output.
+  void _deleteGraphics(Map<String, String> args) {
+    final buffer = _buffer;
+    // Kitty `x`/`y` are 1-based cell coordinates in the cursor's (viewport)
+    // space; translate the row into the absolute buffer coordinates placements
+    // are tracked in.
+    final scrollBack = buffer.absoluteCursorY - buffer.cursorY;
+    final x = int.tryParse(args['x'] ?? '');
+    final y = int.tryParse(args['y'] ?? '');
+    final removed = buffer.graphics.deletePlacements(
+      what: args['d'] ?? 'a',
+      imageId: int.tryParse(args['i'] ?? ''),
+      placementId: int.tryParse(args['p'] ?? ''),
+      cursorCol: buffer.cursorX,
+      cursorRow: buffer.absoluteCursorY,
+      cellCol: x == null ? null : x - 1,
+      cellRow: y == null ? null : (y - 1) + scrollBack,
+    );
+    if (removed) {
+      notifyListeners();
+    }
   }
 
   void _setVirtualGraphicsPlacement(Map<String, String> args) {
