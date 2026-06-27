@@ -155,7 +155,7 @@ void main() {
     hostsController.add(const <Host>[]);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text('No hosts yet'), findsOneWidget);
+    expect(find.text('no hosts yet'), findsOneWidget);
 
     hostsController.add([
       _buildHost(id: 1, label: 'Imported host', sortOrder: 0),
