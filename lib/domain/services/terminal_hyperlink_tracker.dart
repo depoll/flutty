@@ -103,6 +103,47 @@ class TerminalHyperlinkTracker {
     return null;
   }
 
+  /// Whether any tracked hyperlink covers a cell in the inclusive column range
+  /// [startColumn]–[endColumn] on [row].
+  ///
+  /// Used to avoid layering heuristic linkification (e.g. file paths) over text
+  /// the program already marked as an OSC 8 hyperlink.
+  bool hasLinkInRowRange(int row, int startColumn, int endColumn) {
+    final terminal = _terminal;
+    if (terminal == null || endColumn < startColumn) {
+      return false;
+    }
+
+    _pruneDetachedHyperlinks();
+
+    final queryStart = CellOffset(startColumn, row);
+    final queryEnd = CellOffset(endColumn + 1, row);
+    bool intersects(CellOffset start, CellOffset end) =>
+        _compareOffsets(start, queryEnd) < 0 &&
+        _compareOffsets(queryStart, end) < 0;
+
+    final activeHyperlink = _pendingHyperlink;
+    if (activeHyperlink != null &&
+        intersects(
+          activeHyperlink.startAnchor.offset,
+          _currentCursorOffset(terminal),
+        )) {
+      return true;
+    }
+
+    for (final hyperlink in _trackedHyperlinks) {
+      if (hyperlink.attached &&
+          intersects(
+            hyperlink.startAnchor.offset,
+            hyperlink.endAnchor.offset,
+          )) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   /// Resolves the hyperlink anchored on [row] when exactly one distinct
   /// destination spans that row.
   ///

@@ -469,6 +469,65 @@ void main() {
       expect(detectedLink, isNotNull);
       expect(detectedLink!.uri.toString(), 'tel:+15551234567');
     });
+
+    test('detects file links at the tapped offset', () {
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        'Open file:///srv/app/main.dart in the browser.',
+        12,
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(detectedLink!.uri.toString(), 'file:///srv/app/main.dart');
+    });
+  });
+
+  group('resolveTerminalFileUriPath', () {
+    test('extracts the path from a host-qualified file URI', () {
+      expect(
+        resolveTerminalFileUriPath('file://build-host/srv/app/main.dart'),
+        '/srv/app/main.dart',
+      );
+    });
+
+    test('extracts the path from an authority-less file URI', () {
+      expect(
+        resolveTerminalFileUriPath('file:///var/log/app.log'),
+        '/var/log/app.log',
+      );
+    });
+
+    test('decodes percent-encoded path segments', () {
+      expect(
+        resolveTerminalFileUriPath('file:///srv/my%20app/main.dart'),
+        '/srv/my app/main.dart',
+      );
+    });
+
+    test('returns null for non-file links', () {
+      expect(resolveTerminalFileUriPath('https://example.com'), isNull);
+    });
+
+    test('returns null for a file URI without a path', () {
+      expect(resolveTerminalFileUriPath('file://build-host'), isNull);
+    });
+  });
+
+  group('isTerminalFileUri', () {
+    test('accepts file URIs with a path', () {
+      expect(isTerminalFileUri(Uri.parse('file:///srv/app')), isTrue);
+      expect(isTerminalFileUri(Uri.parse('file://host/srv/app')), isTrue);
+    });
+
+    test('rejects non-file and pathless file URIs', () {
+      expect(isTerminalFileUri(Uri.parse('https://example.com')), isFalse);
+      expect(isTerminalFileUri(Uri.parse('file://host')), isFalse);
+    });
+
+    test('treats file URIs as resolvable but not launchable', () {
+      final uri = Uri.parse('file:///srv/app/main.dart');
+      expect(isResolvableTerminalLinkUri(uri), isTrue);
+      expect(isLaunchableTerminalUri(uri), isFalse);
+    });
   });
 
   group('detectTerminalFilePathAtTextOffset', () {

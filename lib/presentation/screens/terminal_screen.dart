@@ -1051,7 +1051,7 @@ class _ExtraKeysToggleKeycap extends StatelessWidget {
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
 final _terminalLinkPattern = RegExp(
-  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
+  r'''(?:(?:https?:\/\/)|(?:file:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
@@ -2239,7 +2239,7 @@ List<({String path, int start, int end})> detectTerminalFilePaths(
 
     final normalizedCandidate = normalizeTerminalLinkCandidate(candidate);
     final uri = Uri.tryParse(normalizedCandidate);
-    if (uri == null || !isLaunchableTerminalUri(uri)) {
+    if (uri == null || !isResolvableTerminalLinkUri(uri)) {
       continue;
     }
 
@@ -2262,6 +2262,38 @@ bool isLaunchableTerminalUri(Uri uri) =>
       'mailto',
       'tel',
     }.contains(uri.scheme.toLowerCase());
+
+/// Whether a parsed terminal URI is a `file:` link with a usable path.
+///
+/// A `file:` link names a file on the connected host, so it opens in the SFTP
+/// browser instead of being launched externally. A bare `file://host` (which
+/// Dart normalizes to a `/` path) names no file and is rejected.
+@visibleForTesting
+bool isTerminalFileUri(Uri uri) =>
+    uri.scheme.toLowerCase() == 'file' &&
+    uri.path.isNotEmpty &&
+    uri.path != '/';
+
+/// Whether a parsed terminal URI resolves to a tappable target: either an
+/// externally launchable link or a `file:` link routed to the SFTP browser.
+@visibleForTesting
+bool isResolvableTerminalLinkUri(Uri uri) =>
+    isLaunchableTerminalUri(uri) || isTerminalFileUri(uri);
+
+/// Resolves the remote path a terminal `file:` link should open in the SFTP
+/// browser, or `null` when [link] is not a usable `file:` URI.
+///
+/// The URI host (if any) is ignored: the path is opened on the host the
+/// terminal session is connected to. Percent-encoding is decoded so the SFTP
+/// browser receives the literal path (e.g. `%20` becomes a space).
+@visibleForTesting
+String? resolveTerminalFileUriPath(String link) {
+  final uri = Uri.tryParse(normalizeTerminalLinkCandidate(link));
+  if (uri == null || !isTerminalFileUri(uri)) {
+    return null;
+  }
+  return Uri.decodeComponent(uri.path);
+}
 
 /// Extracts the currently selected text from the native selection overlay.
 @visibleForTesting
@@ -11766,6 +11798,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   String? _detectTerminalFilePathAtCell(CellOffset offset) {
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    // OSC 8 hyperlinks are authoritative: only linkify text that is not already
+    // a program-declared link.
+    if (_terminalHyperlinkTracker?.resolveLinkAt(CellOffset(column, row)) !=
+        null) {
+      return null;
+    }
     final pathSnapshot = _buildTerminalPathTapSnapshot(row);
     if (pathSnapshot == null) {
       return null;
@@ -12693,6 +12732,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (visibleSegment == null) {
           continue;
         }
+        // Don't layer heuristic file-path linkification over a program-declared
+        // OSC 8 hyperlink: only linkify text that is not already a link.
+        if (_terminalHyperlinkTracker?.hasLinkInRowRange(
+              row,
+              visibleSegment.startColumn,
+              visibleSegment.endColumn,
+            ) ??
+            false) {
+          continue;
+        }
         segments.add((
           path: path,
           text: visibleSegment.text,
@@ -12764,6 +12813,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(
         _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length)),
       );
+      return;
+    }
+
+    // `file:` links name a file on the connected host, so open them in the
+    // SFTP browser rather than launching them externally.
+    final fileUriPath = resolveTerminalFileUriPath(link);
+    if (fileUriPath != null) {
+      unawaited(_openTerminalFilePath(fileUriPath));
       return;
     }
 
