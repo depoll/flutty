@@ -12891,6 +12891,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+            _terminalViewKey.currentState?.forceFullRepaint();
           }
 
           if (mounted && result != null) {
@@ -14020,6 +14021,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return confirmed ?? false;
   }
 
+  /// Minimum delay between consecutive uploaded-file bracketed pastes.
+  ///
+  /// Agent CLIs such as Copilot CLI only register each pasted path as a separate
+  /// attachment (one preview chip per file) when its bracketed pastes arrive as
+  /// distinct input events; pastes delivered closer together are coalesced and
+  /// shown as plain text. Empirically the coalescing window is ~200ms, so a
+  /// single file is sent immediately and additional files are staggered by this
+  /// margin above that threshold.
+  static const _uploadedAttachmentPasteStagger = Duration(milliseconds: 300);
+
+  /// Inserts references to just-uploaded [remotePaths] into the terminal.
+  ///
+  /// Each path is sent as its own bracketed paste so an agent CLI such as
+  /// Copilot CLI shows a preview chip per file (and so plain shells receive the
+  /// paths as distinct, space-separated arguments). Multiple files are staggered
+  /// by [_uploadedAttachmentPasteStagger] so each registers as its own
+  /// attachment. The pre-built segments are written straight to the session
+  /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
+  /// which would strip the bracketed-paste markers.
+  Future<void> _insertUploadedFileReferences(List<String> remotePaths) async {
+    final segments = buildTerminalAttachmentPasteSegments(
+      remotePaths,
+      bracketedPasteMode: _terminal.bracketedPasteMode,
+    );
+    for (var i = 0; i < segments.length; i++) {
+      if (!mounted) {
+        return;
+      }
+      _terminal.onOutput?.call(segments[i]);
+      if (i < segments.length - 1) {
+        await Future<void>.delayed(_uploadedAttachmentPasteStagger);
+      }
+    }
+  }
+
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard files?',
@@ -14096,7 +14132,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14142,7 +14181,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return remotePath;
     });
     _followLiveOutput();
-    _terminal.paste('${shellEscapePosix(remotePath)} ');
+    await _insertUploadedFileReferences([remotePath]);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14228,7 +14270,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
