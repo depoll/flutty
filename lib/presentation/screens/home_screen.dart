@@ -42,6 +42,7 @@ import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_empty_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/connection_status_dot.dart';
 import '../widgets/cursor_block.dart';
 import '../widgets/file_picker_helpers.dart';
 import '../widgets/panel_header.dart';
@@ -1096,9 +1097,14 @@ class _HostRow extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Status indicator
-                  _ConnectionStatusDot(
-                    isConnected: isConnected,
-                    isConnecting: isConnectionStarting,
+                  SizedBox(
+                    height: 28,
+                    child: Center(
+                      child: ConnectionStatusDot(
+                        isConnected: isConnected,
+                        isConnecting: isConnectionStarting,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 12),
 
@@ -1985,53 +1991,6 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
-class _ConnectionStatusDot extends StatelessWidget {
-  const _ConnectionStatusDot({
-    required this.isConnected,
-    required this.isConnecting,
-  });
-
-  final bool isConnected;
-  final bool isConnecting;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
-
-    // Status is conveyed by shape (filled vs. ring) and a text label, not by
-    // color alone, so it is legible to color-blind users.
-    final (Color color, bool filled, String label) = isConnected
-        ? (colorScheme.primary, true, 'Connected')
-        : isConnecting
-        ? (colorScheme.tertiary, false, 'Connecting')
-        : (colorScheme.onSurface.withAlpha(70), false, 'Not connected');
-
-    return Tooltip(
-      message: label,
-      child: SizedBox(
-        height: 28,
-        width: 12,
-        child: Center(
-          child: Container(
-            width: 9,
-            height: 9,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: filled ? color : Colors.transparent,
-              border: filled ? null : Border.all(color: color, width: 1.5),
-              boxShadow: filled && isDark
-                  ? [BoxShadow(color: color.withAlpha(100), blurRadius: 6)]
-                  : null,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _SmallIconButton extends StatelessWidget {
   const _SmallIconButton({
     required this.icon,
@@ -2210,7 +2169,7 @@ class _KeyRow extends ConsumerWidget {
                       sshKey.keyType.toUpperCase(),
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        color: colorScheme.onSurface.withAlpha(160),
                       ),
                     ),
                   ],
@@ -2894,7 +2853,7 @@ class _SnippetRow extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        color: colorScheme.onSurface.withAlpha(150),
                       ),
                     ),
                     if (folderName case final folderName?) ...[
@@ -2904,7 +2863,7 @@ class _SnippetRow extends ConsumerWidget {
                           Icon(
                             Icons.folder_outlined,
                             size: 12,
-                            color: colorScheme.onSurface.withAlpha(110),
+                            color: colorScheme.onSurface.withAlpha(140),
                           ),
                           const SizedBox(width: 4),
                           Flexible(
