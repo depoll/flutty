@@ -812,4 +812,38 @@ void main() {
       expect(responses.single, contains('EINVAL'));
     });
   });
+
+  testWidgets('Kitty graphics image numbers: transmit, place and delete by I=',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      // Transmit-only with an image number (no id). The terminal must answer the
+      // handshake echoing the number and the id it assigned.
+      terminal.write('\x1b_Ga=t,I=5,f=100,q=0;$pngBase64\x1b\\');
+      var waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, matches(RegExp(r'I=5,i=\d+;OK')));
+
+      // The image can be placed by number.
+      terminal.write('\x1b_Ga=p,I=5,c=3,r=2\x1b\\');
+      expect(terminal.graphics.placements, hasLength(1));
+
+      // ...and deleted by number (lowercase keeps the image data).
+      terminal.write('\x1b_Ga=d,d=n,I=5\x1b\\');
+      expect(terminal.graphics.placements, isEmpty);
+      expect(
+        terminal.graphics.imageIdForNumber(5),
+        isNotNull,
+        reason: 'd=n keeps the image data; only the placement is removed',
+      );
+    });
+  });
 }

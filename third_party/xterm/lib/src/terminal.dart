@@ -1191,6 +1191,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final storedImageId = imageId == null
         ? manager.storeImage(image)
         : manager.storeImageWithId(imageId, image);
+    // Associate a client image number (`I=`) with the stored id and answer the
+    // handshake so the client learns the id it can address later.
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (imageNumber != null && imageNumber > 0) {
+      manager.registerImageNumber(imageNumber, storedImageId);
+      if (!_graphicsResponseSuppressed(args, success: true)) {
+        onOutput?.call('\x1b_GI=$imageNumber,i=$storedImageId;OK\x1b\\');
+      }
+    }
     if (args['U'] == '1') {
       manager.setVirtualPlacement(
         storedImageId,
@@ -1233,7 +1242,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   void _placeStoredGraphics(Map<String, String> args) {
-    final imageId = int.tryParse(args['i'] ?? '');
+    var imageId = int.tryParse(args['i'] ?? '');
+    // a=p may address the image by number (`I=`) instead of id.
+    if (imageId == null) {
+      final number = int.tryParse(args['I'] ?? '');
+      if (number != null) {
+        imageId = _buffer.graphics.imageIdForNumber(number);
+      }
+    }
     if (imageId == null || _buffer.graphics.imageById(imageId) == null) {
       return;
     }
@@ -1263,9 +1279,24 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final scrollBack = buffer.absoluteCursorY - buffer.cursorY;
     final x = int.tryParse(args['x'] ?? '');
     final y = int.tryParse(args['y'] ?? '');
+
+    var what = args['d'] ?? 'a';
+    var imageId = int.tryParse(args['i'] ?? '');
+    // Delete-by-number (d=n/N): resolve the image number to its id and delete by
+    // id, preserving the lower/upper free-data semantics.
+    if (what == 'n' || what == 'N') {
+      final number = int.tryParse(args['I'] ?? '');
+      imageId =
+          number == null ? null : buffer.graphics.imageIdForNumber(number);
+      if (imageId == null) {
+        return;
+      }
+      what = what == 'n' ? 'i' : 'I';
+    }
+
     final removed = buffer.graphics.deletePlacements(
-      what: args['d'] ?? 'a',
-      imageId: int.tryParse(args['i'] ?? ''),
+      what: what,
+      imageId: imageId,
       placementId: int.tryParse(args['p'] ?? ''),
       cursorCol: buffer.cursorX,
       cursorRow: buffer.absoluteCursorY,
@@ -1299,6 +1330,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final control = <String>[];
     if (args['i'] case final imageId? when imageId.isNotEmpty) {
       control.add('i=$imageId');
+    }
+    if (args['I'] case final imageNumber? when imageNumber.isNotEmpty) {
+      control.add('I=$imageNumber');
     }
     onOutput?.call(
       '\x1b_G${control.join(',')};${success ? 'OK' : error}\x1b\\',

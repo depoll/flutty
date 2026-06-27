@@ -169,6 +169,9 @@ class GraphicsManager {
   final List<TerminalImagePlaceholder> _placeholders = [];
   final Map<int, TerminalImageVirtualPlacement> _virtualPlacements = {};
   final Set<int> _retainedImageIds = {};
+  // Maps a client-assigned image number (`I=`) to the most recent image id it
+  // was transmitted with, so later commands can address the image by number.
+  final Map<int, int> _imageNumberToId = {};
 
   int _nextImageId = 1;
   int _nextPlacementId = 1;
@@ -208,6 +211,17 @@ class GraphicsManager {
   /// Looks up virtual placement dimensions for [imageId].
   TerminalImageVirtualPlacement? virtualPlacementById(int imageId) =>
       _virtualPlacements[imageId];
+
+  /// Associates a client image number (`I=`) with the [imageId] it was
+  /// transmitted with. Later transmits of the same number overwrite the mapping.
+  void registerImageNumber(int number, int imageId) {
+    if (number > 0 && imageId > 0) {
+      _imageNumberToId[number] = imageId;
+    }
+  }
+
+  /// Resolves a client image number (`I=`) to its current image id, if known.
+  int? imageIdForNumber(int number) => _imageNumberToId[number];
 
   /// Looks up an image referenced by a Kitty Unicode placeholder color.
   ///
@@ -603,6 +617,7 @@ class GraphicsManager {
     }
     _retainedImageIds.remove(imageId);
     _virtualPlacements.remove(imageId);
+    _imageNumberToId.removeWhere((_, id) => id == imageId);
     _placements.removeWhere((placement) {
       if (placement.imageId != imageId) return false;
       placement.dispose();
