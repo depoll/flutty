@@ -33,7 +33,13 @@ class _HostKeyTrustDialog extends StatelessWidget {
         : HostKeyTrustDecision.trust;
 
     return AlertDialog(
-      title: Text(title),
+      title: Text(
+        title,
+        style: FluttyTheme.displayMono(
+          fontSize: 18,
+          color: colorScheme.onSurface,
+        ),
+      ),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 440),
         child: SingleChildScrollView(

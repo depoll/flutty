@@ -8,6 +8,8 @@ import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/brand_empty_state.dart';
+import '../widgets/brand_error_state.dart';
+import '../widgets/brand_list_skeleton.dart';
 
 /// Screen displaying list of SSH keys.
 class KeysScreen extends ConsumerWidget {
@@ -17,31 +19,15 @@ class KeysScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final keysAsync = ref.watch(allKeysProvider);
-    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('SSH Keys')),
       body: keysAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: FluttyTheme.emptyStateIconSize,
-                color: theme.colorScheme.error,
-              ),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              const Text('Couldn’t load your SSH keys.'),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              FilledButton.icon(
-                onPressed: () => ref.invalidate(allKeysProvider),
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Retry'),
-              ),
-            ],
-          ),
+        loading: () => const BrandListSkeleton(),
+        error: (error, stack) => BrandErrorState(
+          title: 'couldn’t load keys',
+          message: 'Your SSH keys didn’t load.',
+          onRetry: () => ref.invalidate(allKeysProvider),
         ),
         data: (keys) => _buildKeysList(context, ref, keys),
       ),

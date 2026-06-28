@@ -8,6 +8,8 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/iterm_color_scheme_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import 'brand_error_state.dart';
+import 'brand_list_skeleton.dart';
 import 'terminal_overlay_focus.dart';
 import 'theme_preview_card.dart';
 
@@ -167,9 +169,12 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         ),
       ],
       body: themesAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) =>
-            const Center(child: Text('Could not load terminal themes.')),
+        loading: () => const BrandListSkeleton(),
+        error: (_, _) => BrandErrorState(
+          title: 'couldn’t load themes',
+          message: 'The terminal theme list didn’t load.',
+          onRetry: () => ref.invalidate(allTerminalThemesProvider),
+        ),
         data: (themes) {
           final filtered = _filterThemes(themes);
           if (filtered.isEmpty && liveSearchText.isEmpty) {
