@@ -103,6 +103,94 @@ class TerminalHyperlinkTracker {
     return null;
   }
 
+  /// Whether any tracked hyperlink covers a cell in the inclusive column range
+  /// [startColumn]–[endColumn] on [row].
+  ///
+  /// Used to avoid layering heuristic linkification (e.g. file paths) over text
+  /// the program already marked as an OSC 8 hyperlink.
+  bool hasLinkInRowRange(int row, int startColumn, int endColumn) {
+    final terminal = _terminal;
+    if (terminal == null || endColumn < startColumn) {
+      return false;
+    }
+
+    _pruneDetachedHyperlinks();
+
+    final queryStart = CellOffset(startColumn, row);
+    final queryEnd = CellOffset(endColumn + 1, row);
+    bool intersects(CellOffset start, CellOffset end) =>
+        _compareOffsets(start, queryEnd) < 0 &&
+        _compareOffsets(queryStart, end) < 0;
+
+    final activeHyperlink = _pendingHyperlink;
+    if (activeHyperlink != null &&
+        intersects(
+          activeHyperlink.startAnchor.offset,
+          _currentCursorOffset(terminal),
+        )) {
+      return true;
+    }
+
+    for (final hyperlink in _trackedHyperlinks) {
+      if (hyperlink.attached &&
+          intersects(
+            hyperlink.startAnchor.offset,
+            hyperlink.endAnchor.offset,
+          )) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /// Resolves the hyperlink anchored on [row] when exactly one distinct
+  /// destination spans that row.
+  ///
+  /// Touch taps rarely land on the exact cell of a short label like `#587`, so
+  /// this acts as a forgiving fallback: if a rendered row carries a single
+  /// hyperlink, a tap anywhere on it opens that link. Rows with two or more
+  /// distinct destinations stay ambiguous and resolve to `null`.
+  String? resolveLinkOnRow(int row) {
+    final terminal = _terminal;
+    if (terminal == null) {
+      return null;
+    }
+
+    _pruneDetachedHyperlinks();
+
+    final destinations = <String>{};
+    String? lastDestination;
+
+    void consider(CellOffset start, CellOffset end, Uri uri) {
+      if (row >= start.y && row <= end.y) {
+        final destination = uri.toString();
+        destinations.add(destination);
+        lastDestination = destination;
+      }
+    }
+
+    final activeHyperlink = _pendingHyperlink;
+    if (activeHyperlink != null) {
+      consider(
+        activeHyperlink.startAnchor.offset,
+        _currentCursorOffset(terminal),
+        activeHyperlink.uri,
+      );
+    }
+    for (final hyperlink in _trackedHyperlinks) {
+      if (hyperlink.attached) {
+        consider(
+          hyperlink.startAnchor.offset,
+          hyperlink.endAnchor.offset,
+          hyperlink.uri,
+        );
+      }
+    }
+
+    return destinations.length == 1 ? lastDestination : null;
+  }
+
   /// Number of fully tracked hyperlinks currently retained in memory.
   @visibleForTesting
   int get trackedHyperlinkCount => _trackedHyperlinks.length;
@@ -159,6 +247,15 @@ class TerminalHyperlinkTracker {
       hyperlink.dispose();
       return true;
     });
+
+    // Drop a still-open hyperlink whose start anchor detached (e.g. the line
+    // scrolled out of scrollback or the screen was cleared before the closing
+    // OSC 8 arrived) so it can't shadow later taps with a stale destination.
+    final pendingHyperlink = _pendingHyperlink;
+    if (pendingHyperlink != null && !pendingHyperlink.attached) {
+      pendingHyperlink.dispose();
+      _pendingHyperlink = null;
+    }
   }
 
   CellOffset _currentCursorOffset(Terminal terminal) =>
@@ -170,6 +267,8 @@ class _PendingTerminalHyperlink {
 
   final Uri uri;
   final CellAnchor startAnchor;
+
+  bool get attached => startAnchor.attached;
 
   void dispose() {
     startAnchor.dispose();

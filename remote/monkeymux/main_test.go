@@ -146,8 +146,22 @@ func TestTerminalEnvironmentAddsTerminalCapabilityDefaults(t *testing.T) {
 	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
 		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
+	if !containsEnv(env, "FORCE_HYPERLINK=1") {
+		t.Fatalf("terminal environment = %#v, want FORCE_HYPERLINK=1", env)
+	}
 	if !reflect.DeepEqual(base, []string{"USER=test"}) {
 		t.Fatalf("terminal environment mutated base = %#v", base)
+	}
+}
+
+func TestTerminalEnvironmentPreservesExistingForceHyperlink(t *testing.T) {
+	env := terminalEnvironment([]string{"FORCE_HYPERLINK=0", "USER=test"})
+
+	if !containsEnv(env, "FORCE_HYPERLINK=0") {
+		t.Fatalf(
+			"terminal environment = %#v, want existing FORCE_HYPERLINK=0 preserved",
+			env,
+		)
 	}
 }
 
@@ -2010,6 +2024,52 @@ func TestStripLocallyAnsweredThemeQueriesForwardsSplitUnansweredQuery(t *testing
 	second := window.stripLocallyAnsweredThemeQueriesLocked([]byte("\x1b\\after"), hint)
 	if string(second) != "\x1b]11;?\x1b\\after" {
 		t.Fatalf("second chunk = %q, want unanswered query forwarded", second)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesPreservesOsc8Hyperlinks(t *testing.T) {
+	// OSC 8 hyperlinks (BEL- and ST-terminated, with and without an id=
+	// parameter) must pass through untouched even while an interleaved theme
+	// query the daemon can answer is stripped.
+	chunk := []byte(
+		"\x1b]8;;https://example.com/a\x07A\x1b]8;;\x07 " +
+			"\x1b]11;?\x07" +
+			"\x1b]8;id=1;file:///tmp/x\x1b\\B\x1b]8;;\x1b\\",
+	)
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	want := "\x1b]8;;https://example.com/a\x07A\x1b]8;;\x07 " +
+		"\x1b]8;id=1;file:///tmp/x\x1b\\B\x1b]8;;\x1b\\"
+	got := stripLocallyAnsweredThemeQueries(chunk, hint)
+	if string(got) != want {
+		t.Fatalf("got = %q, want %q", got, want)
+	}
+}
+
+func TestStripLocallyAnsweredThemeQueriesPreservesSplitOsc8(t *testing.T) {
+	// An OSC 8 hyperlink split across read chunks must survive: the partial
+	// sequence is buffered, then forwarded intact (never dropped or treated as
+	// an answerable theme query).
+	window := &muxWindow{}
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	first := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("label \x1b]8;;https://exa"),
+		hint,
+	)
+	if string(first) != "label " {
+		t.Fatalf("first chunk = %q, want prefix before the split OSC 8", first)
+	}
+
+	second := window.stripLocallyAnsweredThemeQueriesLocked(
+		[]byte("mple.com/x\x07more"),
+		hint,
+	)
+	if string(first)+string(second) != "label \x1b]8;;https://example.com/x\x07more" {
+		t.Fatalf("reassembled = %q, want the OSC 8 hyperlink preserved", string(first)+string(second))
+	}
+	if len(window.attachOscBuffer) != 0 {
+		t.Fatalf("attach OSC buffer = %q, want empty", window.attachOscBuffer)
 	}
 }
 
