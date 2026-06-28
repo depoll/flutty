@@ -1805,7 +1805,7 @@ void main() {
 
       // Scroll to the theme section
       await tester.scrollUntilVisible(
-        find.text('Terminal Theme'),
+        find.text('terminal theme'),
         200,
         scrollable: find.byType(Scrollable).first,
       );

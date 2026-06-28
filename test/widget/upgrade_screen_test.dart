@@ -108,7 +108,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Subscription details'), findsOneWidget);
+    expect(find.text('subscription details'), findsOneWidget);
     expect(find.textContaining('auto-renewable'), findsOneWidget);
     expect(find.textContaining('renew every month'), findsOneWidget);
     expect(find.text('Privacy Policy'), findsOneWidget);
@@ -542,7 +542,7 @@ void main() {
         find.textContaining('Unlocked with a one-time purchase on'),
         findsOneWidget,
       );
-      expect(find.text('Choose a plan'), findsNothing);
+      expect(find.text('choose a plan'), findsNothing);
       expect(find.text('Monthly'), findsNothing);
       expect(find.textContaining('cancel future renewals'), findsWidgets);
       expect(find.text('Subscribe monthly'), findsNothing);

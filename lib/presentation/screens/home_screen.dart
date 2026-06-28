@@ -42,6 +42,7 @@ import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_empty_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/connection_status_dot.dart';
 import '../widgets/cursor_block.dart';
 import '../widgets/file_picker_helpers.dart';
 import '../widgets/panel_header.dart';
@@ -515,7 +516,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final appName = ref.watch(appDisplayNameProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
       body: Row(
@@ -524,7 +524,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           Container(
             width: 230,
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF0F0F14) : Colors.grey.shade50,
+              color: colorScheme.surface,
               border: Border(
                 right: BorderSide(color: colorScheme.outline.withAlpha(60)),
               ),
@@ -881,7 +881,7 @@ class HostsPanel extends ConsumerWidget {
           actions: [
             _ActionButton(
               icon: Icons.add,
-              label: 'New Host',
+              label: 'Add Host',
               onTap: () => context.push('/hosts/add'),
               primary: true,
             ),
@@ -911,7 +911,7 @@ class HostsPanel extends ConsumerWidget {
             color: Theme.of(context).colorScheme.error,
           ),
           const SizedBox(height: 12),
-          const Text('Could not load hosts. Pull to refresh or try again.'),
+          const Text('Couldn’t load your saved hosts. Pull down to retry.'),
         ],
       ),
     ),
@@ -923,7 +923,7 @@ class HostsPanel extends ConsumerWidget {
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
     child: BrandEmptyState(
       title: 'no hosts yet',
-      message: "Nothing to connect to — let's fix that.",
+      message: 'Nothing to connect to — let’s fix that.',
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
@@ -1100,25 +1100,9 @@ class _HostRow extends ConsumerWidget {
                   SizedBox(
                     height: 28,
                     child: Center(
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isConnected
-                              ? colorScheme.primary
-                              : isConnectionStarting
-                              ? Colors.orange
-                              : colorScheme.onSurface.withAlpha(40),
-                          boxShadow: isConnected && isDark
-                              ? [
-                                  BoxShadow(
-                                    color: colorScheme.primary.withAlpha(100),
-                                    blurRadius: 6,
-                                  ),
-                                ]
-                              : null,
-                        ),
+                      child: ConnectionStatusDot(
+                        isConnected: isConnected,
+                        isConnecting: isConnectionStarting,
                       ),
                     ),
                   ),
@@ -1131,10 +1115,13 @@ class _HostRow extends ConsumerWidget {
                       children: [
                         Row(
                           children: [
-                            Text(
-                              host.label,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w500,
+                            Flexible(
+                              child: Text(
+                                host.label,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ),
                             if (connectionCount > 0) ...[
@@ -1162,7 +1149,7 @@ class _HostRow extends ConsumerWidget {
                               Icon(
                                 Icons.star_rounded,
                                 size: 14,
-                                color: Colors.amber.shade600,
+                                color: colorScheme.tertiary,
                               ),
                             ],
                             if (isPinnedToHomeScreen) ...[
@@ -1182,7 +1169,7 @@ class _HostRow extends ConsumerWidget {
                               : '${host.username}@${host.hostname}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 11,
-                            color: colorScheme.onSurface.withAlpha(100),
+                            color: colorScheme.onSurface.withAlpha(160),
                           ),
                         ),
                         if (connectionAttemptMessage != null) ...[
@@ -1214,7 +1201,7 @@ class _HostRow extends ConsumerWidget {
                           ':${host.port}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 10,
-                            color: colorScheme.onSurface.withAlpha(120),
+                            color: colorScheme.onSurface.withAlpha(160),
                           ),
                         ),
                       ),
@@ -1636,7 +1623,7 @@ class _HostRow extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Host'),
-        content: Text('Delete "${host.label}"?'),
+        content: Text('Delete "${host.label}"? This removes the saved host.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -2022,14 +2009,16 @@ class _SmallIconButton extends StatelessWidget {
     final button = ExcludeSemantics(
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(8),
         hoverColor: colorScheme.onSurface.withAlpha(20),
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(
-            icon,
-            size: 16,
-            color: colorScheme.onSurface.withAlpha(120),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          child: Center(
+            child: Icon(
+              icon,
+              size: 16,
+              color: colorScheme.onSurface.withAlpha(120),
+            ),
           ),
         ),
       ),
@@ -2153,13 +2142,13 @@ class _KeyRow extends ConsumerWidget {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
+                  color: colorScheme.primary.withAlpha(isDark ? 25 : 15),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   _getKeyIcon(),
                   size: 16,
-                  color: const Color(0xFF00C9FF),
+                  color: colorScheme.primary,
                 ),
               ),
               const SizedBox(width: 12),
@@ -2180,7 +2169,7 @@ class _KeyRow extends ConsumerWidget {
                       sshKey.keyType.toUpperCase(),
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        color: colorScheme.onSurface.withAlpha(160),
                       ),
                     ),
                   ],
@@ -2353,7 +2342,9 @@ class _KeyRow extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Key'),
-        content: Text('Delete "${sshKey.name}"?'),
+        content: Text(
+          'Delete "${sshKey.name}"? You’ll need the private key to reconnect.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -2862,7 +2853,7 @@ class _SnippetRow extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        color: colorScheme.onSurface.withAlpha(150),
                       ),
                     ),
                     if (folderName case final folderName?) ...[
@@ -2872,7 +2863,7 @@ class _SnippetRow extends ConsumerWidget {
                           Icon(
                             Icons.folder_outlined,
                             size: 12,
-                            color: colorScheme.onSurface.withAlpha(110),
+                            color: colorScheme.onSurface.withAlpha(140),
                           ),
                           const SizedBox(width: 4),
                           Flexible(
@@ -3000,7 +2991,7 @@ class _SnippetRow extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Snippet'),
-        content: Text('Delete "${snippet.name}"?'),
+        content: Text('Delete "${snippet.name}"? This can’t be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),

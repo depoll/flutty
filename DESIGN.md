@@ -257,6 +257,13 @@ are set in JetBrains Mono; body and dense explanatory text stay in Inter. Mono
 at display scale is the brand — don't swap in Inter for a screen title to
 "soften" it, and don't set paragraphs in mono.
 
+**The Casing Register Rule.** Headers inside the app shell — the home panel
+titles (`hosts`, `connections`, `keys`, `snippets`) and in-screen section
+headers — are lowercase mono, the terminal-native section voice. Full-screen
+route titles (AppBar) keep conventional Title Case in mono (`SSH Keys`,
+`Settings`), and proper nouns keep their brand case (`MonkeySSH`). Two registers,
+one font.
+
 **The Machine-Voice Rule.** Real terminal / code / path / fingerprint content is
 set in mono *regular* (13px) — never in Inter. (Display mono is a separate,
 deliberate brand register; the prohibition is on setting literal machine output
