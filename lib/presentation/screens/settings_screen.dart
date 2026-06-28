@@ -21,6 +21,7 @@ import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/message_of_the_day.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -1339,6 +1340,7 @@ class _AboutSection extends ConsumerWidget {
             applicationVersion: _versionLabel(appMetadata),
           ),
         ),
+        const MessageOfTheDay(),
       ],
     );
   }
