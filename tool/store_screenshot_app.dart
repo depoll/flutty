@@ -596,6 +596,9 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runScreenshotFlow() async {
     final terminalHostId = widget.terminalHostId;
     await _connect(terminalHostId);
+    // Warm the MonkeyMux control channel so the window switcher scene renders
+    // the full window list and Claude selection lands, even on slower devices.
+    await _ensureMuxReady();
 
     _go('/terminal/$terminalHostId?connectionId=$_connectionId');
     await Future<void>.delayed(const Duration(seconds: 6));
