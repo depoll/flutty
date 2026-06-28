@@ -105,20 +105,30 @@ the screenshot PR merges to `main`, the Sync Store Metadata workflow validates
 and uploads the committed screenshots.
 
 Short product demo videos use the same real app, SSH, and MonkeyMux capture
-flow, then compose that live capture into a branded vertical promo canvas with
-explanatory copy around the phone screen. Generate local iOS and Android
-recordings with:
+flow, then compose that single live recording into several store-compliant
+deliverables per platform. Generate local iOS and Android recordings with:
 
 ```bash
 python3 scripts/generate_store_demo_videos.py both
-python3 scripts/validate_store_demo_videos.py both
+python3 scripts/validate_store_demo_videos.py all
 ```
 
-The default output is `build/store-demo-videos`. Add `--ios-app-preview` when
-recording iOS to also write `ios/fastlane/app-previews/en-US/iphone_67_1.mov`
-for App Store Connect upload through the metadata sync workflow. Commit Android
-ad/review exports under `store/demo-videos/android/` and validate them with
-`python3 scripts/validate_store_demo_videos.py android --output-dir store/demo-videos`.
+Each device is recorded once and composed into:
+
+- **App Store app previews** (full-screen native app at the exact device slot
+  resolution with fading caption overlays and a silent audio track):
+  `ios/fastlane/app-previews/en-US/iphone_67_1.mov` (886x1920) and
+  `ipad_13_1.mov` (1200x1600). App Store Connect validates resolution at upload,
+  so these are native captures, not the branded canvas.
+- **Google Play preview** (16:9 landscape branded promo, uploaded to YouTube and
+  referenced by URL in Play Console):
+  `store/demo-videos/google-play/monkeyssh-google-play-promo.mp4` (1920x1080).
+- **Ads/marketing** (portrait branded canvas):
+  `store/demo-videos/ads/monkeyssh-ios-ads.mp4` and `monkeyssh-android-ads.mp4`.
+
+The validator checks per-slot resolution, 15-30s duration, H.264, an audio track
+on the Apple previews, and that the live app region actually advances through
+scenes.
 
 ### Commit Messages
 
