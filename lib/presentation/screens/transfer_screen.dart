@@ -91,7 +91,11 @@ Future<void> _sharePayloadViaNativeSheet({
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Failed to prepare transfer file')),
+      const SnackBar(
+        content: Text(
+          'Couldn’t create the transfer file. Check storage space and try again.',
+        ),
+      ),
     );
     return;
   }
@@ -134,7 +138,11 @@ Future<void> _sharePayloadViaNativeSheet({
     );
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to open share sheet')),
+        const SnackBar(
+          content: Text(
+            'Couldn’t open the share sheet. Try again, or save the file instead.',
+          ),
+        ),
       );
     }
   } finally {
@@ -184,7 +192,11 @@ Future<void> _savePayloadToFileDialog({
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to write transfer file')),
+        const SnackBar(
+          content: Text(
+            'Couldn’t write the transfer file. Free up space and try again.',
+          ),
+        ),
       );
       return;
     }
@@ -235,7 +247,9 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Could not read selected transfer file'),
+            content: Text(
+              'Couldn’t read that file. Pick a .monkeysshx file exported from MonkeySSH.',
+            ),
           ),
         );
       }
@@ -245,7 +259,9 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Could not read selected transfer file'),
+            content: Text(
+              'Couldn’t read that file. Pick a .monkeysshx file exported from MonkeySSH.',
+            ),
           ),
         );
       }
@@ -264,7 +280,11 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     } on FormatException {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid transfer file format')),
+          const SnackBar(
+            content: Text(
+              'That isn’t a valid MonkeySSH transfer file. Export it again from MonkeySSH.',
+            ),
+          ),
         );
       }
       return null;
@@ -275,7 +295,11 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
   if (path == null || path.isEmpty) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not read selected transfer file')),
+        const SnackBar(
+          content: Text(
+            'Couldn’t read that file. Pick a .monkeysshx file exported from MonkeySSH.',
+          ),
+        ),
       );
     }
     return null;
@@ -296,14 +320,22 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
   } on FileSystemException {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not read selected transfer file')),
+        const SnackBar(
+          content: Text(
+            'Couldn’t read that file. Pick a .monkeysshx file exported from MonkeySSH.',
+          ),
+        ),
       );
     }
     return null;
   } on FormatException {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid transfer file format')),
+        const SnackBar(
+          content: Text(
+            'That isn’t a valid MonkeySSH transfer file. Export it again from MonkeySSH.',
+          ),
+        ),
       );
     }
     return null;

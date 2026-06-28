@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/theme.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/telemetry_service.dart';
@@ -348,7 +349,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             ),
           ],
           const SizedBox(height: 24),
-          Text('Included with Pro', style: theme.textTheme.titleMedium),
+          Text(
+            'included with Pro',
+            style: FluttyTheme.displayMono(
+              fontSize: 15,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
           const SizedBox(height: 12),
           const _UpgradeBenefitTile(
             icon: Icons.rocket_launch_outlined,
@@ -370,7 +377,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           ),
           if (state.offers.isNotEmpty && !isLifetimeUnlocked) ...[
             const SizedBox(height: 24),
-            Text('Choose a plan', style: theme.textTheme.titleMedium),
+            Text(
+              'choose a plan',
+              style: FluttyTheme.displayMono(
+                fontSize: 15,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
             if (annualSavingsPercent case final savings?) ...[
               const SizedBox(height: 8),
               _UpgradeBanner(
@@ -531,7 +544,13 @@ class _SubscriptionLegalCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Subscription details', style: theme.textTheme.titleMedium),
+            Text(
+              'subscription details',
+              style: FluttyTheme.displayMono(
+                fontSize: 15,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
             const SizedBox(height: 8),
             Text(
               'MonkeySSH Pro subscriptions are auto-renewable. Monthly plans '

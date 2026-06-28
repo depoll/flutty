@@ -550,8 +550,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                         // Authentication section
                         Text(
-                          'Authentication',
-                          style: Theme.of(context).textTheme.titleMedium,
+                          'authentication',
+                          style: FluttyTheme.displayMono(
+                            fontSize: 15,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
                         ),
                         const SizedBox(height: 12),
 
@@ -716,14 +719,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             Row(
                               children: [
                                 Text(
-                                  'Terminal Theme',
-                                  style: Theme.of(context).textTheme.titleSmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                                  'terminal theme',
+                                  style: FluttyTheme.displayMono(
+                                    fontSize: 14,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurface,
+                                  ),
                                 ),
                                 const SizedBox(width: 8),
                                 const PremiumBadge(),
@@ -1489,7 +1491,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not save host. Try again.')),
+          const SnackBar(
+            content: Text(
+              'Couldn’t save this host. Check the required fields and try again.',
+            ),
+          ),
         );
       }
     }
@@ -1675,7 +1681,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
       if (!result.success || result.client == null) {
         messenger.showSnackBar(
-          SnackBar(content: Text(result.error ?? 'Connection test failed')),
+          SnackBar(
+            content: Text(
+              result.error ??
+                  'Connection test failed. Check the host, port, and credentials, then test again.',
+            ),
+          ),
         );
         return;
       }
@@ -2387,7 +2398,7 @@ Future<String?> showFontPickerDialog({
       title: const Text('Terminal Font'),
       content: SizedBox(
         width: double.maxFinite,
-        height: 450,
+        height: MediaQuery.of(context).size.height * 0.6,
         child: Column(
           children: [
             // Current selection preview
