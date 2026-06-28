@@ -9,10 +9,10 @@ class BufferSegment {
   /// The line that this segment resides on.
   final int line;
 
-  /// The start position of this segment. [null] means the start of the line.
+  /// The start position of this segment. `null` means the start of the line.
   final int? start;
 
-  /// The end position of this segment. [null] means the end of the line.
+  /// The end position of this segment. `null` means the end of the line.
   /// Should be greater than or equal to [start].
   final int? end;
 

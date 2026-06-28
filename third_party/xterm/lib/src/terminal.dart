@@ -656,6 +656,171 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void sendModeReport(int mode) {
+    onOutput?.call(_emitter.modeReport(mode, _ansiModeValue(mode)));
+  }
+
+  /// DECRQM state value for an ANSI mode: 1 set, 2 reset, 0 not recognized.
+  ///
+  /// Only the ANSI-mode form (`CSI Ps $ p`) is answered here. The DEC-private
+  /// form (`CSI ? Ps $ p`) is answered by the MonkeySSH app layer, so the core
+  /// must not reply to it (see [EscapeParser]).
+  int _ansiModeValue(int mode) {
+    switch (mode) {
+      case 4: // IRM - Insert/Replace
+        return _insertMode ? 1 : 2;
+      case 20: // LNM - Line Feed/New Line
+        return _lineFeedMode ? 1 : 2;
+      default:
+        return 0;
+    }
+  }
+
+  @override
+  void sendTermcapReport(List<String> capabilities) {
+    final output = onOutput;
+    if (output == null) return;
+    for (final hexName in capabilities) {
+      if (hexName.isEmpty) continue;
+      final name = _decodeHex(hexName);
+      final value = name == null ? null : _termcapValue(name);
+      output(
+        _emitter.termcapReport(
+          hexName,
+          value == null ? null : _encodeHex(value),
+        ),
+      );
+    }
+  }
+
+  /// Resolves a terminfo/termcap capability value for XTGETTCAP, or null when
+  /// the capability is unknown/unsupported.
+  ///
+  /// Only unambiguous, theme-independent capabilities are answered. The
+  /// terminal name (`TN`) is intentionally not reported: TERM is host-defined
+  /// (MonkeySSH leaves it unchanged, often `xterm-256color`), so answering a
+  /// fixed name here would risk a mismatch with the negotiated TERM.
+  String? _termcapValue(String name) {
+    switch (name) {
+      case 'Co': // termcap: maximum colors
+      case 'colors': // terminfo: maximum colors
+        return '256';
+      case 'RGB': // direct-color support, bits per channel
+        return '8/8/8';
+      default:
+        return null;
+    }
+  }
+
+  String? _decodeHex(String hex) {
+    if (hex.isEmpty || hex.length.isOdd) return null;
+    final units = <int>[];
+    for (var i = 0; i < hex.length; i += 2) {
+      final byte = int.tryParse(hex.substring(i, i + 2), radix: 16);
+      if (byte == null) return null;
+      units.add(byte);
+    }
+    return String.fromCharCodes(units);
+  }
+
+  String _encodeHex(String value) {
+    final buffer = StringBuffer();
+    for (final unit in value.codeUnits) {
+      buffer.write(unit.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
+  }
+
+  @override
+  void sendStatusStringReport(String request) {
+    onOutput?.call(_emitter.statusStringReport(_statusStringValue(request)));
+  }
+
+  /// Resolves the DECRQSS status string for [request] (the control function's
+  /// intermediate/final), or null when the request is not recognized.
+  ///
+  /// Only control functions whose state the terminal actually tracks are
+  /// answered; the cursor style (` q`), conformance level (`"p`) and similar
+  /// are reported as not recognized rather than guessed.
+  String? _statusStringValue(String request) {
+    switch (request) {
+      case 'r': // DECSTBM - scrolling region (top/bottom margins, 1-based)
+        return '${_buffer.marginTop + 1};${_buffer.marginBottom + 1}r';
+      case 'm': // SGR - current graphic rendition
+        return '${_currentSgrParameters()}m';
+      default:
+        return null;
+    }
+  }
+
+  /// Serializes the active pen as SGR parameters, beginning with `0` (reset) so
+  /// the string reproduces the rendition on its own.
+  String _currentSgrParameters() {
+    final params = <int>[0];
+    final style = _cursorStyle;
+    final attrs = style.attrs;
+    if (attrs & CellAttr.bold != 0) params.add(1);
+    if (attrs & CellAttr.faint != 0) params.add(2);
+    if (attrs & CellAttr.italic != 0) params.add(3);
+    if (attrs & CellAttr.underline != 0) params.add(4);
+    if (attrs & CellAttr.blink != 0) params.add(5);
+    if (attrs & CellAttr.inverse != 0) params.add(7);
+    if (attrs & CellAttr.invisible != 0) params.add(8);
+    if (attrs & CellAttr.strikethrough != 0) params.add(9);
+    if (attrs & CellAttr.overline != 0) params.add(53);
+    _appendSgrColor(params, style.foreground, named: 30, bright: 90, ext: 38);
+    _appendSgrColor(params, style.background, named: 40, bright: 100, ext: 48);
+    _appendSgrUnderlineColor(params, style.underlineColor);
+    return params.join(';');
+  }
+
+  void _appendSgrColor(
+    List<int> params,
+    int color, {
+    required int named,
+    required int bright,
+    required int ext,
+  }) {
+    final type = (color & CellColor.typeMask);
+    final value = color & CellColor.valueMask;
+    switch (type) {
+      case CellColor.named:
+        params.add(value < 8 ? named + value : bright + (value - 8));
+        break;
+      case CellColor.palette:
+        params.addAll([ext, 5, value]);
+        break;
+      case CellColor.rgb:
+        params.addAll([
+          ext,
+          2,
+          (value >> 16) & 0xFF,
+          (value >> 8) & 0xFF,
+          value & 0xFF,
+        ]);
+        break;
+    }
+  }
+
+  void _appendSgrUnderlineColor(List<int> params, int color) {
+    final value = color & CellColor.valueMask;
+    switch (color & CellColor.typeMask) {
+      case CellColor.palette:
+        params.addAll([58, 5, value]);
+        break;
+      case CellColor.rgb:
+        params.addAll([
+          58,
+          2,
+          (value >> 16) & 0xFF,
+          (value >> 8) & 0xFF,
+          value & 0xFF,
+        ]);
+        break;
+    }
+  }
+
+  @override
   void sendOperatingStatus() {
     onOutput?.call(_emitter.operatingStatus());
   }
