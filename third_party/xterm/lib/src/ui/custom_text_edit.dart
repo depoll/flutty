@@ -234,7 +234,7 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
     // Reset editing state if composing is done
     if (_currentEditingState.composing.isCollapsed &&
         _currentEditingState.text != _initEditingState.text) {
-      _connection!.setEditingState(_initEditingState);
+      _connection?.setEditingState(_initEditingState);
     }
   }
 

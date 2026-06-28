@@ -1116,7 +1116,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     child = Actions(actions: _terminalActions, child: child);
 
-    child = KeyboardVisibilty(onKeyboardShow: _onKeyboardShow, child: child);
+    child = KeyboardVisibility(onKeyboardShow: _onKeyboardShow, child: child);
 
     child = MonkeyTerminalGestureHandler(
       terminalView: this,
