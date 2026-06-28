@@ -408,13 +408,13 @@ def _video_duration(path: Path) -> float:
 def _promo_layout(target: store_screenshots.ScreenshotTarget) -> dict[str, int]:
     canvas_width, canvas_height = target.size
     if target.platform == 'ios':
-        screen_height = int(canvas_height * 0.575)
-        top = int(canvas_height * 0.255)
+        screen_height = int(canvas_height * 0.625)
+        top = int(canvas_height * 0.285)
     else:
-        screen_height = int(canvas_height * 0.565)
-        top = int(canvas_height * 0.262)
+        screen_height = int(canvas_height * 0.615)
+        top = int(canvas_height * 0.292)
     screen_width = int(screen_height * canvas_width / canvas_height)
-    screen_width = min(screen_width, int(canvas_width * 0.66))
+    screen_width = min(screen_width, int(canvas_width * 0.72))
     left = (canvas_width - screen_width) // 2
     return {
         'canvas_width': canvas_width,
@@ -477,9 +477,9 @@ def _render_overlay_frames(
     margin = int(width * 0.072)
     fonts = {
         'eyebrow': _load_font(28 if big else 23, bold=True),
-        'headline': _load_font(66 if big else 54, bold=True),
-        'body': _load_font(32 if big else 27),
-        'label': _load_font(30 if big else 24, bold=True),
+        'headline': _load_font(62 if big else 50, bold=True),
+        'body': _load_font(30 if big else 25),
+        'label': _load_font(36 if big else 30, bold=True),
     }
 
     glow_size = int(width * 0.5)
@@ -623,42 +623,42 @@ def _lighten(accent: tuple[int, int, int]) -> tuple[int, int, int]:
 def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
-            eyebrow='Real SSH session',
-            headline='Start in Claude without leaving mobile.',
-            body='Open a persistent SSH workspace, type with the extended '
-            'keyboard, and ask an agent to reason in the real terminal.',
+            eyebrow='Claude Code',
+            headline='Start a real agent session from the keyboard.',
+            body='Open a persistent SSH workspace, use the extended key row, '
+            'and prompt Claude in the live terminal.',
             label='Claude',
             accent=(0, 201, 255),
         ),
         PromoSegment(
-            eyebrow='Persistent agents',
-            headline='Keep every coding session alive.',
-            body='MonkeyMux keeps Claude, OpenCode, Copilot, and other panes '
-            'running remotely while your phone moves between tasks.',
+            eyebrow='MonkeyMux',
+            headline='Keep every coding agent alive remotely.',
+            body='Claude, OpenCode, and Copilot stay in separate windows while '
+            'you switch panes, apps, or networks.',
             label='MonkeyMux',
             accent=(244, 114, 182),
         ),
         PromoSegment(
             eyebrow='OpenCode TUI',
-            headline='Switch to another agent instantly.',
-            body='OpenCode runs in the same remote workspace with terminal '
-            'mouse support, keyboard shortcuts, and full scrollback intact.',
+            headline='Move to OpenCode with the same workspace.',
+            body='OpenCode keeps TUI mouse support, keyboard shortcuts, and '
+            'full scrollback inside the same SSH session.',
             label='OpenCode',
             accent=(129, 140, 248),
         ),
         PromoSegment(
             eyebrow='Image context',
-            headline='Paste screenshots into the workflow.',
-            body='MonkeySSH uploads the real image to the remote workspace, '
-            'then pastes the safe path into the live agent terminal.',
+            headline='Choose an image. Upload. Paste.',
+            body='The real upload flow sends image context to the remote '
+            'workspace and inserts the path into the agent terminal.',
             label='Real image paste',
             accent=(45, 212, 191),
         ),
         PromoSegment(
             eyebrow='Copilot CLI',
             headline='Finish in Copilot with the same context.',
-            body='Jump from Claude to OpenCode to Copilot while the SSH '
-            'connection, panes, image context, and working directory stay put.',
+            body='Jump from Claude to OpenCode to Copilot while the panes, '
+            'uploaded context, and working directory stay put.',
             label='Copilot',
             accent=(34, 211, 238),
         ),
@@ -779,27 +779,27 @@ def _draw_timeline(
     x0 = margin
     x1 = width - margin
     draw.rounded_rectangle(
-        [x0, track_y - 3, x1, track_y + 3],
-        radius=3,
-        fill=(255, 255, 255, 40),
+        [x0, track_y - 4, x1, track_y + 4],
+        radius=4,
+        fill=(255, 255, 255, 46),
     )
     progress = _clamp01(t / duration) if duration > 0 else 0.0
     fill_x = int(x0 + (x1 - x0) * progress)
     draw.rounded_rectangle(
-        [x0, track_y - 3, fill_x, track_y + 3],
-        radius=3,
+        [x0, track_y - 4, fill_x, track_y + 4],
+        radius=4,
         fill=(*accent, 235),
     )
 
     for index, segment in enumerate(segments):
         cx = int(x0 + (x1 - x0) * (index + 0.5) / count)
         if index < seg_index:
-            node_r = 9
+            node_r = 11
             color = (*segment.accent, 235)
         elif index == seg_index:
             pulse = 0.5 + 0.5 * math.sin(2 * math.pi * t / 1.3)
-            node_r = int(13 + 3 * pulse)
-            ring_r = node_r + 8
+            node_r = int(15 + 3 * pulse)
+            ring_r = node_r + 9
             draw.ellipse(
                 [cx - ring_r, track_y - ring_r, cx + ring_r, track_y + ring_r],
                 outline=(*segment.accent, 180),
@@ -807,7 +807,7 @@ def _draw_timeline(
             )
             color = (*_lighten(segment.accent), 255)
         else:
-            node_r = 8
+            node_r = 9
             color = (255, 255, 255, 70)
         draw.ellipse(
             [cx - node_r, track_y - node_r, cx + node_r, track_y + node_r],
@@ -818,7 +818,7 @@ def _draw_timeline(
     label_font = fonts['label']
     label_w = _text_w(draw, label, label_font)
     label_h = _text_h(draw, label, label_font)
-    label_y = track_y - int(height * 0.028) - label_h
+    label_y = track_y - int(height * 0.033) - label_h
     draw.text(
         ((width - label_w) // 2, label_y),
         label,
