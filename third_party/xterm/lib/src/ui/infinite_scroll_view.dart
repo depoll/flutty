@@ -35,7 +35,6 @@ class InfiniteScrollView extends StatelessWidget {
 
 class _InfiniteScrollView extends SingleChildRenderObjectWidget {
   const _InfiniteScrollView({
-    // super.key,
     super.child,
     required this.position,
     required this.onScroll,
