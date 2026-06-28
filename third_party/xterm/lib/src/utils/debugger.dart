@@ -257,6 +257,26 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void sendStatusStringReport(String request) {
+    onCommand('sendStatusStringReport($request)');
+  }
+
+  @override
+  void sendTextAreaSizePixels() {
+    onCommand('sendTextAreaSizePixels');
+  }
+
+  @override
+  void sendScreenSizePixels() {
+    onCommand('sendScreenSizePixels');
+  }
+
+  @override
+  void sendCellSizePixels() {
+    onCommand('sendCellSizePixels');
+  }
+
+  @override
   void sendOperatingStatus() {
     onCommand('sendOperatingStatus');
   }

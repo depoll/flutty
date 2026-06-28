@@ -137,6 +137,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   int _viewHeight = 24;
 
+  /// Last known text-area size in pixels, as reported by the view on resize.
+  /// `0` means the pixel size is not yet known (the view has not laid out). Used
+  /// to answer the `CSI 14/15/16 t` pixel reports.
+  int _viewPixelWidth = 0;
+
+  int _viewPixelHeight = 0;
+
   final _cursorStyle = CursorStyle();
 
   bool _insertMode = false;
@@ -437,6 +444,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   ]) {
     newWidth = max(newWidth, 1);
     newHeight = max(newHeight, 1);
+
+    // Retain real pixel dimensions for the `CSI 14/15/16 t` reports. Resizes
+    // driven by the application (`CSI 8 t`) omit pixel sizes, so only overwrite
+    // when the view supplies them.
+    if (pixelWidth != null && pixelWidth > 0) _viewPixelWidth = pixelWidth;
+    if (pixelHeight != null && pixelHeight > 0) _viewPixelHeight = pixelHeight;
 
     onResize?.call(newWidth, newHeight, pixelWidth ?? 0, pixelHeight ?? 0);
 
@@ -802,6 +815,122 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       buffer.write(unit.toRadixString(16).padLeft(2, '0'));
     }
     return buffer.toString();
+  }
+
+  @override
+  void sendStatusStringReport(String request) {
+    onOutput?.call(_emitter.statusStringReport(_statusStringValue(request)));
+  }
+
+  /// Resolves the DECRQSS status string for [request] (the control function's
+  /// intermediate/final), or null when the request is not recognized.
+  ///
+  /// Only control functions whose state the terminal actually tracks are
+  /// answered; the cursor style (` q`), conformance level (`"p`) and similar
+  /// are reported as not recognized rather than guessed.
+  String? _statusStringValue(String request) {
+    switch (request) {
+      case 'r': // DECSTBM - scrolling region (top/bottom margins, 1-based)
+        return '${_buffer.marginTop + 1};${_buffer.marginBottom + 1}r';
+      case 'm': // SGR - current graphic rendition
+        return '${_currentSgrParameters()}m';
+      default:
+        return null;
+    }
+  }
+
+  /// Serializes the active pen as SGR parameters, beginning with `0` (reset) so
+  /// the string reproduces the rendition on its own.
+  String _currentSgrParameters() {
+    final params = <int>[0];
+    final style = _cursorStyle;
+    final attrs = style.attrs;
+    if (attrs & CellAttr.bold != 0) params.add(1);
+    if (attrs & CellAttr.faint != 0) params.add(2);
+    if (attrs & CellAttr.italic != 0) params.add(3);
+    if (attrs & CellAttr.underline != 0) params.add(4);
+    if (attrs & CellAttr.blink != 0) params.add(5);
+    if (attrs & CellAttr.inverse != 0) params.add(7);
+    if (attrs & CellAttr.invisible != 0) params.add(8);
+    if (attrs & CellAttr.strikethrough != 0) params.add(9);
+    if (attrs & CellAttr.overline != 0) params.add(53);
+    _appendSgrColor(params, style.foreground, named: 30, bright: 90, ext: 38);
+    _appendSgrColor(params, style.background, named: 40, bright: 100, ext: 48);
+    _appendSgrUnderlineColor(params, style.underlineColor);
+    return params.join(';');
+  }
+
+  void _appendSgrColor(
+    List<int> params,
+    int color, {
+    required int named,
+    required int bright,
+    required int ext,
+  }) {
+    final type = (color & CellColor.typeMask);
+    final value = color & CellColor.valueMask;
+    switch (type) {
+      case CellColor.named:
+        params.add(value < 8 ? named + value : bright + (value - 8));
+        break;
+      case CellColor.palette:
+        params.addAll([ext, 5, value]);
+        break;
+      case CellColor.rgb:
+        params.addAll([
+          ext,
+          2,
+          (value >> 16) & 0xFF,
+          (value >> 8) & 0xFF,
+          value & 0xFF,
+        ]);
+        break;
+    }
+  }
+
+  void _appendSgrUnderlineColor(List<int> params, int color) {
+    final value = color & CellColor.valueMask;
+    switch (color & CellColor.typeMask) {
+      case CellColor.palette:
+        params.addAll([58, 5, value]);
+        break;
+      case CellColor.rgb:
+        params.addAll([
+          58,
+          2,
+          (value >> 16) & 0xFF,
+          (value >> 8) & 0xFF,
+          value & 0xFF,
+        ]);
+        break;
+    }
+  }
+
+  @override
+  void sendTextAreaSizePixels() {
+    if (_viewPixelWidth <= 0 || _viewPixelHeight <= 0) return;
+    onOutput?.call(
+      _emitter.windowSizePixels(4, _viewPixelHeight, _viewPixelWidth),
+    );
+  }
+
+  @override
+  void sendScreenSizePixels() {
+    // The terminal does not distinguish a screen from its text area, so the
+    // screen pixel size mirrors the text area pixel size.
+    if (_viewPixelWidth <= 0 || _viewPixelHeight <= 0) return;
+    onOutput?.call(
+      _emitter.windowSizePixels(5, _viewPixelHeight, _viewPixelWidth),
+    );
+  }
+
+  @override
+  void sendCellSizePixels() {
+    if (_viewPixelWidth <= 0 || _viewPixelHeight <= 0) return;
+    final cellWidth = _viewPixelWidth ~/ _viewWidth;
+    final cellHeight = _viewPixelHeight ~/ _viewHeight;
+    if (cellWidth <= 0 || cellHeight <= 0) return;
+    onOutput?.call(_emitter.windowSizePixels(6, cellHeight, cellWidth));
   }
 
   @override
