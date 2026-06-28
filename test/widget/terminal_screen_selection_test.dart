@@ -482,7 +482,7 @@ void main() {
 
     test('reconstructs a URL split across rendered lines', () {
       const text =
-          'See PR https://github.com/depoll-personal/LANbu-Han\n'
+          'See PR https://github.com/depoll-personal/LANbu-Han │\n'
           'dy/pull/187 for details';
       final detectedLink = detectTerminalLinkAtTextOffset(
         text,
@@ -498,7 +498,7 @@ void main() {
 
     test('resolves a tap on a URL continuation line to the full URL', () {
       const text =
-          'See PR https://github.com/depoll-personal/LANbu-Han\n'
+          'See PR https://github.com/depoll-personal/LANbu-Han │\n'
           'dy/pull/187 for details';
       final detectedLink = detectTerminalLinkAtTextOffset(
         text,
@@ -530,7 +530,7 @@ void main() {
 
     test('reconstructs a URL wrapped after a trailing slash (Copilot)', () {
       const text =
-          'See PR #590 at https://github.com/\n'
+          'See PR #590 at https://github.com/ │\n'
           'depollsoft/MonkeySSH/pull/590 done';
       final detectedLink = detectTerminalLinkAtTextOffset(
         text,
@@ -541,6 +541,30 @@ void main() {
       expect(
         detectedLink!.uri.toString(),
         'https://github.com/depollsoft/MonkeySSH/pull/590',
+      );
+    });
+
+    test('does not weld prose onto a URL across a plain newline', () {
+      // A complete URL ending a line followed by ordinary prose has no
+      // gutter/border chrome at the boundary, so the next line must not be
+      // welded onto the URL (which would resolve a corrupted destination).
+      const text = 'Homepage: https://example.com\nReturns a list of users';
+
+      expect(
+        detectTerminalLinkAtTextOffset(
+          text,
+          text.indexOf('https'),
+        )?.uri.toString(),
+        'https://example.com',
+      );
+    });
+
+    test('does not weld a following sentence onto a bare URL line', () {
+      const text = 'https://example.com\nDone.';
+
+      expect(
+        detectTerminalLinkAtTextOffset(text, 4)?.uri.toString(),
+        'https://example.com',
       );
     });
 

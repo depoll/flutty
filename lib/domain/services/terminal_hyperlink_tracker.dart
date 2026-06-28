@@ -247,6 +247,15 @@ class TerminalHyperlinkTracker {
       hyperlink.dispose();
       return true;
     });
+
+    // Drop a still-open hyperlink whose start anchor detached (e.g. the line
+    // scrolled out of scrollback or the screen was cleared before the closing
+    // OSC 8 arrived) so it can't shadow later taps with a stale destination.
+    final pendingHyperlink = _pendingHyperlink;
+    if (pendingHyperlink != null && !pendingHyperlink.attached) {
+      pendingHyperlink.dispose();
+      _pendingHyperlink = null;
+    }
   }
 
   CellOffset _currentCursorOffset(Terminal terminal) =>
@@ -258,6 +267,8 @@ class _PendingTerminalHyperlink {
 
   final Uri uri;
   final CellAnchor startAnchor;
+
+  bool get attached => startAnchor.attached;
 
   void dispose() {
     startAnchor.dispose();

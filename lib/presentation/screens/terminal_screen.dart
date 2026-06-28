@@ -1838,6 +1838,26 @@ String _trimTerminalPathContinuationSuffix(String text) {
   return text.substring(0, end);
 }
 
+/// Whether [character] is gutter/border chrome (a box-drawing, block-element,
+/// or pipe glyph) rather than plain whitespace padding.
+///
+/// A real URL wrap across a hard rendered-line break leaves such chrome (a
+/// scrollbar thumb or box border) between the fragments; a plain prose newline
+/// or trailing space padding does not.
+bool _isTerminalGutterDecorationCharacter(String character) =>
+    character != ' ' &&
+    character != '\t' &&
+    _isTerminalPathContinuationDecorationCharacter(character);
+
+bool _terminalTextRangeHasGutterDecoration(String text, int start, int end) {
+  for (var index = start; index < end; index++) {
+    if (_isTerminalGutterDecorationCharacter(text[index])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool _startsFreshTerminalFilePathLine(String text) =>
     text == '~' ||
     text.startsWith('~/') ||
@@ -1948,12 +1968,31 @@ bool terminalRowMayContainPath(BufferLine line, int viewWidth) {
 
 _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   String text, {
-  bool Function({required String previousText, required String nextText})?
+  bool Function({
+    required String previousText,
+    required String nextText,
+    required bool hadGutterDecoration,
+  })?
   continuationPredicate,
 }) {
-  final isContinuation =
-      continuationPredicate ??
-      _looksLikeTerminalPathContinuationAcrossRenderedLines;
+  bool isContinuation({
+    required String previousText,
+    required String nextText,
+    required bool hadGutterDecoration,
+  }) {
+    if (continuationPredicate != null) {
+      return continuationPredicate(
+        previousText: previousText,
+        nextText: nextText,
+        hadGutterDecoration: hadGutterDecoration,
+      );
+    }
+    return _looksLikeTerminalPathContinuationAcrossRenderedLines(
+      previousText: previousText,
+      nextText: nextText,
+    );
+  }
+
   final normalizedCharacters = <String>[];
   final originalToNormalizedOffsets = List<int>.filled(text.length + 1, 0);
   final normalizedToOriginalStarts = <int>[];
@@ -1997,11 +2036,24 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
         trailingGapStart--;
       }
 
+      final hadGutterDecoration =
+          _terminalTextRangeHasGutterDecoration(
+            text,
+            trailingGapStart,
+            index,
+          ) ||
+          _terminalTextRangeHasGutterDecoration(
+            text,
+            lineBreakEnd,
+            continuationEnd,
+          );
+
       final isPathContinuation =
           continuationEnd < text.length &&
           isContinuation(
             previousText: text.substring(lineStart, trailingGapStart),
             nextText: text.substring(continuationEnd, nextLineEnd),
+            hadGutterDecoration: hadGutterDecoration,
           );
       if (isPathContinuation) {
         // Drop the trailing gap characters already emitted for the previous
@@ -2257,7 +2309,17 @@ bool _endsInsideTerminalLinkToken(String text) {
 bool _looksLikeTerminalLinkContinuationAcrossRenderedLines({
   required String previousText,
   required String nextText,
+  required bool hadGutterDecoration,
 }) {
+  // Only rejoin a URL across a hard rendered-line break when gutter/border
+  // chrome (a scrollbar thumb or box border, e.g. the Copilot CLI box this
+  // feature targets) was actually stripped at the boundary. A plain prose
+  // newline such as `https://example.com` then `Done.` leaves no chrome, so the
+  // next line must not be welded onto the URL. Soft-wrapped lines never reach
+  // this path: the snapshot concatenates them without a newline.
+  if (!hadGutterDecoration) {
+    return false;
+  }
   if (!_endsInsideTerminalLinkToken(previousText)) {
     return false;
   }
