@@ -46,12 +46,6 @@ class EscapeEmitter {
     return '\x1b[$mode;$value\$y';
   }
 
-  /// Response to DECRQM for a DEC private mode
-  /// (`CSI ? Ps $ p` -> `CSI ? Ps ; Pm $ y`).
-  String privateModeReport(int mode, int value) {
-    return '\x1b[?$mode;$value\$y';
-  }
-
   /// Response to XTGETTCAP for a single capability
   /// (`DCS 1 + r <name>=<value> ST` when known, `DCS 0 + r <name> ST` when not).
   ///
@@ -76,15 +70,6 @@ class EscapeEmitter {
       return '\x1bP0\$r\x1b\\';
     }
     return '\x1bP1\$r$value\x1b\\';
-  }
-
-  /// Response to a window-size pixel report (`CSI 14/15/16 t`).
-  ///
-  /// [kind] is the reply selector (4 text area, 5 screen, 6 cell); [height] and
-  /// [width] are in pixels, height first to match the `CSI 8 ; rows ; cols t`
-  /// convention.
-  String windowSizePixels(int kind, int height, int width) {
-    return '\x1b[$kind;$height;${width}t';
   }
 
   String operatingStatus() {

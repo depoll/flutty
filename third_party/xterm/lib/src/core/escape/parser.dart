@@ -439,13 +439,15 @@ class EscapeParser {
     }
   }
 
-  /// `ESC [ Ps $ p` Request ANSI Mode (DECRQM) and
-  /// `ESC [ ? Ps $ p` Request DEC Private Mode (DECRQM).
+  /// `ESC [ Ps $ p` Request ANSI Mode (DECRQM).
   ///
-  /// The `$` intermediate is what distinguishes DECRQM from the other `p`
-  /// finals (`CSI ! p` DECSTR soft reset, `CSI Ps " p` DECSCL, `CSI > Ps p`
-  /// XTSMPOINTER), none of which are handled here — they fall through to
-  /// [EscapeHandler.unknownCSI] exactly as before.
+  /// Only the ANSI-mode form (no prefix) is answered here. The DEC-private form
+  /// (`CSI ? Ps $ p`) is answered by the MonkeySSH app layer, which scans shell
+  /// output and has the extra state it needs (notably DEC mode 2031 colour
+  /// scheme updates); answering it here as well would send the program two
+  /// replies. The `$` intermediate distinguishes DECRQM from the other `p`
+  /// finals (`CSI ! p` DECSTR, `CSI Ps " p` DECSCL, `CSI > Ps p` XTSMPOINTER),
+  /// which fall through to [EscapeHandler.unknownCSI].
   ///
   /// https://vt100.net/docs/vt510-rm/DECRQM.html
   void _csiHandleRequestMode() {
@@ -454,12 +456,12 @@ class EscapeParser {
       return;
     }
 
-    final mode = _csi.params.isEmpty ? 0 : _csi.params[0];
-    if (_csi.prefix == Ascii.questionMark) {
-      handler.sendPrivateModeReport(mode);
-    } else if (_csi.prefix == null) {
+    if (_csi.prefix == null) {
+      final mode = _csi.params.isEmpty ? 0 : _csi.params[0];
       handler.sendModeReport(mode);
-    } else {
+    } else if (_csi.prefix != Ascii.questionMark) {
+      // `?` (DEC private) is consumed without a reply so the app layer can
+      // answer it; any other prefix is an unrecognized `$ p` sequence.
       handler.unknownCSI(_csi.finalByte);
     }
   }
@@ -893,15 +895,9 @@ class EscapeParser {
       case 10: // Alias: Maximize Terminal Window
       case 11: // Report Terminal Window State
       case 13: // Report Terminal Window Position
-        return;
-      case 14: // Report text area size in pixels
-        handler.sendTextAreaSizePixels();
-        return;
-      case 15: // Report screen size in pixels
-        handler.sendScreenSizePixels();
-        return;
-      case 16: // Report cell size in pixels
-        handler.sendCellSizePixels();
+      case 14: // Report text area size in pixels (answered by the app layer)
+      case 15: // Report screen size in pixels (answered by the app layer)
+      case 16: // Report cell size in pixels (answered by the app layer)
         return;
       case 18: // Report Terminal Size (in characters)
         handler.sendSize();

@@ -137,13 +137,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   int _viewHeight = 24;
 
-  /// Last known text-area size in pixels, as reported by the view on resize.
-  /// `0` means the pixel size is not yet known (the view has not laid out). Used
-  /// to answer the `CSI 14/15/16 t` pixel reports.
-  int _viewPixelWidth = 0;
-
-  int _viewPixelHeight = 0;
-
   final _cursorStyle = CursorStyle();
 
   bool _insertMode = false;
@@ -445,12 +438,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     newWidth = max(newWidth, 1);
     newHeight = max(newHeight, 1);
 
-    // Retain real pixel dimensions for the `CSI 14/15/16 t` reports. Resizes
-    // driven by the application (`CSI 8 t`) omit pixel sizes, so only overwrite
-    // when the view supplies them.
-    if (pixelWidth != null && pixelWidth > 0) _viewPixelWidth = pixelWidth;
-    if (pixelHeight != null && pixelHeight > 0) _viewPixelHeight = pixelHeight;
-
     onResize?.call(newWidth, newHeight, pixelWidth ?? 0, pixelHeight ?? 0);
 
     //we need to resize both buffers so that they are ready when we switch between them
@@ -673,13 +660,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     onOutput?.call(_emitter.modeReport(mode, _ansiModeValue(mode)));
   }
 
-  @override
-  void sendPrivateModeReport(int mode) {
-    onOutput
-        ?.call(_emitter.privateModeReport(mode, _decPrivateModeValue(mode)));
-  }
-
   /// DECRQM state value for an ANSI mode: 1 set, 2 reset, 0 not recognized.
+  ///
+  /// Only the ANSI-mode form (`CSI Ps $ p`) is answered here. The DEC-private
+  /// form (`CSI ? Ps $ p`) is answered by the MonkeySSH app layer, so the core
+  /// must not reply to it (see [EscapeParser]).
   int _ansiModeValue(int mode) {
     switch (mode) {
       case 4: // IRM - Insert/Replace
@@ -689,77 +674,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       default:
         return 0;
     }
-  }
-
-  /// DECRQM state value for a DEC private mode: 1 set, 2 reset, 0 not
-  /// recognized.
-  ///
-  /// Only modes whose state the terminal actually tracks report 1/2; everything
-  /// else reports 0 (not recognized) rather than guess. In particular mode 2026
-  /// (synchronized output) is deliberately reported as not recognized because
-  /// this terminal does not implement it.
-  int _decPrivateModeValue(int mode) {
-    bool? enabled;
-    switch (mode) {
-      case 1: // DECCKM - Cursor Keys
-        enabled = _cursorKeysMode;
-        break;
-      case 5: // DECSCNM - Reverse Video
-        enabled = _reverseDisplayMode;
-        break;
-      case 6: // DECOM - Origin
-        enabled = _originMode;
-        break;
-      case 7: // DECAWM - Auto Wrap
-        enabled = _autoWrapMode;
-        break;
-      case 9: // X10 mouse reporting
-        enabled = _mouseMode == MouseMode.clickOnly;
-        break;
-      case 12: // att610 - Cursor Blink
-        enabled = _cursorBlinkMode;
-        break;
-      case 25: // DECTCEM - Text Cursor Enable
-        enabled = _cursorVisibleMode;
-        break;
-      case 47:
-      case 1047:
-      case 1049: // Alternate screen buffer
-        enabled = _buffer.isAltBuffer;
-        break;
-      case 66: // DECNKM - Numeric Keypad
-        enabled = _appKeypadMode;
-        break;
-      case 1000: // VT200 mouse reporting
-        enabled = _mouseMode == MouseMode.upDownScroll;
-        break;
-      case 1002: // Button-event mouse tracking
-        enabled = _mouseMode == MouseMode.upDownScrollDrag;
-        break;
-      case 1003: // Any-event mouse tracking
-        enabled = _mouseMode == MouseMode.upDownScrollMove;
-        break;
-      case 1004: // Focus reporting
-        enabled = _reportFocusMode;
-        break;
-      case 1005: // UTF-8 mouse extension
-        enabled = _mouseReportMode == MouseReportMode.utf;
-        break;
-      case 1006: // SGR mouse extension
-        enabled = _mouseReportMode == MouseReportMode.sgr;
-        break;
-      case 1007: // Alternate scroll
-        enabled = _altBufferMouseScrollMode;
-        break;
-      case 1015: // urxvt mouse extension
-        enabled = _mouseReportMode == MouseReportMode.urxvt;
-        break;
-      case 2004: // Bracketed paste
-        enabled = _bracketedPasteMode;
-        break;
-    }
-    if (enabled == null) return 0;
-    return enabled ? 1 : 2;
   }
 
   @override
@@ -904,33 +818,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         ]);
         break;
     }
-  }
-
-  @override
-  void sendTextAreaSizePixels() {
-    if (_viewPixelWidth <= 0 || _viewPixelHeight <= 0) return;
-    onOutput?.call(
-      _emitter.windowSizePixels(4, _viewPixelHeight, _viewPixelWidth),
-    );
-  }
-
-  @override
-  void sendScreenSizePixels() {
-    // The terminal does not distinguish a screen from its text area, so the
-    // screen pixel size mirrors the text area pixel size.
-    if (_viewPixelWidth <= 0 || _viewPixelHeight <= 0) return;
-    onOutput?.call(
-      _emitter.windowSizePixels(5, _viewPixelHeight, _viewPixelWidth),
-    );
-  }
-
-  @override
-  void sendCellSizePixels() {
-    if (_viewPixelWidth <= 0 || _viewPixelHeight <= 0) return;
-    final cellWidth = _viewPixelWidth ~/ _viewWidth;
-    final cellHeight = _viewPixelHeight ~/ _viewHeight;
-    if (cellWidth <= 0 || cellHeight <= 0) return;
-    onOutput?.call(_emitter.windowSizePixels(6, cellHeight, cellWidth));
   }
 
   @override
