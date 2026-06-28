@@ -44,6 +44,97 @@ void main() {
       );
     });
 
+    test('resolves OSC 8 links terminated with ST (ESC backslash)', () {
+      terminal.write(
+        [
+          '\u001b]8;;https://example.com/st\u001b\\',
+          'ST link',
+          '\u001b]8;;\u001b\\',
+        ].join(),
+      );
+
+      expect(
+        tracker.resolveLinkAt(const CellOffset(2, 0)),
+        'https://example.com/st',
+      );
+    });
+
+    test('resolves OSC 8 links carrying an id= parameter', () {
+      terminal.write(
+        [
+          '\u001b]8;id=42;https://example.com/with-id\u0007',
+          'labeled',
+          '\u001b]8;;\u0007',
+        ].join(),
+      );
+
+      expect(
+        tracker.resolveLinkAt(const CellOffset(2, 0)),
+        'https://example.com/with-id',
+      );
+    });
+
+    test('resolves OSC 8 file: links to the host path', () {
+      terminal.write(
+        [
+          '\u001b]8;;file:///var/log/system.log\u0007',
+          'system.log',
+          '\u001b]8;;\u0007',
+        ].join(),
+      );
+
+      expect(
+        tracker.resolveLinkAt(const CellOffset(2, 0)),
+        'file:///var/log/system.log',
+      );
+    });
+
+    test('resolves an OSC 8 link whose label wraps across rows', () {
+      terminal
+        ..resize(10, terminal.viewHeight)
+        ..write(
+          [
+            '\u001b]8;;https://example.com/wrapped\u0007',
+            'abcdefghijklmno',
+            '\u001b]8;;\u0007',
+          ].join(),
+        );
+
+      expect(
+        tracker.resolveLinkAt(const CellOffset(3, 0)),
+        'https://example.com/wrapped',
+      );
+      expect(
+        tracker.resolveLinkAt(const CellOffset(2, 1)),
+        'https://example.com/wrapped',
+      );
+    });
+
+    test('tracks an OSC 8 link delivered across separate writes', () {
+      terminal
+        ..write('\u001b]8;;https://example.com/chunked\u0007')
+        ..write('chunked label')
+        ..write('\u001b]8;;\u0007');
+
+      expect(
+        tracker.resolveLinkAt(const CellOffset(2, 0)),
+        'https://example.com/chunked',
+      );
+    });
+
+    test('tracks an OSC 8 open whose sequence is split mid-write', () {
+      terminal
+        ..write('\u001b]8;;https://exa')
+        ..write('mple.com/split\u0007')
+        ..write('label')
+        ..write('\u001b]8;;\u0007');
+
+      expect(
+        tracker.resolveLinkAt(const CellOffset(2, 0)),
+        'https://example.com/split',
+      );
+    });
+
     test('keeps hyperlink anchors valid after terminal reflow', () {
       terminal
         ..write(
@@ -93,6 +184,83 @@ void main() {
         }
       }
       expect(resolvedLink, 'https://example.com/two');
+    });
+
+    group('resolveLinkOnRow', () {
+      test('resolves a row carrying a single hyperlink from any column', () {
+        terminal.write(
+          [
+            'See PR ',
+            '\u001b]8;;https://github.com/o/r/pull/587\u0007',
+            '#587',
+            '\u001b]8;;\u0007',
+            ' for details',
+          ].join(),
+        );
+
+        // A precise tap off the label does not resolve...
+        expect(tracker.resolveLinkAt(const CellOffset(20, 0)), isNull);
+        // ...but the row-level fallback opens the row's only hyperlink.
+        expect(tracker.resolveLinkOnRow(0), 'https://github.com/o/r/pull/587');
+      });
+
+      test('stays ambiguous when a row carries multiple destinations', () {
+        terminal.write(
+          [
+            '\u001b]8;;https://example.com/a\u0007',
+            'A',
+            '\u001b]8;;\u0007',
+            ' and ',
+            '\u001b]8;;https://example.com/b\u0007',
+            'B',
+            '\u001b]8;;\u0007',
+          ].join(),
+        );
+
+        expect(tracker.resolveLinkOnRow(0), isNull);
+      });
+
+      test('returns null for rows without any hyperlink', () {
+        terminal.write(
+          [
+            '\u001b]8;;https://example.com/a\u0007',
+            'A',
+            '\u001b]8;;\u0007',
+          ].join(),
+        );
+
+        expect(tracker.resolveLinkOnRow(5), isNull);
+      });
+    });
+
+    group('hasLinkInRowRange', () {
+      setUp(() {
+        // `#587` occupies columns 7-10 ("See PR " is 7 characters).
+        terminal.write(
+          [
+            'See PR ',
+            '\u001b]8;;https://github.com/o/r/pull/587\u0007',
+            '#587',
+            '\u001b]8;;\u0007',
+            ' done',
+          ].join(),
+        );
+      });
+
+      test('reports overlap with the hyperlink columns', () {
+        expect(tracker.hasLinkInRowRange(0, 7, 10), isTrue);
+        expect(tracker.hasLinkInRowRange(0, 5, 8), isTrue);
+        expect(tracker.hasLinkInRowRange(0, 10, 14), isTrue);
+      });
+
+      test('reports no overlap before or after the hyperlink', () {
+        expect(tracker.hasLinkInRowRange(0, 0, 6), isFalse);
+        expect(tracker.hasLinkInRowRange(0, 11, 20), isFalse);
+      });
+
+      test('does not match a different row', () {
+        expect(tracker.hasLinkInRowRange(1, 7, 10), isFalse);
+      });
     });
 
     group('retained-link cap / LRU eviction', () {
