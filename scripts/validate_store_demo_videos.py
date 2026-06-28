@@ -79,6 +79,7 @@ def main() -> None:
         )
     _validate_dynamics(paths)
     _validate_live_region_motion(paths)
+    _validate_live_region_progression(paths)
     _validate_sampled_ocr_content(paths)
 
 
@@ -274,6 +275,57 @@ def _validate_live_region_motion(paths: list[Path]) -> None:
         print(
             f'Validated live app motion for {_display_path(path)} '
             f'(live region frozen {fraction * 100:.0f}% of the time)',
+        )
+
+
+def _validate_live_region_progression(paths: list[Path]) -> None:
+    """Ensure the live app capture advances through several distinct screens.
+
+    The frozen-fraction check above is defeated by a blinking cursor or spinner
+    that registers as motion while the screen is structurally stalled on one
+    scene (exactly how an earlier broken iOS capture slipped through). This
+    counts substantial scene changes inside the cropped device region: a real
+    walkthrough visits five screens and trips many scene changes, while a
+    stalled or blank capture barely changes at all.
+    """
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        print('Skipping live-region progression validation; requires ffmpeg.')
+        return
+    min_scene_changes = 4
+    for path in paths:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                '-hide_banner',
+                '-nostats',
+                '-i',
+                str(path),
+                '-vf',
+                (
+                    'crop=iw*0.58:ih*0.46:iw*0.21:ih*0.31,'
+                    "select='gt(scene,0.10)',metadata=print"
+                ),
+                '-an',
+                '-f',
+                'null',
+                '-',
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        scene_changes = len(re.findall(r'scene_score', result.stderr))
+        if scene_changes < min_scene_changes:
+            raise ValueError(
+                f'{_display_path(path)} live app region only changes '
+                f'{scene_changes} time(s); the device capture likely stalled on '
+                'a single screen — regenerate the demo video',
+            )
+        print(
+            f'Validated live app progression for {_display_path(path)} '
+            f'({scene_changes} scene changes)',
         )
 
 
