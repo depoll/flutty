@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/theme.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import 'agent_tool_icon.dart';
@@ -525,7 +526,13 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
     final maxDialogHeight = MediaQuery.sizeOf(context).height * 0.6;
 
     return AlertDialog(
-      title: Text(widget.toolName),
+      title: Text(
+        widget.toolName,
+        style: FluttyTheme.displayMono(
+          fontSize: 18,
+          color: theme.colorScheme.onSurface,
+        ),
+      ),
       contentPadding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
       content: hasSessions
           ? SizedBox(
@@ -649,6 +656,10 @@ class _AiSessionPickerTile extends StatelessWidget {
         session.summary ?? session.sessionId,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
+        style: FluttyTheme.monoStyle.copyWith(
+          fontSize: 13,
+          color: theme.colorScheme.onSurface,
+        ),
       ),
       subtitle: Text(
         session.lastUpdatedLabel.isNotEmpty

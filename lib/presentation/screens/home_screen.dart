@@ -40,6 +40,8 @@ import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/brand_empty_state.dart';
+import '../widgets/brand_error_state.dart';
+import '../widgets/brand_list_skeleton.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/connection_status_dot.dart';
@@ -898,22 +900,11 @@ class HostsPanel extends ConsumerWidget {
     WidgetRef ref,
     AsyncValue<List<Host>> hostsAsync,
   ) => hostsAsync.when(
-    loading: () => _buildCenteredHostsState(
-      child: const CircularProgressIndicator(strokeWidth: 2),
-    ),
-    error: (_, _) => _buildCenteredHostsState(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.error_outline,
-            size: 40,
-            color: Theme.of(context).colorScheme.error,
-          ),
-          const SizedBox(height: 12),
-          const Text('Couldn’t load your saved hosts. Pull down to retry.'),
-        ],
-      ),
+    loading: () => const BrandListSkeleton(),
+    error: (_, _) => BrandErrorState(
+      title: 'couldn’t load hosts',
+      message: 'Your saved hosts didn’t load.',
+      onRetry: () => ref.invalidate(allHostsProvider),
     ),
     data: (hosts) => hosts.isEmpty
         ? _buildEmptyState(context)
@@ -1705,7 +1696,13 @@ class _ConnectionSelectionTile extends StatelessWidget {
       minTileHeight: 64,
       minVerticalPadding: 10,
       leading: const Icon(Icons.terminal),
-      title: Text('Connection #$connectionId'),
+      title: Text(
+        'Connection #$connectionId',
+        style: FluttyTheme.displayMono(
+          fontSize: 15,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
@@ -1721,7 +1718,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
       isThreeLine: preview?.trim().isNotEmpty ?? false,
       trailing: Text(
         _stateLabel(state),
-        style: Theme.of(context).textTheme.labelMedium,
+        style: FluttyTheme.monoStyle.copyWith(
+          fontSize: 12,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
       onTap: onTap,
     );
@@ -1936,6 +1936,10 @@ class _ConnectionPreviewText extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
+    endpointStyle: FluttyTheme.monoStyle.copyWith(
+      fontSize: 12,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
     preview: preview,
     previewSnapshot: previewSnapshot,
     sessionTitle: sessionTitle,
@@ -2067,10 +2071,12 @@ class _KeysPanel extends ConsumerWidget {
         // Keys list
         Expanded(
           child: keysAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (_, _) =>
-                const Center(child: Text('Could not load SSH keys.')),
+            loading: () => const BrandListSkeleton(),
+            error: (_, _) => BrandErrorState(
+              title: 'couldn’t load keys',
+              message: 'Your SSH keys didn’t load.',
+              onRetry: () => ref.invalidate(allKeysProvider),
+            ),
             data: (keys) => keys.isEmpty
                 ? _buildEmptyState(context)
                 : _buildKeysList(context, ref, keys),
@@ -2413,16 +2419,19 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
         // Snippets list
         Expanded(
           child: snippetsAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (_, _) =>
-                const Center(child: Text('Could not load snippets.')),
+            loading: () => const BrandListSkeleton(),
+            error: (_, _) => BrandErrorState(
+              title: 'couldn’t load snippets',
+              message: 'Your snippets didn’t load.',
+              onRetry: () => ref.invalidate(allSnippetsProvider),
+            ),
             data: (snippets) => foldersAsync.when(
-              loading: () => const Center(
-                child: CircularProgressIndicator(strokeWidth: 2),
+              loading: () => const BrandListSkeleton(),
+              error: (_, _) => BrandErrorState(
+                title: 'couldn’t load folders',
+                message: 'Your snippet folders didn’t load.',
+                onRetry: () => ref.invalidate(allSnippetFoldersProvider),
               ),
-              error: (_, _) =>
-                  const Center(child: Text('Could not load snippet folders.')),
               data: (folders) => _buildSnippetsBody(context, snippets, folders),
             ),
           ),

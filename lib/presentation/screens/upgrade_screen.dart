@@ -441,8 +441,10 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                 children: [
                   Text(
                     priceLabel,
-                    style: theme.textTheme.headlineSmall?.copyWith(
+                    style: FluttyTheme.displayMono(
+                      fontSize: 22,
                       fontWeight: FontWeight.w700,
+                      color: colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -663,9 +665,9 @@ class _PlanOfferCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       offer.planLabel,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: colorScheme.onSurface,
+                      style: FluttyTheme.displayMono(
                         fontWeight: FontWeight.w700,
+                        color: colorScheme.onSurface,
                       ),
                     ),
                   ),
@@ -695,9 +697,9 @@ class _PlanOfferCard extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 offer.displayPriceLabel,
-                style: theme.textTheme.titleMedium?.copyWith(
+                style: FluttyTheme.displayMono(
+                  fontSize: 16,
                   color: colorScheme.onSurface,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
               if (offer.detailLabel case final detail?) ...[

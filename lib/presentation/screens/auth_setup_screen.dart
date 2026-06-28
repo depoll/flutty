@@ -184,7 +184,7 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
       _OptionCard(
         icon: Icons.pin_outlined,
         title: 'PIN Code',
-        subtitle: 'Use a 4-8 digit PIN',
+        subtitle: 'Use a 6-8 digit PIN',
         onTap: () => setState(() => _step = 1),
       ),
       const SizedBox(height: 12),
@@ -229,7 +229,7 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
       ),
       const SizedBox(height: 8),
       Text(
-        'Enter a 4-8 digit PIN.',
+        'Enter a 6-8 digit PIN.',
         style: theme.textTheme.bodyLarge?.copyWith(
           color: colorScheme.onSurface.withValues(alpha: 0.72),
         ),
@@ -424,7 +424,7 @@ class _OptionCard extends StatelessWidget {
                 Icon(
                   Icons.arrow_forward_ios,
                   size: 16,
-                  color: colorScheme.onSurface.withValues(alpha: 0.4),
+                  color: colorScheme.onSurfaceVariant,
                 ),
             ],
           ),
