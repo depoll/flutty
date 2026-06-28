@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../app/theme.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
@@ -26,6 +27,9 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/brand_empty_state.dart';
+import '../widgets/brand_error_state.dart';
+import '../widgets/brand_list_skeleton.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/syntax_highlight_controller.dart';
 import '../widgets/syntax_highlight_language.dart';
@@ -1434,9 +1438,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 children: [
                   InkWell(
                     onTap: () => unawaited(_navigateTo('/')),
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                      child: Text('/'),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 8,
+                      ),
+                      child: Text(
+                        '/',
+                        style: FluttyTheme.monoStyle.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     ),
                   ),
                   for (var i = 0; i < realParts.length; i++) ...[
@@ -1463,12 +1475,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                             index: i,
                             isLast: i == realParts.length - 1,
                           ),
-                          style: i == realParts.length - 1
-                              ? TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: theme.colorScheme.primary,
-                                )
-                              : null,
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontWeight: i == realParts.length - 1
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                            color: i == realParts.length - 1
+                                ? theme.colorScheme.onSurface
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ),
@@ -1506,45 +1520,31 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   Widget _buildFileList() {
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const BrandListSkeleton();
     }
 
     if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: 64,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              const SizedBox(height: 16),
-              Text(_error!, textAlign: TextAlign.center),
-              const SizedBox(height: 24),
-              ElevatedButton(onPressed: _connect, child: const Text('Retry')),
-            ],
-          ),
-        ),
+      return BrandErrorState(
+        title: 'couldn’t load files',
+        message: _error,
+        onRetry: () => unawaited(_connect()),
       );
     }
 
     if (_files.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.folder_open,
-              size: 64,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 16),
-            const Text('Directory is empty'),
-          ],
-        ),
+      return BrandEmptyState(
+        title: 'empty directory',
+        message: 'Nothing here yet.',
+        primaryLabel: 'Upload',
+        primaryIcon: Icons.upload_file_outlined,
+        onPrimary: () => unawaited(_showUploadDialog()),
+        secondaryActions: [
+          BrandEmptyAction(
+            icon: Icons.create_new_folder_outlined,
+            label: 'New folder',
+            onTap: () => unawaited(_showCreateDirectoryDialog()),
+          ),
+        ],
       );
     }
 
@@ -2655,21 +2655,26 @@ class _FileListTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: isHighlighted
-            ? theme.textTheme.bodyLarge?.copyWith(
+            ? FluttyTheme.monoStyle.copyWith(
+                fontSize: 14,
                 color: theme.colorScheme.onPrimaryContainer,
                 fontWeight: FontWeight.w600,
               )
-            : null,
+            : FluttyTheme.monoStyle.copyWith(
+                fontSize: 14,
+                color: theme.colorScheme.onSurface,
+              ),
       ),
       subtitle: isDirectory
           ? null
           : Text(
               formatRemoteFileSize(file.attr.size ?? 0),
-              style: isHighlighted
-                  ? theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onPrimaryContainer,
-                    )
-                  : theme.textTheme.bodySmall,
+              style: FluttyTheme.monoStyle.copyWith(
+                fontSize: 12,
+                color: isHighlighted
+                    ? theme.colorScheme.onPrimaryContainer
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -2712,7 +2717,14 @@ class _InfoRow extends StatelessWidget {
             ),
           ),
         ),
-        Expanded(child: Text(value)),
+        Expanded(
+          child: Text(
+            value,
+            style: FluttyTheme.monoStyle.copyWith(
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+        ),
       ],
     ),
   );

@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
+import '../../app/theme.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 
 /// Initial tab configuration for the embedded browser.
@@ -222,19 +223,23 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
     final colorScheme = Theme.of(context).colorScheme;
     return Material(
       color: colorScheme.surface,
-      elevation: 8,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_tabs.length > 1) _buildTabStrip(context),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-              child: _buildBottomControls(context, selectedTab),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_tabs.length > 1) _buildTabStrip(context),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+                child: _buildBottomControls(context, selectedTab),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -294,6 +299,10 @@ class _PortForwardBrowserScreenState extends State<PortForwardBrowserScreen> {
       enableSuggestions: false,
       keyboardType: TextInputType.url,
       textInputAction: TextInputAction.go,
+      style: FluttyTheme.monoStyle.copyWith(
+        fontSize: 13,
+        color: colorScheme.onSurface,
+      ),
       inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'\s'))],
       decoration: InputDecoration(
         isDense: true,

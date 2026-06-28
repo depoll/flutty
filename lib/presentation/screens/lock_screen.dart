@@ -198,7 +198,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                       Text(
                         subtitle,
                         style: theme.textTheme.bodyLarge?.copyWith(
-                          color: colorScheme.onSurface.withValues(alpha: 0.6),
+                          color: colorScheme.onSurfaceVariant,
                         ),
                         textAlign: TextAlign.center,
                       ),

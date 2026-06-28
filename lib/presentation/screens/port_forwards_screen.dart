@@ -12,6 +12,8 @@ import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/brand_empty_state.dart';
+import '../widgets/brand_error_state.dart';
+import '../widgets/brand_list_skeleton.dart';
 
 /// Screen displaying list of port forwards grouped by host.
 class PortForwardsScreen extends ConsumerWidget {
@@ -22,35 +24,23 @@ class PortForwardsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final portForwardsAsync = ref.watch(allPortForwardsProvider);
     final hostsAsync = ref.watch(allHostsProvider);
-    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Port Forwards')),
       body: portForwardsAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: FluttyTheme.emptyStateIconSize,
-                color: theme.colorScheme.error,
-              ),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              const Text('Could not load port forwards.'),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              FilledButton.icon(
-                onPressed: () => ref.invalidate(allPortForwardsProvider),
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Retry'),
-              ),
-            ],
-          ),
+        loading: () => const BrandListSkeleton(),
+        error: (_, _) => BrandErrorState(
+          title: 'couldn’t load forwards',
+          message: 'Your port forwards didn’t load.',
+          onRetry: () => ref.invalidate(allPortForwardsProvider),
         ),
         data: (portForwards) => hostsAsync.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (_, _) => const Center(child: Text('Could not load hosts.')),
+          loading: () => const BrandListSkeleton(),
+          error: (_, _) => BrandErrorState(
+            title: 'couldn’t load hosts',
+            message: 'Your saved hosts didn’t load.',
+            onRetry: () => ref.invalidate(allHostsProvider),
+          ),
           data: (hosts) =>
               _buildPortForwardsList(context, ref, portForwards, hosts),
         ),
@@ -274,9 +264,9 @@ class _HostGroup extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Text(
             hostLabel,
-            style: theme.textTheme.titleSmall?.copyWith(
-              color: theme.colorScheme.primary,
-              fontWeight: FontWeight.bold,
+            style: FluttyTheme.displayMono(
+              fontSize: 14,
+              color: theme.colorScheme.onSurface,
             ),
           ),
         ),
