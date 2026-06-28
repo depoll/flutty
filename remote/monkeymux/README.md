@@ -18,7 +18,9 @@ launched `attach` exactly, so profile-managed values such as `PATH` and
 tool-specific variables remain user-owned. PTY windows inherit that environment
 and add terminal defaults such as `TERM=xterm-256color` and
 `COLORTERM=truecolor` only when the launch environment does not already provide
-usable terminal hints.
+usable terminal hints. They also advertise `FORCE_HYPERLINK=1` (unless already
+set) so OSC 8 capable CLIs such as Copilot and `gh` emit clickable hyperlinks,
+which MonkeySSH renders and opens.
 
 Window switching and reconnect repaint from raw byte history for the selected
 window. Main-screen shell history is capped for responsive switching; active
