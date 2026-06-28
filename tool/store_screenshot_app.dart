@@ -407,7 +407,7 @@ Future<int> _seedDatabase(
           localPort: 5173,
           remoteHost: '127.0.0.1',
           remotePort: 5173,
-          autoStart: const Value(true),
+          autoStart: const Value(false),
         ),
       );
   await database
@@ -432,7 +432,7 @@ Future<int> _seedDatabase(
           localPort: 5432,
           remoteHost: '127.0.0.1',
           remotePort: 5432,
-          autoStart: const Value(true),
+          autoStart: const Value(false),
         ),
       );
   await database
@@ -632,53 +632,90 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runVideoDemoFlow() async {
     final terminalHostId = widget.terminalHostId;
     await _connect(terminalHostId);
+    // The slower iOS simulator can lag on MonkeyMux control-channel setup; wait
+    // for windows to enumerate so the switcher renders and window selection
+    // never stalls the recorded flow.
+    await _ensureMuxReady();
 
-    await _selectClaudeWindow();
-    // Everything recorded for store videos is actual app UI. Keep the route
-    // short and focused on agentic coding rather than a full feature tour.
-    _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
-    await Future<void>.delayed(const Duration(milliseconds: 1600));
-    _emitSceneReady(5);
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+    final base = '/terminal/$terminalHostId?connectionId=$_connectionId';
+
+    // Beat 1 — Claude Code: a real agent session, driven from the keyboard.
+    await _selectMonkeyMuxWindow(2);
+    _go('$base&showKeyboard=1');
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    _emitBeat(1); // Recording starts on the first beat marker.
+    await Future<void>.delayed(const Duration(milliseconds: 650));
     await _typePrompt(_claudePrompt);
     await _hideKeyboard();
+    // Let the live Claude response stream in, keyboard-free, so it does not
+    // block the terminal output.
     await Future<void>.delayed(const Duration(milliseconds: 2600));
 
-    _go(
-      '/terminal/$terminalHostId?connectionId=$_connectionId'
-      '&expandTmux=1',
-    );
-    _emitSceneReady(3);
-    await Future<void>.delayed(const Duration(milliseconds: 3600));
+    // Beat 2 — MonkeyMux: every coding agent alive in its own remote window.
+    _emitBeat(2);
+    _go('$base&expandTmux=1');
+    await Future<void>.delayed(const Duration(milliseconds: 3000));
 
+    // Beat 3 — OpenCode: switch windows inside the same persistent SSH session.
     await _selectMonkeyMuxWindow(4);
-    _go(
-      '/terminal/$terminalHostId?connectionId=$_connectionId'
-      '&pasteDemoImage=1',
-    );
+    _emitBeat(3);
+    _go(base);
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 7800));
+    await Future<void>.delayed(const Duration(milliseconds: 2800));
 
+    // Beat 4 — Image context: a real clipboard image upload + paste, with the
+    // upload confirmation held long enough to read.
+    _emitBeat(4);
+    _go('$base&pasteDemoImage=1');
+    await _hideKeyboard();
+    await Future<void>.delayed(const Duration(milliseconds: 5400));
+
+    // Beat 5 — Copilot: finish in Copilot with the same uploaded context.
     await _selectMonkeyMuxWindow(0);
-    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
-    await _hideKeyboard();
-    _emitSceneReady(0);
-    await Future<void>.delayed(const Duration(milliseconds: 1800));
-
-    _go('/terminal/$terminalHostId?connectionId=$_connectionId&showKeyboard=1');
-    await Future<void>.delayed(const Duration(milliseconds: 600));
+    _emitBeat(5);
+    _go('$base&showKeyboard=1');
+    await Future<void>.delayed(const Duration(milliseconds: 650));
     await _typePrompt(_copilotPrompt);
     await _hideKeyboard();
-    await Future<void>.delayed(const Duration(milliseconds: 2600));
+    await Future<void>.delayed(const Duration(milliseconds: 2800));
   }
 
-  void _emitSceneReady(int index) {
-    final payload = {
-      'scene': _sceneNames[index],
-      'index': index + 1,
-      'paths': widget.target.pathsByScene[index],
-    };
-    debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+  /// Emits an ordered promo beat marker. The compositor records the wall-clock
+  /// offset of each beat (relative to beat 1, when recording starts) so the
+  /// caption track stays synced to what is actually on screen.
+  void _emitBeat(int beat) {
+    debugPrintSynchronously(
+      'STORE_SCREENSHOT_READY ${jsonEncode({'beat': beat})}',
+    );
+  }
+
+  /// Polls MonkeyMux until its windows enumerate so the window switcher and
+  /// programmatic window selection are both ready before the flow relies on
+  /// them. Bounded so a stalled control channel can never hang the recording.
+  Future<void> _ensureMuxReady() async {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(_connectionId!);
+    if (session == null) {
+      throw StateError('SSH session not available for store demo.');
+    }
+    final muxService = ref.read(monkeyMuxServiceProvider);
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final windows = await muxService
+            .listWindows(session, _muxSessionName)
+            .timeout(const Duration(seconds: 8));
+        if (windows.length >= 5) {
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          return;
+        }
+      } on Object {
+        // Keep polling until the deadline; transient control-channel errors are
+        // expected while the session is still warming up.
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
   }
 
   Future<void> _hideKeyboard() async {
@@ -713,7 +750,8 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     }
     await ref
         .read(monkeyMuxServiceProvider)
-        .selectWindow(session, _muxSessionName, windowIndex);
+        .selectWindow(session, _muxSessionName, windowIndex)
+        .timeout(const Duration(seconds: 8), onTimeout: () {});
   }
 
   Future<void> _waitForApp() async {

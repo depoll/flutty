@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import shutil
@@ -25,6 +26,9 @@ DEFAULT_SCENE_HOLD_MS = 1600
 ANDROID_RECORDING_BIT_RATE = 8_000_000
 IOS_APP_PREVIEW_NAME = 'iphone_67_1.mov'
 MAX_COMPOSE_DURATION = 28.0
+# Captions are nudged slightly earlier than their measured beat so they arrive
+# with — never after — the scene they describe (covers recorder start latency).
+CAPTION_LEAD_S = 0.45
 PIXEL_LAUNCHER_PACKAGE = 'com.google.android.apps.nexuslauncher'
 OVERLAY_FPS = 30
 COPILOT_PROMPT = 'Draft a release checklist for this SSH app'
@@ -150,7 +154,7 @@ def _run_target(
     try:
         with tempfile.TemporaryDirectory(prefix='monkeyssh-demo-video-') as tmpdir:
             raw_path = Path(tmpdir) / f'raw{output_path.suffix}'
-            _run_flutter_recording(
+            beat_offsets = _run_flutter_recording(
                 target=screenshot_target,
                 device_id=device_id,
                 demo=demo,
@@ -161,6 +165,7 @@ def _run_target(
                 target=screenshot_target,
                 raw_path=raw_path,
                 output_path=output_path,
+                beat_offsets=beat_offsets,
             )
     finally:
         if restore_android is not None:
@@ -188,7 +193,7 @@ def _run_flutter_recording(
     demo: store_screenshots.StoreDemoEnvironment,
     output_path: Path,
     scene_hold_ms: int,
-) -> None:
+) -> list[float]:
     env = os.environ.copy()
     java_home = store_screenshots._java_home_17()
     if java_home:
@@ -239,16 +244,23 @@ def _run_flutter_recording(
 
     recorder: _NativeScreenRecorder | None = None
     saw_done = False
+    beat_times: dict[int, float] = {}
     try:
         for raw_line in process.stdout:
             print(raw_line, end='')
             line = raw_line.strip()
-            if store_screenshots.READY_MARKER in line and recorder is None:
-                if target.platform == 'android':
-                    _dismiss_android_system_dialogs(device_id, force=True)
-                pending_recorder = _recorder_for_target(target, device_id, output_path)
-                pending_recorder.start()
-                recorder = pending_recorder
+            if store_screenshots.READY_MARKER in line:
+                if recorder is None:
+                    if target.platform == 'android':
+                        _dismiss_android_system_dialogs(device_id, force=True)
+                    pending_recorder = _recorder_for_target(
+                        target, device_id, output_path,
+                    )
+                    pending_recorder.start()
+                    recorder = pending_recorder
+                beat = _parse_beat(line)
+                if beat is not None and beat not in beat_times:
+                    beat_times[beat] = time.monotonic()
             if store_screenshots.DONE_MARKER in line:
                 saw_done = True
                 break
@@ -279,6 +291,43 @@ def _run_flutter_recording(
         raise RuntimeError(f'{output_path} is too small to be a real screen recording')
 
     print(f'Wrote {_display_path(output_path)}')
+    return _compute_beat_offsets(beat_times, len(_promo_segments()))
+
+
+def _parse_beat(line: str) -> int | None:
+    """Extracts the promo beat index from a READY marker line, if present."""
+    marker_at = line.find(store_screenshots.READY_MARKER)
+    if marker_at < 0:
+        return None
+    payload = line[marker_at + len(store_screenshots.READY_MARKER):].strip()
+    if not payload:
+        return None
+    try:
+        data = json.loads(payload)
+    except (ValueError, TypeError):
+        return None
+    beat = data.get('beat') if isinstance(data, dict) else None
+    return beat if isinstance(beat, int) else None
+
+
+def _compute_beat_offsets(
+    beat_times: dict[int, float],
+    seg_count: int,
+) -> list[float]:
+    """Returns per-beat offsets (seconds) relative to beat 1.
+
+    Returns an empty list when the beats are incomplete so callers fall back to
+    even time-slicing.
+    """
+    if 1 not in beat_times:
+        return []
+    origin = beat_times[1]
+    offsets: list[float] = []
+    for beat in range(1, seg_count + 1):
+        if beat not in beat_times:
+            return []
+        offsets.append(max(0.0, beat_times[beat] - origin))
+    return offsets
 
 
 def _compose_promotional_video(
@@ -286,6 +335,7 @@ def _compose_promotional_video(
     target: store_screenshots.ScreenshotTarget,
     raw_path: Path,
     output_path: Path,
+    beat_offsets: list[float] | None = None,
 ) -> None:
     ffmpeg = shutil.which('ffmpeg')
     if ffmpeg is None:
@@ -293,6 +343,7 @@ def _compose_promotional_video(
 
     duration = _video_duration(raw_path)
     duration = min(duration, MAX_COMPOSE_DURATION)
+    seg_starts = _segment_starts(beat_offsets or [], len(_promo_segments()), duration)
     with tempfile.TemporaryDirectory(prefix='monkeyssh-demo-compose-') as tmpdir:
         tmpdir_path = Path(tmpdir)
         layout = _promo_layout(target)
@@ -308,6 +359,7 @@ def _compose_promotional_video(
             duration=duration,
             fps=OVERLAY_FPS,
             directory=frames_dir,
+            seg_starts=seg_starts,
         )
 
         screen_w = layout['screen_width']
@@ -467,19 +519,21 @@ def _render_overlay_frames(
     duration: float,
     fps: int,
     directory: Path,
+    seg_starts: list[float],
 ) -> int:
     width = layout['canvas_width']
     height = layout['canvas_height']
     big = height > 2600
     segments = _promo_segments()
     seg_count = len(segments)
-    seg_dur = duration / seg_count
+    if len(seg_starts) != seg_count:
+        seg_starts = [i * duration / seg_count for i in range(seg_count)]
     margin = int(width * 0.072)
     fonts = {
-        'eyebrow': _load_font(28 if big else 23, bold=True),
+        'eyebrow': _load_font(28 if big else 23, bold=True, mono=True),
         'headline': _load_font(62 if big else 50, bold=True),
         'body': _load_font(30 if big else 25),
-        'label': _load_font(36 if big else 30, bold=True),
+        'label': _load_font(34 if big else 28, bold=True, mono=True),
     }
 
     glow_size = int(width * 0.5)
@@ -493,24 +547,67 @@ def _render_overlay_frames(
     for index in range(frame_count):
         t = min(index / fps, duration)
         frame = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        _draw_drift_glow(frame, t, seg_dur, seg_count, glow_sprites, layout)
-        _draw_top_text(frame, t, segments, seg_dur, margin, text_top, width, fonts)
-        _draw_timeline(frame, t, segments, seg_dur, duration, margin, width, height, fonts)
+        _draw_drift_glow(frame, t, seg_starts, glow_sprites, layout)
+        _draw_top_text(frame, t, segments, seg_starts, duration, margin, text_top, width, fonts)
+        _draw_timeline(frame, t, segments, seg_starts, duration, margin, width, height, fonts)
         frame.save(directory / f'frame-{index:05d}.png')
     return frame_count
+
+
+def _segment_starts(
+    beat_offsets: list[float],
+    seg_count: int,
+    duration: float,
+) -> list[float]:
+    """Builds caption start times from measured beat offsets.
+
+    Falls back to even slicing when beats are missing. Applies a small lead so
+    captions land with their scene, and keeps the starts strictly increasing.
+    """
+    if len(beat_offsets) != seg_count:
+        return [i * duration / seg_count for i in range(seg_count)]
+    starts: list[float] = []
+    prev = -1.0
+    for index, offset in enumerate(beat_offsets):
+        start = 0.0 if index == 0 else max(0.0, offset - CAPTION_LEAD_S)
+        start = max(start, prev + 0.3)
+        start = min(start, max(0.0, duration - 0.3))
+        starts.append(start)
+        prev = start
+    starts[0] = 0.0
+    return starts
+
+
+def _segment_at(t: float, seg_starts: list[float]) -> int:
+    index = 0
+    for candidate, start in enumerate(seg_starts):
+        if t >= start:
+            index = candidate
+        else:
+            break
+    return index
+
+
+def _segment_span(
+    index: int,
+    seg_starts: list[float],
+    duration: float,
+) -> tuple[float, float]:
+    start = seg_starts[index]
+    end = seg_starts[index + 1] if index + 1 < len(seg_starts) else duration
+    return start, max(end - start, 0.1)
 
 
 def _draw_drift_glow(
     frame: Image.Image,
     t: float,
-    seg_dur: float,
-    seg_count: int,
+    seg_starts: list[float],
     glow_sprites: list[Image.Image],
     layout: dict[str, int],
 ) -> None:
     width = layout['canvas_width']
     height = layout['canvas_height']
-    index = min(int(t / seg_dur), seg_count - 1)
+    index = _segment_at(t, seg_starts)
     sprite = glow_sprites[index]
     size = sprite.width
     phase = 2 * math.pi * t
@@ -526,7 +623,8 @@ def _draw_top_text(
     frame: Image.Image,
     t: float,
     segments: list[PromoSegment],
-    seg_dur: float,
+    seg_starts: list[float],
+    duration: float,
     margin: int,
     text_top: int,
     width: int,
@@ -535,15 +633,15 @@ def _draw_top_text(
     region_w = width - 2 * margin
     fade = 0.5
     for index, segment in enumerate(segments):
-        start = index * seg_dur
+        start, seg_len = _segment_span(index, seg_starts, duration)
         local = t - start
-        if local < -fade or local > seg_dur + fade:
+        if local < -fade or local > seg_len + fade:
             continue
         alpha_in = _clamp01(local / fade)
         alpha_out = (
             1.0
             if index == len(segments) - 1
-            else _clamp01((seg_dur - local) / fade)
+            else _clamp01((seg_len - local) / fade)
         )
         env = min(alpha_in, alpha_out)
         if env <= 0.01:
@@ -624,41 +722,41 @@ def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
             eyebrow='Claude Code',
-            headline='Start a real agent session from the keyboard.',
-            body='Open a persistent SSH workspace, use the extended key row, '
-            'and prompt Claude in the live terminal.',
+            headline='Prompt a live agent from your phone.',
+            body='Open a persistent SSH workspace and drive Claude Code from '
+            'the keyboard, extended key row and all.',
             label='Claude',
             accent=(0, 201, 255),
         ),
         PromoSegment(
             eyebrow='MonkeyMux',
-            headline='Keep every coding agent alive remotely.',
-            body='Claude, OpenCode, and Copilot stay in separate windows while '
-            'you switch panes, apps, or networks.',
+            headline='Every agent stays alive, remotely.',
+            body='Claude, Codex, Gemini, OpenCode and Copilot each hold their '
+            'own window. Switch in a tap, even after you drop off Wi-Fi.',
             label='MonkeyMux',
             accent=(244, 114, 182),
         ),
         PromoSegment(
-            eyebrow='OpenCode TUI',
-            headline='Move to OpenCode with the same workspace.',
-            body='OpenCode keeps TUI mouse support, keyboard shortcuts, and '
-            'full scrollback inside the same SSH session.',
+            eyebrow='OpenCode',
+            headline='Real mouse and touch in any TUI.',
+            body='OpenCode keeps full mouse support, shortcuts and scrollback '
+            'inside the same SSH session. Tap, scroll, select.',
             label='OpenCode',
             accent=(129, 140, 248),
         ),
         PromoSegment(
-            eyebrow='Image context',
-            headline='Choose an image. Upload. Paste.',
-            body='The real upload flow sends image context to the remote '
-            'workspace and inserts the path into the agent terminal.',
-            label='Real image paste',
+            eyebrow='Image paste',
+            headline='Paste a real screenshot.',
+            body='Pick an image, upload it to the remote workspace, and drop '
+            'its path into the agent terminal in seconds.',
+            label='Image paste',
             accent=(45, 212, 191),
         ),
         PromoSegment(
             eyebrow='Copilot CLI',
-            headline='Finish in Copilot with the same context.',
-            body='Jump from Claude to OpenCode to Copilot while the panes, '
-            'uploaded context, and working directory stay put.',
+            headline='Tap tool calls. Scroll. Ship.',
+            body='Copilot CLI runs native here too. Expand tool calls with a '
+            'tap, scroll with touch, switch tabs hands-free.',
             label='Copilot',
             accent=(34, 211, 238),
         ),
@@ -700,7 +798,7 @@ def _create_promo_base(
     )
     draw = ImageDraw.Draw(image)
 
-    brand_font = _load_font(40 if target.platform == 'ios' else 36, bold=True)
+    brand_font = _load_font(40 if target.platform == 'ios' else 36, bold=True, mono=True)
     tagline_font = _load_font(22 if target.platform == 'ios' else 20)
     margin = int(width * 0.08)
     draw.text((margin, int(height * 0.045)), 'MonkeySSH', font=brand_font, fill=(255, 255, 255))
@@ -763,7 +861,7 @@ def _draw_timeline(
     frame: Image.Image,
     t: float,
     segments: list[PromoSegment],
-    seg_dur: float,
+    seg_starts: list[float],
     duration: float,
     margin: int,
     width: int,
@@ -772,7 +870,7 @@ def _draw_timeline(
 ) -> None:
     draw = ImageDraw.Draw(frame)
     count = len(segments)
-    seg_index = min(int(t / seg_dur), count - 1)
+    seg_index = _segment_at(t, seg_starts)
     accent = segments[seg_index].accent
 
     track_y = int(height * 0.955)
@@ -818,7 +916,9 @@ def _draw_timeline(
     label_font = fonts['label']
     label_w = _text_w(draw, label, label_font)
     label_h = _text_h(draw, label, label_font)
-    label_y = track_y - int(height * 0.033) - label_h
+    # Seat the now-playing label in the clear band between the phone frame and
+    # the progress track so it never collides with either.
+    label_y = int(height * 0.933) - label_h // 2
     draw.text(
         ((width - label_w) // 2, label_y),
         label,
@@ -881,17 +981,31 @@ def _wrap_text(
     return lines
 
 
-def _load_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
-    candidates = [
-        Path('/System/Library/Fonts/Supplemental/Arial Bold.ttf')
-        if bold
-        else Path('/System/Library/Fonts/Supplemental/Arial.ttf'),
-        Path('/System/Library/Fonts/Helvetica.ttc'),
-        Path('/Library/Fonts/Arial.ttf'),
-        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
-        if bold
-        else Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
-    ]
+def _load_font(
+    size: int,
+    *,
+    bold: bool = False,
+    mono: bool = False,
+) -> ImageFont.ImageFont:
+    if mono:
+        candidates = [
+            Path('/System/Library/Fonts/SFNSMono.ttf'),
+            Path('/System/Library/Fonts/Menlo.ttc'),
+            Path('/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf')
+            if bold
+            else Path('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'),
+        ]
+    else:
+        candidates = [
+            Path('/System/Library/Fonts/Supplemental/Arial Bold.ttf')
+            if bold
+            else Path('/System/Library/Fonts/Supplemental/Arial.ttf'),
+            Path('/System/Library/Fonts/Helvetica.ttc'),
+            Path('/Library/Fonts/Arial.ttf'),
+            Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
+            if bold
+            else Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+        ]
     for path in candidates:
         if path.exists():
             return ImageFont.truetype(str(path), size)
