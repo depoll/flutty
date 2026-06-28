@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../app/app_metadata.dart';
+import '../../app/theme.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../widgets/file_picker_helpers.dart';
@@ -518,14 +519,23 @@ Future<MigrationImportMode?> showMigrationImportModeDialog({
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Settings: ${preview.settingsCount}'),
-        Text('Hosts: ${preview.hostCount}'),
-        Text('Keys: ${preview.keyCount}'),
-        Text('Groups: ${preview.groupCount}'),
-        Text('Snippets: ${preview.snippetCount}'),
-        Text('Snippet folders: ${preview.snippetFolderCount}'),
-        Text('Port forwards: ${preview.portForwardCount}'),
-        Text('Known hosts: ${preview.knownHostCount}'),
+        DefaultTextStyle.merge(
+          style: FluttyTheme.monoStyle,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Settings: ${preview.settingsCount}'),
+              Text('Hosts: ${preview.hostCount}'),
+              Text('Keys: ${preview.keyCount}'),
+              Text('Groups: ${preview.groupCount}'),
+              Text('Snippets: ${preview.snippetCount}'),
+              Text('Snippet folders: ${preview.snippetFolderCount}'),
+              Text('Port forwards: ${preview.portForwardCount}'),
+              Text('Known hosts: ${preview.knownHostCount}'),
+            ],
+          ),
+        ),
         const SizedBox(height: 12),
         Text(message),
       ],
@@ -581,7 +591,7 @@ Future<bool> showTransferPayloadImportConfirmationDialog({
             for (final detail in details)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: Text(detail),
+                child: Text(detail, style: FluttyTheme.monoStyle),
               ),
           ],
         ),

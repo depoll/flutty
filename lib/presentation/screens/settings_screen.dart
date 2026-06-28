@@ -1305,13 +1305,23 @@ class _AboutSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.info_outline),
           title: const Text('App version'),
-          subtitle: Text(_versionLabel(appMetadata)),
+          subtitle: Text(
+            _versionLabel(appMetadata),
+            style: FluttyTheme.monoStyle.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
         if (previewBuildLabel != null)
           ListTile(
             leading: const Icon(Icons.merge_type_outlined),
             title: const Text('Preview build'),
-            subtitle: Text(previewBuildLabel),
+            subtitle: Text(
+              previewBuildLabel,
+              style: FluttyTheme.monoStyle.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
           ),
         ListTile(
           leading: const Icon(Icons.code),

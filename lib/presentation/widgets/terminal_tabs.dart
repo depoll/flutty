@@ -67,7 +67,7 @@ class TerminalTabBar extends ConsumerWidget {
     }
 
     return Container(
-      height: 40,
+      height: 44,
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerLow,
         border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
@@ -163,13 +163,16 @@ class _TerminalTab extends StatelessWidget {
             const SizedBox(width: 4),
             InkWell(
               onTap: onClose,
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.close,
-                  size: 14,
-                  color: colorScheme.onSurfaceVariant,
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 40,
+                height: 44,
+                child: Center(
+                  child: Icon(
+                    Icons.close,
+                    size: 16,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ),

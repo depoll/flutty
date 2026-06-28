@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/theme.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/tmux_state.dart';
@@ -728,7 +729,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     color: theme.colorScheme.primary,
                   ),
                   const SizedBox(width: 8),
-                  Text('Windows', style: theme.textTheme.titleMedium),
+                  Text(
+                    'windows',
+                    style: FluttyTheme.displayMono(
+                      fontSize: 18,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close, size: 20),
@@ -878,7 +885,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
             padding: EdgeInsets.zero,
             tooltip: 'Close window',
             onPressed: () => _closeWindow(window.index),
