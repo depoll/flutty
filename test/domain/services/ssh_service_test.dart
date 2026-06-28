@@ -1169,7 +1169,7 @@ void main() {
       expect(result, same(shell));
       verify(
         () => client.execute(
-          r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
+          r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
           pty: pty,
         ),
       ).called(1);
@@ -1209,7 +1209,7 @@ void main() {
         expect(result, same(shell));
         verify(
           () => client.execute(
-            r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
+            r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""",
             pty: pty,
           ),
         ).called(1);
@@ -1530,11 +1530,14 @@ void main() {
       var terminalNotifications = 0;
       terminal.addListener(() => terminalNotifications += 1);
 
+      // Writing only a partial replay marker must start coalescing and hold the
+      // output. pumpEventQueue drains the stream event without advancing real
+      // time, so the 24ms coalesce timer cannot fire here (avoids racing a real
+      // wall-clock delay against the quiet period on a loaded CI machine).
       shell.stdout.add(
         Uint8List.fromList(utf8.encode(monkeyMuxReplayMarker.substring(0, 12))),
       );
       await pumpEventQueue();
-      await Future<void>.delayed(const Duration(milliseconds: 12));
 
       expect(firstLineText(terminal), isEmpty);
       expect(stdoutEvents, isEmpty);
@@ -1546,13 +1549,15 @@ void main() {
         )
         ..add(Uint8List.fromList(utf8.encode('coalesced replay')));
       await pumpEventQueue();
-      await Future<void>.delayed(const Duration(milliseconds: 12));
 
       expect(firstLineText(terminal), isEmpty);
       expect(stdoutEvents, isEmpty);
       expect(terminalNotifications, 0);
 
-      await Future<void>.delayed(const Duration(milliseconds: 35));
+      // Wait comfortably past the coalesce quiet period (24ms) so the buffered
+      // chunks flush as a single coalesced write.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await pumpEventQueue();
 
       expect(firstLineText(terminal), 'coalesced replay');
       expect(stdoutEvents.join(), contains('coalesced replay'));
