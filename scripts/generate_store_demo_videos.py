@@ -21,10 +21,12 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import generate_store_screenshots as store_screenshots
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_DIR = ROOT / 'build/store-demo-videos'
 DEFAULT_SCENE_HOLD_MS = 1600
 ANDROID_RECORDING_BIT_RATE = 8_000_000
-IOS_APP_PREVIEW_NAME = 'iphone_67_1.mov'
+# Store-slot output locations (all relative to the repo root).
+APP_PREVIEW_DIR = 'ios/fastlane/app-previews/en-US'
+ADS_DIR = 'store/demo-videos/ads'
+GOOGLE_PLAY_DIR = 'store/demo-videos/google-play'
 MAX_COMPOSE_DURATION = 28.0
 # Captions are nudged slightly earlier than their measured beat so they arrive
 # with — never after — the scene they describe (covers recorder start latency).
@@ -36,11 +38,20 @@ CLAUDE_PROMPT = 'Summarize the riskiest release checks'
 
 
 @dataclass(frozen=True)
+class VideoOutput:
+    """One composed deliverable derived from a device's raw recording."""
+
+    kind: str  # 'app_preview' | 'landscape_promo' | 'portrait_ads'
+    rel_path: str  # output path relative to the repo root
+    width: int = 0  # target resolution for app previews
+    height: int = 0
+
+
+@dataclass(frozen=True)
 class DemoVideoTarget:
     name: str
     screenshot_target: store_screenshots.ScreenshotTarget
-    output_name: str
-    ios_app_preview_name: str | None = None
+    outputs: tuple[VideoOutput, ...]
 
 
 @dataclass(frozen=True)
@@ -53,16 +64,36 @@ class PromoSegment:
 
 
 TARGETS = {
-    'ios': DemoVideoTarget(
-        name='ios',
+    'iphone': DemoVideoTarget(
+        name='iphone',
         screenshot_target=store_screenshots.TARGETS['ios_phone'],
-        output_name='monkeyssh-ios-demo.mov',
-        ios_app_preview_name=IOS_APP_PREVIEW_NAME,
+        outputs=(
+            # App Store iPhone slot: full-screen native app at 886x1920.
+            VideoOutput('app_preview', f'{APP_PREVIEW_DIR}/iphone_67_1.mov', 886, 1920),
+            # Branded portrait canvas, kept for ads/marketing use.
+            VideoOutput('portrait_ads', f'{ADS_DIR}/monkeyssh-ios-ads.mp4'),
+        ),
+    ),
+    'ipad': DemoVideoTarget(
+        name='ipad',
+        screenshot_target=store_screenshots.TARGETS['ios_ipad'],
+        outputs=(
+            # App Store iPad 13" slot: full-screen native app at 1200x1600.
+            VideoOutput('app_preview', f'{APP_PREVIEW_DIR}/ipad_13_1.mov', 1200, 1600),
+        ),
     ),
     'android': DemoVideoTarget(
         name='android',
         screenshot_target=store_screenshots.TARGETS['android_phone'],
-        output_name='monkeyssh-android-demo.mp4',
+        outputs=(
+            # Google Play preview (uploaded to YouTube): 16:9 landscape promo.
+            VideoOutput(
+                'landscape_promo',
+                f'{GOOGLE_PLAY_DIR}/monkeyssh-google-play-promo.mp4',
+            ),
+            # Branded portrait canvas, kept for ads/marketing use.
+            VideoOutput('portrait_ads', f'{ADS_DIR}/monkeyssh-android-ads.mp4'),
+        ),
     ),
 }
 
@@ -71,34 +102,26 @@ def main() -> None:
     store_screenshots._prefer_stable_xcode()
     args = _parse_args()
     targets = _targets_for_platform(args.platform)
-    output_dir = Path(args.output_dir).expanduser().resolve()
 
     with store_screenshots.StoreDemoEnvironment() as demo:
         for target in targets:
             _run_target(
                 target=target,
                 demo=demo,
-                output_dir=output_dir,
                 scene_hold_ms=args.scene_hold_ms,
-                write_ios_app_preview=args.ios_app_preview,
             )
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Record short real-device MonkeySSH product demo videos.',
+        description='Record store-compliant MonkeySSH product demo videos.',
     )
     parser.add_argument(
         'platform',
         choices=['ios', 'android', 'both'],
         nargs='?',
         default='both',
-        help='Which demo video to record.',
-    )
-    parser.add_argument(
-        '--output-dir',
-        default=str(DEFAULT_OUTPUT_DIR),
-        help='Directory for generated videos. Defaults to build/store-demo-videos.',
+        help='Which platform to record (ios = iPhone + iPad app previews).',
     )
     parser.add_argument(
         '--scene-hold-ms',
@@ -106,32 +129,22 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_SCENE_HOLD_MS,
         help='Milliseconds to hold each settled scene while recording.',
     )
-    parser.add_argument(
-        '--ios-app-preview',
-        action='store_true',
-        help=(
-            'Also copy the iOS video into ios/fastlane/app-previews/en-US '
-            f'as {IOS_APP_PREVIEW_NAME}.'
-        ),
-    )
     return parser.parse_args()
 
 
 def _targets_for_platform(platform: str) -> list[DemoVideoTarget]:
     if platform == 'ios':
-        return [TARGETS['ios']]
+        return [TARGETS['iphone'], TARGETS['ipad']]
     if platform == 'android':
         return [TARGETS['android']]
-    return [TARGETS['ios'], TARGETS['android']]
+    return [TARGETS['iphone'], TARGETS['ipad'], TARGETS['android']]
 
 
 def _run_target(
     *,
     target: DemoVideoTarget,
     demo: store_screenshots.StoreDemoEnvironment,
-    output_dir: Path,
     scene_hold_ms: int,
-    write_ios_app_preview: bool,
 ) -> None:
     print(f'Recording {target.name} demo video...')
     demo.reset_monkeymux()
@@ -149,11 +162,10 @@ def _run_target(
             device_id,
         )
 
-    output_path = output_dir / target.name / target.output_name
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix='monkeyssh-demo-video-') as tmpdir:
-            raw_path = Path(tmpdir) / f'raw{output_path.suffix}'
+            suffix = '.mov' if screenshot_target.platform == 'ios' else '.mp4'
+            raw_path = Path(tmpdir) / f'raw{suffix}'
             beat_offsets = _run_flutter_recording(
                 target=screenshot_target,
                 device_id=device_id,
@@ -161,29 +173,49 @@ def _run_target(
                 output_path=raw_path,
                 scene_hold_ms=scene_hold_ms,
             )
-            _compose_promotional_video(
-                target=screenshot_target,
-                raw_path=raw_path,
-                output_path=output_path,
-                beat_offsets=beat_offsets,
-            )
+            for output in target.outputs:
+                _compose_output(
+                    output=output,
+                    screenshot_target=screenshot_target,
+                    raw_path=raw_path,
+                    beat_offsets=beat_offsets,
+                )
     finally:
         if restore_android is not None:
             restore_android()
 
-    if (
-        write_ios_app_preview
-        and target.ios_app_preview_name is not None
-        and screenshot_target.platform == 'ios'
-    ):
-        app_preview_path = (
-            ROOT
-            / 'ios/fastlane/app-previews/en-US'
-            / target.ios_app_preview_name
+
+def _compose_output(
+    *,
+    output: VideoOutput,
+    screenshot_target: store_screenshots.ScreenshotTarget,
+    raw_path: Path,
+    beat_offsets: list[float],
+) -> None:
+    output_path = ROOT / output.rel_path
+    if output.kind == 'app_preview':
+        _compose_app_preview(
+            raw_path=raw_path,
+            output_path=output_path,
+            width=output.width,
+            height=output.height,
+            beat_offsets=beat_offsets,
         )
-        app_preview_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(output_path, app_preview_path)
-        print(f'Wrote {app_preview_path.relative_to(ROOT)}')
+    elif output.kind == 'landscape_promo':
+        _compose_landscape_promo(
+            raw_path=raw_path,
+            output_path=output_path,
+            beat_offsets=beat_offsets,
+        )
+    elif output.kind == 'portrait_ads':
+        _compose_promotional_video(
+            target=screenshot_target,
+            raw_path=raw_path,
+            output_path=output_path,
+            beat_offsets=beat_offsets,
+        )
+    else:
+        raise ValueError(f'Unknown video output kind: {output.kind}')
 
 
 def _run_flutter_recording(
@@ -432,6 +464,538 @@ def _compose_promotional_video(
     if output_path.stat().st_size < 500_000:
         raise RuntimeError(f'{output_path} is too small to be a composed demo video')
     print(f'Wrote {_display_path(output_path)}')
+
+
+def _compose_app_preview(
+    *,
+    raw_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    beat_offsets: list[float] | None = None,
+) -> None:
+    """Composes an App Store-compliant preview: the full-screen native app at the
+    exact device slot resolution, with fading lower-third caption overlays and a
+    silent stereo AAC track (Apple validates resolution and prefers an audio
+    track). The app fills the frame at native resolution; copy is overlaid for
+    muted-autoplay context, per Apple's app preview guidelines."""
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        raise RuntimeError('ffmpeg is required to compose app previews.')
+    duration = min(_video_duration(raw_path), MAX_COMPOSE_DURATION)
+    seg_starts = _segment_starts(beat_offsets or [], len(_promo_segments()), duration)
+    with tempfile.TemporaryDirectory(prefix='monkeyssh-app-preview-') as tmpdir:
+        frames_dir = Path(tmpdir) / 'overlay-frames'
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        _render_app_preview_overlays(
+            width=width,
+            height=height,
+            duration=duration,
+            fps=OVERLAY_FPS,
+            directory=frames_dir,
+            seg_starts=seg_starts,
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        filter_parts = [
+            (
+                f'[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,'
+                f'crop={width}:{height},setsar=1[app]'
+            ),
+            '[app][1:v]overlay=0:0:shortest=1[ov]',
+            '[ov]format=yuv420p[out]',
+        ]
+        command = [
+            ffmpeg,
+            '-y',
+            '-loglevel',
+            'error',
+            '-i',
+            str(raw_path),
+            '-framerate',
+            str(OVERLAY_FPS),
+            '-i',
+            str(frames_dir / 'frame-%05d.png'),
+            '-f',
+            'lavfi',
+            '-i',
+            'anullsrc=channel_layout=stereo:sample_rate=48000',
+            '-filter_complex',
+            ';'.join(filter_parts),
+            '-map',
+            '[out]',
+            '-map',
+            '2:a',
+            '-r',
+            '30',
+            '-t',
+            f'{duration:.3f}',
+            '-c:v',
+            'libx264',
+            '-profile:v',
+            'high',
+            '-pix_fmt',
+            'yuv420p',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '256k',
+            '-ac',
+            '2',
+            '-movflags',
+            '+faststart',
+            '-shortest',
+            str(output_path),
+        ]
+        subprocess.run(command, cwd=ROOT, check=True)
+
+    if output_path.stat().st_size < 300_000:
+        raise RuntimeError(f'{output_path} is too small to be an app preview')
+    print(f'Wrote {_display_path(output_path)}')
+
+
+def _render_app_preview_overlays(
+    *,
+    width: int,
+    height: int,
+    duration: float,
+    fps: int,
+    directory: Path,
+    seg_starts: list[float],
+) -> None:
+    segments = _promo_segments()
+    fonts = {
+        'eyebrow': _load_font(max(20, int(width * 0.040)), bold=True, mono=True),
+        'headline': _load_font(max(34, int(width * 0.076)), bold=True),
+    }
+    margin = int(width * 0.062)
+    region_w = width - 2 * margin
+    layers = [
+        _build_app_preview_caption_layer(
+            seg, width, height, margin, region_w, fonts,
+        )
+        for seg in segments
+    ]
+    frame_count = int(math.ceil(duration * fps)) + 1
+    for index in range(frame_count):
+        t = min(index / fps, duration)
+        frame = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        seg_index = _segment_at(t, seg_starts)
+        alpha = _app_preview_caption_alpha(t, seg_index, seg_starts, duration)
+        if alpha > 0.01:
+            layer = layers[seg_index].copy()
+            _scale_alpha(layer, alpha)
+            frame.alpha_composite(layer)
+        _draw_app_preview_progress(
+            frame, t, duration, segments, seg_starts, width, height,
+        )
+        frame.save(directory / f'frame-{index:05d}.png')
+
+
+def _build_app_preview_caption_layer(
+    segment: PromoSegment,
+    width: int,
+    height: int,
+    margin: int,
+    region_w: int,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> Image.Image:
+    layer = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    band_top = int(height * 0.58)
+    span = max(height - band_top, 1)
+    scrim = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    scrim_draw = ImageDraw.Draw(scrim)
+    for y in range(band_top, height):
+        ratio = (y - band_top) / span
+        alpha = int(200 * (ratio ** 1.5))
+        scrim_draw.line([(0, y), (width, y)], fill=(4, 6, 16, alpha))
+    layer.alpha_composite(scrim)
+
+    draw = ImageDraw.Draw(layer)
+    accent = segment.accent
+    eyebrow_font = fonts['eyebrow']
+    headline_font = fonts['headline']
+    line_spacing = max(4, int(height * 0.006))
+    eyebrow = segment.eyebrow.upper()
+    eyebrow_h = _text_h(draw, 'Ag', eyebrow_font)
+    head_h = _wrapped_text_height(draw, segment.headline, headline_font, region_w, line_spacing)
+    gap = int(height * 0.015)
+    bottom_pad = int(height * 0.078)
+    total = eyebrow_h + gap + head_h
+    y0 = height - bottom_pad - total
+    rule_w = int(width * 0.10)
+    draw.rounded_rectangle(
+        [margin, y0 - int(height * 0.018), margin + rule_w, y0 - int(height * 0.014)],
+        radius=3,
+        fill=(*_lighten(accent), 255),
+    )
+    draw.text((margin, y0), eyebrow, font=eyebrow_font, fill=(*_lighten(accent), 255))
+    _draw_wrapped_text(
+        draw,
+        segment.headline,
+        font=headline_font,
+        xy=(margin, y0 + eyebrow_h + gap),
+        max_width=region_w,
+        fill=(255, 255, 255, 255),
+        line_spacing=line_spacing,
+    )
+    return layer
+
+
+def _app_preview_caption_alpha(
+    t: float,
+    seg_index: int,
+    seg_starts: list[float],
+    duration: float,
+) -> float:
+    start, seg_len = _segment_span(seg_index, seg_starts, duration)
+    local = t - start
+    visible = min(seg_len - 0.15, 3.6)
+    if visible <= 0 or local < 0 or local > visible:
+        return 0.0
+    fade_in = 0.4
+    fade_out = 0.55
+    return min(_clamp01(local / fade_in), _clamp01((visible - local) / fade_out))
+
+
+def _draw_app_preview_progress(
+    frame: Image.Image,
+    t: float,
+    duration: float,
+    segments: list[PromoSegment],
+    seg_starts: list[float],
+    width: int,
+    height: int,
+) -> None:
+    draw = ImageDraw.Draw(frame)
+    accent = segments[_segment_at(t, seg_starts)].accent
+    y = height - int(height * 0.024)
+    x0 = int(width * 0.062)
+    x1 = width - int(width * 0.062)
+    thickness = max(3, int(height * 0.0035))
+    draw.rounded_rectangle(
+        [x0, y - thickness, x1, y + thickness], radius=thickness, fill=(255, 255, 255, 46),
+    )
+    progress = _clamp01(t / duration) if duration > 0 else 0.0
+    fill_x = int(x0 + (x1 - x0) * progress)
+    draw.rounded_rectangle(
+        [x0, y - thickness, fill_x, y + thickness], radius=thickness, fill=(*accent, 235),
+    )
+
+
+def _compose_landscape_promo(
+    *,
+    raw_path: Path,
+    output_path: Path,
+    beat_offsets: list[float] | None = None,
+) -> None:
+    """Composes a 16:9 landscape branded promo for the Google Play preview slot
+    (uploaded to YouTube): the portrait app capture sits in a device frame on the
+    left with branded copy on the right. No black bars; the live app is visible
+    from the first frame."""
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        raise RuntimeError('ffmpeg is required to compose the landscape promo.')
+    duration = min(_video_duration(raw_path), MAX_COMPOSE_DURATION)
+    seg_starts = _segment_starts(beat_offsets or [], len(_promo_segments()), duration)
+    layout = _landscape_layout()
+    with tempfile.TemporaryDirectory(prefix='monkeyssh-landscape-') as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        base_path = tmpdir_path / 'base.png'
+        _create_landscape_base(layout).save(base_path)
+        frames_dir = tmpdir_path / 'overlay-frames'
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        _render_landscape_overlays(
+            layout=layout,
+            duration=duration,
+            fps=OVERLAY_FPS,
+            directory=frames_dir,
+            seg_starts=seg_starts,
+        )
+        screen_w = layout['screen_width']
+        screen_h = layout['screen_height']
+        screen_x = layout['screen_x']
+        screen_y = layout['screen_y']
+        filter_parts = [
+            (
+                f'[0:v]scale={screen_w}:{screen_h}:'
+                'force_original_aspect_ratio=decrease,setsar=1[app]'
+            ),
+            "[1:v]format=rgba,hue=h='12*sin(2*PI*t/16)':s=1.05,"
+            "noise=alls=6:allf=t[bg]",
+            (
+                f'[bg][app]overlay=x={screen_x}+({screen_w}-w)/2:'
+                f'y={screen_y}+({screen_h}-h)/2:shortest=1[comp]'
+            ),
+            '[comp][2:v]overlay=0:0:shortest=1[ov]',
+            '[ov]format=yuv420p[out]',
+        ]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            ffmpeg,
+            '-y',
+            '-loglevel',
+            'error',
+            '-i',
+            str(raw_path),
+            '-loop',
+            '1',
+            '-t',
+            f'{duration:.3f}',
+            '-i',
+            str(base_path),
+            '-framerate',
+            str(OVERLAY_FPS),
+            '-i',
+            str(frames_dir / 'frame-%05d.png'),
+            '-f',
+            'lavfi',
+            '-i',
+            'anullsrc=channel_layout=stereo:sample_rate=48000',
+            '-filter_complex',
+            ';'.join(filter_parts),
+            '-map',
+            '[out]',
+            '-map',
+            '3:a',
+            '-r',
+            '30',
+            '-t',
+            f'{duration:.3f}',
+            '-c:v',
+            'libx264',
+            '-profile:v',
+            'high',
+            '-pix_fmt',
+            'yuv420p',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '256k',
+            '-ac',
+            '2',
+            '-movflags',
+            '+faststart',
+            '-shortest',
+            str(output_path),
+        ]
+        subprocess.run(command, cwd=ROOT, check=True)
+
+    if output_path.stat().st_size < 300_000:
+        raise RuntimeError(f'{output_path} is too small to be a landscape promo')
+    print(f'Wrote {_display_path(output_path)}')
+
+
+def _landscape_layout() -> dict[str, int]:
+    width, height = 1920, 1080
+    screen_h = int(height * 0.84)
+    screen_w = int(screen_h * 1440 / 2560)
+    screen_x = int(width * 0.058)
+    screen_y = (height - screen_h) // 2
+    return {
+        'canvas_width': width,
+        'canvas_height': height,
+        'screen_width': screen_w,
+        'screen_height': screen_h,
+        'screen_x': screen_x,
+        'screen_y': screen_y,
+    }
+
+
+def _create_landscape_base(layout: dict[str, int]) -> Image.Image:
+    width = layout['canvas_width']
+    height = layout['canvas_height']
+    image = Image.new('RGB', (width, height), (8, 10, 24))
+    draw = ImageDraw.Draw(image)
+    for y in range(height):
+        ratio = y / max(height - 1, 1)
+        draw.line(
+            [(0, y), (width, y)],
+            fill=(int(9 + ratio * 14), int(12 + ratio * 8), int(31 + ratio * 22)),
+        )
+    glows = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glows)
+    glow_draw.ellipse(
+        (-width // 5, -height // 3, width // 2, height // 2), fill=(0, 201, 255, 60),
+    )
+    glow_draw.ellipse(
+        (width // 2, height // 3, width + width // 5, height + height // 4),
+        fill=(167, 139, 250, 52),
+    )
+    image = Image.alpha_composite(
+        image.convert('RGBA'), glows.filter(ImageFilter.GaussianBlur(radius=120)),
+    )
+    draw = ImageDraw.Draw(image)
+
+    brand_font = _load_font(38, bold=True, mono=True)
+    tagline_font = _load_font(22)
+    panel_x = layout['screen_x'] + layout['screen_width'] + int(width * 0.045)
+    draw.text((panel_x, int(height * 0.11)), 'MonkeySSH', font=brand_font, fill=(255, 255, 255))
+    draw.text(
+        (panel_x, int(height * 0.165)),
+        'Run coding agents over SSH, from anywhere',
+        font=tagline_font,
+        fill=(206, 214, 229),
+    )
+
+    screen_x = layout['screen_x']
+    screen_y = layout['screen_y']
+    screen_width = layout['screen_width']
+    screen_height = layout['screen_height']
+    halo = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    halo_draw = ImageDraw.Draw(halo)
+    halo_draw.rounded_rectangle(
+        [
+            screen_x - 56,
+            screen_y - 56,
+            screen_x + screen_width + 56,
+            screen_y + screen_height + 56,
+        ],
+        radius=96,
+        outline=(0, 201, 255, 90),
+        width=20,
+    )
+    image = Image.alpha_composite(image, halo.filter(ImageFilter.GaussianBlur(radius=48)))
+    shadow = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    frame_rect = [
+        screen_x - 16,
+        screen_y - 16,
+        screen_x + screen_width + 16,
+        screen_y + screen_height + 16,
+    ]
+    shadow_draw.rounded_rectangle(frame_rect, radius=44, fill=(0, 0, 0, 170))
+    image = Image.alpha_composite(image, shadow.filter(ImageFilter.GaussianBlur(radius=24)))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        frame_rect, radius=44, outline=(255, 255, 255, 80), width=4, fill=(5, 8, 22, 255),
+    )
+    return image
+
+
+def _render_landscape_overlays(
+    *,
+    layout: dict[str, int],
+    duration: float,
+    fps: int,
+    directory: Path,
+    seg_starts: list[float],
+) -> None:
+    width = layout['canvas_width']
+    height = layout['canvas_height']
+    segments = _promo_segments()
+    panel_x = layout['screen_x'] + layout['screen_width'] + int(width * 0.045)
+    panel_w = width - panel_x - int(width * 0.05)
+    fonts = {
+        'eyebrow': _load_font(int(height * 0.026), bold=True, mono=True),
+        'headline': _load_font(int(height * 0.066), bold=True),
+        'body': _load_font(int(height * 0.030)),
+        'label': _load_font(int(height * 0.030), bold=True, mono=True),
+    }
+    text_top = int(height * 0.30)
+    frame_count = int(math.ceil(duration * fps)) + 1
+    for index in range(frame_count):
+        t = min(index / fps, duration)
+        frame = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        _draw_landscape_drift_glow(frame, t, segments, seg_starts, layout)
+        for seg_index, segment in enumerate(segments):
+            start, seg_len = _segment_span(seg_index, seg_starts, duration)
+            local = t - start
+            fade = 0.5
+            if local < -fade or local > seg_len + fade:
+                continue
+            alpha_in = _clamp01(local / fade)
+            alpha_out = (
+                1.0
+                if seg_index == len(segments) - 1
+                else _clamp01((seg_len - local) / fade)
+            )
+            env = min(alpha_in, alpha_out)
+            if env <= 0.01:
+                continue
+            layer = _render_segment_text(
+                segment, seg_index + 1, len(segments), panel_w, fonts,
+            )
+            _scale_alpha(layer, env)
+            slide = int((1 - _ease_in_out(alpha_in)) * 40)
+            frame.alpha_composite(layer, (panel_x, text_top + slide))
+        _draw_landscape_timeline(
+            frame, t, segments, seg_starts, duration, panel_x, panel_w, height, fonts,
+        )
+        frame.save(directory / f'frame-{index:05d}.png')
+
+
+def _draw_landscape_drift_glow(
+    frame: Image.Image,
+    t: float,
+    segments: list[PromoSegment],
+    seg_starts: list[float],
+    layout: dict[str, int],
+) -> None:
+    width = layout['canvas_width']
+    height = layout['canvas_height']
+    accent = segments[_segment_at(t, seg_starts)].accent
+    size = int(width * 0.42)
+    sprite = _glow_sprite(accent, size, alpha=44)
+    phase = 2 * math.pi * t
+    top_x = int(width * 0.72 + math.sin(phase / 9) * width * 0.07) - size // 2
+    top_y = int(height * 0.26 + math.cos(phase / 11) * height * 0.06) - size // 2
+    frame.alpha_composite(sprite, (top_x, top_y))
+    bottom_x = int(width * 0.83 + math.sin(phase / 8 + 1.7) * width * 0.06) - size // 2
+    bottom_y = int(height * 0.80 + math.cos(phase / 10) * height * 0.06) - size // 2
+    frame.alpha_composite(sprite, (bottom_x, bottom_y))
+
+
+def _draw_landscape_timeline(
+    frame: Image.Image,
+    t: float,
+    segments: list[PromoSegment],
+    seg_starts: list[float],
+    duration: float,
+    panel_x: int,
+    panel_w: int,
+    height: int,
+    fonts: dict[str, ImageFont.ImageFont],
+) -> None:
+    draw = ImageDraw.Draw(frame)
+    count = len(segments)
+    seg_index = _segment_at(t, seg_starts)
+    accent = segments[seg_index].accent
+    track_y = int(height * 0.88)
+    x0 = panel_x
+    x1 = panel_x + panel_w
+    draw.rounded_rectangle([x0, track_y - 4, x1, track_y + 4], radius=4, fill=(255, 255, 255, 46))
+    progress = _clamp01(t / duration) if duration > 0 else 0.0
+    fill_x = int(x0 + (x1 - x0) * progress)
+    draw.rounded_rectangle([x0, track_y - 4, fill_x, track_y + 4], radius=4, fill=(*accent, 235))
+    for index, segment in enumerate(segments):
+        cx = int(x0 + (x1 - x0) * (index + 0.5) / count)
+        if index < seg_index:
+            node_r = 10
+            color = (*segment.accent, 235)
+        elif index == seg_index:
+            pulse = 0.5 + 0.5 * math.sin(2 * math.pi * t / 1.3)
+            node_r = int(13 + 3 * pulse)
+            draw.ellipse(
+                [cx - node_r - 8, track_y - node_r - 8, cx + node_r + 8, track_y + node_r + 8],
+                outline=(*segment.accent, 180),
+                width=3,
+            )
+            color = (*_lighten(segment.accent), 255)
+        else:
+            node_r = 8
+            color = (255, 255, 255, 70)
+        draw.ellipse(
+            [cx - node_r, track_y - node_r, cx + node_r, track_y + node_r], fill=color,
+        )
+    label = segments[seg_index].label
+    label_font = fonts['label']
+    label_h = _text_h(draw, label, label_font)
+    draw.text(
+        (x0, track_y - int(height * 0.05) - label_h),
+        label,
+        font=label_font,
+        fill=(*_lighten(accent), 255),
+    )
 
 
 def _video_duration(path: Path) -> float:

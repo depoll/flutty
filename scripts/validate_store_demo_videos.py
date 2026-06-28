@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_DIR = ROOT / 'build/store-demo-videos'
-IOS_APP_PREVIEW_DIR = ROOT / 'ios/fastlane/app-previews/en-US'
 BAD_VIDEO_OCR_PATTERNS = {
     'Android system error dialog': re.compile(
         r"Pixel Launcher|isn[’']t responding|not responding|Close app",
@@ -27,28 +25,67 @@ BAD_VIDEO_OCR_PATTERNS = {
 
 @dataclass(frozen=True)
 class VideoTarget:
+    name: str
     platform: str
-    relative_path: Path
+    rel_path: str
     size: tuple[int, int]
+    live_crop: str
+    slot: str
+    requires_audio: bool = False
+    animated_bg: bool = True
 
 
-DEFAULT_TARGETS = {
-    'ios': VideoTarget(
+# Crop expressions isolating the live app region for motion/progression checks.
+_APP_PREVIEW_CROP = 'crop=iw*0.62:ih*0.40:iw*0.19:ih*0.30'
+_PORTRAIT_ADS_CROP = 'crop=iw*0.58:ih*0.46:iw*0.21:ih*0.31'
+_LANDSCAPE_CROP = 'crop=iw*0.20:ih*0.62:iw*0.066:ih*0.19'
+
+TARGETS = [
+    VideoTarget(
+        name='iphone_app_preview',
         platform='ios',
-        relative_path=Path('ios/monkeyssh-ios-demo.mov'),
-        size=(1320, 2868),
+        rel_path='ios/fastlane/app-previews/en-US/iphone_67_1.mov',
+        size=(886, 1920),
+        live_crop=_APP_PREVIEW_CROP,
+        slot='App Store iPhone 6.9" app preview',
+        requires_audio=True,
+        animated_bg=False,
     ),
-    'android': VideoTarget(
+    VideoTarget(
+        name='ipad_app_preview',
+        platform='ios',
+        rel_path='ios/fastlane/app-previews/en-US/ipad_13_1.mov',
+        size=(1200, 1600),
+        live_crop=_APP_PREVIEW_CROP,
+        slot='App Store iPad 13" app preview',
+        requires_audio=True,
+        animated_bg=False,
+    ),
+    VideoTarget(
+        name='google_play_promo',
         platform='android',
-        relative_path=Path('android/monkeyssh-android-demo.mp4'),
-        size=(1440, 2560),
+        rel_path='store/demo-videos/google-play/monkeyssh-google-play-promo.mp4',
+        size=(1920, 1080),
+        live_crop=_LANDSCAPE_CROP,
+        slot='Google Play landscape promo (YouTube)',
     ),
-}
-IOS_APP_PREVIEW_TARGET = VideoTarget(
-    platform='ios',
-    relative_path=Path('iphone_67_1.mov'),
-    size=(1320, 2868),
-)
+    VideoTarget(
+        name='ios_ads',
+        platform='ios',
+        rel_path='store/demo-videos/ads/monkeyssh-ios-ads.mp4',
+        size=(1320, 2868),
+        live_crop=_PORTRAIT_ADS_CROP,
+        slot='iOS portrait ad/marketing',
+    ),
+    VideoTarget(
+        name='android_ads',
+        platform='android',
+        rel_path='store/demo-videos/ads/monkeyssh-android-ads.mp4',
+        size=(1440, 2560),
+        live_crop=_PORTRAIT_ADS_CROP,
+        slot='Android portrait ad/marketing',
+    ),
+]
 
 
 @dataclass(frozen=True)
@@ -60,11 +97,8 @@ class VideoInfo:
 
 def main() -> None:
     args = _parse_args()
-    targets = _targets_for_platform(args.platform, args.ios_app_previews)
-    root = IOS_APP_PREVIEW_DIR if args.ios_app_previews else Path(args.output_dir)
-    root = root.expanduser().resolve()
-
-    paths = [root / target.relative_path for target in targets]
+    targets = _filter_targets(args.platform)
+    paths = [ROOT / target.rel_path for target in targets]
     for path in paths:
         if not path.exists():
             raise FileNotFoundError(f'Missing demo video: {path}')
@@ -77,9 +111,11 @@ def main() -> None:
             max_duration=args.max_duration,
             info=infos[path],
         )
-    _validate_dynamics(paths)
-    _validate_live_region_motion(paths)
-    _validate_live_region_progression(paths)
+        if target.requires_audio:
+            _validate_audio_track(path, target.slot)
+        _validate_dynamics(path, check_freeze=target.animated_bg)
+        _validate_live_region_motion(path, crop=target.live_crop)
+        _validate_live_region_progression(path, crop=target.live_crop)
     _validate_sampled_ocr_content(paths)
 
 
@@ -89,20 +125,10 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         'platform',
-        choices=['ios', 'android', 'both'],
+        choices=['ios', 'android', 'all'],
         nargs='?',
-        default='both',
-        help='Which generated demo video to validate.',
-    )
-    parser.add_argument(
-        '--output-dir',
-        default=str(DEFAULT_OUTPUT_DIR),
-        help='Directory containing generated videos. Defaults to build/store-demo-videos.',
-    )
-    parser.add_argument(
-        '--ios-app-previews',
-        action='store_true',
-        help='Validate committed iOS App Preview videos under ios/fastlane/app-previews.',
+        default='all',
+        help='Which slots to validate (default: all store + ads outputs).',
     )
     parser.add_argument(
         '--min-duration',
@@ -119,19 +145,10 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _targets_for_platform(
-    selected_platform: str,
-    ios_app_previews: bool,
-) -> list[VideoTarget]:
-    if ios_app_previews:
-        if selected_platform == 'android':
-            raise ValueError('--ios-app-previews can only validate iOS videos')
-        return [IOS_APP_PREVIEW_TARGET]
-    if selected_platform == 'ios':
-        return [DEFAULT_TARGETS['ios']]
-    if selected_platform == 'android':
-        return [DEFAULT_TARGETS['android']]
-    return [DEFAULT_TARGETS['ios'], DEFAULT_TARGETS['android']]
+def _filter_targets(platform: str) -> list[VideoTarget]:
+    if platform == 'all':
+        return TARGETS
+    return [target for target in TARGETS if target.platform == platform]
 
 
 def _validate_video(
@@ -173,112 +190,134 @@ def _probe_videos(paths: list[Path]) -> dict[Path, VideoInfo]:
     )
 
 
-def _validate_dynamics(paths: list[Path]) -> None:
+def _validate_audio_track(path: Path, slot: str) -> None:
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe is None:
+        print('Skipping audio-track validation; requires ffprobe.')
+        return
+    result = subprocess.run(
+        [
+            ffprobe,
+            '-v',
+            'error',
+            '-select_streams',
+            'a',
+            '-show_entries',
+            'stream=codec_name',
+            '-of',
+            'default=noprint_wrappers=1:nokey=1',
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    if not result.stdout.strip():
+        raise ValueError(
+            f'{_display_path(path)} ({slot}) has no audio track; App Store app '
+            'previews require an audio track — regenerate the preview',
+        )
+    print(f'Validated audio track for {_display_path(path)} ({result.stdout.strip()})')
+
+
+def _validate_dynamics(path: Path, *, check_freeze: bool) -> None:
     ffmpeg = shutil.which('ffmpeg')
     if ffmpeg is None:
         print('Skipping motion/black validation; requires ffmpeg.')
         return
-    for path in paths:
-        result = subprocess.run(
-            [
-                ffmpeg,
-                '-hide_banner',
-                '-nostats',
-                '-i',
-                str(path),
-                '-vf',
-                'blackdetect=d=0.4:pic_th=0.98,freezedetect=n=0.003:d=2.0',
-                '-an',
-                '-f',
-                'null',
-                '-',
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
+    result = subprocess.run(
+        [
+            ffmpeg,
+            '-hide_banner',
+            '-nostats',
+            '-i',
+            str(path),
+            '-vf',
+            'blackdetect=d=0.4:pic_th=0.98,freezedetect=n=0.003:d=2.0',
+            '-an',
+            '-f',
+            'null',
+            '-',
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    stderr = result.stderr
+    black_total = sum(
+        float(value)
+        for value in re.findall(r'black_duration:(\d+(?:\.\d+)?)', stderr)
+    )
+    if black_total > 1.0:
+        raise ValueError(
+            f'{_display_path(path)} contains {black_total:.1f}s of near-black '
+            'frames; the screen capture likely failed — regenerate the demo video',
         )
-        stderr = result.stderr
-        black_total = sum(
-            float(value)
-            for value in re.findall(r'black_duration:(\d+(?:\.\d+)?)', stderr)
+    # The branded outputs always animate their backdrop, so a whole-frame freeze
+    # means the promo animation is missing. Native app previews are intentionally
+    # just the app (no animated backdrop) and hold still during scene reads, so
+    # the freeze gate is skipped for them; their motion is covered by the
+    # live-region progression check instead.
+    if check_freeze and 'freeze_start' in stderr:
+        raise ValueError(
+            f'{_display_path(path)} contains a frozen/static segment of 2s or '
+            'more; the promotional animation is missing — regenerate the demo video',
         )
-        if black_total > 1.0:
-            raise ValueError(
-                f'{_display_path(path)} contains {black_total:.1f}s of near-black '
-                'frames; the screen capture likely failed — regenerate the demo video',
-            )
-        if 'freeze_start' in stderr:
-            raise ValueError(
-                f'{_display_path(path)} contains a frozen/static segment of 2s or '
-                'more; the promotional animation is missing — regenerate the demo video',
-            )
-        print(f'Validated motion for {_display_path(path)} (no black or frozen segments)')
+    print(f'Validated motion for {_display_path(path)} (no black or frozen segments)')
 
 
-def _validate_live_region_motion(paths: list[Path]) -> None:
-    """Ensure the embedded live app capture actually moves over time.
-
-    The promotional background is always animated, so a whole-frame freeze or
-    black check cannot catch a phone screen that failed to render, crashed, or
-    froze on a single frame. This crops the inner region that always overlaps
-    the live device capture and fails if that region is frozen for nearly the
-    entire video. Intentional scene holds on static screens keep the frozen
-    fraction well below the threshold, while a blank or stalled recording is
-    frozen close to 100% of the time.
-    """
+def _validate_live_region_motion(path: Path, *, crop: str) -> None:
+    """Ensure the embedded live app capture actually moves over time."""
     ffmpeg = shutil.which('ffmpeg')
     if ffmpeg is None:
         print('Skipping live-region motion validation; requires ffmpeg.')
         return
     max_frozen_fraction = 0.9
-    for path in paths:
-        duration = _video_duration(path)
-        if duration <= 0:
-            continue
-        result = subprocess.run(
-            [
-                ffmpeg,
-                '-hide_banner',
-                '-nostats',
-                '-i',
-                str(path),
-                '-vf',
-                (
-                    'crop=iw*0.58:ih*0.46:iw*0.21:ih*0.31,'
-                    'freezedetect=n=0.003:d=1.0'
-                ),
-                '-an',
-                '-f',
-                'null',
-                '-',
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
+    duration = _video_duration(path)
+    if duration <= 0:
+        return
+    result = subprocess.run(
+        [
+            ffmpeg,
+            '-hide_banner',
+            '-nostats',
+            '-i',
+            str(path),
+            '-vf',
+            f'{crop},freezedetect=n=0.003:d=1.0',
+            '-an',
+            '-f',
+            'null',
+            '-',
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    frozen = sum(
+        float(value)
+        for value in re.findall(
+            r'freeze_duration:\s*(\d+(?:\.\d+)?)',
+            result.stderr,
         )
-        frozen = sum(
-            float(value)
-            for value in re.findall(
-                r'freeze_duration:\s*(\d+(?:\.\d+)?)',
-                result.stderr,
-            )
+    )
+    fraction = frozen / duration
+    if fraction > max_frozen_fraction:
+        raise ValueError(
+            f'{_display_path(path)} live app region is frozen '
+            f'{fraction * 100:.0f}% of the time; the device capture likely '
+            'failed or stalled — regenerate the demo video',
         )
-        fraction = frozen / duration
-        if fraction > max_frozen_fraction:
-            raise ValueError(
-                f'{_display_path(path)} live app region is frozen '
-                f'{fraction * 100:.0f}% of the time; the device capture likely '
-                'failed or stalled — regenerate the demo video',
-            )
-        print(
-            f'Validated live app motion for {_display_path(path)} '
-            f'(live region frozen {fraction * 100:.0f}% of the time)',
-        )
+    print(
+        f'Validated live app motion for {_display_path(path)} '
+        f'(live region frozen {fraction * 100:.0f}% of the time)',
+    )
 
 
-def _validate_live_region_progression(paths: list[Path]) -> None:
+def _validate_live_region_progression(path: Path, *, crop: str) -> None:
     """Ensure the live app capture advances through several distinct screens.
 
     The frozen-fraction check above is defeated by a blinking cursor or spinner
@@ -293,40 +332,36 @@ def _validate_live_region_progression(paths: list[Path]) -> None:
         print('Skipping live-region progression validation; requires ffmpeg.')
         return
     min_scene_changes = 4
-    for path in paths:
-        result = subprocess.run(
-            [
-                ffmpeg,
-                '-hide_banner',
-                '-nostats',
-                '-i',
-                str(path),
-                '-vf',
-                (
-                    'crop=iw*0.58:ih*0.46:iw*0.21:ih*0.31,'
-                    "select='gt(scene,0.10)',metadata=print"
-                ),
-                '-an',
-                '-f',
-                'null',
-                '-',
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
+    result = subprocess.run(
+        [
+            ffmpeg,
+            '-hide_banner',
+            '-nostats',
+            '-i',
+            str(path),
+            '-vf',
+            f"{crop},select='gt(scene,0.10)',metadata=print",
+            '-an',
+            '-f',
+            'null',
+            '-',
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    scene_changes = len(re.findall(r'scene_score', result.stderr))
+    if scene_changes < min_scene_changes:
+        raise ValueError(
+            f'{_display_path(path)} live app region only changes '
+            f'{scene_changes} time(s); the device capture likely stalled on '
+            'a single screen — regenerate the demo video',
         )
-        scene_changes = len(re.findall(r'scene_score', result.stderr))
-        if scene_changes < min_scene_changes:
-            raise ValueError(
-                f'{_display_path(path)} live app region only changes '
-                f'{scene_changes} time(s); the device capture likely stalled on '
-                'a single screen — regenerate the demo video',
-            )
-        print(
-            f'Validated live app progression for {_display_path(path)} '
-            f'({scene_changes} scene changes)',
-        )
+    print(
+        f'Validated live app progression for {_display_path(path)} '
+        f'({scene_changes} scene changes)',
+    )
 
 
 def _validate_sampled_ocr_content(paths: list[Path]) -> None:
