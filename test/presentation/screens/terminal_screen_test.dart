@@ -46,7 +46,7 @@ import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 const _trueColorLoginShellCommand =
-    r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+    r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
 void _stubTrueColorLoginShell(
   SSHClient client,
@@ -1306,6 +1306,160 @@ void main() {
     void enablePlainTuiSignals() {
       session.terminal!.write('\x1b[?1004h');
     }
+
+    testWidgets(
+      'opens a Copilot-style underlined URL when tapped',
+      (tester) async {
+        const url = 'https://github.com/depollsoft/MonkeySSH/pull/590';
+        const urlLauncherChannel = MethodChannel(
+          'plugins.flutter.io/url_launcher',
+        );
+        final launchedUrls = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          urlLauncherChannel,
+          (call) async {
+            if (call.method == 'launch') {
+              final arguments = call.arguments! as Map<Object?, Object?>;
+              launchedUrls.add(arguments['url']! as String);
+              return true;
+            }
+            return false;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            urlLauncherChannel,
+            null,
+          ),
+        );
+
+        await pumpScreen(tester);
+        // How Copilot CLI renders links: plain text with an SGR underline and
+        // no OSC 8 hyperlink. A tap must still launch the visible URL.
+        final term = session.terminal!..write('See \x1b[4m$url\x1b[24m ok\r\n');
+        await tester.pumpAndSettle();
+
+        final buffer = term.buffer;
+        var urlRow = -1;
+        var urlCol = -1;
+        for (var r = 0; r < buffer.height; r++) {
+          final idx = buffer.lines[r].getText().indexOf('https://');
+          if (idx >= 0) {
+            urlRow = r;
+            urlCol = idx + (url.length ~/ 2);
+            break;
+          }
+        }
+        expect(urlRow, isNonNegative);
+
+        final render = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        await tester.tapAt(
+          render.localToGlobal(
+            render.getOffset(CellOffset(urlCol, urlRow)) +
+                render.cellSize.center(Offset.zero),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(launchedUrls, [url]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'resolves a URL char-wrapped flush against TUI box borders',
+      (tester) async {
+        await pumpScreen(tester);
+        // Copilot CLI on a narrow screen char-wraps a URL flush against its box
+        // borders across two absolutely positioned (non-wrapped) rendered
+        // lines. Tapping either fragment must resolve the whole URL, and the
+        // U+2502 borders must not leak into it.
+        session.terminal!
+          ..write('\x1b[2J')
+          ..write('\x1b[14;1H\u2502https://github.com/depollsoft/Mon\u2502')
+          ..write('\x1b[15;1H\u2502keySSH/pull/592 ok\u2502');
+        await tester.pumpAndSettle();
+
+        final view = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        const expected = 'https://github.com/depollsoft/MonkeySSH/pull/592';
+        // Tap the first fragment (row 13, after the leading border).
+        final firstHalf = view.resolveLinkTap!(const CellOffset(3, 13));
+        // Tap the second fragment (row 14, after the leading border).
+        final secondHalf = view.resolveLinkTap!(const CellOffset(3, 14));
+
+        expect(firstHalf, expected);
+        expect(secondHalf, expected);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'tapping an OSC 8 hyperlink opens locally without forwarding a mouse '
+      'click to the host',
+      (tester) async {
+        const url = 'https://github.com/depollsoft/MonkeySSH/issues/1';
+        const urlLauncherChannel = MethodChannel(
+          'plugins.flutter.io/url_launcher',
+        );
+        final launchedUrls = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          urlLauncherChannel,
+          (call) async {
+            if (call.method == 'launch') {
+              launchedUrls.add((call.arguments! as Map)['url']! as String);
+              return true;
+            }
+            return false;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            urlLauncherChannel,
+            null,
+          ),
+        );
+
+        await pumpScreen(tester);
+        // A real CLI (gh, `ls --hyperlink`, build tools, …) emits an OSC 8
+        // hyperlink whose label is plain text and whose URL is hidden, and its
+        // TUI enables SGR mouse tracking. Tapping the label must open the URL
+        // locally rather than forwarding a mouse click to the host (which would
+        // make the remote process open it server-side over SSH).
+        session.terminal!
+          ..write('\x1b[?1003h\x1b[?1006h')
+          ..write('\x1b]8;;$url\x07Issue #1\x1b]8;;\x07');
+        await tester.pumpAndSettle();
+
+        final render = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        Offset cellCenter(CellOffset offset) => render.localToGlobal(
+          render.getOffset(offset) + render.cellSize.center(Offset.zero),
+        );
+
+        // Control: tapping an empty cell forwards an SGR mouse report, proving
+        // mouse tracking is genuinely active.
+        shellWrites.clear();
+        await tester.tapAt(cellCenter(const CellOffset(40, 5)));
+        await tester.pumpAndSettle();
+        final emptyForward = shellWrites.map(String.fromCharCodes).join();
+        expect(emptyForward, contains('\x1b[<'));
+
+        // Tapping the hyperlink label opens locally and forwards nothing.
+        shellWrites.clear();
+        await tester.tapAt(cellCenter(const CellOffset(3, 0)));
+        await tester.pumpAndSettle();
+
+        expect(launchedUrls, [url]);
+        final linkForward = shellWrites.map(String.fromCharCodes).join();
+        expect(linkForward, isNot(contains('\x1b[<')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     testWidgets(
       'offers reconnect when the active session disappears unexpectedly',
@@ -7328,6 +7482,52 @@ void main() {
         );
         await tester.pumpAndSettle();
 
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .inlineUnderlines,
+          hasLength(1),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'links the longest existing directory when the file is missing',
+      (tester) async {
+        const missingPath = 'lib/presentation/screens/missing_screen.dart';
+        const existingDir = 'lib/presentation/screens';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(() => sftp.stat('$workingDirectory/$missingPath')).thenAnswer(
+          (_) => Future<SftpFileAttrs>.error(
+            SftpStatusError(SftpStatusCode.noSuchFile, 'no such file'),
+          ),
+        );
+        when(() => sftp.stat('$workingDirectory/$existingDir')).thenAnswer(
+          (_) async => SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+        );
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('cat $missingPath');
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.pumpAndSettle();
+
+        // The missing file is probed first, then its parent directory, which
+        // exists and becomes the linkified substring.
+        verify(() => sftp.stat('$workingDirectory/$missingPath')).called(1);
+        verify(() => sftp.stat('$workingDirectory/$existingDir')).called(1);
         expect(
           tester
               .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))

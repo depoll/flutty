@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.71"
+	monkeyMuxVersion                  = "0.1.75"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -53,6 +53,11 @@ const (
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
+	// Caps for the per-window Kitty image retention used to survive history
+	// eviction across reattaches.
+	maxRetainedKittyImages       = 32
+	maxRetainedKittyImageBytes   = 16 * 1024 * 1024
+	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -374,6 +379,15 @@ type muxWindow struct {
 	redrawForwardingGeneration int
 	redrawForwardingReplay     []byte
 	redrawForwardingBuffer     []byte
+	// Kitty graphics image transmissions retained for replay on reattach.
+	// Placeholder-protocol clients (e.g. Copilot CLI) transmit an image once
+	// and thereafter only re-emit placeholder cells, so the one-time image
+	// bytes must survive independently of the rolling visible history (which
+	// evicts them once enough newer output arrives) or reattached placeholders
+	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
+	kittyImages          map[string][]byte
+	kittyImageOrder      []string
+	kittyGraphicsPending []byte
 }
 
 type windowBroadcastIdentity struct {
@@ -2542,6 +2556,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	}
 	s.windows = append(s.windows, window)
 	s.activeID = window.id
+	// Seed the Kitty image cache from any restored history so an image shown
+	// before a server restart can still be replayed on the next reattach.
+	window.observeKittyGraphicsLocked(window.history)
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2619,6 +2636,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
+	window.observeKittyGraphicsLocked(chunk)
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
@@ -3691,7 +3709,16 @@ func (s *muxServer) activeReplayLocked() []byte {
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	if window.usesForegroundRedrawReplayLocked() {
-		history = nil
+		// The foreground app redraws its own cells on reattach (driven by a
+		// resize), so we must not replay the visible history or it would draw
+		// twice. We do, however, replay any retained Kitty graphics image
+		// transmissions: placeholder-protocol clients (e.g. Copilot CLI)
+		// transmit an image once and then only re-emit the placeholder cells,
+		// so without restoring the image bytes the redrawn placeholders would
+		// have nothing to composite and render blank. The retained transmissions
+		// survive eviction from the rolling visible history and are store-only
+		// (a=T downgraded to a=t) so they produce no visible output themselves.
+		history = window.kittyImageReplayLocked()
 	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
@@ -4381,6 +4408,273 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	}
 	output = append(output, data[copyStart:]...)
 	return output
+}
+
+// kittyTransmission is a single complete Kitty graphics image transmission in
+// store-only form (action downgraded to a=t), keyed by its protocol image id.
+type kittyTransmission struct {
+	id  string
+	buf []byte
+}
+
+// scanKittyTransmissions parses complete Kitty graphics image transmissions from
+// the front of data. It returns the store-only transmissions found (a=T rewritten
+// to a=t), any image ids deleted via a=d, and the number of leading bytes fully
+// consumed. data[consumed:] is the trailing remainder, which either is empty or
+// begins an incomplete transmission and must be prepended to the next chunk.
+//
+// Non-graphics bytes are consumed and discarded; the remainder therefore never
+// accumulates ordinary terminal output.
+func scanKittyTransmissions(data []byte) (txs []kittyTransmission, deletes []string, consumed int) {
+	i := 0
+	for i < len(data) {
+		if data[i] != '\x1b' {
+			i++
+			consumed = i
+			continue
+		}
+		// data[i] == ESC. A graphics command is ESC _ G.
+		if i+2 >= len(data) {
+			// Not enough bytes to tell. If it cannot become "_G", consume the
+			// ESC; otherwise carry the partial introducer forward.
+			if i+1 < len(data) && data[i+1] != '_' {
+				i++
+				consumed = i
+				continue
+			}
+			return txs, deletes, i
+		}
+		if data[i+1] != '_' || data[i+2] != 'G' {
+			i++
+			consumed = i
+			continue
+		}
+		end, buf, id, isDelete, ok := assembleKittyTransmission(data, i)
+		if !ok {
+			// Incomplete transmission: carry everything from here forward.
+			return txs, deletes, i
+		}
+		if isDelete {
+			if id != "" {
+				deletes = append(deletes, id)
+			}
+		} else if buf != nil {
+			txs = append(txs, kittyTransmission{id: id, buf: buf})
+		}
+		i = end
+		consumed = end
+	}
+	return txs, deletes, consumed
+}
+
+// assembleKittyTransmission parses a (possibly multi-chunk) Kitty graphics
+// command beginning at start. It returns the index just past the final APC, the
+// store-only transmission bytes (nil for non-transmissions), the image id, an
+// isDelete flag for a=d commands, and ok=false if the command is incomplete and
+// needs more bytes. a=T is downgraded to a=t so replay never draws or moves the
+// cursor.
+func assembleKittyTransmission(
+	data []byte,
+	start int,
+) (end int, buf []byte, id string, isDelete bool, ok bool) {
+	apcEnd := kittyApcEnd(data, start)
+	if apcEnd < 0 {
+		return 0, nil, "", false, false
+	}
+	args := parseKittyControl(kittyControl(data, start, apcEnd))
+	action := args["a"]
+	if action == "" {
+		action = "t"
+	}
+	switch action {
+	case "d":
+		return apcEnd, nil, args["i"], true, true
+	case "t", "T":
+		// An image transmission; assemble continuation chunks below.
+	default:
+		// Queries (a=q), placements (a=p) etc. are complete but not retained.
+		return apcEnd, nil, "", false, true
+	}
+
+	buf = append(buf, rewriteKittyTransmitAction(data[start:apcEnd])...)
+	more := args["m"] == "1"
+	next := apcEnd
+	for more {
+		if next+2 >= len(data) || data[next] != '\x1b' ||
+			data[next+1] != '_' || data[next+2] != 'G' {
+			return 0, nil, "", false, false
+		}
+		chunkEnd := kittyApcEnd(data, next)
+		if chunkEnd < 0 {
+			return 0, nil, "", false, false
+		}
+		chunkArgs := parseKittyControl(kittyControl(data, next, chunkEnd))
+		buf = append(buf, data[next:chunkEnd]...)
+		more = chunkArgs["m"] == "1"
+		next = chunkEnd
+	}
+	return next, buf, args["i"], false, true
+}
+
+// observeKittyGraphicsLocked retains the Kitty image transmissions seen in chunk
+// so they can be replayed on reattach regardless of how much later output has
+// evicted them from the rolling visible history. Partial transmissions split
+// across chunks are carried forward in kittyGraphicsPending.
+func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
+	if len(chunk) == 0 && len(w.kittyGraphicsPending) == 0 {
+		return
+	}
+	data := chunk
+	if len(w.kittyGraphicsPending) > 0 {
+		data = make([]byte, 0, len(w.kittyGraphicsPending)+len(chunk))
+		data = append(data, w.kittyGraphicsPending...)
+		data = append(data, chunk...)
+	}
+
+	txs, deletes, consumed := scanKittyTransmissions(data)
+	for _, id := range deletes {
+		w.removeKittyImageLocked(id)
+	}
+	for _, tx := range txs {
+		if tx.id == "" {
+			continue // cannot dedupe or replay without an id
+		}
+		w.storeKittyImageLocked(tx.id, tx.buf)
+	}
+
+	remainder := data[consumed:]
+	if len(remainder) > maxKittyGraphicsPendingBytes {
+		// An unterminated or oversized graphics sequence: drop it rather than
+		// buffer unbounded bytes; parsing resyncs at the next introducer.
+		w.kittyGraphicsPending = nil
+		return
+	}
+	if len(remainder) == 0 {
+		w.kittyGraphicsPending = nil
+		return
+	}
+	w.kittyGraphicsPending = append([]byte(nil), remainder...)
+}
+
+func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
+	if w.kittyImages == nil {
+		w.kittyImages = map[string][]byte{}
+	}
+	if _, exists := w.kittyImages[id]; exists {
+		w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+	}
+	w.kittyImageOrder = append(w.kittyImageOrder, id)
+	w.kittyImages[id] = append([]byte(nil), buf...)
+	w.enforceKittyImageCapsLocked()
+}
+
+func (w *muxWindow) removeKittyImageLocked(id string) {
+	if _, ok := w.kittyImages[id]; !ok {
+		return
+	}
+	delete(w.kittyImages, id)
+	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+}
+
+func (w *muxWindow) enforceKittyImageCapsLocked() {
+	total := 0
+	for _, b := range w.kittyImages {
+		total += len(b)
+	}
+	for len(w.kittyImageOrder) > 0 &&
+		(len(w.kittyImageOrder) > maxRetainedKittyImages ||
+			(total > maxRetainedKittyImageBytes && len(w.kittyImageOrder) > 1)) {
+		oldest := w.kittyImageOrder[0]
+		w.kittyImageOrder = w.kittyImageOrder[1:]
+		total -= len(w.kittyImages[oldest])
+		delete(w.kittyImages, oldest)
+	}
+}
+
+// kittyImageReplayLocked returns the retained image transmissions in recency
+// order so a reattaching client can repopulate its image store.
+func (w *muxWindow) kittyImageReplayLocked() []byte {
+	if len(w.kittyImageOrder) == 0 {
+		return nil
+	}
+	var out []byte
+	for _, id := range w.kittyImageOrder {
+		out = append(out, w.kittyImages[id]...)
+	}
+	return out
+}
+
+func removeStringOnce(items []string, target string) []string {
+	for i, item := range items {
+		if item == target {
+			return append(items[:i], items[i+1:]...)
+		}
+	}
+	return items
+}
+
+// kittyApcEnd returns the index just past the ST (ESC \) that terminates the
+// Kitty APC sequence beginning at start, or -1 if it is incomplete. The base64
+// payload never contains ESC, so the first ESC \ after the introducer is the
+// terminator.
+func kittyApcEnd(data []byte, start int) int {
+	for i := start + 3; i+1 < len(data); i++ {
+		if data[i] == '\x1b' && data[i+1] == '\\' {
+			return i + 2
+		}
+	}
+	return -1
+}
+
+// kittyControl returns the control portion (the bytes between "_G" and the ';'
+// payload separator, or the ST if there is no payload) of the APC sequence that
+// spans [start, end).
+func kittyControl(data []byte, start, end int) string {
+	from := start + 3
+	to := end - 2 // before the terminating ESC \
+	if to > len(data) {
+		to = len(data)
+	}
+	if semi := bytes.IndexByte(data[from:to], ';'); semi >= 0 {
+		to = from + semi
+	}
+	if from > to {
+		return ""
+	}
+	return string(data[from:to])
+}
+
+// parseKittyControl parses a comma-separated key=value Kitty control string.
+func parseKittyControl(control string) map[string]string {
+	args := map[string]string{}
+	if control == "" {
+		return args
+	}
+	for _, pair := range strings.Split(control, ",") {
+		if eq := strings.IndexByte(pair, '='); eq >= 0 {
+			args[pair[:eq]] = pair[eq+1:]
+		}
+	}
+	return args
+}
+
+// rewriteKittyTransmitAction returns a copy of a single Kitty APC sequence with
+// a display transmit (a=T) downgraded to a store-only transmit (a=t) so replay
+// never draws or moves the cursor. Other sequences are returned unchanged.
+func rewriteKittyTransmitAction(seq []byte) []byte {
+	from := 3 // past ESC _ G
+	to := len(seq)
+	if semi := bytes.IndexByte(seq, ';'); semi >= 0 && semi < to {
+		to = semi
+	}
+	idx := bytes.Index(seq[from:to], []byte("a=T"))
+	if idx < 0 {
+		return seq
+	}
+	out := make([]byte, len(seq))
+	copy(out, seq)
+	out[from+idx+2] = 't'
+	return out
 }
 
 func csiSequenceEnd(data []byte, start int) int {
@@ -5637,6 +5931,9 @@ func terminalEnvironment(base []string) []string {
 	env := inheritedEnvironment(base)
 	env = appendEnvironmentDefault(env, "TERM", "xterm-256color", terminalTermIsUsable)
 	env = appendEnvironmentDefault(env, "COLORTERM", "truecolor", terminalColorTermIsTrueColor)
+	env = appendEnvironmentDefault(env, "TERM_PROGRAM", "kitty", terminalProgramSupportsInlineImages)
+	env = appendEnvironmentDefault(env, "KITTY_WINDOW_ID", "1", terminalEnvironmentValueIsPresent)
+	env = appendEnvironmentDefault(env, "FORCE_HYPERLINK", "1", terminalEnvironmentValueIsPresent)
 	return env
 }
 
@@ -5682,6 +5979,20 @@ func terminalColorTermIsTrueColor(value string) bool {
 func terminalTermIsUsable(value string) bool {
 	normalized := strings.TrimSpace(strings.ToLower(value))
 	return normalized != "" && normalized != "dumb"
+}
+
+func terminalProgramSupportsInlineImages(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	switch normalized {
+	case "kitty", "wezterm", "ghostty":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalEnvironmentValueIsPresent(value string) bool {
+	return strings.TrimSpace(value) != ""
 }
 
 func expandHomePath(path string) (string, error) {

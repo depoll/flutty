@@ -103,7 +103,7 @@ class EscapeParser {
     'E'.charCode: _escHandleNextLine,
     'H'.charCode: _escHandleTabSet,
     'M'.charCode: _escHandleReverseIndex,
-    // 'P'.charCode: _unsupportedHandler, // Sixel
+    'P'.charCode: _escHandleDCS, // DCS - XTGETTCAP (others skipped to ST)
     // 'c'.charCode: _unsupportedHandler,
     // '#'.charCode: _unsupportedHandler,
     '('.charCode: _escHandleDesignateCharset0, //  SCS - G0
@@ -272,6 +272,8 @@ class EscapeParser {
       _csi.prefix = null;
     }
 
+    _csi.intermediate = null;
+
     var param = 0;
     var hasParam = false;
     var pendingEmptyParam = false;
@@ -337,7 +339,9 @@ class EscapeParser {
       }
 
       if (char > Ascii.NULL && char < Ascii.num0) {
-        // intermediates.add(char);
+        // Intermediate byte (0x20-0x2F). Only the last one is retained; it
+        // disambiguates finals such as `p` (DECRQM `$p` vs DECSTR `!p`).
+        _csi.intermediate = char;
         continue;
       }
 
@@ -361,6 +365,8 @@ class EscapeParser {
     'l'.codeUnitAt(0): _csiHandleMode,
     'm'.codeUnitAt(0): _csiHandleSgr,
     'n'.codeUnitAt(0): _csiHandleDeviceStatusReport,
+    'q'.codeUnitAt(0): _csiHandleRequestTerminalVersion,
+    'p'.codeUnitAt(0): _csiHandleRequestMode,
     'r'.codeUnitAt(0): _csiHandleSetMargins,
     't'.codeUnitAt(0): _csiWindowManipulation,
     'A'.codeUnitAt(0): _csiHandleCursorUp,
@@ -418,6 +424,45 @@ class EscapeParser {
         return handler.sendTertiaryDeviceAttributes();
       default:
         handler.sendPrimaryDeviceAttributes();
+    }
+  }
+
+  /// `ESC [ > q` Request Terminal Name and Version (XTVERSION)
+  ///
+  /// https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+  void _csiHandleRequestTerminalVersion() {
+    // Only the `>` form is XTVERSION. Other `q` finals (DECSCUSR cursor style
+    // with a space intermediate, DECSCA with a `"` intermediate) are not
+    // handled here.
+    if (_csi.prefix == Ascii.greaterThan) {
+      handler.sendTerminalVersion();
+    }
+  }
+
+  /// `ESC [ Ps $ p` Request ANSI Mode (DECRQM).
+  ///
+  /// Only the ANSI-mode form (no prefix) is answered here. The DEC-private form
+  /// (`CSI ? Ps $ p`) is answered by the MonkeySSH app layer, which scans shell
+  /// output and has the extra state it needs (notably DEC mode 2031 colour
+  /// scheme updates); answering it here as well would send the program two
+  /// replies. The `$` intermediate distinguishes DECRQM from the other `p`
+  /// finals (`CSI ! p` DECSTR, `CSI Ps " p` DECSCL, `CSI > Ps p` XTSMPOINTER),
+  /// which fall through to [EscapeHandler.unknownCSI].
+  ///
+  /// https://vt100.net/docs/vt510-rm/DECRQM.html
+  void _csiHandleRequestMode() {
+    if (_csi.intermediate != Ascii.dollarSign) {
+      handler.unknownCSI(_csi.finalByte);
+      return;
+    }
+
+    if (_csi.prefix == null) {
+      final mode = _csi.params.isEmpty ? 0 : _csi.params[0];
+      handler.sendModeReport(mode);
+    } else if (_csi.prefix != Ascii.questionMark) {
+      // `?` (DEC private) is consumed without a reply so the app layer can
+      // answer it; any other prefix is an unrecognized `$ p` sequence.
+      handler.unknownCSI(_csi.finalByte);
     }
   }
 
@@ -850,9 +895,9 @@ class EscapeParser {
       case 10: // Alias: Maximize Terminal Window
       case 11: // Report Terminal Window State
       case 13: // Report Terminal Window Position
-      case 14: // Report Terminal Window Size in Pixels
-      case 15: // Report Screen Size in Pixels
-      case 16: // Report Cell Size in Pixels
+      case 14: // Report text area size in pixels (answered by the app layer)
+      case 15: // Report screen size in pixels (answered by the app layer)
+      case 16: // Report cell size in pixels (answered by the app layer)
         return;
       case 18: // Report Terminal Size (in characters)
         handler.sendSize();
@@ -1286,6 +1331,50 @@ class EscapeParser {
     }
   }
 
+  /// `ESC P ... ST` Device Control String (DCS).
+  ///
+  /// XTGETTCAP (`ESC P + q <hex> ; <hex> ... ST`, a terminfo/termcap capability
+  /// query) and DECRQSS (`ESC P $ q <Pt> ST`, request the current setting of a
+  /// control function) are understood; any other DCS string (Sixel `q`, ...) is
+  /// consumed and ignored so its payload is not rendered as text. Returns false
+  /// when the sequence is incomplete so the caller can wait for more data.
+  ///
+  /// https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+  bool _escHandleDCS() {
+    final body = StringBuffer();
+
+    while (true) {
+      if (_queue.isEmpty) return false;
+      final char = _queue.consume();
+
+      // DCS terminates with ST (`ESC \`).
+      if (char == Ascii.ESC) {
+        if (_queue.isEmpty) return false;
+        if (_queue.consume() == Ascii.backslash) break;
+        continue;
+      }
+      // BEL is tolerated as a terminator for robustness.
+      if (char == Ascii.BEL) break;
+
+      body.writeCharCode(char);
+    }
+
+    final payload = body.toString();
+    // XTGETTCAP request: `+ q <hexcap> [ ; <hexcap> ]...`.
+    if (payload.length >= 2 && payload[0] == '+' && payload[1] == 'q') {
+      final caps = payload.substring(2).split(';');
+      handler.sendTermcapReport(caps);
+      return true;
+    }
+    // DECRQSS (Request Status String): `$ q <Pt>`, where <Pt> is the
+    // intermediate/final of the control function being queried (for example
+    // `r` for DECSTBM, `m` for SGR, ` q` for DECSCUSR).
+    if (payload.length >= 2 && payload[0] == '\$' && payload[1] == 'q') {
+      handler.sendStatusStringReport(payload.substring(2));
+    }
+    return true;
+  }
+
   /// `ESC _ ... ST` Application Program Command (APC).
   ///
   /// Only the Kitty graphics protocol (`ESC _ G <args> ; <payload> ST`) is
@@ -1436,6 +1525,13 @@ class _Csi {
   });
 
   int? prefix;
+
+  /// The last intermediate byte (range `0x20`-`0x2F`) seen before the final
+  /// byte, or `null` when the sequence had no intermediate. Most sequences
+  /// ignore intermediates, but a few finals are disambiguated by them — for
+  /// example `CSI Ps $ p` (DECRQM) versus `CSI ! p` (DECSTR), which share the
+  /// `p` final but differ by their `$` / `!` intermediate.
+  int? intermediate;
 
   List<int> params;
 

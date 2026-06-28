@@ -38,7 +38,6 @@ void main() {
 
     when(() => service.currentState).thenReturn(state);
     _stubRestorePurchases(service);
-
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -66,6 +65,54 @@ void main() {
       find.text('Auto-connect automation is part of MonkeySSH Pro'),
       findsNothing,
     );
+  });
+
+  testWidgets('shows subscription legal details and policy links', (
+    tester,
+  ) async {
+    final service = _MockMonetizationService();
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.free(),
+      offers: [
+        MonetizationOffer(
+          id: 'monthly',
+          productId: 'monkeyssh_pro_monthly',
+          billingPeriod: MonetizationBillingPeriod.monthly,
+          planLabel: 'Monthly',
+          priceLabel: r'$5.00',
+          displayPriceLabel: r'$5.00 / month',
+          rawPrice: 5,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+      ],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+    );
+
+    when(() => service.currentState).thenReturn(state);
+    when(
+      () => service.purchaseOffer(any()),
+    ).thenAnswer(_cancelledPurchaseResult);
+    _stubRestorePurchases(service);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(home: UpgradeScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('subscription details'), findsOneWidget);
+    expect(find.textContaining('auto-renewable'), findsOneWidget);
+    expect(find.textContaining('renew every month'), findsOneWidget);
+    expect(find.text('Privacy Policy'), findsOneWidget);
+    expect(find.text('Terms of Use (EULA)'), findsOneWidget);
   });
 
   testWidgets('plan cards stay legible in dark mode', (tester) async {
@@ -126,11 +173,12 @@ void main() {
       ),
     );
     await tester.pump();
-    final annualSavingsBanner = tester.widget<Text>(
-      find.text(
-        'Annual is the best value - save about 17% compared with paying monthly.',
-      ),
+    final annualSavingsFinder = find.text(
+      'Annual is the best value - save about 17% compared with paying monthly.',
     );
+    await tester.scrollUntilVisible(annualSavingsFinder, 300);
+    await tester.pumpAndSettle();
+    final annualSavingsBanner = tester.widget<Text>(annualSavingsFinder);
     await tester.scrollUntilVisible(find.text('Monthly'), 300);
     await tester.pumpAndSettle();
 
@@ -227,7 +275,6 @@ void main() {
       () => service.purchaseOffer(any()),
     ).thenAnswer(_cancelledPurchaseResult);
     _stubRestorePurchases(service);
-
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -294,11 +341,12 @@ void main() {
       ),
     );
     await tester.pump();
-    final annualSavingsBanner = tester.widget<Text>(
-      find.text(
-        'Annual is the best value - save about 17% compared with paying monthly.',
-      ),
+    final annualSavingsFinder = find.text(
+      'Annual is the best value - save about 17% compared with paying monthly.',
     );
+    await tester.scrollUntilVisible(annualSavingsFinder, 300);
+    await tester.pumpAndSettle();
+    final annualSavingsBanner = tester.widget<Text>(annualSavingsFinder);
     await tester.scrollUntilVisible(find.text('Best value - Save 17%'), 300);
     await tester.pumpAndSettle();
 
@@ -494,7 +542,7 @@ void main() {
         find.textContaining('Unlocked with a one-time purchase on'),
         findsOneWidget,
       );
-      expect(find.text('Choose a plan'), findsNothing);
+      expect(find.text('choose a plan'), findsNothing);
       expect(find.text('Monthly'), findsNothing);
       expect(find.textContaining('cancel future renewals'), findsWidgets);
       expect(find.text('Subscribe monthly'), findsNothing);

@@ -166,15 +166,24 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       vsync: this,
       duration: const Duration(milliseconds: 600),
     );
-    _bounceAnimation =
-        TweenSequence<double>([
-          TweenSequenceItem(tween: Tween(begin: 0, end: -6), weight: 1),
-          TweenSequenceItem(tween: Tween(begin: -6, end: 0), weight: 1),
-          TweenSequenceItem(tween: Tween(begin: 0, end: -3), weight: 1),
-          TweenSequenceItem(tween: Tween(begin: -3, end: 0), weight: 1),
-        ]).animate(
-          CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
-        );
+    // A single subtle attention nudge (ease-out up, ease-in settle) — not a
+    // springy bounce, per the design system's "no bounce/elastic" rule.
+    _bounceAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 0,
+          end: -6,
+        ).chain(CurveTween(curve: Curves.easeOutCubic)),
+        weight: 1,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: -6,
+          end: 0,
+        ).chain(CurveTween(curve: Curves.easeInCubic)),
+        weight: 1.4,
+      ),
+    ]).animate(_bounceController);
     unawaited(_loadPreferredLaunchTool());
     unawaited(
       widget.ref
@@ -448,7 +457,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           !_seenAlertWindowKeys.contains(_tmuxAlertWindowKey(w)),
     );
     if (newAlerts.isNotEmpty) {
-      unawaited(_bounceController.forward(from: 0));
+      final reduceMotion =
+          !mounted || (MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+      if (!reduceMotion) {
+        unawaited(_bounceController.forward(from: 0));
+      }
       for (final w in newAlerts) {
         final windowKey = _tmuxAlertWindowKey(w);
         _seenAlertWindowKeys.add(windowKey);

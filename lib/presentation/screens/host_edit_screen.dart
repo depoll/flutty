@@ -107,6 +107,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   AgentLaunchTool _selectedAgentLaunchTool = AgentLaunchTool.claudeCode;
   RemoteMuxBackend _selectedAgentMuxBackend = RemoteMuxBackend.monkeyMux;
   bool _isFavorite = false;
+  bool _isBusy = false;
   bool _showPassword = false;
   bool _disableTmuxStatusBar = false;
   bool _disableAgentTmuxStatusBar = false;
@@ -550,8 +551,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                         // Authentication section
                         Text(
-                          'Authentication',
-                          style: Theme.of(context).textTheme.titleMedium,
+                          'authentication',
+                          style: FluttyTheme.displayMono(
+                            fontSize: 15,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
                         ),
                         const SizedBox(height: 12),
 
@@ -616,7 +620,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 ...keys.map(
                                   (key) => DropdownMenuItem(
                                     value: key.id,
-                                    child: Text(key.name),
+                                    child: Text(
+                                      key.name,
+                                      style: FluttyTheme.monoStyle,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -690,7 +697,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                     ...availableHosts.map(
                                       (host) => DropdownMenuItem(
                                         value: host.id,
-                                        child: Text(host.label),
+                                        child: Text(
+                                          host.label,
+                                          style: FluttyTheme.monoStyle,
+                                        ),
                                       ),
                                     ),
                                   ],
@@ -716,14 +726,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             Row(
                               children: [
                                 Text(
-                                  'Terminal Theme',
-                                  style: Theme.of(context).textTheme.titleSmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                                  'terminal theme',
+                                  style: FluttyTheme.displayMono(
+                                    fontSize: 14,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurface,
+                                  ),
                                 ),
                                 const SizedBox(width: 8),
                                 const PremiumBadge(),
@@ -787,15 +796,23 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         // Save button
                         FilledButton.icon(
                           key: const Key('host-save-button'),
-                          onPressed: _saveHost,
-                          icon: const Icon(Icons.save),
+                          onPressed: _isBusy ? null : _saveHost,
+                          icon: _isBusy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.save),
                           label: Text(isEditing ? 'Save Changes' : 'Add Host'),
                         ),
                         const SizedBox(height: 16),
 
                         // Test connection button
                         OutlinedButton.icon(
-                          onPressed: _testConnection,
+                          onPressed: _isBusy ? null : _testConnection,
                           icon: const Icon(Icons.network_check),
                           label: const Text('Test Connection'),
                         ),
@@ -1371,7 +1388,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     ...snippets.map(
                       (snippet) => DropdownMenuItem<int?>(
                         value: snippet.id,
-                        child: Text(snippet.name),
+                        child: Text(snippet.name, style: FluttyTheme.monoStyle),
                       ),
                     ),
                   ],
@@ -1415,6 +1432,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   );
 
   Future<void> _saveHost() async {
+    if (_isBusy) {
+      return;
+    }
     final formIsValid = _formKey.currentState!.validate();
     final invalidTarget = _firstInvalidHostField();
     if (!formIsValid || invalidTarget != null) {
@@ -1422,6 +1442,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       return;
     }
 
+    setState(() => _isBusy = true);
     try {
       final monetizationState =
           ref.read(monetizationStateProvider).asData?.value ??
@@ -1489,8 +1510,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not save host. Try again.')),
+          const SnackBar(
+            content: Text(
+              'Couldn’t save this host. Check the required fields and try again.',
+            ),
+          ),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
       }
     }
   }
@@ -1628,8 +1657,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _testConnection() async {
+    if (_isBusy) {
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
 
+    setState(() => _isBusy = true);
     final messenger = ScaffoldMessenger.of(context)
       ..showSnackBar(const SnackBar(content: Text('Testing connection...')));
 
@@ -1675,7 +1708,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
       if (!result.success || result.client == null) {
         messenger.showSnackBar(
-          SnackBar(content: Text(result.error ?? 'Connection test failed')),
+          SnackBar(
+            content: Text(
+              result.error ??
+                  'Connection test failed. Check the host, port, and credentials, then test again.',
+            ),
+          ),
         );
         return;
       }
@@ -1702,6 +1740,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
+      }
     }
   }
 
@@ -2387,7 +2429,7 @@ Future<String?> showFontPickerDialog({
       title: const Text('Terminal Font'),
       content: SizedBox(
         width: double.maxFinite,
-        height: 450,
+        height: MediaQuery.of(context).size.height * 0.6,
         child: Column(
           children: [
             // Current selection preview

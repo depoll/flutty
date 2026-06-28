@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/theme.dart';
 import '../../domain/services/auth_service.dart';
 
 /// Screen for setting up PIN/biometric authentication.
@@ -167,22 +168,23 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     children: [
       Text(
         'Protect Your Data',
-        style: theme.textTheme.headlineSmall?.copyWith(
-          fontWeight: FontWeight.bold,
+        style: FluttyTheme.displayMono(
+          fontSize: 24,
+          color: colorScheme.onSurface,
         ),
       ),
       const SizedBox(height: 8),
       Text(
         'Set up a PIN or use biometrics to secure your SSH credentials.',
         style: theme.textTheme.bodyLarge?.copyWith(
-          color: colorScheme.onSurface.withValues(alpha: 0.6),
+          color: colorScheme.onSurface.withValues(alpha: 0.72),
         ),
       ),
       const SizedBox(height: 32),
       _OptionCard(
         icon: Icons.pin_outlined,
         title: 'PIN Code',
-        subtitle: 'Use a 4-8 digit PIN',
+        subtitle: 'Use a 6-8 digit PIN',
         onTap: () => setState(() => _step = 1),
       ),
       const SizedBox(height: 12),
@@ -220,15 +222,16 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     children: [
       Text(
         'Create PIN',
-        style: theme.textTheme.headlineSmall?.copyWith(
-          fontWeight: FontWeight.bold,
+        style: FluttyTheme.displayMono(
+          fontSize: 24,
+          color: colorScheme.onSurface,
         ),
       ),
       const SizedBox(height: 8),
       Text(
-        'Enter a 4-8 digit PIN.',
+        'Enter a 6-8 digit PIN.',
         style: theme.textTheme.bodyLarge?.copyWith(
-          color: colorScheme.onSurface.withValues(alpha: 0.6),
+          color: colorScheme.onSurface.withValues(alpha: 0.72),
         ),
       ),
       const SizedBox(height: 32),
@@ -278,15 +281,16 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
         children: [
           Text(
             'Confirm PIN',
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.bold,
+            style: FluttyTheme.displayMono(
+              fontSize: 24,
+              color: colorScheme.onSurface,
             ),
           ),
           const SizedBox(height: 8),
           Text(
             'Enter your PIN again to confirm.',
             style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withValues(alpha: 0.6),
+              color: colorScheme.onSurface.withValues(alpha: 0.72),
             ),
           ),
           const SizedBox(height: 32),
@@ -409,7 +413,7 @@ class _OptionCard extends StatelessWidget {
                     Text(
                       subtitle,
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurface.withValues(alpha: 0.6),
+                        color: colorScheme.onSurface.withValues(alpha: 0.72),
                       ),
                     ),
                   ],
@@ -420,7 +424,7 @@ class _OptionCard extends StatelessWidget {
                 Icon(
                   Icons.arrow_forward_ios,
                   size: 16,
-                  color: colorScheme.onSurface.withValues(alpha: 0.4),
+                  color: colorScheme.onSurfaceVariant,
                 ),
             ],
           ),

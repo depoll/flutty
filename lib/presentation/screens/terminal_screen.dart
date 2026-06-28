@@ -1054,7 +1054,7 @@ class _ExtraKeysToggleKeycap extends StatelessWidget {
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
 final _terminalLinkPattern = RegExp(
-  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
+  r'''(?:(?:https?:\/\/)|(?:file:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"'\u2500-\u259f]+''',
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
@@ -1102,7 +1102,11 @@ typedef _TerminalPathSnapshotAnalysis = ({
   List<_TerminalPathMatch> detectedPaths,
   _NormalizedTerminalPathSnapshot normalizedSnapshot,
 });
-typedef _VerifiedTerminalPath = ({String terminalPath, String resolvedPath});
+typedef _VerifiedTerminalPath = ({
+  String terminalPath,
+  String resolvedPath,
+  bool exists,
+});
 typedef _PreparedRemoteMuxCommand = ({
   RemoteMuxBackend backend,
   String command,
@@ -1597,6 +1601,69 @@ List<String> resolveTerminalFilePathVerificationCandidates(String path) {
   return candidates;
 }
 
+/// Whether [candidate] is worth probing for existence on the remote host.
+///
+/// More permissive than [isSupportedTerminalFilePath] so directory prefixes
+/// of a detected path (e.g. `lib/foo` from `lib/foo/bar.dart`) can be probed:
+/// because every candidate is confirmed with a remote `stat`, the stricter
+/// "looks like a file" heuristics used during detection are unnecessary here.
+bool _isProbableTerminalPathExistenceCandidate(String candidate) {
+  if (candidate.isEmpty ||
+      candidate == '~' ||
+      candidate == '.' ||
+      candidate == '..' ||
+      candidate.startsWith('//')) {
+    return false;
+  }
+  if (isExplicitTerminalFilePath(candidate)) {
+    return true;
+  }
+  final segments = candidate.split('/');
+  return segments.length >= 2 &&
+      segments.every((segment) => segment.isNotEmpty);
+}
+
+/// Substrings of [path] to probe for existence, ordered longest first.
+///
+/// Combines the alternative parses from
+/// [resolveTerminalFilePathVerificationCandidates] with directory-prefix
+/// walk-backs of each (`a/b/c/d` -> `a/b/c` -> `a/b`), so the verifier can
+/// linkify only the longest substring of the path that actually exists on the
+/// remote host. Candidates are de-duplicated, restricted to probable paths,
+/// and capped so a single path cannot trigger an unbounded number of remote
+/// `stat` probes.
+@visibleForTesting
+List<String> resolveTerminalFilePathExistenceCandidates(String path) {
+  final ordered = <String>[];
+  final seen = <String>{};
+
+  void add(String candidate) {
+    final normalized = trimTerminalFilePathCandidate(candidate);
+    if (!_isProbableTerminalPathExistenceCandidate(normalized) ||
+        !seen.add(normalized)) {
+      return;
+    }
+    ordered.add(normalized);
+  }
+
+  for (final parse in resolveTerminalFilePathVerificationCandidates(path)) {
+    add(parse);
+    var prefix = parse;
+    var slashIndex = prefix.lastIndexOf('/');
+    while (slashIndex > 0) {
+      prefix = prefix.substring(0, slashIndex);
+      add(prefix);
+      slashIndex = prefix.lastIndexOf('/');
+    }
+  }
+
+  ordered.sort((left, right) => right.length.compareTo(left.length));
+  if (ordered.length > _maxTerminalFilePathVerificationCandidates) {
+    return ordered.sublist(0, _maxTerminalFilePathVerificationCandidates);
+  }
+  return ordered;
+}
+
 /// Candidate terminal cells to probe for a touch-friendly path hit test.
 @visibleForTesting
 List<CellOffset> resolveForgivingTerminalTapOffsets(CellOffset offset) {
@@ -1739,10 +1806,22 @@ bool _isTerminalFilePathBodyCharacter(String character) =>
     !RegExp(r'''[\s<>"'$#]''').hasMatch(character) &&
     !_isTerminalPathContinuationDecorationCharacter(character);
 
-bool _isTerminalPathContinuationDecorationCharacter(String character) =>
-    character == ' ' ||
-    character == '\t' ||
-    '│┃║╎┆┊|├┤┬┴┼└┘┌┐╭╮╯╰─━═'.contains(character);
+bool _isTerminalPathContinuationDecorationCharacter(String character) {
+  if (character.isEmpty) {
+    return false;
+  }
+  if (character == ' ' || character == '\t' || character == '|') {
+    return true;
+  }
+  // The Unicode "Box Drawing" (U+2500–U+257F) and "Block Elements"
+  // (U+2580–U+259F) ranges cover the borders, separators, gutters, and
+  // scrollbar glyphs that terminal UIs paint around their content. None of
+  // these characters appear inside a file path, so treating them as decoration
+  // lets a path span a rendered line break even when a tool draws chrome (such
+  // as a right-edge scrollbar) between the fragments.
+  final codeUnit = character.codeUnitAt(0);
+  return codeUnit >= 0x2500 && codeUnit <= 0x259F;
+}
 
 String _trimTerminalPathContinuationPrefix(String text) {
   var index = 0;
@@ -1751,6 +1830,35 @@ String _trimTerminalPathContinuationPrefix(String text) {
     index++;
   }
   return text.substring(index);
+}
+
+String _trimTerminalPathContinuationSuffix(String text) {
+  var end = text.length;
+  while (end > 0 &&
+      _isTerminalPathContinuationDecorationCharacter(text[end - 1])) {
+    end--;
+  }
+  return text.substring(0, end);
+}
+
+/// Whether [character] is gutter/border chrome (a box-drawing, block-element,
+/// or pipe glyph) rather than plain whitespace padding.
+///
+/// A real URL wrap across a hard rendered-line break leaves such chrome (a
+/// scrollbar thumb or box border) between the fragments; a plain prose newline
+/// or trailing space padding does not.
+bool _isTerminalGutterDecorationCharacter(String character) =>
+    character != ' ' &&
+    character != '\t' &&
+    _isTerminalPathContinuationDecorationCharacter(character);
+
+bool _terminalTextRangeHasGutterDecoration(String text, int start, int end) {
+  for (var index = start; index < end; index++) {
+    if (_isTerminalGutterDecorationCharacter(text[index])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool _startsFreshTerminalFilePathLine(String text) =>
@@ -1787,7 +1895,7 @@ bool _looksLikeTerminalPathContinuationAcrossRenderedLines({
   required String previousText,
   required String nextText,
 }) {
-  final trimmedPreviousText = trimTerminalLinePadding(previousText);
+  final trimmedPreviousText = _trimTerminalPathContinuationSuffix(previousText);
   final trimmedNextText = trimTerminalLinePadding(nextText);
   if (trimmedPreviousText.isEmpty || trimmedNextText.isEmpty) {
     return false;
@@ -1862,8 +1970,32 @@ bool terminalRowMayContainPath(BufferLine line, int viewWidth) {
 }
 
 _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
-  String text,
-) {
+  String text, {
+  bool Function({
+    required String previousText,
+    required String nextText,
+    required bool hadGutterDecoration,
+  })?
+  continuationPredicate,
+}) {
+  bool isContinuation({
+    required String previousText,
+    required String nextText,
+    required bool hadGutterDecoration,
+  }) {
+    if (continuationPredicate != null) {
+      return continuationPredicate(
+        previousText: previousText,
+        nextText: nextText,
+        hadGutterDecoration: hadGutterDecoration,
+      );
+    }
+    return _looksLikeTerminalPathContinuationAcrossRenderedLines(
+      previousText: previousText,
+      nextText: nextText,
+    );
+  }
+
   final normalizedCharacters = <String>[];
   final originalToNormalizedOffsets = List<int>.filled(text.length + 1, 0);
   final normalizedToOriginalStarts = <int>[];
@@ -1896,15 +2028,56 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
         nextLineEnd++;
       }
 
+      // Walk back over trailing decoration on the previous line (padding plus
+      // any gutter or scrollbar glyph painted in its rightmost columns) so a
+      // fragment that ends before the chrome can still join its continuation.
+      var trailingGapStart = index;
+      while (trailingGapStart > lineStart &&
+          _isTerminalPathContinuationDecorationCharacter(
+            text[trailingGapStart - 1],
+          )) {
+        trailingGapStart--;
+      }
+
+      final hadGutterDecoration =
+          _terminalTextRangeHasGutterDecoration(
+            text,
+            trailingGapStart,
+            index,
+          ) ||
+          _terminalTextRangeHasGutterDecoration(
+            text,
+            lineBreakEnd,
+            continuationEnd,
+          );
+
       final isPathContinuation =
           continuationEnd < text.length &&
-          _looksLikeTerminalPathContinuationAcrossRenderedLines(
-            previousText: text.substring(lineStart, index),
+          isContinuation(
+            previousText: text.substring(lineStart, trailingGapStart),
             nextText: text.substring(continuationEnd, nextLineEnd),
+            hadGutterDecoration: hadGutterDecoration,
           );
       if (isPathContinuation) {
+        // Drop the trailing gap characters already emitted for the previous
+        // line so the joined path stays contiguous in the normalized text.
+        final trailingGapLength = index - trailingGapStart;
+        if (trailingGapLength > 0) {
+          normalizedCharacters.removeRange(
+            normalizedCharacters.length - trailingGapLength,
+            normalizedCharacters.length,
+          );
+          normalizedToOriginalStarts.removeRange(
+            normalizedToOriginalStarts.length - trailingGapLength,
+            normalizedToOriginalStarts.length,
+          );
+          normalizedToOriginalEnds.removeRange(
+            normalizedToOriginalEnds.length - trailingGapLength,
+            normalizedToOriginalEnds.length,
+          );
+        }
         for (
-          var skippedIndex = index;
+          var skippedIndex = trailingGapStart;
           skippedIndex < continuationEnd;
           skippedIndex++
         ) {
@@ -2112,13 +2285,77 @@ List<({String path, int start, int end})> detectTerminalFilePaths(
   return null;
 }
 
+/// Matches a terminal list-item marker (e.g. `- `, `* `, `+ `, `1. `) so a
+/// wrapped URL is not joined to the next bullet.
+final _terminalListMarkerPattern = RegExp(r'^(?:[-*+]\s|\d+[.)]\s)');
+
+/// Whether [text] ends inside an unterminated terminal link token.
+///
+/// True when the last whitespace-delimited token carries a link scheme (so the
+/// URL runs to the end of the rendered line and likely continues on the next).
+bool _endsInsideTerminalLinkToken(String text) {
+  final trimmed = _trimTerminalPathContinuationSuffix(text);
+  if (trimmed.isEmpty) {
+    return false;
+  }
+  // Strip any leading decoration (e.g. a box border flush against the URL with
+  // no separating space, as a TUI char-wraps a URL against its right edge) so
+  // the token is recognized as a link rather than starting with the border.
+  final lastToken = _trimTerminalPathContinuationPrefix(
+    trimmed.split(RegExp(r'\s')).last,
+  );
+  return _terminalLinkPattern.matchAsPrefix(lastToken) != null;
+}
+
+/// Continuation rule for terminal links: only rejoin a wrapped URL fragment,
+/// never two separate links or a link and a following list item.
+bool _looksLikeTerminalLinkContinuationAcrossRenderedLines({
+  required String previousText,
+  required String nextText,
+  required bool hadGutterDecoration,
+}) {
+  // Only rejoin a URL across a hard rendered-line break when gutter/border
+  // chrome (a scrollbar thumb or box border, e.g. the Copilot CLI box this
+  // feature targets) was actually stripped at the boundary. A plain prose
+  // newline such as `https://example.com` then `Done.` leaves no chrome, so the
+  // next line must not be welded onto the URL. Soft-wrapped lines never reach
+  // this path: the snapshot concatenates them without a newline.
+  if (!hadGutterDecoration) {
+    return false;
+  }
+  if (!_endsInsideTerminalLinkToken(previousText)) {
+    return false;
+  }
+  final trimmedNext = _trimTerminalPathContinuationPrefix(nextText);
+  if (trimmedNext.isEmpty ||
+      _terminalListMarkerPattern.hasMatch(trimmedNext) ||
+      _terminalLinkPattern.matchAsPrefix(trimmedNext) != null) {
+    return false;
+  }
+  return _isTerminalFilePathBodyCharacter(trimmedNext[0]);
+}
+
 /// Resolves a tappable terminal link at the given text offset, if present.
+///
+/// The text is first normalized so a URL split across rendered lines (e.g. a
+/// long URL wrapped inside a program's bordered TUI, with gutter/scrollbar
+/// decoration between fragments) is rejoined before matching — mirroring the
+/// cross-line reconstruction used for file paths.
 @visibleForTesting
 ({Uri uri, int start, int end})? detectTerminalLinkAtTextOffset(
   String text,
   int offset,
 ) {
-  for (final match in _terminalLinkPattern.allMatches(text)) {
+  final normalized = _normalizeTerminalFilePathDetectionText(
+    text,
+    continuationPredicate:
+        _looksLikeTerminalLinkContinuationAcrossRenderedLines,
+  );
+  final clampedOffset = offset.clamp(0, text.length);
+  final normalizedOffset =
+      normalized.originalToNormalizedOffsets[clampedOffset];
+
+  for (final match in _terminalLinkPattern.allMatches(normalized.text)) {
     final candidate = trimTerminalLinkCandidate(match.group(0)!);
     if (candidate.isEmpty) {
       continue;
@@ -2126,13 +2363,17 @@ List<({String path, int start, int end})> detectTerminalFilePaths(
 
     final normalizedCandidate = normalizeTerminalLinkCandidate(candidate);
     final uri = Uri.tryParse(normalizedCandidate);
-    if (uri == null || !isLaunchableTerminalUri(uri)) {
+    if (uri == null || !isResolvableTerminalLinkUri(uri)) {
       continue;
     }
 
-    final end = match.start + candidate.length;
-    if (offset >= match.start && offset < end) {
-      return (uri: uri, start: match.start, end: end);
+    final normalizedEnd = match.start + candidate.length;
+    if (normalizedOffset >= match.start && normalizedOffset < normalizedEnd) {
+      return (
+        uri: uri,
+        start: normalized.normalizedToOriginalStarts[match.start],
+        end: normalized.normalizedToOriginalEnds[normalizedEnd - 1],
+      );
     }
   }
 
@@ -2149,6 +2390,38 @@ bool isLaunchableTerminalUri(Uri uri) =>
       'mailto',
       'tel',
     }.contains(uri.scheme.toLowerCase());
+
+/// Whether a parsed terminal URI is a `file:` link with a usable path.
+///
+/// A `file:` link names a file on the connected host, so it opens in the SFTP
+/// browser instead of being launched externally. A bare `file://host` (which
+/// Dart normalizes to a `/` path) names no file and is rejected.
+@visibleForTesting
+bool isTerminalFileUri(Uri uri) =>
+    uri.scheme.toLowerCase() == 'file' &&
+    uri.path.isNotEmpty &&
+    uri.path != '/';
+
+/// Whether a parsed terminal URI resolves to a tappable target: either an
+/// externally launchable link or a `file:` link routed to the SFTP browser.
+@visibleForTesting
+bool isResolvableTerminalLinkUri(Uri uri) =>
+    isLaunchableTerminalUri(uri) || isTerminalFileUri(uri);
+
+/// Resolves the remote path a terminal `file:` link should open in the SFTP
+/// browser, or `null` when [link] is not a usable `file:` URI.
+///
+/// The URI host (if any) is ignored: the path is opened on the host the
+/// terminal session is connected to. Percent-encoding is decoded so the SFTP
+/// browser receives the literal path (e.g. `%20` becomes a space).
+@visibleForTesting
+String? resolveTerminalFileUriPath(String link) {
+  final uri = Uri.tryParse(normalizeTerminalLinkCandidate(link));
+  if (uri == null || !isTerminalFileUri(uri)) {
+    return null;
+  }
+  return Uri.decodeComponent(uri.path);
+}
 
 /// Extracts the currently selected text from the native selection overlay.
 @visibleForTesting
@@ -2997,6 +3270,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   DateTime? _terminalPathVerificationBackoffUntil;
   final Map<String, String> _pendingTerminalPathVerifications = {};
   bool _isTerminalPathVerificationBatchScheduled = false;
+  Timer? _terminalPathVerificationBatchTimer;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   late final ProviderSubscription<bool> _terminalWakeLockSubscription;
@@ -9590,6 +9864,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
+    _terminalPathVerificationBatchTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
@@ -11527,7 +11802,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    final externalLink = _resolveTerminalExternalLinkAtOffset(offset);
+    final externalLink = _resolveTerminalExternalLinkAtOffset(
+      offset,
+      forgiving: _isMobilePlatform,
+    );
     if (externalLink != null) {
       _pendingTerminalPathTap = null;
       if (_consumeRecentlyOpenedTerminalLinkTap(externalLink)) {
@@ -11564,39 +11842,71 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return '$_terminalSftpPathPrefix$detectedPath';
   }
 
-  String? _resolveTerminalExternalLinkAtOffset(CellOffset offset) {
+  String? _resolveTerminalExternalLinkAtOffset(
+    CellOffset offset, {
+    bool forgiving = false,
+  }) {
     if (!shouldResolveTerminalTapLinks(
       showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
     )) {
       return null;
     }
 
-    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
-    if (trackedHyperlink != null) {
-      return trackedHyperlink;
+    final candidateOffsets = forgiving
+        ? resolveForgivingTerminalTapOffsets(offset)
+        : <CellOffset>[offset];
+    for (final candidateOffset in candidateOffsets) {
+      final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(
+        candidateOffset,
+      );
+      if (trackedHyperlink != null) {
+        return trackedHyperlink;
+      }
+
+      final row = candidateOffset.y.clamp(0, _terminal.buffer.height - 1);
+      final column = candidateOffset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+      final line = _terminal.buffer.lines[row];
+      if (line.getCodePoint(column) == 0) {
+        continue;
+      }
+
+      // Use the cross-rendered-line snapshot (the same one that reconstructs
+      // wrapped file paths) so a URL split across a program's bordered TUI
+      // lines is rejoined before detection.
+      final linkSnapshot = _buildTerminalPathTapSnapshot(row);
+      if (linkSnapshot == null) {
+        continue;
+      }
+
+      final rowIndex = row - linkSnapshot.startRow;
+      if (rowIndex < 0 || rowIndex >= linkSnapshot.columnOffsets.length) {
+        continue;
+      }
+      final textOffset =
+          linkSnapshot.rowStarts[rowIndex] +
+          linkSnapshot.columnOffsets[rowIndex][column];
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        linkSnapshot.text,
+        textOffset,
+      );
+      if (detectedLink != null) {
+        return detectedLink.uri.toString();
+      }
     }
 
-    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
-    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
-    final line = _terminal.buffer.lines[row];
-    if (line.getCodePoint(column) == 0) {
-      return null;
+    // Forgiving touch fallback: a short OSC 8 label such as `#587` is easy to
+    // miss with a finger, so open the link when the tapped row carries exactly
+    // one tracked hyperlink.
+    if (forgiving) {
+      final rowLink = _terminalHyperlinkTracker?.resolveLinkOnRow(
+        offset.y.clamp(0, _terminal.buffer.height - 1),
+      );
+      if (rowLink != null) {
+        return rowLink;
+      }
     }
 
-    final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
-    if (wrappedSnapshot == null) {
-      return null;
-    }
-
-    final rowIndex = row - wrappedSnapshot.startRow;
-    final textOffset =
-        wrappedSnapshot.rowStarts[rowIndex] +
-        wrappedSnapshot.columnOffsets[rowIndex][column];
-    final detectedLink = detectTerminalLinkAtTextOffset(
-      wrappedSnapshot.text,
-      textOffset,
-    );
-    return detectedLink?.uri.toString();
+    return null;
   }
 
   String? _resolveTerminalFilePathAtOffset(
@@ -11611,12 +11921,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    if (_isInteractiveTerminalFilePath(detectedPath)) {
-      return detectedPath;
-    }
-
+    // Prime verification even for optimistically active paths so the link can
+    // shrink to (or drop below) the longest existing substring once resolved.
     _primeTerminalFilePathVerification(detectedPath);
-    return null;
+    return _isInteractiveTerminalFilePath(detectedPath) ? detectedPath : null;
   }
 
   String? _detectTerminalFilePathAtOffset(
@@ -11645,6 +11953,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   String? _detectTerminalFilePathAtCell(CellOffset offset) {
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    // OSC 8 hyperlinks are authoritative: only linkify text that is not already
+    // a program-declared link.
+    if (_terminalHyperlinkTracker?.resolveLinkAt(CellOffset(column, row)) !=
+        null) {
+      return null;
+    }
     final pathSnapshot = _buildTerminalPathTapSnapshot(row);
     if (pathSnapshot == null) {
       return null;
@@ -11696,43 +12011,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     return null;
-  }
-
-  _TerminalPathTapSnapshot? _buildWrappedTerminalLinkSnapshot(int row) {
-    final buffer = _terminal.buffer;
-    if (row < 0 || row >= buffer.height) {
-      return null;
-    }
-
-    var startRow = row;
-    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
-      startRow--;
-    }
-
-    var endRow = row;
-    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
-      endRow++;
-    }
-
-    final builder = StringBuffer();
-    final rowStarts = <int>[];
-    final columnOffsets = <List<int>>[];
-    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
-      rowStarts.add(builder.length);
-      final lineSnapshot = _buildNativeSelectionLineSnapshot(
-        buffer.lines[lineIndex],
-        buffer.viewWidth,
-      );
-      builder.write(lineSnapshot.text);
-      columnOffsets.add(lineSnapshot.columnOffsets);
-    }
-
-    return (
-      text: builder.toString(),
-      startRow: startRow,
-      rowStarts: rowStarts,
-      columnOffsets: columnOffsets,
-    );
   }
 
   _TerminalPathTapSnapshot? _buildTerminalPathTapSnapshot(int row) {
@@ -12009,7 +12287,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final offset = terminalViewState.renderTerminal.getCellOffset(
       terminalLocalPosition,
     );
-    final tappedLink = _resolveTerminalExternalLinkAtOffset(offset);
+    final tappedLink = _resolveTerminalExternalLinkAtOffset(
+      offset,
+      forgiving: true,
+    );
     if (tappedLink == null) {
       return;
     }
@@ -12542,7 +12823,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .originalToNormalizedOffsets[rowStart];
     final rowNormalizedEnd =
         snapshotAnalysis.normalizedSnapshot.originalToNormalizedOffsets[rowEnd];
-    final relativeCandidatesToPrime = <String>{};
+    final candidatesToPrime = <String>{};
     final segments =
         <({String path, String text, int startColumn, int endColumn})>[];
     for (final detectedPath in snapshotAnalysis.detectedPaths) {
@@ -12552,6 +12833,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       final path = detectedPath.path;
+      // Verify every detected path so its link is trimmed to the longest
+      // existing substring (and dropped if no substring exists remotely).
+      candidatesToPrime.add(path);
       final activePath = _interactiveTerminalFilePathCandidate(path);
       if (activePath != null) {
         final visibleSegment = resolveTerminalFilePathSegmentOnRow(
@@ -12566,18 +12850,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (visibleSegment == null) {
           continue;
         }
+        // Don't layer heuristic file-path linkification over a program-declared
+        // OSC 8 hyperlink: only linkify text that is not already a link.
+        if (_terminalHyperlinkTracker?.hasLinkInRowRange(
+              row,
+              visibleSegment.startColumn,
+              visibleSegment.endColumn,
+            ) ??
+            false) {
+          continue;
+        }
         segments.add((
           path: path,
           text: visibleSegment.text,
           startColumn: visibleSegment.startColumn,
           endColumn: visibleSegment.endColumn,
         ));
-      } else if (requiresTerminalFilePathVerification(path)) {
-        relativeCandidatesToPrime.add(path);
       }
     }
 
-    for (final path in relativeCandidatesToPrime) {
+    for (final path in candidatesToPrime) {
       _primeTerminalFilePathVerification(path);
     }
 
@@ -12639,6 +12931,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(
         _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length)),
       );
+      return;
+    }
+
+    // `file:` links name a file on the connected host, so open them in the
+    // SFTP browser rather than launching them externally.
+    final fileUriPath = resolveTerminalFileUriPath(link);
+    if (fileUriPath != null) {
+      unawaited(_openTerminalFilePath(fileUriPath));
       return;
     }
 
@@ -12798,6 +13098,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+            _terminalViewKey.currentState?.forceFullRepaint();
           }
 
           if (mounted && result != null) {
@@ -12998,12 +13299,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     String cacheKey, {
     required String terminalPath,
     required String resolvedPath,
-  }) {
+  }) => _storeVerifiedTerminalPath(cacheKey, (
+    terminalPath: terminalPath,
+    resolvedPath: resolvedPath,
+    exists: true,
+  ));
+
+  /// Remembers that no substring of the path at [cacheKey] exists remotely, so
+  /// the link is dropped and the dead path is not repeatedly re-probed.
+  void _cacheNonexistentTerminalPath(
+    String cacheKey, {
+    required String terminalPath,
+  }) => _storeVerifiedTerminalPath(cacheKey, (
+    terminalPath: terminalPath,
+    resolvedPath: '',
+    exists: false,
+  ));
+
+  void _storeVerifiedTerminalPath(
+    String cacheKey,
+    _VerifiedTerminalPath verifiedPath,
+  ) {
     _verifiedTerminalPathCache.remove(cacheKey);
-    _verifiedTerminalPathCache[cacheKey] = (
-      terminalPath: terminalPath,
-      resolvedPath: resolvedPath,
-    );
+    _verifiedTerminalPathCache[cacheKey] = verifiedPath;
     _verifiedTerminalPathCacheOrder
       ..remove(cacheKey)
       ..addLast(cacheKey);
@@ -13204,22 +13522,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _interactiveTerminalFilePathCandidate(String terminalPath) {
     final verifiedPath = _verifiedTerminalPath(terminalPath);
     if (verifiedPath != null) {
-      return verifiedPath.terminalPath;
+      // Verification has resolved: link the longest existing substring, or
+      // nothing if no substring of the path exists remotely.
+      return verifiedPath.exists ? verifiedPath.terminalPath : null;
     }
-    if (!_isInteractiveTerminalFilePath(terminalPath)) {
-      return null;
-    }
-    return terminalPath;
+    // Verification is still pending: optimistically link explicit paths so the
+    // link appears immediately, then it shrinks (or drops) once `stat` lands.
+    return _isOptimisticTerminalFilePath(terminalPath) ? terminalPath : null;
   }
 
-  bool _isInteractiveTerminalFilePath(String terminalPath) =>
-      shouldActivateTerminalFilePath(
-        terminalPath,
-        hasVerifiedPath: _verifiedTerminalPath(terminalPath) != null,
-      );
+  bool _isInteractiveTerminalFilePath(String terminalPath) {
+    final verifiedPath = _verifiedTerminalPath(terminalPath);
+    if (verifiedPath != null) {
+      return verifiedPath.exists;
+    }
+    return _isOptimisticTerminalFilePath(terminalPath);
+  }
+
+  /// Whether a not-yet-verified path should behave like a link in the meantime.
+  bool _isOptimisticTerminalFilePath(String terminalPath) =>
+      shouldActivateTerminalFilePath(terminalPath, hasVerifiedPath: false);
 
   void _primeTerminalFilePathVerification(String terminalPath) {
-    if (!requiresTerminalFilePathVerification(terminalPath)) {
+    if (!isSupportedTerminalFilePath(terminalPath)) {
       return;
     }
 
@@ -13242,10 +13567,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _isTerminalPathVerificationBatchScheduled = true;
-    unawaited(() async {
+    // Use a cancelable timer (not Future.delayed) so the pending batch is torn
+    // down in dispose() rather than lingering until it fires.
+    _terminalPathVerificationBatchTimer = Timer(delay, () async {
+      _terminalPathVerificationBatchTimer = null;
       Duration? nextDelay;
       try {
-        await Future<void>.delayed(delay);
         if (!mounted) {
           _pendingTerminalPathVerifications.clear();
           _verifyingTerminalPathCacheKeys.clear();
@@ -13260,7 +13587,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         }
       }
-    }());
+    });
   }
 
   Future<Duration?> _verifyPendingTerminalFilePaths() async {
@@ -13288,7 +13615,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final batch = Map<String, String>.from(_pendingTerminalPathVerifications);
     _pendingTerminalPathVerifications.clear();
-    var verifiedAny = false;
+    var cacheChanged = false;
     try {
       final sftp = await _resolveTerminalPathVerificationSftp(
         session,
@@ -13303,12 +13630,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           continue;
         }
         try {
-          final verifiedPath = await _resolveVerifiedTerminalFilePathWithSftp(
+          await _resolveVerifiedTerminalFilePathWithSftp(
             sftp,
             entry.value,
             showErrors: false,
           );
-          verifiedAny = verifiedAny || verifiedPath != null;
+          // A positive or negative result was cached: refresh underlines so an
+          // optimistic link shrinks to (or drops below) the verified extent.
+          cacheChanged = true;
         } on TimeoutException {
           rethrow;
         } on SftpStatusError {
@@ -13352,7 +13681,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    if (verifiedAny && mounted) {
+    if (cacheChanged && mounted) {
       setState(() {
         _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
       });
@@ -13369,14 +13698,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
-      return cachedPath.resolvedPath;
+      return cachedPath.exists ? cachedPath.resolvedPath : null;
     }
 
     final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
-    final verificationCandidates =
-        requiresTerminalFilePathVerification(terminalPath)
-        ? resolveTerminalFilePathVerificationCandidates(terminalPath)
-        : <String>[terminalPath];
+    // Probe from the full path down through its directory prefixes so the
+    // longest substring that actually exists wins (candidates are ordered
+    // longest first).
+    final verificationCandidates = resolveTerminalFilePathExistenceCandidates(
+      terminalPath,
+    );
     for (final candidate in verificationCandidates) {
       final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
         sftp,
@@ -13411,6 +13742,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return resolvedPath;
     }
 
+    _cacheNonexistentTerminalPath(cacheKey, terminalPath: terminalPath);
     if (showErrors && isExplicitPath) {
       _showTerminalLinkMessage(
         'Could not open "$terminalPath" in SFTP: path does not exist',
@@ -13427,7 +13759,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
-      return cachedPath.resolvedPath;
+      return cachedPath.exists ? cachedPath.resolvedPath : null;
     }
 
     final session = _activeSession();
@@ -13914,6 +14246,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return confirmed ?? false;
   }
 
+  /// Minimum delay between consecutive uploaded-file bracketed pastes.
+  ///
+  /// Agent CLIs such as Copilot CLI only register each pasted path as a separate
+  /// attachment (one preview chip per file) when its bracketed pastes arrive as
+  /// distinct input events; pastes delivered closer together are coalesced and
+  /// shown as plain text. Empirically the coalescing window is ~200ms, so a
+  /// single file is sent immediately and additional files are staggered by this
+  /// margin above that threshold.
+  static const _uploadedAttachmentPasteStagger = Duration(milliseconds: 300);
+
+  /// Inserts references to just-uploaded [remotePaths] into the terminal.
+  ///
+  /// Each path is sent as its own bracketed paste so an agent CLI such as
+  /// Copilot CLI shows a preview chip per file (and so plain shells receive the
+  /// paths as distinct, space-separated arguments). Multiple files are staggered
+  /// by [_uploadedAttachmentPasteStagger] so each registers as its own
+  /// attachment. The pre-built segments are written straight to the session
+  /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
+  /// which would strip the bracketed-paste markers.
+  Future<void> _insertUploadedFileReferences(List<String> remotePaths) async {
+    final segments = buildTerminalAttachmentPasteSegments(
+      remotePaths,
+      bracketedPasteMode: _terminal.bracketedPasteMode,
+    );
+    for (var i = 0; i < segments.length; i++) {
+      if (!mounted) {
+        return;
+      }
+      _terminal.onOutput?.call(segments[i]);
+      if (i < segments.length - 1) {
+        await Future<void>.delayed(_uploadedAttachmentPasteStagger);
+      }
+    }
+  }
+
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard files?',
@@ -13990,7 +14357,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14072,7 +14442,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return remotePath;
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    _terminal.paste('${shellEscapePosix(remotePath)} ');
+    await _insertUploadedFileReferences([remotePath]);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)
@@ -14160,7 +14533,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _followLiveOutput();
-    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    await _insertUploadedFileReferences(remotePaths);
+    if (!mounted) {
+      return;
+    }
     unawaited(
       ref
           .read(telemetryServiceProvider)

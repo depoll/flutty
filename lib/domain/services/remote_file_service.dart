@@ -113,15 +113,25 @@ String? resolveRequestedSftpPath(
 }
 
 /// Sanitizes a filename for remote uploads.
+///
+/// Restricts the name to a strict shell-safe allowlist (letters, digits, `.`,
+/// `_`, `-`) so the resulting remote path can be pasted into the terminal
+/// unquoted. Unquoted paths are required for agent CLIs (e.g. Copilot CLI) to
+/// recognise a pasted path as an attachment, and the allowlist keeps the file
+/// extension intact so image previews still resolve.
 String sanitizeRemoteUploadFileName(String name) {
   final sanitized = path
       .basename(name)
       .trim()
-      .replaceAll(RegExp(r'[\\/\x00-\x1F]'), '-')
-      .replaceAll(RegExp(r'\s+'), '-')
+      .replaceAll(RegExp('[^A-Za-z0-9._-]'), '-')
       .replaceAll(RegExp('-+'), '-')
       .replaceAll(RegExp(r'^-+|-+$'), '');
-  return sanitized.isEmpty ? 'file' : sanitized;
+  // A name made only of dots (`.`, `..`) is a path-traversal token rather than a
+  // file, so fall back to a literal name even though it survives the allowlist.
+  if (sanitized.isEmpty || RegExp(r'^\.+$').hasMatch(sanitized)) {
+    return 'file';
+  }
+  return sanitized;
 }
 
 /// Creates a unique remote filename for clipboard uploads.
@@ -161,9 +171,58 @@ bool looksLikeBinaryContent(Uint8List bytes) {
 /// Escapes a path so it can be pasted directly into a POSIX shell.
 String shellEscapePosix(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
-/// Builds the shell text inserted into the terminal after file uploads.
-String buildTerminalUploadInsertion(Iterable<String> remotePaths) =>
-    remotePaths.map(shellEscapePosix).join(' ');
+/// Bracketed-paste introducer and terminator (`CSI 200~` / `CSI 201~`).
+const _bracketedPasteStart = '\x1b[200~';
+const _bracketedPasteEnd = '\x1b[201~';
+
+/// Whether [path] is safe to paste unquoted (only path separators and the
+/// strict upload-filename allowlist). Uploaded filenames are sanitized, but the
+/// directory prefix derives from the remote home directory, which a hostile or
+/// misconfigured server could fill with spaces or shell metacharacters.
+bool _isUnquotedSafeAttachmentPath(String path) =>
+    RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path);
+
+/// Builds the terminal-input segments that reference uploaded [remotePaths]
+/// after a paste upload.
+///
+/// When [bracketedPasteMode] is enabled *and* every path is safe to paste
+/// unquoted, each path is returned as its own bracketed-paste segment
+/// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
+/// these segments sequentially with a short delay between them: an agent CLI
+/// such as Copilot CLI only recognises each path as a separate attachment —
+/// rendering a preview chip per file — when the bracketed pastes arrive as
+/// distinct reads. The trailing space also keeps the paths usable as distinct
+/// shell arguments.
+///
+/// Otherwise — bracketed paste mode is off, or a path contains characters that
+/// would be unsafe unquoted (e.g. a remote home directory with spaces or shell
+/// metacharacters) — the paths are shell-escaped and returned as a single
+/// segment. That form shows no preview (a path with spaces would not produce a
+/// chip anyway) but can never break the shell or inject commands.
+///
+/// Segments must be written straight to the session input sink (e.g.
+/// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
+/// bracketed-paste control sequences.
+List<String> buildTerminalAttachmentPasteSegments(
+  Iterable<String> remotePaths, {
+  required bool bracketedPasteMode,
+}) {
+  final paths = remotePaths
+      .where((remotePath) => remotePath.isNotEmpty)
+      .toList();
+  if (paths.isEmpty) {
+    return const [];
+  }
+  final canRenderChips =
+      bracketedPasteMode && paths.every(_isUnquotedSafeAttachmentPath);
+  if (!canRenderChips) {
+    return ['${paths.map(shellEscapePosix).join(' ')} '];
+  }
+  return [
+    for (final remotePath in paths)
+      '$_bracketedPasteStart$remotePath$_bracketedPasteEnd ',
+  ];
+}
 
 /// Shared helpers for remote file transfers over SFTP.
 final remoteFileServiceProvider = Provider<RemoteFileService>(

@@ -209,10 +209,11 @@ abstract final class FluttyTheme {
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        titleTextStyle: _inter(
+        titleTextStyle: _mono(
           fontSize: 20,
           fontWeight: FontWeight.w600,
           color: textPrimary,
+          letterSpacing: -0.5,
         ),
       ),
 
@@ -537,9 +538,32 @@ abstract final class FluttyTheme {
     );
   }
 
+  static TextStyle _mono({
+    double? fontSize,
+    FontWeight? fontWeight,
+    Color? color,
+    double? letterSpacing,
+  }) {
+    if (debugUseSystemFonts) {
+      return TextStyle(
+        fontFamily: 'monospace',
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        color: color,
+        letterSpacing: letterSpacing,
+      );
+    }
+
+    return GoogleFonts.jetBrainsMono(
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: color,
+      letterSpacing: letterSpacing,
+    );
+  }
+
   static Color _blend(Color background, Color foreground, double amount) =>
       Color.lerp(background, foreground, amount)!;
-
   static Color _resolveTerminalAccent(TerminalThemeData theme) {
     // Prefer the theme's cursor color when its designer chose a strongly
     // saturated, sufficiently contrasty value. Themes that use a near-neutral
@@ -605,6 +629,24 @@ abstract final class FluttyTheme {
         )
       : GoogleFonts.jetBrainsMono(fontSize: 13, fontWeight: FontWeight.w400);
 
+  /// Monospace **display** text style: the brand/identity voice for screen
+  /// titles, host names, numerals, and status badges.
+  ///
+  /// JetBrains Mono at title scale is the signature of the design system; use
+  /// this where a surface announces what it is. Keep dense, explanatory body
+  /// text in the Inter-based [TextTheme] styles instead.
+  static TextStyle displayMono({
+    double fontSize = 20,
+    FontWeight fontWeight = FontWeight.w600,
+    Color? color,
+    double letterSpacing = -0.5,
+  }) => _mono(
+    fontSize: fontSize,
+    fontWeight: fontWeight,
+    color: color,
+    letterSpacing: letterSpacing,
+  );
+
   /// Accent gradient for special elements.
   static LinearGradient get accentGradient => const LinearGradient(
     colors: [_accentTeal, _accentTealSoft],
@@ -616,79 +658,4 @@ abstract final class FluttyTheme {
   static List<BoxShadow> glowShadow([Color? color]) => [
     BoxShadow(color: (color ?? _accentTeal).withAlpha(40), blurRadius: 20),
   ];
-
-  /// Builds a consistent empty-state placeholder widget.
-  ///
-  /// Use across all panels and screens for visual consistency.
-  static Widget buildEmptyState({
-    required BuildContext context,
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    VoidCallback? onAction,
-    String? actionLabel,
-    IconData? actionIcon,
-    bool centered = true,
-    bool padded = true,
-  }) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    Widget child = Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(spacingMd),
-          decoration: BoxDecoration(
-            color: colorScheme.primary.withAlpha(
-              theme.brightness == Brightness.dark ? 15 : 10,
-            ),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(
-            icon,
-            size: emptyStateIconSize,
-            color: colorScheme.onSurface.withAlpha(80),
-          ),
-        ),
-        const SizedBox(height: spacingMd),
-        Text(
-          title,
-          style: theme.textTheme.titleMedium?.copyWith(
-            color: colorScheme.onSurface.withAlpha(180),
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: spacingXs),
-        Text(
-          subtitle,
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: colorScheme.onSurface.withAlpha(100),
-          ),
-        ),
-        if (onAction != null && actionLabel != null) ...[
-          const SizedBox(height: spacingLg),
-          FilledButton.icon(
-            onPressed: onAction,
-            icon: Icon(actionIcon ?? Icons.add, size: 18),
-            label: Text(actionLabel),
-          ),
-        ],
-      ],
-    );
-
-    if (padded) {
-      child = Padding(
-        padding: const EdgeInsets.symmetric(horizontal: spacingLg),
-        child: child,
-      );
-    }
-
-    if (centered) {
-      child = Center(child: child);
-    }
-
-    return child;
-  }
 }

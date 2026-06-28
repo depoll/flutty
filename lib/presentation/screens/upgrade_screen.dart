@@ -5,10 +5,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/theme.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../widgets/premium_badge.dart';
+
+final _privacyPolicyUri = Uri.parse(
+  'https://github.com/depollsoft/MonkeySSH/blob/main/docs/privacy-policy.md',
+);
+final _termsOfUseUri = Uri.parse(
+  'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/',
+);
 
 /// Upgrade screen for MonkeySSH Pro.
 class UpgradeScreen extends ConsumerStatefulWidget {
@@ -238,6 +246,14 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
     }
   }
 
+  Future<void> _openLegalUrl(Uri url, String label) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final didOpen = await launchUrl(url, mode: LaunchMode.externalApplication);
+    if (!didOpen && mounted) {
+      messenger.showSnackBar(SnackBar(content: Text('Could not open $label.')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -315,6 +331,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             const SizedBox(height: 20),
             _UpgradeProgressBanner(message: message),
           ],
+          const SizedBox(height: 20),
+          _SubscriptionLegalCard(
+            onOpenPrivacyPolicy: () =>
+                _openLegalUrl(_privacyPolicyUri, 'the privacy policy'),
+            onOpenTermsOfUse: () =>
+                _openLegalUrl(_termsOfUseUri, 'the Terms of Use'),
+          ),
           if (isLifetimeUnlocked) ...[
             const SizedBox(height: 20),
             _UpgradeBanner(
@@ -326,7 +349,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             ),
           ],
           const SizedBox(height: 24),
-          Text('Included with Pro', style: theme.textTheme.titleMedium),
+          Text(
+            'included with Pro',
+            style: FluttyTheme.displayMono(
+              fontSize: 15,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
           const SizedBox(height: 12),
           const _UpgradeBenefitTile(
             icon: Icons.rocket_launch_outlined,
@@ -348,7 +377,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           ),
           if (state.offers.isNotEmpty && !isLifetimeUnlocked) ...[
             const SizedBox(height: 24),
-            Text('Choose a plan', style: theme.textTheme.titleMedium),
+            Text(
+              'choose a plan',
+              style: FluttyTheme.displayMono(
+                fontSize: 15,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
             if (annualSavingsPercent case final savings?) ...[
               const SizedBox(height: 8),
               _UpgradeBanner(
@@ -406,8 +441,10 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                 children: [
                   Text(
                     priceLabel,
-                    style: theme.textTheme.headlineSmall?.copyWith(
+                    style: FluttyTheme.displayMono(
+                      fontSize: 22,
                       fontWeight: FontWeight.w700,
+                      color: colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -484,6 +521,66 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _SubscriptionLegalCard extends StatelessWidget {
+  const _SubscriptionLegalCard({
+    required this.onOpenPrivacyPolicy,
+    required this.onOpenTermsOfUse,
+  });
+
+  final VoidCallback onOpenPrivacyPolicy;
+  final VoidCallback onOpenTermsOfUse;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'subscription details',
+              style: FluttyTheme.displayMono(
+                fontSize: 15,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'MonkeySSH Pro subscriptions are auto-renewable. Monthly plans '
+              'renew every month and annual plans renew every year. Prices are '
+              'shown on the plan cards below and load from your storefront.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                TextButton.icon(
+                  onPressed: onOpenPrivacyPolicy,
+                  icon: const Icon(Icons.privacy_tip_outlined),
+                  label: const Text('Privacy Policy'),
+                ),
+                TextButton.icon(
+                  onPressed: onOpenTermsOfUse,
+                  icon: const Icon(Icons.description_outlined),
+                  label: const Text('Terms of Use (EULA)'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -568,9 +665,9 @@ class _PlanOfferCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       offer.planLabel,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: colorScheme.onSurface,
+                      style: FluttyTheme.displayMono(
                         fontWeight: FontWeight.w700,
+                        color: colorScheme.onSurface,
                       ),
                     ),
                   ),
@@ -600,9 +697,9 @@ class _PlanOfferCard extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 offer.displayPriceLabel,
-                style: theme.textTheme.titleMedium?.copyWith(
+                style: FluttyTheme.displayMono(
+                  fontSize: 16,
                   color: colorScheme.onSurface,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
               if (offer.detailLabel case final detail?) ...[

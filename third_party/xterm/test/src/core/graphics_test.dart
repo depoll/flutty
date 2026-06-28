@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:archive/archive.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/xterm.dart';
@@ -51,6 +53,331 @@ void main() {
     });
   });
 
+  testWidgets('Kitty graphics omitted format defaults to RGBA', (tester) async {
+    await tester.runAsync(() async {
+      final rgbaBase64 = base64.encode([0xFF, 0x00, 0x00, 0xFF]);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,s=1,v=1;$rgbaBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final placement = terminal.graphics.placements.single;
+      final stored = terminal.graphics.imageById(placement.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 1);
+      expect(stored.image.height, 1);
+    });
+  });
+
+  testWidgets('Kitty graphics query responds before following DA1', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\\x1b[c',
+    );
+
+    expect(output, ['\x1b_Gi=31;OK\x1b\\', '\x1b[?62;22c']);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  testWidgets('Kitty graphics query rejects unsupported transmission media', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,a=q,t=f;${base64.encode('/tmp/image.png'.codeUnits)}'
+      '\x1b\\',
+    );
+
+    expect(
+      output,
+      ['\x1b_Gi=31;EINVAL: unsupported transmission medium\x1b\\'],
+    );
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  testWidgets('Kitty graphics query honors quiet OK suppression', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,q=1,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\',
+    );
+
+    expect(output, isEmpty);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  testWidgets('Kitty graphics query q=2 suppresses successful responses', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    terminal.write(
+      '\x1b_Gi=31,s=1,v=1,a=q,q=2,t=d,f=24;${base64.encode([0, 0, 0])}'
+      '\x1b\\',
+    );
+
+    expect(output, isEmpty);
+    expect(terminal.graphics.hasPlacements, isFalse);
+  });
+
+  testWidgets('Kitty transmit-only images are stored by protocol id', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=t,i=42,f=100;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(42) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final stored = terminal.graphics.imageById(42);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+      expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('Kitty placeholder color can resolve high-byte image ids', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      const imageId = 42 + (2 << 24);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=t,i=$imageId,f=100;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final stored = terminal.graphics.imageByPlaceholderColorId(
+        42,
+        bitWidth: 8,
+      );
+      expect(stored, isNotNull);
+      expect(stored!.id, imageId);
+    });
+  });
+
+  testWidgets('Kitty virtual transmit-and-place uses a virtual placement', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=3,r=2;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (terminal.graphics.imageById(43) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      final stored = terminal.graphics.imageById(43);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+      // U=1 means the client displays the image through Unicode placeholder
+      // cells, so the terminal must not create a physical placement (that would
+      // draw a duplicate image at the cursor).
+      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(
+        terminal.graphics.virtualPlacementById(43),
+        isNotNull,
+        reason: 'Unicode placeholder clients reference the virtual placement',
+      );
+
+      terminal.write('\x1b[2J');
+      expect(
+        terminal.graphics.imageById(43),
+        isNotNull,
+        reason: 'virtual placeholder redraws can still reuse the image bytes',
+      );
+    });
+  });
+
+  testWidgets('Kitty protocol-id image survives clear for placeholder redraw', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,i=44,f=100,c=3,r=2;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(44), isNotNull);
+      expect(terminal.graphics.hasPlacements, isTrue);
+
+      terminal.write('\x1b[2J');
+
+      expect(terminal.graphics.hasPlacements, isFalse);
+      expect(
+        terminal.graphics.imageById(44),
+        isNotNull,
+        reason: 'placeholder redraws can follow a screen clear',
+      );
+    });
+  });
+
+  testWidgets('Kitty Unicode placeholder diacritics do not consume cells', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    terminal.write('\x1b[38;5;42m$placeholder\u0305\u0305X');
+
+    final line = terminal.buffer.lines[terminal.buffer.absoluteCursorY];
+    expect(line.getCodePoint(0), kittyGraphicsPlaceholderCodePoint);
+    expect(line.getCodePoint(1), 'X'.codeUnitAt(0));
+    expect(line.getText(0, 2), '${placeholder}X');
+  });
+
+  testWidgets('Kitty Unicode row-only placeholders reset columns per row', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    terminal.write(
+      '\x1b[38;5;42m'
+      '$placeholder\u0305$placeholder$placeholder\r\n'
+      '$placeholder\u030D$placeholder$placeholder',
+    );
+
+    final placeholders = terminal.graphics.placeholders;
+    expect(placeholders.map((p) => (p.row, p.col)).toList(), [
+      (0, 0),
+      (0, 1),
+      (0, 2),
+      (1, 0),
+      (1, 1),
+      (1, 2),
+    ]);
+  });
+
+  testWidgets('placeholders survive the image decode that backs them', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+      final placeholder =
+          String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+      // The image transmit and the placeholder cells that reference it arrive
+      // together, but the PNG decode completes asynchronously afterwards. The
+      // decode must not drop the placeholder cells waiting on that image.
+      terminal
+        ..write('\x1b_Ga=T,U=1,i=77,f=100,c=3,r=2;$pngBase64\x1b\\')
+        ..write('\x1b[38;2;0;0;77m'
+            '$placeholder\u0305\u0305$placeholder\u0305\u030D'
+            '$placeholder\u0305\u030E');
+
+      expect(terminal.graphics.placeholders, isNotEmpty);
+      final before = terminal.graphics.placeholders.length;
+
+      var waited = 0;
+      while (terminal.graphics.imageById(77) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.imageById(77), isNotNull);
+      expect(
+        terminal.graphics.placeholders.length,
+        before,
+        reason: 'storing the decoded image must not drop its placeholder cells',
+      );
+    });
+  });
+
+  testWidgets('Kitty Unicode placeholders stay attached across a scroll', (
+    tester,
+  ) async {
+    final terminal = Terminal(maxLines: 100)..resize(20, 4);
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    terminal.write('\x1b[38;5;42m$placeholder\u0305\u0305');
+    final placeholdersBefore = terminal.graphics.placeholders.length;
+    expect(placeholdersBefore, greaterThan(0));
+
+    // Emit far more lines than the 4-row viewport so the buffer scrolls. This
+    // used to detach the line that owns the placeholder anchor, dropping it.
+    for (var i = 0; i < 20; i++) {
+      terminal.write('row $i\r\n');
+    }
+
+    expect(
+      terminal.graphics.placeholders.every((p) => p.attached),
+      isTrue,
+      reason: 'scrolling must not orphan placeholder anchors',
+    );
+    expect(terminal.graphics.placeholders.length, placeholdersBefore);
+  });
+
+  testWidgets(
+      'Kitty Unicode placeholders support high-byte diacritics above 127', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+    const imageId = 42 + (200 << 24);
+
+    terminal
+      ..graphics.storeImageWithId(imageId, await _buildImage(1, 1))
+      ..write('\x1b[38;5;42m$placeholder\u0305\u0305\u20D4');
+
+    final placeholders = terminal.graphics.placeholders;
+    expect(placeholders, hasLength(1));
+    expect(placeholders.single.imageId, imageId);
+    expect(
+      terminal.graphics.imageByPlaceholderColorId(
+        placeholders.single.imageId,
+        bitWidth: placeholders.single.imageIdBitWidth,
+      ),
+      isNotNull,
+    );
+  });
+
   testWidgets('a=T advances the cursor below the image by r rows', (
     tester,
   ) async {
@@ -62,6 +389,20 @@ void main() {
 
       // 'X' should land three rows below where the image was anchored.
       expect(terminal.buffer.lines[3].getText().trimRight(), 'X');
+    });
+  });
+
+  testWidgets('a=T with C=1 leaves the cursor where it is', (tester) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(2, 2);
+      final terminal = Terminal();
+
+      // C=1 is the Kitty "do not move the cursor" policy: the following 'X' must
+      // stay on the same row as the image anchor rather than dropping r rows.
+      terminal.write('\x1b_Ga=T,f=100,r=3,C=1;$pngBase64\x1b\\X');
+
+      expect(terminal.buffer.lines[0].getText().trimRight(), 'X');
+      expect(terminal.buffer.lines[3].getText().trimRight(), isEmpty);
     });
   });
 
@@ -297,27 +638,260 @@ void main() {
     });
   });
 
-  testWidgets('eviction accounts for the image being stored', (tester) async {
+  testWidgets(
+    'Kitty graphics a=d removes a placement the client deletes by id',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(4, 3);
+        final terminal = Terminal();
+
+        // Transmit-and-display a physical placement with an explicit image and
+        // placement id, exactly as Copilot CLI does for its full-screen image
+        // viewer (a=T, p=1, i=..., no Unicode placeholder).
+        const imageId = 13912678;
+        terminal
+            .write('\x1b_Ga=T,i=$imageId,p=1,f=100,c=8,r=4;$pngBase64\x1b\\');
+
+        var waited = 0;
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+        expect(
+          terminal.graphics.placements,
+          hasLength(1),
+          reason: 'the transmit-and-display must create a placement',
+        );
+
+        // Closing the viewer sends a delete-by-id (d=i). The placement must be
+        // removed so it does not linger as a background overlay.
+        terminal.write('\x1b_Ga=d,d=i,i=$imageId,p=1,q=2\x1b\\');
+
+        expect(
+          terminal.graphics.placements,
+          isEmpty,
+          reason: 'a=d,d=i must remove the matching placement',
+        );
+        expect(
+          terminal.graphics.imageById(imageId),
+          isNotNull,
+          reason: 'a lowercase d=i deletes the placement but keeps image data',
+        );
+      });
+    },
+  );
+
+  testWidgets(
+    'Kitty graphics a=d,d=i matches the client placement id, not paint order',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(4, 3);
+        final terminal = Terminal();
+
+        // A first physical placement of a different image. Its decode finishes
+        // before the next, so it takes the first internal placement slot.
+        terminal.write('\x1b_Ga=T,i=999,p=7,f=100,c=4,r=2;$pngBase64\x1b\\');
+        var waited = 0;
+        while (terminal.graphics.placements.length < 1 && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+
+        // The full-screen image, transmitted later, with client placement id 1.
+        // Its internal placement id therefore differs from its p= value.
+        const imageId = 13912678;
+        terminal
+            .write('\x1b_Ga=T,i=$imageId,p=1,f=100,c=8,r=4;$pngBase64\x1b\\');
+        waited = 0;
+        while (terminal.graphics.placements.length < 2 && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+
+        // Closing the viewer deletes by image id + client placement id 1. The
+        // match must be on the client p= value, not the internal ordering, or
+        // the image lingers as a background ghost.
+        terminal.write('\x1b_Ga=d,d=i,i=$imageId,p=1,q=2\x1b\\');
+
+        final remaining =
+            terminal.graphics.placements.map((p) => p.imageId).toList();
+        expect(
+          remaining,
+          isNot(contains(imageId)),
+          reason: 'the targeted placement must be deleted by its client p=',
+        );
+        expect(
+          remaining,
+          contains(999),
+          reason: 'the unrelated placement must survive',
+        );
+      });
+    },
+  );
+
+  testWidgets('Kitty graphics a=d with no selector deletes all placements', (
+    tester,
+  ) async {
     await tester.runAsync(() async {
-      final manager = GraphicsManager(maxImageCount: 10, maxMemoryBytes: 64);
-      final first = await _buildImage(2, 2);
-      final second = await _buildImage(2, 2);
-      final third = await _buildImage(2, 2);
+      final pngBase64 = await _buildPngBase64(4, 3);
+      final terminal = Terminal();
 
-      final firstId = manager.storeImage(first);
-      final secondId = manager.storeImage(second);
-      final thirdId = manager.storeImage(third);
+      terminal
+        ..write('\x1b_Ga=T,i=1,f=100,c=4,r=2;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=T,i=2,f=100,c=4,r=2;$pngBase64\x1b\\');
 
+      var waited = 0;
+      while (terminal.graphics.placements.length < 2 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.placements, hasLength(2));
+
+      // The Kitty default selector when d= is omitted is 'a' (all placements).
+      terminal.write('\x1b_Ga=d\x1b\\');
+
+      expect(terminal.graphics.placements, isEmpty);
+    });
+  });
+
+  testWidgets('Kitty graphics a=D (uppercase) frees the image data too', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(4, 3);
+      final terminal = Terminal();
+
+      const imageId = 777;
+      terminal.write('\x1b_Ga=T,i=$imageId,p=1,f=100,c=4,r=2;$pngBase64\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(imageId), isNotNull);
+
+      terminal.write('\x1b_Ga=d,d=I,i=$imageId\x1b\\');
+
+      expect(terminal.graphics.placements, isEmpty);
       expect(
-        manager.imageById(firstId),
+        terminal.graphics.imageById(imageId),
         isNull,
-        reason:
-            'the third 16-byte image must evict against future memory usage',
+        reason: 'an uppercase d=I must also free the image data',
       );
-      expect(manager.imageById(secondId), isNotNull);
-      expect(manager.imageById(thirdId), isNotNull);
-      expect(manager.currentMemoryBytes, 32);
-      expect(first.debugDisposed, isFalse);
+    });
+  });
+
+  testWidgets('Kitty graphics o=z inflates a zlib-compressed RGBA payload', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      // A 2x2 solid red RGBA image, zlib-compressed (o=z).
+      final raw = Uint8List.fromList(
+        List<int>.generate(
+            2 * 2 * 4, (i) => i % 4 == 3 ? 0xFF : (i % 4 == 0 ? 0xFF : 0)),
+      );
+      final compressed = ZLibEncoder().encode(raw);
+      final payload = base64.encode(compressed);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=32,o=z,s=2,v=2;$payload\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final stored = terminal.graphics
+          .imageById(terminal.graphics.placements.single.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 2);
+      expect(stored.image.height, 2);
+    });
+  });
+
+  testWidgets('Kitty graphics o=z inflates a zlib-compressed PNG payload', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(3, 2));
+      final compressed = ZLibEncoder().encode(pngBytes);
+      final payload = base64.encode(compressed);
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100,o=z;$payload\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final stored = terminal.graphics
+          .imageById(terminal.graphics.placements.single.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+    });
+  });
+
+  testWidgets('Kitty graphics query accepts o=z and rejects other o values', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(3, 2));
+      final compressed = base64.encode(ZLibEncoder().encode(pngBytes));
+
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      // q=0 so success responses are emitted; o=z must validate OK.
+      terminal.write('\x1b_Ga=q,i=1,f=100,o=z,q=0;$compressed\x1b\\');
+      expect(responses.single, contains('OK'));
+
+      responses.clear();
+      // An unknown compression value must still be rejected.
+      terminal.write(
+        '\x1b_Ga=q,i=2,f=100,o=w,q=0;${base64.encode(pngBytes)}\x1b\\',
+      );
+      expect(responses.single, contains('EINVAL'));
+    });
+  });
+
+  testWidgets('Kitty graphics image numbers: transmit, place and delete by I=',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final responses = <String>[];
+      final terminal = Terminal(onOutput: responses.add);
+
+      // Transmit-only with an image number (no id). The terminal must answer the
+      // handshake echoing the number and the id it assigned.
+      terminal.write('\x1b_Ga=t,I=5,f=100,q=0;$pngBase64\x1b\\');
+      var waited = 0;
+      while (responses.isEmpty && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(responses.single, matches(RegExp(r'I=5,i=\d+;OK')));
+
+      // The image can be placed by number.
+      terminal.write('\x1b_Ga=p,I=5,c=3,r=2\x1b\\');
+      expect(terminal.graphics.placements, hasLength(1));
+
+      // ...and deleted by number (lowercase keeps the image data).
+      terminal.write('\x1b_Ga=d,d=n,I=5\x1b\\');
+      expect(terminal.graphics.placements, isEmpty);
+      expect(
+        terminal.graphics.imageIdForNumber(5),
+        isNotNull,
+        reason: 'd=n keeps the image data; only the placement is removed',
+      );
     });
   });
 }

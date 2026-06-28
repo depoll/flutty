@@ -412,5 +412,39 @@ void main() {
       expect(item2.attached, false);
       expect(item3.index, 0);
     });
+
+    test("reassignRange keeps reused items attached and re-indexed", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(4);
+      final a = IndexedValue(0);
+      final b = IndexedValue(1);
+      final c = IndexedValue(2);
+      final d = IndexedValue(3);
+      cl.pushAll([a, b, c, d]);
+
+      // Scroll the whole region up by one: [a,b,c,d] -> [b,c,d,e]. This mirrors
+      // Buffer.scrollUp and used to orphan the shifted items (b,c,d) because the
+      // same object was transiently referenced by two slots.
+      final e = IndexedValue(4);
+      cl.reassignRange(0, [b, c, d, e]);
+
+      expect(cl[0], b);
+      expect(cl[1], c);
+      expect(cl[2], d);
+      expect(cl[3], e);
+
+      // The crucial guarantee: shifted items stay attached so anchors pointing
+      // at them remain valid.
+      expect(b.attached, isTrue);
+      expect(c.attached, isTrue);
+      expect(d.attached, isTrue);
+      expect(e.attached, isTrue);
+      expect(b.index, 0);
+      expect(c.index, 1);
+      expect(d.index, 2);
+      expect(e.index, 3);
+
+      // The item that scrolled out is detached.
+      expect(a.attached, isFalse);
+    });
   });
 }

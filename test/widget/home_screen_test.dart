@@ -538,7 +538,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('No hosts yet'), findsOneWidget);
+      expect(find.text('no hosts yet'), findsOneWidget);
       expect(find.text('Import config'), findsNothing);
       expect(find.text('Paste SSH URL'), findsOneWidget);
       expect(find.text('Try local test host'), findsNothing);
@@ -569,9 +569,9 @@ void main() {
       await tester.tap(find.text('Connections').first);
       await tester.pump();
 
-      expect(find.text('No active connections'), findsOneWidget);
+      expect(find.text('no active sessions'), findsOneWidget);
       expect(
-        find.textContaining('Connections appear here while terminals are open'),
+        find.textContaining('live terminals show up here'),
         findsOneWidget,
       );
     });
@@ -876,14 +876,16 @@ void main() {
         Finder connectionsHeader() => find.byWidgetPredicate(
           (widget) =>
               widget is Text &&
-              widget.data == 'Connections' &&
-              widget.style?.fontWeight == FontWeight.w600,
+              (widget.textSpan?.toPlainText().startsWith('connections') ??
+                  false),
         );
+        Color? connectionsHeaderColor() {
+          final span =
+              tester.widget<Text>(connectionsHeader()).textSpan! as TextSpan;
+          return span.children!.first.style?.color;
+        }
 
-        expect(
-          tester.widget<Text>(connectionsHeader()).style?.color,
-          Colors.black,
-        );
+        expect(connectionsHeaderColor(), Colors.black);
         final container = ProviderScope.containerOf(
           tester.element(find.byType(HomeScreen)),
         );
@@ -904,10 +906,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(container.read(terminalAppThemeOverrideProvider), isNull);
-        expect(
-          tester.widget<Text>(connectionsHeader()).style?.color,
-          Colors.black,
-        );
+        expect(connectionsHeaderColor(), Colors.black);
       },
     );
 
@@ -1654,13 +1653,13 @@ void main() {
 
     await tester.tap(find.text('Connections').first);
     await tester.pump();
-    expect(find.text('No active connections'), findsNothing);
+    expect(find.text('no active sessions'), findsNothing);
 
     sessionsNotifier.setActiveConnections(const <ActiveConnection>[]);
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('No active connections'), findsNothing);
+    expect(find.text('no active sessions'), findsNothing);
   });
 
   group('HostRowData value equality', () {
