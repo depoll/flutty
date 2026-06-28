@@ -247,11 +247,6 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
-  void sendPrivateModeReport(int mode) {
-    onCommand('sendPrivateModeReport($mode)');
-  }
-
-  @override
   void sendTermcapReport(List<String> capabilities) {
     onCommand('sendTermcapReport(${capabilities.join(';')})');
   }
@@ -259,21 +254,6 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   @override
   void sendStatusStringReport(String request) {
     onCommand('sendStatusStringReport($request)');
-  }
-
-  @override
-  void sendTextAreaSizePixels() {
-    onCommand('sendTextAreaSizePixels');
-  }
-
-  @override
-  void sendScreenSizePixels() {
-    onCommand('sendScreenSizePixels');
-  }
-
-  @override
-  void sendCellSizePixels() {
-    onCommand('sendCellSizePixels');
   }
 
   @override

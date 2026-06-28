@@ -61,52 +61,6 @@ void main() {
   });
 
   group(r'DECRQM (CSI Ps $ p) mode reports', () {
-    test('reports a tracked DEC private mode as set/reset', () {
-      final responses = <String>[];
-      // Bracketed paste (2004) starts reset, then enable it.
-      final terminal = Terminal()
-        ..onOutput = responses.add
-        ..write('\x1b[?2004\$p');
-      expect(responses, ['\x1b[?2004;2\$y']);
-
-      responses.clear();
-      terminal
-        ..write('\x1b[?2004h')
-        ..write('\x1b[?2004\$p');
-      expect(responses, ['\x1b[?2004;1\$y']);
-    });
-
-    test('reports default-on modes (autowrap, cursor visible) as set', () {
-      final responses = <String>[];
-      Terminal()
-        ..onOutput = responses.add
-        ..write('\x1b[?7\$p') // DECAWM, on by default
-        ..write('\x1b[?25\$p'); // DECTCEM, on by default
-
-      expect(responses, ['\x1b[?7;1\$y', '\x1b[?25;1\$y']);
-    });
-
-    test('reports synchronized output (2026) as not recognized', () {
-      final responses = <String>[];
-      // MonkeySSH deliberately does not implement synchronized output, so
-      // DECRQM must report it as not recognized (value 0) rather than claim
-      // support.
-      Terminal()
-        ..onOutput = responses.add
-        ..write('\x1b[?2026\$p');
-
-      expect(responses, ['\x1b[?2026;0\$y']);
-    });
-
-    test('reports an unknown DEC private mode as not recognized', () {
-      final responses = <String>[];
-      Terminal()
-        ..onOutput = responses.add
-        ..write('\x1b[?9999\$p');
-
-      expect(responses, ['\x1b[?9999;0\$y']);
-    });
-
     test('reports tracked ANSI modes (insert) as set/reset', () {
       final responses = <String>[];
       final terminal = Terminal()
@@ -121,15 +75,27 @@ void main() {
       expect(responses, ['\x1b[4;1\$y']);
     });
 
-    test('reports tracked mouse mode (SGR encoding) accurately', () {
+    test('reports an unknown ANSI mode as not recognized', () {
       final responses = <String>[];
       Terminal()
         ..onOutput = responses.add
-        ..write('\x1b[?1006h') // enable SGR mouse encoding
-        ..write('\x1b[?1006\$p')
-        ..write('\x1b[?1015\$p'); // urxvt encoding, not active
+        ..write('\x1b[99\$p');
 
-      expect(responses, ['\x1b[?1006;1\$y', '\x1b[?1015;2\$y']);
+      expect(responses, ['\x1b[99;0\$y']);
+    });
+
+    test('leaves DEC-private DECRQM to the app layer (no core reply)', () {
+      final responses = <String>[];
+      // `CSI ? Ps $ p` is answered by the MonkeySSH app layer (which tracks the
+      // extra state, e.g. DEC mode 2031). The core must stay silent so the
+      // program does not receive two replies.
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1b[?2004\$p')
+        ..write('\x1b[?2026\$p')
+        ..write('\x1b[?2031\$p');
+
+      expect(responses, isEmpty);
     });
 
     test('a soft reset (CSI ! p) does not emit a DECRQM reply', () {
@@ -267,38 +233,24 @@ void main() {
     });
   });
 
-  group('window pixel-size reports (CSI 14/15/16 t)', () {
-    test('reports text area, screen and cell size in pixels', () {
+  group('window size reports (CSI t)', () {
+    test('leaves pixel-size reports (14t/16t) to the app layer', () {
       final responses = <String>[];
-      // 80x24 cells over an 800x480 px text area => 10x20 px cells.
+      // `CSI 14t` (text area px) and `CSI 16t` (cell px) are answered by the
+      // MonkeySSH app layer, which has the real window metrics. The core must
+      // stay silent so the program does not receive two replies.
       Terminal()
         ..onOutput = responses.add
         ..resize(80, 24, 800, 480)
-        ..write('\x1b[14t') // text area px
-        ..write('\x1b[15t') // screen px (mirrors text area)
-        ..write('\x1b[16t'); // cell px
-
-      expect(responses, [
-        '\x1b[4;480;800t',
-        '\x1b[5;480;800t',
-        '\x1b[6;20;10t',
-      ]);
-    });
-
-    test('does not report pixel sizes before the view size is known', () {
-      final responses = <String>[];
-      Terminal()
-        ..onOutput = responses.add
         ..write('\x1b[14t')
         ..write('\x1b[16t');
 
-      // No layout has happened yet, so pixel dimensions are unknown; a wrong
-      // (zero) report is worse than none.
       expect(responses, isEmpty);
     });
 
-    test('still answers the character size report (CSI 18 t)', () {
+    test('answers the character size report (CSI 18 t)', () {
       final responses = <String>[];
+      // 18t (size in characters) is core-only; the app layer does not answer it.
       Terminal()
         ..onOutput = responses.add
         ..write('\x1b[18t');

@@ -59,15 +59,15 @@ out of scope.
   text-width background. Upstream kterm does not answer XTVERSION yet, so keep
   `EscapeEmitter.terminalVersion()` and the `CSI q` parser dispatch when
   re-syncing. Consider upstreaming.
-* DECRQM replies (`CSI Ps $ p` / `CSI ? Ps $ p` -> `... $ y`). The parser now
+* DECRQM ANSI-mode replies (`CSI Ps $ p` -> `CSI Ps ; Pm $ y`). The parser now
   retains the last CSI intermediate (`_Csi.intermediate`) to distinguish DECRQM
   (`$`) from the other `p` finals (DECSTR `!`, DECSCL `"`), which still fall
-  through to `unknownCSI`. Tracked ANSI/DEC-private modes report their real
-  set/reset state; everything else reports "not recognized" (0). Synchronized
-  output (`2026`) is intentionally reported as not recognized, matching the
-  "evaluated but intentionally not ported" note above. Keep
-  `EscapeEmitter.modeReport`/`privateModeReport`, the `CSI p` parser dispatch,
-  and `Terminal._ansiModeValue`/`_decPrivateModeValue` on re-sync.
+  through to `unknownCSI`. Only the ANSI-mode form is answered here; the
+  DEC-private form (`CSI ? Ps $ p`) is deliberately left to the MonkeySSH app
+  layer, which scans shell output and tracks extra state (notably DEC mode 2031
+  colour-scheme updates) — answering it in core as well would double-reply.
+  Keep `EscapeEmitter.modeReport`, the `CSI p` parser dispatch, and
+  `Terminal._ansiModeValue` on re-sync.
 * XTGETTCAP replies (`DCS + q <hex> ST` -> `DCS 1+r <hex>=<hex> ST` /
   `DCS 0+r <hex> ST`). A new `ESC P` (DCS) parser branch buffers the string to
   ST; XTGETTCAP requests are answered for theme-independent caps (`Co`/`colors`
@@ -84,17 +84,15 @@ out of scope.
   `EscapeEmitter.statusStringReport` and
   `Terminal.sendStatusStringReport`/`_statusStringValue`/`_currentSgrParameters`
   on re-sync.
-* Window pixel-size reports (`CSI 14 t` text area, `CSI 15 t` screen, `CSI 16 t`
-  cell, replying `CSI 4/5/6 ; H ; W t`). The terminal now retains the text-area
-  pixel size supplied to `resize` (`_viewPixelWidth`/`_viewPixelHeight`) and
-  derives the cell size from it; it stays silent until the size is known so a
-  wrong (zero) report is never sent. Useful for image-capable CLIs. Keep
-  `EscapeEmitter.windowSizePixels` and the `CSI 14/15/16 t` handlers on re-sync.
 * Modernized Device Attributes: DA1 reports VT220 + ANSI colour (`CSI ?62;22c`,
   was `?1;2c`) and DA2 a VT220-class identity (`CSI >1;0;0c`, was `>0;0;0c`),
   consistent with the kitty XTVERSION identity. Keep
   `EscapeEmitter.primaryDeviceAttributes`/`secondaryDeviceAttributes` on
   re-sync.
+* Note: DEC-private DECRQM (`CSI ? Ps $ p`) and the window pixel-size reports
+  (`CSI 14/15/16 t`) are answered by the MonkeySSH app layer
+  (`ssh_service.dart`), not here, so the core deliberately does not reply to
+  them.
 
 
 ## [3.6.1-pre] - 2023-04-28
