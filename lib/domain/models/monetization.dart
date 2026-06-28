@@ -57,22 +57,43 @@ abstract final class MonetizationProductIds {
   static const allLifetime = <String>{androidProLifetime, iosProLifetimeProd};
 
   /// Product identifiers to query on the current platform.
-  static Set<String> forPlatform(TargetPlatform platform) => switch (platform) {
+  static Set<String> forPlatform(
+    TargetPlatform platform, {
+    String? packageName,
+  }) => switch (platform) {
     TargetPlatform.android => const {androidPro, androidProLifetime},
-    TargetPlatform.iOS || TargetPlatform.macOS => const {
-      iosMonthly,
-      iosAnnual,
-      iosMonthlyProd,
-      iosAnnualProd,
-      iosProLifetime,
-      iosProLifetimeProd,
-    },
+    TargetPlatform.iOS ||
+    TargetPlatform.macOS => _forApplePackageName(packageName),
     _ => const {},
   };
 
   /// Whether [productId] identifies a lifetime (one-time) product.
   static bool isLifetime(String? productId) =>
       productId != null && allLifetime.contains(productId);
+
+  static Set<String> _forApplePackageName(String? packageName) {
+    final normalizedPackageName = packageName?.trim();
+    return switch (normalizedPackageName) {
+      'xyz.depollsoft.monkeyssh.private' => const {
+        iosMonthly,
+        iosAnnual,
+        iosProLifetime,
+      },
+      'xyz.depollsoft.monkeyssh' => const {
+        iosMonthlyProd,
+        iosAnnualProd,
+        iosProLifetimeProd,
+      },
+      _ => const {
+        iosMonthly,
+        iosAnnual,
+        iosMonthlyProd,
+        iosAnnualProd,
+        iosProLifetime,
+        iosProLifetimeProd,
+      },
+    };
+  }
 }
 
 /// Premium features controlled by MonkeySSH Pro.

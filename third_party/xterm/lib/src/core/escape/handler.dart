@@ -64,6 +64,19 @@ abstract class EscapeHandler {
 
   void sendTertiaryDeviceAttributes();
 
+  void sendTerminalVersion();
+
+  /// Answers DECRQM for an ANSI mode (`CSI Ps $ p`).
+  void sendModeReport(int mode);
+
+  /// Answers XTGETTCAP (`DCS + q <hex> ST`) for the given hex-encoded
+  /// terminfo/termcap capability names.
+  void sendTermcapReport(List<String> capabilities);
+
+  /// Answers DECRQSS (`DCS $ q <Pt> ST`) for the control function identified by
+  /// [request] (the intermediate/final bytes, e.g. `r`, `m`, ` q`).
+  void sendStatusStringReport(String request);
+
   void sendOperatingStatus();
 
   void sendCursorPosition();

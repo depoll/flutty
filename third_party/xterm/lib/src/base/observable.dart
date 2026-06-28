@@ -1,16 +1,16 @@
 mixin Observable {
-  final listeners = <void Function()>{};
+  final _listeners = <void Function()>{};
 
   void addListener(void Function() listener) {
-    listeners.add(listener);
+    _listeners.add(listener);
   }
 
   void removeListener(void Function() listener) {
-    listeners.remove(listener);
+    _listeners.remove(listener);
   }
 
   void notifyListeners() {
-    for (var listener in listeners) {
+    for (var listener in _listeners) {
       listener();
     }
   }

@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
+import '../../app/theme.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
@@ -102,10 +103,10 @@ class _SectionHeader extends StatelessWidget {
         children: [
           Text(
             title,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.primary,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.5,
+            style: FluttyTheme.displayMono(
+              fontSize: 13,
+              color: theme.colorScheme.onSurface,
+              letterSpacing: 0,
             ),
           ),
           if (subtitle case final subtitle?) ...[
@@ -179,7 +180,7 @@ class _AppearanceSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Appearance',
+          title: 'appearance',
           subtitle: 'App-wide color mode',
         ),
         ListTile(
@@ -269,7 +270,7 @@ class _SecuritySection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Security',
+          title: 'security',
           subtitle: 'PIN, biometrics, and automatic locking',
         ),
         if (isAuthConfigured)
@@ -622,7 +623,7 @@ class _PrivacySection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Privacy',
+          title: 'privacy',
           subtitle: 'Anonymous usage analytics and crash reporting',
         ),
         SwitchListTile(
@@ -717,7 +718,7 @@ class _TerminalSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Terminal',
+          title: 'terminal',
           subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
         ),
         ListTile(
@@ -1080,7 +1081,7 @@ class _TerminalSection extends ConsumerWidget {
         title: const Text('Font family'),
         content: SizedBox(
           width: double.maxFinite,
-          height: 450,
+          height: MediaQuery.of(context).size.height * 0.6,
           child: Column(
             children: [
               // Current selection preview
@@ -1237,7 +1238,7 @@ class _DiagnosticsSectionState extends ConsumerState<_DiagnosticsSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'Diagnostics',
+          title: 'diagnostics',
           subtitle: 'Preview-only troubleshooting logs',
         ),
         ListTile(
@@ -1298,19 +1299,29 @@ class _AboutSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(
-          title: 'About',
+          title: 'about',
           subtitle: 'Version, source, and licenses',
         ),
         ListTile(
           leading: const Icon(Icons.info_outline),
           title: const Text('App version'),
-          subtitle: Text(_versionLabel(appMetadata)),
+          subtitle: Text(
+            _versionLabel(appMetadata),
+            style: FluttyTheme.monoStyle.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
         if (previewBuildLabel != null)
           ListTile(
             leading: const Icon(Icons.merge_type_outlined),
             title: const Text('Preview build'),
-            subtitle: Text(previewBuildLabel),
+            subtitle: Text(
+              previewBuildLabel,
+              style: FluttyTheme.monoStyle.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
           ),
         ListTile(
           leading: const Icon(Icons.code),
@@ -1439,7 +1450,7 @@ class _AndroidBackgroundSectionState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const _SectionHeader(
-            title: 'Background SSH',
+            title: 'background ssh',
             subtitle: 'Keep sessions alive while MonkeySSH is backgrounded',
           ),
           ListTile(
@@ -1468,7 +1479,7 @@ class _ImportExportSection extends ConsumerWidget {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       const _SectionHeader(
-        title: 'Import & Export',
+        title: 'import & export',
         subtitle: 'Encrypted migration packages for moving devices',
       ),
       ListTile(

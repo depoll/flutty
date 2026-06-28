@@ -174,6 +174,8 @@ ios/fastlane/
 │   │   ├── release_notes.txt
 │   │   ├── privacy_url.txt
 │   │   └── support_url.txt
+│   ├── review_information/
+│   │   └── notes.txt
 │   ├── copyright.txt
 │   └── primary_category.txt
 └── metadata-production/     # MonkeySSH (production app)

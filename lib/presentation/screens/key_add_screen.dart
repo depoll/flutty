@@ -196,16 +196,16 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
         Text('Key Type', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         SegmentedButton<String>(
-          segments: const [
+          segments: [
             ButtonSegment(
               value: 'ed25519',
-              label: Text('Ed25519'),
-              icon: Icon(Icons.enhanced_encryption),
+              label: Text('Ed25519', style: FluttyTheme.monoStyle),
+              icon: const Icon(Icons.enhanced_encryption),
             ),
             ButtonSegment(
               value: 'rsa',
-              label: Text('RSA'),
-              icon: Icon(Icons.key),
+              label: Text('RSA', style: FluttyTheme.monoStyle),
+              icon: const Icon(Icons.key),
             ),
           ],
           selected: {_keyType},

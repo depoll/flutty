@@ -21,6 +21,9 @@ ROOT_TEXT_LIMITS = {
     'primary_category.txt': 64,
     'copyright.txt': 64,
 }
+REVIEW_INFORMATION_TEXT_LIMITS = {
+    'notes.txt': 4000,
+}
 
 
 def _parse_args() -> argparse.Namespace:
@@ -70,6 +73,10 @@ def _validate_variant(variant: str) -> None:
 
     for file_name, max_length in ROOT_TEXT_LIMITS.items():
         _validate_text_file(metadata_dir / file_name, max_length)
+
+    review_information_dir = metadata_dir / 'review_information'
+    for file_name, max_length in REVIEW_INFORMATION_TEXT_LIMITS.items():
+        _validate_text_file(review_information_dir / file_name, max_length)
 
 
 def main() -> None:

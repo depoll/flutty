@@ -39,9 +39,15 @@ import '../providers/entity_list_providers.dart';
 import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/brand_empty_state.dart';
+import '../widgets/brand_error_state.dart';
+import '../widgets/brand_list_skeleton.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/connection_status_dot.dart';
+import '../widgets/cursor_block.dart';
 import '../widgets/file_picker_helpers.dart';
+import '../widgets/panel_header.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import '../widgets/snippet_folder_dialog.dart';
@@ -512,7 +518,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final appName = ref.watch(appDisplayNameProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
       body: Row(
@@ -521,7 +526,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           Container(
             width: 230,
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF0F0F14) : Colors.grey.shade50,
+              color: colorScheme.surface,
               border: Border(
                 right: BorderSide(color: colorScheme.outline.withAlpha(60)),
               ),
@@ -544,10 +549,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                           ),
                         ),
                         const SizedBox(width: 12),
-                        Text(
-                          appName,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
+                        Flexible(
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: appName,
+                                  style: FluttyTheme.displayMono(
+                                    fontSize: 16,
+                                    color: colorScheme.onSurface,
+                                  ),
+                                ),
+                                WidgetSpan(
+                                  alignment: PlaceholderAlignment.baseline,
+                                  baseline: TextBaseline.alphabetic,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 4),
+                                    child: CursorBlock(
+                                      size: 16,
+                                      color: colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -839,72 +865,6 @@ class _TelemetryOptInPromptCard extends ConsumerWidget {
   }
 }
 
-class _EmptyStateAction {
-  const _EmptyStateAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-}
-
-class _GuidedEmptyState extends StatelessWidget {
-  const _GuidedEmptyState({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.primaryLabel,
-    required this.onPrimary,
-    this.primaryIcon = Icons.add,
-    this.secondaryActions = const [],
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String primaryLabel;
-  final IconData primaryIcon;
-  final VoidCallback onPrimary;
-  final List<_EmptyStateAction> secondaryActions;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      FluttyTheme.buildEmptyState(
-        context: context,
-        icon: icon,
-        title: title,
-        subtitle: subtitle,
-        onAction: onPrimary,
-        actionLabel: primaryLabel,
-        actionIcon: primaryIcon,
-        centered: false,
-        padded: false,
-      ),
-      if (secondaryActions.isNotEmpty) ...[
-        const SizedBox(height: FluttyTheme.spacingMd),
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: FluttyTheme.spacingSm,
-          runSpacing: FluttyTheme.spacingSm,
-          children: [
-            for (final action in secondaryActions)
-              OutlinedButton.icon(
-                onPressed: action.onTap,
-                icon: Icon(action.icon, size: 18),
-                label: Text(action.label),
-              ),
-          ],
-        ),
-      ],
-    ],
-  );
-}
-
 /// Panel for displaying and managing hosts inline.
 class HostsPanel extends ConsumerWidget {
   /// Creates a [HostsPanel].
@@ -912,38 +872,22 @@ class HostsPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'hosts',
+          actions: [
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Host',
+              onTap: () => context.push('/hosts/add'),
+              primary: true,
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Hosts',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'New Host',
-                onTap: () => context.push('/hosts/add'),
-                primary: true,
-              ),
-            ],
-          ),
+          ],
         ),
 
         Expanded(child: _buildHostsBody(context, ref, hostsAsync)),
@@ -956,22 +900,11 @@ class HostsPanel extends ConsumerWidget {
     WidgetRef ref,
     AsyncValue<List<Host>> hostsAsync,
   ) => hostsAsync.when(
-    loading: () => _buildCenteredHostsState(
-      child: const CircularProgressIndicator(strokeWidth: 2),
-    ),
-    error: (_, _) => _buildCenteredHostsState(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.error_outline,
-            size: 40,
-            color: Theme.of(context).colorScheme.error,
-          ),
-          const SizedBox(height: 12),
-          const Text('Could not load hosts. Pull to refresh or try again.'),
-        ],
-      ),
+    loading: () => const BrandListSkeleton(),
+    error: (_, _) => BrandErrorState(
+      title: 'couldn’t load hosts',
+      message: 'Your saved hosts didn’t load.',
+      onRetry: () => ref.invalidate(allHostsProvider),
     ),
     data: (hosts) => hosts.isEmpty
         ? _buildEmptyState(context)
@@ -979,14 +912,13 @@ class HostsPanel extends ConsumerWidget {
   );
 
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
-    child: _GuidedEmptyState(
-      icon: Icons.dns_outlined,
-      title: 'No hosts yet',
-      subtitle: 'Add an SSH server or paste an ssh:// URL to get started.',
+    child: BrandEmptyState(
+      title: 'no hosts yet',
+      message: 'Nothing to connect to — let’s fix that.',
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
-        _EmptyStateAction(
+        BrandEmptyAction(
           icon: Icons.content_paste_go_outlined,
           label: 'Paste SSH URL',
           onTap: () => unawaited(_openPastedSshUrl(context)),
@@ -1159,25 +1091,9 @@ class _HostRow extends ConsumerWidget {
                   SizedBox(
                     height: 28,
                     child: Center(
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isConnected
-                              ? colorScheme.primary
-                              : isConnectionStarting
-                              ? Colors.orange
-                              : colorScheme.onSurface.withAlpha(40),
-                          boxShadow: isConnected && isDark
-                              ? [
-                                  BoxShadow(
-                                    color: colorScheme.primary.withAlpha(100),
-                                    blurRadius: 6,
-                                  ),
-                                ]
-                              : null,
-                        ),
+                      child: ConnectionStatusDot(
+                        isConnected: isConnected,
+                        isConnecting: isConnectionStarting,
                       ),
                     ),
                   ),
@@ -1190,10 +1106,13 @@ class _HostRow extends ConsumerWidget {
                       children: [
                         Row(
                           children: [
-                            Text(
-                              host.label,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w500,
+                            Flexible(
+                              child: Text(
+                                host.label,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ),
                             if (connectionCount > 0) ...[
@@ -1221,7 +1140,7 @@ class _HostRow extends ConsumerWidget {
                               Icon(
                                 Icons.star_rounded,
                                 size: 14,
-                                color: Colors.amber.shade600,
+                                color: colorScheme.tertiary,
                               ),
                             ],
                             if (isPinnedToHomeScreen) ...[
@@ -1241,7 +1160,7 @@ class _HostRow extends ConsumerWidget {
                               : '${host.username}@${host.hostname}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 11,
-                            color: colorScheme.onSurface.withAlpha(100),
+                            color: colorScheme.onSurface.withAlpha(160),
                           ),
                         ),
                         if (connectionAttemptMessage != null) ...[
@@ -1273,7 +1192,7 @@ class _HostRow extends ConsumerWidget {
                           ':${host.port}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 10,
-                            color: colorScheme.onSurface.withAlpha(120),
+                            color: colorScheme.onSurface.withAlpha(160),
                           ),
                         ),
                       ),
@@ -1695,7 +1614,7 @@ class _HostRow extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Host'),
-        content: Text('Delete "${host.label}"?'),
+        content: Text('Delete "${host.label}"? This removes the saved host.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1777,7 +1696,13 @@ class _ConnectionSelectionTile extends StatelessWidget {
       minTileHeight: 64,
       minVerticalPadding: 10,
       leading: const Icon(Icons.terminal),
-      title: Text('Connection #$connectionId'),
+      title: Text(
+        'Connection #$connectionId',
+        style: FluttyTheme.displayMono(
+          fontSize: 15,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
@@ -1793,7 +1718,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
       isThreeLine: preview?.trim().isNotEmpty ?? false,
       trailing: Text(
         _stateLabel(state),
-        style: Theme.of(context).textTheme.labelMedium,
+        style: FluttyTheme.monoStyle.copyWith(
+          fontSize: 12,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
       onTap: onTap,
     );
@@ -1842,20 +1770,7 @@ class _ConnectionsPanel extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Text(
-            'Connections',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
+        const PanelHeader(title: 'connections'),
         Expanded(
           child: connections.isEmpty
               ? _buildEmptyState(context)
@@ -1982,13 +1897,14 @@ class _ConnectionsPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) => FluttyTheme.buildEmptyState(
-    context: context,
-    icon: Icons.link_off,
-    title: 'No active connections',
-    subtitle:
-        'Connections appear here while terminals are open. Choose a host to '
-        'connect, then jump back to live sessions from this tab.',
+  Widget _buildEmptyState(BuildContext context) => const Center(
+    child: Padding(
+      padding: EdgeInsets.symmetric(horizontal: 24),
+      child: BrandEmptyState(
+        title: 'no active sessions',
+        message: 'Open a host and your live terminals show up here.',
+      ),
+    ),
   );
 }
 
@@ -2020,6 +1936,10 @@ class _ConnectionPreviewText extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
+    endpointStyle: FluttyTheme.monoStyle.copyWith(
+      fontSize: 12,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
     preview: preview,
     previewSnapshot: previewSnapshot,
     sessionTitle: sessionTitle,
@@ -2093,14 +2013,16 @@ class _SmallIconButton extends StatelessWidget {
     final button = ExcludeSemantics(
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(8),
         hoverColor: colorScheme.onSurface.withAlpha(20),
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(
-            icon,
-            size: 16,
-            color: colorScheme.onSurface.withAlpha(120),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          child: Center(
+            child: Icon(
+              icon,
+              size: 16,
+              color: colorScheme.onSurface.withAlpha(120),
+            ),
           ),
         ),
       ),
@@ -2128,47 +2050,33 @@ class _KeysPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final keysAsync = ref.watch(allKeysProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'keys',
+          actions: [
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Key',
+              onTap: () => context.push('/keys/add'),
+              primary: true,
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'SSH Keys',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Key',
-                onTap: () => context.push('/keys/add'),
-                primary: true,
-              ),
-            ],
-          ),
+          ],
         ),
 
         // Keys list
         Expanded(
           child: keysAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (_, _) =>
-                const Center(child: Text('Could not load SSH keys.')),
+            loading: () => const BrandListSkeleton(),
+            error: (_, _) => BrandErrorState(
+              title: 'couldn’t load keys',
+              message: 'Your SSH keys didn’t load.',
+              onRetry: () => ref.invalidate(allKeysProvider),
+            ),
             data: (keys) => keys.isEmpty
                 ? _buildEmptyState(context)
                 : _buildKeysList(context, ref, keys),
@@ -2181,17 +2089,14 @@ class _KeysPanel extends ConsumerWidget {
   Widget _buildEmptyState(BuildContext context) => Center(
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: _GuidedEmptyState(
-        icon: Icons.key_outlined,
-        title: 'No SSH keys yet',
-        subtitle:
-            'Keys let you sign in without saving server passwords. Generate a '
-            'new Ed25519 key or import an existing private key.',
+      child: BrandEmptyState(
+        title: 'no keys yet',
+        message: 'Generate a key and stop saving server passwords.',
         primaryLabel: 'Generate Key',
         primaryIcon: Icons.enhanced_encryption,
         onPrimary: () => context.push('/keys/add'),
         secondaryActions: [
-          _EmptyStateAction(
+          BrandEmptyAction(
             icon: Icons.upload_file_outlined,
             label: 'Import Key',
             onTap: () => context.push('/keys/add?tab=import'),
@@ -2243,13 +2148,13 @@ class _KeyRow extends ConsumerWidget {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
+                  color: colorScheme.primary.withAlpha(isDark ? 25 : 15),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   _getKeyIcon(),
                   size: 16,
-                  color: const Color(0xFF00C9FF),
+                  color: colorScheme.primary,
                 ),
               ),
               const SizedBox(width: 12),
@@ -2270,7 +2175,7 @@ class _KeyRow extends ConsumerWidget {
                       sshKey.keyType.toUpperCase(),
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        color: colorScheme.onSurface.withAlpha(160),
                       ),
                     ),
                   ],
@@ -2443,7 +2348,9 @@ class _KeyRow extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Key'),
-        content: Text('Delete "${sshKey.name}"?'),
+        content: Text(
+          'Delete "${sshKey.name}"? You’ll need the private key to reconnect.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -2484,8 +2391,6 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final snippetsAsync = ref.watch(allSnippetsProvider);
     final foldersAsync = ref.watch(allSnippetFoldersProvider);
 
@@ -2493,51 +2398,40 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+        PanelHeader(
+          title: 'snippets',
+          actions: [
+            _ActionButton(
+              icon: Icons.create_new_folder_outlined,
+              label: 'New Folder',
+              onTap: () => unawaited(_createFolder(context)),
             ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Snippets',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.create_new_folder_outlined,
-                label: 'New Folder',
-                onTap: () => unawaited(_createFolder(context)),
-              ),
-              const SizedBox(width: 8),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Snippet',
-                onTap: () => _addSnippet(context),
-                primary: true,
-              ),
-            ],
-          ),
+            const SizedBox(width: 8),
+            _ActionButton(
+              icon: Icons.add,
+              label: 'Add Snippet',
+              onTap: () => _addSnippet(context),
+              primary: true,
+            ),
+          ],
         ),
 
         // Snippets list
         Expanded(
           child: snippetsAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (_, _) =>
-                const Center(child: Text('Could not load snippets.')),
+            loading: () => const BrandListSkeleton(),
+            error: (_, _) => BrandErrorState(
+              title: 'couldn’t load snippets',
+              message: 'Your snippets didn’t load.',
+              onRetry: () => ref.invalidate(allSnippetsProvider),
+            ),
             data: (snippets) => foldersAsync.when(
-              loading: () => const Center(
-                child: CircularProgressIndicator(strokeWidth: 2),
+              loading: () => const BrandListSkeleton(),
+              error: (_, _) => BrandErrorState(
+                title: 'couldn’t load folders',
+                message: 'Your snippet folders didn’t load.',
+                onRetry: () => ref.invalidate(allSnippetFoldersProvider),
               ),
-              error: (_, _) =>
-                  const Center(child: Text('Could not load snippet folders.')),
               data: (folders) => _buildSnippetsBody(context, snippets, folders),
             ),
           ),
@@ -2837,19 +2731,20 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
   }
 
   Widget _buildEmptyState(BuildContext context, String? selectedFolderName) =>
-      FluttyTheme.buildEmptyState(
-        context: context,
-        icon: Icons.code_outlined,
-        title: selectedFolderName == null
-            ? 'No snippets yet'
-            : 'No snippets in $selectedFolderName',
-        subtitle: selectedFolderName == null
-            ? 'Save commands you run often. Try templates such as '
-                  '`tail -f {{log_file}}`, `docker restart {{container}}`, or '
-                  '`git pull && {{restart_command}}`.'
-            : 'Add a snippet to this folder or pick another folder above.',
-        onAction: () => _addSnippet(context),
-        actionLabel: 'Add Snippet',
+      Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: BrandEmptyState(
+            title: selectedFolderName == null
+                ? 'no snippets yet'
+                : 'empty folder',
+            message: selectedFolderName == null
+                ? 'Save commands you keep retyping — {{variables}} and all.'
+                : 'Nothing in this folder yet — add one or pick another above.',
+            primaryLabel: 'Add Snippet',
+            onPrimary: () => _addSnippet(context),
+          ),
+        ),
       );
 
   Widget _buildSnippetsList(
@@ -2967,7 +2862,7 @@ class _SnippetRow extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        color: colorScheme.onSurface.withAlpha(150),
                       ),
                     ),
                     if (folderName case final folderName?) ...[
@@ -2977,7 +2872,7 @@ class _SnippetRow extends ConsumerWidget {
                           Icon(
                             Icons.folder_outlined,
                             size: 12,
-                            color: colorScheme.onSurface.withAlpha(110),
+                            color: colorScheme.onSurface.withAlpha(140),
                           ),
                           const SizedBox(width: 4),
                           Flexible(
@@ -3105,7 +3000,7 @@ class _SnippetRow extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Snippet'),
-        content: Text('Delete "${snippet.name}"?'),
+        content: Text('Delete "${snippet.name}"? This can’t be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),

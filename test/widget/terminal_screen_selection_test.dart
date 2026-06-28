@@ -170,6 +170,50 @@ void main() {
     );
   });
 
+  group('resolveTerminalFilePathExistenceCandidates', () {
+    test('walks back directory prefixes for an absolute path', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates('/srv/app/lib/main.dart'),
+        ['/srv/app/lib/main.dart', '/srv/app/lib', '/srv/app', '/srv'],
+      );
+    });
+
+    test('walks back directory prefixes for a relative path', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates(
+          'lib/presentation/screens/terminal_screen.dart',
+        ),
+        [
+          'lib/presentation/screens/terminal_screen.dart',
+          'lib/presentation/screens',
+          'lib/presentation',
+        ],
+      );
+    });
+
+    test('stops directory walk-back before the bare home directory', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates('~/Code/app/main.dart'),
+        ['~/Code/app/main.dart', '~/Code/app', '~/Code'],
+      );
+    });
+
+    test('orders ambiguous parses and prefixes longest first', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates(
+          '/srv/app/archive.tar.gzbackup',
+        ),
+        [
+          '/srv/app/archive.tar.gzbackup',
+          '/srv/app/archive.tar.gz',
+          '/srv/app/archive.tar',
+          '/srv/app',
+          '/srv',
+        ],
+      );
+    });
+  });
+
   group('hasAmbiguousTerminalFilePathParsing', () {
     test(
       'returns false for ordinary explicit paths with a final known extension',
@@ -425,6 +469,213 @@ void main() {
       expect(detectedLink, isNotNull);
       expect(detectedLink!.uri.toString(), 'tel:+15551234567');
     });
+
+    test('detects file links at the tapped offset', () {
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        'Open file:///srv/app/main.dart in the browser.',
+        12,
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(detectedLink!.uri.toString(), 'file:///srv/app/main.dart');
+    });
+
+    test('reconstructs a URL split across rendered lines', () {
+      const text =
+          'See PR https://github.com/depoll-personal/LANbu-Han │\n'
+          'dy/pull/187 for details';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depoll-personal/LANbu-Handy/pull/187',
+      );
+    });
+
+    test('resolves a tap on a URL continuation line to the full URL', () {
+      const text =
+          'See PR https://github.com/depoll-personal/LANbu-Han │\n'
+          'dy/pull/187 for details';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('dy/pull'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depoll-personal/LANbu-Handy/pull/187',
+      );
+    });
+
+    test('reconstructs a URL wrapped past a TUI gutter and scrollbar', () {
+      const text =
+          'See https://github.com/depoll-personal/LANbu-Han █\n'
+          '  dy/pull/187 done                              █';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depoll-personal/LANbu-Handy/pull/187',
+      );
+    });
+
+    test('reconstructs a URL wrapped after a trailing slash (Copilot)', () {
+      const text =
+          'See PR #590 at https://github.com/ │\n'
+          'depollsoft/MonkeySSH/pull/590 done';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('depollsoft'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depollsoft/MonkeySSH/pull/590',
+      );
+    });
+
+    test('does not weld prose onto a URL across a plain newline', () {
+      // A complete URL ending a line followed by ordinary prose has no
+      // gutter/border chrome at the boundary, so the next line must not be
+      // welded onto the URL (which would resolve a corrupted destination).
+      const text = 'Homepage: https://example.com\nReturns a list of users';
+
+      expect(
+        detectTerminalLinkAtTextOffset(
+          text,
+          text.indexOf('https'),
+        )?.uri.toString(),
+        'https://example.com',
+      );
+    });
+
+    test('does not weld a following sentence onto a bare URL line', () {
+      const text = 'https://example.com\nDone.';
+
+      expect(
+        detectTerminalLinkAtTextOffset(text, 4)?.uri.toString(),
+        'https://example.com',
+      );
+    });
+
+    test('does not merge adjacent bare-URL list items', () {
+      const text =
+          '- https://github.com/depoll/a/pull/1\n'
+          '- https://github.com/depoll/b/pull/2';
+
+      expect(
+        detectTerminalLinkAtTextOffset(
+          text,
+          text.indexOf('github.com/depoll/a'),
+        )?.uri.toString(),
+        'https://github.com/depoll/a/pull/1',
+      );
+      expect(
+        detectTerminalLinkAtTextOffset(
+          text,
+          text.indexOf('github.com/depoll/b'),
+        )?.uri.toString(),
+        'https://github.com/depoll/b/pull/2',
+      );
+    });
+
+    test('excludes a box border flush against the end of a URL', () {
+      // A TUI (e.g. Copilot CLI) char-wraps a URL against its right box border
+      // with no separating space, so the border glyph sits immediately after
+      // the URL. The border must not be swallowed into the link.
+      const text =
+          '\u2502https://github.com/depollsoft/MonkeySSH/pull/590\u2502';
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(
+        detectedLink!.uri.toString(),
+        'https://github.com/depollsoft/MonkeySSH/pull/590',
+      );
+    });
+
+    test('reconstructs a URL char-wrapped flush against box borders', () {
+      // Copilot CLI on a narrow screen char-wraps a URL flush against the box
+      // borders on both rendered lines, with no spaces separating the URL
+      // fragments from the U+2502 borders.
+      const text =
+          '\u2502https://github.com/depollsoft/Mon\u2502\n'
+          '\u2502keySSH/pull/592 ok\u2502';
+      final detectedFirstHalf = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('https'),
+      );
+      final detectedSecondHalf = detectTerminalLinkAtTextOffset(
+        text,
+        text.indexOf('keySSH'),
+      );
+
+      const expected = 'https://github.com/depollsoft/MonkeySSH/pull/592';
+      expect(detectedFirstHalf?.uri.toString(), expected);
+      expect(detectedSecondHalf?.uri.toString(), expected);
+    });
+  });
+
+  group('resolveTerminalFileUriPath', () {
+    test('extracts the path from a host-qualified file URI', () {
+      expect(
+        resolveTerminalFileUriPath('file://build-host/srv/app/main.dart'),
+        '/srv/app/main.dart',
+      );
+    });
+
+    test('extracts the path from an authority-less file URI', () {
+      expect(
+        resolveTerminalFileUriPath('file:///var/log/app.log'),
+        '/var/log/app.log',
+      );
+    });
+
+    test('decodes percent-encoded path segments', () {
+      expect(
+        resolveTerminalFileUriPath('file:///srv/my%20app/main.dart'),
+        '/srv/my app/main.dart',
+      );
+    });
+
+    test('returns null for non-file links', () {
+      expect(resolveTerminalFileUriPath('https://example.com'), isNull);
+    });
+
+    test('returns null for a file URI without a path', () {
+      expect(resolveTerminalFileUriPath('file://build-host'), isNull);
+    });
+  });
+
+  group('isTerminalFileUri', () {
+    test('accepts file URIs with a path', () {
+      expect(isTerminalFileUri(Uri.parse('file:///srv/app')), isTrue);
+      expect(isTerminalFileUri(Uri.parse('file://host/srv/app')), isTrue);
+    });
+
+    test('rejects non-file and pathless file URIs', () {
+      expect(isTerminalFileUri(Uri.parse('https://example.com')), isFalse);
+      expect(isTerminalFileUri(Uri.parse('file://host')), isFalse);
+    });
+
+    test('treats file URIs as resolvable but not launchable', () {
+      final uri = Uri.parse('file:///srv/app/main.dart');
+      expect(isResolvableTerminalLinkUri(uri), isTrue);
+      expect(isLaunchableTerminalUri(uri), isFalse);
+    });
   });
 
   group('detectTerminalFilePathAtTextOffset', () {
@@ -639,6 +890,71 @@ void main() {
       expect(
         detectedPath!.path,
         '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/presentation/widgets/terminal_text_input_handler.dart',
+      );
+    });
+
+    test('detects paths split across lines ending with a scrollbar glyph', () {
+      const text =
+          'Read ~/Code/flutty/lib/presentation/screens/   █\n'
+          'terminal_screen.dart for the link logic.       █';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('detects absolute paths split before a right-edge scrollbar', () {
+      const text =
+          'Open /srv/app/lib/presentation/                ▐\n'
+          'screens/terminal_screen.dart next.            ▐';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('screens'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('detects paths split across three scrollbar-padded rows', () {
+      const text =
+          'Read ~/Code/flutty/lib/                        ▌\n'
+          'presentation/widgets/terminal_text_input_handl ▌\n'
+          'er.dart for review.                            ▌';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('er.dart'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty/lib/presentation/widgets/terminal_text_input_handler.dart',
+      );
+    });
+
+    test('detects paths split across mixed scrollbar thumb and track rows', () {
+      const text =
+          'Read /srv/app/lib/presentation/screens/        ░\n'
+          'terminal_screen.dart for the link logic.       █';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
       );
     });
 

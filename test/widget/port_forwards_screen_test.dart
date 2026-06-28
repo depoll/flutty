@@ -79,7 +79,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('No port forwards yet'), findsOneWidget);
+      expect(find.text('no forwards yet'), findsOneWidget);
     });
 
     testWidgets('shows port forwards grouped by host', (tester) async {
@@ -139,7 +139,7 @@ void main() {
       controller.add(const <PortForward>[]);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      expect(find.text('No port forwards yet'), findsOneWidget);
+      expect(find.text('no forwards yet'), findsOneWidget);
 
       final host = _buildHost(id: 1, label: 'Server');
       final pf = _buildPortForward(id: 1, hostId: 1, name: 'SSH Tunnel');

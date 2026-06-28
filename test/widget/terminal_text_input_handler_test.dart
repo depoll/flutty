@@ -1543,7 +1543,10 @@ void main() {
 
       await _commitSwipeText(tester, '$_deleteDetectionMarker next');
 
-      expect(terminalOutput.join(), 'echo hi\nnext');
+      expect(
+        terminalOutput.join(),
+        'echo hi${_terminalKeyOutput(TerminalKey.enter)}next',
+      );
 
       focusNode.dispose();
     });
@@ -4739,6 +4742,55 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets('soft-keyboard newline text sends terminal Enter', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('echo', selectionOffset: 'echo'.length),
+      );
+      await tester.pump();
+
+      terminalOutput.clear();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('echo\n', selectionOffset: 'echo\n'.length),
+      );
+      await tester.pump();
+
+      expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.enter));
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length,
+          ),
+        ),
+      );
+
+      focusNode.dispose();
+    });
 
     testWidgets(
       'suppresses the first follow-up newline action after a committed newline update',
@@ -8253,7 +8305,10 @@ void main() {
       );
       await tester.pump();
 
-      expect(_terminalTextFromEvents(terminalOutput), 'echo hi\nnext');
+      expect(
+        _terminalTextFromEvents(terminalOutput),
+        'echo hi${_terminalKeyOutput(TerminalKey.enter)}next',
+      );
 
       focusNode.dispose();
     });

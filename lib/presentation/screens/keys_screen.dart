@@ -7,6 +7,9 @@ import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/brand_empty_state.dart';
+import '../widgets/brand_error_state.dart';
+import '../widgets/brand_list_skeleton.dart';
 
 /// Screen displaying list of SSH keys.
 class KeysScreen extends ConsumerWidget {
@@ -16,31 +19,15 @@ class KeysScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final keysAsync = ref.watch(allKeysProvider);
-    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('SSH Keys')),
       body: keysAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: FluttyTheme.emptyStateIconSize,
-                color: theme.colorScheme.error,
-              ),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              const Text('Could not load SSH keys.'),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              FilledButton.icon(
-                onPressed: () => ref.invalidate(allKeysProvider),
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Retry'),
-              ),
-            ],
-          ),
+        loading: () => const BrandListSkeleton(),
+        error: (error, stack) => BrandErrorState(
+          title: 'couldn’t load keys',
+          message: 'Your SSH keys didn’t load.',
+          onRetry: () => ref.invalidate(allKeysProvider),
         ),
         data: (keys) => _buildKeysList(context, ref, keys),
       ),
@@ -61,28 +48,17 @@ class KeysScreen extends ConsumerWidget {
       return Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              FluttyTheme.buildEmptyState(
-                context: context,
-                icon: Icons.vpn_key_outlined,
-                title: 'No SSH keys yet',
-                subtitle:
-                    'Keys let you sign in without saving server passwords. '
-                    'Generate a new Ed25519 key or import an existing private '
-                    'key.',
-                onAction: () => context.push('/keys/add'),
-                actionLabel: 'Generate Key',
-                actionIcon: Icons.enhanced_encryption,
-                centered: false,
-                padded: false,
-              ),
-              const SizedBox(height: FluttyTheme.spacingMd),
-              OutlinedButton.icon(
-                onPressed: () => context.push('/keys/add?tab=import'),
-                icon: const Icon(Icons.upload_file_outlined, size: 18),
-                label: const Text('Import Key'),
+          child: BrandEmptyState(
+            title: 'no keys yet',
+            message: 'Generate a key and stop saving server passwords.',
+            primaryLabel: 'Generate Key',
+            primaryIcon: Icons.enhanced_encryption,
+            onPrimary: () => context.push('/keys/add'),
+            secondaryActions: [
+              BrandEmptyAction(
+                icon: Icons.upload_file_outlined,
+                label: 'Import Key',
+                onTap: () => context.push('/keys/add?tab=import'),
               ),
             ],
           ),
@@ -177,17 +153,17 @@ class _KeyListTile extends StatelessWidget {
       leading: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
+          color: theme.colorScheme.primary.withAlpha(isDark ? 25 : 15),
           borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
         ),
-        child: Icon(_getKeyIcon(), size: 20, color: const Color(0xFF00C9FF)),
+        child: Icon(_getKeyIcon(), size: 20, color: theme.colorScheme.primary),
       ),
       title: Text(sshKey.name),
       subtitle: Text(
         _getKeyTypeLabel(),
         style: FluttyTheme.monoStyle.copyWith(
           fontSize: 11,
-          color: theme.colorScheme.onSurface.withAlpha(120),
+          color: theme.colorScheme.onSurface.withAlpha(160),
         ),
       ),
       trailing: PopupMenuButton<String>(

@@ -40,6 +40,28 @@ out of scope.
   overlay uses the non-deprecated `OverlayPortal`; double-tap timers are canceled
   on dispose; and the ZMODEM detector awaits initial session handling instead of
   fire-and-forget while serializing stdout chunk processing.
+* kterm.dart 1.2.0 -> 1.5.0 reconciliation (#591). Upstream advanced to 1.5.0
+  with discrete fixes plus an architectural move of its Kitty keyboard onto the
+  external `kitty_protocol` package. The genuinely-applicable fixes were ported:
+  * X10/UTF mouse reporting sent the row coordinate one cell too low — the row
+    byte was double-incremented (`32 + y + 1` where `y` is already 1-based) while
+    the column was not. It now matches the column and xterm.js (`32 + y`).
+  * The vendored `TerminalGestureHandler` reported middle-button taps as the
+    right button. The tap-up handler used `.right` (fixed to `.middle`, matching
+    upstream's method change), and the gesture detector routed both tertiary
+    callbacks to the secondary handlers — so middle clicks reported
+    `TerminalMouseButton.right`. A local wiring fix now routes the detector's
+    tertiary callbacks to the tertiary handlers, so middle clicks report
+    `TerminalMouseButton.middle`. (The app uses `MonkeyTerminalGestureHandler`,
+    which was already correct.)
+  * `CustomTextEdit` no longer force-unwraps the text-input connection when
+    resetting editing state after IME composing, avoiding a null crash if the
+    connection closed mid-compose.
+  * Housekeeping that reduces divergence from upstream: `KeyboardVisibilty` was
+    renamed to `KeyboardVisibility` (the long-standing typo), `Observable.listeners`
+    is now private, `IndexAwareCircularBuffer.operator []=` has an explicit `void`
+    return type, the unused `TerminalSnapshot` plus dead `main()`/commented
+    scaffolding were removed, and `TerminalSize` is exported from `ui.dart`.
 
 ### Evaluated but intentionally not ported
 * Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end
@@ -49,6 +71,73 @@ out of scope.
 * Unicode width tables remain at v11. Bumping them can either help or hurt
   cursor alignment depending on the host's own `wcwidth`, so it is left as a
   separate, deliberate change.
+* The `kitty_protocol` package (kterm.dart 1.5.0's architecture) is **not**
+  adopted (#591). It is encoders-only and upstream keeps its own `GraphicsManager`
+  vendored regardless, so it contributes nothing to our app-integrated Kitty
+  graphics (compositing, retained protocol-image ids, Unicode placeholders,
+  use-after-free/`CellAnchor` safety). Its keyboard encoder is also strictly
+  inferior to our `kitty_keyboard.dart`: it couples encoding to Flutter's
+  `LogicalKeyboardKey`, keeps a single global flag state (we keep independent
+  main/alt screen stacks), and ships an Enter keycode bug that upstream works
+  around with a string-replacing wrapper. Adopting it would be a regression and a
+  new dependency for no new capability.
+* Upstream's 1.3.0 Kitty-keyboard and 1.4.0 chunked-graphics *parser* fixes are
+  already covered by our divergence: the parser dispatches Kitty keyboard by CSI
+  prefix (`=` set / `>` push / `<` pop / `?` query) and accumulates graphics
+  payload across all chunks, deferring `graphicsCommandEnd` until the final
+  (`m != 1`) chunk.
+* Upstream's 1.4.2 painter run-batching and 1.5.0 htop spurious-underline
+  cache-key fix do not apply: MonkeySSH renders through `MonkeyTerminalPainter` /
+  `MonkeyRenderTerminal`, and our foreground paragraph cache key already folds in
+  the underline flag (via `CellData.getHash`). Porting the draw-call batching
+  into `MonkeyTerminalPainter` itself (where it would actually run) is tracked in
+  #595. The `notifyListeners` microtask coalescing and the paste-from-shortcut
+  dedup were also left out as behavioral changes the app's own render/input paths
+  do not need.
+
+### MonkeySSH-local additions (preserve across kterm syncs)
+* XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
+  implements the kitty graphics + keyboard protocols, so it reports a
+  kitty-family identity. CLIs such as the GitHub Copilot CLI gate their richer
+  rendering (full-width prompt/composer backgrounds, painted with real cells)
+  on a recognized XTVERSION name; without it they fall back to a tight,
+  text-width background. Upstream kterm does not answer XTVERSION yet, so keep
+  `EscapeEmitter.terminalVersion()` and the `CSI q` parser dispatch when
+  re-syncing. Consider upstreaming.
+* DECRQM ANSI-mode replies (`CSI Ps $ p` -> `CSI Ps ; Pm $ y`). The parser now
+  retains the last CSI intermediate (`_Csi.intermediate`) to distinguish DECRQM
+  (`$`) from the other `p` finals (DECSTR `!`, DECSCL `"`), which still fall
+  through to `unknownCSI`. Only the ANSI-mode form is answered here; the
+  DEC-private form (`CSI ? Ps $ p`) is deliberately left to the MonkeySSH app
+  layer, which scans shell output and tracks extra state (notably DEC mode 2031
+  colour-scheme updates) — answering it in core as well would double-reply.
+  Keep `EscapeEmitter.modeReport`, the `CSI p` parser dispatch, and
+  `Terminal._ansiModeValue` on re-sync.
+* XTGETTCAP replies (`DCS + q <hex> ST` -> `DCS 1+r <hex>=<hex> ST` /
+  `DCS 0+r <hex> ST`). A new `ESC P` (DCS) parser branch buffers the string to
+  ST; XTGETTCAP requests are answered for theme-independent caps (`Co`/`colors`
+  -> 256, `RGB` -> 8/8/8) and reported invalid otherwise (including `TN`, since
+  TERM is host-defined). As a side effect this also stops unrecognized DCS
+  payloads (Sixel, ...) from leaking into the buffer as text. Keep
+  `EscapeEmitter.termcapReport`, the `ESC P` dispatch, and
+  `Terminal.sendTermcapReport`/`_termcapValue` on re-sync.
+* DECRQSS replies (`DCS $ q <Pt> ST` -> `DCS 1$r <Pt> ST` / `DCS 0$r ST`),
+  dispatched from the same `ESC P` branch. Only control functions whose state
+  the core tracks are answered: DECSTBM (`r`, scrolling region) and SGR (`m`,
+  current rendition, serialized from the active pen). The cursor style (` q`),
+  conformance level (`"p`) and others report not recognized. Keep
+  `EscapeEmitter.statusStringReport` and
+  `Terminal.sendStatusStringReport`/`_statusStringValue`/`_currentSgrParameters`
+  on re-sync.
+* Modernized Device Attributes: DA1 reports VT220 + ANSI colour (`CSI ?62;22c`,
+  was `?1;2c`) and DA2 a VT220-class identity (`CSI >1;0;0c`, was `>0;0;0c`),
+  consistent with the kitty XTVERSION identity. Keep
+  `EscapeEmitter.primaryDeviceAttributes`/`secondaryDeviceAttributes` on
+  re-sync.
+* Note: DEC-private DECRQM (`CSI ? Ps $ p`) and the window pixel-size reports
+  (`CSI 14/15/16 t`) are answered by the MonkeySSH app layer
+  (`ssh_service.dart`), not here, so the core deliberately does not reply to
+  them.
 
 
 ## [3.6.1-pre] - 2023-04-28

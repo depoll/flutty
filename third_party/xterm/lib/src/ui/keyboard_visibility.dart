@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 
-class KeyboardVisibilty extends StatefulWidget {
-  const KeyboardVisibilty({
+class KeyboardVisibility extends StatefulWidget {
+  const KeyboardVisibility({
     super.key,
     required this.child,
     this.onKeyboardShow,
@@ -15,10 +15,10 @@ class KeyboardVisibilty extends StatefulWidget {
   final VoidCallback? onKeyboardHide;
 
   @override
-  KeyboardVisibiltyState createState() => KeyboardVisibiltyState();
+  KeyboardVisibilityState createState() => KeyboardVisibilityState();
 }
 
-class KeyboardVisibiltyState extends State<KeyboardVisibilty>
+class KeyboardVisibilityState extends State<KeyboardVisibility>
     with WidgetsBindingObserver {
   @override
   void initState() {

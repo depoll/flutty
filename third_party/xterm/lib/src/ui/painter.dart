@@ -184,6 +184,7 @@ class TerminalPainter {
   void paintCellForeground(Canvas canvas, Offset offset, CellData cellData) {
     final charCode = cellData.content & CellContent.codepointMask;
     if (charCode == 0) return;
+    if (charCode == kittyGraphicsPlaceholderCodePoint) return;
 
     // Conceal (SGR 8): the cell keeps its content for selection/copy but the
     // glyph is not drawn.

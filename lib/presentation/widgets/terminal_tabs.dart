@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../domain/services/ssh_service.dart';
+import 'connection_status_dot.dart';
 
 /// An immutable, value-equal snapshot of the active session tab entries.
 ///
@@ -66,7 +67,7 @@ class TerminalTabBar extends ConsumerWidget {
     }
 
     return Container(
-      height: 40,
+      height: 44,
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerLow,
         border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
@@ -144,14 +145,7 @@ class _TerminalTab extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isConnected ? colorScheme.primary : colorScheme.tertiary,
-              ),
-            ),
+            ConnectionStatusDot(isConnected: isConnected, size: 8),
             const SizedBox(width: 8),
             Flexible(
               child: Text(
@@ -169,13 +163,16 @@ class _TerminalTab extends StatelessWidget {
             const SizedBox(width: 4),
             InkWell(
               onTap: onClose,
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.close,
-                  size: 14,
-                  color: colorScheme.onSurfaceVariant,
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 40,
+                height: 44,
+                child: Center(
+                  child: Icon(
+                    Icons.close,
+                    size: 16,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ),

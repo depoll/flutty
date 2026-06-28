@@ -1335,16 +1335,65 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final appendedText = delta.appendedText;
-    if (appendedText.isNotEmpty) {
-      widget.terminal.textInput(_applyTerminalTextInputModifiers(appendedText));
-    }
+    final newlineCount = _sendAppendedTerminalInput(appendedText);
 
     _lastSentText = currentText;
     _lastSentCursorOffset =
         delta.deleteCursorOffset -
         deletedCount +
         appendedText.characters.length;
-    return '\n'.allMatches(appendedText).length;
+    return newlineCount;
+  }
+
+  int _sendAppendedTerminalInput(String text) {
+    if (text.isEmpty) {
+      return 0;
+    }
+
+    var newlineCount = 0;
+    var segmentStart = 0;
+    var index = 0;
+    while (index < text.length) {
+      final codeUnit = text.codeUnitAt(index);
+      final newlineLength = codeUnit == 0x0D
+          ? (index + 1 < text.length && text.codeUnitAt(index + 1) == 0x0A
+                ? 2
+                : 1)
+          : codeUnit == 0x0A
+          ? 1
+          : 0;
+      if (newlineLength == 0) {
+        index++;
+        continue;
+      }
+
+      _sendTerminalTextSegment(text.substring(segmentStart, index));
+      _sendTerminalEnterFromTextInput();
+      newlineCount++;
+      index += newlineLength;
+      segmentStart = index;
+    }
+
+    _sendTerminalTextSegment(text.substring(segmentStart));
+    return newlineCount;
+  }
+
+  void _sendTerminalTextSegment(String text) {
+    if (text.isEmpty) {
+      return;
+    }
+    widget.terminal.textInput(_applyTerminalTextInputModifiers(text));
+  }
+
+  void _sendTerminalEnterFromTextInput() {
+    final modifiers = widget.resolveTerminalKeyModifiers?.call();
+    sendTerminalEnterInput(
+      widget.terminal,
+      shiftActive: modifiers?.shift ?? false,
+      altActive: modifiers?.alt ?? false,
+      ctrlActive: modifiers?.ctrl ?? false,
+    );
+    widget.consumeTerminalKeyModifiers?.call();
   }
 
   void _resetCommittedInputState({

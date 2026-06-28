@@ -65,6 +65,21 @@ void main() {
       expect(sanitizeRemoteUploadFileName('   '), 'file');
     });
 
+    test('strips shell metacharacters from upload file names', () {
+      // Only letters, digits, '.', '_' and '-' survive, so the uploaded path
+      // can be pasted unquoted without risking shell interpretation. The
+      // extension is preserved so image previews still resolve.
+      expect(sanitizeRemoteUploadFileName(r'a$(rm -rf ~).png'), 'a-rm-rf-.png');
+      expect(sanitizeRemoteUploadFileName('photo;`id`.jpg'), 'photo-id-.jpg');
+      expect(sanitizeRemoteUploadFileName('***.png'), '.png');
+    });
+
+    test('rejects dot-only (path traversal) upload file names', () {
+      expect(sanitizeRemoteUploadFileName('.'), 'file');
+      expect(sanitizeRemoteUploadFileName('..'), 'file');
+      expect(sanitizeRemoteUploadFileName('/a/b/..'), 'file');
+    });
+
     test('builds deterministic clipboard upload names', () {
       final timestamp = DateTime.utc(2026, 3, 21, 18, 12, 18, 297);
 
@@ -97,9 +112,67 @@ void main() {
 
     test('escapes uploaded paths for terminal insertion', () {
       expect(shellEscapePosix("/tmp/it's.txt"), r"'/tmp/it'\''s.txt'");
+    });
+
+    test(
+      'builds a separate bracketed paste per file so agents show one chip each',
+      () {
+        const start = '\x1b[200~';
+        const end = '\x1b[201~';
+        expect(
+          buildTerminalAttachmentPasteSegments([
+            '/home/u/.cache/monkeyssh/uploads/a.png',
+            '/home/u/b.png',
+          ], bracketedPasteMode: true),
+          [
+            '$start/home/u/.cache/monkeyssh/uploads/a.png$end ',
+            '$start/home/u/b.png$end ',
+          ],
+        );
+      },
+    );
+
+    test('inserts one shell-escaped segment when bracketed paste is off', () {
       expect(
-        buildTerminalUploadInsertion(['/tmp/a.png', '/tmp/two words.txt']),
-        "'/tmp/a.png' '/tmp/two words.txt'",
+        buildTerminalAttachmentPasteSegments([
+          '/tmp/a.png',
+          '/tmp/b.png',
+        ], bracketedPasteMode: false),
+        ["'/tmp/a.png' '/tmp/b.png' "],
+      );
+    });
+
+    test('falls back to shell-escaping when a path is not unquoted-safe', () {
+      // A remote home directory with a space (or shell metacharacters) must not
+      // be pasted raw: it would split/inject in a shell. Such a path would not
+      // produce a preview chip anyway, so a safe shell-escaped segment is used.
+      expect(
+        buildTerminalAttachmentPasteSegments([
+          '/home/john smith/.cache/monkeyssh/uploads/a.png',
+        ], bracketedPasteMode: true),
+        ["'/home/john smith/.cache/monkeyssh/uploads/a.png' "],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments([
+          r'/home/u/$(reboot)/a.png',
+        ], bracketedPasteMode: true),
+        [r"'/home/u/$(reboot)/a.png' "],
+      );
+    });
+
+    test('returns no segments when there are no paths', () {
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          const [],
+          bracketedPasteMode: true,
+        ),
+        isEmpty,
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(const [
+          '',
+        ], bracketedPasteMode: true),
+        isEmpty,
       );
     });
   });

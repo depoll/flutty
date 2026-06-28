@@ -46,12 +46,17 @@ class _SshSessionRuntime {
   static const _maxTerminalOutputFlushChars = 64 * 1024;
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
-  // SSH pty negotiation sets TERM but cannot advertise COLORTERM. Launch the
-  // user's login shell with the hint instead of relying on server-gated env
-  // requests that OpenSSH commonly rejects by default. Keep the outer command
-  // parseable by common non-POSIX login shells; /bin/sh handles the fallback.
+  // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
+  // app hints. Launch the user's login shell with those hints instead of
+  // relying on server-gated env requests that OpenSSH commonly rejects by
+  // default. Keep TERM itself unchanged: xterm-kitty terminfo is often absent
+  // on remote hosts, while TERM_PROGRAM/KITTY_WINDOW_ID are enough for image
+  // capable CLIs to choose Kitty graphics sequences. FORCE_HYPERLINK=1 makes
+  // OSC 8 capable CLIs (Copilot, gh, ...) emit hyperlinks even though their
+  // capability probes don't recognize this TERM/TERM_PROGRAM combination;
+  // MonkeySSH renders and opens OSC 8 links, so advertising support is safe.
   static const _trueColorLoginShellCommand =
-      r"""exec env COLORTERM=truecolor /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+      r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
 
   /// UTF-8 decoder that tolerates malformed bytes by emitting U+FFFD instead
   /// of throwing a [FormatException]. The shell stream carries raw terminal

@@ -106,6 +106,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
+  _PendingKittyPlaceholder? _pendingKittyPlaceholder;
+  _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
   late var _buffer = _mainBuffer;
 
@@ -462,6 +464,33 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void writeChar(int char) {
+    if (_pendingKittyPlaceholder != null) {
+      final diacriticValue = _kittyPlaceholderDiacriticValue(char);
+      if (diacriticValue != null) {
+        _pendingKittyPlaceholder!.addDiacritic(diacriticValue);
+        _lastKittyPlaceholder = _pendingKittyPlaceholder;
+        return;
+      }
+      _pendingKittyPlaceholder = null;
+    }
+    if (char == kittyGraphicsPlaceholderCodePoint) {
+      final pending = _PendingKittyPlaceholder(
+        foreground: _buffer.terminal.cursor.foreground,
+        underlineColor: _buffer.terminal.cursor.underlineColor,
+        anchor: _buffer.currentLine.createAnchor(_buffer.cursorX),
+        previous: _lastKittyPlaceholder,
+      );
+      _buffer.graphics.addPlaceholder(
+        imageId: pending.imageId,
+        imageIdBitWidth: pending.imageIdBitWidth,
+        anchor: pending.anchor,
+        row: pending.row,
+        col: pending.col,
+      );
+      pending.bind(_buffer.graphics.placeholders.last);
+      _pendingKittyPlaceholder = pending;
+      _lastKittyPlaceholder = pending;
+    }
     _precedingCodepoint = char;
     _buffer.writeChar(char);
   }
@@ -619,6 +648,176 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void sendTertiaryDeviceAttributes() {
     onOutput?.call(_emitter.tertiaryDeviceAttributes());
+  }
+
+  @override
+  void sendTerminalVersion() {
+    onOutput?.call(_emitter.terminalVersion());
+  }
+
+  @override
+  void sendModeReport(int mode) {
+    onOutput?.call(_emitter.modeReport(mode, _ansiModeValue(mode)));
+  }
+
+  /// DECRQM state value for an ANSI mode: 1 set, 2 reset, 0 not recognized.
+  ///
+  /// Only the ANSI-mode form (`CSI Ps $ p`) is answered here. The DEC-private
+  /// form (`CSI ? Ps $ p`) is answered by the MonkeySSH app layer, so the core
+  /// must not reply to it (see [EscapeParser]).
+  int _ansiModeValue(int mode) {
+    switch (mode) {
+      case 4: // IRM - Insert/Replace
+        return _insertMode ? 1 : 2;
+      case 20: // LNM - Line Feed/New Line
+        return _lineFeedMode ? 1 : 2;
+      default:
+        return 0;
+    }
+  }
+
+  @override
+  void sendTermcapReport(List<String> capabilities) {
+    final output = onOutput;
+    if (output == null) return;
+    for (final hexName in capabilities) {
+      if (hexName.isEmpty) continue;
+      final name = _decodeHex(hexName);
+      final value = name == null ? null : _termcapValue(name);
+      output(
+        _emitter.termcapReport(
+          hexName,
+          value == null ? null : _encodeHex(value),
+        ),
+      );
+    }
+  }
+
+  /// Resolves a terminfo/termcap capability value for XTGETTCAP, or null when
+  /// the capability is unknown/unsupported.
+  ///
+  /// Only unambiguous, theme-independent capabilities are answered. The
+  /// terminal name (`TN`) is intentionally not reported: TERM is host-defined
+  /// (MonkeySSH leaves it unchanged, often `xterm-256color`), so answering a
+  /// fixed name here would risk a mismatch with the negotiated TERM.
+  String? _termcapValue(String name) {
+    switch (name) {
+      case 'Co': // termcap: maximum colors
+      case 'colors': // terminfo: maximum colors
+        return '256';
+      case 'RGB': // direct-color support, bits per channel
+        return '8/8/8';
+      default:
+        return null;
+    }
+  }
+
+  String? _decodeHex(String hex) {
+    if (hex.isEmpty || hex.length.isOdd) return null;
+    final units = <int>[];
+    for (var i = 0; i < hex.length; i += 2) {
+      final byte = int.tryParse(hex.substring(i, i + 2), radix: 16);
+      if (byte == null) return null;
+      units.add(byte);
+    }
+    return String.fromCharCodes(units);
+  }
+
+  String _encodeHex(String value) {
+    final buffer = StringBuffer();
+    for (final unit in value.codeUnits) {
+      buffer.write(unit.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
+  }
+
+  @override
+  void sendStatusStringReport(String request) {
+    onOutput?.call(_emitter.statusStringReport(_statusStringValue(request)));
+  }
+
+  /// Resolves the DECRQSS status string for [request] (the control function's
+  /// intermediate/final), or null when the request is not recognized.
+  ///
+  /// Only control functions whose state the terminal actually tracks are
+  /// answered; the cursor style (` q`), conformance level (`"p`) and similar
+  /// are reported as not recognized rather than guessed.
+  String? _statusStringValue(String request) {
+    switch (request) {
+      case 'r': // DECSTBM - scrolling region (top/bottom margins, 1-based)
+        return '${_buffer.marginTop + 1};${_buffer.marginBottom + 1}r';
+      case 'm': // SGR - current graphic rendition
+        return '${_currentSgrParameters()}m';
+      default:
+        return null;
+    }
+  }
+
+  /// Serializes the active pen as SGR parameters, beginning with `0` (reset) so
+  /// the string reproduces the rendition on its own.
+  String _currentSgrParameters() {
+    final params = <int>[0];
+    final style = _cursorStyle;
+    final attrs = style.attrs;
+    if (attrs & CellAttr.bold != 0) params.add(1);
+    if (attrs & CellAttr.faint != 0) params.add(2);
+    if (attrs & CellAttr.italic != 0) params.add(3);
+    if (attrs & CellAttr.underline != 0) params.add(4);
+    if (attrs & CellAttr.blink != 0) params.add(5);
+    if (attrs & CellAttr.inverse != 0) params.add(7);
+    if (attrs & CellAttr.invisible != 0) params.add(8);
+    if (attrs & CellAttr.strikethrough != 0) params.add(9);
+    if (attrs & CellAttr.overline != 0) params.add(53);
+    _appendSgrColor(params, style.foreground, named: 30, bright: 90, ext: 38);
+    _appendSgrColor(params, style.background, named: 40, bright: 100, ext: 48);
+    _appendSgrUnderlineColor(params, style.underlineColor);
+    return params.join(';');
+  }
+
+  void _appendSgrColor(
+    List<int> params,
+    int color, {
+    required int named,
+    required int bright,
+    required int ext,
+  }) {
+    final type = (color & CellColor.typeMask);
+    final value = color & CellColor.valueMask;
+    switch (type) {
+      case CellColor.named:
+        params.add(value < 8 ? named + value : bright + (value - 8));
+        break;
+      case CellColor.palette:
+        params.addAll([ext, 5, value]);
+        break;
+      case CellColor.rgb:
+        params.addAll([
+          ext,
+          2,
+          (value >> 16) & 0xFF,
+          (value >> 8) & 0xFF,
+          value & 0xFF,
+        ]);
+        break;
+    }
+  }
+
+  void _appendSgrUnderlineColor(List<int> params, int color) {
+    final value = color & CellColor.valueMask;
+    switch (color & CellColor.typeMask) {
+      case CellColor.palette:
+        params.addAll([58, 5, value]);
+        break;
+      case CellColor.rgb:
+        params.addAll([
+          58,
+          2,
+          (value >> 16) & 0xFF,
+          (value >> 8) & 0xFF,
+          value & 0xFF,
+        ]);
+        break;
+    }
   }
 
   @override
@@ -1060,22 +1259,64 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final data = Uint8List.fromList(_graphicsData);
     _graphicsData.clear();
 
-    // Only transmit-and-display (a=T) is rendered; other actions are ignored.
-    if ((args['a'] ?? 't') != 'T' || data.isEmpty) {
+    if (args['a'] == 'q') {
+      _respondToGraphicsQuery(args, data);
       return;
+    }
+
+    final action = args['a'] ?? 't';
+    final virtualPlacement = args['U'] == '1';
+    if (action == 'p') {
+      if (virtualPlacement) {
+        _setVirtualGraphicsPlacement(args);
+      } else {
+        _placeStoredGraphics(args);
+      }
+      return;
+    }
+
+    if (action == 'd') {
+      _deleteGraphics(args);
+      return;
+    }
+
+    // Only transmit (a=t) and transmit-and-display (a=T) are rendered here.
+    // Animation actions (a=f transmit-frame, a=a control, a=c compose) are
+    // intentionally not supported — no client we target uses protocol-level
+    // animation, and it requires a frame-advancing ticker in the render widget.
+    // They are ignored safely: the chunk state was already reset above, so the
+    // payload is simply discarded.
+    if ((action != 't' && action != 'T') || data.isEmpty) {
+      return;
+    }
+    // a=T transmits and displays at the cursor. When U=1 is also set the client
+    // is using the Unicode placeholder protocol: the image is displayed by
+    // U+10EEEE placeholder cells (see `_paintKittyPlaceholderGraphics`), not a
+    // physical placement, so creating one here would draw a second, misplaced
+    // copy. Only place — and advance the cursor — for a non-virtual a=T.
+    final shouldPlace = action == 'T' && !virtualPlacement;
+    if (virtualPlacement) {
+      _setVirtualGraphicsPlacement(args);
     }
 
     // Anchor the placement to the cursor cell now, before the async decode or
     // any further output can move the cursor. Bind it to the buffer that is
     // active at command time so a later buffer switch can't misplace it.
     final buffer = _buffer;
-    final anchor = buffer.currentLine.createAnchor(buffer.cursorX);
-    final generation = buffer.graphics.generation;
+    final anchor =
+        shouldPlace ? buffer.currentLine.createAnchor(buffer.cursorX) : null;
+    final generation = shouldPlace ? buffer.graphics.generation : null;
 
-    // Move the cursor below the image so following output does not overlap it.
+    // Move the cursor below the image so following output does not overlap it,
+    // unless the client set the no-cursor-movement policy (C=1) — e.g. a client
+    // redrawing a full-screen image in place keeps the cursor where it is, and
+    // advancing it past the bottom margin would scroll the screen.
+    final keepCursor = args['C'] == '1';
     final rows = int.tryParse(args['r'] ?? '') ?? 0;
-    for (var i = 0; i < rows; i++) {
-      buffer.index();
+    if (shouldPlace && !keepCursor) {
+      for (var i = 0; i < rows; i++) {
+        buffer.index();
+      }
     }
 
     unawaited(
@@ -1086,16 +1327,27 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   Future<void> _finalizeGraphics(
     Map<String, String> args,
     Uint8List data,
-    CellAnchor anchor,
+    CellAnchor? anchor,
     GraphicsManager manager,
-    int generation,
+    int? generation,
   ) async {
-    final format = int.tryParse(args['f'] ?? '') ?? 100;
+    final format = _graphicsFormat(args);
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
 
+    // Inflate zlib-compressed payloads (o=z) before decoding.
+    var payload = data;
+    if (args['o'] == 'z') {
+      final inflated = inflateZlibData(data);
+      if (inflated == null) {
+        anchor?.dispose();
+        return;
+      }
+      payload = inflated;
+    }
+
     final image = await decodeTerminalImage(
-      data,
+      payload,
       format: format,
       width: width,
       height: height,
@@ -1104,18 +1356,568 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // Skip placing if the decode failed, the anchored cell is gone, or the
     // screen was cleared while we were decoding (e.g. a MonkeyMux replay clear
     // racing this decode — placing now would leave a duplicate/stale image).
-    if (image == null || !anchor.attached || manager.generation != generation) {
-      anchor.dispose();
+    if (image == null) {
+      anchor?.dispose();
       return;
     }
 
-    final imageId = manager.storeImage(image);
+    final imageId = int.tryParse(args['i'] ?? '');
+    final storedImageId = imageId == null
+        ? manager.storeImage(image)
+        : manager.storeImageWithId(imageId, image);
+    // Associate a client image number (`I=`) with the stored id and answer the
+    // handshake so the client learns the id it can address later.
+    final imageNumber = int.tryParse(args['I'] ?? '');
+    if (imageNumber != null && imageNumber > 0) {
+      manager.registerImageNumber(imageNumber, storedImageId);
+      if (!_graphicsResponseSuppressed(args, success: true)) {
+        onOutput?.call('\x1b_GI=$imageNumber,i=$storedImageId;OK\x1b\\');
+      }
+    }
+    if (args['U'] == '1') {
+      manager.setVirtualPlacement(
+        storedImageId,
+        cols: int.tryParse(args['c'] ?? '') ?? 0,
+        rows: int.tryParse(args['r'] ?? '') ?? 0,
+      );
+    }
+    if (anchor != null) {
+      if (!anchor.attached || manager.generation != generation) {
+        anchor.dispose();
+        // The screen was cleared or the anchor cell evicted while this image
+        // decoded, so it will never get a placement. Reclaim it now unless it is
+        // retained for Unicode-placeholder reuse, rather than leaving it in the
+        // cache until the next erase or memory-pressure eviction.
+        manager.pruneUnreferencedImages();
+        return;
+      }
+      _placeImageWithDisplayArgs(manager, storedImageId, anchor, args);
+    }
+    notifyListeners();
+  }
+
+  /// Creates a placement from the display-related Kitty graphics keys: cell span
+  /// (`c`/`r`), z-index (`z`), source crop (`x`/`y`/`w`/`h`) and in-cell pixel
+  /// offset (`X`/`Y`).
+  void _placeImageWithDisplayArgs(
+    GraphicsManager manager,
+    int imageId,
+    CellAnchor anchor,
+    Map<String, String> args,
+  ) {
     manager.placeImage(
       imageId,
       anchor,
       cols: int.tryParse(args['c'] ?? '') ?? 0,
       rows: int.tryParse(args['r'] ?? '') ?? 0,
+      z: int.tryParse(args['z'] ?? '') ?? 0,
+      clientPlacementId: int.tryParse(args['p'] ?? '') ?? 0,
+      srcX: int.tryParse(args['x'] ?? '') ?? 0,
+      srcY: int.tryParse(args['y'] ?? '') ?? 0,
+      srcWidth: int.tryParse(args['w'] ?? '') ?? 0,
+      srcHeight: int.tryParse(args['h'] ?? '') ?? 0,
+      xOffset: int.tryParse(args['X'] ?? '') ?? 0,
+      yOffset: int.tryParse(args['Y'] ?? '') ?? 0,
     );
+  }
+
+  void _placeStoredGraphics(Map<String, String> args) {
+    var imageId = int.tryParse(args['i'] ?? '');
+    // a=p may address the image by number (`I=`) instead of id.
+    if (imageId == null) {
+      final number = int.tryParse(args['I'] ?? '');
+      if (number != null) {
+        imageId = _buffer.graphics.imageIdForNumber(number);
+      }
+    }
+    if (imageId == null || _buffer.graphics.imageById(imageId) == null) {
+      return;
+    }
+    final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
+    _placeImageWithDisplayArgs(_buffer.graphics, imageId, anchor, args);
+    // Respect the no-cursor-movement policy (C=1); otherwise drop below the
+    // image so subsequent output does not overlap it.
+    final keepCursor = args['C'] == '1';
+    final rows = int.tryParse(args['r'] ?? '') ?? 0;
+    if (!keepCursor) {
+      for (var i = 0; i < rows; i++) {
+        _buffer.index();
+      }
+    }
     notifyListeners();
+  }
+
+  /// Handles a Kitty graphics delete command (`a=d`). Without this the image a
+  /// client placed and then explicitly asked to remove (e.g. Copilot CLI closing
+  /// its full-screen image viewer) would linger as a stale overlay behind later
+  /// output.
+  void _deleteGraphics(Map<String, String> args) {
+    final buffer = _buffer;
+    // Kitty `x`/`y` are 1-based cell coordinates in the cursor's (viewport)
+    // space; translate the row into the absolute buffer coordinates placements
+    // are tracked in.
+    final scrollBack = buffer.absoluteCursorY - buffer.cursorY;
+    final x = int.tryParse(args['x'] ?? '');
+    final y = int.tryParse(args['y'] ?? '');
+
+    var what = args['d'] ?? 'a';
+    var imageId = int.tryParse(args['i'] ?? '');
+    // Delete-by-number (d=n/N): resolve the image number to its id and delete by
+    // id, preserving the lower/upper free-data semantics.
+    if (what == 'n' || what == 'N') {
+      final number = int.tryParse(args['I'] ?? '');
+      imageId =
+          number == null ? null : buffer.graphics.imageIdForNumber(number);
+      if (imageId == null) {
+        return;
+      }
+      what = what == 'n' ? 'i' : 'I';
+    }
+
+    final removed = buffer.graphics.deletePlacements(
+      what: what,
+      imageId: imageId,
+      placementId: int.tryParse(args['p'] ?? ''),
+      cursorCol: buffer.cursorX,
+      cursorRow: buffer.absoluteCursorY,
+      cellCol: x == null ? null : x - 1,
+      cellRow: y == null ? null : (y - 1) + scrollBack,
+    );
+    if (removed) {
+      notifyListeners();
+    }
+  }
+
+  void _setVirtualGraphicsPlacement(Map<String, String> args) {
+    final imageId = int.tryParse(args['i'] ?? '');
+    if (imageId == null) {
+      return;
+    }
+    _buffer.graphics.setVirtualPlacement(
+      imageId,
+      cols: int.tryParse(args['c'] ?? '') ?? 0,
+      rows: int.tryParse(args['r'] ?? '') ?? 0,
+    );
+  }
+
+  void _respondToGraphicsQuery(Map<String, String> args, Uint8List data) {
+    final error = _graphicsQueryError(args, data);
+    final success = error == null;
+    if (_graphicsResponseSuppressed(args, success: success)) {
+      return;
+    }
+
+    final control = <String>[];
+    if (args['i'] case final imageId? when imageId.isNotEmpty) {
+      control.add('i=$imageId');
+    }
+    if (args['I'] case final imageNumber? when imageNumber.isNotEmpty) {
+      control.add('I=$imageNumber');
+    }
+    onOutput?.call(
+      '\x1b_G${control.join(',')};${success ? 'OK' : error}\x1b\\',
+    );
+  }
+
+  String? _graphicsQueryError(Map<String, String> args, Uint8List data) {
+    if ((args['t'] ?? 'd') != 'd') {
+      return 'EINVAL: unsupported transmission medium';
+    }
+    final compression = args['o'];
+    if (compression != null && compression != 'z') {
+      return 'EINVAL: unsupported compression';
+    }
+    if (data.isEmpty) {
+      return 'EINVAL: missing image data';
+    }
+
+    var payload = data;
+    if (compression == 'z') {
+      final inflated = inflateZlibData(data);
+      if (inflated == null) {
+        return 'EINVAL: invalid compressed data';
+      }
+      payload = inflated;
+    }
+
+    final format = _graphicsFormat(args);
+    if (format == 24 || format == 32) {
+      final width = int.tryParse(args['s'] ?? '') ?? 0;
+      final height = int.tryParse(args['v'] ?? '') ?? 0;
+      if (width <= 0 || height <= 0) {
+        return 'EINVAL: missing image dimensions';
+      }
+      final bytesPerPixel = format == 24 ? 3 : 4;
+      if (payload.length < width * height * bytesPerPixel) {
+        return 'EINVAL: invalid image data';
+      }
+      return null;
+    }
+
+    if (format == 100) {
+      return _looksLikePng(payload) ? null : 'EINVAL: invalid PNG data';
+    }
+
+    return 'EINVAL: unsupported image format';
+  }
+
+  int _graphicsFormat(Map<String, String> args) =>
+      int.tryParse(args['f'] ?? '') ?? 32;
+
+  bool _graphicsResponseSuppressed(
+    Map<String, String> args, {
+    required bool success,
+  }) {
+    final quiet = args['q'];
+    return success ? quiet == '1' || quiet == '2' : quiet == '2';
+  }
+
+  bool _looksLikePng(Uint8List data) =>
+      data.length >= 8 &&
+      data[0] == 0x89 &&
+      data[1] == 0x50 &&
+      data[2] == 0x4E &&
+      data[3] == 0x47 &&
+      data[4] == 0x0D &&
+      data[5] == 0x0A &&
+      data[6] == 0x1A &&
+      data[7] == 0x0A;
+
+  int? _kittyPlaceholderDiacriticValue(int char) =>
+      _kittyPlaceholderDiacriticIndex[char];
+}
+
+/// Unicode code point used by Kitty graphics placeholder mode.
+const kittyGraphicsPlaceholderCodePoint = 0x10EEEE;
+
+/// Reverse lookup from a placeholder diacritic code point to its row/column
+/// index. Placeholder-protocol clients (e.g. Copilot CLI) re-emit their full
+/// placeholder grid on essentially every frame, so this O(1) map replaces a
+/// linear scan of [_kittyPlaceholderDiacritics] for each placeholder cell.
+final Map<int, int> _kittyPlaceholderDiacriticIndex = {
+  for (var i = 0; i < _kittyPlaceholderDiacritics.length; i++)
+    _kittyPlaceholderDiacritics[i]: i,
+};
+
+const _kittyPlaceholderDiacritics = <int>[
+  0x0305,
+  0x030D,
+  0x030E,
+  0x0310,
+  0x0312,
+  0x033D,
+  0x033E,
+  0x033F,
+  0x0346,
+  0x034A,
+  0x034B,
+  0x034C,
+  0x0350,
+  0x0351,
+  0x0352,
+  0x0357,
+  0x035B,
+  0x0363,
+  0x0364,
+  0x0365,
+  0x0366,
+  0x0367,
+  0x0368,
+  0x0369,
+  0x036A,
+  0x036B,
+  0x036C,
+  0x036D,
+  0x036E,
+  0x036F,
+  0x0483,
+  0x0484,
+  0x0485,
+  0x0486,
+  0x0487,
+  0x0592,
+  0x0593,
+  0x0594,
+  0x0595,
+  0x0597,
+  0x0598,
+  0x0599,
+  0x059C,
+  0x059D,
+  0x059E,
+  0x059F,
+  0x05A0,
+  0x05A1,
+  0x05A8,
+  0x05A9,
+  0x05AB,
+  0x05AC,
+  0x05AF,
+  0x05C4,
+  0x0610,
+  0x0611,
+  0x0612,
+  0x0613,
+  0x0614,
+  0x0615,
+  0x0616,
+  0x0617,
+  0x0657,
+  0x0658,
+  0x0659,
+  0x065A,
+  0x065B,
+  0x065D,
+  0x065E,
+  0x06D6,
+  0x06D7,
+  0x06D8,
+  0x06D9,
+  0x06DA,
+  0x06DB,
+  0x06DC,
+  0x06DF,
+  0x06E0,
+  0x06E1,
+  0x06E2,
+  0x06E4,
+  0x06E7,
+  0x06E8,
+  0x06EB,
+  0x06EC,
+  0x0730,
+  0x0732,
+  0x0733,
+  0x0735,
+  0x0736,
+  0x073A,
+  0x073D,
+  0x073F,
+  0x0740,
+  0x0741,
+  0x0743,
+  0x0745,
+  0x0747,
+  0x0749,
+  0x074A,
+  0x07EB,
+  0x07EC,
+  0x07ED,
+  0x07EE,
+  0x07EF,
+  0x07F0,
+  0x07F1,
+  0x07F3,
+  0x0816,
+  0x0817,
+  0x0818,
+  0x0819,
+  0x081B,
+  0x081C,
+  0x081D,
+  0x081E,
+  0x081F,
+  0x0820,
+  0x0821,
+  0x0822,
+  0x0823,
+  0x0825,
+  0x0826,
+  0x0827,
+  0x0829,
+  0x082A,
+  0x082B,
+  0x082C,
+  0x082D,
+  0x0951,
+  0x0953,
+  0x0954,
+  0x0F82,
+  0x0F83,
+  0x0F86,
+  0x0F87,
+  0x135D,
+  0x135E,
+  0x135F,
+  0x17DD,
+  0x193A,
+  0x1A17,
+  0x1A75,
+  0x1A76,
+  0x1A77,
+  0x1A78,
+  0x1A79,
+  0x1A7A,
+  0x1A7B,
+  0x1A7C,
+  0x1B6B,
+  0x1B6D,
+  0x1B6E,
+  0x1B6F,
+  0x1B70,
+  0x1B71,
+  0x1B72,
+  0x1B73,
+  0x1CD0,
+  0x1CD1,
+  0x1CD2,
+  0x1CDA,
+  0x1CDB,
+  0x1CE0,
+  0x1DC0,
+  0x1DC1,
+  0x1DC3,
+  0x1DC4,
+  0x1DC5,
+  0x1DC6,
+  0x1DC7,
+  0x1DC8,
+  0x1DC9,
+  0x1DCB,
+  0x1DCC,
+  0x1DD1,
+  0x1DD2,
+  0x1DD3,
+  0x1DD4,
+  0x1DD5,
+  0x1DD6,
+  0x1DD7,
+  0x1DD8,
+  0x1DD9,
+  0x1DDA,
+  0x1DDB,
+  0x1DDC,
+  0x1DDD,
+  0x1DDE,
+  0x1DDF,
+  0x1DE0,
+  0x1DE1,
+  0x1DE2,
+  0x1DE3,
+  0x1DE4,
+  0x1DE5,
+  0x1DE6,
+  0x1DFE,
+  0x20D0,
+  0x20D1,
+  0x20D4,
+  0x20D5,
+  0x20D6,
+  0x20D7,
+  0x20DB,
+  0x20DC,
+  0x20E1,
+  0x20E7,
+  0x20E9,
+  0x20F0,
+  0x2CEF,
+  0x2CF0,
+  0x2CF1,
+  0x2DE0,
+  0x2DE1,
+  0x2DE2,
+  0x2DE3,
+  0x2DE4,
+  0x2DE5,
+  0x2DE6,
+  0x2DE7,
+  0x2DE8,
+  0x2DE9,
+  0x2DEA,
+  0x2DEB,
+  0x2DEC,
+  0x2DED,
+  0x2DEE,
+  0x2DEF,
+  0x2DF0,
+  0x2DF1,
+  0x2DF2,
+  0x2DF3,
+  0x2DF4,
+  0x2DF5,
+  0x2DF6,
+  0x2DF7,
+  0x2DF8,
+  0x2DF9,
+  0x2DFA,
+  0x2DFB,
+  0x2DFC,
+  0x2DFD,
+  0x2DFE,
+  0x2DFF,
+  0xA66F,
+  0xA67C,
+  0xA67D,
+  0xA6F0,
+  0xA6F1,
+  0xA8E0,
+  0xA8E1,
+  0xA8E2,
+  0xA8E3,
+  0xA8E4,
+  0xA8E5,
+];
+
+class _PendingKittyPlaceholder {
+  _PendingKittyPlaceholder({
+    required this.foreground,
+    required this.underlineColor,
+    required this.anchor,
+    required _PendingKittyPlaceholder? previous,
+  }) {
+    final sameImage = previous != null &&
+        previous.foreground == foreground &&
+        previous.underlineColor == underlineColor;
+    row = sameImage ? previous.row : 0;
+    col = sameImage ? previous.col + 1 : 0;
+    highByte = sameImage ? previous.highByte : 0;
+  }
+
+  final int foreground;
+  final int underlineColor;
+  final CellAnchor anchor;
+  late int row;
+  late int col;
+  late int highByte;
+  var _diacriticCount = 0;
+  TerminalImagePlaceholder? _placeholder;
+
+  int get imageIdBitWidth =>
+      (foreground & CellColor.typeMask) == CellColor.rgb ? 24 : 8;
+
+  int get imageId {
+    final lowBits = foreground & CellColor.valueMask;
+    final low = imageIdBitWidth == 8 ? lowBits & 0xFF : lowBits;
+    return low | (highByte << 24);
+  }
+
+  void bind(TerminalImagePlaceholder placeholder) {
+    _placeholder = placeholder;
+  }
+
+  void addDiacritic(int value) {
+    switch (_diacriticCount) {
+      case 0:
+        if (value != row) {
+          col = 0;
+        }
+        row = value;
+        break;
+      case 1:
+        col = value;
+        break;
+      case 2:
+        highByte = value;
+        break;
+    }
+    _diacriticCount += 1;
+    final placeholder = _placeholder;
+    if (placeholder != null) {
+      placeholder
+        ..imageId = imageId
+        ..imageIdBitWidth = imageIdBitWidth
+        ..row = row
+        ..col = col;
+    }
   }
 }

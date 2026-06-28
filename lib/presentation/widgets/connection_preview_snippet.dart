@@ -221,11 +221,6 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     final previewTextColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
     final borderColor = _previewBorderColor(previewTheme, colorScheme);
-    final shadowColor = _previewShadowColor(
-      previewTheme,
-      theme.shadowColor,
-      16,
-    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -274,13 +269,6 @@ class ConnectionPreviewSnippet extends StatelessWidget {
               color: previewBackgroundBase,
               border: Border.all(color: borderColor),
               borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: shadowColor,
-                  blurRadius: 6,
-                  offset: const Offset(0, 1),
-                ),
-              ],
             ),
             child: _AdaptiveTerminalPreviewText(
               text: previewText,
@@ -451,11 +439,6 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     final previewTheme = entry.terminalTheme;
     final backgroundColor = _previewSurfaceColor(previewTheme, colorScheme);
     final borderColor = _previewBorderColor(previewTheme, colorScheme);
-    final shadowColor = _previewShadowColor(
-      previewTheme,
-      theme.shadowColor,
-      20,
-    );
     final textColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
 
@@ -468,13 +451,6 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
           color: backgroundColor,
           border: Border.all(color: borderColor),
           borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: shadowColor,
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -556,17 +532,6 @@ Color _previewBorderColor(
     previewTheme.foreground.withAlpha(previewTheme.isDark ? 46 : 64),
     previewTheme.background,
   );
-}
-
-Color _previewShadowColor(
-  TerminalThemeData? previewTheme,
-  Color fallbackShadowColor,
-  int fallbackAlpha,
-) {
-  if (previewTheme == null) {
-    return fallbackShadowColor.withAlpha(fallbackAlpha);
-  }
-  return Colors.black.withAlpha(previewTheme.isDark ? 72 : 36);
 }
 
 double _stackPreviewCardHeightForEntry({
@@ -877,7 +842,6 @@ class _TerminalPreviewPainter extends CustomPainter {
       canvas
         ..save()
         ..clipRect(Rect.fromLTWH(0, y, size.width, lineHeight));
-      painter.paintLineTrailingBackgroundFill(canvas, Offset(0, y), line);
       for (
         var column = 0;
         column < line.length && column < visibleColumns;
