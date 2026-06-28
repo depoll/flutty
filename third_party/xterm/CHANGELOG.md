@@ -46,10 +46,14 @@ out of scope.
   * X10/UTF mouse reporting sent the row coordinate one cell too low — the row
     byte was double-incremented (`32 + y + 1` where `y` is already 1-based) while
     the column was not. It now matches the column and xterm.js (`32 + y`).
-  * The vendored `TerminalGestureHandler` reported a tertiary (middle) tap *up* as
-    the right button; it now reports `TerminalMouseButton.middle`, matching its
-    tap-down. (The app uses `MonkeyTerminalGestureHandler`, which was already
-    correct.)
+  * The vendored `TerminalGestureHandler` reported middle-button taps as the
+    right button. The tap-up handler used `.right` (fixed to `.middle`, matching
+    upstream's method change), and the gesture detector routed both tertiary
+    callbacks to the secondary handlers — so middle clicks reported
+    `TerminalMouseButton.right`. A local wiring fix now routes the detector's
+    tertiary callbacks to the tertiary handlers, so middle clicks report
+    `TerminalMouseButton.middle`. (The app uses `MonkeyTerminalGestureHandler`,
+    which was already correct.)
   * `CustomTextEdit` no longer force-unwraps the text-input connection when
     resetting editing state after IME composing, avoiding a null crash if the
     connection closed mid-compose.
