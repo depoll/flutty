@@ -76,6 +76,10 @@ abstract class EscapeHandler {
   /// terminfo/termcap capability names.
   void sendTermcapReport(List<String> capabilities);
 
+  /// Answers DECRQSS (`DCS $ q <Pt> ST`) for the control function identified by
+  /// [request] (the intermediate/final bytes, e.g. `r`, `m`, ` q`).
+  void sendStatusStringReport(String request);
+
   void sendOperatingStatus();
 
   void sendCursorPosition();
@@ -171,6 +175,15 @@ abstract class EscapeHandler {
   void resize(int cols, int rows);
 
   void sendSize();
+
+  /// Answers `CSI 14 t` — report text area size in pixels (`CSI 4 ; H ; W t`).
+  void sendTextAreaSizePixels();
+
+  /// Answers `CSI 15 t` — report screen size in pixels (`CSI 5 ; H ; W t`).
+  void sendScreenSizePixels();
+
+  /// Answers `CSI 16 t` — report cell size in pixels (`CSI 6 ; H ; W t`).
+  void sendCellSizePixels();
 
   /* Select Graphic Rendition (SGR) */
 

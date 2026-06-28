@@ -65,6 +65,28 @@ class EscapeEmitter {
     return '\x1bP1+r$hexName=$hexValue\x1b\\';
   }
 
+  /// Response to DECRQSS (`DCS 1 $ r <Pt> ST` when the request is recognized,
+  /// `DCS 0 $ r ST` when it is not).
+  ///
+  /// [value] is the full status string including the control function's
+  /// trailing intermediate/final (for example `1;24r` or `0;1m`), or null when
+  /// the request is not recognized.
+  String statusStringReport(String? value) {
+    if (value == null) {
+      return '\x1bP0\$r\x1b\\';
+    }
+    return '\x1bP1\$r$value\x1b\\';
+  }
+
+  /// Response to a window-size pixel report (`CSI 14/15/16 t`).
+  ///
+  /// [kind] is the reply selector (4 text area, 5 screen, 6 cell); [height] and
+  /// [width] are in pixels, height first to match the `CSI 8 ; rows ; cols t`
+  /// convention.
+  String windowSizePixels(int kind, int height, int width) {
+    return '\x1b[$kind;$height;${width}t';
+  }
+
   String operatingStatus() {
     return '\x1b[0n';
   }

@@ -192,15 +192,118 @@ void main() {
       ]);
     });
 
-    test('a non-XTGETTCAP DCS is consumed without leaking as text', () {
+    test('an unhandled DCS is consumed without leaking as text', () {
       final responses = <String>[];
-      // DECRQSS-style DCS ($q) must not emit a reply nor render its body.
+      // A Sixel-style DCS (`DCS q ... ST`, neither +q nor $q) must not emit a
+      // reply nor render its body.
       final terminal = Terminal()
         ..onOutput = responses.add
-        ..write('\x1bP\$q m\x1b\\');
+        ..write('\x1bPq#0;2;0;0;0\x1b\\');
 
       expect(responses, isEmpty);
       expect(terminal.buffer.getText().trim(), isEmpty);
+    });
+  });
+
+  group(r'DECRQSS (DCS $ q <Pt> ST)', () {
+    test('reports the scrolling region (DECSTBM) for an 80x24 terminal', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1bP\$qr\x1b\\');
+
+      // Default margins span the whole screen: rows 1..24.
+      expect(responses, ['\x1bP1\$r1;24r\x1b\\']);
+    });
+
+    test('reports a custom scrolling region', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1b[5;20r') // DECSTBM top=5 bottom=20
+        ..write('\x1bP\$qr\x1b\\');
+
+      expect(responses, ['\x1bP1\$r5;20r\x1b\\']);
+    });
+
+    test('reports the default SGR as a bare reset', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1bP\$qm\x1b\\');
+
+      expect(responses, ['\x1bP1\$r0m\x1b\\']);
+    });
+
+    test('reports the active SGR (bold + named foreground)', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1b[1;31m') // bold, red foreground
+        ..write('\x1bP\$qm\x1b\\');
+
+      expect(responses, ['\x1bP1\$r0;1;31m\x1b\\']);
+    });
+
+    test('reports indexed and rgb SGR colours', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1b[38;5;42;48;2;1;2;3m') // palette fg 42, rgb bg 1/2/3
+        ..write('\x1bP\$qm\x1b\\');
+
+      expect(responses, ['\x1bP1\$r0;38;5;42;48;2;1;2;3m\x1b\\']);
+    });
+
+    test('reports an untracked control function (DECSCUSR) as invalid', () {
+      final responses = <String>[];
+      // Cursor shape (` q`) is not tracked by the core terminal, so DECRQSS
+      // reports it as not recognized rather than guessing.
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1bP\$q q\x1b\\');
+
+      expect(responses, ['\x1bP0\$r\x1b\\']);
+    });
+  });
+
+  group('window pixel-size reports (CSI 14/15/16 t)', () {
+    test('reports text area, screen and cell size in pixels', () {
+      final responses = <String>[];
+      // 80x24 cells over an 800x480 px text area => 10x20 px cells.
+      Terminal()
+        ..onOutput = responses.add
+        ..resize(80, 24, 800, 480)
+        ..write('\x1b[14t') // text area px
+        ..write('\x1b[15t') // screen px (mirrors text area)
+        ..write('\x1b[16t'); // cell px
+
+      expect(responses, [
+        '\x1b[4;480;800t',
+        '\x1b[5;480;800t',
+        '\x1b[6;20;10t',
+      ]);
+    });
+
+    test('does not report pixel sizes before the view size is known', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1b[14t')
+        ..write('\x1b[16t');
+
+      // No layout has happened yet, so pixel dimensions are unknown; a wrong
+      // (zero) report is worse than none.
+      expect(responses, isEmpty);
+    });
+
+    test('still answers the character size report (CSI 18 t)', () {
+      final responses = <String>[];
+      Terminal()
+        ..onOutput = responses.add
+        ..write('\x1b[18t');
+
+      expect(responses, ['\x1b[8;24;80t']);
     });
   });
 }

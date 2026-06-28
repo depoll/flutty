@@ -893,9 +893,15 @@ class EscapeParser {
       case 10: // Alias: Maximize Terminal Window
       case 11: // Report Terminal Window State
       case 13: // Report Terminal Window Position
-      case 14: // Report Terminal Window Size in Pixels
-      case 15: // Report Screen Size in Pixels
-      case 16: // Report Cell Size in Pixels
+        return;
+      case 14: // Report text area size in pixels
+        handler.sendTextAreaSizePixels();
+        return;
+      case 15: // Report screen size in pixels
+        handler.sendScreenSizePixels();
+        return;
+      case 16: // Report cell size in pixels
+        handler.sendCellSizePixels();
         return;
       case 18: // Report Terminal Size (in characters)
         handler.sendSize();
@@ -1331,11 +1337,11 @@ class EscapeParser {
 
   /// `ESC P ... ST` Device Control String (DCS).
   ///
-  /// Only XTGETTCAP (`ESC P + q <hex> ; <hex> ... ST`, a terminfo/termcap
-  /// capability query) is understood; any other DCS string (DECRQSS `$q`,
-  /// Sixel `q`, ...) is consumed and ignored so its payload is not rendered as
-  /// text. Returns false when the sequence is incomplete so the caller can wait
-  /// for more data.
+  /// XTGETTCAP (`ESC P + q <hex> ; <hex> ... ST`, a terminfo/termcap capability
+  /// query) and DECRQSS (`ESC P $ q <Pt> ST`, request the current setting of a
+  /// control function) are understood; any other DCS string (Sixel `q`, ...) is
+  /// consumed and ignored so its payload is not rendered as text. Returns false
+  /// when the sequence is incomplete so the caller can wait for more data.
   ///
   /// https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
   bool _escHandleDCS() {
@@ -1362,6 +1368,13 @@ class EscapeParser {
     if (payload.length >= 2 && payload[0] == '+' && payload[1] == 'q') {
       final caps = payload.substring(2).split(';');
       handler.sendTermcapReport(caps);
+      return true;
+    }
+    // DECRQSS (Request Status String): `$ q <Pt>`, where <Pt> is the
+    // intermediate/final of the control function being queried (for example
+    // `r` for DECSTBM, `m` for SGR, ` q` for DECSCUSR).
+    if (payload.length >= 2 && payload[0] == '\$' && payload[1] == 'q') {
+      handler.sendStatusStringReport(payload.substring(2));
     }
     return true;
   }

@@ -73,9 +73,23 @@ out of scope.
   ST; XTGETTCAP requests are answered for theme-independent caps (`Co`/`colors`
   -> 256, `RGB` -> 8/8/8) and reported invalid otherwise (including `TN`, since
   TERM is host-defined). As a side effect this also stops unrecognized DCS
-  payloads (Sixel, DECRQSS) from leaking into the buffer as text. Keep
+  payloads (Sixel, ...) from leaking into the buffer as text. Keep
   `EscapeEmitter.termcapReport`, the `ESC P` dispatch, and
   `Terminal.sendTermcapReport`/`_termcapValue` on re-sync.
+* DECRQSS replies (`DCS $ q <Pt> ST` -> `DCS 1$r <Pt> ST` / `DCS 0$r ST`),
+  dispatched from the same `ESC P` branch. Only control functions whose state
+  the core tracks are answered: DECSTBM (`r`, scrolling region) and SGR (`m`,
+  current rendition, serialized from the active pen). The cursor style (` q`),
+  conformance level (`"p`) and others report not recognized. Keep
+  `EscapeEmitter.statusStringReport` and
+  `Terminal.sendStatusStringReport`/`_statusStringValue`/`_currentSgrParameters`
+  on re-sync.
+* Window pixel-size reports (`CSI 14 t` text area, `CSI 15 t` screen, `CSI 16 t`
+  cell, replying `CSI 4/5/6 ; H ; W t`). The terminal now retains the text-area
+  pixel size supplied to `resize` (`_viewPixelWidth`/`_viewPixelHeight`) and
+  derives the cell size from it; it stays silent until the size is known so a
+  wrong (zero) report is never sent. Useful for image-capable CLIs. Keep
+  `EscapeEmitter.windowSizePixels` and the `CSI 14/15/16 t` handlers on re-sync.
 * Modernized Device Attributes: DA1 reports VT220 + ANSI colour (`CSI ?62;22c`,
   was `?1;2c`) and DA2 a VT220-class identity (`CSI >1;0;0c`, was `>0;0;0c`),
   consistent with the kitty XTVERSION identity. Keep
