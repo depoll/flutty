@@ -14,6 +14,7 @@ import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
+import 'package:monkeyssh/presentation/widgets/brand_list_skeleton.dart';
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
@@ -166,7 +167,7 @@ void main() {
     expect(find.text('Imported host'), findsOneWidget);
   });
 
-  testWidgets('loading state remains centered', (tester) async {
+  testWidgets('loading state shows a skeleton placeholder', (tester) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);
 
@@ -183,8 +184,8 @@ void main() {
       ),
     );
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    expect(find.byType(CustomScrollView), findsOneWidget);
+    expect(find.byType(BrandListSkeleton), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
   testWidgets('reordering hosts persists the new order', (tester) async {
