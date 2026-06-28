@@ -40,6 +40,24 @@ out of scope.
   overlay uses the non-deprecated `OverlayPortal`; double-tap timers are canceled
   on dispose; and the ZMODEM detector awaits initial session handling instead of
   fire-and-forget while serializing stdout chunk processing.
+* kterm.dart 1.2.0 -> 1.5.0 reconciliation (#591). Upstream advanced to 1.5.0
+  with discrete fixes plus an architectural move of its Kitty keyboard onto the
+  external `kitty_protocol` package. The genuinely-applicable fixes were ported:
+  * X10/UTF mouse reporting sent the row coordinate one cell too low — the row
+    byte was double-incremented (`32 + y + 1` where `y` is already 1-based) while
+    the column was not. It now matches the column and xterm.js (`32 + y`).
+  * The vendored `TerminalGestureHandler` reported a tertiary (middle) tap *up* as
+    the right button; it now reports `TerminalMouseButton.middle`, matching its
+    tap-down. (The app uses `MonkeyTerminalGestureHandler`, which was already
+    correct.)
+  * `CustomTextEdit` no longer force-unwraps the text-input connection when
+    resetting editing state after IME composing, avoiding a null crash if the
+    connection closed mid-compose.
+  * Housekeeping that reduces divergence from upstream: `KeyboardVisibilty` was
+    renamed to `KeyboardVisibility` (the long-standing typo), `Observable.listeners`
+    is now private, `IndexAwareCircularBuffer.operator []=` has an explicit `void`
+    return type, the unused `TerminalSnapshot` plus dead `main()`/commented
+    scaffolding were removed, and `TerminalSize` is exported from `ui.dart`.
 
 ### Evaluated but intentionally not ported
 * Synchronized output (`DECSET 2026`) needs a timeout safeguard (a dropped end
@@ -49,6 +67,29 @@ out of scope.
 * Unicode width tables remain at v11. Bumping them can either help or hurt
   cursor alignment depending on the host's own `wcwidth`, so it is left as a
   separate, deliberate change.
+* The `kitty_protocol` package (kterm.dart 1.5.0's architecture) is **not**
+  adopted (#591). It is encoders-only and upstream keeps its own `GraphicsManager`
+  vendored regardless, so it contributes nothing to our app-integrated Kitty
+  graphics (compositing, retained protocol-image ids, Unicode placeholders,
+  use-after-free/`CellAnchor` safety). Its keyboard encoder is also strictly
+  inferior to our `kitty_keyboard.dart`: it couples encoding to Flutter's
+  `LogicalKeyboardKey`, keeps a single global flag state (we keep independent
+  main/alt screen stacks), and ships an Enter keycode bug that upstream works
+  around with a string-replacing wrapper. Adopting it would be a regression and a
+  new dependency for no new capability.
+* Upstream's 1.3.0 Kitty-keyboard and 1.4.0 chunked-graphics *parser* fixes are
+  already covered by our divergence: the parser dispatches Kitty keyboard by CSI
+  prefix (`=` set / `>` push / `<` pop / `?` query) and accumulates graphics
+  payload across all chunks, deferring `graphicsCommandEnd` until the final
+  (`m != 1`) chunk.
+* Upstream's 1.4.2 painter run-batching and 1.5.0 htop spurious-underline
+  cache-key fix do not apply: MonkeySSH renders through `MonkeyTerminalPainter` /
+  `MonkeyRenderTerminal`, and our foreground paragraph cache key already folds in
+  the underline flag (via `CellData.getHash`). Porting the draw-call batching
+  into `MonkeyTerminalPainter` itself (where it would actually run) is tracked in
+  #595. The `notifyListeners` microtask coalescing and the paste-from-shortcut
+  dedup were also left out as behavioral changes the app's own render/input paths
+  do not need.
 
 ### MonkeySSH-local additions (preserve across kterm syncs)
 * XTVERSION reply (`CSI > q` -> `DCS > | kitty(0.32.0) ST`). MonkeySSH
