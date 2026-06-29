@@ -1285,43 +1285,42 @@ def _lighten(accent: tuple[int, int, int]) -> tuple[int, int, int]:
 def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
-            eyebrow='Claude Code',
-            headline='Code from your phone, over SSH.',
-            body='Open a Claude Code session on your own server and prompt it '
-            'right from the keyboard.',
-            label='Claude',
+            eyebrow='From anywhere',
+            headline='Run coding agents from your phone.',
+            body='Open a session on your own server and prompt it straight '
+            'from the keyboard.',
+            label='Anywhere',
             accent=(0, 201, 255),
         ),
         PromoSegment(
-            eyebrow='MonkeyMux',
-            headline='Agents keep running after you leave.',
-            body='Claude, Copilot, Codex, Gemini and OpenCode each stay in '
-            'their own window. Reconnect any time.',
-            label='MonkeyMux',
+            eyebrow='Always on',
+            headline='Sessions stay live when you disconnect.',
+            body='Reconnect to running agents from any device or network, '
+            'right where you left off.',
+            label='Always on',
             accent=(244, 114, 182),
         ),
         PromoSegment(
-            eyebrow='OpenCode',
-            headline='Tap, scroll and select like a desktop.',
-            body='Full mouse and touch in every terminal. Switch agents '
-            'without losing your place.',
-            label='OpenCode',
+            eyebrow='Touch native',
+            headline='Tap, scroll and select in the terminal.',
+            body='Full mouse and touch, no laptop required.',
+            label='Touch',
             accent=(129, 140, 248),
         ),
         PromoSegment(
-            eyebrow='Image paste',
-            headline='Paste a screenshot for context.',
-            body='Upload an image from your phone and the agent gets the '
-            'file, ready to inspect.',
-            label='Image paste',
+            eyebrow='Real context',
+            headline='Paste a screenshot for instant context.',
+            body='Upload an image from your phone and the agent reads it '
+            'in seconds.',
+            label='Context',
             accent=(45, 212, 191),
         ),
         PromoSegment(
-            eyebrow='Copilot CLI',
-            headline='Finish in Copilot, same workspace.',
-            body='Hop between agents in one session. Your files and context '
-            'follow you across.',
-            label='Copilot',
+            eyebrow='Any agent',
+            headline='Switch agents, keep your workspace.',
+            body='Move between agents in one session. Your files and context '
+            'stay put.',
+            label='Any agent',
             accent=(34, 211, 238),
         ),
     ]
