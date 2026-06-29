@@ -802,6 +802,26 @@ bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
         .firstOrNull
         ?.terminalMouseReportSgr;
 
+/// Scroll-relevant mouse-reporting signature for the active tmux window.
+///
+/// Used to detect when touch-scroll routing must be recomputed after a window
+/// metadata update that doesn't change the active window itself (for example a
+/// foreground app toggling mouse mode). Returns `null` when there is no active
+/// window so an appearing/disappearing active window is also treated as a
+/// change.
+@visibleForTesting
+({bool? reportsMouseWheel, bool? mouseReportSgr})?
+activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
+  final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
+  if (activeWindow == null) {
+    return null;
+  }
+  return (
+    reportsMouseWheel: activeWindow.terminalReportsMouseWheel,
+    mouseReportSgr: activeWindow.terminalMouseReportSgr,
+  );
+}
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting
@@ -4565,6 +4585,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
     );
+  }
+
+  /// Recomputes touch-scroll routing when the active window's mouse-reporting
+  /// metadata changes. The routing getters read live from the tmux bar
+  /// snapshot, so a rebuild is enough to flip `touchScrollToTerminal` and stop
+  /// scrolling from getting stuck until the next window switch.
+  void _handleActiveWindowScrollModeChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   void _refreshMuxPaneContextAfterWindowStateChange(
@@ -8734,6 +8765,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
+      onActiveWindowScrollModeChanged: _handleActiveWindowScrollModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
