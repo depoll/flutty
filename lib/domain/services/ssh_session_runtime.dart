@@ -48,10 +48,10 @@ class _SshSessionRuntime {
   static const _maxTerminalOutputFlushChars = 64 * 1024;
   // A window switch with lots of content/images replays hundreds of KB at once.
   // Parsing it all in one synchronous `terminal.write` blocks the UI thread and
-  // hangs the whole app, so cap each write and spread the remainder across
-  // frames. Image decoding is already async; this bounds the per-frame parse,
-  // inflate, and cell-write cost during a large replay.
-  static const _maxTerminalWriteChunkChars = 24 * 1024;
+  // hangs the whole app, so write a bounded slice per frame and yield between
+  // slices. The slice is sized to parse in a few ms while still draining a
+  // large replay within a handful of frames; image decoding is already async.
+  static const _maxTerminalWriteChunkChars = 128 * 1024;
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
@@ -692,7 +692,10 @@ class _SshSessionRuntime {
     if (_terminalWriteChunkTimer?.isActive ?? false) {
       return;
     }
-    _terminalWriteChunkTimer = Timer(_terminalOutputFlushInterval, () {
+    // Pump on the next event-loop turn (not the 8ms flush cadence) so a large
+    // replay drains within a few frames; each slice is small enough to parse
+    // without a visible stall but the run completes quickly.
+    _terminalWriteChunkTimer = Timer(Duration.zero, () {
       _terminalWriteChunkTimer = null;
       if (_pendingTerminalWriteBacklog.isEmpty ||
           !identical(_terminal, terminal)) {
