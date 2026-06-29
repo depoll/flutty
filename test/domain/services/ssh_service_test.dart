@@ -1564,6 +1564,48 @@ void main() {
       expect(terminalNotifications, 1);
     });
 
+    test('spreads a large active-window replay across frames instead of one '
+        'blocking write', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+
+      var terminalNotifications = 0;
+      terminal.addListener(() => terminalNotifications += 1);
+
+      // A Copilot window full of content replays far more than the per-frame
+      // write cap (24 KiB) at once. The first chunk lands within a frame; the
+      // rest must be pumped over later frames so the UI thread stays free.
+      final builder = StringBuffer(monkeyMuxReplayMarker);
+      for (var i = 0; i < 4000; i++) {
+        builder.write('line $i is part of a very large replay payload\r\n');
+      }
+      final replay = builder.toString();
+      expect(replay.length, greaterThan(64 * 1024));
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode(replay)));
+      await pumpEventQueue();
+
+      // Past the coalesce quiet period: the first bounded chunk is written,
+      // but the whole payload is not drained in a single synchronous write.
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await pumpEventQueue();
+      final notificationsAfterFirstChunk = terminalNotifications;
+      expect(notificationsAfterFirstChunk, greaterThanOrEqualTo(1));
+      expect(notificationsAfterFirstChunk, lessThan(6));
+
+      // Remaining chunks pump over subsequent frames until fully drained.
+      for (var i = 0; i < 12; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await pumpEventQueue();
+      }
+      expect(terminalNotifications, greaterThan(notificationsAfterFirstChunk));
+      expect(
+        firstLineText(terminal),
+        'line 0 is part of a very large replay payload',
+      );
+    });
+
     test('flushes terminal theme OSC queries without frame delay', () async {
       final shell = await openShell();
       final session = shell.session;
