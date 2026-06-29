@@ -18,6 +18,7 @@ class _SshSessionRuntime {
   Timer? _shellIoDiagnosticsTimer;
   Timer? _terminalOutputFlushTimer;
   Timer? _monkeyMuxReplayCoalesceTimer;
+  Timer? _terminalWriteChunkTimer;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
   final _pendingShellOutputs =
@@ -35,6 +36,7 @@ class _SshSessionRuntime {
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
   String _monkeyMuxReplayDetectionTail = '';
+  String _pendingTerminalWriteBacklog = '';
   bool _isCoalescingMonkeyMuxReplay = false;
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalInsertMode = false;
@@ -44,6 +46,12 @@ class _SshSessionRuntime {
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  // A window switch with lots of content/images replays hundreds of KB at once.
+  // Parsing it all in one synchronous `terminal.write` blocks the UI thread and
+  // hangs the whole app, so cap each write and spread the remainder across
+  // frames. Image decoding is already async; this bounds the per-frame parse,
+  // inflate, and cell-write cost during a large replay.
+  static const _maxTerminalWriteChunkChars = 24 * 1024;
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
@@ -203,6 +211,9 @@ class _SshSessionRuntime {
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) async {
     _flushPendingShellOutput(drainAll: true);
+    _drainTerminalWriteBacklogNow();
+    _terminalWriteChunkTimer?.cancel();
+    _terminalWriteChunkTimer = null;
     _flushShellIoDiagnostics();
     _shellIoDiagnosticsTimer?.cancel();
     _shellIoDiagnosticsTimer = null;
@@ -610,7 +621,7 @@ class _SshSessionRuntime {
       _terminalInsertModePendingInput = terminalOutput.pendingInput;
       _terminalInsertMode = terminalOutput.insertMode;
       if (terminalOutput.output.isNotEmpty) {
-        terminal.write(terminalOutput.output);
+        _writeTerminalSpread(terminal, terminalOutput.output);
       }
       _respondToTerminalWindowControlQueries(output.terminalData, terminal);
       if (terminalOutput.output.isNotEmpty) {
@@ -643,6 +654,59 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
   }
+
+  /// Writes [output] to [terminal] in bounded chunks so a single large remote
+  /// replay (e.g. switching to a Copilot window full of images) cannot block
+  /// the UI thread. Content under the cap is written immediately so ordinary
+  /// output stays in one frame; the remainder is queued and pumped each frame.
+  void _writeTerminalSpread(Terminal terminal, String output) {
+    if (output.isEmpty) {
+      return;
+    }
+    final combined = _pendingTerminalWriteBacklog.isEmpty
+        ? output
+        : _pendingTerminalWriteBacklog + output;
+    _pendingTerminalWriteBacklog = '';
+    final written = _writeBoundedTerminalChunk(terminal, combined);
+    if (written < combined.length) {
+      _pendingTerminalWriteBacklog = combined.substring(written);
+      _scheduleTerminalWriteChunkPump(terminal);
+    }
+  }
+
+  int _writeBoundedTerminalChunk(Terminal terminal, String data) {
+    var end = math.min(_maxTerminalWriteChunkChars, data.length);
+    // Avoid cutting a surrogate pair; the parser tolerates split escape
+    // sequences via rollback but a lone surrogate corrupts the code point.
+    if (end < data.length && _isHighSurrogate(data.codeUnitAt(end - 1))) {
+      end -= 1;
+    }
+    if (end <= 0) {
+      end = data.length;
+    }
+    terminal.write(data.substring(0, end));
+    return end;
+  }
+
+  void _scheduleTerminalWriteChunkPump(Terminal terminal) {
+    if (_terminalWriteChunkTimer?.isActive ?? false) {
+      return;
+    }
+    _terminalWriteChunkTimer = Timer(_terminalOutputFlushInterval, () {
+      _terminalWriteChunkTimer = null;
+      if (_pendingTerminalWriteBacklog.isEmpty ||
+          !identical(_terminal, terminal)) {
+        return;
+      }
+      final pending = _pendingTerminalWriteBacklog;
+      _pendingTerminalWriteBacklog = '';
+      _writeTerminalSpread(terminal, pending);
+      _scheduleTerminalPreviewRefresh();
+    });
+  }
+
+  bool _isHighSurrogate(int codeUnit) =>
+      codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
 
   ({String stderrData, String stdoutData, String terminalData})
   _drainPendingShellOutputs({required bool drainAll}) {
@@ -691,6 +755,19 @@ class _SshSessionRuntime {
     _pendingShellOutputTerminal = null;
     _monkeyMuxReplayDetectionTail = '';
     _isCoalescingMonkeyMuxReplay = false;
+  }
+
+  /// Flushes any queued terminal write backlog immediately. Used on shutdown so
+  /// the final frames of replay are not stranded by the chunk pump timer.
+  void _drainTerminalWriteBacklogNow() {
+    _terminalWriteChunkTimer?.cancel();
+    _terminalWriteChunkTimer = null;
+    final pending = _pendingTerminalWriteBacklog;
+    _pendingTerminalWriteBacklog = '';
+    final terminal = _terminal;
+    if (pending.isNotEmpty && terminal != null) {
+      terminal.write(pending);
+    }
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
