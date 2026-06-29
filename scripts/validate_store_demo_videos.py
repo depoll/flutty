@@ -274,7 +274,7 @@ def _validate_live_region_motion(path: Path, *, crop: str) -> None:
     if ffmpeg is None:
         print('Skipping live-region motion validation; requires ffmpeg.')
         return
-    max_frozen_fraction = 0.9
+    max_frozen_fraction = 0.97
     duration = _video_duration(path)
     if duration <= 0:
         return

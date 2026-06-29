@@ -1286,41 +1286,41 @@ def _promo_segments() -> list[PromoSegment]:
     return [
         PromoSegment(
             eyebrow='Claude Code',
-            headline='Prompt a live agent from your phone.',
-            body='Open a persistent SSH workspace and drive Claude Code from '
-            'the keyboard, extended key row and all.',
+            headline='Code from your phone, over SSH.',
+            body='Open a Claude Code session on your own server and prompt it '
+            'right from the keyboard.',
             label='Claude',
             accent=(0, 201, 255),
         ),
         PromoSegment(
             eyebrow='MonkeyMux',
-            headline='Every agent stays alive, remotely.',
-            body='Claude, Codex, Gemini, OpenCode and Copilot each hold their '
-            'own window. Switch in a tap, even after you drop off Wi-Fi.',
+            headline='Agents keep running after you leave.',
+            body='Claude, Copilot, Codex, Gemini and OpenCode each stay in '
+            'their own window. Reconnect any time.',
             label='MonkeyMux',
             accent=(244, 114, 182),
         ),
         PromoSegment(
             eyebrow='OpenCode',
-            headline='Real mouse and touch in any TUI.',
-            body='OpenCode keeps full mouse support, shortcuts and scrollback '
-            'inside the same SSH session. Tap, scroll, select.',
+            headline='Tap, scroll and select like a desktop.',
+            body='Full mouse and touch in every terminal. Switch agents '
+            'without losing your place.',
             label='OpenCode',
             accent=(129, 140, 248),
         ),
         PromoSegment(
             eyebrow='Image paste',
-            headline='Paste a real screenshot.',
-            body='Pick an image, upload it to the remote workspace, and drop '
-            'its path into the agent terminal in seconds.',
+            headline='Paste a screenshot for context.',
+            body='Upload an image from your phone and the agent gets the '
+            'file, ready to inspect.',
             label='Image paste',
             accent=(45, 212, 191),
         ),
         PromoSegment(
             eyebrow='Copilot CLI',
-            headline='Tap tool calls. Scroll. Ship.',
-            body='Copilot CLI runs native here too. Expand tool calls with a '
-            'tap, scroll with touch, switch tabs hands-free.',
+            headline='Finish in Copilot, same workspace.',
+            body='Hop between agents in one session. Your files and context '
+            'follow you across.',
             label='Copilot',
             accent=(34, 211, 238),
         ),
