@@ -5,6 +5,19 @@ import 'dart:ui' as ui;
 import 'package:archive/archive.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 
+/// Optional observer invoked after each Kitty graphics decode attempt.
+///
+/// The app wires this to its diagnostics log to surface inflate/decode timing
+/// and payload size; it stays null in tests and standalone xterm so the decode
+/// path keeps no dependency on the host application.
+void Function({
+  required int payloadBytes,
+  required int inflateMicros,
+  required int decodeMicros,
+  required bool compressed,
+  required bool success,
+})? terminalGraphicsDecodeObserver;
+
 /// A decoded image retained for the Kitty graphics protocol.
 class TerminalImage {
   TerminalImage(this.id, this.image);

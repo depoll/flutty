@@ -1335,22 +1335,44 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
 
-    // Inflate zlib-compressed payloads (o=z) before decoding.
+    final observer = terminalGraphicsDecodeObserver;
+    final compressed = args['o'] == 'z';
+
+    // Inflate zlib-compressed payloads (o=z) before decoding. This runs
+    // synchronously on the UI thread, so time it separately from the decode.
     var payload = data;
-    if (args['o'] == 'z') {
+    var inflateMicros = 0;
+    if (compressed) {
+      final inflateStopwatch = observer == null ? null : (Stopwatch()..start());
       final inflated = inflateZlibData(data);
+      inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
       if (inflated == null) {
+        observer?.call(
+          payloadBytes: data.length,
+          inflateMicros: inflateMicros,
+          decodeMicros: 0,
+          compressed: true,
+          success: false,
+        );
         anchor?.dispose();
         return;
       }
       payload = inflated;
     }
 
+    final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
     final image = await decodeTerminalImage(
       payload,
       format: format,
       width: width,
       height: height,
+    );
+    observer?.call(
+      payloadBytes: payload.length,
+      inflateMicros: inflateMicros,
+      decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
+      compressed: compressed,
+      success: image != null,
     );
 
     // Skip placing if the decode failed, the anchored cell is gone, or the
