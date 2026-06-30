@@ -49,11 +49,14 @@ class _SshSessionRuntime {
   static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
   // The replay that follows a window switch is coalesced so it renders as one
   // batch instead of janky pieces. The quiet-period timer resets on every
-  // chunk, so a window whose agent streams output continuously (e.g. a running
-  // Copilot CLI) never hits a quiet gap and its content would be withheld for
-  // as long as it keeps printing — the switch appears to hang. Cap the hold so
-  // the batch always flushes promptly; the budgeted parse keeps it smooth.
-  static const _monkeyMuxReplayCoalesceMaxHold = Duration(milliseconds: 96);
+  // chunk, and a large image/content replay arrives as a continuous stream of
+  // sub-quiet-period chunks, so the debounce never settles until the whole
+  // multi-MB replay finishes downloading — the window stays blank and the
+  // switch appears to hang (this happens whether or not the window's agent is
+  // active; the replay stream alone is enough). Cap the hold so the batch
+  // always flushes promptly; the budgeted parse keeps the catch-up smooth and
+  // any replay still streaming after the cap renders progressively.
+  static const _monkeyMuxReplayCoalesceMaxHold = Duration(milliseconds: 64);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
   // A window switch with lots of content/images replays hundreds of KB (or MB)
   // at once. Parsing it all synchronously — the adapt pass, the xterm parser,

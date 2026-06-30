@@ -1612,9 +1612,11 @@ void main() {
       });
 
       // Begin the active-window replay, then keep streaming chunks with gaps
-      // shorter than the 24ms quiet period. The debounce keeps resetting, so
-      // without a hard deadline the content would never render until output
-      // stops. The 96ms max-hold must flush it mid-stream.
+      // shorter than the 24ms quiet period — exactly how a large image/content
+      // replay arrives over the network. The debounce keeps resetting, so
+      // without a hard deadline the content would never render until the whole
+      // replay finishes downloading (the window stays blank). The max-hold must
+      // flush it mid-stream so content appears promptly.
       shell.stdout.add(
         Uint8List.fromList(utf8.encode('${monkeyMuxReplayMarker}busy 0 ')),
       );
