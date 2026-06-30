@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.78"
+	monkeyMuxVersion                  = "0.1.79"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -62,14 +62,14 @@ const (
 	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
-	// Replaying every retained transmission makes the client base64-decode and
-	// image-decode many megabytes per switch. The client now dedups images it
-	// already holds (so switching back is cheap), which lets this cover a full
-	// screen of images without re-paying on return; only a window's first
-	// display pays to transfer/decode them. Kept well below retention so deep
-	// scrollback images aren't all re-sent at once.
-	maxReplayedKittyImages     = 48
-	maxReplayedKittyImageBytes = 24 * 1024 * 1024
+	// Replaying every retained transmission makes the client decode many
+	// megabytes per switch; even with client-side downscaling and dedup, a very
+	// large burst can pressure memory on small devices, so keep this modest. The
+	// foreground app re-emits placeholder cells for the visible screen, so this
+	// only needs to cover the images currently on screen plus a little
+	// scrollback; deeper scrollback images repaint when the app redraws.
+	maxReplayedKittyImages     = 16
+	maxReplayedKittyImageBytes = 8 * 1024 * 1024
 )
 
 const terminalParserResetSequence = "\x1b\\"

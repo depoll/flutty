@@ -276,6 +276,32 @@ void main() {
     expect(terminalGraphicsSourceSignature(Uint8List(0)), 0);
   });
 
+  testWidgets('decodeTerminalImage downscales an oversized image', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      // A 2400x1200 PNG must come back capped to 1280 on its longest side with
+      // aspect ratio preserved (so it can't blow up decoded memory on mobile).
+      final pngBytes = base64.decode(await _buildPngBase64(2400, 1200));
+      final image = await decodeTerminalImage(pngBytes, format: 100);
+      expect(image, isNotNull);
+      expect(image!.width, 1280);
+      expect(image.height, 640);
+    });
+  });
+
+  testWidgets('decodeTerminalImage leaves a small image untouched', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(320, 200));
+      final image = await decodeTerminalImage(pngBytes, format: 100);
+      expect(image, isNotNull);
+      expect(image!.width, 320);
+      expect(image.height, 200);
+    });
+  });
+
   testWidgets('Kitty placeholder color can resolve high-byte image ids', (
     tester,
   ) async {
