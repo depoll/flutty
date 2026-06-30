@@ -1805,6 +1805,52 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 	}
 }
 
+func TestKittyImageReplayCapsCount(t *testing.T) {
+	window := &muxWindow{}
+	// Transmit more images than the replay count cap. Each is tiny so the byte
+	// budget never binds; only the count cap should.
+	const transmitted = maxReplayedKittyImages + 8
+	for i := 0; i < transmitted; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;D%d\x1b\\", i, i)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	replay := string(window.kittyImageReplayLocked())
+	if got := strings.Count(replay, "i="); got > maxReplayedKittyImages {
+		t.Fatalf("replayed %d images, want <= %d", got, maxReplayedKittyImages)
+	}
+	// The most-recent image is replayed; an image older than the cap is not.
+	newest := fmt.Sprintf("D%d\x1b", transmitted-1)
+	if !strings.Contains(replay, newest) {
+		t.Fatalf("newest image %q missing from replay", newest)
+	}
+	oldestKept := transmitted - maxReplayedKittyImages
+	tooOld := fmt.Sprintf("i=%d,", oldestKept-1)
+	if strings.Contains(replay, tooOld) {
+		t.Fatalf("image %q older than the replay cap should be omitted", tooOld)
+	}
+}
+
+func TestKittyImageReplayCapsBytes(t *testing.T) {
+	window := &muxWindow{}
+	// Each image is ~1 MiB so the 4 MiB byte budget binds before the count cap.
+	big := strings.Repeat("Z", 1024*1024)
+	for i := 0; i < 8; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\", i, big)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	replay := window.kittyImageReplayLocked()
+	if len(replay) > maxReplayedKittyImageBytes+len(big) {
+		t.Fatalf("replay %d bytes exceeds budget %d (+one image slack)",
+			len(replay), maxReplayedKittyImageBytes)
+	}
+	// At least one image (the most recent) is always replayed.
+	if !strings.Contains(string(replay), "i=7,") {
+		t.Fatalf("most-recent image missing from byte-capped replay")
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
