@@ -1573,9 +1573,9 @@ void main() {
       var terminalWrites = 0;
       terminal.addListener(() => terminalWrites += 1);
 
-      // A Copilot window full of content replays far more than the per-frame
-      // write cap (128 KiB) at once. It must be sliced across writes so no
-      // single synchronous parse blocks the UI thread.
+      // A Copilot window full of content replays far more than one frame's
+      // parse budget at once. The adapt/parse/control-query pipeline must run
+      // on bounded slices so no single synchronous turn blocks the UI thread.
       final builder = StringBuffer(monkeyMuxReplayMarker);
       for (var i = 0; i < 20000; i++) {
         builder.write('line $i is part of a very large replay payload\r\n');
