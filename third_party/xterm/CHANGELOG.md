@@ -138,6 +138,16 @@ out of scope.
   (`CSI 14/15/16 t`) are answered by the MonkeySSH app layer
   (`ssh_service.dart`), not here, so the core deliberately does not reply to
   them.
+* Performance: faster parsing of large Kitty image transmissions, which a
+  MonkeyMux window switch replays (several MB of base64) ahead of the visible
+  redraw on the parse critical path. `ByteConsumer.add` now returns the
+  `String.codeUnits` view directly instead of running the `Runes` iterator
+  (~10x cheaper) for the common case with no surrogate pairs, falling back to
+  combining surrogate pairs into code points only when present.
+  `_parseGraphicsPayload` decodes base64 inline through a lookup table as bytes
+  are consumed, dropping the per-image `StringBuffer` + whitespace `RegExp`
+  strip + `base64.decode` passes. Together these roughly halve `terminal.write`
+  time on an image-heavy replay. Keep both on re-sync.
 
 
 ## [3.6.1-pre] - 2023-04-28

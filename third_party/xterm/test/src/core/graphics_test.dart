@@ -85,6 +85,35 @@ void main() {
     });
   });
 
+  testWidgets('Kitty graphics payload tolerates embedded whitespace', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      // Splice newlines/spaces into the payload; the streaming decoder must
+      // skip them, matching the previous lenient whitespace-stripping behavior.
+      final mid = pngBase64.length ~/ 2;
+      final noisy =
+          '${pngBase64.substring(0, mid)}\n \r\t${pngBase64.substring(mid)}';
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100;$noisy\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final stored = terminal.graphics
+          .imageById(terminal.graphics.placements.single.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+    });
+  });
+
   testWidgets('Kitty graphics omitted format defaults to RGBA', (tester) async {
     await tester.runAsync(() async {
       final rgbaBase64 = base64.encode([0xFF, 0x00, 0x00, 0xFF]);

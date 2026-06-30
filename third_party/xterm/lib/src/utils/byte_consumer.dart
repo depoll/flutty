@@ -13,9 +13,52 @@ class ByteConsumer {
 
   void add(String data) {
     if (data.isEmpty) return;
-    final runes = data.runes.toList(growable: false);
-    _queue.addLast(runes);
-    _length += runes.length;
+    final block = _toCodePoints(data);
+    _queue.addLast(block);
+    _length += block.length;
+  }
+
+  /// Converts [data] into a list of Unicode code points (matching
+  /// `String.runes`) while avoiding the cost of the [Runes] iterator, which
+  /// decodes the whole string through a general-purpose state machine.
+  ///
+  /// The overwhelmingly common terminal payload — including the multi-megabyte
+  /// base64 of replayed Kitty images that land on the window-switch parse
+  /// critical path — contains no surrogate pairs, so the UTF-16 code units are
+  /// already the code points. In that case the lazy [String.codeUnits] view is
+  /// returned directly with no copy. Only when a surrogate pair is present do we
+  /// fall back to combining the pair into a single code point.
+  static List<int> _toCodePoints(String data) {
+    final units = data.codeUnits;
+    final length = units.length;
+    for (var i = 0; i < length; i++) {
+      final unit = units[i];
+      if (unit >= 0xD800 && unit <= 0xDBFF) {
+        return _combineSurrogatePairs(units, i);
+      }
+    }
+    return units;
+  }
+
+  static List<int> _combineSurrogatePairs(List<int> units, int firstSurrogate) {
+    final length = units.length;
+    final out = <int>[];
+    for (var i = 0; i < firstSurrogate; i++) {
+      out.add(units[i]);
+    }
+    for (var i = firstSurrogate; i < length; i++) {
+      final unit = units[i];
+      if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < length) {
+        final low = units[i + 1];
+        if (low >= 0xDC00 && low <= 0xDFFF) {
+          out.add(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00));
+          i++;
+          continue;
+        }
+      }
+      out.add(unit);
+    }
+    return out;
   }
 
   int peek() {
