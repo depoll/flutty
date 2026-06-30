@@ -1859,6 +1859,78 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	}
 }
 
+func TestGlobalKittyImageBudgetEvictsAcrossWindows(t *testing.T) {
+	saved := kittyImageGlobalBudgetBytes
+	defer func() { kittyImageGlobalBudgetBytes = saved }()
+	// Tiny budget so a couple of ~1 MiB images exceed it across two windows.
+	kittyImageGlobalBudgetBytes = 2 * 1024 * 1024
+
+	w1 := &muxWindow{id: "@1"}
+	w2 := &muxWindow{id: "@2"}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{w1, w2}
+
+	big := strings.Repeat("Z", 1024*1024)
+	store := func(w *muxWindow, id int) {
+		w.observeKittyGraphicsLocked(
+			[]byte(fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\", id, big)),
+		)
+		server.enforceGlobalKittyImageBudgetLocked()
+	}
+
+	// Store oldest in w1, then newer images in w2; the global cap must evict the
+	// older w1 image even though w1 is under its own per-window cap.
+	store(w1, 1)
+	store(w2, 2)
+	store(w2, 3)
+
+	total := 0
+	for _, w := range server.windows {
+		for _, b := range w.kittyImages {
+			total += len(b)
+		}
+	}
+	if total > kittyImageGlobalBudgetBytes {
+		t.Fatalf("global image bytes %d exceed budget %d", total,
+			kittyImageGlobalBudgetBytes)
+	}
+	if _, ok := w1.kittyImages["1"]; ok {
+		t.Fatalf("oldest image (w1 id=1) should have been globally evicted")
+	}
+	if _, ok := w2.kittyImages["3"]; !ok {
+		t.Fatalf("newest image (w2 id=3) must be retained")
+	}
+}
+
+func TestGlobalKittyImageBudgetKeepsAtLeastOne(t *testing.T) {
+	saved := kittyImageGlobalBudgetBytes
+	defer func() { kittyImageGlobalBudgetBytes = saved }()
+	// Budget smaller than a single image: it must keep the one image rather than
+	// drop everything (which would render blank).
+	kittyImageGlobalBudgetBytes = 1024
+
+	w := &muxWindow{id: "@1"}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{w}
+	w.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=9,f=100;" + strings.Repeat("Z", 4096) + "\x1b\\"),
+	)
+	server.enforceGlobalKittyImageBudgetLocked()
+
+	if len(w.kittyImages) != 1 {
+		t.Fatalf("expected to keep the single image, have %d", len(w.kittyImages))
+	}
+}
+
+func TestComputeKittyImageGlobalBudgetClampsToRange(t *testing.T) {
+	const floor = 32 * 1024 * 1024
+	const ceiling = 512 * 1024 * 1024
+	got := computeKittyImageGlobalBudgetBytes()
+	if got < floor || got > ceiling {
+		t.Fatalf("budget %d out of clamp range [%d,%d]", got, floor, ceiling)
+	}
+}
+
 func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}

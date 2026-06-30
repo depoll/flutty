@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.77"
+	monkeyMuxVersion                  = "0.1.78"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -397,8 +397,12 @@ type muxWindow struct {
 	// bytes must survive independently of the rolling visible history (which
 	// evicts them once enough newer output arrives) or reattached placeholders
 	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
-	kittyImages          map[string][]byte
-	kittyImageOrder      []string
+	kittyImages     map[string][]byte
+	kittyImageOrder []string
+	// kittyImageSeq records a global monotonic store sequence per image id so a
+	// machine-wide budget can evict the globally-oldest image across all
+	// windows. Protected by the server lock, like the maps above.
+	kittyImageSeq        map[string]uint64
 	kittyGraphicsPending []byte
 }
 
@@ -2571,6 +2575,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	// Seed the Kitty image cache from any restored history so an image shown
 	// before a server restart can still be replayed on the next reattach.
 	window.observeKittyGraphicsLocked(window.history)
+	s.enforceGlobalKittyImageBudgetLocked()
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2649,6 +2654,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	window.observeKittyGraphicsLocked(chunk)
+	s.enforceGlobalKittyImageBudgetLocked()
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
@@ -4572,11 +4578,16 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	if w.kittyImages == nil {
 		w.kittyImages = map[string][]byte{}
 	}
+	if w.kittyImageSeq == nil {
+		w.kittyImageSeq = map[string]uint64{}
+	}
 	if _, exists := w.kittyImages[id]; exists {
 		w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	}
 	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	w.kittyImages[id] = append([]byte(nil), buf...)
+	kittyImageStoreSeq++
+	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
 }
 
@@ -4585,6 +4596,7 @@ func (w *muxWindow) removeKittyImageLocked(id string) {
 		return
 	}
 	delete(w.kittyImages, id)
+	delete(w.kittyImageSeq, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 }
 
@@ -4600,7 +4612,133 @@ func (w *muxWindow) enforceKittyImageCapsLocked() {
 		w.kittyImageOrder = w.kittyImageOrder[1:]
 		total -= len(w.kittyImages[oldest])
 		delete(w.kittyImages, oldest)
+		delete(w.kittyImageSeq, oldest)
 	}
+}
+
+// kittyImageStoreSeq is a global monotonic counter assigning each stored image
+// a store order, used to evict the globally-oldest image under the machine-wide
+// budget. Mutated only while the server lock is held.
+var kittyImageStoreSeq uint64
+
+// kittyImageGlobalBudgetBytes bounds the total Kitty image bytes retained across
+// all windows so a busy multi-window session cannot exhaust memory on a small
+// host (e.g. a Raspberry Pi). Computed once from detected system memory; a var
+// so tests can override it.
+var kittyImageGlobalBudgetBytes = computeKittyImageGlobalBudgetBytes()
+
+// enforceGlobalKittyImageBudgetLocked evicts the globally-oldest retained images
+// across every window until the total retained bytes fit the machine-wide
+// budget. The server lock must be held.
+func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
+	budget := kittyImageGlobalBudgetBytes
+	if budget <= 0 {
+		return
+	}
+	total := 0
+	count := 0
+	for _, w := range s.windows {
+		for _, b := range w.kittyImages {
+			total += len(b)
+			count++
+		}
+	}
+	// Keep at least one image so a single oversized image is never fully
+	// dropped (it would just render blank otherwise); the per-window caps still
+	// bound any single window.
+	for total > budget && count > 1 {
+		var victimWin *muxWindow
+		var victimID string
+		var victimSeq uint64
+		found := false
+		for _, w := range s.windows {
+			for id, seq := range w.kittyImageSeq {
+				if _, ok := w.kittyImages[id]; !ok {
+					continue
+				}
+				if !found || seq < victimSeq {
+					found = true
+					victimSeq = seq
+					victimWin = w
+					victimID = id
+				}
+			}
+		}
+		if !found || victimWin == nil {
+			return
+		}
+		total -= len(victimWin.kittyImages[victimID])
+		count--
+		victimWin.removeKittyImageLocked(victimID)
+	}
+}
+
+// computeKittyImageGlobalBudgetBytes derives the machine-wide image cache budget
+// from detected system memory, clamped to a safe range. Unknown memory falls
+// back to a conservative default.
+func computeKittyImageGlobalBudgetBytes() int {
+	const (
+		floorBytes    = 32 * 1024 * 1024  // always allow some image caching
+		ceilingBytes  = 512 * 1024 * 1024 // cap on large machines
+		defaultBytes  = 256 * 1024 * 1024 // used when memory is undetectable
+		memoryDivisor = 8                 // ~12.5% of RAM for the image cache
+	)
+	mem := detectSystemMemoryBytes()
+	if mem == 0 {
+		return defaultBytes
+	}
+	budget := int(mem / memoryDivisor)
+	if budget < floorBytes {
+		budget = floorBytes
+	}
+	if budget > ceilingBytes {
+		budget = ceilingBytes
+	}
+	return budget
+}
+
+// detectSystemMemoryBytes returns total physical memory in bytes, or 0 when it
+// cannot be determined on this platform.
+func detectSystemMemoryBytes() uint64 {
+	switch runtime.GOOS {
+	case "linux":
+		return readLinuxMemTotalBytes()
+	case "darwin":
+		return readDarwinMemTotalBytes()
+	}
+	return 0
+}
+
+func readLinuxMemTotalBytes() uint64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "MemTotal:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			if kb, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				return kb * 1024
+			}
+		}
+		break
+	}
+	return 0
+}
+
+func readDarwinMemTotalBytes() uint64 {
+	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return 0
+	}
+	bytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return bytes
 }
 
 // kittyImageReplayLocked returns the most-recent retained image transmissions,
