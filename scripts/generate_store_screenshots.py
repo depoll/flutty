@@ -294,7 +294,7 @@ class StoreDemoEnvironment:
         self.username = getpass.getuser()
         self.port = _free_local_port()
         self.mux_session = f'monkeyssh-store-{os.getpid()}'
-        self.demo_dir = Path('/Users/Shared') / self.mux_session
+        self.demo_dir = Path('/tmp') / self.mux_session
         self._process: subprocess.Popen[str] | None = None
         self._monkeymux = self._extract_monkeymux()
         self._monkeymux_env = self._build_monkeymux_env()
@@ -308,6 +308,7 @@ class StoreDemoEnvironment:
         self._claude = shutil.which('claude')
         if self._claude is None:
             raise RuntimeError('Claude Code CLI is required for the Claude store screenshot.')
+        self._opencode = shutil.which('opencode')
 
     @property
     def private_key_b64(self) -> str:
@@ -523,14 +524,28 @@ class StoreDemoEnvironment:
             printf 'Keep long-running coding sessions alive in MonkeyMux.\\n'
             """,
         )
-        self._write_pane_script(
-            'opencode',
+        opencode_home = self._tmpdir / 'opencode-home'
+        (opencode_home / '.config/opencode').mkdir(parents=True, exist_ok=True)
+        (opencode_home / '.config/opencode/tui.json').write_text('{"theme":"system"}\n')
+        opencode_body = (
+            f"""
+            exec env \\
+              HOME={self._shell_quote(str(opencode_home))} \\
+              PATH={self._shell_quote(os.environ.get('PATH', ''))} \\
+              TERM=xterm-256color \\
+              {self._shell_quote(self._opencode)} \\
+              --pure \\
+              --log-level ERROR \\
+              --prompt 'Inspect the release checklist image and keep this agent session ready.'
             """
+            if self._opencode is not None
+            else """
             clear
             printf 'OpenCode agent session ready\\n'
             printf 'Launch another coding assistant in its own remote window.\\n'
-            """,
+            """
         )
+        self._write_pane_script('opencode', opencode_body)
         self._write_pane_script(
             'antigravity',
             """

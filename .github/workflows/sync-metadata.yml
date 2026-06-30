@@ -7,6 +7,7 @@ on:
       - 'assets/icons/**'
       - 'android/fastlane/metadata-*/**'
       - 'ios/fastlane/metadata-*/**'
+      - 'ios/fastlane/app-previews/**'
       - 'ios/fastlane/screenshots/**'
   workflow_dispatch:
     inputs:
@@ -36,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      ios_app_previews: ${{ steps.filter.outputs.ios_app_previews }}
       ios_screenshots: ${{ steps.filter.outputs.ios_screenshots }}
       android: ${{ steps.filter.outputs.android }}
       android_screenshots: ${{ steps.filter.outputs.android_screenshots }}
@@ -50,6 +52,7 @@ jobs:
         shell: bash
         run: |
           ios=false
+          ios_app_previews=false
           ios_screenshots=false
           android=false
           android_screenshots=false
@@ -80,6 +83,11 @@ jobs:
                   ;;
               esac
               case "$changed_path" in
+                ios/fastlane/app-previews/*)
+                  ios=true
+                  ;;
+              esac
+              case "$changed_path" in
                 ios/fastlane/screenshots/*)
                   ios_screenshots=true
                   ;;
@@ -96,8 +104,15 @@ jobs:
               esac
             done <<< "$changed_files"
           fi
+          if [ "$ios" = true ] && [ -d ios/fastlane/app-previews ] && \
+            find ios/fastlane/app-previews \
+            -type f \( -name '*.mov' -o -name '*.mp4' -o -name '*.m4v' \) \
+            | grep -q .; then
+            ios_app_previews=true
+          fi
 
           echo "ios=$ios" >> "$GITHUB_OUTPUT"
+          echo "ios_app_previews=$ios_app_previews" >> "$GITHUB_OUTPUT"
           echo "ios_screenshots=$ios_screenshots" >> "$GITHUB_OUTPUT"
           echo "android=$android" >> "$GITHUB_OUTPUT"
           echo "android_screenshots=$android_screenshots" >> "$GITHUB_OUTPUT"
@@ -140,14 +155,29 @@ jobs:
       - name: Validate screenshots with OCR
         run: .venv/bin/python scripts/validate_store_screenshots.py android
 
+  validate_ios_app_previews:
+    name: Validate iOS App Previews
+    needs: changes
+    if: needs.changes.outputs.ios_app_previews == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate App Preview videos
+        run: python3 scripts/validate_store_demo_videos.py ios
+
   sync-ios:
     name: Sync iOS Metadata
-    needs: [changes, validate_ios_screenshots]
+    needs: [changes, validate_ios_screenshots, validate_ios_app_previews]
     if: >-
       !cancelled() &&
       needs.changes.outputs.ios == 'true' &&
       needs.validate_ios_screenshots.result != 'failure' &&
-      needs.validate_ios_screenshots.result != 'cancelled'
+      needs.validate_ios_screenshots.result != 'cancelled' &&
+      needs.validate_ios_app_previews.result != 'failure' &&
+      needs.validate_ios_app_previews.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

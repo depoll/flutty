@@ -8,6 +8,7 @@ import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
@@ -58,7 +59,21 @@ const _terminalThemeDarkId = String.fromEnvironment(
   'STORE_SCREENSHOT_TERMINAL_THEME_DARK_ID',
   defaultValue: 'velvet',
 );
-const _postReadyCaptureDelay = Duration(seconds: 6);
+const _postReadyCaptureDelay = Duration(
+  milliseconds: int.fromEnvironment(
+    'STORE_SCREENSHOT_SCENE_HOLD_MS',
+    defaultValue: 6000,
+  ),
+);
+const _videoDemoMode = bool.fromEnvironment('STORE_SCREENSHOT_VIDEO_DEMO');
+const _copilotPrompt = String.fromEnvironment(
+  'STORE_SCREENSHOT_COPILOT_PROMPT',
+  defaultValue: 'Draft a release checklist for this SSH app',
+);
+const _claudePrompt = String.fromEnvironment(
+  'STORE_SCREENSHOT_CLAUDE_PROMPT',
+  defaultValue: 'Summarize the riskiest release checks',
+);
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
   productId: 'store-screenshot-fallback',
@@ -392,7 +407,7 @@ Future<int> _seedDatabase(
           localPort: 5173,
           remoteHost: '127.0.0.1',
           remotePort: 5173,
-          autoStart: const Value(true),
+          autoStart: const Value(false),
         ),
       );
   await database
@@ -417,7 +432,7 @@ Future<int> _seedDatabase(
           localPort: 5432,
           remoteHost: '127.0.0.1',
           remotePort: 5432,
-          autoStart: const Value(true),
+          autoStart: const Value(false),
         ),
       );
   await database
@@ -561,53 +576,11 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runFlow() async {
     try {
       await _waitForApp();
-      final terminalHostId = widget.terminalHostId;
-      final result = await ref
-          .read(activeSessionsProvider.notifier)
-          .connect(terminalHostId);
-      if (!result.success || result.connectionId == null) {
-        throw StateError(result.error ?? 'SSH connection did not open.');
+      if (_videoDemoMode) {
+        await _runVideoDemoFlow();
+      } else {
+        await _runScreenshotFlow();
       }
-      _connectionId = result.connectionId;
-
-      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
-      await Future<void>.delayed(const Duration(seconds: 6));
-      await _announceScene(0);
-
-      _go('/');
-      await Future<void>.delayed(const Duration(seconds: 2));
-      await _announceScene(1);
-
-      _go('/snippets');
-      await Future<void>.delayed(const Duration(seconds: 2));
-      await _announceScene(2);
-
-      _go(
-        '/terminal/$terminalHostId?connectionId=$_connectionId'
-        '&expandTmux=1',
-      );
-      await Future<void>.delayed(const Duration(seconds: 4));
-      await _announceScene(3);
-
-      _go(
-        '/sftp/$terminalHostId?connectionId=$_connectionId'
-        '&path=${Uri.encodeComponent(_workspacePath)}',
-      );
-      await Future<void>.delayed(const Duration(seconds: 2));
-      await _announceScene(4);
-
-      final session = ref
-          .read(activeSessionsProvider.notifier)
-          .getSession(_connectionId!);
-      if (session == null) {
-        throw StateError('SSH session not available for Claude screenshot.');
-      }
-      await ref
-          .read(monkeyMuxServiceProvider)
-          .selectWindow(session, _muxSessionName, 2);
-      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
-      await Future<void>.delayed(const Duration(seconds: 4));
-      await _announceScene(5);
 
       debugPrintSynchronously('STORE_SCREENSHOT_DONE');
       await ref.read(databaseProvider).close();
@@ -618,6 +591,170 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await ref.read(databaseProvider).close();
       exit(1);
     }
+  }
+
+  Future<void> _runScreenshotFlow() async {
+    final terminalHostId = widget.terminalHostId;
+    await _connect(terminalHostId);
+    // Warm the MonkeyMux control channel so the window switcher scene renders
+    // the full window list and Claude selection lands, even on slower devices.
+    await _ensureMuxReady();
+
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+    await Future<void>.delayed(const Duration(seconds: 6));
+    await _announceScene(0);
+
+    _go('/');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(1);
+
+    _go('/snippets');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(2);
+
+    _go(
+      '/terminal/$terminalHostId?connectionId=$_connectionId'
+      '&expandTmux=1',
+    );
+    await Future<void>.delayed(const Duration(seconds: 4));
+    await _announceScene(3);
+
+    _go(
+      '/sftp/$terminalHostId?connectionId=$_connectionId'
+      '&path=${Uri.encodeComponent(_workspacePath)}',
+    );
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _announceScene(4);
+
+    await _selectClaudeWindow();
+    _go('/terminal/$terminalHostId?connectionId=$_connectionId');
+    await Future<void>.delayed(const Duration(seconds: 4));
+    await _announceScene(5);
+  }
+
+  Future<void> _runVideoDemoFlow() async {
+    final terminalHostId = widget.terminalHostId;
+    await _connect(terminalHostId);
+    // The slower iOS simulator can lag on MonkeyMux control-channel setup; wait
+    // for windows to enumerate so the switcher renders and window selection
+    // never stalls the recorded flow.
+    await _ensureMuxReady();
+
+    final base = '/terminal/$terminalHostId?connectionId=$_connectionId';
+
+    // Beat 1 — Claude Code: a real agent session, driven from the keyboard.
+    await _selectMonkeyMuxWindow(2);
+    _go('$base&showKeyboard=1');
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    _emitBeat(1); // Recording starts on the first beat marker.
+    await Future<void>.delayed(const Duration(milliseconds: 650));
+    await _typePrompt(_claudePrompt);
+    await _hideKeyboard();
+    // Let the live Claude response stream in, keyboard-free, so it does not
+    // block the terminal output.
+    await Future<void>.delayed(const Duration(milliseconds: 2600));
+
+    // Beat 2 — MonkeyMux: every coding agent alive in its own remote window.
+    _emitBeat(2);
+    _go('$base&expandTmux=1');
+    await Future<void>.delayed(const Duration(milliseconds: 3000));
+
+    // Beat 3 — OpenCode: switch windows inside the same persistent SSH session.
+    await _selectMonkeyMuxWindow(4);
+    _emitBeat(3);
+    _go(base);
+    await _hideKeyboard();
+    await Future<void>.delayed(const Duration(milliseconds: 2800));
+
+    // Beat 4 — Image context: a real clipboard image upload + paste, with the
+    // upload confirmation held long enough to read.
+    _emitBeat(4);
+    _go('$base&pasteDemoImage=1');
+    await _hideKeyboard();
+    await Future<void>.delayed(const Duration(milliseconds: 5400));
+
+    // Beat 5 — Copilot: finish in Copilot with the same uploaded context.
+    await _selectMonkeyMuxWindow(0);
+    _emitBeat(5);
+    _go('$base&showKeyboard=1');
+    await Future<void>.delayed(const Duration(milliseconds: 650));
+    await _typePrompt(_copilotPrompt);
+    await _hideKeyboard();
+    await Future<void>.delayed(const Duration(milliseconds: 2800));
+  }
+
+  /// Emits an ordered promo beat marker. The compositor records the wall-clock
+  /// offset of each beat (relative to beat 1, when recording starts) so the
+  /// caption track stays synced to what is actually on screen.
+  void _emitBeat(int beat) {
+    debugPrintSynchronously(
+      'STORE_SCREENSHOT_READY ${jsonEncode({'beat': beat})}',
+    );
+  }
+
+  /// Polls MonkeyMux until its windows enumerate so the window switcher and
+  /// programmatic window selection are both ready before the flow relies on
+  /// them. Bounded so a stalled control channel can never hang the recording.
+  Future<void> _ensureMuxReady() async {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(_connectionId!);
+    if (session == null) {
+      throw StateError('SSH session not available for store demo.');
+    }
+    final muxService = ref.read(monkeyMuxServiceProvider);
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final windows = await muxService
+            .listWindows(session, _muxSessionName)
+            .timeout(const Duration(seconds: 8));
+        if (windows.length >= 5) {
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          return;
+        }
+      } on Object {
+        // Keep polling until the deadline; transient control-channel errors are
+        // expected while the session is still warming up.
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+  }
+
+  Future<void> _hideKeyboard() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+  }
+
+  Future<void> _connect(int terminalHostId) async {
+    if (_connectionId != null) {
+      return;
+    }
+    final result = await ref
+        .read(activeSessionsProvider.notifier)
+        .connect(terminalHostId);
+    if (!result.success || result.connectionId == null) {
+      throw StateError(result.error ?? 'SSH connection did not open.');
+    }
+    _connectionId = result.connectionId;
+  }
+
+  Future<void> _selectClaudeWindow() async {
+    await _selectMonkeyMuxWindow(2);
+  }
+
+  Future<void> _selectMonkeyMuxWindow(int windowIndex) async {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(_connectionId!);
+    if (session == null) {
+      throw StateError('SSH session not available for store demo.');
+    }
+    await ref
+        .read(monkeyMuxServiceProvider)
+        .selectWindow(session, _muxSessionName, windowIndex)
+        .timeout(const Duration(seconds: 8), onTimeout: () {});
   }
 
   Future<void> _waitForApp() async {
@@ -636,6 +773,35 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     };
     debugPrintSynchronously('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
     await Future<void>.delayed(_postReadyCaptureDelay);
+  }
+
+  Future<void> _typePrompt(String prompt) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    var terminal = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(_connectionId!)
+        ?.terminal;
+    while (terminal?.onOutput == null && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      terminal = ref
+          .read(activeSessionsProvider.notifier)
+          .getSession(_connectionId!)
+          ?.terminal;
+    }
+    final onOutput = terminal?.onOutput;
+    if (onOutput == null) {
+      throw StateError('Terminal input is not ready for store demo prompt.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    for (final rune in prompt.runes) {
+      onOutput(String.fromCharCode(rune));
+      await Future<void>.delayed(const Duration(milliseconds: 24));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    onOutput('\r');
+    // Keep this short so the caller can hide the keyboard quickly; the live
+    // agent response is then revealed (keyboard-free) during the beat hold.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
   }
 
   void _go(String location) {
