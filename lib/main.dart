@@ -56,6 +56,7 @@ void _installPerformanceDiagnostics() {
         required bool success,
         String? imageId,
         String? action,
+        bool? reused,
       }) => logTerminalGraphicsDecode(
         TerminalGraphicsDecodeStats(
           payloadBytes: payloadBytes,
@@ -65,6 +66,7 @@ void _installPerformanceDiagnostics() {
           success: success,
           imageId: imageId,
           action: action,
+          reused: reused ?? false,
         ),
       );
 }

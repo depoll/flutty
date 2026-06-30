@@ -101,6 +101,7 @@ class TerminalGraphicsDecodeStats {
     required this.success,
     this.imageId,
     this.action,
+    this.reused = false,
   });
 
   /// Size of the (post-inflate) payload handed to the image decoder, in bytes.
@@ -125,6 +126,10 @@ class TerminalGraphicsDecodeStats {
   /// Kitty graphics action (`a=`): `T`/`t` transmit(+display), etc. Lets us
   /// tell live app transmits from MonkeyMux store-only cache replay.
   final String? action;
+
+  /// Whether the image was reused from cache (id + identical bytes) instead of
+  /// decoded again. Confirms the window-switch dedup is firing.
+  final bool reused;
 }
 
 /// Logs terminal graphics decode timing for diagnostics builds.
@@ -145,6 +150,7 @@ void logTerminalGraphicsDecode(TerminalGraphicsDecodeStats stats) {
       'decodeMs': (stats.decodeMicros / 1000).round(),
       'compressed': stats.compressed,
       'success': stats.success,
+      'reused': stats.reused,
       if (stats.imageId != null && stats.imageId!.isNotEmpty)
         'imageId': stats.imageId,
       if (stats.action != null && stats.action!.isNotEmpty)
