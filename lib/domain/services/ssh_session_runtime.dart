@@ -623,6 +623,24 @@ class _SshSessionRuntime {
   void _flushCoalescedMonkeyMuxReplay() {
     _monkeyMuxReplayCoalesceTimer?.cancel();
     _monkeyMuxReplayCoalesceTimer = null;
+    if (DiagnosticsLogService.instance.enabled) {
+      final heldMs = _monkeyMuxReplayCoalesceDeadline == null
+          ? 0
+          : _monkeyMuxReplayCoalesceMaxHold.inMilliseconds -
+                _monkeyMuxReplayCoalesceDeadline!
+                    .difference(DateTime.now())
+                    .inMilliseconds;
+      DiagnosticsLogService.instance.debug(
+        'terminal.replay',
+        'coalesce_flush',
+        fields: {
+          'connectionId': _session.connectionId,
+          'chunks': _pendingShellOutputs.length,
+          'chars': _pendingTerminalWriteChars,
+          'heldMs': heldMs,
+        },
+      );
+    }
     _monkeyMuxReplayCoalesceDeadline = null;
     _isCoalescingMonkeyMuxReplay = false;
     _flushPendingShellOutput(drainAll: true);
@@ -709,17 +727,32 @@ class _SshSessionRuntime {
       return;
     }
 
+    final diagnosticsEnabled = DiagnosticsLogService.instance.enabled;
+    final startOffset = _terminalParseOffset;
     final stopwatch = Stopwatch()..start();
     var processedAny = false;
+    var sliceCount = 0;
+    var worstSliceMicros = 0;
     while (_terminalParseOffset < _terminalParseBacklog.length) {
+      final sliceStartMicros = diagnosticsEnabled
+          ? stopwatch.elapsedMicroseconds
+          : 0;
       _processTerminalParseSlice(terminal, _takeTerminalParseSlice());
       processedAny = true;
+      sliceCount += 1;
+      if (diagnosticsEnabled) {
+        final sliceMicros = stopwatch.elapsedMicroseconds - sliceStartMicros;
+        if (sliceMicros > worstSliceMicros) {
+          worstSliceMicros = sliceMicros;
+        }
+      }
       if (stopwatch.elapsed >= _terminalParseFrameBudget) {
         break;
       }
     }
 
-    if (_terminalParseOffset < _terminalParseBacklog.length) {
+    final remaining = _terminalParseBacklog.length - _terminalParseOffset;
+    if (remaining > 0) {
       _scheduleTerminalParsePump(terminal);
     } else {
       _terminalParseBacklog = '';
@@ -727,6 +760,20 @@ class _SshSessionRuntime {
     }
     if (processedAny) {
       _scheduleTerminalPreviewRefresh();
+      if (diagnosticsEnabled) {
+        DiagnosticsLogService.instance.debug(
+          'terminal.parse',
+          'pump',
+          fields: {
+            'connectionId': _session.connectionId,
+            'slices': sliceCount,
+            'chars': _terminalParseOffset - startOffset,
+            'durationMs': stopwatch.elapsedMilliseconds,
+            'worstSliceMs': (worstSliceMicros / 1000).round(),
+            'remainingChars': remaining,
+          },
+        );
+      }
     }
   }
 
