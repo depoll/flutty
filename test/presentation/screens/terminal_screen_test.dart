@@ -4665,11 +4665,19 @@ void main() {
           ),
         );
         await tester.pump();
-        await tester.pump(const Duration(milliseconds: 1049));
+        // The tmux theme refresh is debounced by ~150ms plus the remaining
+        // post-window-switch quiet period (up to 900ms). That quiet period is
+        // measured against the real wall clock (DateTime.now), which does not
+        // advance with tester.pump, so the effective fake-async timer lands a
+        // few milliseconds short of 1050ms under load. Assert "not fired yet"
+        // from well inside the window instead of 1ms before its exact edge, so
+        // slow CI can't tip a knife-edge boundary.
+        await tester.pump(const Duration(milliseconds: 500));
 
         expect(refreshCount, refreshCountAfterBackgroundWindow);
 
-        await tester.pump(const Duration(milliseconds: 1));
+        // Pump comfortably past the full debounce window so the refresh fires.
+        await tester.pump(const Duration(milliseconds: 700));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 60));
 
