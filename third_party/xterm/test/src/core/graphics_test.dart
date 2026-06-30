@@ -53,6 +53,38 @@ void main() {
     });
   });
 
+  testWidgets('a burst of images all decode despite the concurrency gate', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // Transmit more images at once than the decode gate's permits (3) to
+      // exercise queueing; every image must still decode and store.
+      const count = 8;
+      for (var id = 1; id <= count; id++) {
+        terminal.write('\x1b_Ga=t,f=100,i=$id;$pngBase64\x1b\\');
+      }
+
+      var waited = 0;
+      bool allStored() => List.generate(count, (i) => i + 1)
+          .every((id) => terminal.graphics.imageById(id) != null);
+      while (!allStored() && waited < 3000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      for (var id = 1; id <= count; id++) {
+        expect(
+          terminal.graphics.imageById(id),
+          isNotNull,
+          reason: 'image $id should have decoded despite throttling',
+        );
+      }
+    });
+  });
+
   testWidgets('Kitty graphics omitted format defaults to RGBA', (tester) async {
     await tester.runAsync(() async {
       final rgbaBase64 = base64.encode([0xFF, 0x00, 0x00, 0xFF]);
