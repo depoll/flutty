@@ -28,9 +28,9 @@ class PerformanceDiagnosticsService {
   final bool _enabled;
 
   // A frame slower than this is reported. 60fps is ~16.7ms and 120fps ~8.3ms,
-  // so 48ms is unambiguous jank (3+ dropped frames) without flooding on normal
-  // heavy scrolling.
-  static const _jankThreshold = Duration(milliseconds: 48);
+  // so 32ms is ~2 dropped frames — sensitive enough to catch sustained sluggish
+  // (not-fully-frozen) periods while still ignoring the odd hitch.
+  static const _jankThreshold = Duration(milliseconds: 32);
 
   TimingsCallback? _callback;
 
@@ -99,6 +99,8 @@ class TerminalGraphicsDecodeStats {
     required this.decodeMicros,
     required this.compressed,
     required this.success,
+    this.imageId,
+    this.action,
   });
 
   /// Size of the (post-inflate) payload handed to the image decoder, in bytes.
@@ -115,6 +117,14 @@ class TerminalGraphicsDecodeStats {
 
   /// Whether decoding produced an image.
   final bool success;
+
+  /// Kitty protocol image id (`i=`), a transmission identifier — not user
+  /// content. Repeated ids across one switch indicate re-transmission.
+  final String? imageId;
+
+  /// Kitty graphics action (`a=`): `T`/`t` transmit(+display), etc. Lets us
+  /// tell live app transmits from MonkeyMux store-only cache replay.
+  final String? action;
 }
 
 /// Logs terminal graphics decode timing for diagnostics builds.
@@ -135,6 +145,10 @@ void logTerminalGraphicsDecode(TerminalGraphicsDecodeStats stats) {
       'decodeMs': (stats.decodeMicros / 1000).round(),
       'compressed': stats.compressed,
       'success': stats.success,
+      if (stats.imageId != null && stats.imageId!.isNotEmpty)
+        'imageId': stats.imageId,
+      if (stats.action != null && stats.action!.isNotEmpty)
+        'action': stats.action,
     },
   );
 }
