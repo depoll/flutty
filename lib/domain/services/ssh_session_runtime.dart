@@ -35,6 +35,7 @@ class _SshSessionRuntime {
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
+  int _terminalInsertModePendingScanOffset = 0;
   String _monkeyMuxReplayDetectionTail = '';
   DateTime? _monkeyMuxReplayCoalesceDeadline;
   String _terminalParseBacklog = '';
@@ -67,6 +68,13 @@ class _SshSessionRuntime {
   // builds) while keeping any single turn short enough to stay responsive.
   // Image decoding is already async, so it does not count against this budget.
   static const _maxTerminalParseSliceChars = 32 * 1024;
+  // While a single escape sequence is still incomplete (e.g. a multi-megabyte
+  // Kitty image APC), the held bytes aren't rendered until the terminator
+  // arrives, and re-feeding them in 32KB slices makes `adapt` re-copy the
+  // growing pending buffer each call (O(n^2)). Take much larger slices in that
+  // state so the sequence is gathered in a few calls; the time budget still
+  // yields between slices.
+  static const _maxTerminalParseSequenceSliceChars = 256 * 1024;
   static const _terminalParseFrameBudget = Duration(milliseconds: 8);
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
@@ -724,10 +732,13 @@ class _SshSessionRuntime {
 
   String _takeTerminalParseSlice() {
     final start = _terminalParseOffset;
-    var end = math.min(
-      start + _maxTerminalParseSliceChars,
-      _terminalParseBacklog.length,
-    );
+    // A larger slice while mid-sequence keeps gathering a long escape sequence
+    // (image APC) in O(n) instead of O(n^2); otherwise a small slice keeps each
+    // frame's parse/image work bounded.
+    final sliceChars = _terminalInsertModePendingInput.isEmpty
+        ? _maxTerminalParseSliceChars
+        : _maxTerminalParseSequenceSliceChars;
+    var end = math.min(start + sliceChars, _terminalParseBacklog.length);
     // Avoid cutting a surrogate pair; the parser tolerates split escape
     // sequences via rollback but a lone surrogate corrupts the code point.
     if (end < _terminalParseBacklog.length &&
@@ -745,6 +756,7 @@ class _SshSessionRuntime {
     final terminalOutput = adaptTerminalInsertModeOutputForXterm(
       input: slice,
       pendingInput: _terminalInsertModePendingInput,
+      pendingScanOffset: _terminalInsertModePendingScanOffset,
       insertMode: _terminalInsertMode,
       terminalColumns: terminal.viewWidth,
       terminalRows: terminal.viewHeight,
@@ -755,6 +767,7 @@ class _SshSessionRuntime {
       originMode: terminal.originMode,
     );
     _terminalInsertModePendingInput = terminalOutput.pendingInput;
+    _terminalInsertModePendingScanOffset = terminalOutput.pendingScanOffset;
     _terminalInsertMode = terminalOutput.insertMode;
     if (terminalOutput.output.isNotEmpty) {
       terminal.write(terminalOutput.output);
@@ -825,6 +838,17 @@ class _SshSessionRuntime {
     _monkeyMuxReplayDetectionTail = '';
     _monkeyMuxReplayCoalesceDeadline = null;
     _isCoalescingMonkeyMuxReplay = false;
+    // Discard the chunked parse backlog and its in-flight pump too. This path
+    // runs when queued output is dropped because it belongs to a stale shell;
+    // leaving the backlog (or partial-sequence parser state) would let old
+    // bytes render into a reconnected shell's terminal.
+    _terminalParsePumpTimer?.cancel();
+    _terminalParsePumpTimer = null;
+    _terminalParseBacklog = '';
+    _terminalParseOffset = 0;
+    _terminalInsertModePendingInput = '';
+    _terminalInsertModePendingScanOffset = 0;
+    _terminalInsertMode = false;
   }
 
   /// Drains any queued terminal parse backlog immediately, ignoring the frame

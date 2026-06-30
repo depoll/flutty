@@ -384,6 +384,60 @@ void main() {
       expect(terminal.lines[0].getText(0, 7), 'abcZQef');
     });
 
+    test('reassembles a long APC split across slices via incremental scan', () {
+      // A large image APC must pass through intact when fed in many slices,
+      // and the incremental scan offset must not skip a split `ESC \`
+      // terminator. Threading pendingScanOffset keeps this O(n) (see the
+      // window-switch hang fix) without changing the parsed result.
+      final body = 'QUJDREVGR0g=' * 4000; // ~48 KB, no ESC bytes
+      final apc = '\x1b_Gf=100,a=T;$body\x1b\\';
+
+      String runWithSlice(int sliceSize) {
+        final out = StringBuffer();
+        var pending = '';
+        var scanOffset = 0;
+        var insertMode = false;
+        var offset = 0;
+        while (offset < apc.length) {
+          final end = offset + sliceSize > apc.length
+              ? apc.length
+              : offset + sliceSize;
+          final result = adaptTerminalInsertModeOutputForXterm(
+            input: apc.substring(offset, end),
+            pendingInput: pending,
+            pendingScanOffset: scanOffset,
+            insertMode: insertMode,
+          );
+          out.write(result.output);
+          pending = result.pendingInput;
+          scanOffset = result.pendingScanOffset;
+          insertMode = result.insertMode;
+          offset = end;
+        }
+        expect(pending, isEmpty, reason: 'slice $sliceSize left a partial');
+        return out.toString();
+      }
+
+      // Small odd slices land boundaries inside the body and across `ESC \`.
+      expect(runWithSlice(7), apc);
+      expect(runWithSlice(1024), apc);
+      // A boundary exactly between ESC and the trailing backslash.
+      final beforeTerminator = apc.length - 1;
+      final split = adaptTerminalInsertModeOutputForXterm(
+        input: apc.substring(0, beforeTerminator),
+        pendingInput: '',
+        insertMode: false,
+      );
+      final rest = adaptTerminalInsertModeOutputForXterm(
+        input: apc.substring(beforeTerminator),
+        pendingInput: split.pendingInput,
+        pendingScanOffset: split.pendingScanOffset,
+        insertMode: split.insertMode,
+      );
+      expect(rest.pendingInput, isEmpty);
+      expect('${split.output}${rest.output}', apc);
+    });
+
     test('does not inject insert blanks into OSC payloads', () {
       final result = adaptTerminalInsertModeOutputForXterm(
         input: '\x1b[4h\x1b]0;nano title\x07Z',
@@ -1626,7 +1680,7 @@ void main() {
         await pumpEventQueue();
       }
 
-      // Streaming ran ~400ms; the batch must have flushed near the 96ms
+      // Streaming ran ~400ms; the batch must have flushed near the 64ms
       // deadline, well before output stopped.
       expect(firstChangeAtMs, greaterThanOrEqualTo(0));
       expect(firstChangeAtMs, lessThan(250));
