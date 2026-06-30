@@ -709,11 +709,21 @@ int terminalGraphicsSourceSignature(Uint8List bytes) {
   return folded == 0 ? 1 : folded;
 }
 
+/// Maximum width/height a decoded terminal image is kept at. Source images
+/// larger than this on their longest side are downscaled during decode, with
+/// aspect ratio preserved. A terminal renders images into a small cell grid, so
+/// full-resolution screenshots (often several megapixels) waste large amounts of
+/// decoded RGBA memory and raster bandwidth; on mobile, decoding many at once
+/// can exhaust memory and crash. 1280px keeps images crisp at terminal sizes
+/// while bounding each decode to ~6.5 MB.
+const _maxDecodedImageDimension = 1280;
+
 /// Decodes Kitty graphics payload [bytes] into a [ui.Image].
 ///
 /// Uses Flutter's built-in codecs for `f=100`/`f=98` (PNG/JPEG/GIF first frame)
 /// and [ui.decodeImageFromPixels] for raw pixels (`f=32` RGBA, `f=24` RGB).
-/// Returns null on any failure rather than throwing.
+/// Encoded images larger than [_maxDecodedImageDimension] are downscaled during
+/// decode to bound memory. Returns null on any failure rather than throwing.
 Future<ui.Image?> decodeTerminalImage(
   Uint8List bytes, {
   int format = 100,
@@ -739,11 +749,46 @@ Future<ui.Image?> decodeTerminalImage(
         onTimeout: () => throw 'timeout',
       );
     }
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    return frame.image;
+    return await _decodeEncodedImageBounded(bytes);
   } catch (_) {
     return null;
+  }
+}
+
+/// Decodes an encoded image (PNG/JPEG/GIF), downscaling to
+/// [_maxDecodedImageDimension] on its longest side when larger.
+Future<ui.Image?> _decodeEncodedImageBounded(Uint8List bytes) async {
+  final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+  ui.ImageDescriptor? descriptor;
+  try {
+    descriptor = await ui.ImageDescriptor.encoded(buffer);
+    final srcWidth = descriptor.width;
+    final srcHeight = descriptor.height;
+    int? targetWidth;
+    int? targetHeight;
+    final longest = srcWidth > srcHeight ? srcWidth : srcHeight;
+    if (longest > _maxDecodedImageDimension && longest > 0) {
+      final scale = _maxDecodedImageDimension / longest;
+      targetWidth =
+          (srcWidth * scale).round().clamp(1, _maxDecodedImageDimension);
+      targetHeight = (srcHeight * scale).round().clamp(
+            1,
+            _maxDecodedImageDimension,
+          );
+    }
+    final codec = await descriptor.instantiateCodec(
+      targetWidth: targetWidth,
+      targetHeight: targetHeight,
+    );
+    try {
+      final frame = await codec.getNextFrame();
+      return frame.image;
+    } finally {
+      codec.dispose();
+    }
+  } finally {
+    descriptor?.dispose();
+    buffer.dispose();
   }
 }
 
