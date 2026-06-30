@@ -16,6 +16,8 @@ void Function({
   required int decodeMicros,
   required bool compressed,
   required bool success,
+  String? imageId,
+  String? action,
 })? terminalGraphicsDecodeObserver;
 
 /// A decoded image retained for the Kitty graphics protocol.

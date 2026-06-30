@@ -54,6 +54,8 @@ void _installPerformanceDiagnostics() {
         required int decodeMicros,
         required bool compressed,
         required bool success,
+        String? imageId,
+        String? action,
       }) => logTerminalGraphicsDecode(
         TerminalGraphicsDecodeStats(
           payloadBytes: payloadBytes,
@@ -61,6 +63,8 @@ void _installPerformanceDiagnostics() {
           decodeMicros: decodeMicros,
           compressed: compressed,
           success: success,
+          imageId: imageId,
+          action: action,
         ),
       );
 }

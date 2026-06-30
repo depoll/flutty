@@ -1358,6 +1358,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           decodeMicros: 0,
           compressed: true,
           success: false,
+          imageId: args['i'],
+          action: args['a'],
         );
         anchor?.dispose();
         return;
@@ -1385,6 +1387,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
       compressed: compressed,
       success: image != null,
+      imageId: args['i'],
+      action: args['a'],
     );
 
     // Skip placing if the decode failed, the anchored cell is gone, or the
