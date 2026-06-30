@@ -22,6 +22,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/routes.dart';
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
@@ -59,7 +60,9 @@ import '../../domain/services/tmux_service.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/brand_error_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
+import '../widgets/cursor_block.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
@@ -801,6 +804,26 @@ bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
         ?.where((window) => window.isActive)
         .firstOrNull
         ?.terminalMouseReportSgr;
+
+/// Scroll-relevant mouse-reporting signature for the active tmux window.
+///
+/// Used to detect when touch-scroll routing must be recomputed after a window
+/// metadata update that doesn't change the active window itself (for example a
+/// foreground app toggling mouse mode). Returns `null` when there is no active
+/// window so an appearing/disappearing active window is also treated as a
+/// change.
+@visibleForTesting
+({bool? reportsMouseWheel, bool? mouseReportSgr})?
+activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
+  final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
+  if (activeWindow == null) {
+    return null;
+  }
+  return (
+    reportsMouseWheel: activeWindow.terminalReportsMouseWheel,
+    mouseReportSgr: activeWindow.terminalMouseReportSgr,
+  );
+}
 
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
@@ -4565,6 +4588,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
     );
+  }
+
+  /// Recomputes touch-scroll routing when the active window's mouse-reporting
+  /// metadata changes. The routing getters read live from the tmux bar
+  /// snapshot, so a rebuild is enough to flip `touchScrollToTerminal` and stop
+  /// scrolling from getting stuck until the next window switch.
+  void _handleActiveWindowScrollModeChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   void _refreshMuxPaneContextAfterWindowStateChange(
@@ -8734,6 +8768,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
+      onActiveWindowScrollModeChanged: _handleActiveWindowScrollModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -10111,13 +10146,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       _host?.label ?? 'Terminal',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
+                      style: FluttyTheme.displayMono(
+                        fontSize: 16,
+                        color: theme.colorScheme.onSurface,
+                      ),
                     ),
                     if (titleSubtitle.isNotEmpty)
                       Text(
                         titleSubtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(
+                        style: FluttyTheme.monoStyle.copyWith(
+                          fontSize: 11,
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
@@ -10839,8 +10879,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 360),
-            child: Card(
-              elevation: 4,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(FluttyTheme.radiusLg),
+                border: Border.all(color: theme.colorScheme.outlineVariant),
+              ),
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
@@ -10856,7 +10900,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       showsDisconnectedOverlay
                           ? 'Disconnected'
                           : 'Connection Error',
-                      style: theme.textTheme.titleLarge,
+                      style: FluttyTheme.displayMono(
+                        fontSize: 18,
+                        color: theme.colorScheme.onSurface,
+                      ),
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 8),
@@ -10907,13 +10954,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hasOverlayMessage: overlayMessage != null,
         isMobile: isMobile,
       );
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Connecting...'),
+            const CursorBlock(size: 32),
+            const SizedBox(height: 16),
+            Text(
+              'connecting…',
+              style: FluttyTheme.monoStyle.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ),
       );
@@ -10928,36 +10980,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hasOverlayMessage: true,
         isMobile: isMobile,
       );
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: 64,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Connection Error',
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                overlayMessage,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isConnecting ? null : _reconnect,
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
+      return BrandErrorState(
+        title: 'Connection Error',
+        message: overlayMessage,
+        onRetry: _reconnect,
       );
     }
 
@@ -14624,7 +14650,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     children: [
                       Text(
                         'Snippets',
-                        style: Theme.of(context).textTheme.titleLarge,
+                        style: FluttyTheme.displayMono(
+                          fontSize: 18,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
                       ),
                       const Spacer(),
                       TextButton(
@@ -14649,12 +14678,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                           hasVariables ? Icons.tune : Icons.code,
                           color: Theme.of(context).colorScheme.primary,
                         ),
-                        title: Text(snippet.name),
+                        title: Text(
+                          snippet.name,
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 14,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                        ),
                         subtitle: Text(
                           snippet.command.replaceAll('\n', ' '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontFamily: 'monospace'),
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 12,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                          ),
                         ),
                         trailing: hasVariables
                             ? const Chip(label: Text('Has variables'))
