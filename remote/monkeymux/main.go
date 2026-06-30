@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.75"
+	monkeyMuxVersion                  = "0.1.76"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -58,6 +58,13 @@ const (
 	maxRetainedKittyImages       = 32
 	maxRetainedKittyImageBytes   = 16 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
+	// Caps for how many retained images are *replayed* on a window switch.
+	// Replaying every retained transmission makes the client base64-decode and
+	// image-decode many megabytes on its UI thread per switch, stalling the
+	// app. Only the most-recent images are likely still on the foreground app's
+	// current screen; older ones are re-emitted by the app on its next redraw.
+	maxReplayedKittyImages     = 16
+	maxReplayedKittyImageBytes = 4 * 1024 * 1024
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -4591,15 +4598,34 @@ func (w *muxWindow) enforceKittyImageCapsLocked() {
 	}
 }
 
-// kittyImageReplayLocked returns the retained image transmissions in recency
-// order so a reattaching client can repopulate its image store.
+// kittyImageReplayLocked returns the most-recent retained image transmissions,
+// bounded by count and bytes, so a reattaching client repopulates the images
+// most likely still on screen without decoding many megabytes on its UI thread.
+// Older retained transmissions are omitted; the foreground app re-emits them on
+// its next redraw if they are still visible.
 func (w *muxWindow) kittyImageReplayLocked() []byte {
 	if len(w.kittyImageOrder) == 0 {
 		return nil
 	}
+	// Walk newest-first, keeping images until a cap is hit.
+	selected := make([]string, 0, maxReplayedKittyImages)
+	total := 0
+	for i := len(w.kittyImageOrder) - 1; i >= 0; i-- {
+		id := w.kittyImageOrder[i]
+		buf := w.kittyImages[id]
+		if len(selected) >= maxReplayedKittyImages {
+			break
+		}
+		if len(selected) > 0 && total+len(buf) > maxReplayedKittyImageBytes {
+			break
+		}
+		selected = append(selected, id)
+		total += len(buf)
+	}
+	// Emit oldest-kept first so ids are established in chronological order.
 	var out []byte
-	for _, id := range w.kittyImageOrder {
-		out = append(out, w.kittyImages[id]...)
+	for i := len(selected) - 1; i >= 0; i-- {
+		out = append(out, w.kittyImages[selected[i]]...)
 	}
 	return out
 }
