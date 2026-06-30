@@ -1833,9 +1833,16 @@ func TestKittyImageReplayCapsCount(t *testing.T) {
 
 func TestKittyImageReplayCapsBytes(t *testing.T) {
 	window := &muxWindow{}
-	// Each image is ~1 MiB so the 4 MiB byte budget binds before the count cap.
-	big := strings.Repeat("Z", 1024*1024)
-	for i := 0; i < 8; i++ {
+	// Use ~1 MiB images and transmit enough total to exceed the byte budget so
+	// it binds before the count cap. Derived from the constant so the test stays
+	// valid if the cap changes, while staying within the retention caps.
+	const imgBytes = 1024 * 1024
+	count := maxReplayedKittyImageBytes/imgBytes + 4
+	if count > maxRetainedKittyImages {
+		count = maxRetainedKittyImages
+	}
+	big := strings.Repeat("Z", imgBytes)
+	for i := 0; i < count; i++ {
 		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\", i, big)
 		window.observeKittyGraphicsLocked([]byte(seq))
 	}
@@ -1846,8 +1853,9 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 			len(replay), maxReplayedKittyImageBytes)
 	}
 	// At least one image (the most recent) is always replayed.
-	if !strings.Contains(string(replay), "i=7,") {
-		t.Fatalf("most-recent image missing from byte-capped replay")
+	newest := fmt.Sprintf("i=%d,", count-1)
+	if !strings.Contains(string(replay), newest) {
+		t.Fatalf("most-recent image %q missing from byte-capped replay", newest)
 	}
 }
 

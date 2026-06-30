@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.76"
+	monkeyMuxVersion                  = "0.1.77"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -53,18 +53,23 @@ const (
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
-	// Caps for the per-window Kitty image retention used to survive history
-	// eviction across reattaches.
-	maxRetainedKittyImages       = 32
-	maxRetainedKittyImageBytes   = 16 * 1024 * 1024
+	// Per-window Kitty image retention, used to survive history eviction across
+	// reattaches and to back placeholder cells the foreground app re-emits.
+	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
+	// screenshots); the byte cap is the binding limit and is per window, so peak
+	// server memory is this times the number of image-heavy windows.
+	maxRetainedKittyImages       = 128
+	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
 	// Caps for how many retained images are *replayed* on a window switch.
 	// Replaying every retained transmission makes the client base64-decode and
-	// image-decode many megabytes on its UI thread per switch, stalling the
-	// app. Only the most-recent images are likely still on the foreground app's
-	// current screen; older ones are re-emitted by the app on its next redraw.
-	maxReplayedKittyImages     = 16
-	maxReplayedKittyImageBytes = 4 * 1024 * 1024
+	// image-decode many megabytes per switch. The client now dedups images it
+	// already holds (so switching back is cheap), which lets this cover a full
+	// screen of images without re-paying on return; only a window's first
+	// display pays to transfer/decode them. Kept well below retention so deep
+	// scrollback images aren't all re-sent at once.
+	maxReplayedKittyImages     = 48
+	maxReplayedKittyImageBytes = 24 * 1024 * 1024
 )
 
 const terminalParserResetSequence = "\x1b\\"
