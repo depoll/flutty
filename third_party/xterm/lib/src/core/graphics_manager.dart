@@ -18,17 +18,24 @@ void Function({
   required bool success,
   String? imageId,
   String? action,
+  bool? reused,
 })? terminalGraphicsDecodeObserver;
 
 /// A decoded image retained for the Kitty graphics protocol.
 class TerminalImage {
-  TerminalImage(this.id, this.image);
+  TerminalImage(this.id, this.image, {this.sourceSignature = 0});
 
   /// Image id assigned by the [GraphicsManager].
   final int id;
 
   /// The decoded image.
   final ui.Image image;
+
+  /// A cheap hash of the source payload this image was decoded from. Used to
+  /// skip re-decoding when the same id is transmitted again with identical
+  /// bytes (e.g. MonkeyMux replays cached images on every window switch).
+  /// Zero means "unknown" and never matches an incoming signature.
+  final int sourceSignature;
 
   /// Approximate size of the decoded image in bytes (RGBA).
   int get sizeBytes => image.width * image.height * 4;
@@ -276,12 +283,13 @@ class GraphicsManager {
   }
 
   /// Stores [image] and returns its new id.
-  int storeImage(ui.Image image) {
+  int storeImage(ui.Image image, {int sourceSignature = 0}) {
     final sizeBytes = image.width * image.height * 4;
     _evictIfNeeded(sizeBytes);
 
     final id = _nextImageId++;
-    _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _images[id] = TerminalImage(id, image, sourceSignature: sourceSignature)
+      .._lastAccess = ++_accessClock;
     _currentMemoryBytes += sizeBytes;
     return id;
   }
@@ -294,9 +302,9 @@ class GraphicsManager {
   /// referenced image finishes decoding, so dropping them here (as a full
   /// [_dropImage] would) leaves the freshly stored image with nothing to paint
   /// over — the cells render as bare placeholder glyphs instead of the image.
-  int storeImageWithId(int id, ui.Image image) {
+  int storeImageWithId(int id, ui.Image image, {int sourceSignature = 0}) {
     if (id <= 0) {
-      return storeImage(image);
+      return storeImage(image, sourceSignature: sourceSignature);
     }
 
     final sizeBytes = image.width * image.height * 4;
@@ -306,13 +314,27 @@ class GraphicsManager {
     }
     _evictIfNeeded(sizeBytes);
 
-    _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _images[id] = TerminalImage(id, image, sourceSignature: sourceSignature)
+      .._lastAccess = ++_accessClock;
     _retainedImageIds.add(id);
     _currentMemoryBytes += sizeBytes;
     if (id >= _nextImageId) {
       _nextImageId = id + 1;
     }
     return id;
+  }
+
+  /// Whether image [id] is already stored with a matching [sourceSignature].
+  ///
+  /// Lets the transmit path skip re-decoding an identical image that the same
+  /// id was already decoded from (e.g. a window switch replaying cached images
+  /// the client still holds). A zero signature never matches.
+  bool hasImageWithSignature(int id, int sourceSignature) {
+    if (id <= 0 || sourceSignature == 0) {
+      return false;
+    }
+    final existing = _images[id];
+    return existing != null && existing.sourceSignature == sourceSignature;
   }
 
   /// Creates a placement of [imageId] anchored at [anchor], optionally spanning
@@ -659,6 +681,32 @@ class GraphicsManager {
       return true;
     });
   }
+}
+
+/// Computes a cheap, stable signature of an image payload for dedup.
+///
+/// Used to skip re-decoding an identical image (same id, same bytes) that a
+/// window switch replays. Not cryptographic: a collision merely causes a
+/// redundant decode, never corruption. To stay fast on very large payloads it
+/// hashes the length plus an evenly-spaced sample of bytes rather than every
+/// byte, which is more than enough to distinguish a genuinely updated image
+/// from an identical replay. Returns a non-zero value for non-empty input.
+int terminalGraphicsSourceSignature(Uint8List bytes) {
+  if (bytes.isEmpty) {
+    return 0;
+  }
+  // FNV-1a over a bounded sample (<= ~4096 bytes) plus the exact length.
+  var hash = 0xcbf29ce484222325;
+  hash ^= bytes.length;
+  hash = hash * 0x100000001b3;
+  final step = bytes.length <= 4096 ? 1 : bytes.length ~/ 4096;
+  for (var i = 0; i < bytes.length; i += step) {
+    hash ^= bytes[i];
+    hash = hash * 0x100000001b3;
+  }
+  // Fold to a positive int so it is stable across platforms/use as a map key.
+  final folded = (hash ^ (hash >> 32)) & 0x7FFFFFFFFFFFFFFF;
+  return folded == 0 ? 1 : folded;
 }
 
 /// Decodes Kitty graphics payload [bytes] into a [ui.Image].

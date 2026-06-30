@@ -1367,6 +1367,31 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       payload = inflated;
     }
 
+    final imageId = int.tryParse(args['i'] ?? '');
+    final signature = terminalGraphicsSourceSignature(payload);
+
+    // Dedup: if this id is already decoded from identical bytes, reuse it and
+    // skip the expensive decode. A window switch replays the active window's
+    // cached images, so flipping back to a window re-sends images the client
+    // still holds; decoding them again wastes engine threads, memory and raster
+    // compositing. The signature guards against an app that updates an id with
+    // new content (different bytes -> miss -> decode).
+    if (imageId != null && manager.hasImageWithSignature(imageId, signature)) {
+      manager.imageById(imageId); // keep retained and bump LRU access
+      observer?.call(
+        payloadBytes: payload.length,
+        inflateMicros: inflateMicros,
+        decodeMicros: 0,
+        compressed: compressed,
+        success: true,
+        imageId: args['i'],
+        action: args['a'],
+        reused: true,
+      );
+      _placeStoredImageId(manager, imageId, anchor, args, generation);
+      return;
+    }
+
     final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
     await _graphicsDecodeGate.acquire();
     final image = await () async {
@@ -1389,6 +1414,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       success: image != null,
       imageId: args['i'],
       action: args['a'],
+      reused: false,
     );
 
     // Skip placing if the decode failed, the anchored cell is gone, or the
@@ -1399,10 +1425,23 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    final imageId = int.tryParse(args['i'] ?? '');
     final storedImageId = imageId == null
-        ? manager.storeImage(image)
-        : manager.storeImageWithId(imageId, image);
+        ? manager.storeImage(image, sourceSignature: signature)
+        : manager.storeImageWithId(imageId, image, sourceSignature: signature);
+    _placeStoredImageId(manager, storedImageId, anchor, args, generation);
+  }
+
+  /// Registers the image number, virtual placement and cell placement for an
+  /// already-stored [storedImageId]. Shared by the fresh-decode and the
+  /// dedup-reuse paths so both honor the same Kitty display keys and the
+  /// decode-race anchor/generation check.
+  void _placeStoredImageId(
+    GraphicsManager manager,
+    int storedImageId,
+    CellAnchor? anchor,
+    Map<String, String> args,
+    int? generation,
+  ) {
     // Associate a client image number (`I=`) with the stored id and answer the
     // handshake so the client learns the id it can address later.
     final imageNumber = int.tryParse(args['I'] ?? '');

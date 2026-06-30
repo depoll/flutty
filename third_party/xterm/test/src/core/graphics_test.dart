@@ -197,6 +197,85 @@ void main() {
     });
   });
 
+  testWidgets('re-transmitting an identical image id reuses the cached decode',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // First transmit decodes and stores the image.
+      terminal.write('\x1b_Ga=t,i=77,f=100;$pngBase64\x1b\\');
+      var waited = 0;
+      while (terminal.graphics.imageById(77) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      final first = terminal.graphics.imageById(77);
+      expect(first, isNotNull);
+
+      // Re-transmitting the same id with identical bytes (as a window-switch
+      // replay does) must reuse the existing decoded image, not replace it.
+      terminal.write('\x1b_Ga=t,i=77,f=100;$pngBase64\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      final second = terminal.graphics.imageById(77);
+      expect(
+        identical(first!.image, second!.image),
+        isTrue,
+        reason: 'identical replay should reuse the same ui.Image',
+      );
+    });
+  });
+
+  testWidgets('re-transmitting an id with new bytes decodes a fresh image', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final smallPng = await _buildPngBase64(3, 2);
+      final largerPng = await _buildPngBase64(5, 4);
+      final terminal = Terminal();
+
+      terminal.write('\x1b_Ga=t,i=88,f=100;$smallPng\x1b\\');
+      var waited = 0;
+      while (terminal.graphics.imageById(88) == null && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(88)!.image.width, 3);
+
+      // Different bytes for the same id must miss the dedup and re-decode.
+      terminal.write('\x1b_Ga=t,i=88,f=100;$largerPng\x1b\\');
+      waited = 0;
+      while (
+          terminal.graphics.imageById(88)!.image.width != 5 && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(88)!.image.width, 5);
+    });
+  });
+
+  test('terminalGraphicsSourceSignature distinguishes content and is stable',
+      () {
+    final a = Uint8List.fromList(List<int>.generate(5000, (i) => i % 251));
+    final b = Uint8List.fromList(List<int>.generate(5000, (i) => i % 251));
+    final c =
+        Uint8List.fromList(List<int>.generate(5000, (i) => (i + 1) % 251));
+    expect(terminalGraphicsSourceSignature(a), isNot(0));
+    expect(
+      terminalGraphicsSourceSignature(a),
+      terminalGraphicsSourceSignature(b),
+      reason: 'identical bytes hash equally',
+    );
+    expect(
+      terminalGraphicsSourceSignature(a),
+      isNot(terminalGraphicsSourceSignature(c)),
+      reason: 'different bytes hash differently',
+    );
+    expect(terminalGraphicsSourceSignature(Uint8List(0)), 0);
+  });
+
   testWidgets('Kitty placeholder color can resolve high-byte image ids', (
     tester,
   ) async {
