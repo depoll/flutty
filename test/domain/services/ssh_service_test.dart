@@ -1597,6 +1597,40 @@ void main() {
       expect(firstLineText(terminal), endsWith('large replay payload'));
     });
 
+    test('flushes a continuously-streaming window within the coalesce '
+        'deadline instead of starving', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+
+      final sw = Stopwatch()..start();
+      var firstChangeAtMs = -1;
+      terminal.addListener(() {
+        if (firstChangeAtMs < 0) {
+          firstChangeAtMs = sw.elapsedMilliseconds;
+        }
+      });
+
+      // Begin the active-window replay, then keep streaming chunks with gaps
+      // shorter than the 24ms quiet period. The debounce keeps resetting, so
+      // without a hard deadline the content would never render until output
+      // stops. The 96ms max-hold must flush it mid-stream.
+      shell.stdout.add(
+        Uint8List.fromList(utf8.encode('${monkeyMuxReplayMarker}busy 0 ')),
+      );
+      for (var i = 1; i <= 25; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+        shell.stdout.add(Uint8List.fromList(utf8.encode('busy $i ')));
+        await pumpEventQueue();
+      }
+
+      // Streaming ran ~400ms; the batch must have flushed near the 96ms
+      // deadline, well before output stopped.
+      expect(firstChangeAtMs, greaterThanOrEqualTo(0));
+      expect(firstChangeAtMs, lessThan(250));
+      expect(firstLineText(terminal), startsWith('busy 0'));
+    });
+
     test('flushes terminal theme OSC queries without frame delay', () async {
       final shell = await openShell();
       final session = shell.session;

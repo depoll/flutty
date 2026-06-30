@@ -36,6 +36,7 @@ class _SshSessionRuntime {
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
   String _monkeyMuxReplayDetectionTail = '';
+  DateTime? _monkeyMuxReplayCoalesceDeadline;
   String _terminalParseBacklog = '';
   int _terminalParseOffset = 0;
   bool _isCoalescingMonkeyMuxReplay = false;
@@ -46,6 +47,13 @@ class _SshSessionRuntime {
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
+  // The replay that follows a window switch is coalesced so it renders as one
+  // batch instead of janky pieces. The quiet-period timer resets on every
+  // chunk, so a window whose agent streams output continuously (e.g. a running
+  // Copilot CLI) never hits a quiet gap and its content would be withheld for
+  // as long as it keeps printing — the switch appears to hang. Cap the hold so
+  // the batch always flushes promptly; the budgeted parse keeps it smooth.
+  static const _monkeyMuxReplayCoalesceMaxHold = Duration(milliseconds: 96);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
   // A window switch with lots of content/images replays hundreds of KB (or MB)
   // at once. Parsing it all synchronously — the adapt pass, the xterm parser,
@@ -580,15 +588,33 @@ class _SshSessionRuntime {
   void _scheduleMonkeyMuxReplayCoalesceFlush() {
     _terminalOutputFlushTimer?.cancel();
     _terminalOutputFlushTimer = null;
+    final now = DateTime.now();
+    final deadline = _monkeyMuxReplayCoalesceDeadline ??= now.add(
+      _monkeyMuxReplayCoalesceMaxHold,
+    );
+    final untilDeadline = deadline.difference(now);
+    if (untilDeadline <= Duration.zero) {
+      _flushCoalescedMonkeyMuxReplay();
+      return;
+    }
+    // Debounce on the quiet period, but never hold past the deadline so a
+    // continuously-printing window still renders without waiting for a pause.
+    final delay = untilDeadline < _monkeyMuxReplayCoalesceQuietPeriod
+        ? untilDeadline
+        : _monkeyMuxReplayCoalesceQuietPeriod;
     _monkeyMuxReplayCoalesceTimer?.cancel();
     _monkeyMuxReplayCoalesceTimer = Timer(
-      _monkeyMuxReplayCoalesceQuietPeriod,
-      () {
-        _monkeyMuxReplayCoalesceTimer = null;
-        _isCoalescingMonkeyMuxReplay = false;
-        _flushPendingShellOutput(drainAll: true);
-      },
+      delay,
+      _flushCoalescedMonkeyMuxReplay,
     );
+  }
+
+  void _flushCoalescedMonkeyMuxReplay() {
+    _monkeyMuxReplayCoalesceTimer?.cancel();
+    _monkeyMuxReplayCoalesceTimer = null;
+    _monkeyMuxReplayCoalesceDeadline = null;
+    _isCoalescingMonkeyMuxReplay = false;
+    _flushPendingShellOutput(drainAll: true);
   }
 
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
@@ -600,6 +626,7 @@ class _SshSessionRuntime {
     _terminalOutputFlushTimer = null;
     _monkeyMuxReplayCoalesceTimer?.cancel();
     _monkeyMuxReplayCoalesceTimer = null;
+    _monkeyMuxReplayCoalesceDeadline = null;
     _isCoalescingMonkeyMuxReplay = false;
 
     final shell = _pendingShellOutputShell;
@@ -793,6 +820,7 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
     _monkeyMuxReplayDetectionTail = '';
+    _monkeyMuxReplayCoalesceDeadline = null;
     _isCoalescingMonkeyMuxReplay = false;
   }
 
