@@ -106,6 +106,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
+  // Bounds how many Kitty images decode concurrently. A window switch can replay
+  // a burst of images; decoding them all at once spikes engine threads, memory,
+  // and raster compositing. Decoding a few at a time renders progressively and
+  // keeps the device responsive.
+  final _AsyncSemaphore _graphicsDecodeGate = _AsyncSemaphore(3);
   _PendingKittyPlaceholder? _pendingKittyPlaceholder;
   _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
@@ -1361,12 +1366,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
-    final image = await decodeTerminalImage(
-      payload,
-      format: format,
-      width: width,
-      height: height,
-    );
+    await _graphicsDecodeGate.acquire();
+    final image = await () async {
+      try {
+        return await decodeTerminalImage(
+          payload,
+          format: format,
+          width: width,
+          height: height,
+        );
+      } finally {
+        _graphicsDecodeGate.release();
+      }
+    }();
     observer?.call(
       payloadBytes: payload.length,
       inflateMicros: inflateMicros,
@@ -1940,6 +1952,35 @@ class _PendingKittyPlaceholder {
         ..imageIdBitWidth = imageIdBitWidth
         ..row = row
         ..col = col;
+    }
+  }
+}
+
+/// A minimal counting semaphore used to bound concurrent async work
+/// (image decoding). Not reentrant; [release] must be paired with [acquire].
+class _AsyncSemaphore {
+  _AsyncSemaphore(this._permits) : assert(_permits > 0);
+
+  int _permits;
+  final List<Completer<void>> _waiters = [];
+
+  /// Acquires a permit, waiting if none are currently available.
+  Future<void> acquire() {
+    if (_permits > 0) {
+      _permits -= 1;
+      return Future<void>.value();
+    }
+    final completer = Completer<void>();
+    _waiters.add(completer);
+    return completer.future;
+  }
+
+  /// Releases a permit, waking the longest-waiting acquirer if any.
+  void release() {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete();
+    } else {
+      _permits += 1;
     }
   }
 }
