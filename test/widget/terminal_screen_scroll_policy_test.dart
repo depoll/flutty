@@ -2,7 +2,21 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+
+TmuxWindow _window({
+  required int index,
+  required bool isActive,
+  bool? reportsMouseWheel,
+  bool? mouseReportSgr,
+}) => TmuxWindow(
+  index: index,
+  name: 'w$index',
+  isActive: isActive,
+  terminalReportsMouseWheel: reportsMouseWheel,
+  terminalMouseReportSgr: mouseReportSgr,
+);
 
 void main() {
   group('terminal scroll policy helpers', () {
@@ -213,6 +227,68 @@ void main() {
         ),
         isTrue,
       );
+    });
+  });
+
+  group('active window scroll-mode signature', () {
+    test('is null when no window is active', () {
+      expect(
+        activeTmuxWindowScrollModeSignature([
+          _window(index: 0, isActive: false, reportsMouseWheel: true),
+        ]),
+        isNull,
+      );
+    });
+
+    test('captures the active window mouse-reporting state', () {
+      final signature = activeTmuxWindowScrollModeSignature([
+        _window(index: 0, isActive: true, reportsMouseWheel: true),
+        _window(index: 1, isActive: false, reportsMouseWheel: false),
+      ]);
+      expect(signature?.reportsMouseWheel, isTrue);
+      expect(signature?.mouseReportSgr, isNull);
+    });
+
+    test('changes when the active window toggles mouse mode', () {
+      final before = activeTmuxWindowScrollModeSignature([
+        _window(index: 0, isActive: true, reportsMouseWheel: false),
+      ]);
+      final after = activeTmuxWindowScrollModeSignature([
+        _window(index: 0, isActive: true, reportsMouseWheel: true),
+      ]);
+      expect(before == after, isFalse);
+    });
+
+    test('changes when the active window toggles SGR reporting', () {
+      final before = activeTmuxWindowScrollModeSignature([
+        _window(
+          index: 0,
+          isActive: true,
+          reportsMouseWheel: true,
+          mouseReportSgr: false,
+        ),
+      ]);
+      final after = activeTmuxWindowScrollModeSignature([
+        _window(
+          index: 0,
+          isActive: true,
+          reportsMouseWheel: true,
+          mouseReportSgr: true,
+        ),
+      ]);
+      expect(before == after, isFalse);
+    });
+
+    test('ignores mouse-mode changes on non-active windows', () {
+      final before = activeTmuxWindowScrollModeSignature([
+        _window(index: 0, isActive: true, reportsMouseWheel: false),
+        _window(index: 1, isActive: false, reportsMouseWheel: false),
+      ]);
+      final after = activeTmuxWindowScrollModeSignature([
+        _window(index: 0, isActive: true, reportsMouseWheel: false),
+        _window(index: 1, isActive: false, reportsMouseWheel: true),
+      ]);
+      expect(before == after, isTrue);
     });
   });
 
