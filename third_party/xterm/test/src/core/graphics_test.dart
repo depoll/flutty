@@ -480,6 +480,46 @@ void main() {
     });
   });
 
+  testWidgets(
+    'virtual placement survives the alt-screen reattach clear',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(3, 2);
+        final terminal = Terminal();
+
+        // A full-screen TUI such as the Copilot CLI runs in the alternate
+        // screen, so its images (and their virtual placements) live on the alt
+        // buffer. Enter the alt screen, then transmit a virtual image with a
+        // known cell grid (c=8, r=4).
+        terminal.write('\x1b[?1049h');
+        terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=8,r=4;$pngBase64\x1b\\');
+        final before = terminal.graphics.virtualPlacementById(43);
+        expect(before, isNotNull);
+        expect(before!.cols, 8);
+        expect(before.rows, 4);
+
+        // The MonkeyMux reattach/window-switch replay re-enters the alternate
+        // screen (`CSI ? 1049 h`), which clears it. The image bytes are
+        // retained, and — because the app redraws only placeholder cells and
+        // never re-sends the image or its virtual placement — the virtual
+        // placement (the grid size the painter needs to slice the image) must
+        // survive too. Before the fix this was wiped, so the painter guessed
+        // the grid from visible cells and mis-sliced the image.
+        terminal.write('\x1b[?1049h');
+
+        final after = terminal.graphics.virtualPlacementById(43);
+        expect(
+          after,
+          isNotNull,
+          reason: 'entering the alt screen must not drop the virtual placement '
+              'of a retained image',
+        );
+        expect(after!.cols, 8);
+        expect(after.rows, 4);
+      });
+    },
+  );
+
   testWidgets('Kitty protocol-id image survives clear for placeholder redraw', (
     tester,
   ) async {
