@@ -1414,8 +1414,11 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalMouseReportSgr =
       (value['terminalMouseReportSgr'] as bool? ?? false) ||
       _privateModeEnabled(privateModes, '1006');
-  // MonkeyMux activity is tracked via idle metadata; tmux alert flags would
-  // turn ordinary background output into noisy system notifications.
+  // The MonkeyMux server only raises the `#` alert flag when a background
+  // window emits a terminal bell (agents ring the bell when they need input),
+  // and clears it as soon as the window is selected. Parsing it restores the
+  // alert badge and the push notification for prompts/alerts without turning
+  // ordinary background output into noisy notifications.
   return TmuxWindow(
     index: index is int ? index : 0,
     id: value['id'] as String?,
@@ -1424,6 +1427,7 @@ TmuxWindow? _windowFromJson(Object? value) {
     currentCommand: _nonEmpty(value['currentCommand'] as String?),
     currentPath: _nonEmpty(value['currentPath'] as String?),
     panePid: value['panePid'] as int?,
+    flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
     terminalReportsMouseWheel: terminalReportsMouseWheel,
