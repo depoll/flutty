@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.80"
+	monkeyMuxVersion                  = "0.1.81"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -4870,22 +4870,45 @@ func decodeLenientBase64(payload []byte) []byte {
 }
 
 // kittyTransmissionPayloadSignature returns the FNV-1a-32 signature of the
-// base64-decoded payload of a stored Kitty transmission APC, matching the
-// client's terminalGraphicsSourceSignature over the same bytes. Returns 0 when
-// there is no payload, which never matches a client-reported signature.
+// base64-decoded payload of a stored Kitty transmission, matching the client's
+// terminalGraphicsSourceSignature over the same bytes. Returns 0 when there is
+// no payload, which never matches a client-reported signature.
+//
+// A transmission larger than a single APC is split into m=1 continuation chunks
+// (Kitty caps each APC payload at 4096 base64 bytes), and a stored image buffer
+// concatenates every chunk's full APC. The client appends each chunk's decoded
+// payload into one buffer before hashing, so the signature MUST cover the whole
+// concatenated payload — hashing only the first chunk would never match a
+// multi-chunk image (i.e. every non-trivial screenshot), defeating the switch
+// replay skip and forcing the whole image set to be re-sent on every switch.
 func kittyTransmissionPayloadSignature(buf []byte) uint32 {
-	semi := bytes.IndexByte(buf, ';')
-	if semi < 0 {
+	var payload []byte
+	for i := 0; i+2 < len(buf); {
+		if buf[i] != '\x1b' || buf[i+1] != '_' || buf[i+2] != 'G' {
+			i++
+			continue
+		}
+		apcEnd := kittyApcEnd(buf, i)
+		if apcEnd < 0 {
+			break
+		}
+		chunk := buf[i:apcEnd]
+		if semi := bytes.IndexByte(chunk, ';'); semi >= 0 {
+			body := chunk[semi+1:]
+			if end := bytes.Index(body, []byte{'\x1b', '\\'}); end >= 0 {
+				body = body[:end]
+			}
+			if bel := bytes.IndexByte(body, '\a'); bel >= 0 {
+				body = body[:bel]
+			}
+			payload = append(payload, decodeLenientBase64(body)...)
+		}
+		i = apcEnd
+	}
+	if len(payload) == 0 {
 		return 0
 	}
-	payload := buf[semi+1:]
-	if end := bytes.Index(payload, []byte{'\x1b', '\\'}); end >= 0 {
-		payload = payload[:end]
-	}
-	if bel := bytes.IndexByte(payload, '\a'); bel >= 0 {
-		payload = payload[:bel]
-	}
-	return fnv32ImageSignature(decodeLenientBase64(payload))
+	return fnv32ImageSignature(payload)
 }
 
 // fnv32ImageSignature mirrors the client's terminalGraphicsSourceSignature: an

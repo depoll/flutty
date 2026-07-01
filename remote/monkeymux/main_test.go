@@ -1903,6 +1903,16 @@ func TestKittyTransmissionPayloadSignatureMatchesClientHash(t *testing.T) {
 	if got := kittyTransmissionPayloadSignature([]byte("\x1b_Ga=d,i=1\x1b\\")); got != 0 {
 		t.Fatalf("payload-less transmission signature = %d, want 0", got)
 	}
+	// A multi-chunk (m=1) transmission must hash the concatenation of every
+	// chunk's decoded payload, identically to the same image sent in one chunk.
+	// The client appends each decoded chunk into one buffer before hashing, so
+	// "hel" ("aGVs") + "lo" ("bG8=") must hash the same as "hello" above. Kitty
+	// splits any payload over 4096 base64 bytes this way, so without covering
+	// every chunk no real screenshot's signature would ever match the client.
+	multi := []byte("\x1b_Ga=t,i=1,f=100,m=1;aGVs\x1b\\\x1b_Gm=0;bG8=\x1b\\")
+	if got := kittyTransmissionPayloadSignature(multi); got != 3314369016 {
+		t.Fatalf("multi-chunk payload signature = %d, want 3314369016", got)
+	}
 }
 
 func TestGlobalKittyImageBudgetEvictsAcrossWindows(t *testing.T) {
