@@ -22,6 +22,24 @@ Future<ui.Image> _buildImage(int width, int height) async {
   return recorder.endRecording().toImage(width, height);
 }
 
+/// Waits until image [id] has finished its (deferred) decode and is stored.
+Future<void> _awaitImage(Terminal terminal, int id) async {
+  var waited = 0;
+  while (terminal.graphics.imageById(id) == null && waited < 2000) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    waited += 20;
+  }
+}
+
+/// Store-only (`a=t`) and virtual (`a=T,U=1`) images are decoded lazily: the
+/// bytes are retained and only decoded when something paints them. Tests that
+/// assert on the decoded image must first reference it the way the renderer
+/// does on a visible frame, then wait for the async decode.
+Future<void> _decodeDeferredImage(Terminal terminal, int id) async {
+  terminal.graphics.imageForPlacement(id);
+  await _awaitImage(terminal, id);
+}
+
 void main() {
   testWidgets('Kitty graphics a=T decodes, stores and places an image', (
     tester,
@@ -61,10 +79,14 @@ void main() {
       final terminal = Terminal();
 
       // Transmit more images at once than the decode gate's permits (3) to
-      // exercise queueing; every image must still decode and store.
+      // exercise queueing. Decoding is deferred until each is referenced, so
+      // reference them all (as the painter would) and confirm none deadlock.
       const count = 8;
       for (var id = 1; id <= count; id++) {
         terminal.write('\x1b_Ga=t,f=100,i=$id;$pngBase64\x1b\\');
+      }
+      for (var id = 1; id <= count; id++) {
+        terminal.graphics.imageForPlacement(id);
       }
 
       var waited = 0;
@@ -212,17 +234,57 @@ void main() {
       final terminal = Terminal();
       terminal.write('\x1b_Ga=t,i=42,f=100;$pngBase64\x1b\\');
 
-      var waited = 0;
-      while (terminal.graphics.imageById(42) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      // Deferred: the bytes are retained but not decoded until referenced.
+      expect(terminal.graphics.imageById(42), isNull);
+      expect(terminal.graphics.hasPendingImage(42), isTrue);
+
+      await _decodeDeferredImage(terminal, 42);
 
       final stored = terminal.graphics.imageById(42);
       expect(stored, isNotNull);
       expect(stored!.image.width, 3);
       expect(stored.image.height, 2);
       expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('transmit-only images are not decoded until referenced', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // A window switch replays every retained image up front (store-only).
+      const count = 5;
+      for (var id = 1; id <= count; id++) {
+        terminal.write('\x1b_Ga=t,f=100,i=$id;$pngBase64\x1b\\');
+      }
+
+      // Give any (unwanted) eager decode ample time to run.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      for (var id = 1; id <= count; id++) {
+        expect(
+          terminal.graphics.imageById(id),
+          isNull,
+          reason: 'image $id must stay deferred until something paints it',
+        );
+        expect(terminal.graphics.hasPendingImage(id), isTrue);
+      }
+
+      // Reference only image 3, the way the painter would for a visible cell.
+      await _decodeDeferredImage(terminal, 3);
+
+      expect(terminal.graphics.imageById(3), isNotNull);
+      for (final id in [1, 2, 4, 5]) {
+        expect(
+          terminal.graphics.imageById(id),
+          isNull,
+          reason: 'off-screen image $id must not be decoded',
+        );
+        expect(terminal.graphics.hasPendingImage(id), isTrue);
+      }
     });
   });
 
@@ -234,13 +296,9 @@ void main() {
       final pngBase64 = await _buildPngBase64(3, 2);
       final terminal = Terminal();
 
-      // First transmit decodes and stores the image.
+      // First transmit + reference decodes and stores the image.
       terminal.write('\x1b_Ga=t,i=77,f=100;$pngBase64\x1b\\');
-      var waited = 0;
-      while (terminal.graphics.imageById(77) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      await _decodeDeferredImage(terminal, 77);
       final first = terminal.graphics.imageById(77);
       expect(first, isNotNull);
 
@@ -266,18 +324,16 @@ void main() {
       final terminal = Terminal();
 
       terminal.write('\x1b_Ga=t,i=88,f=100;$smallPng\x1b\\');
-      var waited = 0;
-      while (terminal.graphics.imageById(88) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      await _decodeDeferredImage(terminal, 88);
       expect(terminal.graphics.imageById(88)!.image.width, 3);
 
-      // Different bytes for the same id must miss the dedup and re-decode.
+      // Different bytes for the same id must miss the dedup, supersede the stale
+      // image and re-decode once referenced again.
       terminal.write('\x1b_Ga=t,i=88,f=100;$largerPng\x1b\\');
-      waited = 0;
-      while (
-          terminal.graphics.imageById(88)!.image.width != 5 && waited < 2000) {
+      terminal.graphics.imageForPlacement(88);
+      var waited = 0;
+      while ((terminal.graphics.imageById(88)?.image.width ?? 3) != 5 &&
+          waited < 2000) {
         await Future<void>.delayed(const Duration(milliseconds: 20));
         waited += 20;
       }
@@ -341,11 +397,10 @@ void main() {
       final terminal = Terminal();
       terminal.write('\x1b_Ga=t,i=$imageId,f=100;$pngBase64\x1b\\');
 
-      var waited = 0;
-      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      // Referencing by the placeholder color (low byte 42) triggers the
+      // deferred decode via the low-bits fallback.
+      terminal.graphics.imageByPlaceholderColorId(42, bitWidth: 8);
+      await _awaitImage(terminal, imageId);
 
       final stored = terminal.graphics.imageByPlaceholderColorId(
         42,
@@ -365,25 +420,24 @@ void main() {
       final terminal = Terminal();
       terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=3,r=2;$pngBase64\x1b\\');
 
-      var waited = 0;
-      while (terminal.graphics.imageById(43) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
-
-      final stored = terminal.graphics.imageById(43);
-      expect(stored, isNotNull);
-      expect(stored!.image.width, 3);
-      expect(stored.image.height, 2);
       // U=1 means the client displays the image through Unicode placeholder
       // cells, so the terminal must not create a physical placement (that would
-      // draw a duplicate image at the cursor).
+      // draw a duplicate image at the cursor). The virtual placement is
+      // registered immediately even though the decode is deferred.
       expect(terminal.graphics.hasPlacements, isFalse);
       expect(
         terminal.graphics.virtualPlacementById(43),
         isNotNull,
         reason: 'Unicode placeholder clients reference the virtual placement',
       );
+
+      await _decodeDeferredImage(terminal, 43);
+
+      final stored = terminal.graphics.imageById(43);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+      expect(terminal.graphics.hasPlacements, isFalse);
 
       terminal.write('\x1b[2J');
       expect(
@@ -481,11 +535,10 @@ void main() {
       expect(terminal.graphics.placeholders, isNotEmpty);
       final before = terminal.graphics.placeholders.length;
 
-      var waited = 0;
-      while (terminal.graphics.imageById(77) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      // The painter references the backing image on the next frame, which
+      // starts the deferred decode; that decode must not drop the placeholders.
+      terminal.graphics.imageForPlacement(77);
+      await _awaitImage(terminal, 77);
 
       expect(terminal.graphics.imageById(77), isNotNull);
       expect(

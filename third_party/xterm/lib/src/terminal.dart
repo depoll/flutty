@@ -23,6 +23,7 @@ import 'package:xterm/src/core/platform.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
+import 'package:xterm/src/utils/async_semaphore.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
@@ -110,7 +111,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   // a burst of images; decoding them all at once spikes engine threads, memory,
   // and raster compositing. Decoding a few at a time renders progressively and
   // keeps the device responsive.
-  final _AsyncSemaphore _graphicsDecodeGate = _AsyncSemaphore(3);
+  final AsyncSemaphore _graphicsDecodeGate = AsyncSemaphore(3);
   _PendingKittyPlaceholder? _pendingKittyPlaceholder;
   _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
@@ -1340,6 +1341,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
 
+    // Wire the deferred-decode repaint signal (idempotent). A lazily decoded
+    // image calls this once it is ready so the painter recomposites it.
+    manager.onChanged ??= notifyListeners;
+
     final observer = terminalGraphicsDecodeObserver;
     final compressed = args['o'] == 'z';
 
@@ -1389,6 +1394,31 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         reused: true,
       );
       _placeStoredImageId(manager, imageId, anchor, args, generation);
+      return;
+    }
+
+    // Defer decoding of images that are not being placed right now (store-only
+    // `a=t`, or a virtual `a=T,U=1` placeholder backing). A MonkeyMux window
+    // switch replays every retained image up front, but the foreground app only
+    // re-displays the few currently on screen, so decoding them all eagerly
+    // burns CPU, memory and raster bandwidth on images the user never sees.
+    // Keep the encoded payload and decode on first paint reference instead.
+    // Compressed (`o=z`) and immediately-placed (`a=T`) images keep the eager
+    // path: the former to avoid deferring the inflate/signature handling, the
+    // latter because they must appear at the anchored cell straight away.
+    if (anchor == null && imageId != null && !compressed) {
+      if (!manager.hasPendingWithSignature(imageId, signature)) {
+        manager.storePendingImage(
+          imageId,
+          payload: payload,
+          format: format,
+          width: width,
+          height: height,
+          sourceSignature: signature,
+        );
+      }
+      _placeStoredImageId(manager, imageId, null, args, generation);
+      notifyListeners();
       return;
     }
 
@@ -1507,7 +1537,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         imageId = _buffer.graphics.imageIdForNumber(number);
       }
     }
-    if (imageId == null || _buffer.graphics.imageById(imageId) == null) {
+    if (imageId == null ||
+        (_buffer.graphics.imageById(imageId) == null &&
+            !_buffer.graphics.hasPendingImage(imageId))) {
       return;
     }
     final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);
@@ -1995,35 +2027,6 @@ class _PendingKittyPlaceholder {
         ..imageIdBitWidth = imageIdBitWidth
         ..row = row
         ..col = col;
-    }
-  }
-}
-
-/// A minimal counting semaphore used to bound concurrent async work
-/// (image decoding). Not reentrant; [release] must be paired with [acquire].
-class _AsyncSemaphore {
-  _AsyncSemaphore(this._permits) : assert(_permits > 0);
-
-  int _permits;
-  final List<Completer<void>> _waiters = [];
-
-  /// Acquires a permit, waiting if none are currently available.
-  Future<void> acquire() {
-    if (_permits > 0) {
-      _permits -= 1;
-      return Future<void>.value();
-    }
-    final completer = Completer<void>();
-    _waiters.add(completer);
-    return completer.future;
-  }
-
-  /// Releases a permit, waking the longest-waiting acquirer if any.
-  void release() {
-    if (_waiters.isNotEmpty) {
-      _waiters.removeAt(0).complete();
-    } else {
-      _permits += 1;
     }
   }
 }

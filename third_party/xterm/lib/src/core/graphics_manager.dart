@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
 import 'package:xterm/src/core/buffer/line.dart';
+import 'package:xterm/src/utils/async_semaphore.dart';
 
 /// Optional observer invoked after each Kitty graphics decode attempt.
 ///
@@ -178,6 +179,31 @@ class TerminalImageVirtualPlacement {
   final int rows;
 }
 
+/// A transmitted-but-not-yet-decoded image, held so its decode can be deferred
+/// until something actually needs to paint it.
+///
+/// A MonkeyMux window switch replays every retained Kitty image up front
+/// (store-only, `a=t`), but a foreground app such as the Copilot CLI only
+/// re-emits placeholder cells for the few images currently on screen. Decoding
+/// all of them eagerly wastes CPU, memory and raster bandwidth on images the
+/// user never sees; keeping the encoded payload and decoding on first reference
+/// bounds the work to the visible set.
+class _PendingGraphicsImage {
+  _PendingGraphicsImage({
+    required this.payload,
+    required this.format,
+    required this.width,
+    required this.height,
+    required this.sourceSignature,
+  });
+
+  final Uint8List payload;
+  final int format;
+  final int width;
+  final int height;
+  final int sourceSignature;
+}
+
 /// Stores decoded terminal images and their placements with count and memory
 /// caps.
 class GraphicsManager {
@@ -197,9 +223,29 @@ class GraphicsManager {
   final List<TerminalImagePlaceholder> _placeholders = [];
   final Map<int, TerminalImageVirtualPlacement> _virtualPlacements = {};
   final Set<int> _retainedImageIds = {};
+  // Encoded images awaiting a first paint reference (see [_PendingGraphicsImage]
+  // and [storePendingImage]). Insertion-ordered so the oldest can be evicted.
+  final Map<int, _PendingGraphicsImage> _pendingImages = {};
+  final Set<int> _decodingIds = {};
+  final AsyncSemaphore _decodeGate = AsyncSemaphore(3);
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
+
+  /// Invoked after a deferred image finishes decoding so the host can repaint.
+  /// The [Terminal] wires this to `notifyListeners`; it stays null in tests and
+  /// standalone xterm.
+  void Function()? onChanged;
+
+  /// Bounds the encoded bytes retained for not-yet-decoded images. Small
+  /// relative to the decoded-image budget because encoded payloads are far
+  /// smaller than their RGBA bitmaps.
+  static const int _maxPendingBytes = 64 * 1024 * 1024;
+
+  /// Bounds the number of not-yet-decoded images retained.
+  static const int _maxPendingImages = 128;
+
+  int _pendingBytes = 0;
 
   int _nextImageId = 1;
   int _nextPlacementId = 1;
@@ -257,10 +303,18 @@ class GraphicsManager {
   /// foreground color, with higher bits optionally carried by combining
   /// diacritics. When that high-byte metadata is not available, fall back to the
   /// retained protocol image whose low bits match the color value.
+  ///
+  /// If the referenced image is still pending (transmitted but not decoded), its
+  /// decode is started and null is returned; the caller (renderer) paints
+  /// nothing this frame and repaints via [onChanged] once the decode completes.
   TerminalImage? imageByPlaceholderColorId(int id, {required int bitWidth}) {
     final direct = imageById(id);
     if (direct != null) {
       return direct;
+    }
+    if (_pendingImages.containsKey(id)) {
+      unawaited(_beginDecode(id));
+      return null;
     }
 
     final mask = bitWidth >= 24 ? 0xFFFFFF : 0xFF;
@@ -278,8 +332,152 @@ class GraphicsManager {
     }
     if (best != null) {
       best._lastAccess = ++_accessClock;
+      return best;
     }
-    return best;
+
+    // No decoded image matches; a pending one whose low bits match must be
+    // decoded before it can be composited.
+    int? pendingMatch;
+    for (final pendingId in _pendingImages.keys) {
+      if ((pendingId & mask) == id) {
+        pendingMatch = pendingId; // keep scanning: newest insertion wins
+      }
+    }
+    if (pendingMatch != null) {
+      unawaited(_beginDecode(pendingMatch));
+    }
+    return null;
+  }
+
+  /// Resolves a placement's image for painting, starting a deferred decode if
+  /// the image is pending. Returns null (paint nothing this frame) until the
+  /// decode completes and triggers a repaint via [onChanged].
+  TerminalImage? imageForPlacement(int id) {
+    final image = imageById(id);
+    if (image != null) {
+      return image;
+    }
+    if (_pendingImages.containsKey(id)) {
+      unawaited(_beginDecode(id));
+    }
+    return null;
+  }
+
+  /// Whether image [id] has been transmitted but not yet decoded.
+  bool hasPendingImage(int id) => _pendingImages.containsKey(id);
+
+  /// Whether a pending (undecoded) image [id] carries a matching
+  /// [sourceSignature], so a replay can skip re-storing identical bytes. A zero
+  /// signature never matches.
+  bool hasPendingWithSignature(int id, int sourceSignature) {
+    if (id <= 0 || sourceSignature == 0) {
+      return false;
+    }
+    final pending = _pendingImages[id];
+    return pending != null && pending.sourceSignature == sourceSignature;
+  }
+
+  /// Retains an encoded image for [id] without decoding it, to be decoded on
+  /// first paint reference. See [_PendingGraphicsImage].
+  void storePendingImage(
+    int id, {
+    required Uint8List payload,
+    required int format,
+    int width = 0,
+    int height = 0,
+    int sourceSignature = 0,
+  }) {
+    if (id <= 0) {
+      return;
+    }
+    // Already decoded from identical bytes: nothing to defer.
+    if (hasImageWithSignature(id, sourceSignature)) {
+      return;
+    }
+    // New bytes for an id whose previous image is already decoded supersede it;
+    // drop the stale bitmap (keeping any placements/placeholders that reference
+    // the id) so the deferred decode of the new bytes is what gets painted.
+    final stale = _images.remove(id);
+    if (stale != null) {
+      _currentMemoryBytes -= stale.sizeBytes;
+    }
+    final existing = _pendingImages.remove(id);
+    if (existing != null) {
+      _pendingBytes -= existing.payload.length;
+    }
+    _pendingImages[id] = _PendingGraphicsImage(
+      payload: payload,
+      format: format,
+      width: width,
+      height: height,
+      sourceSignature: sourceSignature,
+    );
+    _pendingBytes += payload.length;
+    if (id >= _nextImageId) {
+      _nextImageId = id + 1;
+    }
+    _evictPendingIfNeeded();
+  }
+
+  void _evictPendingIfNeeded() {
+    while (_pendingImages.isNotEmpty &&
+        (_pendingBytes > _maxPendingBytes ||
+            _pendingImages.length > _maxPendingImages)) {
+      final oldest = _pendingImages.keys.first;
+      final removed = _pendingImages.remove(oldest);
+      if (removed != null) {
+        _pendingBytes -= removed.payload.length;
+      }
+    }
+  }
+
+  Future<void> _beginDecode(int id) async {
+    if (_decodingIds.contains(id)) {
+      return;
+    }
+    final pending = _pendingImages[id];
+    if (pending == null) {
+      return;
+    }
+    _decodingIds.add(id);
+    final observer = terminalGraphicsDecodeObserver;
+    final stopwatch = observer == null ? null : (Stopwatch()..start());
+    ui.Image? image;
+    await _decodeGate.acquire();
+    try {
+      image = await decodeTerminalImage(
+        pending.payload,
+        format: pending.format,
+        width: pending.width,
+        height: pending.height,
+      );
+    } finally {
+      _decodeGate.release();
+      _decodingIds.remove(id);
+    }
+
+    // The pending entry may have been evicted, deleted (`a=d`) or replaced with
+    // fresh bytes while decoding; only commit when it is still the same image.
+    if (!identical(_pendingImages[id], pending)) {
+      return;
+    }
+    observer?.call(
+      payloadBytes: pending.payload.length,
+      inflateMicros: 0,
+      decodeMicros: stopwatch?.elapsedMicroseconds ?? 0,
+      compressed: false,
+      success: image != null,
+      imageId: id.toString(),
+      action: 'lazy',
+      reused: false,
+    );
+    _pendingImages.remove(id);
+    _pendingBytes -= pending.payload.length;
+    if (image == null) {
+      return;
+    }
+    storeImageWithId(id, image, sourceSignature: pending.sourceSignature);
+    onChanged?.call();
   }
 
   /// Stores [image] and returns its new id.
@@ -667,6 +865,11 @@ class GraphicsManager {
     if (image != null) {
       _currentMemoryBytes -= image.sizeBytes;
     }
+    final pending = _pendingImages.remove(imageId);
+    if (pending != null) {
+      _pendingBytes -= pending.payload.length;
+    }
+    _decodingIds.remove(imageId);
     _retainedImageIds.remove(imageId);
     _virtualPlacements.remove(imageId);
     _imageNumberToId.removeWhere((_, id) => id == imageId);
