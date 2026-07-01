@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.75"
+	monkeyMuxVersion                  = "0.1.76"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -210,6 +210,26 @@ var foregroundProcessGroupForWindow = func(window *muxWindow) int {
 	return pgrp
 }
 
+// restoreRedrawFollowUpDelays are the delays after a restored foreground-redraw
+// window first becomes visible at which we re-issue a forced redraw. A window
+// restored from an upgrade snapshot relaunches its foreground process (for an
+// agent, something like `claude --resume`), and that process can take a while
+// to start listening for SIGWINCH. The immediate synthetic resize can therefore
+// land before the process is ready, leaving the pane blank until the user
+// manually resizes. Re-issuing the redraw a few times catches the process once
+// it is up without waiting on a human.
+var restoreRedrawFollowUpDelays = []time.Duration{
+	250 * time.Millisecond,
+	750 * time.Millisecond,
+	1750 * time.Millisecond,
+}
+
+// scheduleRestoreRedraw runs a restore redraw follow-up after the given delay.
+// It is a package variable so tests can invoke the action synchronously.
+var scheduleRestoreRedraw = func(delay time.Duration, action func()) {
+	time.AfterFunc(delay, action)
+}
+
 const (
 	serverUpdatePolicyPrompt = "prompt"
 	serverUpdatePolicyNever  = "never"
@@ -339,6 +359,15 @@ type muxServer struct {
 	controls   map[*controlClient]struct{}
 	themeHint  []byte
 	closed     bool
+
+	// restoreRedrawPending tracks windows recreated from a restore snapshot
+	// whose freshly-launched foreground process (an agent that was just
+	// relaunched, for example) may not have been ready to repaint when it first
+	// became visible. Such a window can miss the single synthetic resize that
+	// drives its redraw and stay blank until the user manually resizes. The
+	// first time each of these windows becomes the active/attached window we
+	// schedule follow-up redraws and clear it from this set.
+	restoreRedrawPending map[string]bool
 }
 
 type muxWindow struct {
@@ -2364,6 +2393,7 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 
 	var activeID string
 	var firstID string
+	var pendingRedraw []string
 	restored := 0
 	for _, state := range restore.Windows {
 		window, err := s.createWindow(
@@ -2378,12 +2408,16 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		if state.Active {
 			activeID = window.id
 		}
+		if s.windowUsesForegroundRedraw(window.id) {
+			pendingRedraw = append(pendingRedraw, window.id)
+		}
 		restored++
 	}
 	if restored == 0 {
 		_, err := s.createWindow(initialWindow)
 		return err
 	}
+	s.markRestoreRedrawPending(pendingRedraw)
 	if activeID == "" {
 		activeID = firstID
 	}
@@ -2391,6 +2425,70 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		_ = s.selectWindow(activeID)
 	}
 	return nil
+}
+
+func (s *muxServer) windowUsesForegroundRedraw(windowID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	window := s.windowByIDLocked(windowID)
+	return window != nil && !window.closed && window.usesForegroundRedrawReplayLocked()
+}
+
+func (s *muxServer) markRestoreRedrawPending(windowIDs []string) {
+	if len(windowIDs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.restoreRedrawPending == nil {
+		s.restoreRedrawPending = make(map[string]bool, len(windowIDs))
+	}
+	for _, id := range windowIDs {
+		s.restoreRedrawPending[id] = true
+	}
+	s.mu.Unlock()
+}
+
+// takeRestoreRedrawPending reports whether the window still needs post-restore
+// redraw follow-ups and, if so, clears it so the follow-ups run only once.
+func (s *muxServer) takeRestoreRedrawPending(windowID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restoreRedrawPending[windowID] {
+		return false
+	}
+	delete(s.restoreRedrawPending, windowID)
+	return true
+}
+
+// scheduleRestoreRedrawFollowUps re-issues a forced foreground redraw for a
+// freshly restored window a few times after it first becomes visible, so an
+// agent that was still starting up when it first appeared is repainted without
+// the user having to resize the terminal.
+func (s *muxServer) scheduleRestoreRedrawFollowUps(conn net.Conn, windowID string) {
+	if conn == nil || !s.takeRestoreRedrawPending(windowID) {
+		return
+	}
+	for _, delay := range restoreRedrawFollowUpDelays {
+		scheduleRestoreRedraw(delay, func() {
+			s.redrawRestoredWindow(conn, windowID)
+		})
+	}
+}
+
+func (s *muxServer) redrawRestoredWindow(conn net.Conn, windowID string) {
+	s.mu.Lock()
+	if conn == nil || s.attachConn != conn || s.activeID != windowID {
+		s.mu.Unlock()
+		return
+	}
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed || !window.usesForegroundRedrawReplayLocked() {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.width, s.height
+	s.mu.Unlock()
+	s.resizeWithRedraw(width, height, true)
 }
 
 func createWindowOptionsForRestore(
@@ -2483,14 +2581,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	var snapshots []windowSnapshot
 	var addedSnapshot *windowSnapshot
 	var foregroundProcessGroup int
-	cwd := strings.TrimSpace(options.cwd)
-	if cwd == "" {
-		if current, err := os.Getwd(); err == nil {
-			cwd = current
-		}
-	} else if expanded, err := expandHomePath(cwd); err == nil {
-		cwd = expanded
-	}
+	cwd := resolveStartupDirectory(options.cwd)
 
 	shell := defaultShellPath()
 	cmd := shellCommand(shell)
@@ -2780,6 +2871,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var replay []byte
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
+	var activeWindowID string
 	var themeHintData []byte
 	var themeHintWindowID string
 	var sendFocusTransition bool
@@ -2801,6 +2893,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if window := s.windowByIDLocked(s.activeID); window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		redrawWindow = window
+		activeWindowID = window.id
 		if len(s.themeHint) > 0 {
 			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
@@ -2824,6 +2917,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+	s.scheduleRestoreRedrawFollowUps(conn, activeWindowID)
 
 	defer func() {
 		s.mu.Lock()
@@ -3411,6 +3505,7 @@ func (s *muxServer) selectWindow(windowID string) error {
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+	s.scheduleRestoreRedrawFollowUps(attach, windowID)
 	return nil
 }
 
@@ -6007,6 +6102,63 @@ func expandHomePath(path string) (string, error) {
 		return home, nil
 	}
 	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+}
+
+// resolveStartupDirectory returns a directory that exists and can be used as a
+// new window's working directory. A restored window can reference a directory
+// that no longer exists — a git worktree, temp build dir, or scratch checkout
+// removed between sessions is common — and starting the PTY there fails with
+// "chdir: no such file or directory", which previously dropped the window from
+// the restore entirely. To keep every window, fall back to the nearest existing
+// ancestor of the requested directory, then the home directory, then the serve
+// process's own working directory.
+func resolveStartupDirectory(requested string) string {
+	candidate := strings.TrimSpace(requested)
+	if candidate == "" {
+		// No directory requested: preserve the historical behavior of
+		// inheriting the serve process's working directory.
+		if current, err := os.Getwd(); err == nil && directoryExists(current) {
+			return current
+		}
+		if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
+			return home
+		}
+		return ""
+	}
+	if expanded, err := expandHomePath(candidate); err == nil {
+		candidate = expanded
+	}
+	if directoryExists(candidate) {
+		return candidate
+	}
+	// The requested directory is gone. Walk up to the nearest existing ancestor
+	// so a removed leaf directory falls back close to where the window used to
+	// live, then fall back to home, then the process's own working directory.
+	for candidate != "" {
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+		candidate = parent
+		if directoryExists(candidate) {
+			return candidate
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
+		return home
+	}
+	if current, err := os.Getwd(); err == nil {
+		return current
+	}
+	return ""
+}
+
+func directoryExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func firstShellWord(command string) string {
