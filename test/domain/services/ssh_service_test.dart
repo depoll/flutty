@@ -438,6 +438,74 @@ void main() {
       expect('${split.output}${rest.output}', apc);
     });
 
+    test(
+      'a multi-chunk image survives the adapt+xterm pipeline without leaking '
+      'base64 as text',
+      () {
+        // The real window-switch path pumps the replay through the adapt layer
+        // in fixed slices before xterm parses it. A large image is transmitted
+        // as several m=1 continuation APCs (Kitty caps a chunk at 4096 base64
+        // bytes), so the slice boundaries fall between chunks, mid-payload and
+        // across each chunk's ESC/ST. None of the base64 may reach the terminal
+        // as printable text (the on-screen "gibberish").
+        final rgba = base64.encode(
+          Uint8List.fromList(
+            List<int>.generate(40 * 40 * 4, (i) => (i * 37 + 11) & 0xFF),
+          ),
+        );
+        final chunks = <String>[];
+        for (var offset = 0; offset < rgba.length; offset += 4096) {
+          final end = offset + 4096 > rgba.length ? rgba.length : offset + 4096;
+          final isLast = end >= rgba.length;
+          final more = isLast ? '0' : '1';
+          if (offset == 0) {
+            chunks.add(
+              '\x1b_Ga=t,i=93,f=32,s=40,v=40,m=$more;'
+              '${rgba.substring(offset, end)}\x1b\\',
+            );
+          } else {
+            chunks.add('\x1b_Gm=$more;${rgba.substring(offset, end)}\x1b\\');
+          }
+        }
+        final stream = 'BEGIN${chunks.join()}END';
+        expect(chunks.length, greaterThan(1), reason: 'must be multi-chunk');
+
+        for (final sliceSize in <int>[1, 13, 200, 4096]) {
+          final terminal = Terminal(maxLines: 100);
+          var pending = '';
+          var scanOffset = 0;
+          var insertMode = false;
+          for (var offset = 0; offset < stream.length; offset += sliceSize) {
+            final end = offset + sliceSize > stream.length
+                ? stream.length
+                : offset + sliceSize;
+            final result = adaptTerminalInsertModeOutputForXterm(
+              input: stream.substring(offset, end),
+              pendingInput: pending,
+              pendingScanOffset: scanOffset,
+              insertMode: insertMode,
+            );
+            terminal.write(result.output);
+            pending = result.pendingInput;
+            scanOffset = result.pendingScanOffset;
+            insertMode = result.insertMode;
+          }
+
+          expect(pending, isEmpty, reason: 'slice $sliceSize left a partial');
+          expect(
+            terminal.buffer.getText().replaceAll('\n', ''),
+            'BEGINEND',
+            reason: 'slice $sliceSize leaked image payload into the buffer',
+          );
+          expect(
+            terminal.heldImageSignatures().keys,
+            <int>[93],
+            reason: 'slice $sliceSize must reassemble exactly one image',
+          );
+        }
+      },
+    );
+
     test('does not inject insert blanks into OSC payloads', () {
       final result = adaptTerminalInsertModeOutputForXterm(
         input: '\x1b[4h\x1b]0;nano title\x07Z',

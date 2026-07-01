@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -38,6 +39,50 @@ Future<void> _awaitImage(Terminal terminal, int id) async {
 Future<void> _decodeDeferredImage(Terminal terminal, int id) async {
   terminal.graphics.imageForPlacement(id);
   await _awaitImage(terminal, id);
+}
+
+/// Splits [base64Payload] into a Kitty multi-chunk (`m=1`) transmission the way
+/// the protocol requires for payloads over 4096 base64 bytes: the first APC
+/// carries the control keys, every APC sets `m=1` except the last which sets
+/// `m=0`. MonkeyMux stores and replays exactly this byte stream, so the client
+/// must reassemble it into a single image.
+String _multiChunkTransmission(
+  String base64Payload, {
+  required String firstControl,
+  int chunkSize = 4096,
+}) {
+  final buffer = StringBuffer();
+  var offset = 0;
+  var first = true;
+  while (offset < base64Payload.length) {
+    final end = math.min(offset + chunkSize, base64Payload.length);
+    final chunk = base64Payload.substring(offset, end);
+    final isLast = end >= base64Payload.length;
+    final more = isLast ? '0' : '1';
+    if (first) {
+      buffer.write('\x1b_G$firstControl,m=$more;$chunk\x1b\\');
+      first = false;
+    } else {
+      buffer.write('\x1b_Gm=$more;$chunk\x1b\\');
+    }
+    offset = end;
+  }
+  return buffer.toString();
+}
+
+/// Base64 of a raw RGBA image of [width] x [height] filled with pseudo-random
+/// bytes so it does not compress and is large enough to force multiple chunks.
+String _rawRgbaBase64(int width, int height) {
+  final bytes = Uint8List(width * height * 4);
+  var seed = 0x12345678;
+  for (var i = 0; i < bytes.length; i++) {
+    // xorshift keeps the payload incompressible and deterministic.
+    seed ^= (seed << 13) & 0xFFFFFFFF;
+    seed ^= seed >> 17;
+    seed ^= (seed << 5) & 0xFFFFFFFF;
+    bytes[i] = seed & 0xFF;
+  }
+  return base64.encode(bytes);
 }
 
 void main() {
@@ -1185,4 +1230,115 @@ void main() {
       );
     });
   });
+
+  test(
+    'an orphaned continuation chunk does not poison the next real image',
+    () {
+      // If a multi-chunk transmission is truncated (its first chunk lost to a
+      // racing replay), a bare `m=1` continuation can arrive with no active
+      // transmission. It must be ignored: decoding it headless fails, and — the
+      // real danger — leaving it "active" would swallow the next real image's
+      // first chunk as a no-op start and finalize that image under empty args,
+      // dropping it. The following real image must still store correctly.
+      final rgba = _rawRgbaBase64(16, 16);
+
+      final terminal = Terminal();
+      // Orphaned continuation: only the more-data flag, no id/action/format.
+      terminal.write('\x1b_Gm=1;${rgba.substring(0, 64)}\x1b\\');
+      expect(
+        terminal.heldImageSignatures().keys,
+        isEmpty,
+        reason: 'a headless continuation must not create an image',
+      );
+
+      // A real, well-formed image immediately after must be unaffected.
+      terminal.write('\x1b_Ga=t,i=94,f=32,s=16,v=16;$rgba\x1b\\');
+      expect(
+        terminal.heldImageSignatures().keys,
+        <int>[94],
+        reason: 'the next real image must not be swallowed by the orphan',
+      );
+    },
+  );
+
+  test(
+    'multi-chunk image reassembles to one image with the full-payload signature',
+    () {
+      // Kitty caps each APC payload at 4096 base64 bytes, so any real image is
+      // transmitted as m=1 continuation chunks. The client must concatenate
+      // every chunk's decoded payload into one image whose signature is taken
+      // over the whole payload — this is what the MonkeyMux skip protocol keys
+      // on, and hashing only the first chunk (the old server bug) would never
+      // let a switch-back skip a real screenshot.
+      final rgba = _rawRgbaBase64(48, 48);
+      final fullPayload = base64.decode(rgba);
+      final expectedSignature = terminalGraphicsSourceSignature(
+        Uint8List.fromList(fullPayload),
+      );
+
+      final transmission = _multiChunkTransmission(
+        rgba,
+        firstControl: 'a=t,i=91,f=32,s=48,v=48',
+      );
+      // Sanity: the payload really did split into several chunks.
+      expect('\x1b_G'.allMatches(transmission).length, greaterThan(1));
+
+      final terminal = Terminal();
+      terminal.write(transmission);
+
+      final held = terminal.heldImageSignatures();
+      expect(
+        held[91],
+        expectedSignature,
+        reason: 'the id must hash over the concatenation of all chunk payloads',
+      );
+      // No stray images from continuation chunks being mis-parsed as their own
+      // headless transmissions.
+      expect(held.keys, <int>[91]);
+    },
+  );
+
+  test(
+    'multi-chunk image split across arbitrary write boundaries never leaks '
+    'base64 as text',
+    () {
+      // A window-switch replay is pumped through the parser in fixed-size
+      // slices that fall at arbitrary byte offsets — mid-control, mid-payload,
+      // and across the ESC/ST that frame each chunk. The parser must hold the
+      // incomplete APC and resume, never dropping the introducer and rendering
+      // the base64 as ground-state text (the on-screen "gibberish").
+      final rgba = _rawRgbaBase64(40, 40);
+      final transmission = _multiChunkTransmission(
+        rgba,
+        firstControl: 'a=t,i=92,f=32,s=40,v=40',
+      );
+
+      // Prefix/suffix with ordinary text so a leak is unmistakable in the
+      // buffer and the parser has real ground-state work around the image.
+      const prefix = 'BEGIN';
+      const suffix = 'END';
+      final stream = '$prefix$transmission$suffix';
+
+      for (final sliceSize in <int>[1, 7, 64, 293, 4096]) {
+        final terminal = Terminal();
+        for (var offset = 0; offset < stream.length; offset += sliceSize) {
+          final end = math.min(offset + sliceSize, stream.length);
+          terminal.write(stream.substring(offset, end));
+        }
+
+        final text = terminal.buffer.getText().replaceAll('\n', '');
+        expect(
+          text,
+          'BEGINEND',
+          reason: 'slice size $sliceSize leaked image payload into the buffer',
+        );
+        expect(
+          terminal.heldImageSignatures().keys,
+          <int>[92],
+          reason:
+              'slice size $sliceSize must still reassemble exactly one image',
+        );
+      }
+    },
+  );
 }

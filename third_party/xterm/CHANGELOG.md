@@ -184,6 +184,16 @@ out of scope.
   whose image is still retained or pending (they are dropped with the image via
   `_dropImage`/pending eviction). Keep on re-sync.
 
+* Fix: an orphaned Kitty continuation chunk no longer poisons the next image.
+  A multi-chunk transmission (`m=1` continuations, used for any payload over
+  4096 base64 bytes) can lose its first chunk when a window-switch replay races
+  a live transmission, leaving a bare `m=1` chunk with no active command.
+  `graphicsCommandStart` previously started a headless command from it (no
+  `i`/`a`/`f`), which failed to decode and — worse — stayed "active" so the next
+  real image's first chunk was swallowed as a no-op start and finalized under
+  the empty args, dropping that image. A bare continuation (only `m`, optionally
+  `q`) arriving while inactive is now ignored. Keep on re-sync.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback
