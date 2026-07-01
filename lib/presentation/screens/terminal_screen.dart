@@ -9102,9 +9102,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowId: targetWindowId,
     );
     if (targetWindowId == null) {
-      await backend.selectWindow(windowIndex);
+      await backend.selectWindow(
+        windowIndex,
+        clientImageSignatures: _terminal.heldImageSignatures(),
+      );
     } else {
-      await backend.selectWindow(windowIndex, windowId: targetWindowId);
+      await backend.selectWindow(
+        windowIndex,
+        windowId: targetWindowId,
+        clientImageSignatures: _terminal.heldImageSignatures(),
+      );
     }
     final activeTool =
         targetWindow?.foregroundAgentTool ?? targetWindow?.agentTool;

@@ -161,6 +161,16 @@ out of scope.
   (`a=T`) images keep the eager path. Keep `storePendingImage`, the pending
   fallback in `imageByPlaceholderColorId`, `imageForPlacement` and the
   `_finalizeGraphics` deferral on re-sync.
+* Window-switch image dedup across the client/server boundary:
+  `terminalGraphicsSourceSignature` is now an FNV-1a-32 (was a 64-bit hash with
+  a signed-shift fold) computed over the base64-decoded transmission payload
+  *before* inflation, so the MonkeyMux server can compute the identical hash
+  (Go `uint32`) over the bytes it stores and omit re-transmitting images the
+  client already holds. `GraphicsManager.heldImageSignatures()` /
+  `Terminal.heldImageSignatures()` expose `{imageId: signature}` for the app to
+  report on a switch. Keep the exact FNV-1a-32 (offset `0x811c9dc5`, prime
+  `0x01000193`, length mixed as 4 little-endian bytes, then a <=4096-byte
+  evenly-spaced sample) in sync with the server on re-sync.
 
 
 ## [3.6.1-pre] - 2023-04-28

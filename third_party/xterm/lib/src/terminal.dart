@@ -101,6 +101,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// alternate screens.
   GraphicsManager get graphics => _buffer.graphics;
 
+  /// The `{imageId: sourceSignature}` of every Kitty image currently held across
+  /// both the main and alternate screens (decoded or still pending).
+  ///
+  /// Reported to the MonkeyMux server on a window switch so it can omit
+  /// re-transmitting images the client already holds, avoiding a multi-megabyte
+  /// re-parse of image data the client would immediately discard as a duplicate.
+  Map<int, int> heldImageSignatures() {
+    final result = <int, int>{}
+      ..addAll(_mainBuffer.graphics.heldImageSignatures())
+      ..addAll(_altBuffer.graphics.heldImageSignatures());
+    return result;
+  }
+
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
 
@@ -1373,7 +1386,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     final imageId = int.tryParse(args['i'] ?? '');
-    final signature = terminalGraphicsSourceSignature(payload);
+    // Signature over the base64-decoded payload *before* inflation. The
+    // MonkeyMux server computes the same hash over the base64-decoded
+    // transmission bytes (which it stores compressed for o=z), so hashing
+    // pre-inflate lets the server match without having to decompress, and keeps
+    // the client/server skip protocol in agreement.
+    final signature = terminalGraphicsSourceSignature(data);
 
     // Dedup: if this id is already decoded from identical bytes, reuse it and
     // skip the expensive decode. A window switch replays the active window's

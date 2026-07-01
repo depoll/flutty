@@ -355,6 +355,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'select_window',
@@ -362,6 +363,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         'windowId': windowId.trim()
       else
         'windowIndex': windowIndex,
+      if (clientImageSignatures != null && clientImageSignatures.isNotEmpty)
+        'haveImageSignatures': {
+          for (final entry in clientImageSignatures.entries)
+            entry.key.toString(): entry.value,
+        },
     });
   }
 

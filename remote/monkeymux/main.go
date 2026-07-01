@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.79"
+	monkeyMuxVersion                  = "0.1.80"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -272,6 +272,11 @@ type controlMessage struct {
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
 	Redraw      bool     `json:"redraw,omitempty"`
+	// HaveImageSignatures maps a Kitty protocol image id (as a string) to the
+	// FNV-1a-32 signature of the base64-decoded payload the client already
+	// holds. Sent with select_window so the replay can skip re-transmitting
+	// images the client can render from its own cache.
+	HaveImageSignatures map[string]uint32 `json:"haveImageSignatures,omitempty"`
 }
 
 type controlResponse struct {
@@ -403,6 +408,12 @@ type muxWindow struct {
 	// machine-wide budget can evict the globally-oldest image across all
 	// windows. Protected by the server lock, like the maps above.
 	kittyImageSeq        map[string]uint64
+	// kittyImageToken holds the FNV-1a-32 signature of each retained image's
+	// base64-decoded transmission payload, keyed by protocol image id. A client
+	// reports the signatures of the images it still holds on a window switch so
+	// the replay can omit re-sending — and the client re-parsing — several
+	// megabytes of image data it already has. Kept in sync with kittyImages.
+	kittyImageToken      map[string]uint32
 	kittyGraphicsPending []byte
 }
 
@@ -2950,7 +2961,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("missing target window"))
 			return
 		}
-		if err := s.selectWindow(id); err != nil {
+		if err := s.selectWindowWithSkip(id, request.HaveImageSignatures); err != nil {
 			client.sendError(request, err)
 			return
 		}
@@ -3403,6 +3414,16 @@ func (o *boundedCommandOutput) exceeded() bool {
 }
 
 func (s *muxServer) selectWindow(windowID string) error {
+	return s.selectWindowWithSkip(windowID, nil)
+}
+
+// selectWindowWithSkip activates a window and streams its reattach replay,
+// omitting retained Kitty images the client reports already holding in
+// clientHas (nil replays every retained image).
+func (s *muxServer) selectWindowWithSkip(
+	windowID string,
+	clientHas map[string]uint32,
+) error {
 	var attach net.Conn
 	var replay []byte
 	var foregroundProcessGroup int
@@ -3419,7 +3440,7 @@ func (s *muxServer) selectWindow(windowID string) error {
 	window.alert = false
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
-	replay = s.replayBytesLocked(window)
+	replay = s.replayBytesLockedWithSkip(window, clientHas)
 	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	redrawWindow = window
 	s.mu.Unlock()
@@ -3725,6 +3746,16 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	return s.replayBytesLockedWithSkip(window, nil)
+}
+
+// replayBytesLockedWithSkip builds the reattach replay, omitting retained Kitty
+// images whose id/signature the client reports already holding in clientHas
+// (nil replays every retained image, as a fresh attach does).
+func (s *muxServer) replayBytesLockedWithSkip(
+	window *muxWindow,
+	clientHas map[string]uint32,
+) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	if window.usesForegroundRedrawReplayLocked() {
 		// The foreground app redraws its own cells on reattach (driven by a
@@ -3736,7 +3767,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 		// have nothing to composite and render blank. The retained transmissions
 		// survive eviction from the rolling visible history and are store-only
 		// (a=T downgraded to a=t) so they produce no visible output themselves.
-		history = window.kittyImageReplayLocked()
+		history = window.kittyImageReplayLocked(clientHas)
 	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
@@ -4581,11 +4612,15 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	if w.kittyImageSeq == nil {
 		w.kittyImageSeq = map[string]uint64{}
 	}
+	if w.kittyImageToken == nil {
+		w.kittyImageToken = map[string]uint32{}
+	}
 	if _, exists := w.kittyImages[id]; exists {
 		w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	}
 	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	w.kittyImages[id] = append([]byte(nil), buf...)
+	w.kittyImageToken[id] = kittyTransmissionPayloadSignature(buf)
 	kittyImageStoreSeq++
 	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
@@ -4597,6 +4632,7 @@ func (w *muxWindow) removeKittyImageLocked(id string) {
 	}
 	delete(w.kittyImages, id)
 	delete(w.kittyImageSeq, id)
+	delete(w.kittyImageToken, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 }
 
@@ -4613,6 +4649,7 @@ func (w *muxWindow) enforceKittyImageCapsLocked() {
 		total -= len(w.kittyImages[oldest])
 		delete(w.kittyImages, oldest)
 		delete(w.kittyImageSeq, oldest)
+		delete(w.kittyImageToken, oldest)
 	}
 }
 
@@ -4746,7 +4783,12 @@ func readDarwinMemTotalBytes() uint64 {
 // most likely still on screen without decoding many megabytes on its UI thread.
 // Older retained transmissions are omitted; the foreground app re-emits them on
 // its next redraw if they are still visible.
-func (w *muxWindow) kittyImageReplayLocked() []byte {
+//
+// Images whose id maps to a matching signature in clientHas are omitted: the
+// client already holds identical bytes and would re-parse (then discard) them,
+// so re-sending only adds switch latency. The id still counts against the caps
+// so the "most recent N" window is unchanged whether or not the client has them.
+func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	if len(w.kittyImageOrder) == 0 {
 		return nil
 	}
@@ -4765,10 +4807,17 @@ func (w *muxWindow) kittyImageReplayLocked() []byte {
 		selected = append(selected, id)
 		total += len(buf)
 	}
-	// Emit oldest-kept first so ids are established in chronological order.
+	// Emit oldest-kept first so ids are established in chronological order,
+	// skipping any the client already holds with identical content.
 	var out []byte
 	for i := len(selected) - 1; i >= 0; i-- {
-		out = append(out, w.kittyImages[selected[i]]...)
+		id := selected[i]
+		if len(clientHas) > 0 {
+			if token, ok := clientHas[id]; ok && token == w.kittyImageToken[id] {
+				continue
+			}
+		}
+		out = append(out, w.kittyImages[id]...)
 	}
 	return out
 }
@@ -4780,6 +4829,93 @@ func removeStringOnce(items []string, target string) []string {
 		}
 	}
 	return items
+}
+
+// base64DecodeValue maps an ASCII byte to its 6-bit base64 value, or -1 for any
+// non-base64 byte (whitespace, padding, control). Package-level so the lenient
+// decoder allocates nothing per call.
+var base64DecodeValue = func() [256]int8 {
+	var table [256]int8
+	for i := range table {
+		table[i] = -1
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i := 0; i < len(alphabet); i++ {
+		table[alphabet[i]] = int8(i)
+	}
+	return table
+}()
+
+// decodeLenientBase64 decodes base64 the same way the client parser does:
+// non-base64 bytes (whitespace, padding) are skipped and 6-bit groups are
+// emitted as bytes as they accumulate, tolerating a missing final group. Both
+// sides must decode identically for the payload signatures to match.
+func decodeLenientBase64(payload []byte) []byte {
+	out := make([]byte, 0, len(payload)*3/4+1)
+	var accumulator uint32
+	var bits int
+	for _, c := range payload {
+		v := base64DecodeValue[c]
+		if v < 0 {
+			continue
+		}
+		accumulator = (accumulator << 6) | uint32(v)
+		bits += 6
+		if bits >= 8 {
+			bits -= 8
+			out = append(out, byte((accumulator>>uint(bits))&0xff))
+		}
+	}
+	return out
+}
+
+// kittyTransmissionPayloadSignature returns the FNV-1a-32 signature of the
+// base64-decoded payload of a stored Kitty transmission APC, matching the
+// client's terminalGraphicsSourceSignature over the same bytes. Returns 0 when
+// there is no payload, which never matches a client-reported signature.
+func kittyTransmissionPayloadSignature(buf []byte) uint32 {
+	semi := bytes.IndexByte(buf, ';')
+	if semi < 0 {
+		return 0
+	}
+	payload := buf[semi+1:]
+	if end := bytes.Index(payload, []byte{'\x1b', '\\'}); end >= 0 {
+		payload = payload[:end]
+	}
+	if bel := bytes.IndexByte(payload, '\a'); bel >= 0 {
+		payload = payload[:bel]
+	}
+	return fnv32ImageSignature(decodeLenientBase64(payload))
+}
+
+// fnv32ImageSignature mirrors the client's terminalGraphicsSourceSignature: an
+// FNV-1a-32 over the exact length (4 little-endian bytes) plus an evenly-spaced
+// sample of at most ~4096 bytes. Returns a non-zero value for non-empty input.
+func fnv32ImageSignature(b []byte) uint32 {
+	if len(b) == 0 {
+		return 0
+	}
+	const (
+		fnvOffset = uint32(0x811c9dc5)
+		fnvPrime  = uint32(0x01000193)
+	)
+	hash := fnvOffset
+	length := len(b)
+	for i := 0; i < 4; i++ {
+		hash = (hash ^ uint32(length&0xFF)) * fnvPrime
+		length >>= 8
+	}
+	step := 1
+	if len(b) > 4096 {
+		step = len(b) / 4096
+	}
+	for i := 0; i < len(b); i += step {
+		hash = (hash ^ uint32(b[i])) * fnvPrime
+	}
+	if hash == 0 {
+		return 1
+	}
+	return hash
 }
 
 // kittyApcEnd returns the index just past the ST (ESC \) that terminates the

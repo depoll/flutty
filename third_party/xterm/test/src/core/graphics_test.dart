@@ -361,6 +361,38 @@ void main() {
     expect(terminalGraphicsSourceSignature(Uint8List(0)), 0);
   });
 
+  test('terminalGraphicsSourceSignature is a 32-bit value', () {
+    // The MonkeyMux server matches this hash as a Go uint32, so it must never
+    // exceed 32 bits or exactly match a known reference value.
+    final bytes = Uint8List.fromList('hello'.codeUnits);
+    final sig = terminalGraphicsSourceSignature(bytes);
+    expect(sig, lessThanOrEqualTo(0xFFFFFFFF));
+    expect(sig, 3314369016, reason: 'must match the Go server FNV-1a-32');
+  });
+
+  testWidgets('heldImageSignatures reports decoded and pending images', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // Two store-only images: one decoded (referenced), one left pending.
+      terminal
+        ..write('\x1b_Ga=t,i=71,f=100;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=t,i=72,f=100;$pngBase64\x1b\\');
+      await _decodeDeferredImage(terminal, 71);
+
+      final held = terminal.heldImageSignatures();
+      expect(held.keys, containsAll(<int>[71, 72]));
+      expect(held[71], isNot(0));
+      // Both images share identical bytes, so their signatures match.
+      expect(held[71], held[72]);
+      expect(terminal.graphics.imageById(71), isNotNull);
+      expect(terminal.graphics.hasPendingImage(72), isTrue);
+    });
+  });
+
   testWidgets('decodeTerminalImage downscales an oversized image', (
     tester,
   ) async {
