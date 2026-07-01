@@ -171,6 +171,18 @@ out of scope.
   report on a switch. Keep the exact FNV-1a-32 (offset `0x811c9dc5`, prime
   `0x01000193`, length mixed as 4 little-endian bytes, then a <=4096-byte
   evenly-spaced sample) in sync with the server on re-sync.
+* Fix: `GraphicsManager.clear()` no longer drops the virtual placements of
+  retained/pending images. A virtual placement records the cell grid
+  (`c`/`r`) an image maps onto for Unicode-placeholder display, and the painter
+  needs it to slice the image correctly. Entering the alternate screen
+  (`CSI ? 1049 h`) clears it, and that sequence is part of the MonkeyMux
+  reattach replay. Previously the re-sent `a=T,U=1` transmission recreated the
+  virtual placement, but once the server started skipping images the client
+  already holds, the placement was gone and the painter fell back to guessing
+  the grid from visible cells — mis-slicing the image into garbled output until
+  a resize forced a full re-transmit. `clear()` now keeps virtual placements
+  whose image is still retained or pending (they are dropped with the image via
+  `_dropImage`/pending eviction). Keep on re-sync.
 
 
 ## [3.6.1-pre] - 2023-04-28

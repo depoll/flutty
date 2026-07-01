@@ -453,6 +453,11 @@ class GraphicsManager {
       if (removed != null) {
         _pendingBytes -= removed.payload.length;
       }
+      // The image bytes are gone, so its virtual placement (if any) can no
+      // longer back a placeholder; drop it unless a decoded image kept the id.
+      if (!_images.containsKey(oldest)) {
+        _virtualPlacements.remove(oldest);
+      }
     }
   }
 
@@ -814,12 +819,25 @@ class GraphicsManager {
     }
     _placements.clear();
     _placeholders.clear();
-    _virtualPlacements.clear();
     for (final id in _images.keys.toList()) {
       if (!_retainedImageIds.contains(id)) {
         _dropImage(id);
       }
     }
+    // Keep virtual placements for images that survive the clear (retained
+    // decoded images and not-yet-decoded pending ones). A virtual placement
+    // records how a retained image maps onto Unicode-placeholder cells
+    // (its cell columns/rows), and a placeholder-protocol app such as the
+    // Copilot CLI redraws only the placeholder cells after a clear/reattach —
+    // it never re-transmits the image or its virtual placement. Entering the
+    // alternate screen (`CSI ? 1049 h`, part of the MonkeyMux reattach replay)
+    // calls clear(); wiping the virtual placements here left the painter to
+    // guess the image grid from the visible cells and mis-slice it. Dropped
+    // images already had their virtual placement removed by [_dropImage].
+    _virtualPlacements.removeWhere(
+      (id, _) =>
+          !_retainedImageIds.contains(id) && !_pendingImages.containsKey(id),
+    );
   }
 
   /// Drops stored images that no longer have a placement referencing them.
