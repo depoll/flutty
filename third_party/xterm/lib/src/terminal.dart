@@ -1252,9 +1252,31 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void graphicsCommandStart(Map<String, String> args) {
     if (_graphicsActive) return; // continuation chunk; keep the first args
+    if (_isBareContinuationArgs(args)) {
+      // An orphaned continuation chunk: it carries only the `m` more-data flag,
+      // so its first chunk (with the action/format/id) was never seen — e.g. a
+      // transmission truncated by a racing window-switch replay. Starting a
+      // command from it would decode a headless image (no id/format, which then
+      // fails to decode) and, worse, leave the transmission "active" so the next
+      // real image's first chunk is swallowed as a no-op start and finalized
+      // under these empty args, dropping that image. Ignore it instead.
+      return;
+    }
     _graphicsActive = true;
     _graphicsArgs = args;
     _graphicsData.clear();
+  }
+
+  /// Whether [args] is a bare Kitty continuation chunk — one that carries only
+  /// the `m` more-data flag (optionally `q` quiet) and none of the keys a first
+  /// chunk sets (action, format, id, dimensions, ...). Such a chunk is only
+  /// valid while a transmission is already active.
+  static bool _isBareContinuationArgs(Map<String, String> args) {
+    if (!args.containsKey('m')) return false;
+    for (final key in args.keys) {
+      if (key != 'm' && key != 'q') return false;
+    }
+    return true;
   }
 
   @override
