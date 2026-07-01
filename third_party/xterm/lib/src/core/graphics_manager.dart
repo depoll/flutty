@@ -259,6 +259,31 @@ class GraphicsManager {
   /// Active Unicode-placeholder cells, oldest first.
   List<TerminalImagePlaceholder> get placeholders => _placeholders;
 
+  /// The `{imageId: sourceSignature}` of every image currently held — decoded or
+  /// still pending (transmitted but not yet decoded).
+  ///
+  /// Reported to the MonkeyMux server on a window switch so it can omit
+  /// re-transmitting images the client already has, sparing the client from
+  /// re-parsing several megabytes of image data it would immediately discard as
+  /// a duplicate. The signature disambiguates content, so a different window
+  /// that reuses the same protocol id for different bytes is never skipped.
+  Map<int, int> heldImageSignatures() {
+    final result = <int, int>{};
+    for (final entry in _images.entries) {
+      final signature = entry.value.sourceSignature;
+      if (signature != 0) {
+        result[entry.key] = signature;
+      }
+    }
+    for (final entry in _pendingImages.entries) {
+      final signature = entry.value.sourceSignature;
+      if (signature != 0) {
+        result[entry.key] = signature;
+      }
+    }
+    return result;
+  }
+
   /// Approximate decoded image memory currently retained.
   int get currentMemoryBytes => _currentMemoryBytes;
 
@@ -886,30 +911,41 @@ class GraphicsManager {
   }
 }
 
-/// Computes a cheap, stable signature of an image payload for dedup.
+/// Computes a cheap, stable signature of an image payload for dedup and for the
+/// window-switch replay skip protocol.
 ///
 /// Used to skip re-decoding an identical image (same id, same bytes) that a
-/// window switch replays. Not cryptographic: a collision merely causes a
-/// redundant decode, never corruption. To stay fast on very large payloads it
-/// hashes the length plus an evenly-spaced sample of bytes rather than every
-/// byte, which is more than enough to distinguish a genuinely updated image
-/// from an identical replay. Returns a non-zero value for non-empty input.
+/// window switch replays, and — reported to the MonkeyMux server — to let the
+/// server omit re-transmitting images the client already holds. Not
+/// cryptographic: a collision merely causes a redundant decode (or, for the skip
+/// protocol, a rare re-send), never corruption.
+///
+/// FNV-1a over 32 bits (so it stays within a Dart small-int and matches a Go
+/// `uint32` exactly, with no signed-shift ambiguity across languages), mixing
+/// the exact length plus an evenly-spaced sample of bytes (<= ~4096) rather than
+/// every byte to stay fast on very large payloads. The server computes the same
+/// hash over the base64-decoded transmission payload, so both sides must keep
+/// the algorithm identical. Returns a non-zero value for non-empty input.
 int terminalGraphicsSourceSignature(Uint8List bytes) {
   if (bytes.isEmpty) {
     return 0;
   }
-  // FNV-1a over a bounded sample (<= ~4096 bytes) plus the exact length.
-  var hash = 0xcbf29ce484222325;
-  hash ^= bytes.length;
-  hash = hash * 0x100000001b3;
+  const fnvOffset = 0x811c9dc5;
+  const fnvPrime = 0x01000193;
+  const mask = 0xFFFFFFFF;
+  var hash = fnvOffset;
+  // Mix the exact length (little-endian bytes) so payloads that share a sample
+  // but differ in length still diverge.
+  var length = bytes.length;
+  for (var i = 0; i < 4; i++) {
+    hash = ((hash ^ (length & 0xFF)) * fnvPrime) & mask;
+    length >>= 8;
+  }
   final step = bytes.length <= 4096 ? 1 : bytes.length ~/ 4096;
   for (var i = 0; i < bytes.length; i += step) {
-    hash ^= bytes[i];
-    hash = hash * 0x100000001b3;
+    hash = ((hash ^ bytes[i]) * fnvPrime) & mask;
   }
-  // Fold to a positive int so it is stable across platforms/use as a map key.
-  final folded = (hash ^ (hash >> 32)) & 0x7FFFFFFFFFFFFFFF;
-  return folded == 0 ? 1 : folded;
+  return hash == 0 ? 1 : hash;
 }
 
 /// Maximum width/height a decoded terminal image is kept at. Source images

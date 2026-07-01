@@ -1736,7 +1736,7 @@ func TestObserveKittyGraphicsRetainsImageAcrossHistoryEviction(t *testing.T) {
 	window.observeKittyGraphicsLocked(
 		bytes.Repeat([]byte("placeholder frame "), 100000))
 
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	if !strings.Contains(replay, "i=10871563") ||
 		!strings.Contains(replay, "iVBORw0KGgo=") {
 		t.Fatalf("retained image lost after eviction-scale output: %q", replay)
@@ -1759,7 +1759,7 @@ func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
 		window.observeKittyGraphicsLocked([]byte{full[i]})
 	}
 
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	for _, want := range []string{"AAAA", "BBBB", "CCCC", "i=5"} {
 		if !strings.Contains(replay, want) {
 			t.Fatalf("split transmission missing %q: %q", want, replay)
@@ -1772,12 +1772,12 @@ func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
 
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
-	if got := window.kittyImageReplayLocked(); !strings.Contains(string(got), "PAYLOAD") {
+	if got := window.kittyImageReplayLocked(nil); !strings.Contains(string(got), "PAYLOAD") {
 		t.Fatalf("image id=7 not retained: %q", got)
 	}
 
 	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
-	if got := window.kittyImageReplayLocked(); len(got) != 0 {
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
 		t.Fatalf("deleted image id=7 still retained: %q", got)
 	}
 }
@@ -1795,7 +1795,7 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 			len(window.kittyImageOrder), maxRetainedKittyImages)
 	}
 	// The oldest images are evicted; the most recent are kept.
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	if strings.Contains(replay, "DATA0") {
 		t.Fatalf("oldest image should have been evicted: %q", replay)
 	}
@@ -1815,7 +1815,7 @@ func TestKittyImageReplayCapsCount(t *testing.T) {
 		window.observeKittyGraphicsLocked([]byte(seq))
 	}
 
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	if got := strings.Count(replay, "i="); got > maxReplayedKittyImages {
 		t.Fatalf("replayed %d images, want <= %d", got, maxReplayedKittyImages)
 	}
@@ -1847,7 +1847,7 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 		window.observeKittyGraphicsLocked([]byte(seq))
 	}
 
-	replay := window.kittyImageReplayLocked()
+	replay := window.kittyImageReplayLocked(nil)
 	if len(replay) > maxReplayedKittyImageBytes+len(big) {
 		t.Fatalf("replay %d bytes exceeds budget %d (+one image slack)",
 			len(replay), maxReplayedKittyImageBytes)
@@ -1856,6 +1856,52 @@ func TestKittyImageReplayCapsBytes(t *testing.T) {
 	newest := fmt.Sprintf("i=%d,", count-1)
 	if !strings.Contains(string(replay), newest) {
 		t.Fatalf("most-recent image %q missing from byte-capped replay", newest)
+	}
+}
+
+func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=101,f=100;AAAABBBBCCCC\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=202,f=100;DDDDEEEEFFFF\x1b\\"))
+
+	// The client reports holding image 101 with its true signature and image
+	// 202 with a stale signature (different content). Only 101 may be skipped.
+	clientHas := map[string]uint32{
+		"101": window.kittyImageToken["101"],
+		"202": window.kittyImageToken["202"] ^ 0x1,
+	}
+	replay := string(window.kittyImageReplayLocked(clientHas))
+	if strings.Contains(replay, "i=101") {
+		t.Fatalf("image 101 should be skipped; client holds it: %q", replay)
+	}
+	if !strings.Contains(replay, "i=202") {
+		t.Fatalf("image 202 has a stale client signature and must be re-sent: %q",
+			replay)
+	}
+	// A nil skip-set (fresh attach) still replays everything.
+	full := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(full, "i=101") || !strings.Contains(full, "i=202") {
+		t.Fatalf("nil skip-set must replay every image: %q", full)
+	}
+}
+
+func TestKittyTransmissionPayloadSignatureMatchesClientHash(t *testing.T) {
+	// "aGVsbG8=" is base64 for "hello"; the client's FNV-1a-32 over "hello" is
+	// 3314369016 (verified against the Dart terminalGraphicsSourceSignature).
+	buf := []byte("\x1b_Ga=t,i=1,f=100;aGVsbG8=\x1b\\")
+	if got := kittyTransmissionPayloadSignature(buf); got != 3314369016 {
+		t.Fatalf("payload signature = %d, want 3314369016 (client parity)", got)
+	}
+	// Whitespace in the payload is ignored, matching the client's lenient decode.
+	spaced := []byte("\x1b_Ga=t,i=1,f=100;aGVs bG8=\n\x1b\\")
+	if got := kittyTransmissionPayloadSignature(spaced); got != 3314369016 {
+		t.Fatalf("whitespace payload signature = %d, want 3314369016", got)
+	}
+	// No payload yields 0, which never matches a client-reported signature.
+	if got := kittyTransmissionPayloadSignature([]byte("\x1b_Ga=d,i=1\x1b\\")); got != 0 {
+		t.Fatalf("payload-less transmission signature = %d, want 0", got)
 	}
 }
 
