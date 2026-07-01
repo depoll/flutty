@@ -1,0 +1,177 @@
+name: PR Preview iOS
+
+# iOS previews build in their own workflow, decoupled from Android. Running the
+# iOS build as a job inside "PR Preview" made the Android internal-app-sharing
+# upload (a workflow_run consumer of "PR Preview", kept separate for fork-PR
+# secret safety) wait for the whole workflow — including iOS — to finish. By
+# building iOS here, triggered when "PR Preview" completes, Android's completion
+# is its own workflow_run event and its upload no longer waits on iOS. The two
+# builds still share one build number: "PR Preview" computes it once and
+# publishes it as the preview-version-metadata artifact, which this workflow
+# reads so /deploy can still reuse both unsigned intermediates.
+on:
+  workflow_run:
+    workflows: [PR Preview]
+    types: [completed]
+
+concurrency:
+  group: preview-ios-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve Preview iOS Context
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      should-build: ${{ steps.pr.outputs.should-build }}
+      pr-number: ${{ steps.pr.outputs.pr-number }}
+      pr-title: ${{ steps.pr.outputs.pr-title }}
+      source-sha: ${{ steps.pr.outputs.source-sha }}
+      build-name: ${{ steps.meta.outputs.build-name }}
+      build-number: ${{ steps.meta.outputs.build-number }}
+      build-codename: ${{ steps.meta.outputs.build-codename }}
+    steps:
+      - name: Resolve pull request
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowRun = context.payload.workflow_run;
+            const pullRequestSummary = workflowRun.pull_requests?.[0];
+
+            if (!pullRequestSummary) {
+              core.notice(`Workflow run ${workflowRun.id} is not associated with a pull request.`);
+              core.setOutput('should-build', 'false');
+              return;
+            }
+
+            const {data: pullRequest} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullRequestSummary.number,
+            });
+
+            if (pullRequest.head.repo?.full_name !== `${owner}/${repo}`) {
+              core.notice(`Skipping iOS preview build for fork PR #${pullRequest.number}.`);
+              core.setOutput('should-build', 'false');
+              return;
+            }
+
+            if (pullRequest.head.sha !== workflowRun.head_sha) {
+              core.notice(
+                `Skipping stale workflow run ${workflowRun.id}; PR #${pullRequest.number} now points at ${pullRequest.head.sha}.`,
+              );
+              core.setOutput('should-build', 'false');
+              return;
+            }
+
+            core.setOutput('should-build', 'true');
+            core.setOutput('pr-number', String(pullRequest.number));
+            core.setOutput('pr-title', pullRequest.title ?? '');
+            core.setOutput('source-sha', workflowRun.head_sha);
+
+      - name: Download version metadata
+        if: steps.pr.outputs.should-build == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: preview-version-metadata
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: preview-metadata
+
+      - name: Parse version metadata
+        if: steps.pr.outputs.should-build == 'true'
+        id: meta
+        run: |
+          FILE=preview-metadata/version.json
+          if [ ! -f "$FILE" ]; then
+            echo "::error::preview-version-metadata artifact missing version.json"
+            exit 1
+          fi
+          {
+            echo "build-name=$(jq -r '."build-name"' "$FILE")"
+            echo "build-number=$(jq -r '."build-number"' "$FILE")"
+            echo "build-codename=$(jq -r '."build-codename"' "$FILE")"
+          } >> "$GITHUB_OUTPUT"
+
+  build-ios:
+    name: Build iOS Preview
+    needs: resolve
+    if: needs.resolve.outputs.should-build == 'true'
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.resolve.outputs.build-name }}
+      build-number: ${{ needs.resolve.outputs.build-number }}
+      build-codename: ${{ needs.resolve.outputs.build-codename }}
+      pr-number: ${{ needs.resolve.outputs.pr-number }}
+      pr-title: ${{ needs.resolve.outputs.pr-title }}
+      enable-diagnostics: true
+      flavor: private
+      source-ref: ${{ needs.resolve.outputs.source-sha }}
+      deploy-ios-to: none
+      deploy-android-to: none
+      build-ios: true
+      build-android: false
+      build-ios-unsigned-ipa: true
+    secrets:
+      FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST }}
+
+  comment-ios:
+    name: PR Comment (iOS)
+    runs-on: ubuntu-latest
+    needs: [resolve, build-ios]
+    if: always() && needs.resolve.outputs.should-build == 'true'
+    permissions:
+      issues: write
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Resolve iOS status
+        id: ios-status
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const result = '${{ needs.build-ios.result }}';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const statuses = {
+              success: '✅ Built',
+              failure: '❌ Failed',
+              cancelled: '⛔ Cancelled',
+              skipped: '⏭️ Skipped',
+            };
+            core.setOutput('status', statuses[result] ?? `⏳ ${result}`);
+            core.setOutput('run-url', runUrl);
+
+      - name: Comment iOS status on PR
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3
+        with:
+          header: preview-build-ios
+          number: ${{ needs.resolve.outputs.pr-number }}
+          recreate: true
+          message: |
+            ## 🍎 iOS Preview Build
+
+            | | Details |
+            |---|---|
+            | **Version** | `${{ needs.resolve.outputs.build-name }}` (build `${{ needs.resolve.outputs.build-number }}`) |
+            | **iOS Status** | ${{ steps.ios-status.outputs.status }} |
+            | **Run** | [View iOS build run](${{ steps.ios-status.outputs.run-url }}) |
+
+            iOS installs become available after a `/deploy` PR preview deploy.
+
+            > Built from ${{ needs.resolve.outputs.source-sha }}
