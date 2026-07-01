@@ -148,6 +148,19 @@ out of scope.
   are consumed, dropping the per-image `StringBuffer` + whitespace `RegExp`
   strip + `base64.decode` passes. Together these roughly halve `terminal.write`
   time on an image-heavy replay. Keep both on re-sync.
+* Performance: deferred ("lazy") decode of store-only Kitty images. Images
+  transmitted with `a=t` (or a virtual `a=T,U=1` placeholder backing) are no
+  longer decoded eagerly; their encoded bytes are retained and decoded only when
+  the painter first references the image (`GraphicsManager.imageForPlacement` /
+  `imageByPlaceholderColorId`, wired through `_finalizeGraphics`). A MonkeyMux
+  window switch replays every retained image up front, but a foreground app such
+  as the Copilot CLI only re-displays the few currently on screen, so eager
+  decoding burned CPU, memory and raster bandwidth (and blocked the UI isolate)
+  on images the user never sees. `GraphicsManager.onChanged` requests a repaint
+  once a deferred decode completes; compressed (`o=z`) and immediately-placed
+  (`a=T`) images keep the eager path. Keep `storePendingImage`, the pending
+  fallback in `imageByPlaceholderColorId`, `imageForPlacement` and the
+  `_finalizeGraphics` deferral on re-sync.
 
 
 ## [3.6.1-pre] - 2023-04-28

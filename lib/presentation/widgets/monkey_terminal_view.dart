@@ -3662,7 +3662,7 @@ class MonkeyRenderTerminal extends RenderBox
       if (!placement.attached) {
         continue;
       }
-      final stored = graphics.imageById(placement.imageId);
+      final stored = graphics.imageForPlacement(placement.imageId);
       if (stored == null) {
         continue;
       }
