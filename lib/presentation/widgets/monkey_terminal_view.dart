@@ -3522,8 +3522,47 @@ class MonkeyRenderTerminal extends RenderBox
   @override
   void paint(PaintingContext context, Offset offset) {
     _paintCount++;
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      _paint(context, offset);
+      context.setWillChangeHint();
+      return;
+    }
+    // Measure the whole terminal paint so a capture can attribute build-thread
+    // jank to the terminal render (text shaping, image compositing) versus the
+    // surrounding widget rebuild. Timing only.
+    final stopwatch = Stopwatch()..start();
     _paint(context, offset);
+    _maybeLogTerminalPaint(stopwatch.elapsedMicroseconds);
     context.setWillChangeHint();
+  }
+
+  int _terminalPaintLogAtMs = 0;
+
+  void _maybeLogTerminalPaint(int micros) {
+    if (micros < 8000) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _terminalPaintLogAtMs < 1000) {
+      return;
+    }
+    _terminalPaintLogAtMs = nowMs;
+    final lines = _terminal.buffer.lines;
+    final charHeight = _painter.cellSize.height;
+    final visibleRows = charHeight > 0 ? (size.height / charHeight).ceil() : 0;
+    DiagnosticsLogService.instance.debug(
+      'terminal.paint',
+      'frame',
+      fields: {
+        'durationMs': (micros / 1000).round(),
+        'visibleRows': visibleRows,
+        'bufferLines': lines.length,
+        'hasImages':
+            _terminal.graphics.imageCount > 0 ||
+            _terminal.graphics.placeholders.isNotEmpty,
+      },
+    );
   }
 
   void _paint(PaintingContext context, Offset offset) {
@@ -3780,6 +3819,8 @@ class MonkeyRenderTerminal extends RenderBox
     // path and whether the viewport-bounded analysis keeps it cheap. Count and
     // timing only — never any cell content.
     final placeholderCount = _terminal.graphics.placeholders.length;
+    _kittyResolvedInstances = 0;
+    _kittyUnresolvedInstances = 0;
     final stopwatch = Stopwatch()..start();
     _paintKittyPlaceholderGraphicsImpl(
       canvas,
@@ -3798,6 +3839,14 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   int _kittyPlaceholderPaintLogAtMs = 0;
+
+  // Per-paint tallies (diagnostics only): how many on-screen placeholder runs
+  // resolved to a ready image versus not (pending decode or missing). A window
+  // that shows placeholder cells but resolves nothing — e.g. after a reattach
+  // that restored the image bytes but never re-decoded/placed them — is the
+  // "images blank until the CLI redraws" signature.
+  int _kittyResolvedInstances = 0;
+  int _kittyUnresolvedInstances = 0;
 
   void _maybeLogKittyPlaceholderPaint(
     int placeholderCount,
@@ -3825,6 +3874,8 @@ class MonkeyRenderTerminal extends RenderBox
         'placeholders': placeholderCount,
         'visibleRows': lastLine - firstLine + 1,
         'durationMs': (micros / 1000).round(),
+        'resolved': _kittyResolvedInstances,
+        'unresolved': _kittyUnresolvedInstances,
       },
     );
   }
@@ -4074,8 +4125,10 @@ class MonkeyRenderTerminal extends RenderBox
         ),
       );
       if (stored == null) {
+        _kittyUnresolvedInstances++;
         continue;
       }
+      _kittyResolvedInstances++;
       final imageIntKey = start.imageId * 64 + start.bitWidth;
       final cols = gridColsByImage[imageIntKey] ?? 1;
       final rows = gridRowsByImage[imageIntKey] ?? 1;

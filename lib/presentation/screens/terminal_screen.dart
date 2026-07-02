@@ -3265,6 +3265,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   bool _isTerminalPathUnderlineRefreshQueued = false;
+  Timer? _terminalPathUnderlineScrollThrottleTimer;
+  int _lastTerminalPathUnderlineRefreshMs = 0;
+  int _terminalPathUnderlineRefreshLogAtMs = 0;
 
   /// Monotonically-increasing counter; incremented whenever the terminal
   /// buffer changes content. Used to invalidate per-row snapshot caches.
@@ -5459,7 +5462,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     _syncNativeScrollFromTerminal();
-    _refreshVisibleTerminalPathUnderlines();
+    _scheduleScrollTerminalPathUnderlineRefresh();
+  }
+
+  /// Throttles the visible-path underline refresh while scrolling.
+  ///
+  /// A scroll notification fires many times per fling, and each refresh scans
+  /// the visible rows for file paths and — when the set changes — calls
+  /// `setState`, rebuilding the whole terminal screen. Running that on every
+  /// scroll frame is the dominant build-thread cost while scrolling an active
+  /// window. The visible underlines themselves are row/column anchored, so they
+  /// still track the scroll between refreshes; only new-path detection and the
+  /// tap target rects lag by up to the throttle window, which is imperceptible
+  /// mid-fling. Leading + trailing edges keep the settled position accurate.
+  void _scheduleScrollTerminalPathUnderlineRefresh() {
+    const throttleMs = 120;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final sinceLast = nowMs - _lastTerminalPathUnderlineRefreshMs;
+    if (sinceLast >= throttleMs) {
+      _terminalPathUnderlineScrollThrottleTimer?.cancel();
+      _terminalPathUnderlineScrollThrottleTimer = null;
+      _lastTerminalPathUnderlineRefreshMs = nowMs;
+      _refreshVisibleTerminalPathUnderlines();
+      return;
+    }
+    if (_terminalPathUnderlineScrollThrottleTimer?.isActive ?? false) {
+      return;
+    }
+    _terminalPathUnderlineScrollThrottleTimer = Timer(
+      Duration(milliseconds: throttleMs - sinceLast),
+      () {
+        _terminalPathUnderlineScrollThrottleTimer = null;
+        if (!mounted) {
+          return;
+        }
+        _lastTerminalPathUnderlineRefreshMs =
+            DateTime.now().millisecondsSinceEpoch;
+        _refreshVisibleTerminalPathUnderlines();
+      },
+    );
   }
 
   void _setShouldFollowLiveOutput(bool value) {
@@ -9907,6 +9948,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
     _terminalPathVerificationBatchTimer?.cancel();
+    _terminalPathUnderlineScrollThrottleTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
@@ -12643,6 +12685,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _refreshVisibleTerminalPathUnderlines() {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      _refreshVisibleTerminalPathUnderlinesImpl();
+      return;
+    }
+    final stopwatch = Stopwatch()..start();
+    _refreshVisibleTerminalPathUnderlinesImpl();
+    final micros = stopwatch.elapsedMicroseconds;
+    if (micros < 4000) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _terminalPathUnderlineRefreshLogAtMs < 1000) {
+      return;
+    }
+    _terminalPathUnderlineRefreshLogAtMs = nowMs;
+    diagnostics.debug(
+      'terminal.paths',
+      'underline_refresh',
+      fields: {
+        'durationMs': (micros / 1000).round(),
+        'underlines': _visibleTerminalPathUnderlines.length,
+      },
+    );
+  }
+
+  void _refreshVisibleTerminalPathUnderlinesImpl() {
     final terminalViewState = _terminalViewKey.currentState;
     final showsUnderlines =
         ref.read(terminalPathLinksNotifierProvider) &&
