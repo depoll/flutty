@@ -280,6 +280,71 @@ void main() {
       expect(concealed, 0, reason: 'concealed glyph should not be drawn');
     });
 
+    test(
+      'foreground picture cache reuses unchanged lines and re-renders changes',
+      () async {
+        final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+        // One painter shared across renders so its per-line picture cache is
+        // exercised (a fresh painter per render would always miss).
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        final terminal = Terminal()..resize(4, 1);
+
+        Future<int> foregroundPixels(BufferLine line) async {
+          final width = (painter.cellSize.width * 4).ceil();
+          final height = painter.cellSize.height.ceil();
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(recorder)
+            ..drawRect(
+              Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+              Paint()..color = theme.background,
+            );
+          painter.paintLineForegrounds(canvas, Offset.zero, line);
+          final image = await recorder.endRecording().toImage(width, height);
+          final byteData = (await image.toByteData())!;
+          var count = 0;
+          for (var i = 0; i + 4 <= byteData.lengthInBytes; i += 4) {
+            final pixel = Color.fromARGB(
+              byteData.getUint8(i + 3),
+              byteData.getUint8(i),
+              byteData.getUint8(i + 1),
+              byteData.getUint8(i + 2),
+            );
+            if (pixel != theme.background) {
+              count++;
+            }
+          }
+          return count;
+        }
+
+        terminal.write('\x1b[37mMMMM');
+        final first = await foregroundPixels(terminal.buffer.lines[0]);
+        expect(first, greaterThan(0), reason: 'glyphs render');
+
+        // Same content again → a cache hit must render identically.
+        final second = await foregroundPixels(terminal.buffer.lines[0]);
+        expect(
+          second,
+          first,
+          reason: 'a cached unchanged line renders identically',
+        );
+
+        // Overwrite the same line with blanks → different content must not
+        // reuse the stale cached glyph picture.
+        terminal.write('\x1b[2K');
+        final cleared = await foregroundPixels(terminal.buffer.lines[0]);
+        expect(
+          cleared,
+          0,
+          reason:
+              'a changed line re-renders instead of reusing a stale picture',
+        );
+      },
+    );
+
     test('colored underline (SGR 58) tints the underline', () async {
       final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
 
