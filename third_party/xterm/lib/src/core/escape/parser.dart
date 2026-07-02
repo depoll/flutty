@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/color.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
@@ -1462,8 +1460,20 @@ class EscapeParser {
 
   /// Reads the base64 payload up to ST and decodes it into [out]. Returns false
   /// if the sequence is incomplete.
+  ///
+  /// The payload is decoded inline as it is consumed: each base64 character is
+  /// translated through [_base64DecodeTable] and the accumulated 6-bit groups
+  /// are emitted as bytes directly into [out]. This avoids buffering the entire
+  /// payload as a String and the extra full passes that a
+  /// `StringBuffer` + whitespace `RegExp` strip + `base64.decode` would cost.
+  /// A window switch can replay several megabytes of Kitty image transmissions
+  /// on the parse critical path (ahead of the visible redraw), so the cheaper
+  /// the payload decode, the sooner the screen repaints. Non-base64 bytes
+  /// (whitespace, stray padding) are skipped, matching the previous lenient
+  /// decoder.
   bool _parseGraphicsPayload(List<int> out) {
-    final payload = StringBuffer();
+    var accumulator = 0;
+    var bits = 0;
 
     while (true) {
       if (_queue.isEmpty) return false;
@@ -1476,10 +1486,16 @@ class EscapeParser {
       }
       if (char == Ascii.BEL) break;
 
-      payload.writeCharCode(char);
+      final value = char >= 0 && char < 128 ? _base64DecodeTable[char] : -1;
+      if (value < 0) continue; // whitespace, padding or non-base64 byte
+      accumulator = (accumulator << 6) | value;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out.add((accumulator >> bits) & 0xff);
+      }
     }
 
-    out.addAll(_decodeBase64(payload.toString()));
     return true;
   }
 
@@ -1497,21 +1513,22 @@ class EscapeParser {
       if (char == Ascii.BEL) return true;
     }
   }
+}
 
-  /// Lenient base64 decode that tolerates missing padding and whitespace.
-  List<int> _decodeBase64(String input) {
-    var cleaned = input.replaceAll(RegExp(r'\s'), '');
-    if (cleaned.isEmpty) return const [];
-    final remainder = cleaned.length % 4;
-    if (remainder != 0) {
-      cleaned = cleaned.padRight(cleaned.length + (4 - remainder), '=');
-    }
-    try {
-      return base64.decode(cleaned);
-    } on FormatException {
-      return const [];
-    }
+/// Maps an ASCII byte to its 6-bit base64 value, or -1 when the byte is not a
+/// base64 digit (whitespace, padding `=`, or any other character). Indexed by
+/// code unit (0-127) so [_parseGraphicsPayload] can decode the payload inline
+/// without allocating intermediate strings.
+final List<int> _base64DecodeTable = _buildBase64DecodeTable();
+
+List<int> _buildBase64DecodeTable() {
+  final table = List<int>.filled(128, -1);
+  const alphabet =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (var i = 0; i < alphabet.length; i++) {
+    table[alphabet.codeUnitAt(i)] = i;
   }
+  return table;
 }
 
 /// Result of parsing the key/value header of an APC graphics command.

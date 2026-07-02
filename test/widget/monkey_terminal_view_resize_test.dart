@@ -581,22 +581,15 @@ void main() {
 
     expect(focusNode.hasFocus, isTrue);
     final renderTerminal = terminalKey.currentState!.renderTerminal;
-    final paintPattern = paints;
-    for (var row = 0; row < terminal.viewHeight; row += 1) {
-      paintPattern.rect(color: backgroundColor, style: PaintingStyle.fill);
-    }
-    // Glyphs are painted in a second pass after every line's background so a
-    // descender is not clipped by the next row's background. The row 0 "A"
-    // paragraph therefore lands after all of the row backgrounds.
-    paintPattern.paragraph();
+    // Row glyphs are now recorded per line into a cached picture (replayed as a
+    // drawPicture), so the only *direct* drawParagraph left is the focused block
+    // cursor repainting the glyph it covers, clipped to that cell with a
+    // readable color.
     expect(
       renderTerminal,
-      paintPattern
-        ..rect(color: hiddenColor, style: PaintingStyle.fill)
-        ..save()
-        ..clipRect()
-        ..paragraph()
-        ..restore(),
+      paints
+        ..something((symbol, arguments) => symbol == #clipRect)
+        ..paragraph(),
     );
     expect(
       resolveMonkeyTerminalCursorForegroundColor(
@@ -645,9 +638,10 @@ void main() {
       for (var row = 0; row < terminal.viewHeight; row += 1) {
         paintPattern.rect(color: backgroundColor, style: PaintingStyle.fill);
       }
-      // The glyph paragraph is only reached after every row background, proving
-      // the second (foreground) pass runs after all backgrounds.
-      paintPattern.paragraph();
+      // Each line's glyphs are recorded once into a cached picture and replayed
+      // as a drawPicture in the second pass, so the first foreground draw still
+      // lands after every row background.
+      paintPattern.something((symbol, arguments) => symbol == #drawPicture);
       expect(renderTerminal, paintPattern);
     },
   );
