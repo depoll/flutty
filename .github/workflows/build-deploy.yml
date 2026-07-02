@@ -79,7 +79,7 @@ on:
         required: false
         type: string
         default: ''
-        description: 'Optional Flutter Android target platform override, e.g. android-arm64 for fast preview builds'
+        description: 'Optional Flutter Android target platform override, e.g. android-arm64 for fast non-deploy preview builds'
       build-ios-unsigned-ipa:
         required: false
         type: boolean
@@ -621,7 +621,7 @@ jobs:
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}${{ inputs.android-target-platform != '' && format('-{0}', inputs.android-target-platform) || '' }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload APK artifact
