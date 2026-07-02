@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.82"
+	monkeyMuxVersion                  = "0.1.84"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -222,6 +222,26 @@ var foregroundProcessGroupForWindow = func(window *muxWindow) int {
 	return pgrp
 }
 
+// restoreRedrawFollowUpDelays are the delays after a restored foreground-redraw
+// window first becomes visible at which we re-issue a forced redraw. A window
+// restored from an upgrade snapshot relaunches its foreground process (for an
+// agent, something like `claude --resume`), and that process can take a while
+// to start listening for SIGWINCH. The immediate synthetic resize can therefore
+// land before the process is ready, leaving the pane blank until the user
+// manually resizes. Re-issuing the redraw a few times catches the process once
+// it is up without waiting on a human.
+var restoreRedrawFollowUpDelays = []time.Duration{
+	250 * time.Millisecond,
+	750 * time.Millisecond,
+	1750 * time.Millisecond,
+}
+
+// scheduleRestoreRedraw runs a restore redraw follow-up after the given delay.
+// It is a package variable so tests can invoke the action synchronously.
+var scheduleRestoreRedraw = func(delay time.Duration, action func()) {
+	time.AfterFunc(delay, action)
+}
+
 const (
 	serverUpdatePolicyPrompt = "prompt"
 	serverUpdatePolicyNever  = "never"
@@ -361,6 +381,15 @@ type muxServer struct {
 	controls   map[*controlClient]struct{}
 	themeHint  []byte
 	closed     bool
+
+	// restoreRedrawPending tracks windows recreated from a restore snapshot
+	// whose freshly-launched foreground process (an agent that was just
+	// relaunched, for example) may not have been ready to repaint when it first
+	// became visible. Such a window can miss the single synthetic resize that
+	// drives its redraw and stay blank until the user manually resizes. The
+	// first time each of these windows becomes the active/attached window we
+	// schedule follow-up redraws and clear it from this set.
+	restoreRedrawPending map[string]bool
 }
 
 type muxWindow struct {
@@ -379,6 +408,8 @@ type muxWindow struct {
 	oscBuffer                  []byte
 	attachOscBuffer            []byte
 	csiBuffer                  []byte
+	terminalBellState          terminalBellParserState
+	terminalBellBytes          int
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -421,6 +452,17 @@ type muxWindow struct {
 	kittyImageToken      map[string]uint32
 	kittyGraphicsPending []byte
 }
+
+type terminalBellParserState int
+
+const (
+	terminalBellParserGround terminalBellParserState = iota
+	terminalBellParserEscape
+	terminalBellParserOsc
+	terminalBellParserOscEscape
+	terminalBellParserString
+	terminalBellParserStringEscape
+)
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -2396,6 +2438,7 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 
 	var activeID string
 	var firstID string
+	var pendingRedraw []string
 	restored := 0
 	for _, state := range restore.Windows {
 		window, err := s.createWindow(
@@ -2410,12 +2453,16 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		if state.Active {
 			activeID = window.id
 		}
+		if s.windowUsesForegroundRedraw(window.id) {
+			pendingRedraw = append(pendingRedraw, window.id)
+		}
 		restored++
 	}
 	if restored == 0 {
 		_, err := s.createWindow(initialWindow)
 		return err
 	}
+	s.markRestoreRedrawPending(pendingRedraw)
 	if activeID == "" {
 		activeID = firstID
 	}
@@ -2423,6 +2470,70 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		_ = s.selectWindow(activeID)
 	}
 	return nil
+}
+
+func (s *muxServer) windowUsesForegroundRedraw(windowID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	window := s.windowByIDLocked(windowID)
+	return window != nil && !window.closed && window.usesForegroundRedrawReplayLocked()
+}
+
+func (s *muxServer) markRestoreRedrawPending(windowIDs []string) {
+	if len(windowIDs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.restoreRedrawPending == nil {
+		s.restoreRedrawPending = make(map[string]bool, len(windowIDs))
+	}
+	for _, id := range windowIDs {
+		s.restoreRedrawPending[id] = true
+	}
+	s.mu.Unlock()
+}
+
+// takeRestoreRedrawPending reports whether the window still needs post-restore
+// redraw follow-ups and, if so, clears it so the follow-ups run only once.
+func (s *muxServer) takeRestoreRedrawPending(windowID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restoreRedrawPending[windowID] {
+		return false
+	}
+	delete(s.restoreRedrawPending, windowID)
+	return true
+}
+
+// scheduleRestoreRedrawFollowUps re-issues a forced foreground redraw for a
+// freshly restored window a few times after it first becomes visible, so an
+// agent that was still starting up when it first appeared is repainted without
+// the user having to resize the terminal.
+func (s *muxServer) scheduleRestoreRedrawFollowUps(conn net.Conn, windowID string) {
+	if conn == nil || !s.takeRestoreRedrawPending(windowID) {
+		return
+	}
+	for _, delay := range restoreRedrawFollowUpDelays {
+		scheduleRestoreRedraw(delay, func() {
+			s.redrawRestoredWindow(conn, windowID)
+		})
+	}
+}
+
+func (s *muxServer) redrawRestoredWindow(conn net.Conn, windowID string) {
+	s.mu.Lock()
+	if conn == nil || s.attachConn != conn || s.activeID != windowID {
+		s.mu.Unlock()
+		return
+	}
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed || !window.usesForegroundRedrawReplayLocked() {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.width, s.height
+	s.mu.Unlock()
+	s.resizeWithRedraw(width, height, true)
 }
 
 func createWindowOptionsForRestore(
@@ -2515,14 +2626,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	var snapshots []windowSnapshot
 	var addedSnapshot *windowSnapshot
 	var foregroundProcessGroup int
-	cwd := strings.TrimSpace(options.cwd)
-	if cwd == "" {
-		if current, err := os.Getwd(); err == nil {
-			cwd = current
-		}
-	} else if expanded, err := expandHomePath(cwd); err == nil {
-		cwd = expanded
-	}
+	cwd := resolveStartupDirectory(options.cwd)
 
 	shell := defaultShellPath()
 	cmd := shellCommand(shell)
@@ -2590,8 +2694,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.activeID = window.id
 	// Seed the Kitty image cache from any restored history so an image shown
 	// before a server restart can still be replayed on the next reattach.
-	window.observeKittyGraphicsLocked(window.history)
-	s.enforceGlobalKittyImageBudgetLocked()
+	if window.observeKittyGraphicsLocked(window.history) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2663,18 +2768,20 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	terminalBell := window.observeTerminalBellLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
-	window.observeKittyGraphicsLocked(chunk)
-	s.enforceGlobalKittyImageBudgetLocked()
+	if window.observeKittyGraphicsLocked(chunk) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
-	} else if containsTerminalBell(chunk) {
+	} else if terminalBell {
 		window.alert = true
 	}
 	after := window.broadcastIdentityLocked()
@@ -2814,6 +2921,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var replay []byte
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
+	var activeWindowID string
 	var themeHintData []byte
 	var themeHintWindowID string
 	var sendFocusTransition bool
@@ -2835,6 +2943,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if window := s.windowByIDLocked(s.activeID); window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		redrawWindow = window
+		activeWindowID = window.id
 		if len(s.themeHint) > 0 {
 			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
@@ -2858,6 +2967,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+	s.scheduleRestoreRedrawFollowUps(conn, activeWindowID)
 
 	defer func() {
 		s.mu.Lock()
@@ -3495,6 +3605,7 @@ func (s *muxServer) selectWindowWithSkip(
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+	s.scheduleRestoreRedrawFollowUps(attach, windowID)
 	return nil
 }
 
@@ -4334,8 +4445,85 @@ func stripFocusReportsFromAttachInput(data []byte) []byte {
 	return output
 }
 
-func containsTerminalBell(data []byte) bool {
-	return bytes.IndexByte(data, '\a') >= 0
+func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	observedBell := false
+	for _, b := range data {
+		switch w.terminalBellState {
+		case terminalBellParserGround:
+			switch b {
+			case '\a':
+				observedBell = true
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			}
+		case terminalBellParserEscape:
+			w.terminalBellBytes++
+			switch b {
+			case ']':
+				w.terminalBellState = terminalBellParserOsc
+			case 'P', 'X', '^', '_':
+				w.terminalBellState = terminalBellParserString
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			case '\a':
+				observedBell = true
+				w.resetTerminalBellParserLocked()
+			default:
+				w.resetTerminalBellParserLocked()
+			}
+		case terminalBellParserOsc:
+			w.terminalBellBytes++
+			switch b {
+			case '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			}
+		case terminalBellParserOscEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			default:
+				w.terminalBellState = terminalBellParserOsc
+			}
+		case terminalBellParserString:
+			w.terminalBellBytes++
+			switch b {
+			case '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			}
+		case terminalBellParserStringEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\', '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			default:
+				w.terminalBellState = terminalBellParserString
+			}
+		}
+		if w.terminalBellState != terminalBellParserGround &&
+			w.terminalBellBytes > oscBufferLimitBytes {
+			w.resetTerminalBellParserLocked()
+		}
+	}
+	return observedBell
+}
+
+func (w *muxWindow) resetTerminalBellParserLocked() {
+	w.terminalBellState = terminalBellParserGround
+	w.terminalBellBytes = 0
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
@@ -4614,9 +4802,9 @@ func assembleKittyTransmission(
 // so they can be replayed on reattach regardless of how much later output has
 // evicted them from the rolling visible history. Partial transmissions split
 // across chunks are carried forward in kittyGraphicsPending.
-func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
+func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	if len(chunk) == 0 && len(w.kittyGraphicsPending) == 0 {
-		return
+		return false
 	}
 	data := chunk
 	if len(w.kittyGraphicsPending) > 0 {
@@ -4625,15 +4813,19 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		data = append(data, chunk...)
 	}
 
+	changed := false
 	txs, deletes, consumed := scanKittyTransmissions(data)
 	for _, id := range deletes {
-		w.removeKittyImageLocked(id)
+		if w.removeKittyImageLocked(id) {
+			changed = true
+		}
 	}
 	for _, tx := range txs {
 		if tx.id == "" {
 			continue // cannot dedupe or replay without an id
 		}
 		w.storeKittyImageLocked(tx.id, tx.buf)
+		changed = true
 	}
 
 	remainder := data[consumed:]
@@ -4641,13 +4833,14 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		// An unterminated or oversized graphics sequence: drop it rather than
 		// buffer unbounded bytes; parsing resyncs at the next introducer.
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	if len(remainder) == 0 {
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	w.kittyGraphicsPending = append([]byte(nil), remainder...)
+	return changed
 }
 
 func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
@@ -4671,14 +4864,15 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	w.enforceKittyImageCapsLocked()
 }
 
-func (w *muxWindow) removeKittyImageLocked(id string) {
+func (w *muxWindow) removeKittyImageLocked(id string) bool {
 	if _, ok := w.kittyImages[id]; !ok {
-		return
+		return false
 	}
 	delete(w.kittyImages, id)
 	delete(w.kittyImageSeq, id)
 	delete(w.kittyImageToken, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+	return true
 }
 
 func (w *muxWindow) enforceKittyImageCapsLocked() {
@@ -6412,6 +6606,63 @@ func expandHomePath(path string) (string, error) {
 		return home, nil
 	}
 	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+}
+
+// resolveStartupDirectory returns a directory that exists and can be used as a
+// new window's working directory. A restored window can reference a directory
+// that no longer exists — a git worktree, temp build dir, or scratch checkout
+// removed between sessions is common — and starting the PTY there fails with
+// "chdir: no such file or directory", which previously dropped the window from
+// the restore entirely. To keep every window, fall back to the nearest existing
+// ancestor of the requested directory, then the home directory, then the serve
+// process's own working directory.
+func resolveStartupDirectory(requested string) string {
+	candidate := strings.TrimSpace(requested)
+	if candidate == "" {
+		// No directory requested: preserve the historical behavior of
+		// inheriting the serve process's working directory.
+		if current, err := os.Getwd(); err == nil && directoryExists(current) {
+			return current
+		}
+		if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
+			return home
+		}
+		return ""
+	}
+	if expanded, err := expandHomePath(candidate); err == nil {
+		candidate = expanded
+	}
+	if directoryExists(candidate) {
+		return candidate
+	}
+	// The requested directory is gone. Walk up to the nearest existing ancestor
+	// so a removed leaf directory falls back close to where the window used to
+	// live, then fall back to home, then the process's own working directory.
+	for candidate != "" {
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+		candidate = parent
+		if directoryExists(candidate) {
+			return candidate
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
+		return home
+	}
+	if current, err := os.Getwd(); err == nil {
+		return current
+	}
+	return ""
+}
+
+func directoryExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func firstShellWord(command string) string {

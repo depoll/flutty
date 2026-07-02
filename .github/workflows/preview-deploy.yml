@@ -345,7 +345,8 @@ jobs:
       actions: write
       contents: read
     outputs:
-      reuse-artifacts: ${{ steps.resolve.outputs.reuse-artifacts }}
+      reuse-android-artifact: ${{ steps.resolve.outputs.reuse-android-artifact }}
+      reuse-ios-artifact: ${{ steps.resolve.outputs.reuse-ios-artifact }}
       preview-run-id: ${{ steps.resolve.outputs.preview-run-id }}
     steps:
       - name: Find or start reusable artifact build
@@ -362,19 +363,19 @@ jobs:
             const rebuildRequired =
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const workflowId = 'preview.yml';
-            const requiredArtifactNames = [
-              `android-unsigned-private-${buildName}-${buildNumber}`,
-              `ios-unsigned-private-${buildName}-${buildNumber}.ipa`,
-            ];
+            const androidArtifactName = `android-unsigned-private-${buildName}-${buildNumber}`;
+            const iosArtifactName = `ios-unsigned-private-${buildName}-${buildNumber}.ipa`;
             const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
             const maxWaitAttempts = 40;
             const waitDelayMs = 30_000;
 
             const setOutputs = ({
-              reuseArtifacts = 'false',
+              reuseAndroidArtifact = 'false',
+              reuseIosArtifact = 'false',
               previewRunId = '',
             }) => {
-              core.setOutput('reuse-artifacts', reuseArtifacts);
+              core.setOutput('reuse-android-artifact', reuseAndroidArtifact);
+              core.setOutput('reuse-ios-artifact', reuseIosArtifact);
               core.setOutput('preview-run-id', previewRunId);
             };
 
@@ -472,20 +473,28 @@ jobs:
             const availableArtifactNames = new Set(
               artifacts.filter((artifact) => !artifact.expired).map((artifact) => artifact.name),
             );
-            const missingArtifactNames = requiredArtifactNames.filter(
-              (artifactName) => !availableArtifactNames.has(artifactName),
-            );
+            const hasAndroidArtifact = availableArtifactNames.has(androidArtifactName);
+            const hasIosArtifact = availableArtifactNames.has(iosArtifactName);
 
-            if (missingArtifactNames.length > 0) {
+            if (!hasAndroidArtifact) {
               core.notice(
-                 `Preview workflow run ${finishedRun.id} is missing reusable artifacts (${missingArtifactNames.join(', ')}); deploy will build fresh artifacts.`,
-               );
+                `Preview workflow run ${finishedRun.id} is missing reusable full-ABI Android artifact ${androidArtifactName}; deploy will build Android from source.`,
+              );
+            }
+            if (!hasIosArtifact) {
+              core.notice(
+                `Preview workflow run ${finishedRun.id} is missing reusable iOS artifact ${iosArtifactName}; deploy will build iOS from source.`,
+              );
+            }
+
+            if (!hasAndroidArtifact && !hasIosArtifact) {
               setOutputs({});
               return;
             }
 
             setOutputs({
-              reuseArtifacts: 'true',
+              reuseAndroidArtifact: hasAndroidArtifact ? 'true' : 'false',
+              reuseIosArtifact: hasIosArtifact ? 'true' : 'false',
               previewRunId: String(finishedRun.id),
             });
 
@@ -584,11 +593,19 @@ jobs:
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const rebuildNote =
               ${{ toJSON(needs.finalize-version.outputs.rebuild-note) }};
+            const reuseAndroidArtifact =
+              '${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact }}' === 'true';
+            const reuseIosArtifact =
+              '${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact }}' === 'true';
             const artifactDetails =
               rebuildRequired
                 ? `| **Artifacts** | Rebuilding deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` is not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
-                : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reusing unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                : reuseAndroidArtifact && reuseIosArtifact
+                ? `| **Artifacts** | Reusing unsigned Android and iOS preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                : reuseAndroidArtifact
+                ? `| **Artifacts** | Reusing unsigned Android preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; building iOS from source |`
+                : reuseIosArtifact
+                ? `| **Artifacts** | Reusing unsigned iOS preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; building Android from source |`
                 : '| **Artifacts** | Preview intermediates unavailable, so this run is building deploy artifacts from source |';
 
             const body = [
@@ -671,14 +688,14 @@ jobs:
       source-ref: ${{ needs.validate-pr.outputs.deploy-sha }}
       deploy-ios-to: testflight
       deploy-android-to: internal
-      android-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
-      android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
-      android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
-      ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
-      ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
-      ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
+      android-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
+      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' }}
+      android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
+      ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' }}
+      ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -832,11 +849,19 @@ jobs:
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const rebuildNote =
               ${{ toJSON(needs.finalize-version.outputs.rebuild-note) }};
+            const reuseAndroidArtifact =
+              '${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact }}' === 'true';
+            const reuseIosArtifact =
+              '${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact }}' === 'true';
             const artifactDetails =
               rebuildRequired
                 ? `| **Artifacts** | Built fresh deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` was not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
-                : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reused unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                : reuseAndroidArtifact && reuseIosArtifact
+                ? `| **Artifacts** | Reused unsigned Android and iOS preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                : reuseAndroidArtifact
+                ? `| **Artifacts** | Reused unsigned Android preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; built iOS from source |`
+                : reuseIosArtifact
+                ? `| **Artifacts** | Reused unsigned iOS preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; built Android from source |`
                 : '| **Artifacts** | Built fresh deploy artifacts in this run because matching preview intermediates were unavailable |';
 
             const syncRequestCommentReaction = async (targetReaction) => {

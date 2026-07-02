@@ -283,6 +283,145 @@ void main() {
     },
   );
 
+  testWidgets('scroll reset clears pending touch scroll distance', (
+    tester,
+  ) async {
+    final terminal = Terminal()..useAltBuffer();
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    Widget buildTerminal(int scrollResetGeneration) => MaterialApp(
+      home: SizedBox(
+        width: 300,
+        height: 200,
+        child: MonkeyTerminalView(
+          terminal,
+          hardwareKeyboardOnly: true,
+          touchScrollToTerminal: true,
+          scrollResetGeneration: scrollResetGeneration,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(buildTerminal(0));
+    var terminalState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = terminalState.renderTerminal.lineHeight;
+    expect(lineHeight, greaterThan(0));
+    final partialDelta = lineHeight * 0.75;
+
+    var detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - partialDelta),
+        localPosition: Offset(150, 100 - partialDelta),
+        delta: Offset(0, -partialDelta),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, isEmpty);
+
+    await tester.pumpWidget(buildTerminal(1));
+    terminalState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    expect(terminalState.renderTerminal.lineHeight, lineHeight);
+
+    detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(150, 100),
+      ),
+    );
+    detector.onTouchScrollUpdate!(
+      DragUpdateDetails(
+        kind: PointerDeviceKind.touch,
+        globalPosition: Offset(150, 100 - partialDelta),
+        localPosition: Offset(150, 100 - partialDelta),
+        delta: Offset(0, -partialDelta),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, isEmpty);
+  });
+
+  testWidgets('scroll reset clears pending trackpad scroll distance', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    Widget buildTerminal(int scrollResetGeneration) => MaterialApp(
+      home: SizedBox(
+        width: 300,
+        height: 200,
+        child: MonkeyTerminalView(
+          terminal,
+          hardwareKeyboardOnly: true,
+          simulateScroll: false,
+          scrollResetGeneration: scrollResetGeneration,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(buildTerminal(0));
+    final terminalState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final lineHeight = terminalState.renderTerminal.lineHeight;
+    expect(lineHeight, greaterThan(0));
+    final partialDelta = lineHeight * 0.75;
+
+    final terminalFinder = find.byType(MonkeyTerminalView);
+    final center = tester.getCenter(terminalFinder);
+    var gesture = await tester.createGesture(kind: PointerDeviceKind.trackpad);
+    await gesture.panZoomStart(center);
+    await tester.pump();
+    await gesture.panZoomUpdate(
+      center + Offset(0, -partialDelta),
+      pan: Offset(0, -partialDelta),
+    );
+    await tester.pump();
+    await gesture.panZoomEnd();
+    await tester.pump();
+
+    expect(output, isEmpty);
+
+    await tester.pumpWidget(buildTerminal(1));
+
+    gesture = await tester.createGesture(kind: PointerDeviceKind.trackpad);
+    await gesture.panZoomStart(center);
+    await tester.pump();
+    await gesture.panZoomUpdate(
+      center + Offset(0, -partialDelta),
+      pan: Offset(0, -partialDelta),
+    );
+    await tester.pump();
+    await gesture.panZoomEnd();
+    await tester.pump();
+
+    expect(output, isEmpty);
+  });
+
   testWidgets('touch scroll keeps moving with inertia after lift-off', (
     tester,
   ) async {
