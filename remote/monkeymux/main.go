@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.82"
+	monkeyMuxVersion                  = "0.1.83"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -379,6 +379,8 @@ type muxWindow struct {
 	oscBuffer                  []byte
 	attachOscBuffer            []byte
 	csiBuffer                  []byte
+	terminalBellState          terminalBellParserState
+	terminalBellBytes          int
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -421,6 +423,17 @@ type muxWindow struct {
 	kittyImageToken      map[string]uint32
 	kittyGraphicsPending []byte
 }
+
+type terminalBellParserState int
+
+const (
+	terminalBellParserGround terminalBellParserState = iota
+	terminalBellParserEscape
+	terminalBellParserOsc
+	terminalBellParserOscEscape
+	terminalBellParserString
+	terminalBellParserStringEscape
+)
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -2663,6 +2676,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	terminalBell := window.observeTerminalBellLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
@@ -2674,7 +2688,7 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
-	} else if containsTerminalBell(chunk) {
+	} else if terminalBell {
 		window.alert = true
 	}
 	after := window.broadcastIdentityLocked()
@@ -4326,8 +4340,91 @@ func stripFocusReportsFromAttachInput(data []byte) []byte {
 	return output
 }
 
-func containsTerminalBell(data []byte) bool {
-	return bytes.IndexByte(data, '\a') >= 0
+func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	observedBell := false
+	for _, b := range data {
+		switch w.terminalBellState {
+		case terminalBellParserGround:
+			switch b {
+			case '\a':
+				observedBell = true
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			case '\x9d':
+				w.terminalBellState = terminalBellParserOsc
+				w.terminalBellBytes = 1
+			case '\x90', '\x98', '\x9e', '\x9f':
+				w.terminalBellState = terminalBellParserString
+				w.terminalBellBytes = 1
+			}
+		case terminalBellParserEscape:
+			w.terminalBellBytes++
+			switch b {
+			case ']':
+				w.terminalBellState = terminalBellParserOsc
+			case 'P', 'X', '^', '_':
+				w.terminalBellState = terminalBellParserString
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			case '\a':
+				observedBell = true
+				w.resetTerminalBellParserLocked()
+			default:
+				w.resetTerminalBellParserLocked()
+			}
+		case terminalBellParserOsc:
+			w.terminalBellBytes++
+			switch b {
+			case '\a', '\x9c':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			}
+		case terminalBellParserOscEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\', '\a', '\x9c':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			default:
+				w.terminalBellState = terminalBellParserOsc
+			}
+		case terminalBellParserString:
+			w.terminalBellBytes++
+			switch b {
+			case '\a', '\x9c':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			}
+		case terminalBellParserStringEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\', '\a', '\x9c':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			default:
+				w.terminalBellState = terminalBellParserString
+			}
+		}
+		if w.terminalBellState != terminalBellParserGround &&
+			w.terminalBellBytes > oscBufferLimitBytes {
+			w.resetTerminalBellParserLocked()
+		}
+	}
+	return observedBell
+}
+
+func (w *muxWindow) resetTerminalBellParserLocked() {
+	w.terminalBellState = terminalBellParserGround
+	w.terminalBellBytes = 0
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
