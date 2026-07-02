@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.84"
+	monkeyMuxVersion                  = "0.1.85"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -6651,7 +6651,7 @@ func resolveStartupDirectory(requested string) string {
 	if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
 		return home
 	}
-	if current, err := os.Getwd(); err == nil {
+	if current, err := os.Getwd(); err == nil && directoryExists(current) {
 		return current
 	}
 	return ""
