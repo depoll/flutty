@@ -13309,6 +13309,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (forceFullRepaint) {
       _terminalViewKey.currentState?.forceFullRepaint();
     }
+
+    _rearmForegroundAppMouseReportingAfterOverlay();
+  }
+
+  /// Re-emits a focus-in report after an overlay route (the SFTP browser)
+  /// closes.
+  ///
+  /// Opening the browser calls [_temporarilyDismissTerminalKeyboard], which
+  /// unfocuses the terminal and therefore emits a focus-out report. Focus-aware
+  /// TUIs such as Copilot CLI in the alternate screen disable mouse-wheel
+  /// reporting on focus-out, so touch scroll would stay frozen after the
+  /// browser closes until the next window switch re-emits focus reports. The
+  /// keyboard-restore path only refocuses when the soft keyboard was visible,
+  /// so a plain scroll interaction never regained focus and never reported
+  /// focus-in. Restore focus so the terminal emits the matching focus-in report
+  /// (gated on the foreground app's own focus-report mode, so bare shells are
+  /// unaffected) and the app re-enables mouse reporting.
+  void _rearmForegroundAppMouseReportingAfterOverlay() {
+    if (!_isMobilePlatform) {
+      return;
+    }
+    _restoreTerminalFocus();
   }
 
   Future<void> _createSnippetFromSelection() async {
