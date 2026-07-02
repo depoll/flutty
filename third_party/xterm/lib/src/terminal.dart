@@ -100,6 +100,34 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// alternate screens.
   GraphicsManager get graphics => _buffer.graphics;
 
+  /// The `{imageId: sourceSignature}` of every Kitty image currently held across
+  /// both the main and alternate screens (decoded or still pending).
+  ///
+  /// Reported to the MonkeyMux server on a window switch so it can omit
+  /// re-transmitting images the client already holds, avoiding a multi-megabyte
+  /// re-parse of image data the client would immediately discard as a duplicate.
+  Map<int, int> heldImageSignatures() {
+    final result = <int, int>{}
+      ..addAll(_mainBuffer.graphics.heldImageSignatures())
+      ..addAll(_altBuffer.graphics.heldImageSignatures());
+    return result;
+  }
+
+  /// Protocol image ids referenced by on-screen Kitty Unicode-placeholder cells
+  /// on the active screen that resolve to no stored or pending image.
+  ///
+  /// Scoped to the active buffer on purpose: it is the visible screen, and it is
+  /// the only buffer a replay repopulates — the bytes a server sends in response
+  /// arrive as normal output and are parsed into whichever buffer is active when
+  /// they land. Reporting an id that is only unresolved on the inactive buffer
+  /// would request bytes that get parsed into the wrong buffer, leaving the
+  /// inactive one blank while the caller records the id as already handled.
+  /// Reported to the MonkeyMux server via `request_images` so it can replay
+  /// exactly these ids from its retained cache, repopulating images a bounded
+  /// switch/reconnect replay dropped.
+  Set<int> unresolvedPlaceholderImageIds() =>
+      _buffer.graphics.unresolvedPlaceholderImageIds();
+
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
 
@@ -263,6 +291,25 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   void write(String data) {
     _parser.write(data);
     notifyListeners();
+  }
+
+  /// Writes [data] to the terminal without notifying listeners of the resulting
+  /// state change.
+  ///
+  /// Escape sequences that reply to the program (device attributes, cursor
+  /// position, etc.) still fire their own notifications, but the routine buffer
+  /// update does not, so the view is not repainted for this write.
+  ///
+  /// This lets the host app drain a large burst of output — e.g. the multi-MB
+  /// redraw a multiplexer replays when switching to an image-heavy window —
+  /// across several frames while coalescing repaints: advance the parser with
+  /// this, then call [notifyListeners] at a throttled cadence and once more when
+  /// the burst is fully drained. Scheduling one repaint per parsed slice instead
+  /// floods the raster thread with image-heavy frames it cannot keep up with,
+  /// so frames queue and the switch appears to hang. Interactive writes should
+  /// use [write], which repaints immediately.
+  void writeSilently(String data) {
+    _parser.write(data);
   }
 
   /// Sends a key event to the underlying program.
@@ -1233,9 +1280,31 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void graphicsCommandStart(Map<String, String> args) {
     if (_graphicsActive) return; // continuation chunk; keep the first args
+    if (_isBareContinuationArgs(args)) {
+      // An orphaned continuation chunk: it carries only the `m` more-data flag,
+      // so its first chunk (with the action/format/id) was never seen — e.g. a
+      // transmission truncated by a racing window-switch replay. Starting a
+      // command from it would decode a headless image (no id/format, which then
+      // fails to decode) and, worse, leave the transmission "active" so the next
+      // real image's first chunk is swallowed as a no-op start and finalized
+      // under these empty args, dropping that image. Ignore it instead.
+      return;
+    }
     _graphicsActive = true;
     _graphicsArgs = args;
     _graphicsData.clear();
+  }
+
+  /// Whether [args] is a bare Kitty continuation chunk — one that carries only
+  /// the `m` more-data flag (optionally `q` quiet) and none of the keys a first
+  /// chunk sets (action, format, id, dimensions, ...). Such a chunk is only
+  /// valid while a transmission is already active.
+  static bool _isBareContinuationArgs(Map<String, String> args) {
+    if (!args.containsKey('m')) return false;
+    for (final key in args.keys) {
+      if (key != 'm' && key != 'q') return false;
+    }
+    return true;
   }
 
   @override
@@ -1335,22 +1404,115 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final width = int.tryParse(args['s'] ?? '') ?? 0;
     final height = int.tryParse(args['v'] ?? '') ?? 0;
 
-    // Inflate zlib-compressed payloads (o=z) before decoding.
+    // Wire the deferred-decode repaint signal (idempotent). A lazily decoded
+    // image calls this once it is ready so the painter recomposites it.
+    manager.onChanged ??= notifyListeners;
+
+    final observer = terminalGraphicsDecodeObserver;
+    final compressed = args['o'] == 'z';
+
+    // Inflate zlib-compressed payloads (o=z) before decoding. This runs
+    // synchronously on the UI thread, so time it separately from the decode.
     var payload = data;
-    if (args['o'] == 'z') {
+    var inflateMicros = 0;
+    if (compressed) {
+      final inflateStopwatch = observer == null ? null : (Stopwatch()..start());
       final inflated = inflateZlibData(data);
+      inflateMicros = inflateStopwatch?.elapsedMicroseconds ?? 0;
       if (inflated == null) {
+        observer?.call(
+          payloadBytes: data.length,
+          inflateMicros: inflateMicros,
+          decodeMicros: 0,
+          compressed: true,
+          success: false,
+          imageId: args['i'],
+          action: args['a'],
+        );
         anchor?.dispose();
         return;
       }
       payload = inflated;
     }
 
-    final image = await decodeTerminalImage(
-      payload,
-      format: format,
-      width: width,
-      height: height,
+    final imageId = int.tryParse(args['i'] ?? '');
+    // Signature over the base64-decoded payload *before* inflation. The
+    // MonkeyMux server computes the same hash over the base64-decoded
+    // transmission bytes (which it stores compressed for o=z), so hashing
+    // pre-inflate lets the server match without having to decompress, and keeps
+    // the client/server skip protocol in agreement.
+    final signature = terminalGraphicsSourceSignature(data);
+
+    // Dedup: if this id is already decoded from identical bytes, reuse it and
+    // skip the expensive decode. A window switch replays the active window's
+    // cached images, so flipping back to a window re-sends images the client
+    // still holds; decoding them again wastes engine threads, memory and raster
+    // compositing. The signature guards against an app that updates an id with
+    // new content (different bytes -> miss -> decode).
+    if (imageId != null && manager.hasImageWithSignature(imageId, signature)) {
+      manager.imageById(imageId); // keep retained and bump LRU access
+      observer?.call(
+        payloadBytes: payload.length,
+        inflateMicros: inflateMicros,
+        decodeMicros: 0,
+        compressed: compressed,
+        success: true,
+        imageId: args['i'],
+        action: args['a'],
+        reused: true,
+      );
+      _placeStoredImageId(manager, imageId, anchor, args, generation);
+      return;
+    }
+
+    // Defer decoding of images that are not being placed right now (store-only
+    // `a=t`, or a virtual `a=T,U=1` placeholder backing). A MonkeyMux window
+    // switch replays every retained image up front, but the foreground app only
+    // re-displays the few currently on screen, so decoding them all eagerly
+    // burns CPU, memory and raster bandwidth on images the user never sees.
+    // Keep the encoded payload and decode on first paint reference instead.
+    // Compressed (`o=z`) and immediately-placed (`a=T`) images keep the eager
+    // path: the former to avoid deferring the inflate/signature handling, the
+    // latter because they must appear at the anchored cell straight away.
+    if (anchor == null && imageId != null && !compressed) {
+      if (!manager.hasPendingWithSignature(imageId, signature)) {
+        manager.storePendingImage(
+          imageId,
+          payload: payload,
+          format: format,
+          width: width,
+          height: height,
+          sourceSignature: signature,
+        );
+      }
+      _placeStoredImageId(manager, imageId, null, args, generation);
+      notifyListeners();
+      return;
+    }
+
+    final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
+    await terminalGraphicsDecodeGate.acquire();
+    final image = await () async {
+      try {
+        return await decodeTerminalImage(
+          payload,
+          format: format,
+          width: width,
+          height: height,
+        );
+      } finally {
+        terminalGraphicsDecodeGate.release();
+      }
+    }();
+    observer?.call(
+      payloadBytes: payload.length,
+      inflateMicros: inflateMicros,
+      decodeMicros: decodeStopwatch?.elapsedMicroseconds ?? 0,
+      compressed: compressed,
+      success: image != null,
+      imageId: args['i'],
+      action: args['a'],
+      reused: false,
     );
 
     // Skip placing if the decode failed, the anchored cell is gone, or the
@@ -1361,10 +1523,23 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
       return;
     }
 
-    final imageId = int.tryParse(args['i'] ?? '');
     final storedImageId = imageId == null
-        ? manager.storeImage(image)
-        : manager.storeImageWithId(imageId, image);
+        ? manager.storeImage(image, sourceSignature: signature)
+        : manager.storeImageWithId(imageId, image, sourceSignature: signature);
+    _placeStoredImageId(manager, storedImageId, anchor, args, generation);
+  }
+
+  /// Registers the image number, virtual placement and cell placement for an
+  /// already-stored [storedImageId]. Shared by the fresh-decode and the
+  /// dedup-reuse paths so both honor the same Kitty display keys and the
+  /// decode-race anchor/generation check.
+  void _placeStoredImageId(
+    GraphicsManager manager,
+    int storedImageId,
+    CellAnchor? anchor,
+    Map<String, String> args,
+    int? generation,
+  ) {
     // Associate a client image number (`I=`) with the stored id and answer the
     // handshake so the client learns the id it can address later.
     final imageNumber = int.tryParse(args['I'] ?? '');
@@ -1430,7 +1605,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         imageId = _buffer.graphics.imageIdForNumber(number);
       }
     }
-    if (imageId == null || _buffer.graphics.imageById(imageId) == null) {
+    if (imageId == null ||
+        (_buffer.graphics.imageById(imageId) == null &&
+            !_buffer.graphics.hasPendingImage(imageId))) {
       return;
     }
     final anchor = _buffer.currentLine.createAnchor(_buffer.cursorX);

@@ -18,6 +18,7 @@ class _SshSessionRuntime {
   Timer? _shellIoDiagnosticsTimer;
   Timer? _terminalOutputFlushTimer;
   Timer? _monkeyMuxReplayCoalesceTimer;
+  Timer? _terminalParsePumpTimer;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
   final _pendingShellOutputs =
@@ -34,7 +35,17 @@ class _SshSessionRuntime {
   String _terminalTmuxPassthroughPendingInput = '';
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
+  int _terminalInsertModePendingScanOffset = 0;
   String _monkeyMuxReplayDetectionTail = '';
+  DateTime? _monkeyMuxReplayCoalesceDeadline;
+  String _terminalParseBacklog = '';
+  int _terminalParseOffset = 0;
+  // Wall-clock time of the last repaint notification emitted while draining the
+  // parse backlog. Null when the backlog is idle, so the first slice of a new
+  // burst repaints immediately; while a multi-frame drain is in progress,
+  // repaints are throttled to _terminalParseDrainNotifyInterval so a heavy
+  // switch replay does not schedule one image-heavy frame per parsed slice.
+  int? _lastTerminalParseNotifyAtMs;
   bool _isCoalescingMonkeyMuxReplay = false;
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalInsertMode = false;
@@ -43,7 +54,42 @@ class _SshSessionRuntime {
 
   static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
+  // The replay that follows a window switch is coalesced so it renders as one
+  // batch instead of janky pieces. The quiet-period timer resets on every
+  // chunk, and a large image/content replay arrives as a continuous stream of
+  // sub-quiet-period chunks, so the debounce never settles until the whole
+  // multi-MB replay finishes downloading — the window stays blank and the
+  // switch appears to hang (this happens whether or not the window's agent is
+  // active; the replay stream alone is enough). Cap the hold so the batch
+  // always flushes promptly; the budgeted parse keeps the catch-up smooth and
+  // any replay still streaming after the cap renders progressively.
+  static const _monkeyMuxReplayCoalesceMaxHold = Duration(milliseconds: 64);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
+  // A window switch with lots of content/images replays hundreds of KB (or MB)
+  // at once. Parsing it all synchronously — the adapt pass, the xterm parser,
+  // and the control-query scan all walk the whole payload — blocks the UI
+  // thread and hangs the app. So the parse pipeline runs on bounded slices and
+  // stops once a frame-time budget is spent, resuming on the next event-loop
+  // turn. This drains as fast as the device allows (more per frame on faster
+  // builds) while keeping any single turn short enough to stay responsive.
+  // Image decoding is already async, so it does not count against this budget.
+  static const _maxTerminalParseSliceChars = 32 * 1024;
+  // While a single escape sequence is still incomplete (e.g. a multi-megabyte
+  // Kitty image APC), the held bytes aren't rendered until the terminator
+  // arrives, and re-feeding them in 32KB slices makes `adapt` re-copy the
+  // growing pending buffer each call (O(n^2)). Take much larger slices in that
+  // state so the sequence is gathered in a few calls; the time budget still
+  // yields between slices.
+  static const _maxTerminalParseSequenceSliceChars = 256 * 1024;
+  static const _terminalParseFrameBudget = Duration(milliseconds: 8);
+  // While draining a multi-frame backlog (a large switch/reconnect replay),
+  // repaint at most this often. The parser keeps advancing every event-loop
+  // turn, but coalescing the repaints keeps the raster thread — which must
+  // re-composite the image-heavy screen each frame — from being handed frames
+  // faster than it can draw them (which queues frames and stalls the switch for
+  // hundreds of ms). The final slice always repaints, so the settled screen is
+  // never delayed by more than this interval.
+  static const _terminalParseDrainNotifyInterval = Duration(milliseconds: 96);
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
@@ -203,6 +249,9 @@ class _SshSessionRuntime {
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) async {
     _flushPendingShellOutput(drainAll: true);
+    _drainTerminalParseBacklogNow();
+    _terminalParsePumpTimer?.cancel();
+    _terminalParsePumpTimer = null;
     _flushShellIoDiagnostics();
     _shellIoDiagnosticsTimer?.cancel();
     _shellIoDiagnosticsTimer = null;
@@ -271,8 +320,14 @@ class _SshSessionRuntime {
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalInsertModePendingInput = '';
+    // Reset the paired scan offset with the pending input it indexes into.
+    // The drain above can end mid-escape-sequence, leaving a non-zero offset;
+    // clearing the input but not the offset would make the next shell's first
+    // replay slice resume parsing at a stale position and corrupt it.
+    _terminalInsertModePendingScanOffset = 0;
     _terminalColorSchemeUpdatesMode = false;
     _terminalInsertMode = false;
+    _lastTerminalParseNotifyAtMs = null;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -564,15 +619,51 @@ class _SshSessionRuntime {
   void _scheduleMonkeyMuxReplayCoalesceFlush() {
     _terminalOutputFlushTimer?.cancel();
     _terminalOutputFlushTimer = null;
+    final now = DateTime.now();
+    final deadline = _monkeyMuxReplayCoalesceDeadline ??= now.add(
+      _monkeyMuxReplayCoalesceMaxHold,
+    );
+    final untilDeadline = deadline.difference(now);
+    if (untilDeadline <= Duration.zero) {
+      _flushCoalescedMonkeyMuxReplay();
+      return;
+    }
+    // Debounce on the quiet period, but never hold past the deadline so a
+    // continuously-printing window still renders without waiting for a pause.
+    final delay = untilDeadline < _monkeyMuxReplayCoalesceQuietPeriod
+        ? untilDeadline
+        : _monkeyMuxReplayCoalesceQuietPeriod;
     _monkeyMuxReplayCoalesceTimer?.cancel();
     _monkeyMuxReplayCoalesceTimer = Timer(
-      _monkeyMuxReplayCoalesceQuietPeriod,
-      () {
-        _monkeyMuxReplayCoalesceTimer = null;
-        _isCoalescingMonkeyMuxReplay = false;
-        _flushPendingShellOutput(drainAll: true);
-      },
+      delay,
+      _flushCoalescedMonkeyMuxReplay,
     );
+  }
+
+  void _flushCoalescedMonkeyMuxReplay() {
+    _monkeyMuxReplayCoalesceTimer?.cancel();
+    _monkeyMuxReplayCoalesceTimer = null;
+    if (DiagnosticsLogService.instance.enabled) {
+      final heldMs = _monkeyMuxReplayCoalesceDeadline == null
+          ? 0
+          : _monkeyMuxReplayCoalesceMaxHold.inMilliseconds -
+                _monkeyMuxReplayCoalesceDeadline!
+                    .difference(DateTime.now())
+                    .inMilliseconds;
+      DiagnosticsLogService.instance.debug(
+        'terminal.replay',
+        'coalesce_flush',
+        fields: {
+          'connectionId': _session.connectionId,
+          'chunks': _pendingShellOutputs.length,
+          'chars': _pendingTerminalWriteChars,
+          'heldMs': heldMs,
+        },
+      );
+    }
+    _monkeyMuxReplayCoalesceDeadline = null;
+    _isCoalescingMonkeyMuxReplay = false;
+    _flushPendingShellOutput(drainAll: true);
   }
 
   bool _shouldFlushShellOutputImmediately(String terminalData) =>
@@ -584,38 +675,30 @@ class _SshSessionRuntime {
     _terminalOutputFlushTimer = null;
     _monkeyMuxReplayCoalesceTimer?.cancel();
     _monkeyMuxReplayCoalesceTimer = null;
+    _monkeyMuxReplayCoalesceDeadline = null;
     _isCoalescingMonkeyMuxReplay = false;
 
     final shell = _pendingShellOutputShell;
     final terminal = _pendingShellOutputTerminal;
-    if (shell == null || terminal == null || !identical(_shell, shell)) {
+    if (shell != null && !identical(_shell, shell)) {
+      // Pending output belongs to a stale shell (e.g. gathered before a
+      // reconnect swapped `_shell`): discard it, and the parse backlog, so old
+      // bytes never render into the new shell.
       _clearPendingShellOutput();
+      return;
+    }
+    if (shell == null || terminal == null) {
+      // No raw output is queued to flush. Leave any in-flight parse backlog
+      // intact for the pump/drain: it belongs to the current shell, and wiping
+      // it here (as `_clearPendingShellOutput` does) would drop the tail of a
+      // large replay that `closeShell` then expects `_drainTerminalParseBacklogNow`
+      // to render.
       return;
     }
 
     final output = _drainPendingShellOutputs(drainAll: drainAll);
     if (output.terminalData.isNotEmpty) {
-      final terminalOutput = adaptTerminalInsertModeOutputForXterm(
-        input: output.terminalData,
-        pendingInput: _terminalInsertModePendingInput,
-        insertMode: _terminalInsertMode,
-        terminalColumns: terminal.viewWidth,
-        terminalRows: terminal.viewHeight,
-        cursorColumn: terminal.buffer.cursorX,
-        cursorRow: terminal.buffer.cursorY,
-        marginTop: terminal.buffer.marginTop,
-        marginBottom: terminal.buffer.marginBottom,
-        originMode: terminal.originMode,
-      );
-      _terminalInsertModePendingInput = terminalOutput.pendingInput;
-      _terminalInsertMode = terminalOutput.insertMode;
-      if (terminalOutput.output.isNotEmpty) {
-        terminal.write(terminalOutput.output);
-      }
-      _respondToTerminalWindowControlQueries(output.terminalData, terminal);
-      if (terminalOutput.output.isNotEmpty) {
-        _scheduleTerminalPreviewRefresh();
-      }
+      _enqueueTerminalParse(terminal, output.terminalData);
     }
 
     if (output.stdoutData.isNotEmpty) {
@@ -643,6 +726,177 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
   }
+
+  /// Queues [data] for parsing and pumps as much as fits in a frame-time
+  /// budget. A single large remote replay (e.g. switching to a Copilot window
+  /// full of images) must not run the whole adapt/parse/control-query pipeline
+  /// synchronously, which would block the UI thread. The remainder resumes on
+  /// the next event-loop turn so the app stays responsive while draining as
+  /// fast as the device can manage.
+  void _enqueueTerminalParse(Terminal terminal, String data) {
+    if (data.isEmpty) {
+      return;
+    }
+    // Drop already-consumed prefix before appending so the backing string does
+    // not grow without bound across successive flushes.
+    if (_terminalParseOffset > 0) {
+      _terminalParseBacklog = _terminalParseBacklog.substring(
+        _terminalParseOffset,
+      );
+      _terminalParseOffset = 0;
+    }
+    _terminalParseBacklog += data;
+    _pumpTerminalParse(terminal);
+  }
+
+  void _pumpTerminalParse(Terminal terminal) {
+    _terminalParsePumpTimer?.cancel();
+    _terminalParsePumpTimer = null;
+    if (!identical(_terminal, terminal)) {
+      _terminalParseBacklog = '';
+      _terminalParseOffset = 0;
+      return;
+    }
+
+    final diagnosticsEnabled = DiagnosticsLogService.instance.enabled;
+    final startOffset = _terminalParseOffset;
+    final stopwatch = Stopwatch()..start();
+    var processedAny = false;
+    var sliceCount = 0;
+    var worstSliceMicros = 0;
+    while (_terminalParseOffset < _terminalParseBacklog.length) {
+      final sliceStartMicros = diagnosticsEnabled
+          ? stopwatch.elapsedMicroseconds
+          : 0;
+      _processTerminalParseSlice(terminal, _takeTerminalParseSlice());
+      processedAny = true;
+      sliceCount += 1;
+      if (diagnosticsEnabled) {
+        final sliceMicros = stopwatch.elapsedMicroseconds - sliceStartMicros;
+        if (sliceMicros > worstSliceMicros) {
+          worstSliceMicros = sliceMicros;
+        }
+      }
+      if (stopwatch.elapsed >= _terminalParseFrameBudget) {
+        break;
+      }
+    }
+
+    final remaining = _terminalParseBacklog.length - _terminalParseOffset;
+    if (remaining > 0) {
+      _scheduleTerminalParsePump(terminal);
+    } else {
+      _terminalParseBacklog = '';
+      _terminalParseOffset = 0;
+    }
+    if (processedAny) {
+      _notifyTerminalParseProgress(terminal, drained: remaining == 0);
+      _scheduleTerminalPreviewRefresh();
+      if (diagnosticsEnabled) {
+        DiagnosticsLogService.instance.debug(
+          'terminal.parse',
+          'pump',
+          fields: {
+            'connectionId': _session.connectionId,
+            'slices': sliceCount,
+            'chars': _terminalParseOffset - startOffset,
+            'durationMs': stopwatch.elapsedMilliseconds,
+            'worstSliceMs': (worstSliceMicros / 1000).round(),
+            'remainingChars': remaining,
+          },
+        );
+      }
+    }
+  }
+
+  /// Repaints the terminal view for the slices parsed in this pump, coalescing
+  /// repaints while a large backlog is still draining.
+  ///
+  /// Slices are written with [Terminal.writeSilently] (no per-slice repaint), so
+  /// this owns the repaint. When the backlog is [drained] the settled screen is
+  /// shown immediately. While it is still draining, repaints are throttled to
+  /// [_terminalParseDrainNotifyInterval] so a burst of parsed slices collapses
+  /// to one image-heavy frame instead of overrunning the raster thread. The
+  /// first slice after an idle backlog always repaints so incoming output is not
+  /// held back for interactive use.
+  void _notifyTerminalParseProgress(
+    Terminal terminal, {
+    required bool drained,
+  }) {
+    if (drained) {
+      _lastTerminalParseNotifyAtMs = null;
+      terminal.notifyListeners();
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final lastMs = _lastTerminalParseNotifyAtMs;
+    if (lastMs != null &&
+        nowMs - lastMs < _terminalParseDrainNotifyInterval.inMilliseconds) {
+      return;
+    }
+    _lastTerminalParseNotifyAtMs = nowMs;
+    terminal.notifyListeners();
+  }
+
+  String _takeTerminalParseSlice() {
+    final start = _terminalParseOffset;
+    // A larger slice while mid-sequence keeps gathering a long escape sequence
+    // (image APC) in O(n) instead of O(n^2); otherwise a small slice keeps each
+    // frame's parse/image work bounded.
+    final sliceChars = _terminalInsertModePendingInput.isEmpty
+        ? _maxTerminalParseSliceChars
+        : _maxTerminalParseSequenceSliceChars;
+    var end = math.min(start + sliceChars, _terminalParseBacklog.length);
+    // Avoid cutting a surrogate pair; the parser tolerates split escape
+    // sequences via rollback but a lone surrogate corrupts the code point.
+    if (end < _terminalParseBacklog.length &&
+        _isHighSurrogate(_terminalParseBacklog.codeUnitAt(end - 1))) {
+      end -= 1;
+    }
+    if (end <= start) {
+      end = _terminalParseBacklog.length;
+    }
+    _terminalParseOffset = end;
+    return _terminalParseBacklog.substring(start, end);
+  }
+
+  void _processTerminalParseSlice(Terminal terminal, String slice) {
+    final terminalOutput = adaptTerminalInsertModeOutputForXterm(
+      input: slice,
+      pendingInput: _terminalInsertModePendingInput,
+      pendingScanOffset: _terminalInsertModePendingScanOffset,
+      insertMode: _terminalInsertMode,
+      terminalColumns: terminal.viewWidth,
+      terminalRows: terminal.viewHeight,
+      cursorColumn: terminal.buffer.cursorX,
+      cursorRow: terminal.buffer.cursorY,
+      marginTop: terminal.buffer.marginTop,
+      marginBottom: terminal.buffer.marginBottom,
+      originMode: terminal.originMode,
+    );
+    _terminalInsertModePendingInput = terminalOutput.pendingInput;
+    _terminalInsertModePendingScanOffset = terminalOutput.pendingScanOffset;
+    _terminalInsertMode = terminalOutput.insertMode;
+    if (terminalOutput.output.isNotEmpty) {
+      terminal.writeSilently(terminalOutput.output);
+    }
+    _respondToTerminalWindowControlQueries(slice, terminal);
+  }
+
+  void _scheduleTerminalParsePump(Terminal terminal) {
+    if (_terminalParsePumpTimer?.isActive ?? false) {
+      return;
+    }
+    // Resume on the next event-loop turn so the engine can render a frame
+    // between budgets; the run still completes within a handful of frames.
+    _terminalParsePumpTimer = Timer(Duration.zero, () {
+      _terminalParsePumpTimer = null;
+      _pumpTerminalParse(terminal);
+    });
+  }
+
+  bool _isHighSurrogate(int codeUnit) =>
+      codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
 
   ({String stderrData, String stdoutData, String terminalData})
   _drainPendingShellOutputs({required bool drainAll}) {
@@ -690,7 +944,45 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
     _monkeyMuxReplayDetectionTail = '';
+    _monkeyMuxReplayCoalesceDeadline = null;
     _isCoalescingMonkeyMuxReplay = false;
+    // Discard the chunked parse backlog and its in-flight pump too. This path
+    // runs when queued output is dropped because it belongs to a stale shell;
+    // leaving the backlog (or partial-sequence parser state) would let old
+    // bytes render into a reconnected shell's terminal.
+    _terminalParsePumpTimer?.cancel();
+    _terminalParsePumpTimer = null;
+    _terminalParseBacklog = '';
+    _terminalParseOffset = 0;
+    _lastTerminalParseNotifyAtMs = null;
+    _terminalInsertModePendingInput = '';
+    _terminalInsertModePendingScanOffset = 0;
+    _terminalInsertMode = false;
+  }
+
+  /// Drains any queued terminal parse backlog immediately, ignoring the frame
+  /// budget. Used on shutdown so the final frames of replay are not stranded by
+  /// the pump timer.
+  void _drainTerminalParseBacklogNow() {
+    _terminalParsePumpTimer?.cancel();
+    _terminalParsePumpTimer = null;
+    final terminal = _terminal;
+    if (terminal == null) {
+      _terminalParseBacklog = '';
+      _terminalParseOffset = 0;
+      return;
+    }
+    final hadBacklog = _terminalParseOffset < _terminalParseBacklog.length;
+    while (_terminalParseOffset < _terminalParseBacklog.length) {
+      _processTerminalParseSlice(terminal, _takeTerminalParseSlice());
+    }
+    _terminalParseBacklog = '';
+    _terminalParseOffset = 0;
+    if (hadBacklog) {
+      // Slices are written silently, so repaint the drained result once.
+      _lastTerminalParseNotifyAtMs = null;
+      terminal.notifyListeners();
+    }
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {

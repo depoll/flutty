@@ -160,6 +160,35 @@ void main() {
       expect(window!.terminalReportsMouseWheel, isTrue);
       expect(window.terminalMouseReportSgr, isTrue);
     });
+
+    test('surfaces the alert flag so prompts trigger push notifications', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@2',
+        'index': 1,
+        'name': 'Claude Code',
+        'active': false,
+        'currentCommand': 'claude',
+        'panePid': 4321,
+        'flags': '#',
+      });
+
+      expect(window, isNotNull);
+      expect(window!.flags, '#');
+      expect(window.hasAlert, isTrue);
+    });
+
+    test('leaves windows without an alert flag un-alerted', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@3',
+        'index': 2,
+        'name': 'shell',
+        'active': false,
+        'currentCommand': 'zsh',
+      });
+
+      expect(window, isNotNull);
+      expect(window!.hasAlert, isFalse);
+    });
   });
 
   group('MonkeyMux agent metadata', () {

@@ -138,6 +138,91 @@ out of scope.
   (`CSI 14/15/16 t`) are answered by the MonkeySSH app layer
   (`ssh_service.dart`), not here, so the core deliberately does not reply to
   them.
+* Performance: faster parsing of large Kitty image transmissions, which a
+  MonkeyMux window switch replays (several MB of base64) ahead of the visible
+  redraw on the parse critical path. `ByteConsumer.add` now returns the
+  `String.codeUnits` view directly instead of running the `Runes` iterator
+  (~10x cheaper) for the common case with no surrogate pairs, falling back to
+  combining surrogate pairs into code points only when present.
+  `_parseGraphicsPayload` decodes base64 inline through a lookup table as bytes
+  are consumed, dropping the per-image `StringBuffer` + whitespace `RegExp`
+  strip + `base64.decode` passes. Together these roughly halve `terminal.write`
+  time on an image-heavy replay. Keep both on re-sync.
+* Performance: deferred ("lazy") decode of store-only Kitty images. Images
+  transmitted with `a=t` (or a virtual `a=T,U=1` placeholder backing) are no
+  longer decoded eagerly; their encoded bytes are retained and decoded only when
+  the painter first references the image (`GraphicsManager.imageForPlacement` /
+  `imageByPlaceholderColorId`, wired through `_finalizeGraphics`). A MonkeyMux
+  window switch replays every retained image up front, but a foreground app such
+  as the Copilot CLI only re-displays the few currently on screen, so eager
+  decoding burned CPU, memory and raster bandwidth (and blocked the UI isolate)
+  on images the user never sees. `GraphicsManager.onChanged` requests a repaint
+  once a deferred decode completes; compressed (`o=z`) and immediately-placed
+  (`a=T`) images keep the eager path. Keep `storePendingImage`, the pending
+  fallback in `imageByPlaceholderColorId`, `imageForPlacement` and the
+  `_finalizeGraphics` deferral on re-sync.
+* Window-switch image dedup across the client/server boundary:
+  `terminalGraphicsSourceSignature` is now an FNV-1a-32 (was a 64-bit hash with
+  a signed-shift fold) computed over the base64-decoded transmission payload
+  *before* inflation, so the MonkeyMux server can compute the identical hash
+  (Go `uint32`) over the bytes it stores and omit re-transmitting images the
+  client already holds. `GraphicsManager.heldImageSignatures()` /
+  `Terminal.heldImageSignatures()` expose `{imageId: signature}` for the app to
+  report on a switch. Keep the exact FNV-1a-32 (offset `0x811c9dc5`, prime
+  `0x01000193`, length mixed as 4 little-endian bytes, then a <=4096-byte
+  evenly-spaced sample) in sync with the server on re-sync.
+* Fix: `GraphicsManager.clear()` no longer drops the virtual placements of
+  retained/pending images. A virtual placement records the cell grid
+  (`c`/`r`) an image maps onto for Unicode-placeholder display, and the painter
+  needs it to slice the image correctly. Entering the alternate screen
+  (`CSI ? 1049 h`) clears it, and that sequence is part of the MonkeyMux
+  reattach replay. Previously the re-sent `a=T,U=1` transmission recreated the
+  virtual placement, but once the server started skipping images the client
+  already holds, the placement was gone and the painter fell back to guessing
+  the grid from visible cells — mis-slicing the image into garbled output until
+  a resize forced a full re-transmit. `clear()` now keeps virtual placements
+  whose image is still retained or pending (they are dropped with the image via
+  `_dropImage`/pending eviction). Keep on re-sync.
+
+* Fix: an orphaned Kitty continuation chunk no longer poisons the next image.
+  A multi-chunk transmission (`m=1` continuations, used for any payload over
+  4096 base64 bytes) can lose its first chunk when a window-switch replay races
+  a live transmission, leaving a bare `m=1` chunk with no active command.
+  `graphicsCommandStart` previously started a headless command from it (no
+  `i`/`a`/`f`), which failed to decode and — worse — stayed "active" so the next
+  real image's first chunk was swallowed as a no-op start and finalized under
+  the empty args, dropping that image. A bare continuation (only `m`, optionally
+  `q`) arriving while inactive is now ignored. Keep on re-sync.
+
+* Fix: `heldImageSignatures` now reports only images that survive a `clear()` —
+  retained decoded images and pending ones — not every decoded image. The value
+  is sent to the MonkeyMux server so it can skip re-transmitting images the
+  client already holds on a window switch. A switch replays `CSI ? 1049 h`, whose
+  `clear()` drops decoded images that are not retained (e.g. a physical `a=T`
+  placement with no protocol id). Reporting such an image let the server skip it,
+  and then the switch's own clear dropped it, leaving the redrawn cells blank.
+  Pending images are untouched by `clear()`, so they stay reported. Keep on
+  re-sync.
+
+* Add: `GraphicsManager.unresolvedPlaceholderImageIds()` /
+  `Terminal.unresolvedPlaceholderImageIds()` return the protocol image ids that
+  on-screen Kitty Unicode-placeholder cells reference but that resolve to no
+  stored or pending image. The `Terminal` accessor is scoped to the active
+  buffer — the visible screen, and the only buffer a replay repopulates. The
+  MonkeySSH app reports these to the MonkeyMux server (`request_images`) so it
+  can replay exactly those bytes from its per-window retained cache, recovering
+  images a bounded switch/reconnect replay dropped (the foreground app draws
+  placeholder cells for them but never re-transmits the bytes). Pending
+  (in-flight) ids are treated as resolvable and excluded. Keep on re-sync.
+
+* Add: `Terminal.writeSilently(String)` writes to the parser without notifying
+  listeners (unlike `write`, which repaints after every call). The MonkeySSH
+  host uses it to drain a large switch/reconnect replay across several frames
+  while coalescing repaints — it advances the parser silently and calls
+  `notifyListeners()` at a throttled cadence and once when the burst drains.
+  Scheduling one repaint per parsed slice otherwise hands the raster thread
+  image-heavy frames faster than it can draw them, so frames queue and the
+  window switch stalls for hundreds of ms. Keep on re-sync.
 
 
 ## [3.6.1-pre] - 2023-04-28

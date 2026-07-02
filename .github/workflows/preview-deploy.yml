@@ -197,7 +197,14 @@ jobs:
             const requestedBuildCodename = (process.env.INPUT_BUILD_CODENAME || '').trim();
             const requestedBuildDisplay = (process.env.INPUT_BUILD_DISPLAY || '').trim();
             const requestedBuildNumber = (process.env.INPUT_BUILD_NUMBER || '').trim();
-            const workflowIds = ['deploy-testflight.yml', 'develop.yml'];
+            // Include legacy workflow filenames so old private deploy artifacts
+            // still keep new PR deploy build numbers monotonic after renames.
+            const workflowIds = [
+              'preview-deploy.yml',
+              'deploy-testflight.yml',
+              'deploy-private.yml',
+              'develop.yml',
+            ];
             const markerArtifactPattern = /^private-deploy-build-number-(\d+)$/;
             const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)(?:\.(?:aab|apk|ipa))?$/;
             const maxDiscoveredBuildNumbersPerWorkflow = 20;
@@ -598,6 +605,7 @@ jobs:
     permissions:
       actions: read
       contents: read
+      deployments: write
       issues: write
       pull-requests: write
     uses: ./.github/workflows/build-deploy.yml
