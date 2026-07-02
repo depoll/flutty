@@ -214,6 +214,15 @@ out of scope.
   re-transmits the bytes). Pending (in-flight) ids are treated as resolvable and
   excluded. Keep on re-sync.
 
+* Add: `Terminal.writeSilently(String)` writes to the parser without notifying
+  listeners (unlike `write`, which repaints after every call). The MonkeySSH
+  host uses it to drain a large switch/reconnect replay across several frames
+  while coalescing repaints — it advances the parser silently and calls
+  `notifyListeners()` at a throttled cadence and once when the burst drains.
+  Scheduling one repaint per parsed slice otherwise hands the raster thread
+  image-heavy frames faster than it can draw them, so frames queue and the
+  window switch stalls for hundreds of ms. Keep on re-sync.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback

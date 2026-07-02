@@ -40,6 +40,12 @@ class _SshSessionRuntime {
   DateTime? _monkeyMuxReplayCoalesceDeadline;
   String _terminalParseBacklog = '';
   int _terminalParseOffset = 0;
+  // Wall-clock time of the last repaint notification emitted while draining the
+  // parse backlog. Null when the backlog is idle, so the first slice of a new
+  // burst repaints immediately; while a multi-frame drain is in progress,
+  // repaints are throttled to _terminalParseDrainNotifyInterval so a heavy
+  // switch replay does not schedule one image-heavy frame per parsed slice.
+  int? _lastTerminalParseNotifyAtMs;
   bool _isCoalescingMonkeyMuxReplay = false;
   bool _terminalColorSchemeUpdatesMode = false;
   bool _terminalInsertMode = false;
@@ -76,6 +82,14 @@ class _SshSessionRuntime {
   // yields between slices.
   static const _maxTerminalParseSequenceSliceChars = 256 * 1024;
   static const _terminalParseFrameBudget = Duration(milliseconds: 8);
+  // While draining a multi-frame backlog (a large switch/reconnect replay),
+  // repaint at most this often. The parser keeps advancing every event-loop
+  // turn, but coalescing the repaints keeps the raster thread — which must
+  // re-composite the image-heavy screen each frame — from being handed frames
+  // faster than it can draw them (which queues frames and stalls the switch for
+  // hundreds of ms). The final slice always repaints, so the settled screen is
+  // never delayed by more than this interval.
+  static const _terminalParseDrainNotifyInterval = Duration(milliseconds: 96);
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
@@ -759,6 +773,7 @@ class _SshSessionRuntime {
       _terminalParseOffset = 0;
     }
     if (processedAny) {
+      _notifyTerminalParseProgress(terminal, drained: remaining == 0);
       _scheduleTerminalPreviewRefresh();
       if (diagnosticsEnabled) {
         DiagnosticsLogService.instance.debug(
@@ -775,6 +790,35 @@ class _SshSessionRuntime {
         );
       }
     }
+  }
+
+  /// Repaints the terminal view for the slices parsed in this pump, coalescing
+  /// repaints while a large backlog is still draining.
+  ///
+  /// Slices are written with [Terminal.writeSilently] (no per-slice repaint), so
+  /// this owns the repaint. When the backlog is [drained] the settled screen is
+  /// shown immediately. While it is still draining, repaints are throttled to
+  /// [_terminalParseDrainNotifyInterval] so a burst of parsed slices collapses
+  /// to one image-heavy frame instead of overrunning the raster thread. The
+  /// first slice after an idle backlog always repaints so incoming output is not
+  /// held back for interactive use.
+  void _notifyTerminalParseProgress(
+    Terminal terminal, {
+    required bool drained,
+  }) {
+    if (drained) {
+      _lastTerminalParseNotifyAtMs = null;
+      terminal.notifyListeners();
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final lastMs = _lastTerminalParseNotifyAtMs;
+    if (lastMs != null &&
+        nowMs - lastMs < _terminalParseDrainNotifyInterval.inMilliseconds) {
+      return;
+    }
+    _lastTerminalParseNotifyAtMs = nowMs;
+    terminal.notifyListeners();
   }
 
   String _takeTerminalParseSlice() {
@@ -817,7 +861,7 @@ class _SshSessionRuntime {
     _terminalInsertModePendingScanOffset = terminalOutput.pendingScanOffset;
     _terminalInsertMode = terminalOutput.insertMode;
     if (terminalOutput.output.isNotEmpty) {
-      terminal.write(terminalOutput.output);
+      terminal.writeSilently(terminalOutput.output);
     }
     _respondToTerminalWindowControlQueries(slice, terminal);
   }
@@ -893,6 +937,7 @@ class _SshSessionRuntime {
     _terminalParsePumpTimer = null;
     _terminalParseBacklog = '';
     _terminalParseOffset = 0;
+    _lastTerminalParseNotifyAtMs = null;
     _terminalInsertModePendingInput = '';
     _terminalInsertModePendingScanOffset = 0;
     _terminalInsertMode = false;
@@ -910,11 +955,17 @@ class _SshSessionRuntime {
       _terminalParseOffset = 0;
       return;
     }
+    final hadBacklog = _terminalParseOffset < _terminalParseBacklog.length;
     while (_terminalParseOffset < _terminalParseBacklog.length) {
       _processTerminalParseSlice(terminal, _takeTerminalParseSlice());
     }
     _terminalParseBacklog = '';
     _terminalParseOffset = 0;
+    if (hadBacklog) {
+      // Slices are written silently, so repaint the drained result once.
+      _lastTerminalParseNotifyAtMs = null;
+      terminal.notifyListeners();
+    }
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {

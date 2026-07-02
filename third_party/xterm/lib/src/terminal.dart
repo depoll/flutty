@@ -299,6 +299,25 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     notifyListeners();
   }
 
+  /// Writes [data] to the terminal without notifying listeners of the resulting
+  /// state change.
+  ///
+  /// Escape sequences that reply to the program (device attributes, cursor
+  /// position, etc.) still fire their own notifications, but the routine buffer
+  /// update does not, so the view is not repainted for this write.
+  ///
+  /// This lets the host app drain a large burst of output — e.g. the multi-MB
+  /// redraw a multiplexer replays when switching to an image-heavy window —
+  /// across several frames while coalescing repaints: advance the parser with
+  /// this, then call [notifyListeners] at a throttled cadence and once more when
+  /// the burst is fully drained. Scheduling one repaint per parsed slice instead
+  /// floods the raster thread with image-heavy frames it cannot keep up with,
+  /// so frames queue and the switch appears to hang. Interactive writes should
+  /// use [write], which repaints immediately.
+  void writeSilently(String data) {
+    _parser.write(data);
+  }
+
   /// Sends a key event to the underlying program.
   ///
   /// See also:
