@@ -263,13 +263,13 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
-          cache-dependency-path: |
-            android/*.gradle*
-            android/**/*.gradle*
-            android/gradle.properties
-            android/gradle/wrapper/gradle-wrapper.properties
-            pubspec.lock
+
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        if: inputs.android-reuse-aab-artifact-name == ''
+        with:
+          cache-cleanup: always
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          add-job-summary: on-failure
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.android-reuse-aab-artifact-name == ''
