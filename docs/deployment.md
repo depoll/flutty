@@ -98,12 +98,12 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
-- **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
-- **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
+- **iOS**: Builds an unsigned release IPA for `/deploy` promotion to TestFlight
+- **Android**: Builds an unsigned release AAB plus a debug-signed APK for direct download in the PR comment
 
 When `/deploy` promotes a PR preview, it reuses the existing unsigned preview artifacts when their build number is still ahead of the latest private deploy. If a newer private build has already been deployed, the workflow automatically rebuilds with a fresh build number before uploading to TestFlight and Play internal.
 
-### Deploy Private (`develop.yml`)
+### Deploy Private (`deploy-private.yml`)
 
 Triggered on push to `main`. Builds the **private** flavor and deploys to:
 - **iOS**: TestFlight (MonkeySSH β)
@@ -147,9 +147,28 @@ Supports selecting:
 - **Platform**: iOS, Android, or both
 - **App**: private, production, or both
 
+### GitHub Deployment Environments
+
+Store uploads create GitHub Deployments so PRs and the repository deployment
+view show the latest status for each supported channel:
+
+| Environment | Updated by |
+|-------------|------------|
+| `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
+| `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
+| `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
+| `iOS Production / TestFlight` | Release Internal |
+| `Android Production / Play Internal` | Release Internal |
+| `iOS Production / App Store` | Release |
+| `Android Production / Play Production` | Release |
+| `iOS Private / App Store Metadata` | Sync Metadata |
+| `iOS Production / App Store Metadata` | Sync Metadata |
+| `Android Private / Play Store Metadata` | Sync Metadata |
+| `Android Production / Play Store Metadata` | Sync Metadata |
+
 ### Build Numbers
 
-All builds use epoch-minute build numbers (`$(date +%s) / 60`) — monotonically increasing regardless of how many PRs are active. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
+All deployable builds use epoch-derived build numbers (`$(date +%s) / 10`) — monotonically increasing regardless of how many PRs are active. PR info is stored in build metadata, not the build number.
 
 ## Store Metadata
 
