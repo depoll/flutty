@@ -584,6 +584,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
     this.forceSgrTouchScroll = false,
+    this.scrollResetGeneration = 0,
     this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
@@ -720,6 +721,9 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// If true, sends SGR wheel reports even when local mouse mode state is stale.
   final bool forceSgrTouchScroll;
+
+  /// Bump this value to reset transient scroll gesture state.
+  final int scrollResetGeneration;
 
   /// If true, the terminal keeps the viewport pinned to the newest output while
   /// it is already scrolled to the bottom.
@@ -870,6 +874,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       _touchScrollRemainder = 0;
     }
     if (oldWidget.forceSgrTouchScroll != widget.forceSgrTouchScroll) {
+      _stopTouchScrollInertia();
+      _touchScrollRemainder = 0;
+    }
+    if (oldWidget.scrollResetGeneration != widget.scrollResetGeneration) {
       _stopTouchScrollInertia();
       _touchScrollRemainder = 0;
     }
@@ -1077,6 +1085,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     if (!widget.touchScrollToTerminal) {
       child = MonkeyTerminalScrollGestureHandler(
+        key: ValueKey<int>(widget.scrollResetGeneration),
         terminal: widget.terminal,
         simulateScroll: widget.simulateScroll,
         forceSgr: widget.forceSgrTouchScroll,
@@ -1119,6 +1128,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     child = KeyboardVisibility(onKeyboardShow: _onKeyboardShow, child: child);
 
     child = MonkeyTerminalGestureHandler(
+      key: ValueKey<int>(widget.scrollResetGeneration),
       terminalView: this,
       terminalController: _controller,
       onSingleTapUp: _onTapUp,
