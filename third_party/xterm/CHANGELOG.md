@@ -207,12 +207,13 @@ out of scope.
 * Add: `GraphicsManager.unresolvedPlaceholderImageIds()` /
   `Terminal.unresolvedPlaceholderImageIds()` return the protocol image ids that
   on-screen Kitty Unicode-placeholder cells reference but that resolve to no
-  stored or pending image. The MonkeySSH app reports these to the MonkeyMux
-  server (`request_images`) so it can replay exactly those bytes from its
-  per-window retained cache, recovering images a bounded switch/reconnect replay
-  dropped (the foreground app draws placeholder cells for them but never
-  re-transmits the bytes). Pending (in-flight) ids are treated as resolvable and
-  excluded. Keep on re-sync.
+  stored or pending image. The `Terminal` accessor is scoped to the active
+  buffer — the visible screen, and the only buffer a replay repopulates. The
+  MonkeySSH app reports these to the MonkeyMux server (`request_images`) so it
+  can replay exactly those bytes from its per-window retained cache, recovering
+  images a bounded switch/reconnect replay dropped (the foreground app draws
+  placeholder cells for them but never re-transmits the bytes). Pending
+  (in-flight) ids are treated as resolvable and excluded. Keep on re-sync.
 
 * Add: `Terminal.writeSilently(String)` writes to the parser without notifying
   listeners (unlike `write`, which repaints after every call). The MonkeySSH
