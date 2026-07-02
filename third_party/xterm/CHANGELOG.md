@@ -194,6 +194,16 @@ out of scope.
   the empty args, dropping that image. A bare continuation (only `m`, optionally
   `q`) arriving while inactive is now ignored. Keep on re-sync.
 
+* Fix: `heldImageSignatures` now reports only images that survive a `clear()` —
+  retained decoded images and pending ones — not every decoded image. The value
+  is sent to the MonkeyMux server so it can skip re-transmitting images the
+  client already holds on a window switch. A switch replays `CSI ? 1049 h`, whose
+  `clear()` drops decoded images that are not retained (e.g. a physical `a=T`
+  placement with no protocol id). Reporting such an image let the server skip it,
+  and then the switch's own clear dropped it, leaving the redrawn cells blank.
+  Pending images are untouched by `clear()`, so they stay reported. Keep on
+  re-sync.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback

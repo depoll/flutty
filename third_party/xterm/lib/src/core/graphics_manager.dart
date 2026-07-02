@@ -259,17 +259,30 @@ class GraphicsManager {
   /// Active Unicode-placeholder cells, oldest first.
   List<TerminalImagePlaceholder> get placeholders => _placeholders;
 
-  /// The `{imageId: sourceSignature}` of every image currently held — decoded or
-  /// still pending (transmitted but not yet decoded).
+  /// The `{imageId: sourceSignature}` of every image the client is guaranteed to
+  /// still hold after a window switch — retained decoded images and pending
+  /// (transmitted but not yet decoded) ones.
   ///
   /// Reported to the MonkeyMux server on a window switch so it can omit
   /// re-transmitting images the client already has, sparing the client from
   /// re-parsing several megabytes of image data it would immediately discard as
   /// a duplicate. The signature disambiguates content, so a different window
   /// that reuses the same protocol id for different bytes is never skipped.
+  ///
+  /// Only images that survive [clear] are reported. A window switch replays
+  /// `CSI ? 1049 h`, which clears the screen and drops every decoded image that
+  /// is not retained (i.e. a physical `a=T` placement rather than a
+  /// Unicode-placeholder virtual image). Reporting such an image would let the
+  /// server skip re-transmitting it, and then the switch's own clear would drop
+  /// it — leaving the redrawn cells with no image to composite (blank until the
+  /// app fully redraws). Pending images survive the clear untouched, so they are
+  /// always safe to report.
   Map<int, int> heldImageSignatures() {
     final result = <int, int>{};
     for (final entry in _images.entries) {
+      if (!_retainedImageIds.contains(entry.key)) {
+        continue;
+      }
       final signature = entry.value.sourceSignature;
       if (signature != 0) {
         result[entry.key] = signature;
