@@ -918,10 +918,6 @@ String _stripTerminalPromptEscapeSequences(String text) => text
     .replaceAll(_csiEscapeSequencePattern, '')
     .replaceAll(_singleCharEscapeSequencePattern, '');
 
-bool _isTerminalMouseOrFocusReportOutput(String output) =>
-    _terminalMouseReportOutputPattern.hasMatch(output) ||
-    _terminalFocusReportOutputPattern.hasMatch(output);
-
 bool _isShellCommandName(String? command) {
   final trimmed = command?.trim();
   if (trimmed == null || trimmed.isEmpty) return false;
@@ -938,6 +934,52 @@ bool _isShellCommandName(String? command) {
     default:
       return false;
   }
+}
+
+/// Whether a MonkeyMux terminal mouse/focus control report should be dropped
+/// before it reaches the remote shell.
+///
+/// The app synthesizes mouse-wheel reports for touch scroll and focus reports
+/// when overlays open/close. Sending those escape bytes to a bare shell would
+/// type garbage, but suppressing them for a foreground app that actually
+/// enabled the matching mode (a mouse-reporting TUI, or a coding agent) breaks
+/// touch scroll and focus re-arming.
+///
+/// The foreground command name alone is not reliable: opening the SFTP browser
+/// probes the MonkeyMux pane context, which can report the login shell (e.g.
+/// `zsh`) that a coding agent runs under and overwrite the tracked command.
+/// Gate on the live input-mode state (and the active-window agent tool) so a
+/// report is only suppressed for a genuine bare shell.
+@visibleForTesting
+bool shouldSuppressMonkeyMuxControlReport({
+  required bool isMonkeyMux,
+  required bool isMouseReport,
+  required bool isFocusReport,
+  required bool mouseReportingActive,
+  required bool focusReportingActive,
+  required bool isAgentToolActive,
+  String? currentCommand,
+}) {
+  if (!isMonkeyMux) {
+    return false;
+  }
+  if (!isMouseReport && !isFocusReport) {
+    return false;
+  }
+  if (isMouseReport && mouseReportingActive) {
+    return false;
+  }
+  if (isFocusReport && focusReportingActive) {
+    return false;
+  }
+  if (isAgentToolActive) {
+    return false;
+  }
+  final command = currentCommand?.trim();
+  if (command != null && agentLaunchToolForCommandName(command) != null) {
+    return false;
+  }
+  return _isShellCommandName(command);
 }
 
 final _terminalSensitivePromptPattern = RegExp(
@@ -4459,19 +4501,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.isUsingAltBuffer ||
       _terminal.mouseMode != MouseMode.none;
 
-  bool _shouldSuppressMonkeyMuxTerminalControlInput(String output) {
-    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
-      return false;
-    }
-    if (!_isTerminalMouseOrFocusReportOutput(output)) {
-      return false;
-    }
-    final command = _tmuxCurrentCommand?.trim();
-    if (command != null && agentLaunchToolForCommandName(command) != null) {
-      return false;
-    }
-    return _isShellCommandName(command);
-  }
+  bool _shouldSuppressMonkeyMuxTerminalControlInput(String output) =>
+      shouldSuppressMonkeyMuxControlReport(
+        isMonkeyMux: _activeMuxBackend == RemoteMuxBackend.monkeyMux,
+        isMouseReport: _terminalMouseReportOutputPattern.hasMatch(output),
+        isFocusReport: _terminalFocusReportOutputPattern.hasMatch(output),
+        mouseReportingActive: _terminalReportsMouseWheelForScroll,
+        focusReportingActive: _terminal.reportFocusMode,
+        isAgentToolActive: _isAgentToolActive,
+        currentCommand: _tmuxCurrentCommand,
+      );
 
   /// Whether outer-tmux focus reports are safe to push through the SSH stream.
   ///
