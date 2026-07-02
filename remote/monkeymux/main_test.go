@@ -4028,8 +4028,8 @@ func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 
 	options := createWindowOptionsForRestore(state, false)
 
-	if got := options.command; got != "copilot --resume 'session'\"'\"'s id'" {
-		t.Fatalf("command = %q, want quoted copilot resume", got)
+	if got := options.command; got != "copilot --resume 'session'\"'\"'s id' || copilot" {
+		t.Fatalf("command = %q, want quoted copilot resume with fresh fallback", got)
 	}
 	if len(options.history) != 0 {
 		t.Fatalf("agent restore history length = %d, want 0", len(options.history))
@@ -4076,8 +4076,8 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 		t.Fatalf("agent session ID = %q, want new-session", got)
 	}
 	options := createWindowOptionsForRestore(restore.Windows[0], true)
-	if got := options.command; got != "agy --dangerously-skip-permissions --conversation 'new-session'" {
-		t.Fatalf("command = %q, want Antigravity resume command", got)
+	if got := options.command; got != "agy --dangerously-skip-permissions --conversation 'new-session' || agy --dangerously-skip-permissions" {
+		t.Fatalf("command = %q, want Antigravity resume command with fresh fallback", got)
 	}
 }
 
@@ -4157,7 +4157,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "copilot",
 				AgentSessionID: "session-123",
 			},
-			want:      "copilot --yolo --resume 'session-123'",
+			want:      "copilot --yolo --resume 'session-123' || copilot --yolo",
 			agentTool: "copilot",
 		},
 		{
@@ -4168,7 +4168,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "codex",
 				AgentSessionID: "codex-session",
 			},
-			want:      "codex --yolo resume 'codex-session'",
+			want:      "codex --yolo resume 'codex-session' || codex --yolo",
 			agentTool: "codex",
 		},
 		{
@@ -4179,7 +4179,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "opencode",
 				AgentSessionID: "_continue",
 			},
-			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue || OPENCODE_PERMISSION='{"*":"allow"}' opencode`,
 			agentTool: "opencode",
 		},
 		{
@@ -4190,7 +4190,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "opencode",
 				AgentSessionID: "ses_abc",
 			},
-			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --session 'ses_abc'`,
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --session 'ses_abc' || OPENCODE_PERMISSION='{"*":"allow"}' opencode`,
 			agentTool: "opencode",
 		},
 		{
@@ -4201,7 +4201,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "claude",
 				AgentSessionID: "de4e84a3-cf16-4cc2-8ba7-34587e984d4a",
 			},
-			want:      `claude --dangerously-skip-permissions --resume 'de4e84a3-cf16-4cc2-8ba7-34587e984d4a'`,
+			want:      `claude --dangerously-skip-permissions --resume 'de4e84a3-cf16-4cc2-8ba7-34587e984d4a' || claude --dangerously-skip-permissions`,
 			agentTool: "claude",
 		},
 		{
@@ -4212,7 +4212,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "gemini",
 				AgentSessionID: "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
 			},
-			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1'`,
+			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1' || gemini --yolo`,
 			agentTool: "gemini",
 		},
 		{
@@ -4223,7 +4223,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "antigravity",
 				AgentSessionID: "session-456",
 			},
-			want:      `agy --dangerously-skip-permissions --conversation 'session-456'`,
+			want:      `agy --dangerously-skip-permissions --conversation 'session-456' || agy --dangerously-skip-permissions`,
 			agentTool: "antigravity",
 		},
 		{
@@ -4234,7 +4234,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "antigravity",
 				AgentSessionID: "_continue",
 			},
-			want:      `agy --dangerously-skip-permissions --continue`,
+			want:      `agy --dangerously-skip-permissions --continue || agy --dangerously-skip-permissions`,
 			agentTool: "antigravity",
 		},
 	}
