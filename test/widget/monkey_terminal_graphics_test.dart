@@ -185,6 +185,32 @@ String _placeholderGrid(int imageId, {required int cols, required int rows}) {
   return buffer.toString();
 }
 
+/// Store-only (`a=t`) and virtual (`a=T,U=1`) images decode lazily, on the
+/// first paint that references them. In a real app that paint runs in the real
+/// async zone so the decode completes; a widget-test `pump()` runs in the
+/// fake-async zone where `dart:ui` decodes never finish. So reference each image
+/// inside [WidgetTester.runAsync] (exactly what the painter does — it triggers
+/// the deferred decode), wait for it, then pump so the decoded image composites
+/// before pixel assertions run.
+Future<void> _pumpUntilImagesDecoded(
+  WidgetTester tester,
+  Terminal terminal,
+  List<int> imageIds,
+) async {
+  await tester.runAsync(() async {
+    for (final id in imageIds) {
+      terminal.graphics.imageForPlacement(id);
+    }
+    var waited = 0;
+    while (imageIds.any((id) => terminal.graphics.imageById(id) == null) &&
+        waited < 2000) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      waited += 20;
+    }
+  });
+  await tester.pump();
+}
+
 void main() {
   testWidgets('Kitty graphics image is composited into the terminal', (
     tester,
@@ -349,14 +375,9 @@ void main() {
         terminal
           ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
           ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
-
-        var waited = 0;
-        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-          waited += 20;
-        }
       });
-      await tester.pump();
+      // Painting the placeholder cells starts the deferred decode.
+      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
 
       // U=1 must not create a physical placement; the placeholders display it.
       expect(terminal.graphics.hasPlacements, isFalse);
@@ -482,14 +503,8 @@ void main() {
       terminal
         ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
         ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
-
-      var waited = 0;
-      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
     });
-    await tester.pump();
+    await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
 
     expect(
       await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
@@ -558,14 +573,8 @@ void main() {
         terminal
           ..write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=12,f=100,q=2;$png\x1b\\')
           ..write(_placeholderGrid(imageId, cols: 8, rows: 12));
-
-        var waited = 0;
-        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-          waited += 20;
-        }
       });
-      await tester.pump();
+      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
       expect(
         await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
         isTrue,
@@ -586,6 +595,86 @@ void main() {
         reason:
             'a clean scroll crop must keep rendering even when most of the '
             'image has scrolled off',
+      );
+    },
+  );
+
+  testWidgets(
+    'Kitty placeholder image renders its visible crop with off-screen '
+    'scrollback cells retained',
+    (tester) async {
+      // The main screen (unlike the alt screen) keeps scrolled-off rows in the
+      // scrollback, so a tall image pushed up the viewport leaves many attached
+      // placeholder cells above the fold. The compositor only analyses the
+      // visible rows, but the image grid must still be sliced from the full
+      // placement, so the on-screen bottom crop renders at the correct scale
+      // rather than being dropped or mis-sliced by the off-screen remainder.
+      final boundaryKey = GlobalKey();
+      final terminal = Terminal(maxLines: 400);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 360,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const imageId = 0xA5E30B;
+      terminal.resize(8, 20);
+      await tester.runAsync(() async {
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        terminal
+          ..write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=12,f=100,q=2;$png\x1b\\')
+          ..write(_placeholderGrid(imageId, cols: 8, rows: 12));
+      });
+      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason: 'the full image renders before scrolling',
+      );
+      final placeholdersBeforeScroll = terminal.graphics.placeholders.length;
+
+      // Push the top of the image above the fold into the scrollback. The rows
+      // stay attached (main-screen scrollback), so the off-screen portion is
+      // exactly the "many retained placeholders" case the viewport-bounded
+      // compositor must handle without dropping the visible crop.
+      terminal.write('\x1b[20;1H');
+      for (var i = 0; i < 10; i++) {
+        terminal.write('\r\n');
+      }
+      await tester.pump();
+
+      expect(
+        terminal.graphics.placeholders.length,
+        placeholdersBeforeScroll,
+        reason: 'main-screen scrollback must retain the off-screen cells',
+      );
+      expect(
+        terminal.graphics.placeholders.every((p) => p.attached),
+        isTrue,
+        reason: 'scrolled-off placeholder cells stay attached in scrollback',
+      );
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason:
+            'the still-visible bottom crop must keep rendering while most of '
+            'the image sits off-screen in the scrollback',
       );
     },
   );
@@ -636,13 +725,8 @@ void main() {
             ..write('\x1b[${row + 12};1H')
             ..write(_placeholderRow(imageId, row: row, cols: 8));
         }
-        var waited = 0;
-        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-          waited += 20;
-        }
       });
-      await tester.pump();
+      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
       expect(
         await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
         greaterThan(0),
@@ -723,13 +807,8 @@ void main() {
             ..write('\x1b[${row + 14};1H')
             ..write(_placeholderRow(imageId, row: row, cols: 8));
         }
-        var waited = 0;
-        while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-          waited += 20;
-        }
       });
-      await tester.pump();
+      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
 
       // Terminal content has top padding, so check generous bands rather than
       // exact cell rows. The older copy sits in the top ~quarter; the current
@@ -811,14 +890,8 @@ void main() {
           decoder.add(bytes.sublist(i, end));
         }
         decoder.close();
-
-        var waited = 0;
-        while (terminal.graphics.imageById(0xA5E30B) == null && waited < 2000) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-          waited += 20;
-        }
       });
-      await tester.pump();
+      await _pumpUntilImagesDecoded(tester, terminal, [0xA5E30B]);
 
       expect(
         await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
@@ -853,22 +926,21 @@ void main() {
     );
     await tester.pump();
 
+    const imageId = 42 + (2 << 24);
     await tester.runAsync(() async {
       final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
-      const imageId = 42 + (2 << 24);
       terminal.write('\x1b_Ga=t,i=$imageId,f=100;$png\x1b\\');
-
-      var waited = 0;
-      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
     });
+    // Deferred until a placeholder references it.
+    expect(terminal.graphics.imageById(imageId), isNull);
 
     final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
     final row = List.filled(8, '$placeholder\u0305\u0305\u030E').join();
     terminal.write('\x1b[38;5;42m$row\r\n$row\r\n$row\r\n$row\x1b[39m');
-    await tester.pump();
+
+    // Painting the placeholders resolves the high-byte id via the low-bits
+    // fallback and starts the deferred decode.
+    await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
 
     var hasRed = false;
     await tester.runAsync(() async {
@@ -1091,21 +1163,14 @@ void main() {
       final blue = await _buildSolidPngBase64(const Color(0xFF0000FF), 16);
       terminal
         ..write('\x1b_Ga=t,i=1,f=100;$red\x1b\\')
-        ..write('\x1b_Ga=t,i=2,f=100;$blue\x1b\\');
-      var waited = 0;
-      while ((terminal.graphics.imageById(1) == null ||
-              terminal.graphics.imageById(2) == null) &&
-          waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
-      // Place blue (z=1) first, then red (z=0) at the same spot. Z-order, not
-      // write order, must decide: blue stays on top.
-      terminal
+        ..write('\x1b_Ga=t,i=2,f=100;$blue\x1b\\')
+        // Place blue (z=1) first, then red (z=0) at the same spot. Z-order, not
+        // write order, must decide: blue stays on top.
         ..write('\x1b[H\x1b_Ga=p,i=2,c=6,r=3,z=1,C=1\x1b\\')
         ..write('\x1b[H\x1b_Ga=p,i=1,c=6,r=3,z=0,C=1\x1b\\');
     });
-    await tester.pump();
+    // The placements reference both images, so painting decodes them.
+    await _pumpUntilImagesDecoded(tester, terminal, [1, 2]);
 
     expect(
       await tester.runAsync(() => _boundaryPixelCount(boundaryKey, _isBlue)),

@@ -2894,6 +2894,7 @@ void main() {
             sessionName,
             1,
             extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
           ),
         ).thenAnswer((_) async {
           monkeyMuxService.controlOperations.add('select');
@@ -2995,6 +2996,7 @@ void main() {
             sessionName,
             1,
             extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
           ),
         ).called(1);
         expect(
