@@ -320,8 +320,14 @@ class _SshSessionRuntime {
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalInsertModePendingInput = '';
+    // Reset the paired scan offset with the pending input it indexes into.
+    // The drain above can end mid-escape-sequence, leaving a non-zero offset;
+    // clearing the input but not the offset would make the next shell's first
+    // replay slice resume parsing at a stale position and corrupt it.
+    _terminalInsertModePendingScanOffset = 0;
     _terminalColorSchemeUpdatesMode = false;
     _terminalInsertMode = false;
+    _lastTerminalParseNotifyAtMs = null;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
