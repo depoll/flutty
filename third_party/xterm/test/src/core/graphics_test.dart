@@ -789,6 +789,27 @@ void main() {
     expect(terminal.unresolvedPlaceholderImageIds(), isNot(contains(88)));
   });
 
+  testWidgets('unresolvedPlaceholderImageIds reports only the active buffer', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    // Draw an unresolved placeholder on the primary screen, then switch to the
+    // alternate screen. Only the active buffer is visible and only it can be
+    // repopulated by a replay, so the inactive primary-screen id must not be
+    // reported while the alt screen is active — reporting it would request bytes
+    // that land on the wrong buffer and get recorded as already handled.
+    terminal.write('\x1b[38;5;55m$placeholder');
+    expect(terminal.unresolvedPlaceholderImageIds(), {55});
+
+    terminal.write('\x1b[?1049h'); // enter alternate screen
+    expect(terminal.unresolvedPlaceholderImageIds(), isEmpty);
+
+    terminal.write('\x1b[?1049l'); // back to the primary screen
+    expect(terminal.unresolvedPlaceholderImageIds(), {55});
+  });
+
   testWidgets('a=T advances the cursor below the image by r rows', (
     tester,
   ) async {

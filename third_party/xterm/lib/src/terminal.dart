@@ -23,7 +23,6 @@ import 'package:xterm/src/core/platform.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
-import 'package:xterm/src/utils/async_semaphore.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
@@ -115,19 +114,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   /// Protocol image ids referenced by on-screen Kitty Unicode-placeholder cells
-  /// that resolve to no stored or pending image, across both screens.
+  /// on the active screen that resolve to no stored or pending image.
   ///
-  /// The active screen is the common case (an agent CLI redrawing its alternate
-  /// screen), but the main buffer is included too so a placeholder left on the
-  /// primary screen is not missed. Reported to the MonkeyMux server via
-  /// `request_images` so it can replay exactly these ids from its retained
-  /// cache, repopulating images a bounded switch/reconnect replay dropped.
-  Set<int> unresolvedPlaceholderImageIds() {
-    return <int>{
-      ..._mainBuffer.graphics.unresolvedPlaceholderImageIds(),
-      ..._altBuffer.graphics.unresolvedPlaceholderImageIds(),
-    };
-  }
+  /// Scoped to the active buffer on purpose: it is the visible screen, and it is
+  /// the only buffer a replay repopulates — the bytes a server sends in response
+  /// arrive as normal output and are parsed into whichever buffer is active when
+  /// they land. Reporting an id that is only unresolved on the inactive buffer
+  /// would request bytes that get parsed into the wrong buffer, leaving the
+  /// inactive one blank while the caller records the id as already handled.
+  /// Reported to the MonkeyMux server via `request_images` so it can replay
+  /// exactly these ids from its retained cache, repopulating images a bounded
+  /// switch/reconnect replay dropped.
+  Set<int> unresolvedPlaceholderImageIds() =>
+      _buffer.graphics.unresolvedPlaceholderImageIds();
 
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
@@ -135,11 +134,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
-  // Bounds how many Kitty images decode concurrently. A window switch can replay
-  // a burst of images; decoding them all at once spikes engine threads, memory,
-  // and raster compositing. Decoding a few at a time renders progressively and
-  // keeps the device responsive.
-  final AsyncSemaphore _graphicsDecodeGate = AsyncSemaphore(3);
   _PendingKittyPlaceholder? _pendingKittyPlaceholder;
   _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
@@ -1497,7 +1491,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
-    await _graphicsDecodeGate.acquire();
+    await terminalGraphicsDecodeGate.acquire();
     final image = await () async {
       try {
         return await decodeTerminalImage(
@@ -1507,7 +1501,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           height: height,
         );
       } finally {
-        _graphicsDecodeGate.release();
+        terminalGraphicsDecodeGate.release();
       }
     }();
     observer?.call(
