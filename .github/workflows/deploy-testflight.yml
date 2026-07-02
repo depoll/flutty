@@ -338,7 +338,6 @@ jobs:
       actions: write
       contents: read
     outputs:
-      reuse-artifacts: ${{ steps.resolve.outputs.reuse-artifacts }}
       reuse-android-artifact: ${{ steps.resolve.outputs.reuse-android-artifact }}
       reuse-ios-artifact: ${{ steps.resolve.outputs.reuse-ios-artifact }}
       preview-run-id: ${{ steps.resolve.outputs.preview-run-id }}
@@ -368,11 +367,6 @@ jobs:
               reuseIosArtifact = 'false',
               previewRunId = '',
             }) => {
-              const reuseArtifacts =
-                reuseAndroidArtifact === 'true' || reuseIosArtifact === 'true'
-                  ? 'true'
-                  : 'false';
-              core.setOutput('reuse-artifacts', reuseArtifacts);
               core.setOutput('reuse-android-artifact', reuseAndroidArtifact);
               core.setOutput('reuse-ios-artifact', reuseIosArtifact);
               core.setOutput('preview-run-id', previewRunId);

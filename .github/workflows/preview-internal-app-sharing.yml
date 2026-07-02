@@ -61,14 +61,29 @@ jobs:
               run_id: workflowRun.id,
               per_page: 100,
             });
-            const aabArtifact = artifacts.find((artifact) =>
-              !artifact.expired && artifact.name.startsWith('android-unsigned-private-'),
+            const isAndroidAabArtifact = (artifact) =>
+              !artifact.expired && artifact.name.startsWith('android-unsigned-private-');
+            const isAbiLimitedAndroidAab = (artifact) =>
+              /-android-(arm|arm64|x64)$/.test(artifact.name);
+            const aabArtifact = artifacts.find(
+              (artifact) => isAndroidAabArtifact(artifact) && !isAbiLimitedAndroidAab(artifact),
+            );
+            const abiLimitedAabArtifact = artifacts.find(
+              (artifact) => isAndroidAabArtifact(artifact) && isAbiLimitedAndroidAab(artifact),
             );
             const apkArtifact = artifacts.find((artifact) =>
               !artifact.expired && artifact.name.startsWith('android-apk-private-'),
             );
 
             if (!aabArtifact) {
+              if (abiLimitedAabArtifact) {
+                core.notice(
+                  `Skipping Internal App Sharing upload because ${abiLimitedAabArtifact.name} is ABI-limited.`,
+                );
+                core.setOutput('should-upload', 'false');
+                return;
+              }
+
               core.setFailed(
                 `No reusable Android AAB artifact was found on workflow run ${workflowRun.id}.`,
               );
