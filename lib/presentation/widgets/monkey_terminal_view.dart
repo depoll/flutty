@@ -1996,6 +1996,19 @@ class MonkeyTerminalPainter extends TerminalPainter {
     if (cellFlags & CellFlags.invisible != 0) {
       return;
     }
+    // A plain space paints no glyph: its background is filled in the background
+    // pass and any underline in the underline pass, so shaping and drawing a
+    // space paragraph is a wasted per-cell drawParagraph. Overline and
+    // strikethrough do need a drawn run across the cell (below, a space is
+    // swapped for U+00A0 so the line renders), so only skip when neither is set.
+    // A typical terminal screen is mostly blank cells (indentation, padding,
+    // gaps between columns), so skipping them is a large cut to the per-frame
+    // paint that dominates build-thread time while a full-screen TUI redraws.
+    if (charCode == 0x20 &&
+        cellFlags & CellFlags.overline == 0 &&
+        cellFlags & CellFlags.strikethrough == 0) {
+      return;
+    }
     final color = resolveMonkeyTerminalCellForegroundColor(cellData);
     if (_paintBlockElementForeground(
       canvas,
@@ -3524,6 +3537,7 @@ class MonkeyRenderTerminal extends RenderBox
     _paintCount++;
     final diagnostics = DiagnosticsLogService.instance;
     if (!diagnostics.enabled) {
+      _measureTerminalPaintPhases = false;
       _paint(context, offset);
       context.setWillChangeHint();
       return;
@@ -3531,6 +3545,8 @@ class MonkeyRenderTerminal extends RenderBox
     // Measure the whole terminal paint so a capture can attribute build-thread
     // jank to the terminal render (text shaping, image compositing) versus the
     // surrounding widget rebuild. Timing only.
+    _measureTerminalPaintPhases = true;
+    _lastForegroundPaintMicros = 0;
     final stopwatch = Stopwatch()..start();
     _paint(context, offset);
     _maybeLogTerminalPaint(stopwatch.elapsedMicroseconds);
@@ -3538,6 +3554,8 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   int _terminalPaintLogAtMs = 0;
+  bool _measureTerminalPaintPhases = false;
+  int _lastForegroundPaintMicros = 0;
 
   void _maybeLogTerminalPaint(int micros) {
     if (micros < 8000) {
@@ -3556,6 +3574,7 @@ class MonkeyRenderTerminal extends RenderBox
       'frame',
       fields: {
         'durationMs': (micros / 1000).round(),
+        'foregroundMs': (_lastForegroundPaintMicros / 1000).round(),
         'visibleRows': visibleRows,
         'bufferLines': lines.length,
         'hasImages':
@@ -3597,12 +3616,18 @@ class MonkeyRenderTerminal extends RenderBox
     // Glyphs are drawn in a pass after every line's opaque background so a
     // descender (the bottom of "g"/"y"/"p") that extends past its cell box is
     // not clipped by the next line's background.
+    final foregroundStopwatch = _measureTerminalPaintPhases
+        ? (Stopwatch()..start())
+        : null;
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       _painter.paintLineForegrounds(
         canvas,
         _linePaintOffset(offset, i),
         lines[i],
       );
+    }
+    if (foregroundStopwatch != null) {
+      _lastForegroundPaintMicros = foregroundStopwatch.elapsedMicroseconds;
     }
 
     // Styled underlines are drawn as a separate pass, after every line's opaque
@@ -3832,6 +3857,7 @@ class MonkeyRenderTerminal extends RenderBox
     );
     _maybeLogKittyPlaceholderPaint(
       placeholderCount,
+      _terminal.graphics.imageCount,
       firstLine,
       lastLine,
       stopwatch.elapsedMicroseconds,
@@ -3850,16 +3876,19 @@ class MonkeyRenderTerminal extends RenderBox
 
   void _maybeLogKittyPlaceholderPaint(
     int placeholderCount,
+    int imageCount,
     int firstLine,
     int lastLine,
     int micros,
   ) {
-    // Surface a paint that is either slow or backed by many placeholder cells,
-    // throttled to at most one entry per second so a busy scroll does not flood
-    // the ring buffer. Logging the count even when fast lets a capture confirm
-    // both that the window is image-heavy and that the viewport-bounded analysis
-    // now keeps the paint cheap.
-    if (micros < 2000 && placeholderCount < 256) {
+    // Report the graphics state whenever the window holds any image bytes or
+    // placeholder cells, throttled to at most one entry per second so a busy
+    // scroll does not flood the ring buffer. Logging even when the paint is
+    // cheap lets a capture confirm the window is image-heavy, that the
+    // viewport-bounded analysis stays cheap, and — for the "images blank after
+    // reconnect" report — whether placeholder cells are present at all and
+    // whether they resolve to a ready image.
+    if (placeholderCount == 0 && imageCount == 0) {
       return;
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -3872,6 +3901,7 @@ class MonkeyRenderTerminal extends RenderBox
       'placeholder_paint',
       fields: {
         'placeholders': placeholderCount,
+        'images': imageCount,
         'visibleRows': lastLine - firstLine + 1,
         'durationMs': (micros / 1000).round(),
         'resolved': _kittyResolvedInstances,
