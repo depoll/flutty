@@ -600,6 +600,86 @@ void main() {
   );
 
   testWidgets(
+    'Kitty placeholder image renders its visible crop with off-screen '
+    'scrollback cells retained',
+    (tester) async {
+      // The main screen (unlike the alt screen) keeps scrolled-off rows in the
+      // scrollback, so a tall image pushed up the viewport leaves many attached
+      // placeholder cells above the fold. The compositor only analyses the
+      // visible rows, but the image grid must still be sliced from the full
+      // placement, so the on-screen bottom crop renders at the correct scale
+      // rather than being dropped or mis-sliced by the off-screen remainder.
+      final boundaryKey = GlobalKey();
+      final terminal = Terminal(maxLines: 400);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 360,
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: MonkeyTerminalView(
+                    terminal,
+                    hardwareKeyboardOnly: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      const imageId = 0xA5E30B;
+      terminal.resize(8, 20);
+      await tester.runAsync(() async {
+        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
+        terminal
+          ..write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=12,f=100,q=2;$png\x1b\\')
+          ..write(_placeholderGrid(imageId, cols: 8, rows: 12));
+      });
+      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason: 'the full image renders before scrolling',
+      );
+      final placeholdersBeforeScroll = terminal.graphics.placeholders.length;
+
+      // Push the top of the image above the fold into the scrollback. The rows
+      // stay attached (main-screen scrollback), so the off-screen portion is
+      // exactly the "many retained placeholders" case the viewport-bounded
+      // compositor must handle without dropping the visible crop.
+      terminal.write('\x1b[20;1H');
+      for (var i = 0; i < 10; i++) {
+        terminal.write('\r\n');
+      }
+      await tester.pump();
+
+      expect(
+        terminal.graphics.placeholders.length,
+        placeholdersBeforeScroll,
+        reason: 'main-screen scrollback must retain the off-screen cells',
+      );
+      expect(
+        terminal.graphics.placeholders.every((p) => p.attached),
+        isTrue,
+        reason: 'scrolled-off placeholder cells stay attached in scrollback',
+      );
+      expect(
+        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
+        isTrue,
+        reason:
+            'the still-visible bottom crop must keep rendering while most of '
+            'the image sits off-screen in the scrollback',
+      );
+    },
+  );
+
+  testWidgets(
     'Kitty same-id image: stale holey copy is dismissed, fresh copy renders',
     (tester) async {
       final boundaryKey = GlobalKey();

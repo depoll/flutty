@@ -3763,6 +3763,80 @@ class MonkeyRenderTerminal extends RenderBox
     double cellWidth,
     double cellHeight,
   ) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      _paintKittyPlaceholderGraphicsImpl(
+        canvas,
+        offset,
+        firstLine,
+        lastLine,
+        cellWidth,
+        cellHeight,
+      );
+      return;
+    }
+    // Measure the placeholder compositing cost so a diagnostics capture can
+    // confirm whether an image-heavy window's build-thread jank comes from this
+    // path and whether the viewport-bounded analysis keeps it cheap. Count and
+    // timing only — never any cell content.
+    final placeholderCount = _terminal.graphics.placeholders.length;
+    final stopwatch = Stopwatch()..start();
+    _paintKittyPlaceholderGraphicsImpl(
+      canvas,
+      offset,
+      firstLine,
+      lastLine,
+      cellWidth,
+      cellHeight,
+    );
+    _maybeLogKittyPlaceholderPaint(
+      placeholderCount,
+      firstLine,
+      lastLine,
+      stopwatch.elapsedMicroseconds,
+    );
+  }
+
+  int _kittyPlaceholderPaintLogAtMs = 0;
+
+  void _maybeLogKittyPlaceholderPaint(
+    int placeholderCount,
+    int firstLine,
+    int lastLine,
+    int micros,
+  ) {
+    // Surface a paint that is either slow or backed by many placeholder cells,
+    // throttled to at most one entry per second so a busy scroll does not flood
+    // the ring buffer. Logging the count even when fast lets a capture confirm
+    // both that the window is image-heavy and that the viewport-bounded analysis
+    // now keeps the paint cheap.
+    if (micros < 2000 && placeholderCount < 256) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _kittyPlaceholderPaintLogAtMs < 1000) {
+      return;
+    }
+    _kittyPlaceholderPaintLogAtMs = nowMs;
+    DiagnosticsLogService.instance.debug(
+      'terminal.graphics',
+      'placeholder_paint',
+      fields: {
+        'placeholders': placeholderCount,
+        'visibleRows': lastLine - firstLine + 1,
+        'durationMs': (micros / 1000).round(),
+      },
+    );
+  }
+
+  void _paintKittyPlaceholderGraphicsImpl(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+    double cellWidth,
+    double cellHeight,
+  ) {
     final graphics = _terminal.graphics..pruneDetachedPlaceholders();
     final placeholders = graphics.placeholders;
     if (placeholders.isEmpty) {
@@ -3803,8 +3877,25 @@ class MonkeyRenderTerminal extends RenderBox
     //    viewer and redrawing) without clearing the previous copy's cells, the
     //    old copy lingers as a ghost. Among the surviving dense groups of one
     //    image id we keep only the most recently written placement.
-    final gridCols = <String, int>{};
-    final gridRows = <String, int>{};
+    //
+    // The instance grouping is scoped to the visible rows. Only visible cells
+    // are ever composited, and both axes are decided correctly from what is on
+    // screen: a clean on-screen crop is still dense, and competing copies of one
+    // image that matter for the viewport are the ones drawn within it. Bounding
+    // the heavy per-cell work (string keys and several maps) to the viewport
+    // keeps scrolling — and live-redrawing — an image-heavy window off the
+    // O(total placeholders) path that otherwise showed up as mid-scroll build
+    // jank on a window holding many image cells across its scrollback.
+    //
+    // Grid dimensions, by contrast, are gathered from every attached
+    // placeholder: an image's grid is fixed (it does not shrink as rows scroll
+    // off), so a non-virtual image whose lower rows are below the viewport would
+    // be sliced with too few rows if inferred from visible cells alone. That
+    // whole-list pass is kept allocation-free via a packed int key
+    // (imageId * 64 + bitWidth; bitWidth is only ever 8 or 24) so it stays cheap
+    // on the per-frame scroll path.
+    final gridColsByImage = <int, int>{};
+    final gridRowsByImage = <int, int>{};
     final instanceCellCount = <String, int>{};
     final instanceRowBounds = <String, List<int>>{};
     final instanceColBounds = <String, List<int>>{};
@@ -3826,22 +3917,26 @@ class MonkeyRenderTerminal extends RenderBox
       if (!placeholder.attached) {
         continue;
       }
-      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
       final virtualPlacement = graphics.virtualPlacementById(
         placeholder.imageId,
       );
-      final cols = (virtualPlacement?.cols ?? 0) > 0
+      final imageIntKey =
+          placeholder.imageId * 64 + placeholder.imageIdBitWidth;
+      gridColsByImage[imageIntKey] = (virtualPlacement?.cols ?? 0) > 0
           ? virtualPlacement!.cols
-          : math.max(gridCols[key] ?? 1, placeholder.col + 1);
-      final rows = (virtualPlacement?.rows ?? 0) > 0
+          : math.max(gridColsByImage[imageIntKey] ?? 1, placeholder.col + 1);
+      gridRowsByImage[imageIntKey] = (virtualPlacement?.rows ?? 0) > 0
           ? virtualPlacement!.rows
-          : math.max(gridRows[key] ?? 1, placeholder.row + 1);
-      gridCols[key] = cols;
-      gridRows[key] = rows;
+          : math.max(gridRowsByImage[imageIntKey] ?? 1, placeholder.row + 1);
 
-      if (!cellIsLivePlaceholder(placeholder.cellRow, placeholder.cellCol)) {
+      final cellRow = placeholder.cellRow;
+      if (cellRow < firstLine || cellRow > lastLine) {
         continue;
       }
+      if (!cellIsLivePlaceholder(cellRow, placeholder.cellCol)) {
+        continue;
+      }
+      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
       final instanceKey = instanceKeyFor(placeholder, key);
       instanceImageKey[instanceKey] = key;
       instanceCellCount[instanceKey] =
@@ -3904,18 +3999,19 @@ class MonkeyRenderTerminal extends RenderBox
     }
 
     // Pass 2: collect the visible cells that belong to a renderable instance.
-    // Keep at most one live cell per on-screen position.
+    // Keep at most one live cell per on-screen position. The visible-range check
+    // runs first so off-screen placeholders cost nothing but an integer compare.
     final cellByPosition = <int, _KittyPlaceholderCell>{};
     for (final placeholder in placeholders) {
       if (!placeholder.attached) {
         continue;
       }
-      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
-      if (!renderableInstances.contains(instanceKeyFor(placeholder, key))) {
-        continue;
-      }
       final cellRow = placeholder.cellRow;
       if (cellRow < firstLine || cellRow > lastLine) {
+        continue;
+      }
+      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
+      if (!renderableInstances.contains(instanceKeyFor(placeholder, key))) {
         continue;
       }
       final cellCol = placeholder.cellCol;
@@ -3980,8 +4076,9 @@ class MonkeyRenderTerminal extends RenderBox
       if (stored == null) {
         continue;
       }
-      final cols = gridCols[start.imageKey] ?? 1;
-      final rows = gridRows[start.imageKey] ?? 1;
+      final imageIntKey = start.imageId * 64 + start.bitWidth;
+      final cols = gridColsByImage[imageIntKey] ?? 1;
+      final rows = gridRowsByImage[imageIntKey] ?? 1;
       if (cols <= 0 || rows <= 0) {
         continue;
       }
