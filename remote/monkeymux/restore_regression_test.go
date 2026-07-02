@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -201,5 +202,119 @@ func TestScheduleRestoreRedrawFollowUpsIgnoresNilConn(t *testing.T) {
 	// The pending entry is preserved for the next real attach.
 	if !server.restoreRedrawPending["@1"] {
 		t.Fatal("pending redraw entry was consumed without an attached client")
+	}
+}
+
+func TestAgentResumeCommandWithFreshFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		resume string
+		launch string
+		want   string
+	}{
+		{
+			name:   "resume falls back to fresh launch",
+			resume: "copilot --resume 'abc'",
+			launch: "copilot",
+			want:   "copilot --resume 'abc' || copilot",
+		},
+		{
+			name:   "yolo launch preserved in fallback",
+			resume: "copilot --yolo --resume 'abc'",
+			launch: "copilot --yolo",
+			want:   "copilot --yolo --resume 'abc' || copilot --yolo",
+		},
+		{
+			name:   "no launch keeps bare resume",
+			resume: "copilot --resume 'abc'",
+			launch: "",
+			want:   "copilot --resume 'abc'",
+		},
+		{
+			name:   "identical commands are not chained",
+			resume: "opencode --continue",
+			launch: "opencode --continue",
+			want:   "opencode --continue",
+		},
+		{
+			name:   "empty resume yields launch",
+			resume: "",
+			launch: "copilot",
+			want:   "copilot",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentResumeCommandWithFreshFallback(tc.resume, tc.launch); got != tc.want {
+				t.Fatalf("agentResumeCommandWithFreshFallback(%q, %q) = %q, want %q", tc.resume, tc.launch, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRestoreAgentWindowSurvivesFailedResume reproduces the "Copilot CLI does
+// not restore after a MonkeyMux upgrade" regression: when a restored agent
+// window's --resume attempt exits immediately (the previous session can no
+// longer be resumed), the window must fall back to a fresh launch and stay
+// open instead of vanishing.
+func TestRestoreAgentWindowSurvivesFailedResume(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "fresh-launched")
+	// Fake agent: any --resume invocation fails (like Copilot CLI's "No
+	// session ... matched" exit 1); a fresh launch records that it ran and
+	// then blocks so the window stays alive.
+	fake := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$arg\" = \"--resume\" ]; then\n" +
+		"    echo 'No session, task, or name matched' 1>&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		": > " + shellQuote(marker) + "\n" +
+		"exec cat\n"
+	if err := os.WriteFile(filepath.Join(binDir, "copilot"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	server := newMuxServerWithSize("restore-failed-resume", 80, 24)
+	t.Cleanup(server.close)
+
+	restore := &serverRestore{
+		SchemaVersion: restoreSchemaVersion,
+		Windows: []restoreWindowState{
+			{
+				ID:             "@1",
+				Index:          0,
+				Name:           "Copilot CLI",
+				AgentTool:      "copilot",
+				AgentSessionID: "dead-session",
+				Cwd:            binDir,
+				Active:         true,
+			},
+		},
+	}
+	if err := server.restoreOrCreateInitialWindow(restore, createWindowOptions{}); err != nil {
+		t.Fatalf("restoreOrCreateInitialWindow: %v", err)
+	}
+
+	// The fresh fallback must run (the window would otherwise close on the
+	// failed resume).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fresh fallback never launched; window closed after failed resume. snapshots=%+v", server.snapshots())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The window survives with exactly one open pane running the fresh agent.
+	snaps := server.snapshots()
+	if len(snaps) != 1 {
+		t.Fatalf("restored windows = %d, want 1 (window vanished after failed resume): %+v", len(snaps), snaps)
 	}
 }

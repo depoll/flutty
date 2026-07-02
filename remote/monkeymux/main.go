@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.84"
+	monkeyMuxVersion                  = "0.1.86"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -2548,9 +2548,11 @@ func createWindowOptionsForRestore(
 	)
 	command := ""
 	if agentTool != "" {
-		command = agentLaunchCommand(agentTool, startInYoloMode)
+		launch := agentLaunchCommand(agentTool, startInYoloMode)
+		command = launch
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
-			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			resume := agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			command = agentResumeCommandWithFreshFallback(resume, launch)
 		}
 	}
 	history := []byte(nil)
@@ -5776,6 +5778,35 @@ func canonicalAgentCommandName(command string) string {
 	return firstNonEmptyString(agentToolFromCommandName(command), cleanProcessCommandName(command))
 }
 
+// agentResumeCommandWithFreshFallback wraps a restored agent's --resume command
+// so a resume that exits immediately falls back to launching the agent fresh,
+// keeping the restored window alive instead of letting it vanish.
+//
+// After a MonkeyMux helper upgrade every window is recreated by relaunching its
+// foreground process. For an agent this is something like `copilot --resume
+// <id>`. When that session can no longer be resumed — a window that never
+// committed a session before the restart, a session store that lives on another
+// machine, a stale id — the CLI prints an error and exits non-zero (Copilot CLI
+// reports "No session, task, or name matched" and exits 1). The window's shell
+// then has nothing left to run, so the pane closes and the user loses the whole
+// window. Falling back to a fresh launch preserves the window; a successful
+// resume runs interactively and only exits when the user quits, so the "||"
+// branch is reached solely when the resume itself failed to start. An
+// intentional close signals the whole process group (SIGHUP), which terminates
+// the shell before it can reach the fallback, so closing a window never
+// relaunches the agent.
+func agentResumeCommandWithFreshFallback(resume string, launch string) string {
+	resume = strings.TrimSpace(resume)
+	launch = strings.TrimSpace(launch)
+	if resume == "" {
+		return launch
+	}
+	if launch == "" || launch == resume {
+		return resume
+	}
+	return resume + " || " + launch
+}
+
 func agentToolFromTerminalTitle(title string) string {
 	normalized := strings.ToLower(strings.Join(strings.Fields(title), " "))
 	normalized = strings.Trim(normalized, "·-: ")
@@ -6651,7 +6682,7 @@ func resolveStartupDirectory(requested string) string {
 	if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
 		return home
 	}
-	if current, err := os.Getwd(); err == nil {
+	if current, err := os.Getwd(); err == nil && directoryExists(current) {
 		return current
 	}
 	return ""
