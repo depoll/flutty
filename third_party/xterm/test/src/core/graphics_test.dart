@@ -748,6 +748,47 @@ void main() {
     );
   });
 
+  testWidgets(
+      'unresolvedPlaceholderImageIds lists placeholder ids with no image', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    // A placeholder cell referencing image id 77 whose bytes never arrived
+    // (e.g. dropped by a bounded switch/reconnect replay) resolves to nothing.
+    terminal.write('\x1b[38;5;77m$placeholder');
+    final placeholders = terminal.graphics.placeholders;
+    expect(placeholders, hasLength(1));
+    expect(placeholders.single.imageId, 77);
+    expect(terminal.unresolvedPlaceholderImageIds(), {77});
+
+    // Once the bytes arrive (server replay of the requested id), the placeholder
+    // resolves and the id drops out of the missing set.
+    terminal.graphics.storeImageWithId(77, await _buildImage(1, 1));
+    expect(terminal.unresolvedPlaceholderImageIds(), isEmpty);
+  });
+
+  testWidgets('unresolvedPlaceholderImageIds excludes still-pending images', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    // Image 88's bytes are in hand but not yet decoded (a store-only transmit
+    // deferred to first paint). A placeholder for it must not be reported as
+    // missing — re-requesting bytes already held would be wasteful.
+    terminal.graphics.storePendingImage(
+      88,
+      payload: base64.decode('AAAA'),
+      format: 100,
+    );
+    terminal.write('\x1b[38;5;88m$placeholder');
+    expect(terminal.graphics.hasPendingImage(88), isTrue);
+    expect(terminal.graphics.placeholders.single.imageId, 88);
+    expect(terminal.unresolvedPlaceholderImageIds(), isNot(contains(88)));
+  });
+
   testWidgets('a=T advances the cursor below the image by r rows', (
     tester,
   ) async {

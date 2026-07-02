@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.81"
+	monkeyMuxVersion                  = "0.1.82"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -277,6 +277,11 @@ type controlMessage struct {
 	// holds. Sent with select_window so the replay can skip re-transmitting
 	// images the client can render from its own cache.
 	HaveImageSignatures map[string]uint32 `json:"haveImageSignatures,omitempty"`
+	// ImageIDs lists Kitty protocol image ids (as strings) the client is missing
+	// for the active window: it has drawn placeholder cells that reference them
+	// but never received (or has evicted) their bytes. Sent with request_images
+	// so the server can replay exactly those retained transmissions.
+	ImageIDs []string `json:"imageIds,omitempty"`
 }
 
 type controlResponse struct {
@@ -407,7 +412,7 @@ type muxWindow struct {
 	// kittyImageSeq records a global monotonic store sequence per image id so a
 	// machine-wide budget can evict the globally-oldest image across all
 	// windows. Protected by the server lock, like the maps above.
-	kittyImageSeq        map[string]uint64
+	kittyImageSeq map[string]uint64
 	// kittyImageToken holds the FNV-1a-32 signature of each retained image's
 	// base64-decoded transmission payload, keyed by protocol image id. A client
 	// reports the signatures of the images it still holds on a window switch so
@@ -2966,6 +2971,9 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			return
 		}
 		client.send(controlResponse{ID: request.ID, Type: "window_selected", Status: "ok"})
+	case "request_images":
+		s.replayRequestedImages(request.ImageIDs)
+		client.send(controlResponse{ID: request.ID, Type: "images_replayed", Status: "ok"})
 	case "close_window", "kill_window":
 		id := request.WindowID
 		if id == "" && request.WindowIndex != nil {
@@ -3415,6 +3423,35 @@ func (o *boundedCommandOutput) exceeded() bool {
 
 func (s *muxServer) selectWindow(windowID string) error {
 	return s.selectWindowWithSkip(windowID, nil)
+}
+
+// replayRequestedImages re-sends specific retained Kitty image transmissions to
+// the attach connection. The client calls this after a switch/redraw when it
+// finds placeholder cells referencing images it never received (they fell
+// outside the bounded switch replay). The bytes are the store-only (a=t)
+// transmissions, so they only repopulate the client's image cache — the
+// placeholder cells already on screen then resolve on the next repaint without
+// drawing or moving the cursor. Only the active window is served: the attach
+// connection is viewing it, and requested ids are scoped to what it just drew.
+func (s *muxServer) replayRequestedImages(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	var attach net.Conn
+	var payload []byte
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return
+	}
+	attach = s.attachConn
+	payload = window.kittyImageTransmissionsForLocked(ids)
+	s.mu.Unlock()
+	s.writeAttachLocked(attach, payload)
+	s.attachMu.Unlock()
 }
 
 // selectWindowWithSkip activates a window and streams its reattach replay,
@@ -4818,6 +4855,38 @@ func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 			}
 		}
 		out = append(out, w.kittyImages[id]...)
+	}
+	return out
+}
+
+// kittyImageTransmissionsForLocked returns the concatenated store-only
+// transmissions of the requested image ids, in request order, skipping ids that
+// are unknown or duplicated. Unlike kittyImageReplayLocked this ignores the
+// replay caps: the client asks only for the handful of ids it is actually
+// missing, so the payload is naturally bounded by demand rather than by a fixed
+// "most recent N" window.
+func (w *muxWindow) kittyImageTransmissionsForLocked(ids []string) []byte {
+	if len(ids) == 0 || len(w.kittyImages) == 0 {
+		return nil
+	}
+	var out []byte
+	var seen map[string]struct{}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		buf, ok := w.kittyImages[id]
+		if !ok {
+			continue
+		}
+		if seen == nil {
+			seen = make(map[string]struct{}, len(ids))
+		}
+		seen[id] = struct{}{}
+		out = append(out, buf...)
 	}
 	return out
 }

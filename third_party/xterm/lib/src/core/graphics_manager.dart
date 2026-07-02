@@ -297,6 +297,65 @@ class GraphicsManager {
     return result;
   }
 
+  /// Protocol image ids referenced by attached Kitty Unicode-placeholder cells
+  /// that resolve to no stored or pending image.
+  ///
+  /// The foreground app has drawn placeholder cells for these images, but their
+  /// bytes were never received (or have been evicted) — for example when a
+  /// window switch replay is bounded and drops images the app still shows, or a
+  /// reconnect replays fewer images than the app references. Such placeholders
+  /// render blank until the bytes arrive. A caller can ask the MonkeyMux server
+  /// to replay exactly these ids from its per-window retained cache.
+  ///
+  /// Pending (transmitted but not yet decoded) ids are treated as resolvable and
+  /// excluded: their bytes are already in flight. The result is de-duplicated by
+  /// image id, so a full-screen image made of hundreds of placeholder cells
+  /// contributes a single id.
+  Set<int> unresolvedPlaceholderImageIds() {
+    if (_placeholders.isEmpty) {
+      return const <int>{};
+    }
+    final unresolved = <int>{};
+    final resolvable = <int>{};
+    for (final placeholder in _placeholders) {
+      if (!placeholder.attached) {
+        continue;
+      }
+      final id = placeholder.imageId;
+      if (id <= 0 || unresolved.contains(id) || resolvable.contains(id)) {
+        continue;
+      }
+      if (_canResolvePlaceholderId(id, placeholder.imageIdBitWidth)) {
+        resolvable.add(id);
+      } else {
+        unresolved.add(id);
+      }
+    }
+    return unresolved;
+  }
+
+  /// Whether a placeholder color [id] maps to any stored or pending image,
+  /// directly or via the low-bit masked fallback used by
+  /// [imageByPlaceholderColorId]. Unlike that method this never starts a decode,
+  /// so it is safe to call while merely probing for missing images.
+  bool _canResolvePlaceholderId(int id, int bitWidth) {
+    if (_images.containsKey(id) || _pendingImages.containsKey(id)) {
+      return true;
+    }
+    final mask = bitWidth >= 24 ? 0xFFFFFF : 0xFF;
+    for (final key in _images.keys) {
+      if (_retainedImageIds.contains(key) && (key & mask) == id) {
+        return true;
+      }
+    }
+    for (final key in _pendingImages.keys) {
+      if ((key & mask) == id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Approximate decoded image memory currently retained.
   int get currentMemoryBytes => _currentMemoryBytes;
 

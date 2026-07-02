@@ -114,6 +114,21 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     return result;
   }
 
+  /// Protocol image ids referenced by on-screen Kitty Unicode-placeholder cells
+  /// that resolve to no stored or pending image, across both screens.
+  ///
+  /// The active screen is the common case (an agent CLI redrawing its alternate
+  /// screen), but the main buffer is included too so a placeholder left on the
+  /// primary screen is not missed. Reported to the MonkeyMux server via
+  /// `request_images` so it can replay exactly these ids from its retained
+  /// cache, repopulating images a bounded switch/reconnect replay dropped.
+  Set<int> unresolvedPlaceholderImageIds() {
+    return <int>{
+      ..._mainBuffer.graphics.unresolvedPlaceholderImageIds(),
+      ..._altBuffer.graphics.unresolvedPlaceholderImageIds(),
+    };
+  }
+
   /// Cap on the size of a single buffered graphics transmission (16 MiB).
   static const _maxGraphicsBytes = 16 * 1024 * 1024;
 

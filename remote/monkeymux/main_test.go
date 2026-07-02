@@ -1831,6 +1831,60 @@ func TestKittyImageReplayCapsCount(t *testing.T) {
 	}
 }
 
+func TestKittyImageTransmissionsForReplaysRequestedIdsBeyondReplayCap(t *testing.T) {
+	window := &muxWindow{}
+	// Transmit more images than the replay caps would ever send at once, using
+	// distinct payloads so a request can target an early (older-than-cap) id.
+	const transmitted = maxReplayedKittyImages + 8
+	for i := 0; i < transmitted; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;PAY%d\x1b\\", i, i)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	// An id well outside the "most recent N" replay window is omitted by the
+	// bounded switch replay...
+	const oldID = "0"
+	if strings.Contains(string(window.kittyImageReplayLocked(nil)), "i=0,") {
+		t.Fatalf("precondition: id 0 should be beyond the bounded replay cap")
+	}
+	// ...but a targeted request replays exactly it, ignoring the caps.
+	got := string(window.kittyImageTransmissionsForLocked([]string{oldID}))
+	if !strings.Contains(got, "i=0,") || !strings.Contains(got, "PAY0") {
+		t.Fatalf("requested id 0 not replayed: %q", got)
+	}
+	if strings.Contains(got, "PAY1") {
+		t.Fatalf("only the requested id should be replayed: %q", got)
+	}
+	if strings.Contains(got, "a=T") {
+		t.Fatalf("requested transmit must stay store-only (a=t): %q", got)
+	}
+}
+
+func TestKittyImageTransmissionsForSkipsUnknownAndDeduplicates(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=11,f=100;ALPHA\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=22,f=100;BETA\x1b\\"))
+
+	// Unknown ids are skipped; a duplicated id is emitted once.
+	got := string(window.kittyImageTransmissionsForLocked(
+		[]string{"11", "999", "11", ""}))
+	if strings.Count(got, "i=11,") != 1 {
+		t.Fatalf("id 11 should be replayed exactly once: %q", got)
+	}
+	if strings.Contains(got, "i=22,") {
+		t.Fatalf("unrequested id 22 must not be replayed: %q", got)
+	}
+	if strings.Contains(got, "i=999") {
+		t.Fatalf("unknown id 999 must be skipped: %q", got)
+	}
+	// No ids requested replays nothing.
+	if len(window.kittyImageTransmissionsForLocked(nil)) != 0 {
+		t.Fatalf("empty request must replay nothing")
+	}
+}
+
 func TestKittyImageReplayCapsBytes(t *testing.T) {
 	window := &muxWindow{}
 	// Use ~1 MiB images and transmit enough total to exceed the byte budget so

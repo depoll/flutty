@@ -204,6 +204,16 @@ out of scope.
   Pending images are untouched by `clear()`, so they stay reported. Keep on
   re-sync.
 
+* Add: `GraphicsManager.unresolvedPlaceholderImageIds()` /
+  `Terminal.unresolvedPlaceholderImageIds()` return the protocol image ids that
+  on-screen Kitty Unicode-placeholder cells reference but that resolve to no
+  stored or pending image. The MonkeySSH app reports these to the MonkeyMux
+  server (`request_images`) so it can replay exactly those bytes from its
+  per-window retained cache, recovering images a bounded switch/reconnect replay
+  dropped (the foreground app draws placeholder cells for them but never
+  re-transmits the bytes). Pending (in-flight) ids are treated as resolvable and
+  excluded. Keep on re-sync.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback
