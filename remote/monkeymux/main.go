@@ -3433,6 +3433,14 @@ func (s *muxServer) selectWindow(windowID string) error {
 // placeholder cells already on screen then resolve on the next repaint without
 // drawing or moving the cursor. Only the active window is served: the attach
 // connection is viewing it, and requested ids are scoped to what it just drew.
+//
+// The request carries no window id and resolves against whichever window is
+// active when the server processes it. This is deliberate and safe if a window
+// switch races the request: the ids are looked up in the now-active window's
+// retained cache, so ids it does not hold are simply skipped (a no-op), and the
+// client resets its per-visit request set on every window change and re-requests
+// whatever the new window is still missing. The worst case is a redundant or
+// skipped transmission, never a wrong-window image persisting on screen.
 func (s *muxServer) replayRequestedImages(ids []string) {
 	if len(ids) == 0 {
 		return
