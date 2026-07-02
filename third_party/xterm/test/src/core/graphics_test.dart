@@ -438,6 +438,40 @@ void main() {
     });
   });
 
+  testWidgets(
+    'heldImageSignatures omits an image that would not survive a clear',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(3, 2);
+        final terminal = Terminal();
+
+        // A physical a=T image with no protocol id is stored under an
+        // auto-assigned id and is NOT retained, so entering the alternate
+        // screen (a window switch's `CSI ? 1049 h`) drops it. It must therefore
+        // never be reported as held: doing so would let the server skip
+        // re-transmitting it, and then the switch's own clear would drop it,
+        // leaving the redrawn placement blank.
+        terminal.write('\x1b_Ga=T,f=100;$pngBase64\x1b\\');
+        var waited = 0;
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+        expect(terminal.graphics.hasPlacements, isTrue);
+        expect(
+          terminal.heldImageSignatures(),
+          isEmpty,
+          reason: 'a non-retained image must not be reported as held',
+        );
+
+        // Entering the alternate screen clears it, confirming the image really
+        // does not survive — exactly why it must not be reported.
+        terminal.write('\x1b[?1049h');
+        expect(terminal.graphics.hasPlacements, isFalse);
+      });
+    },
+  );
+
   testWidgets('decodeTerminalImage downscales an oversized image', (
     tester,
   ) async {
