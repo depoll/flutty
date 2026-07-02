@@ -241,6 +241,11 @@ const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
 const _monkeyMuxLiveResizeSyncMinGap = Duration(milliseconds: 32);
 const _monkeyMuxFallbackResizeSyncMinGap = Duration(milliseconds: 70);
 const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
+// After the terminal settles, ask the MonkeyMux server to replay any Kitty
+// images referenced by on-screen placeholder cells that the client never
+// received. Debounced so an agent redrawing or scrolling many image cells sends
+// at most one request per settle rather than one per output frame.
+const _missingImageRecoveryDebounce = Duration(milliseconds: 350);
 // After a multiplexer window switch, sample the live render object's paint/
 // change counters once the redraw has had time to arrive, then force a repaint.
 // A second, later force catches a redraw that lands after the first sample.
@@ -3337,6 +3342,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
+  // Debounced demand-driven Kitty image recovery. When the terminal redraws
+  // placeholder cells for images the client never received (a bounded switch or
+  // reconnect replay dropped them, and the app does not re-transmit), the ids
+  // are collected here and re-requested from the MonkeyMux server. Ids already
+  // asked for this window visit are tracked so a genuinely-gone image is not
+  // requested on every output frame; the set resets on each window change.
+  Timer? _missingImageRequestTimer;
+  final Set<int> _requestedMissingImageIds = <int>{};
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -4055,6 +4068,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
+    _scheduleMissingImageRecoveryRequest();
     if (_shellCompletionsEnabled &&
         _shellCompletionPromptPrefix != null &&
         _shellCompletionDebounceTimer == null &&
@@ -6831,6 +6845,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     bool revealLatestOutput = false,
   }) {
+    // A window switch, create, or reattach redraws the screen fresh, so any
+    // image the client still lacks should be re-requested for the new view;
+    // clear the per-visit request tracking (and cancel a pending debounce).
+    _resetMissingImageRecoveryState();
     // The MonkeyMux helper owns the replay/redraw for attach, select, create,
     // and active-window close. A second app-triggered redraw here competes with
     // that replay and can expose old alternate-screen output as visible scroll.
@@ -6876,6 +6894,66 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       },
     );
+  }
+
+  /// Debounces a demand-driven recovery of Kitty images the terminal references
+  /// but does not hold.
+  ///
+  /// Fires from every terminal content change (window switch replay, reconnect
+  /// replay, and an agent CLI scrolling its own view), coalescing bursts of
+  /// output so the resolve scan and any control request run only once the screen
+  /// settles.
+  void _scheduleMissingImageRecoveryRequest() {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    _missingImageRequestTimer?.cancel();
+    _missingImageRequestTimer = Timer(
+      _missingImageRecoveryDebounce,
+      _requestMissingImagesNow,
+    );
+  }
+
+  void _requestMissingImagesNow() {
+    _missingImageRequestTimer = null;
+    if (!mounted || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final unresolved = _terminal.unresolvedPlaceholderImageIds();
+    if (unresolved.isEmpty) {
+      return;
+    }
+    final toRequest = <int>[
+      for (final id in unresolved)
+        if (_requestedMissingImageIds.add(id)) id,
+    ];
+    if (toRequest.isEmpty) {
+      return;
+    }
+    final session = _activeSession();
+    if (session == null) {
+      return;
+    }
+    final sessionName = _activeMonkeyMuxSessionName(session);
+    if (sessionName == null) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'terminal.graphics',
+      'request_missing_images',
+      fields: {
+        'connectionId': session.connectionId,
+        'requested': toRequest.length,
+        'unresolved': unresolved.length,
+      },
+    );
+    unawaited(_monkeyMuxService.requestImages(session, sessionName, toRequest));
+  }
+
+  void _resetMissingImageRecoveryState() {
+    _missingImageRequestTimer?.cancel();
+    _missingImageRequestTimer = null;
+    _requestedMissingImageIds.clear();
   }
 
   /// Throttles the remote MonkeyMux resize so pinch-zoom follows in real time
@@ -9947,6 +10025,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
+    _missingImageRequestTimer?.cancel();
     _terminalPathVerificationBatchTimer?.cancel();
     _terminalPathUnderlineScrollThrottleTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
