@@ -345,9 +345,9 @@ jobs:
       actions: write
       contents: read
     outputs:
-      reuse-android-artifact: ${{ steps.resolve.outputs.reuse-android-artifact }}
-      reuse-ios-artifact: ${{ steps.resolve.outputs.reuse-ios-artifact }}
-      preview-run-id: ${{ steps.resolve.outputs.preview-run-id }}
+      reuse-artifacts: ${{ steps.resolve.outputs.reuse-artifacts }}
+      android-run-id: ${{ steps.resolve.outputs.android-run-id }}
+      ios-run-id: ${{ steps.resolve.outputs.ios-run-id }}
     steps:
       - name: Find or start reusable artifact build
         id: resolve
@@ -357,26 +357,26 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const deploySha = '${{ needs.validate-pr.outputs.deploy-sha }}';
-            const prNumber = '${{ inputs.pr-number }}';
             const buildName = '${{ needs.finalize-version.outputs.build-name }}';
             const buildNumber = '${{ needs.finalize-version.outputs.build-number }}';
             const rebuildRequired =
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
-            const workflowId = 'preview.yml';
             const androidArtifactName = `android-unsigned-private-${buildName}-${buildNumber}`;
             const iosArtifactName = `ios-unsigned-private-${buildName}-${buildNumber}.ipa`;
-            const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
+            // Android and iOS unsigned intermediates are produced by two separate
+            // preview workflows (PR Preview / PR Preview iOS), so resolve each by
+            // artifact name across the repo rather than assuming one shared run.
             const maxWaitAttempts = 40;
             const waitDelayMs = 30_000;
 
             const setOutputs = ({
-              reuseAndroidArtifact = 'false',
-              reuseIosArtifact = 'false',
-              previewRunId = '',
+              reuseArtifacts = 'false',
+              androidRunId = '',
+              iosRunId = '',
             }) => {
-              core.setOutput('reuse-android-artifact', reuseAndroidArtifact);
-              core.setOutput('reuse-ios-artifact', reuseIosArtifact);
-              core.setOutput('preview-run-id', previewRunId);
+              core.setOutput('reuse-artifacts', reuseArtifacts);
+              core.setOutput('android-run-id', androidRunId);
+              core.setOutput('ios-run-id', iosRunId);
             };
 
             if (rebuildRequired) {
@@ -390,112 +390,52 @@ jobs:
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-            const listRuns = async () =>
-              github.paginate(github.rest.actions.listWorkflowRuns, {
-                owner,
-                repo,
-                workflow_id: workflowId,
-                event: 'pull_request',
-                per_page: 100,
-              });
-
-            const listArtifacts = async (runId) =>
-              github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-                owner,
-                repo,
-                run_id: Number(runId),
-                per_page: 100,
-              });
-
-            const getWorkflowRun = async (runId) =>
-              (
-                await github.rest.actions.getWorkflowRun({
-                  owner,
-                  repo,
-                  run_id: Number(runId),
-                })
-              ).data;
-
-            const findRunForSha = async () => {
-              const runs = await listRuns();
-              return runs.find(
-                (run) =>
-                  run.head_sha === deploySha &&
-                  run.event === 'pull_request' &&
-                  run.pull_requests?.some((pullRequest) => String(pullRequest.number) === prNumber),
-              ) ?? null;
+            // Returns the run id of a non-expired artifact with the exact name that
+            // was produced by a run for the deploy SHA, or null if not present yet.
+            const findArtifactRunId = async (name) => {
+              const artifacts = await github.paginate(
+                github.rest.actions.listArtifactsForRepo,
+                {owner, repo, name, per_page: 100},
+              );
+              const match = artifacts.find(
+                (artifact) =>
+                  !artifact.expired &&
+                  artifact.name === name &&
+                  artifact.workflow_run?.head_sha === deploySha,
+              );
+              return match ? String(match.workflow_run.id) : null;
             };
 
-            const awaitCompletion = async (initialRun) => {
-              let currentRun = initialRun;
-              for (let attempt = 0; attempt < maxWaitAttempts; attempt += 1) {
-                if (!waitStatuses.has(currentRun.status)) {
-                  return currentRun;
-                }
-
-                core.notice(
-                  `Waiting for preview workflow run ${currentRun.id} to finish building reusable artifacts for ${deploySha}.`,
-                );
-                await sleep(waitDelayMs);
-                currentRun = await getWorkflowRun(currentRun.id);
+            let androidRunId = null;
+            let iosRunId = null;
+            for (let attempt = 0; attempt < maxWaitAttempts; attempt += 1) {
+              androidRunId = androidRunId ?? (await findArtifactRunId(androidArtifactName));
+              iosRunId = iosRunId ?? (await findArtifactRunId(iosArtifactName));
+              if (androidRunId && iosRunId) {
+                break;
               }
-
-              return currentRun;
-            };
-
-            const prepareRun = await findRunForSha();
-            if (!prepareRun) {
               core.notice(
-                `No preview workflow run found for ${deploySha}; deploy will build fresh artifacts.`,
+                `Waiting for reusable preview artifacts for ${deploySha} ` +
+                  `(android: ${androidRunId ? 'ready' : 'pending'}, ` +
+                  `ios: ${iosRunId ? 'ready' : 'pending'}).`,
               );
-              setOutputs({});
-              return;
+              await sleep(waitDelayMs);
             }
 
-            const finishedRun = await awaitCompletion(prepareRun);
-            if (finishedRun.status !== 'completed') {
+            if (!androidRunId || !iosRunId) {
               core.notice(
-                `Preview workflow run ${finishedRun.id} did not complete in time; deploy will build fresh artifacts.`,
+                `Reusable preview artifacts for ${deploySha} did not both appear in time ` +
+                  `(android: ${androidRunId ? 'ready' : 'missing'}, ` +
+                  `ios: ${iosRunId ? 'ready' : 'missing'}); deploy will build fresh artifacts.`,
               );
-              setOutputs({});
-              return;
-            }
-
-            if (finishedRun.conclusion !== 'success') {
-              core.notice(
-                `Preview workflow run ${finishedRun.id} concluded with ${finishedRun.conclusion}; deploy will build fresh artifacts.`,
-              );
-              setOutputs({});
-              return;
-            }
-
-            const artifacts = await listArtifacts(finishedRun.id);
-            const availableArtifactNames = new Set(
-              artifacts.filter((artifact) => !artifact.expired).map((artifact) => artifact.name),
-            );
-            const hasAndroidArtifact = availableArtifactNames.has(androidArtifactName);
-            const hasIosArtifact = availableArtifactNames.has(iosArtifactName);
-
-            if (!hasAndroidArtifact) {
-              core.notice(
-                `Preview workflow run ${finishedRun.id} is missing reusable full-ABI Android artifact ${androidArtifactName}; deploy will build Android from source.`,
-              );
-            }
-            if (!hasIosArtifact) {
-              core.notice(
-                `Preview workflow run ${finishedRun.id} is missing reusable iOS artifact ${iosArtifactName}; deploy will build iOS from source.`,
-              );
-            }
-
-            if (!hasAndroidArtifact && !hasIosArtifact) {
               setOutputs({});
               return;
             }
 
             setOutputs({
-              reuseAndroidArtifact: hasAndroidArtifact ? 'true' : 'false',
-              reuseIosArtifact: hasIosArtifact ? 'true' : 'false',
-              previewRunId: String(finishedRun.id),
+              reuseArtifacts: 'true',
+              androidRunId,
+              iosRunId,
             });
 
   comment-start:
@@ -593,19 +533,11 @@ jobs:
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const rebuildNote =
               ${{ toJSON(needs.finalize-version.outputs.rebuild-note) }};
-            const reuseAndroidArtifact =
-              '${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact }}' === 'true';
-            const reuseIosArtifact =
-              '${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact }}' === 'true';
             const artifactDetails =
               rebuildRequired
                 ? `| **Artifacts** | Rebuilding deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` is not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
-                : reuseAndroidArtifact && reuseIosArtifact
-                ? `| **Artifacts** | Reusing unsigned Android and iOS preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
-                : reuseAndroidArtifact
-                ? `| **Artifacts** | Reusing unsigned Android preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; building iOS from source |`
-                : reuseIosArtifact
-                ? `| **Artifacts** | Reusing unsigned iOS preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; building Android from source |`
+                : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
+                ? `| **Artifacts** | Reusing unsigned preview intermediates (Android run #${{ needs.resolve-preview-artifacts.outputs.android-run-id }}, iOS run #${{ needs.resolve-preview-artifacts.outputs.ios-run-id }}) |`
                 : '| **Artifacts** | Preview intermediates unavailable, so this run is building deploy artifacts from source |';
 
             const body = [
@@ -688,14 +620,14 @@ jobs:
       source-ref: ${{ needs.validate-pr.outputs.deploy-sha }}
       deploy-ios-to: testflight
       deploy-android-to: internal
-      android-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
-      android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' }}
-      android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
-      ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
-      ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' }}
-      ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
+      android-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.android-run-id || '' }}
+      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
+      android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
+      ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.ios-run-id || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}.ipa', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
+      ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -849,19 +781,11 @@ jobs:
               '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const rebuildNote =
               ${{ toJSON(needs.finalize-version.outputs.rebuild-note) }};
-            const reuseAndroidArtifact =
-              '${{ needs.resolve-preview-artifacts.outputs.reuse-android-artifact }}' === 'true';
-            const reuseIosArtifact =
-              '${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact }}' === 'true';
             const artifactDetails =
               rebuildRequired
                 ? `| **Artifacts** | Built fresh deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` was not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
-                : reuseAndroidArtifact && reuseIosArtifact
-                ? `| **Artifacts** | Reused unsigned Android and iOS preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
-                : reuseAndroidArtifact
-                ? `| **Artifacts** | Reused unsigned Android preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; built iOS from source |`
-                : reuseIosArtifact
-                ? `| **Artifacts** | Reused unsigned iOS preview intermediate from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }}; built Android from source |`
+                : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
+                ? `| **Artifacts** | Reused unsigned preview intermediates (Android run #${{ needs.resolve-preview-artifacts.outputs.android-run-id }}, iOS run #${{ needs.resolve-preview-artifacts.outputs.ios-run-id }}) |`
                 : '| **Artifacts** | Built fresh deploy artifacts in this run because matching preview intermediates were unavailable |';
 
             const syncRequestCommentReaction = async (targetReaction) => {
