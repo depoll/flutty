@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local MonkeyMux build output
+/remote/monkeymux/monkeymux
+
 # Symbolication related
 app.*.symbols
 

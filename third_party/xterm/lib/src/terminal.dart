@@ -23,7 +23,6 @@ import 'package:xterm/src/core/platform.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
-import 'package:xterm/src/utils/async_semaphore.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
@@ -135,11 +134,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _graphicsActive = false;
   Map<String, String> _graphicsArgs = const {};
   final List<int> _graphicsData = [];
-  // Bounds how many Kitty images decode concurrently. A window switch can replay
-  // a burst of images; decoding them all at once spikes engine threads, memory,
-  // and raster compositing. Decoding a few at a time renders progressively and
-  // keeps the device responsive.
-  final AsyncSemaphore _graphicsDecodeGate = AsyncSemaphore(3);
   _PendingKittyPlaceholder? _pendingKittyPlaceholder;
   _PendingKittyPlaceholder? _lastKittyPlaceholder;
 
@@ -1497,7 +1491,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     final decodeStopwatch = observer == null ? null : (Stopwatch()..start());
-    await _graphicsDecodeGate.acquire();
+    await terminalGraphicsDecodeGate.acquire();
     final image = await () async {
       try {
         return await decodeTerminalImage(
@@ -1507,7 +1501,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
           height: height,
         );
       } finally {
-        _graphicsDecodeGate.release();
+        terminalGraphicsDecodeGate.release();
       }
     }();
     observer?.call(

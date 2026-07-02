@@ -1354,6 +1354,22 @@ func TestInactiveWindowBellMarksAlert(t *testing.T) {
 	}
 }
 
+func TestInactiveWindowUtf8BeforeBellMarksAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte{'x', 0xe2, 0x80, 0x9d, '\a'})
+
+	if !inactiveWindow.alert {
+		t.Fatal("bell after UTF-8 continuation bytes did not mark the window alert")
+	}
+}
+
 func TestInactiveWindowOscTerminatorDoesNotMarkAlert(t *testing.T) {
 	server := newMuxServer("test")
 	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
@@ -1370,6 +1386,24 @@ func TestInactiveWindowOscTerminatorDoesNotMarkAlert(t *testing.T) {
 	}
 	if inactiveWindow.paneTitle != "build" {
 		t.Fatalf("pane title = %q, want build", inactiveWindow.paneTitle)
+	}
+}
+
+func TestInactiveWindowOscUtf8PayloadDoesNotMarkAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte{
+		'\x1b', ']', '0', ';', 'u', 't', 'f', '8', ' ', 0xc5, 0x9c, '\a',
+	})
+
+	if inactiveWindow.alert {
+		t.Fatal("OSC title UTF-8 continuation byte caused a false alert")
 	}
 }
 
