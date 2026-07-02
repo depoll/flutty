@@ -1695,6 +1695,17 @@ class MonkeyTerminalPainter extends TerminalPainter {
   final _inlineUnderlineParagraphCache = ParagraphCache(1024);
   final _cursorCellData = CellData.empty();
 
+  // Cache of recorded per-line glyph pictures, keyed by a hash of the line's
+  // cell content. Painting a full screen of text draws one paragraph per
+  // non-blank cell; recording that once per distinct line and replaying it as a
+  // single `drawPicture` turns the hot foreground pass into one draw call per
+  // *unchanged* line — which is every line on a scroll frame, and the static
+  // majority of a streaming TUI screen. Invalidated wholesale whenever the font,
+  // theme or text scale changes (the same triggers that clear the paragraph
+  // cache), since those change how a given cell content renders.
+  final _foregroundPictureCache = <int, Picture>{};
+  static const _maxForegroundPictureCacheEntries = 512;
+
   @override
   set textStyle(TerminalStyle value) {
     if (value == textStyle) {
@@ -1703,6 +1714,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.textStyle = value;
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   @override
@@ -1713,6 +1725,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.textScaler = value;
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   @override
@@ -1724,6 +1737,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     _palette = _buildMonkeyTerminalPalette(value);
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   @override
@@ -1731,6 +1745,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.clearFontCache();
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   void paintReadableCursor(
@@ -1838,16 +1853,68 @@ class MonkeyTerminalPainter extends TerminalPainter {
   /// line's background so descenders that extend past the cell box are not
   /// clipped by the next row's background.
   void paintLineForegrounds(Canvas canvas, Offset offset, BufferLine line) {
+    final hash = _lineForegroundHash(line);
+    // remove+reinsert keeps the map in least-recently-used order (oldest first).
+    var picture = _foregroundPictureCache.remove(hash);
+    if (picture == null) {
+      final recorder = PictureRecorder();
+      _paintLineForegroundsInto(Canvas(recorder), line);
+      picture = recorder.endRecording();
+    }
+    _foregroundPictureCache[hash] = picture;
+    if (_foregroundPictureCache.length > _maxForegroundPictureCacheEntries) {
+      // Drop the least-recently-used entry. The picture is not disposed: a
+      // still-in-flight frame may reference it, and a raster of a disposed
+      // picture crashes; dropping the reference lets the GC finalizer reclaim it
+      // once nothing can draw it.
+      _foregroundPictureCache.remove(_foregroundPictureCache.keys.first);
+    }
+    canvas
+      ..save()
+      ..translate(offset.dx, offset.dy)
+      ..drawPicture(picture)
+      ..restore();
+  }
+
+  /// Draws [line]'s glyphs at the origin (each cell at `x = column * cellWidth`),
+  /// for recording into a cached [Picture]. See [paintLineForegrounds].
+  void _paintLineForegroundsInto(Canvas canvas, BufferLine line) {
     final cellData = CellData.empty();
     final cellWidth = cellSize.width;
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
       final charWidth = cellData.content >> CellContent.widthShift;
-      paintCellForeground(canvas, offset.translate(i * cellWidth, 0), cellData);
+      paintCellForeground(canvas, Offset(i * cellWidth, 0), cellData);
       if (charWidth == 2) {
         i++;
       }
     }
+  }
+
+  /// A content hash of [line]'s cells, used to key the foreground picture cache.
+  /// Two lines that render identical glyphs produce the same hash, so a scrolled
+  /// or unchanged line reuses its recorded picture. Font/theme/scale changes
+  /// clear the cache, so they need not enter the hash.
+  ///
+  /// Folds the raw cell fields (not `CellData.getHash()`, which narrows to ~29
+  /// bits) so a single differing field in any cell changes the key — including
+  /// `background`, since the readable-foreground resolution tints the glyph
+  /// against the cell's background.
+  int _lineForegroundHash(BufferLine line) {
+    final cellData = CellData.empty();
+    const mask = 0x3FFFFFFFFFFFFFFF;
+    const prime = 0x100000001b3;
+    final length = line.length;
+    var hash = (0xcbf29ce484222325 ^ length) & mask;
+    for (var i = 0; i < length; i++) {
+      line.getCellData(i, cellData);
+      hash = ((hash ^ cellData.content) * prime) & mask;
+      hash = ((hash ^ cellData.foreground) * prime) & mask;
+      hash = ((hash ^ cellData.background) * prime) & mask;
+      hash = ((hash ^ cellData.flags) * prime) & mask;
+      hash = ((hash ^ cellData.underlineColor) * prime) & mask;
+    }
+    return hash;
   }
 
   /// Draws the styled (SGR) cell underlines for [line] in a pass separate from
@@ -3846,6 +3913,8 @@ class MonkeyRenderTerminal extends RenderBox
     final placeholderCount = _terminal.graphics.placeholders.length;
     _kittyResolvedInstances = 0;
     _kittyUnresolvedInstances = 0;
+    _kittyFirstUnresolvedImageId = 0;
+    _kittyFirstUnresolvedBitWidth = 0;
     final stopwatch = Stopwatch()..start();
     _paintKittyPlaceholderGraphicsImpl(
       canvas,
@@ -3873,6 +3942,12 @@ class MonkeyRenderTerminal extends RenderBox
   // "images blank until the CLI redraws" signature.
   int _kittyResolvedInstances = 0;
   int _kittyUnresolvedInstances = 0;
+  // The protocol image id (and its placeholder bit width) of the first on-screen
+  // placeholder run that could not resolve to a stored image this paint. With
+  // the retained image ids present, a capture can tell whether the id is simply
+  // missing (server skipped it / it was dropped) or present but not matched.
+  int _kittyFirstUnresolvedImageId = 0;
+  int _kittyFirstUnresolvedBitWidth = 0;
 
   void _maybeLogKittyPlaceholderPaint(
     int placeholderCount,
@@ -3906,6 +3981,15 @@ class MonkeyRenderTerminal extends RenderBox
         'durationMs': (micros / 1000).round(),
         'resolved': _kittyResolvedInstances,
         'unresolved': _kittyUnresolvedInstances,
+        if (_kittyUnresolvedInstances > 0) ...{
+          'missId': _kittyFirstUnresolvedImageId,
+          'missBits': _kittyFirstUnresolvedBitWidth,
+          'heldIds': _terminal.graphics
+              .heldImageSignatures()
+              .keys
+              .take(8)
+              .join(','),
+        },
       },
     );
   }
@@ -4156,6 +4240,10 @@ class MonkeyRenderTerminal extends RenderBox
       );
       if (stored == null) {
         _kittyUnresolvedInstances++;
+        if (_kittyFirstUnresolvedImageId == 0) {
+          _kittyFirstUnresolvedImageId = start.imageId;
+          _kittyFirstUnresolvedBitWidth = start.bitWidth;
+        }
         continue;
       }
       _kittyResolvedInstances++;
