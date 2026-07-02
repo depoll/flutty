@@ -3208,6 +3208,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _didPasteDemoImage = false;
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
+  int _terminalScrollResetGeneration = 0;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   late final TerminalSessionController _sessionController;
   bool _showsTerminalMetadata = false;
@@ -11182,6 +11183,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
+      scrollResetGeneration: _terminalScrollResetGeneration,
       resolveLinkTap: _resolveTerminalLinkTap,
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
@@ -11517,6 +11519,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } finally {
         _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+        _resetTerminalScrollAfterSftpBrowserClosed();
       }
     },
   );
@@ -13279,7 +13282,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
-            _terminalViewKey.currentState?.forceFullRepaint();
+            _resetTerminalScrollAfterSftpBrowserClosed(forceFullRepaint: true);
           }
 
           if (mounted && result != null) {
@@ -13287,6 +13290,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
         },
       );
+
+  void _resetTerminalScrollAfterSftpBrowserClosed({
+    bool forceFullRepaint = false,
+  }) {
+    if (!mounted) {
+      return;
+    }
+
+    // The terminal route stays mounted under SFTP, so reset accumulated gesture
+    // deltas before the first scroll after the browser pops.
+    _terminalOutputPauseTouchPointers.clear();
+    setState(() {
+      _terminalScrollResetGeneration += 1;
+    });
+    _syncTerminalLiveOutputAutoScroll();
+
+    if (forceFullRepaint) {
+      _terminalViewKey.currentState?.forceFullRepaint();
+    }
+  }
 
   Future<void> _createSnippetFromSelection() async {
     final text = _currentTerminalSelectionText();
