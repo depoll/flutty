@@ -84,6 +84,11 @@ void main() {
       final backend = service.resolve(session, tmuxExtraFlags: '-L flutty');
       final context = await backend.currentPaneContext();
       await backend.selectWindow(2, windowId: '@7');
+      await backend.selectWindow(
+        4,
+        windowId: '@9',
+        clientImageSignatures: const {1: 111, 2: 222},
+      );
       await backend.createWindow(command: 'codex', workingDirectory: '/repo');
       await backend.killWindow(3);
 
@@ -94,7 +99,8 @@ void main() {
         tmuxMultiplexer.calls,
         containsAll(<String>[
           'context:dev:-L flutty',
-          'select:dev:2:@7:-L flutty',
+          'select:dev:2:@7:-L flutty:null',
+          'select:dev:4:@9:-L flutty:2',
           'create:dev:codex:/repo:-L flutty',
           'kill:dev:3:-L flutty',
         ]),
@@ -231,8 +237,12 @@ class _FakeRemoteMultiplexerService implements RemoteMultiplexerService {
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
   }) async {
-    calls.add('select:$sessionName:$windowIndex:$windowId:$extraFlags');
+    calls.add(
+      'select:$sessionName:$windowIndex:$windowId:$extraFlags:'
+      '${clientImageSignatures == null ? 'null' : clientImageSignatures.length}',
+    );
   }
 
   @override

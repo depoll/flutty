@@ -1695,6 +1695,17 @@ class MonkeyTerminalPainter extends TerminalPainter {
   final _inlineUnderlineParagraphCache = ParagraphCache(1024);
   final _cursorCellData = CellData.empty();
 
+  // Cache of recorded per-line glyph pictures, keyed by a hash of the line's
+  // cell content. Painting a full screen of text draws one paragraph per
+  // non-blank cell; recording that once per distinct line and replaying it as a
+  // single `drawPicture` turns the hot foreground pass into one draw call per
+  // *unchanged* line — which is every line on a scroll frame, and the static
+  // majority of a streaming TUI screen. Invalidated wholesale whenever the font,
+  // theme or text scale changes (the same triggers that clear the paragraph
+  // cache), since those change how a given cell content renders.
+  final _foregroundPictureCache = <int, Picture>{};
+  static const _maxForegroundPictureCacheEntries = 512;
+
   @override
   set textStyle(TerminalStyle value) {
     if (value == textStyle) {
@@ -1703,6 +1714,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.textStyle = value;
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   @override
@@ -1713,6 +1725,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.textScaler = value;
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   @override
@@ -1724,6 +1737,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     _palette = _buildMonkeyTerminalPalette(value);
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   @override
@@ -1731,6 +1745,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.clearFontCache();
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _foregroundPictureCache.clear();
   }
 
   void paintReadableCursor(
@@ -1838,16 +1853,68 @@ class MonkeyTerminalPainter extends TerminalPainter {
   /// line's background so descenders that extend past the cell box are not
   /// clipped by the next row's background.
   void paintLineForegrounds(Canvas canvas, Offset offset, BufferLine line) {
+    final hash = _lineForegroundHash(line);
+    // remove+reinsert keeps the map in least-recently-used order (oldest first).
+    var picture = _foregroundPictureCache.remove(hash);
+    if (picture == null) {
+      final recorder = PictureRecorder();
+      _paintLineForegroundsInto(Canvas(recorder), line);
+      picture = recorder.endRecording();
+    }
+    _foregroundPictureCache[hash] = picture;
+    if (_foregroundPictureCache.length > _maxForegroundPictureCacheEntries) {
+      // Drop the least-recently-used entry. The picture is not disposed: a
+      // still-in-flight frame may reference it, and a raster of a disposed
+      // picture crashes; dropping the reference lets the GC finalizer reclaim it
+      // once nothing can draw it.
+      _foregroundPictureCache.remove(_foregroundPictureCache.keys.first);
+    }
+    canvas
+      ..save()
+      ..translate(offset.dx, offset.dy)
+      ..drawPicture(picture)
+      ..restore();
+  }
+
+  /// Draws [line]'s glyphs at the origin (each cell at `x = column * cellWidth`),
+  /// for recording into a cached [Picture]. See [paintLineForegrounds].
+  void _paintLineForegroundsInto(Canvas canvas, BufferLine line) {
     final cellData = CellData.empty();
     final cellWidth = cellSize.width;
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
       final charWidth = cellData.content >> CellContent.widthShift;
-      paintCellForeground(canvas, offset.translate(i * cellWidth, 0), cellData);
+      paintCellForeground(canvas, Offset(i * cellWidth, 0), cellData);
       if (charWidth == 2) {
         i++;
       }
     }
+  }
+
+  /// A content hash of [line]'s cells, used to key the foreground picture cache.
+  /// Two lines that render identical glyphs produce the same hash, so a scrolled
+  /// or unchanged line reuses its recorded picture. Font/theme/scale changes
+  /// clear the cache, so they need not enter the hash.
+  ///
+  /// Folds the raw cell fields (not `CellData.getHash()`, which narrows to ~29
+  /// bits) so a single differing field in any cell changes the key — including
+  /// `background`, since the readable-foreground resolution tints the glyph
+  /// against the cell's background.
+  int _lineForegroundHash(BufferLine line) {
+    final cellData = CellData.empty();
+    const mask = 0x3FFFFFFFFFFFFFFF;
+    const prime = 0x100000001b3;
+    final length = line.length;
+    var hash = (0xcbf29ce484222325 ^ length) & mask;
+    for (var i = 0; i < length; i++) {
+      line.getCellData(i, cellData);
+      hash = ((hash ^ cellData.content) * prime) & mask;
+      hash = ((hash ^ cellData.foreground) * prime) & mask;
+      hash = ((hash ^ cellData.background) * prime) & mask;
+      hash = ((hash ^ cellData.flags) * prime) & mask;
+      hash = ((hash ^ cellData.underlineColor) * prime) & mask;
+    }
+    return hash;
   }
 
   /// Draws the styled (SGR) cell underlines for [line] in a pass separate from
@@ -1994,6 +2061,19 @@ class MonkeyTerminalPainter extends TerminalPainter {
     // Conceal (SGR 8): keep the cell content for selection/copy but do not
     // draw the glyph.
     if (cellFlags & CellFlags.invisible != 0) {
+      return;
+    }
+    // A plain space paints no glyph: its background is filled in the background
+    // pass and any underline in the underline pass, so shaping and drawing a
+    // space paragraph is a wasted per-cell drawParagraph. Overline and
+    // strikethrough do need a drawn run across the cell (below, a space is
+    // swapped for U+00A0 so the line renders), so only skip when neither is set.
+    // A typical terminal screen is mostly blank cells (indentation, padding,
+    // gaps between columns), so skipping them is a large cut to the per-frame
+    // paint that dominates build-thread time while a full-screen TUI redraws.
+    if (charCode == 0x20 &&
+        cellFlags & CellFlags.overline == 0 &&
+        cellFlags & CellFlags.strikethrough == 0) {
       return;
     }
     final color = resolveMonkeyTerminalCellForegroundColor(cellData);
@@ -3522,8 +3602,53 @@ class MonkeyRenderTerminal extends RenderBox
   @override
   void paint(PaintingContext context, Offset offset) {
     _paintCount++;
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      _measureTerminalPaintPhases = false;
+      _paint(context, offset);
+      context.setWillChangeHint();
+      return;
+    }
+    // Measure the whole terminal paint so a capture can attribute build-thread
+    // jank to the terminal render (text shaping, image compositing) versus the
+    // surrounding widget rebuild. Timing only.
+    _measureTerminalPaintPhases = true;
+    _lastForegroundPaintMicros = 0;
+    final stopwatch = Stopwatch()..start();
     _paint(context, offset);
+    _maybeLogTerminalPaint(stopwatch.elapsedMicroseconds);
     context.setWillChangeHint();
+  }
+
+  int _terminalPaintLogAtMs = 0;
+  bool _measureTerminalPaintPhases = false;
+  int _lastForegroundPaintMicros = 0;
+
+  void _maybeLogTerminalPaint(int micros) {
+    if (micros < 8000) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _terminalPaintLogAtMs < 1000) {
+      return;
+    }
+    _terminalPaintLogAtMs = nowMs;
+    final lines = _terminal.buffer.lines;
+    final charHeight = _painter.cellSize.height;
+    final visibleRows = charHeight > 0 ? (size.height / charHeight).ceil() : 0;
+    DiagnosticsLogService.instance.debug(
+      'terminal.paint',
+      'frame',
+      fields: {
+        'durationMs': (micros / 1000).round(),
+        'foregroundMs': (_lastForegroundPaintMicros / 1000).round(),
+        'visibleRows': visibleRows,
+        'bufferLines': lines.length,
+        'hasImages':
+            _terminal.graphics.imageCount > 0 ||
+            _terminal.graphics.placeholders.isNotEmpty,
+      },
+    );
   }
 
   void _paint(PaintingContext context, Offset offset) {
@@ -3558,12 +3683,18 @@ class MonkeyRenderTerminal extends RenderBox
     // Glyphs are drawn in a pass after every line's opaque background so a
     // descender (the bottom of "g"/"y"/"p") that extends past its cell box is
     // not clipped by the next line's background.
+    final foregroundStopwatch = _measureTerminalPaintPhases
+        ? (Stopwatch()..start())
+        : null;
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       _painter.paintLineForegrounds(
         canvas,
         _linePaintOffset(offset, i),
         lines[i],
       );
+    }
+    if (foregroundStopwatch != null) {
+      _lastForegroundPaintMicros = foregroundStopwatch.elapsedMicroseconds;
     }
 
     // Styled underlines are drawn as a separate pass, after every line's opaque
@@ -3662,7 +3793,7 @@ class MonkeyRenderTerminal extends RenderBox
       if (!placement.attached) {
         continue;
       }
-      final stored = graphics.imageById(placement.imageId);
+      final stored = graphics.imageForPlacement(placement.imageId);
       if (stored == null) {
         continue;
       }
@@ -3763,6 +3894,114 @@ class MonkeyRenderTerminal extends RenderBox
     double cellWidth,
     double cellHeight,
   ) {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      _paintKittyPlaceholderGraphicsImpl(
+        canvas,
+        offset,
+        firstLine,
+        lastLine,
+        cellWidth,
+        cellHeight,
+      );
+      return;
+    }
+    // Measure the placeholder compositing cost so a diagnostics capture can
+    // confirm whether an image-heavy window's build-thread jank comes from this
+    // path and whether the viewport-bounded analysis keeps it cheap. Count and
+    // timing only — never any cell content.
+    final placeholderCount = _terminal.graphics.placeholders.length;
+    _kittyResolvedInstances = 0;
+    _kittyUnresolvedInstances = 0;
+    _kittyFirstUnresolvedImageId = 0;
+    _kittyFirstUnresolvedBitWidth = 0;
+    final stopwatch = Stopwatch()..start();
+    _paintKittyPlaceholderGraphicsImpl(
+      canvas,
+      offset,
+      firstLine,
+      lastLine,
+      cellWidth,
+      cellHeight,
+    );
+    _maybeLogKittyPlaceholderPaint(
+      placeholderCount,
+      _terminal.graphics.imageCount,
+      firstLine,
+      lastLine,
+      stopwatch.elapsedMicroseconds,
+    );
+  }
+
+  int _kittyPlaceholderPaintLogAtMs = 0;
+
+  // Per-paint tallies (diagnostics only): how many on-screen placeholder runs
+  // resolved to a ready image versus not (pending decode or missing). A window
+  // that shows placeholder cells but resolves nothing — e.g. after a reattach
+  // that restored the image bytes but never re-decoded/placed them — is the
+  // "images blank until the CLI redraws" signature.
+  int _kittyResolvedInstances = 0;
+  int _kittyUnresolvedInstances = 0;
+  // The protocol image id (and its placeholder bit width) of the first on-screen
+  // placeholder run that could not resolve to a stored image this paint. With
+  // the retained image ids present, a capture can tell whether the id is simply
+  // missing (server skipped it / it was dropped) or present but not matched.
+  int _kittyFirstUnresolvedImageId = 0;
+  int _kittyFirstUnresolvedBitWidth = 0;
+
+  void _maybeLogKittyPlaceholderPaint(
+    int placeholderCount,
+    int imageCount,
+    int firstLine,
+    int lastLine,
+    int micros,
+  ) {
+    // Report the graphics state whenever the window holds any image bytes or
+    // placeholder cells, throttled to at most one entry per second so a busy
+    // scroll does not flood the ring buffer. Logging even when the paint is
+    // cheap lets a capture confirm the window is image-heavy, that the
+    // viewport-bounded analysis stays cheap, and — for the "images blank after
+    // reconnect" report — whether placeholder cells are present at all and
+    // whether they resolve to a ready image.
+    if (placeholderCount == 0 && imageCount == 0) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _kittyPlaceholderPaintLogAtMs < 1000) {
+      return;
+    }
+    _kittyPlaceholderPaintLogAtMs = nowMs;
+    DiagnosticsLogService.instance.debug(
+      'terminal.graphics',
+      'placeholder_paint',
+      fields: {
+        'placeholders': placeholderCount,
+        'images': imageCount,
+        'visibleRows': lastLine - firstLine + 1,
+        'durationMs': (micros / 1000).round(),
+        'resolved': _kittyResolvedInstances,
+        'unresolved': _kittyUnresolvedInstances,
+        if (_kittyUnresolvedInstances > 0) ...{
+          'missId': _kittyFirstUnresolvedImageId,
+          'missBits': _kittyFirstUnresolvedBitWidth,
+          'heldIds': _terminal.graphics
+              .heldImageSignatures()
+              .keys
+              .take(8)
+              .join(','),
+        },
+      },
+    );
+  }
+
+  void _paintKittyPlaceholderGraphicsImpl(
+    Canvas canvas,
+    Offset offset,
+    int firstLine,
+    int lastLine,
+    double cellWidth,
+    double cellHeight,
+  ) {
     final graphics = _terminal.graphics..pruneDetachedPlaceholders();
     final placeholders = graphics.placeholders;
     if (placeholders.isEmpty) {
@@ -3803,8 +4042,25 @@ class MonkeyRenderTerminal extends RenderBox
     //    viewer and redrawing) without clearing the previous copy's cells, the
     //    old copy lingers as a ghost. Among the surviving dense groups of one
     //    image id we keep only the most recently written placement.
-    final gridCols = <String, int>{};
-    final gridRows = <String, int>{};
+    //
+    // The instance grouping is scoped to the visible rows. Only visible cells
+    // are ever composited, and both axes are decided correctly from what is on
+    // screen: a clean on-screen crop is still dense, and competing copies of one
+    // image that matter for the viewport are the ones drawn within it. Bounding
+    // the heavy per-cell work (string keys and several maps) to the viewport
+    // keeps scrolling — and live-redrawing — an image-heavy window off the
+    // O(total placeholders) path that otherwise showed up as mid-scroll build
+    // jank on a window holding many image cells across its scrollback.
+    //
+    // Grid dimensions, by contrast, are gathered from every attached
+    // placeholder: an image's grid is fixed (it does not shrink as rows scroll
+    // off), so a non-virtual image whose lower rows are below the viewport would
+    // be sliced with too few rows if inferred from visible cells alone. That
+    // whole-list pass is kept allocation-free via a packed int key
+    // (imageId * 64 + bitWidth; bitWidth is only ever 8 or 24) so it stays cheap
+    // on the per-frame scroll path.
+    final gridColsByImage = <int, int>{};
+    final gridRowsByImage = <int, int>{};
     final instanceCellCount = <String, int>{};
     final instanceRowBounds = <String, List<int>>{};
     final instanceColBounds = <String, List<int>>{};
@@ -3826,22 +4082,26 @@ class MonkeyRenderTerminal extends RenderBox
       if (!placeholder.attached) {
         continue;
       }
-      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
       final virtualPlacement = graphics.virtualPlacementById(
         placeholder.imageId,
       );
-      final cols = (virtualPlacement?.cols ?? 0) > 0
+      final imageIntKey =
+          placeholder.imageId * 64 + placeholder.imageIdBitWidth;
+      gridColsByImage[imageIntKey] = (virtualPlacement?.cols ?? 0) > 0
           ? virtualPlacement!.cols
-          : math.max(gridCols[key] ?? 1, placeholder.col + 1);
-      final rows = (virtualPlacement?.rows ?? 0) > 0
+          : math.max(gridColsByImage[imageIntKey] ?? 1, placeholder.col + 1);
+      gridRowsByImage[imageIntKey] = (virtualPlacement?.rows ?? 0) > 0
           ? virtualPlacement!.rows
-          : math.max(gridRows[key] ?? 1, placeholder.row + 1);
-      gridCols[key] = cols;
-      gridRows[key] = rows;
+          : math.max(gridRowsByImage[imageIntKey] ?? 1, placeholder.row + 1);
 
-      if (!cellIsLivePlaceholder(placeholder.cellRow, placeholder.cellCol)) {
+      final cellRow = placeholder.cellRow;
+      if (cellRow < firstLine || cellRow > lastLine) {
         continue;
       }
+      if (!cellIsLivePlaceholder(cellRow, placeholder.cellCol)) {
+        continue;
+      }
+      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
       final instanceKey = instanceKeyFor(placeholder, key);
       instanceImageKey[instanceKey] = key;
       instanceCellCount[instanceKey] =
@@ -3904,18 +4164,19 @@ class MonkeyRenderTerminal extends RenderBox
     }
 
     // Pass 2: collect the visible cells that belong to a renderable instance.
-    // Keep at most one live cell per on-screen position.
+    // Keep at most one live cell per on-screen position. The visible-range check
+    // runs first so off-screen placeholders cost nothing but an integer compare.
     final cellByPosition = <int, _KittyPlaceholderCell>{};
     for (final placeholder in placeholders) {
       if (!placeholder.attached) {
         continue;
       }
-      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
-      if (!renderableInstances.contains(instanceKeyFor(placeholder, key))) {
-        continue;
-      }
       final cellRow = placeholder.cellRow;
       if (cellRow < firstLine || cellRow > lastLine) {
+        continue;
+      }
+      final key = '${placeholder.imageIdBitWidth}:${placeholder.imageId}';
+      if (!renderableInstances.contains(instanceKeyFor(placeholder, key))) {
         continue;
       }
       final cellCol = placeholder.cellCol;
@@ -3978,10 +4239,17 @@ class MonkeyRenderTerminal extends RenderBox
         ),
       );
       if (stored == null) {
+        _kittyUnresolvedInstances++;
+        if (_kittyFirstUnresolvedImageId == 0) {
+          _kittyFirstUnresolvedImageId = start.imageId;
+          _kittyFirstUnresolvedBitWidth = start.bitWidth;
+        }
         continue;
       }
-      final cols = gridCols[start.imageKey] ?? 1;
-      final rows = gridRows[start.imageKey] ?? 1;
+      _kittyResolvedInstances++;
+      final imageIntKey = start.imageId * 64 + start.bitWidth;
+      final cols = gridColsByImage[imageIntKey] ?? 1;
+      final rows = gridRowsByImage[imageIntKey] ?? 1;
       if (cols <= 0 || rows <= 0) {
         continue;
       }
