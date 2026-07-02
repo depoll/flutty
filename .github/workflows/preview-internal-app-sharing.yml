@@ -65,25 +65,20 @@ jobs:
               !artifact.expired && artifact.name.startsWith('android-unsigned-private-');
             const isAbiLimitedAndroidAab = (artifact) =>
               /-android-(arm|arm64|x64)$/.test(artifact.name);
-            const aabArtifact = artifacts.find(
-              (artifact) => isAndroidAabArtifact(artifact) && !isAbiLimitedAndroidAab(artifact),
-            );
-            const abiLimitedAabArtifact = artifacts.find(
-              (artifact) => isAndroidAabArtifact(artifact) && isAbiLimitedAndroidAab(artifact),
-            );
+            const androidAabArtifacts = artifacts.filter(isAndroidAabArtifact);
+            // Prefer a full (all-ABI) AAB when one is present, but fall back to
+            // an ABI-limited preview AAB. Fast PR previews build arm64-only, so
+            // without this fallback the Internal App Sharing link would never be
+            // published; an arm64 bundle still installs on real arm64 test
+            // devices via the sharing link.
+            const aabArtifact =
+              androidAabArtifacts.find((artifact) => !isAbiLimitedAndroidAab(artifact)) ??
+              androidAabArtifacts[0];
             const apkArtifact = artifacts.find((artifact) =>
               !artifact.expired && artifact.name.startsWith('android-apk-private-'),
             );
 
             if (!aabArtifact) {
-              if (abiLimitedAabArtifact) {
-                core.notice(
-                  `Skipping Internal App Sharing upload because ${abiLimitedAabArtifact.name} is ABI-limited.`,
-                );
-                core.setOutput('should-upload', 'false');
-                return;
-              }
-
               core.setFailed(
                 `No reusable Android AAB artifact was found on workflow run ${workflowRun.id}.`,
               );
