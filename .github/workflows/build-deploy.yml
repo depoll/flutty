@@ -70,6 +70,11 @@ on:
         type: boolean
         default: true
         description: 'Whether to derive and upload a universal Android APK artifact from the preview AAB when deploy-android-to == none'
+      android-target-platform:
+        required: false
+        type: string
+        default: ''
+        description: 'Optional Flutter Android target platform override, e.g. android-arm64 for fast preview builds'
       build-ios-unsigned-ipa:
         required: false
         type: boolean
@@ -258,15 +263,13 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        if: inputs.android-reuse-aab-artifact-name == ''
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          cache: 'gradle'
+          cache-dependency-path: |
+            android/*.gradle*
+            android/**/*.gradle*
+            android/gradle.properties
+            android/gradle/wrapper/gradle-wrapper.properties
+            pubspec.lock
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.android-reuse-aab-artifact-name == ''
@@ -302,7 +305,8 @@ jobs:
           printf '%s' "$GOOGLE_SERVICES_JSON" > "android/app/src/${{ inputs.flavor }}/google-services.json"
           echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
 
-      - name: Install Android CMake
+      - name: Resolve Android SDK path
+        id: android-sdk
         if: inputs.android-reuse-aab-artifact-name == ''
         run: |
           set -euo pipefail
@@ -310,6 +314,23 @@ jobs:
           if [ -z "$ANDROID_SDK" ]; then
             echo "::error title=Missing Android SDK::ANDROID_HOME or ANDROID_SDK_ROOT must be set."
             exit 1
+          fi
+          echo "path=$ANDROID_SDK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        if: inputs.android-reuse-aab-artifact-name == ''
+        with:
+          path: ${{ steps.android-sdk.outputs.path }}/cmake/3.22.1
+          key: android-cmake-${{ runner.os }}-3.22.1
+
+      - name: Install Android CMake
+        if: inputs.android-reuse-aab-artifact-name == ''
+        env:
+          ANDROID_SDK: ${{ steps.android-sdk.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [ -x "$ANDROID_SDK/cmake/3.22.1/bin/cmake" ]; then
+            exit 0
           fi
           SDKMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
@@ -381,10 +402,17 @@ jobs:
 
       - name: Build signed AAB
         if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
         run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -409,12 +437,18 @@ jobs:
       - name: Build unsigned AAB
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
           FLUTTY_ALLOW_UNSIGNED_RELEASE: 'true'
         run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
             --no-tree-shake-icons \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -424,11 +458,18 @@ jobs:
 
       - name: Build debug AAB for preview artifacts
         if: inputs.build-android-apk && inputs.deploy-android-to == 'none' && !inputs.build-android-unsigned-aab
+        env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
         run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --debug \
             --no-tree-shake-icons \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \

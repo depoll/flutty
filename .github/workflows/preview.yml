@@ -147,6 +147,7 @@ jobs:
       build-ios: false
       build-android: true
       build-android-unsigned-aab: true
+      android-target-platform: android-arm64
     secrets:
       FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON }}
 
