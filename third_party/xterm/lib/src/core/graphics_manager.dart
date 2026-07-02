@@ -22,6 +22,9 @@ void Function({
   bool? reused,
 })? terminalGraphicsDecodeObserver;
 
+/// Bounds all terminal image decodes across eager and deferred graphics paths.
+final AsyncSemaphore terminalGraphicsDecodeGate = AsyncSemaphore(3);
+
 /// A decoded image retained for the Kitty graphics protocol.
 class TerminalImage {
   TerminalImage(this.id, this.image, {this.sourceSignature = 0});
@@ -227,7 +230,6 @@ class GraphicsManager {
   // and [storePendingImage]). Insertion-ordered so the oldest can be evicted.
   final Map<int, _PendingGraphicsImage> _pendingImages = {};
   final Set<int> _decodingIds = {};
-  final AsyncSemaphore _decodeGate = AsyncSemaphore(3);
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
@@ -545,7 +547,7 @@ class GraphicsManager {
     final observer = terminalGraphicsDecodeObserver;
     final stopwatch = observer == null ? null : (Stopwatch()..start());
     ui.Image? image;
-    await _decodeGate.acquire();
+    await terminalGraphicsDecodeGate.acquire();
     try {
       image = await decodeTerminalImage(
         pending.payload,
@@ -554,7 +556,7 @@ class GraphicsManager {
         height: pending.height,
       );
     } finally {
-      _decodeGate.release();
+      terminalGraphicsDecodeGate.release();
       _decodingIds.remove(id);
     }
 

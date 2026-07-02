@@ -320,8 +320,14 @@ class _SshSessionRuntime {
     _terminalTmuxPassthroughPendingInput = '';
     _terminalControlModeUpdatePendingInput = '';
     _terminalInsertModePendingInput = '';
+    // Reset the paired scan offset with the pending input it indexes into.
+    // The drain above can end mid-escape-sequence, leaving a non-zero offset;
+    // clearing the input but not the offset would make the next shell's first
+    // replay slice resume parsing at a stale position and corrupt it.
+    _terminalInsertModePendingScanOffset = 0;
     _terminalColorSchemeUpdatesMode = false;
     _terminalInsertMode = false;
+    _lastTerminalParseNotifyAtMs = null;
     _terminal = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
@@ -674,8 +680,19 @@ class _SshSessionRuntime {
 
     final shell = _pendingShellOutputShell;
     final terminal = _pendingShellOutputTerminal;
-    if (shell == null || terminal == null || !identical(_shell, shell)) {
+    if (shell != null && !identical(_shell, shell)) {
+      // Pending output belongs to a stale shell (e.g. gathered before a
+      // reconnect swapped `_shell`): discard it, and the parse backlog, so old
+      // bytes never render into the new shell.
       _clearPendingShellOutput();
+      return;
+    }
+    if (shell == null || terminal == null) {
+      // No raw output is queued to flush. Leave any in-flight parse backlog
+      // intact for the pump/drain: it belongs to the current shell, and wiping
+      // it here (as `_clearPendingShellOutput` does) would drop the tail of a
+      // large replay that `closeShell` then expects `_drainTerminalParseBacklogNow`
+      // to render.
       return;
     }
 
