@@ -355,6 +355,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'select_window',
@@ -362,7 +363,52 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         'windowId': windowId.trim()
       else
         'windowIndex': windowIndex,
+      if (clientImageSignatures != null && clientImageSignatures.isNotEmpty)
+        'haveImageSignatures': {
+          for (final entry in clientImageSignatures.entries)
+            entry.key.toString(): entry.value,
+        },
     });
+  }
+
+  /// Asks the server to replay specific retained Kitty image transmissions the
+  /// client is missing for the active window.
+  ///
+  /// After a window switch or reconnect, the bounded image replay can omit
+  /// images the foreground app still shows (it draws placeholder cells that
+  /// reference them but never re-transmits the bytes). The client detects those
+  /// unresolved ids and calls this so the server replays exactly them from its
+  /// per-window retained cache. Best-effort: a failure (e.g. an older server
+  /// without this command) is logged and swallowed so image gaps never break
+  /// the session.
+  Future<void> requestImages(
+    SshSession session,
+    String sessionName,
+    Iterable<int> imageIds,
+  ) async {
+    final ids = <String>[
+      for (final id in imageIds)
+        if (id > 0) id.toString(),
+    ];
+    if (ids.isEmpty) {
+      return;
+    }
+    try {
+      await _runControlCommand(session, sessionName, {
+        'type': 'request_images',
+        'imageIds': ids,
+      }, priority: SshExecPriority.low);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.graphics',
+        'request_images_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'count': ids.length,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+    }
   }
 
   @override

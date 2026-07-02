@@ -62,3 +62,6 @@ app.*.map.json
 **/fastlane/test_output
 **/fastlane/README.md
 **/android/app/upload-keystore.jks
+
+# Local Go build of the MonkeyMux server (distributed via assets/monkeymux/bin/*.gz)
+/remote/monkeymux/monkeymux
