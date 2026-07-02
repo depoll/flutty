@@ -179,6 +179,9 @@ jobs:
       needs.validate_ios_app_previews.result != 'failure' &&
       needs.validate_ios_app_previews.result != 'cancelled'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -192,7 +195,20 @@ jobs:
       - name: Validate App Store metadata
         run: python3 scripts/validate_app_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
 
+      - name: Start private App Store metadata GitHub deployment
+        id: start-private-ios-metadata-deployment
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: start
+          ref: ${{ github.sha }}
+          environment: iOS Private / App Store Metadata
+          state: in_progress
+          description: Syncing private App Store metadata.
+
       - name: Sync private app metadata
+        id: sync-private-ios-metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -203,7 +219,31 @@ jobs:
           cd ios
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh.private
 
+      - name: Finish private App Store metadata GitHub deployment
+        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private') && steps.start-private-ios-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: finish
+          deployment-id: ${{ steps.start-private-ios-metadata-deployment.outputs['deployment-id'] }}
+          environment: iOS Private / App Store Metadata
+          state: ${{ steps.sync-private-ios-metadata.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.sync-private-ios-metadata.outcome == 'success' && 'Private App Store metadata synced.' || 'Private App Store metadata sync failed.' }}
+
+      - name: Start production App Store metadata GitHub deployment
+        id: start-production-ios-metadata-deployment
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: start
+          ref: ${{ github.sha }}
+          environment: iOS Production / App Store Metadata
+          state: in_progress
+          description: Syncing production App Store metadata.
+
       - name: Sync production app metadata
+        id: sync-production-ios-metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -214,6 +254,17 @@ jobs:
           cd ios
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh
 
+      - name: Finish production App Store metadata GitHub deployment
+        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production') && steps.start-production-ios-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: finish
+          deployment-id: ${{ steps.start-production-ios-metadata-deployment.outputs['deployment-id'] }}
+          environment: iOS Production / App Store Metadata
+          state: ${{ steps.sync-production-ios-metadata.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.sync-production-ios-metadata.outcome == 'success' && 'Production App Store metadata synced.' || 'Production App Store metadata sync failed.' }}
+
   sync-android:
     name: Sync Android Metadata
     needs: [changes, validate_android_screenshots]
@@ -223,6 +274,9 @@ jobs:
       needs.validate_android_screenshots.result != 'failure' &&
       needs.validate_android_screenshots.result != 'cancelled'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -243,7 +297,20 @@ jobs:
       - name: Validate Play Store metadata
         run: python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
 
+      - name: Start private Play Store metadata GitHub deployment
+        id: start-private-android-metadata-deployment
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: start
+          ref: ${{ github.sha }}
+          environment: Android Private / Play Store Metadata
+          state: in_progress
+          description: Syncing private Play Store metadata.
+
       - name: Sync private app metadata
+        id: sync-private-android-metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
@@ -252,7 +319,33 @@ jobs:
           cd android
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh.private
 
+      - name: Finish private Play Store metadata GitHub deployment
+        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private') && steps.start-private-android-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: finish
+          deployment-id: ${{ steps.start-private-android-metadata-deployment.outputs['deployment-id'] }}
+          environment: Android Private / Play Store Metadata
+          state: ${{ steps.sync-private-android-metadata.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.sync-private-android-metadata.outcome == 'success' && 'Private Play Store metadata synced.' || 'Private Play Store metadata sync failed.' }}
+
+      - name: Start production Play Store metadata GitHub deployment
+        id: start-production-android-metadata-deployment
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: start
+          ref: ${{ github.sha }}
+          environment: Android Production / Play Store Metadata
+          state: in_progress
+          description: Syncing production Play Store metadata.
+          environment-url: https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh
+          production-environment: 'true'
+
       - name: Sync production app metadata
+        id: sync-production-android-metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
@@ -260,3 +353,16 @@ jobs:
         run: |
           cd android
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh
+
+      - name: Finish production Play Store metadata GitHub deployment
+        if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production') && steps.start-production-android-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: finish
+          deployment-id: ${{ steps.start-production-android-metadata-deployment.outputs['deployment-id'] }}
+          environment: Android Production / Play Store Metadata
+          state: ${{ steps.sync-production-android-metadata.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.sync-production-android-metadata.outcome == 'success' && 'Production Play Store metadata synced.' || 'Production Play Store metadata sync failed.' }}
+          environment-url: https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh
+          production-environment: 'true'

@@ -198,11 +198,6 @@ on:
         description: 'Final iOS deploy status summary for preview deploy comments'
         value: ${{ jobs.deploy-status-summary.outputs.ios-deploy-status }}
 
-permissions:
-  actions: read
-  contents: read
-  issues: write
-
 env:
   FLUTTER_VERSION: '3.44.0'
 
@@ -679,6 +674,44 @@ jobs:
               print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
           SCRIPT
 
+      - name: Start Android GitHub deployment
+        id: start-android-deployment
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
+          DEPLOYMENT_ENVIRONMENT: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / Play ${{ inputs.deploy-android-to == 'production' && 'Production' || 'Internal' }}
+          DEPLOYMENT_DESCRIPTION: Android ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to Play ${{ inputs.deploy-android-to }}
+          DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
+          DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-android-to == 'production' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const environmentUrl = process.env.DEPLOYMENT_ENVIRONMENT_URL || '';
+            const deployment = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref: process.env.DEPLOYMENT_REF,
+              environment: process.env.DEPLOYMENT_ENVIRONMENT,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: process.env.DEPLOYMENT_PRODUCTION_ENVIRONMENT === 'true',
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: deployment.data.id,
+              state: 'in_progress',
+              description: 'Android Play upload started.',
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: false,
+              ...(environmentUrl ? {environment_url: environmentUrl} : {}),
+            });
+            core.setOutput('deployment-id', String(deployment.data.id));
+
       - name: Validate Play Store service account
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
@@ -708,6 +741,7 @@ jobs:
           python3 scripts/validate_play_store_metadata.py ${{ inputs.flavor }}
 
       - name: Run Fastlane
+        id: android-deploy
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
@@ -726,6 +760,31 @@ jobs:
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
             bundle exec fastlane release skip_metadata:"$SKIP_META" version_code:"$ANDROID_VERSION_CODE"
           fi
+
+      - name: Finish Android GitHub deployment
+        if: always() && inputs.deploy-android-to != 'none' && inputs.run-android-deploy && steps.start-android-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_ID: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
+          DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
+          DEPLOYMENT_STATE: ${{ steps.android-deploy.outcome == 'success' && 'success' || 'failure' }}
+          DEPLOYMENT_DESCRIPTION: ${{ steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const environmentUrl = process.env.DEPLOYMENT_ENVIRONMENT_URL || '';
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: process.env.DEPLOYMENT_STATE,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
+              ...(environmentUrl ? {environment_url: environmentUrl} : {}),
+            });
 
       - name: Remove Android signing material
         if: always() && inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
@@ -996,7 +1055,43 @@ jobs:
               print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
           SCRIPT
 
+      - name: Start iOS GitHub deployment
+        id: start-ios-deployment
+        if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
+          DEPLOYMENT_ENVIRONMENT: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
+          DEPLOYMENT_DESCRIPTION: iOS ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to ${{ inputs.deploy-ios-to }}
+          DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-ios-to == 'appstore' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const deployment = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref: process.env.DEPLOYMENT_REF,
+              environment: process.env.DEPLOYMENT_ENVIRONMENT,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: process.env.DEPLOYMENT_PRODUCTION_ENVIRONMENT === 'true',
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: deployment.data.id,
+              state: 'in_progress',
+              description: 'iOS App Store Connect upload started.',
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: false,
+            });
+            core.setOutput('deployment-id', String(deployment.data.id));
+
       - name: Archive, sign & deploy via Fastlane
+        id: ios-deploy
         if: inputs.deploy-ios-to != 'none'
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
@@ -1046,6 +1141,28 @@ jobs:
           elif [ -z "$REUSED_IPA_PATH" ]; then
             bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
+
+      - name: Finish iOS GitHub deployment
+        if: always() && inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy && steps.start-ios-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_ID: ${{ steps.start-ios-deployment.outputs['deployment-id'] }}
+          DEPLOYMENT_STATE: ${{ steps.ios-deploy.outcome == 'success' && 'success' || 'failure' }}
+          DEPLOYMENT_DESCRIPTION: ${{ steps.ios-deploy.outcome == 'success' && 'iOS App Store Connect upload completed.' || 'iOS App Store Connect upload failed.' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: process.env.DEPLOYMENT_STATE,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
+            });
 
       - name: Prepare signed IPA artifact
         id: signed-ipa-artifact
