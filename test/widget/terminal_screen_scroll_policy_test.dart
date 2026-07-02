@@ -367,4 +367,79 @@ void main() {
       );
     });
   });
+
+  group('monkeymux control-report suppression', () {
+    bool suppress({
+      bool isMonkeyMux = true,
+      bool isMouseReport = true,
+      bool isFocusReport = false,
+      bool mouseReportingActive = false,
+      bool focusReportingActive = false,
+      bool isAgentToolActive = false,
+      String? currentCommand = 'zsh',
+    }) => shouldSuppressMonkeyMuxControlReport(
+      isMonkeyMux: isMonkeyMux,
+      isMouseReport: isMouseReport,
+      isFocusReport: isFocusReport,
+      mouseReportingActive: mouseReportingActive,
+      focusReportingActive: focusReportingActive,
+      isAgentToolActive: isAgentToolActive,
+      currentCommand: currentCommand,
+    );
+
+    test('suppresses a mouse report for a bare shell foreground', () {
+      expect(suppress(), isTrue);
+    });
+
+    test('suppresses a focus report for a bare shell foreground', () {
+      expect(suppress(isMouseReport: false, isFocusReport: true), isTrue);
+    });
+
+    test('keeps mouse reports when the foreground app enabled mouse reporting '
+        'even if the pane command probed as a shell', () {
+      // Regression: opening the SFTP browser overwrites the tracked command
+      // with the login shell (zsh) that Copilot runs under. The wheel report
+      // must still reach the app so touch scroll keeps working.
+      expect(suppress(mouseReportingActive: true), isFalse);
+    });
+
+    test('keeps focus reports when focus reporting is active', () {
+      expect(
+        suppress(
+          isMouseReport: false,
+          isFocusReport: true,
+          focusReportingActive: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('keeps reports when the active window is a coding agent', () {
+      expect(suppress(isAgentToolActive: true), isFalse);
+      expect(
+        suppress(
+          isMouseReport: false,
+          isFocusReport: true,
+          isAgentToolActive: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('keeps reports when the tracked command is a known agent tool', () {
+      expect(suppress(currentCommand: 'copilot'), isFalse);
+    });
+
+    test('never suppresses outside MonkeyMux', () {
+      expect(suppress(isMonkeyMux: false), isFalse);
+    });
+
+    test('never suppresses non mouse/focus output', () {
+      expect(suppress(isMouseReport: false), isFalse);
+    });
+
+    test('does not suppress when the command is unknown (non-shell)', () {
+      expect(suppress(currentCommand: 'htop'), isFalse);
+    });
+  });
 }
