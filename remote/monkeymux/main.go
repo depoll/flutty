@@ -2603,8 +2603,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.activeID = window.id
 	// Seed the Kitty image cache from any restored history so an image shown
 	// before a server restart can still be replayed on the next reattach.
-	window.observeKittyGraphicsLocked(window.history)
-	s.enforceGlobalKittyImageBudgetLocked()
+	if window.observeKittyGraphicsLocked(window.history) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2683,8 +2684,9 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
-	window.observeKittyGraphicsLocked(chunk)
-	s.enforceGlobalKittyImageBudgetLocked()
+	if window.observeKittyGraphicsLocked(chunk) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
@@ -4354,12 +4356,6 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 			case '\x1b':
 				w.terminalBellState = terminalBellParserEscape
 				w.terminalBellBytes = 1
-			case '\x9d':
-				w.terminalBellState = terminalBellParserOsc
-				w.terminalBellBytes = 1
-			case '\x90', '\x98', '\x9e', '\x9f':
-				w.terminalBellState = terminalBellParserString
-				w.terminalBellBytes = 1
 			}
 		case terminalBellParserEscape:
 			w.terminalBellBytes++
@@ -4380,7 +4376,7 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 		case terminalBellParserOsc:
 			w.terminalBellBytes++
 			switch b {
-			case '\a', '\x9c':
+			case '\a':
 				w.resetTerminalBellParserLocked()
 			case '\x1b':
 				w.terminalBellState = terminalBellParserOscEscape
@@ -4388,7 +4384,7 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 		case terminalBellParserOscEscape:
 			w.terminalBellBytes++
 			switch b {
-			case '\\', '\a', '\x9c':
+			case '\\':
 				w.resetTerminalBellParserLocked()
 			case '\x1b':
 				w.terminalBellState = terminalBellParserOscEscape
@@ -4398,7 +4394,7 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 		case terminalBellParserString:
 			w.terminalBellBytes++
 			switch b {
-			case '\a', '\x9c':
+			case '\a':
 				w.resetTerminalBellParserLocked()
 			case '\x1b':
 				w.terminalBellState = terminalBellParserStringEscape
@@ -4406,7 +4402,7 @@ func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
 		case terminalBellParserStringEscape:
 			w.terminalBellBytes++
 			switch b {
-			case '\\', '\a', '\x9c':
+			case '\\', '\a':
 				w.resetTerminalBellParserLocked()
 			case '\x1b':
 				w.terminalBellState = terminalBellParserStringEscape
@@ -4703,9 +4699,9 @@ func assembleKittyTransmission(
 // so they can be replayed on reattach regardless of how much later output has
 // evicted them from the rolling visible history. Partial transmissions split
 // across chunks are carried forward in kittyGraphicsPending.
-func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
+func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	if len(chunk) == 0 && len(w.kittyGraphicsPending) == 0 {
-		return
+		return false
 	}
 	data := chunk
 	if len(w.kittyGraphicsPending) > 0 {
@@ -4714,15 +4710,19 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		data = append(data, chunk...)
 	}
 
+	changed := false
 	txs, deletes, consumed := scanKittyTransmissions(data)
 	for _, id := range deletes {
-		w.removeKittyImageLocked(id)
+		if w.removeKittyImageLocked(id) {
+			changed = true
+		}
 	}
 	for _, tx := range txs {
 		if tx.id == "" {
 			continue // cannot dedupe or replay without an id
 		}
 		w.storeKittyImageLocked(tx.id, tx.buf)
+		changed = true
 	}
 
 	remainder := data[consumed:]
@@ -4730,13 +4730,14 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		// An unterminated or oversized graphics sequence: drop it rather than
 		// buffer unbounded bytes; parsing resyncs at the next introducer.
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	if len(remainder) == 0 {
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	w.kittyGraphicsPending = append([]byte(nil), remainder...)
+	return changed
 }
 
 func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
@@ -4760,14 +4761,15 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	w.enforceKittyImageCapsLocked()
 }
 
-func (w *muxWindow) removeKittyImageLocked(id string) {
+func (w *muxWindow) removeKittyImageLocked(id string) bool {
 	if _, ok := w.kittyImages[id]; !ok {
-		return
+		return false
 	}
 	delete(w.kittyImages, id)
 	delete(w.kittyImageSeq, id)
 	delete(w.kittyImageToken, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+	return true
 }
 
 func (w *muxWindow) enforceKittyImageCapsLocked() {
