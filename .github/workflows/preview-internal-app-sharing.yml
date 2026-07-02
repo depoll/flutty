@@ -8,6 +8,7 @@ on:
 permissions:
   actions: read
   contents: read
+  deployments: write
   issues: write
   pull-requests: read
 
@@ -158,6 +159,19 @@ jobs:
 
           echo "path=$SIGNED_AAB_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Start Internal App Sharing GitHub deployment
+        id: start-internal-app-sharing-deployment
+        if: steps.preview.outputs.should-upload == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: start
+          ref: ${{ github.event.workflow_run.head_sha }}
+          environment: Android Private / Internal App Sharing
+          state: in_progress
+          description: Android private PR #${{ steps.preview.outputs.pull-number }} Internal App Sharing upload started.
+          transient-environment: 'true'
+
       - name: Upload Android Internal App Sharing artifact
         id: upload-internal-app-sharing
         if: steps.preview.outputs.should-upload == 'true'
@@ -190,6 +204,19 @@ jobs:
           fi
 
           echo "url=$INTERNAL_APP_SHARING_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Finish Internal App Sharing GitHub deployment
+        if: always() && steps.preview.outputs.should-upload == 'true' && steps.start-internal-app-sharing-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: finish
+          deployment-id: ${{ steps.start-internal-app-sharing-deployment.outputs['deployment-id'] }}
+          environment: Android Private / Internal App Sharing
+          state: ${{ steps.upload-internal-app-sharing.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.upload-internal-app-sharing.outcome == 'success' && 'Android Internal App Sharing upload completed.' || 'Android Internal App Sharing upload failed.' }}
+          environment-url: ${{ steps.upload-internal-app-sharing.outputs.url }}
+          transient-environment: 'true'
 
       - name: Add Internal App Sharing link to PR comment
         if: steps.preview.outputs.should-upload == 'true' && steps.upload-internal-app-sharing.outputs.url != ''
