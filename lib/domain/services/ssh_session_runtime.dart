@@ -680,8 +680,19 @@ class _SshSessionRuntime {
 
     final shell = _pendingShellOutputShell;
     final terminal = _pendingShellOutputTerminal;
-    if (shell == null || terminal == null || !identical(_shell, shell)) {
+    if (shell != null && !identical(_shell, shell)) {
+      // Pending output belongs to a stale shell (e.g. gathered before a
+      // reconnect swapped `_shell`): discard it, and the parse backlog, so old
+      // bytes never render into the new shell.
       _clearPendingShellOutput();
+      return;
+    }
+    if (shell == null || terminal == null) {
+      // No raw output is queued to flush. Leave any in-flight parse backlog
+      // intact for the pump/drain: it belongs to the current shell, and wiping
+      // it here (as `_clearPendingShellOutput` does) would drop the tail of a
+      // large replay that `closeShell` then expects `_drainTerminalParseBacklogNow`
+      // to render.
       return;
     }
 
