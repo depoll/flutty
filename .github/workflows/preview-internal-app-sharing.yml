@@ -162,6 +162,7 @@ jobs:
       - name: Start Internal App Sharing GitHub deployment
         id: start-internal-app-sharing-deployment
         if: steps.preview.outputs.should-upload == 'true'
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: start
@@ -206,6 +207,7 @@ jobs:
 
       - name: Finish Internal App Sharing GitHub deployment
         if: always() && steps.preview.outputs.should-upload == 'true' && steps.start-internal-app-sharing-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: finish

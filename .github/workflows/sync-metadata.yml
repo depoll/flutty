@@ -198,6 +198,7 @@ jobs:
       - name: Start private App Store metadata GitHub deployment
         id: start-private-ios-metadata-deployment
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: start
@@ -220,6 +221,7 @@ jobs:
 
       - name: Finish private App Store metadata GitHub deployment
         if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private') && steps.start-private-ios-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: finish
@@ -231,6 +233,7 @@ jobs:
       - name: Start production App Store metadata GitHub deployment
         id: start-production-ios-metadata-deployment
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: start
@@ -253,6 +256,7 @@ jobs:
 
       - name: Finish production App Store metadata GitHub deployment
         if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production') && steps.start-production-ios-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: finish
@@ -296,6 +300,7 @@ jobs:
       - name: Start private Play Store metadata GitHub deployment
         id: start-private-android-metadata-deployment
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: start
@@ -316,6 +321,7 @@ jobs:
 
       - name: Finish private Play Store metadata GitHub deployment
         if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private') && steps.start-private-android-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: finish
@@ -327,6 +333,7 @@ jobs:
       - name: Start production Play Store metadata GitHub deployment
         id: start-production-android-metadata-deployment
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: start
@@ -349,6 +356,7 @@ jobs:
 
       - name: Finish production Play Store metadata GitHub deployment
         if: always() && (github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production') && steps.start-production-android-metadata-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: ./.github/actions/deployment-status
         with:
           action: finish

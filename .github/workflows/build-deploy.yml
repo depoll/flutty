@@ -682,6 +682,7 @@ jobs:
       - name: Start Android GitHub deployment
         id: start-android-deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
@@ -767,6 +768,7 @@ jobs:
 
       - name: Finish Android GitHub deployment
         if: always() && inputs.deploy-android-to != 'none' && inputs.run-android-deploy && steps.start-android-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_ID: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
@@ -1061,6 +1063,7 @@ jobs:
       - name: Start iOS GitHub deployment
         id: start-ios-deployment
         if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
@@ -1146,6 +1149,7 @@ jobs:
 
       - name: Finish iOS GitHub deployment
         if: always() && inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy && steps.start-ios-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DEPLOYMENT_ID: ${{ steps.start-ios-deployment.outputs['deployment-id'] }}
