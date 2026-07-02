@@ -11558,7 +11558,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } finally {
         _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
-        _resetTerminalScrollAfterSftpBrowserClosed();
+        _resetTerminalScrollAfterSftpBrowserClosed(
+          focusAlreadyRestored: shouldRestoreKeyboard,
+        );
       }
     },
   );
@@ -13321,7 +13323,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
-            _resetTerminalScrollAfterSftpBrowserClosed(forceFullRepaint: true);
+            _resetTerminalScrollAfterSftpBrowserClosed(
+              forceFullRepaint: true,
+              focusAlreadyRestored: shouldRestoreKeyboard,
+            );
           }
 
           if (mounted && result != null) {
@@ -13332,6 +13337,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _resetTerminalScrollAfterSftpBrowserClosed({
     bool forceFullRepaint = false,
+    bool focusAlreadyRestored = false,
   }) {
     if (!mounted) {
       return;
@@ -13349,7 +13355,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminalViewKey.currentState?.forceFullRepaint();
     }
 
-    _rearmForegroundAppMouseReportingAfterOverlay();
+    _rearmForegroundAppMouseReportingAfterOverlay(
+      focusAlreadyRestored: focusAlreadyRestored,
+    );
   }
 
   /// Re-emits a focus-in report after an overlay route (the SFTP browser)
@@ -13365,8 +13373,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// focus-in. Restore focus so the terminal emits the matching focus-in report
   /// (gated on the foreground app's own focus-report mode, so bare shells are
   /// unaffected) and the app re-enables mouse reporting.
-  void _rearmForegroundAppMouseReportingAfterOverlay() {
-    if (!_isMobilePlatform) {
+  ///
+  /// When [focusAlreadyRestored] is true the keyboard-restore path already
+  /// requested focus (and emitted the focus-in report), so skip a second
+  /// focus request to avoid scheduling a duplicate post-frame IME reset in the
+  /// same frame, which can flicker or desync the soft keyboard on mobile.
+  void _rearmForegroundAppMouseReportingAfterOverlay({
+    bool focusAlreadyRestored = false,
+  }) {
+    if (!_isMobilePlatform || focusAlreadyRestored) {
       return;
     }
     _restoreTerminalFocus();

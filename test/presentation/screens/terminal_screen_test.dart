@@ -6802,11 +6802,16 @@ void main() {
         await tester.pump();
         expect(session.terminal!.reportFocusMode, isTrue);
 
-        // Focus the terminal the way a tap would before opening the browser.
+        // Reproduce the real bug precondition: the terminal is focused (a prior
+        // touch focuses it on mobile) but the soft keyboard is hidden. In that
+        // state the keyboard-restore path is a no-op on close, so the focus-in
+        // report can only come from the overlay rearm. Pin "keyboard hidden" so
+        // this test can't silently start exercising the keyboard-restore path.
         tester
             .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
             .requestKeyboard();
         await tester.pump();
+        expect(tester.testTextInput.isVisible, isFalse);
 
         // Opening the browser unfocuses the terminal, which reports focus-out;
         // Copilot disables mouse-wheel reporting in response.
