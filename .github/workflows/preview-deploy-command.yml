@@ -37,7 +37,7 @@ jobs:
              const authorAssociation = context.payload.comment.author_association;
              const previewMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
              const statusMarker = '<!-- preview-deploy-status -->';
-            const workflowId = 'deploy-testflight.yml';
+            const workflowId = 'preview-deploy.yml';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
             const activeLockTimeoutMs = 4 * 60 * 60 * 1000;
              const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);

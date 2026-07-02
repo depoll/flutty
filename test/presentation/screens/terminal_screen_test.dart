@@ -2894,6 +2894,7 @@ void main() {
             sessionName,
             1,
             extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
           ),
         ).thenAnswer((_) async {
           monkeyMuxService.controlOperations.add('select');
@@ -2995,6 +2996,7 @@ void main() {
             sessionName,
             1,
             extraFlags: any(named: 'extraFlags'),
+            clientImageSignatures: any(named: 'clientImageSignatures'),
           ),
         ).called(1);
         expect(
@@ -6644,6 +6646,198 @@ void main() {
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'closing the SFTP browser re-reports focus-in so alt-buffer mouse '
+      'reporting is re-armed',
+      (tester) async {
+        const sessionName = 'agents';
+        final tmuxService = _MockTmuxService();
+        final monkeyMuxService = _MockMonkeyMuxService();
+        final openedPaths = <String>[];
+        final windows = <TmuxWindow>[
+          const TmuxWindow(
+            index: 0,
+            name: 'copilot',
+            isActive: true,
+            id: '@0',
+            currentCommand: 'copilot',
+            currentPath: '/repo',
+            agentTool: AgentLaunchTool.copilotCli,
+            terminalReportsMouseWheel: true,
+            terminalMouseReportSgr: true,
+          ),
+        ];
+
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: sessionName,
+          remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+        );
+        session
+          ..remoteMuxBackend = RemoteMuxBackend.monkeyMux
+          ..remoteMuxSessionName = sessionName;
+        when(
+          () => monkeyMuxService.hasForegroundClientOrThrow(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => true);
+        when(
+          () => monkeyMuxService.listWindows(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => monkeyMuxService.watchWindowChanges(
+            session,
+            sessionName,
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => monkeyMuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer(
+          (_) async => const TmuxPaneContext(
+            currentPath: '/repo',
+            currentCommand: 'copilot',
+          ),
+        );
+        when(
+          () => monkeyMuxService.refreshTerminalTheme(
+            session,
+            sessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.currentPaneContext(
+            session,
+            sessionName,
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer(
+          (_) async => const TmuxPaneContext(
+            currentPath: '/repo',
+            currentCommand: 'copilot',
+          ),
+        );
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.detectInstalledAgentTools(session),
+        ).thenAnswer((_) async => const <AgentLaunchTool>{});
+
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+            GoRoute(
+              path: '/sftp/:hostId',
+              name: Routes.sftp,
+              builder: (context, state) {
+                openedPaths.add(state.uri.queryParameters['path'] ?? '');
+                return const Scaffold(body: Text('SFTP opened'));
+              },
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.touchScrollToTerminal, isTrue);
+        expect(terminalView.forceSgrTouchScroll, isTrue);
+
+        // Copilot enables focus reporting; the outer terminal now forwards
+        // focus transitions to it.
+        session.terminal!.write('\x1b[?1004h');
+        await tester.pump();
+        expect(session.terminal!.reportFocusMode, isTrue);
+
+        // Reproduce the real bug precondition: the terminal is focused (a prior
+        // touch focuses it on mobile) but the soft keyboard is hidden. In that
+        // state the keyboard-restore path is a no-op on close, so the focus-in
+        // report can only come from the overlay rearm. Pin "keyboard hidden" so
+        // this test can't silently start exercising the keyboard-restore path.
+        tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .requestKeyboard();
+        await tester.pump();
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        // Opening the browser unfocuses the terminal, which reports focus-out;
+        // Copilot disables mouse-wheel reporting in response.
+        await tester.tap(find.byTooltip('Browse files'));
+        await tester.pumpAndSettle();
+        expect(openedPaths, hasLength(1));
+        expect(find.text('SFTP opened'), findsOneWidget);
+        expect(
+          utf8.decode(shellWrites.expand((chunk) => chunk).toList()),
+          contains('\x1b[O'),
+        );
+
+        // Closing the browser must re-report focus-in so Copilot re-enables
+        // mouse-wheel reporting and touch scroll keeps working — without this
+        // the app stays mouse-disabled until the next window switch.
+        shellWrites.clear();
+        router.pop();
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 60));
+
+        expect(
+          utf8.decode(shellWrites.expand((chunk) => chunk).toList()),
+          contains('\x1b[I'),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(
