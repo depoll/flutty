@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.82"
+	monkeyMuxVersion                  = "0.1.83"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -379,6 +379,8 @@ type muxWindow struct {
 	oscBuffer                  []byte
 	attachOscBuffer            []byte
 	csiBuffer                  []byte
+	terminalBellState          terminalBellParserState
+	terminalBellBytes          int
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -421,6 +423,17 @@ type muxWindow struct {
 	kittyImageToken      map[string]uint32
 	kittyGraphicsPending []byte
 }
+
+type terminalBellParserState int
+
+const (
+	terminalBellParserGround terminalBellParserState = iota
+	terminalBellParserEscape
+	terminalBellParserOsc
+	terminalBellParserOscEscape
+	terminalBellParserString
+	terminalBellParserStringEscape
+)
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -2590,8 +2603,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.activeID = window.id
 	// Seed the Kitty image cache from any restored history so an image shown
 	// before a server restart can still be replayed on the next reattach.
-	window.observeKittyGraphicsLocked(window.history)
-	s.enforceGlobalKittyImageBudgetLocked()
+	if window.observeKittyGraphicsLocked(window.history) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2663,18 +2677,20 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	terminalBell := window.observeTerminalBellLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
-	window.observeKittyGraphicsLocked(chunk)
-	s.enforceGlobalKittyImageBudgetLocked()
+	if window.observeKittyGraphicsLocked(chunk) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
-	} else if containsTerminalBell(chunk) {
+	} else if terminalBell {
 		window.alert = true
 	}
 	after := window.broadcastIdentityLocked()
@@ -4326,8 +4342,85 @@ func stripFocusReportsFromAttachInput(data []byte) []byte {
 	return output
 }
 
-func containsTerminalBell(data []byte) bool {
-	return bytes.IndexByte(data, '\a') >= 0
+func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	observedBell := false
+	for _, b := range data {
+		switch w.terminalBellState {
+		case terminalBellParserGround:
+			switch b {
+			case '\a':
+				observedBell = true
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			}
+		case terminalBellParserEscape:
+			w.terminalBellBytes++
+			switch b {
+			case ']':
+				w.terminalBellState = terminalBellParserOsc
+			case 'P', 'X', '^', '_':
+				w.terminalBellState = terminalBellParserString
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			case '\a':
+				observedBell = true
+				w.resetTerminalBellParserLocked()
+			default:
+				w.resetTerminalBellParserLocked()
+			}
+		case terminalBellParserOsc:
+			w.terminalBellBytes++
+			switch b {
+			case '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			}
+		case terminalBellParserOscEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			default:
+				w.terminalBellState = terminalBellParserOsc
+			}
+		case terminalBellParserString:
+			w.terminalBellBytes++
+			switch b {
+			case '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			}
+		case terminalBellParserStringEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\', '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			default:
+				w.terminalBellState = terminalBellParserString
+			}
+		}
+		if w.terminalBellState != terminalBellParserGround &&
+			w.terminalBellBytes > oscBufferLimitBytes {
+			w.resetTerminalBellParserLocked()
+		}
+	}
+	return observedBell
+}
+
+func (w *muxWindow) resetTerminalBellParserLocked() {
+	w.terminalBellState = terminalBellParserGround
+	w.terminalBellBytes = 0
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
@@ -4606,9 +4699,9 @@ func assembleKittyTransmission(
 // so they can be replayed on reattach regardless of how much later output has
 // evicted them from the rolling visible history. Partial transmissions split
 // across chunks are carried forward in kittyGraphicsPending.
-func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
+func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	if len(chunk) == 0 && len(w.kittyGraphicsPending) == 0 {
-		return
+		return false
 	}
 	data := chunk
 	if len(w.kittyGraphicsPending) > 0 {
@@ -4617,15 +4710,19 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		data = append(data, chunk...)
 	}
 
+	changed := false
 	txs, deletes, consumed := scanKittyTransmissions(data)
 	for _, id := range deletes {
-		w.removeKittyImageLocked(id)
+		if w.removeKittyImageLocked(id) {
+			changed = true
+		}
 	}
 	for _, tx := range txs {
 		if tx.id == "" {
 			continue // cannot dedupe or replay without an id
 		}
 		w.storeKittyImageLocked(tx.id, tx.buf)
+		changed = true
 	}
 
 	remainder := data[consumed:]
@@ -4633,13 +4730,14 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		// An unterminated or oversized graphics sequence: drop it rather than
 		// buffer unbounded bytes; parsing resyncs at the next introducer.
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	if len(remainder) == 0 {
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	w.kittyGraphicsPending = append([]byte(nil), remainder...)
+	return changed
 }
 
 func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
@@ -4663,14 +4761,15 @@ func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	w.enforceKittyImageCapsLocked()
 }
 
-func (w *muxWindow) removeKittyImageLocked(id string) {
+func (w *muxWindow) removeKittyImageLocked(id string) bool {
 	if _, ok := w.kittyImages[id]; !ok {
-		return
+		return false
 	}
 	delete(w.kittyImages, id)
 	delete(w.kittyImageSeq, id)
 	delete(w.kittyImageToken, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+	return true
 }
 
 func (w *muxWindow) enforceKittyImageCapsLocked() {

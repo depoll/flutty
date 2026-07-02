@@ -1493,6 +1493,7 @@ class EscapeParser {
       if (bits >= 8) {
         bits -= 8;
         out.add((accumulator >> bits) & 0xff);
+        accumulator = bits == 0 ? 0 : accumulator & ((1 << bits) - 1);
       }
     }
 
