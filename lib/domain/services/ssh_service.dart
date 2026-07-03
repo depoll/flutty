@@ -22,6 +22,7 @@ import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
+import 'interactive_auth_prompt.dart';
 import 'local_notification_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
@@ -1237,6 +1238,7 @@ typedef SshClientFactory =
       required String username,
       SSHHostkeyVerifyHandler? onVerifyHostKey,
       SSHPasswordRequestHandler? onPasswordRequest,
+      SSHUserInfoRequestHandler? onUserInfoRequest,
       List<SSHKeyPair>? identities,
       Duration? keepAliveInterval,
     });
@@ -1301,6 +1303,41 @@ class ConnectionAttemptStatus {
       state == SshConnectionState.reconnecting;
 }
 
+/// Resolved password / keyboard-interactive handlers for a connection.
+class _InteractiveAuthHandlers {
+  const _InteractiveAuthHandlers({
+    this.onPasswordRequest,
+    this.onUserInfoRequest,
+  });
+
+  final SSHPasswordRequestHandler? onPasswordRequest;
+  final SSHUserInfoRequestHandler? onUserInfoRequest;
+}
+
+/// Tracks whether an interactive authentication prompt is currently open so
+/// the authentication timeout can pause while the user types.
+class _InteractiveAuthGate {
+  int _activePrompts = 0;
+
+  /// Invoked whenever a prompt opens or closes.
+  void Function()? onActivityChanged;
+
+  /// Whether at least one interactive prompt is currently awaiting input.
+  bool get isPrompting => _activePrompts > 0;
+
+  /// Runs [action] while marking a prompt as active for its duration.
+  Future<T> guard<T>(Future<T> Function() action) async {
+    _activePrompts++;
+    onActivityChanged?.call();
+    try {
+      return await action();
+    } finally {
+      _activePrompts--;
+      onActivityChanged?.call();
+    }
+  }
+}
+
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
@@ -1309,6 +1346,7 @@ class SshService {
     this.keyRepository,
     this.knownHostsRepository,
     this.hostKeyPromptHandler,
+    this.interactiveAuthPromptHandler,
     WifiNetworkService? wifiNetworkService,
     SshSocketConnector? socketConnector,
     SshClientFactory? clientFactory,
@@ -1334,6 +1372,10 @@ class SshService {
 
   /// UI callback used for TOFU and changed-key prompts.
   final HostKeyPromptHandler? hostKeyPromptHandler;
+
+  /// UI callback used to collect passwords / keyboard-interactive responses
+  /// when the server issues a challenge and no stored credential answers it.
+  final InteractiveAuthPromptHandler? interactiveAuthPromptHandler;
 
   /// Service used to read the current Wi-Fi SSID for jump host bypass.
   final WifiNetworkService wifiNetworkService;
@@ -1623,6 +1665,8 @@ class SshService {
         },
       );
       final verificationService = _createHostKeyVerificationService(config);
+      final authGate = _InteractiveAuthGate();
+      final authHandlers = _buildInteractiveAuthHandlers(config, authGate);
 
       // Handle jump host
       if (config.jumpHost != null) {
@@ -1706,22 +1750,19 @@ class SshService {
             }
             return true;
           },
-          onPasswordRequest: config.password != null
-              ? () => config.password!
-              : null,
+          onPasswordRequest: authHandlers.onPasswordRequest,
+          onUserInfoRequest: authHandlers.onUserInfoRequest,
           identities: _parseIdentities(config),
           keepAliveInterval: config.keepAliveInterval,
         );
 
         // Bound authentication waits so the progress dialog can surface a
         // recoverable error instead of hanging indefinitely.
-        await client.authenticated.timeout(
-          config.connectionTimeout,
-          onTimeout: () => throw TimeoutException(
-            isJumpHost
-                ? 'Jump host authentication timed out'
-                : 'Authentication timed out',
-          ),
+        await _awaitAuthentication(
+          client,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
         );
         report(
           SshConnectionState.connected,
@@ -1764,21 +1805,18 @@ class SshService {
           }
           return trusted;
         },
-        onPasswordRequest: config.password != null
-            ? () => config.password!
-            : null,
+        onPasswordRequest: authHandlers.onPasswordRequest,
+        onUserInfoRequest: authHandlers.onUserInfoRequest,
         identities: _parseIdentities(config),
         keepAliveInterval: config.keepAliveInterval,
       );
 
       try {
-        await client.authenticated.timeout(
-          config.connectionTimeout,
-          onTimeout: () => throw TimeoutException(
-            isJumpHost
-                ? 'Jump host authentication timed out'
-                : 'Authentication timed out',
-          ),
+        await _awaitAuthentication(
+          client,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
         );
       } on SSHHostkeyError {
         if (!rejectedTrustedHostKey) {
@@ -1823,20 +1861,17 @@ class SshService {
             }
             return true;
           },
-          onPasswordRequest: config.password != null
-              ? () => config.password!
-              : null,
+          onPasswordRequest: authHandlers.onPasswordRequest,
+          onUserInfoRequest: authHandlers.onUserInfoRequest,
           identities: _parseIdentities(config),
           keepAliveInterval: config.keepAliveInterval,
         );
 
-        await client.authenticated.timeout(
-          config.connectionTimeout,
-          onTimeout: () => throw TimeoutException(
-            isJumpHost
-                ? 'Jump host authentication timed out'
-                : 'Authentication timed out',
-          ),
+        await _awaitAuthentication(
+          client,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
         );
         report(
           SshConnectionState.connected,
@@ -1948,6 +1983,194 @@ class SshService {
         error: 'Connection failed. Check the host settings and try again.',
       );
     }
+  }
+
+  /// Builds the password / keyboard-interactive handlers for a connection.
+  ///
+  /// When the host has a stored password it is used directly (and also
+  /// answers a simple keyboard-interactive password prompt). Otherwise, if an
+  /// [interactiveAuthPromptHandler] is available, the user is prompted so a
+  /// server-issued password challenge can be answered from the UI.
+  _InteractiveAuthHandlers _buildInteractiveAuthHandlers(
+    SshConnectionConfig config,
+    _InteractiveAuthGate gate,
+  ) {
+    final staticPassword = config.password;
+    final promptHandler = interactiveAuthPromptHandler;
+    final hostLabel = '${config.username}@${config.hostname}:${config.port}';
+
+    SSHPasswordRequestHandler? onPasswordRequest;
+    if (staticPassword != null) {
+      onPasswordRequest = () => staticPassword;
+    } else if (promptHandler != null) {
+      onPasswordRequest = () => gate.guard(() async {
+        final responses = await promptHandler(
+          SshAuthChallenge(
+            hostLabel: hostLabel,
+            username: config.username,
+            name: '',
+            instruction: '',
+            prompts: const [SshAuthPrompt(prompt: 'Password:', echo: false)],
+          ),
+        );
+        if (responses == null || responses.isEmpty) {
+          return null;
+        }
+        return responses.first;
+      });
+    }
+
+    SSHUserInfoRequestHandler? onUserInfoRequest;
+    if (staticPassword != null || promptHandler != null) {
+      onUserInfoRequest = (request) async {
+        final prompts = request.prompts;
+        // A keyboard-interactive info request may legitimately carry zero
+        // prompts (e.g. an informational banner, RFC 4256). It must be
+        // answered with an empty response list rather than prompting the user.
+        if (prompts.isEmpty) {
+          return const <String>[];
+        }
+        // Reuse the stored password only for a single hidden prompt that
+        // clearly asks for a password, so OTP/2FA/password-change challenges
+        // still reach the user instead of silently receiving the saved
+        // password (which the server would reject, breaking the login).
+        if (staticPassword != null &&
+            prompts.length == 1 &&
+            !prompts.first.echo &&
+            _isPlainPasswordPrompt(
+              request.name,
+              request.instruction,
+              prompts.first.promptText,
+            )) {
+          return <String>[staticPassword];
+        }
+        if (promptHandler == null) {
+          return null;
+        }
+        return gate.guard(
+          () => promptHandler(
+            SshAuthChallenge(
+              hostLabel: hostLabel,
+              username: config.username,
+              name: request.name,
+              instruction: request.instruction,
+              prompts: prompts
+                  .map(
+                    (prompt) => SshAuthPrompt(
+                      prompt: prompt.promptText,
+                      echo: prompt.echo,
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ),
+        );
+      };
+    }
+
+    return _InteractiveAuthHandlers(
+      onPasswordRequest: onPasswordRequest,
+      onUserInfoRequest: onUserInfoRequest,
+    );
+  }
+
+  /// Whether a single keyboard-interactive prompt is unambiguously asking for
+  /// an account password (rather than an OTP/2FA code or a new password during
+  /// a password change), so a stored password can be safely reused to answer
+  /// it. Errs toward `false`: unknown prompts fall through to the user.
+  static bool _isPlainPasswordPrompt(
+    String name,
+    String instruction,
+    String promptText,
+  ) {
+    final prompt = promptText.toLowerCase();
+    if (!prompt.contains('password') && !prompt.contains('passphrase')) {
+      return false;
+    }
+    final haystack = '$name\n$instruction\n$promptText'.toLowerCase();
+    const nonPasswordMarkers = <String>[
+      'one-time',
+      'one time',
+      'otp',
+      'passcode',
+      'verification',
+      'authenticator',
+      'token',
+      '2fa',
+      'mfa',
+      'second factor',
+      'two-factor',
+      'two factor',
+      'duo',
+      'yubikey',
+      'totp',
+      'hotp',
+      'security key',
+      'new password',
+      'new passphrase',
+      'retype',
+      're-enter',
+      'reenter',
+      'confirm',
+      'change',
+    ];
+    return !nonPasswordMarkers.any(haystack.contains);
+  }
+
+  /// Awaits SSH authentication with a timeout that pauses while the user is
+  /// answering an interactive prompt, so slow password entry does not abort
+  /// the connection. Each time a prompt closes the timeout is refreshed to
+  /// allow the following network round-trip to complete.
+  Future<void> _awaitAuthentication(
+    SSHClient client,
+    _InteractiveAuthGate gate, {
+    required Duration timeout,
+    required bool isJumpHost,
+  }) {
+    final completer = Completer<void>();
+    Timer? timer;
+
+    void arm() {
+      timer?.cancel();
+      timer = Timer(timeout, () {
+        if (gate.isPrompting) {
+          arm();
+          return;
+        }
+        if (!completer.isCompleted) {
+          completer.completeError(
+            TimeoutException(
+              isJumpHost
+                  ? 'Jump host authentication timed out'
+                  : 'Authentication timed out',
+            ),
+          );
+        }
+      });
+    }
+
+    client.authenticated.then<void>(
+      (_) {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      },
+    );
+
+    gate.onActivityChanged = arm;
+    arm();
+
+    return completer.future.whenComplete(() {
+      timer?.cancel();
+      if (identical(gate.onActivityChanged, arm)) {
+        gate.onActivityChanged = null;
+      }
+    });
   }
 
   HostKeyVerificationService _createHostKeyVerificationService(
@@ -2201,6 +2424,7 @@ class SshService {
     required String username,
     SSHHostkeyVerifyHandler? onVerifyHostKey,
     SSHPasswordRequestHandler? onPasswordRequest,
+    SSHUserInfoRequestHandler? onUserInfoRequest,
     List<SSHKeyPair>? identities,
     Duration? keepAliveInterval,
   }) => SSHClient(
@@ -2208,6 +2432,7 @@ class SshService {
     username: username,
     onVerifyHostKey: onVerifyHostKey,
     onPasswordRequest: onPasswordRequest,
+    onUserInfoRequest: onUserInfoRequest,
     identities: identities,
     keepAliveInterval: keepAliveInterval,
   );
@@ -3828,6 +4053,9 @@ final sshServiceProvider = Provider<SshService>(
     keyRepository: ref.watch(keyRepositoryProvider),
     knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
     hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
+    interactiveAuthPromptHandler: ref.watch(
+      interactiveAuthPromptHandlerProvider,
+    ),
     wifiNetworkService: ref.watch(wifiNetworkServiceProvider),
   ),
 );
