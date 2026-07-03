@@ -9,8 +9,10 @@ import 'package:xterm/xterm.dart';
 import 'app/app.dart';
 import 'app/app_metadata.dart';
 import 'app/host_key_prompt.dart';
+import 'app/interactive_auth_prompt.dart';
 import 'data/database/database.dart';
 import 'domain/services/host_key_prompt_handler_provider.dart';
+import 'domain/services/interactive_auth_prompt.dart';
 import 'domain/services/performance_diagnostics_service.dart';
 import 'domain/services/settings_service.dart';
 import 'domain/services/telemetry_service.dart';
@@ -33,6 +35,9 @@ Future<void> main() async {
         telemetryServiceProvider.overrideWithValue(telemetryService),
         hostKeyPromptHandlerProvider.overrideWith(
           (ref) => createHostKeyPromptHandler(),
+        ),
+        interactiveAuthPromptHandlerProvider.overrideWith(
+          (ref) => createInteractiveAuthPromptHandler(),
         ),
       ],
       child: const FluttyApp(),
