@@ -6,6 +6,10 @@ import 'dart:typed_data';
 // ignore_for_file: public_member_api_docs
 
 import 'package:dartssh2/dartssh2.dart';
+// SSHUserInfoRequest/SSHUserInfoPrompt are not exported from the public API,
+// but are needed to exercise the keyboard-interactive auth handler.
+// ignore: implementation_imports
+import 'package:dartssh2/src/ssh_userauth.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +25,7 @@ import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
+import 'package:monkeyssh/domain/services/interactive_auth_prompt.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/wifi_network_service.dart';
@@ -2578,6 +2583,7 @@ void main() {
                 required username,
                 onVerifyHostKey,
                 onPasswordRequest,
+                onUserInfoRequest,
                 identities,
                 keepAliveInterval,
               }) {
@@ -2630,6 +2636,7 @@ void main() {
               required username,
               onVerifyHostKey,
               onPasswordRequest,
+              onUserInfoRequest,
               identities,
               keepAliveInterval,
             }) {
@@ -2696,6 +2703,7 @@ void main() {
               required username,
               onVerifyHostKey,
               onPasswordRequest,
+              onUserInfoRequest,
               identities,
               keepAliveInterval,
             }) {
@@ -2725,6 +2733,289 @@ void main() {
       expect(clientFactoryCalls, 1);
       expect(promptCount, 0);
     });
+
+    test('connect prompts interactively when host has no password', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final hostKeyBytes = _ed25519HostKeyBlob([9, 9, 9]);
+      await _seedTrustedHost(
+        knownHostsRepository,
+        hostname: 'prompt.example.com',
+        hostKeyBytes: hostKeyBytes,
+      );
+      final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+      final client = _MockSshClient();
+      var socketIndex = 0;
+      SshAuthChallenge? seenChallenge;
+      SSHPasswordRequestHandler? capturedPassword;
+      SSHUserInfoRequestHandler? capturedUserInfo;
+
+      when(client.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        interactiveAuthPromptHandler: (challenge) async {
+          seenChallenge = challenge;
+          return ['typed-secret'];
+        },
+        socketConnector: (host, port, {timeout}) async =>
+            sockets[socketIndex++],
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              onUserInfoRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              capturedPassword = onPasswordRequest;
+              capturedUserInfo = onUserInfoRequest;
+              when(() => client.authenticated).thenAnswer((_) async {
+                final bytes = await (socket as HostKeySource).hostKeyBytes;
+                await onVerifyHostKey!(
+                  'ssh-ed25519',
+                  _hostKeyCallbackFingerprint(bytes),
+                );
+              });
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'prompt.example.com',
+        port: 22,
+        username: 'tester',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isTrue);
+      // Password auth is enabled and answered by the interactive prompt.
+      expect(capturedPassword, isNotNull);
+      expect(await capturedPassword!(), 'typed-secret');
+      expect(seenChallenge, isNotNull);
+      expect(seenChallenge!.hostLabel, 'tester@prompt.example.com:22');
+      expect(seenChallenge!.prompts, hasLength(1));
+      expect(seenChallenge!.prompts.single.echo, isFalse);
+      // Keyboard-interactive is also enabled so PAM logins can be answered.
+      expect(capturedUserInfo, isNotNull);
+    });
+
+    test('connect uses stored password without prompting', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final hostKeyBytes = _ed25519HostKeyBlob([8, 8, 8]);
+      await _seedTrustedHost(
+        knownHostsRepository,
+        hostname: 'stored.example.com',
+        hostKeyBytes: hostKeyBytes,
+      );
+      final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+      final client = _MockSshClient();
+      var socketIndex = 0;
+      var promptCalls = 0;
+      SSHPasswordRequestHandler? capturedPassword;
+      SSHUserInfoRequestHandler? capturedUserInfo;
+
+      when(client.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        interactiveAuthPromptHandler: (challenge) async {
+          promptCalls++;
+          return null;
+        },
+        socketConnector: (host, port, {timeout}) async =>
+            sockets[socketIndex++],
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              onUserInfoRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              capturedPassword = onPasswordRequest;
+              capturedUserInfo = onUserInfoRequest;
+              when(() => client.authenticated).thenAnswer((_) async {
+                final bytes = await (socket as HostKeySource).hostKeyBytes;
+                await onVerifyHostKey!(
+                  'ssh-ed25519',
+                  _hostKeyCallbackFingerprint(bytes),
+                );
+              });
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'stored.example.com',
+        port: 22,
+        username: 'tester',
+        password: 'stored-pass',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isTrue);
+      expect(capturedPassword, isNotNull);
+      expect(await capturedPassword!(), 'stored-pass');
+      // A single hidden keyboard-interactive prompt reuses the stored
+      // password instead of prompting the user.
+      expect(capturedUserInfo, isNotNull);
+      expect(
+        await capturedUserInfo!(
+          SSHUserInfoRequest('', '', [SSHUserInfoPrompt('Password:', false)]),
+        ),
+        ['stored-pass'],
+      );
+      expect(promptCalls, 0);
+    });
+
+    test(
+      'connect leaves password auth disabled without a prompt handler',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([7, 7, 7]);
+        await _seedTrustedHost(
+          knownHostsRepository,
+          hostname: 'nohandler.example.com',
+          hostKeyBytes: hostKeyBytes,
+        );
+        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+        final client = _MockSshClient();
+        var socketIndex = 0;
+        SSHPasswordRequestHandler? capturedPassword;
+        SSHUserInfoRequestHandler? capturedUserInfo;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          socketConnector: (host, port, {timeout}) async =>
+              sockets[socketIndex++],
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                onUserInfoRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                capturedPassword = onPasswordRequest;
+                capturedUserInfo = onUserInfoRequest;
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    _hostKeyCallbackFingerprint(bytes),
+                  );
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'nohandler.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isTrue);
+        expect(capturedPassword, isNull);
+        expect(capturedUserInfo, isNull);
+      },
+    );
+
+    test(
+      'connect maps keyboard-interactive prompts to the interactive handler',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([6, 6, 6]);
+        await _seedTrustedHost(
+          knownHostsRepository,
+          hostname: 'kbi.example.com',
+          hostKeyBytes: hostKeyBytes,
+        );
+        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+        final client = _MockSshClient();
+        var socketIndex = 0;
+        SshAuthChallenge? seenChallenge;
+        SSHUserInfoRequestHandler? capturedUserInfo;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          interactiveAuthPromptHandler: (challenge) async {
+            seenChallenge = challenge;
+            return ['otp-123', 'kbi-pass'];
+          },
+          socketConnector: (host, port, {timeout}) async =>
+              sockets[socketIndex++],
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                onUserInfoRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                capturedUserInfo = onUserInfoRequest;
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    _hostKeyCallbackFingerprint(bytes),
+                  );
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'kbi.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isTrue);
+        expect(capturedUserInfo, isNotNull);
+        final responses = await capturedUserInfo!(
+          SSHUserInfoRequest('Two-factor', 'Enter your codes', [
+            SSHUserInfoPrompt('Token:', true),
+            SSHUserInfoPrompt('Password:', false),
+          ]),
+        );
+        expect(responses, ['otp-123', 'kbi-pass']);
+        expect(seenChallenge, isNotNull);
+        expect(seenChallenge!.name, 'Two-factor');
+        expect(seenChallenge!.instruction, 'Enter your codes');
+        expect(seenChallenge!.prompts, hasLength(2));
+        expect(seenChallenge!.prompts[0].prompt, 'Token:');
+        expect(seenChallenge!.prompts[0].echo, isTrue);
+        expect(seenChallenge!.prompts[1].prompt, 'Password:');
+        expect(seenChallenge!.prompts[1].echo, isFalse);
+      },
+    );
 
     test('connect replaces a changed trusted host key after prompt', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -2780,6 +3071,7 @@ void main() {
               required username,
               onVerifyHostKey,
               onPasswordRequest,
+              onUserInfoRequest,
               identities,
               keepAliveInterval,
             }) {
@@ -2868,6 +3160,7 @@ void main() {
                 required username,
                 onVerifyHostKey,
                 onPasswordRequest,
+                onUserInfoRequest,
                 identities,
                 keepAliveInterval,
               }) {
@@ -2936,6 +3229,7 @@ void main() {
               required username,
               onVerifyHostKey,
               onPasswordRequest,
+              onUserInfoRequest,
               identities,
               keepAliveInterval,
             }) {
@@ -2994,6 +3288,7 @@ void main() {
               required username,
               onVerifyHostKey,
               onPasswordRequest,
+              onUserInfoRequest,
               identities,
               keepAliveInterval,
             }) {
@@ -3112,6 +3407,7 @@ void main() {
               required username,
               onVerifyHostKey,
               onPasswordRequest,
+              onUserInfoRequest,
               identities,
               keepAliveInterval,
             }) {
@@ -3171,6 +3467,7 @@ void main() {
                 required username,
                 onVerifyHostKey,
                 onPasswordRequest,
+                onUserInfoRequest,
                 identities,
                 keepAliveInterval,
               }) {
@@ -3249,6 +3546,7 @@ void main() {
                 required username,
                 onVerifyHostKey,
                 onPasswordRequest,
+                onUserInfoRequest,
                 identities,
                 keepAliveInterval,
               }) {
@@ -3463,6 +3761,28 @@ Uint8List _ed25519HostKeyBlob(List<int> keyData) {
 
 Uint8List _hostKeyCallbackFingerprint(List<int> hostKeyBytes) =>
     Uint8List.fromList(utf8.encode(formatSshHostKeyFingerprint(hostKeyBytes)));
+
+Future<void> _seedTrustedHost(
+  KnownHostsRepository repository, {
+  required String hostname,
+  required Uint8List hostKeyBytes,
+  int port = 22,
+}) async {
+  final trusted = VerifiedHostKey(
+    hostname: hostname,
+    port: port,
+    keyType: 'ssh-ed25519',
+    hostKeyBytes: hostKeyBytes,
+  );
+  await repository.upsertTrustedHost(
+    hostname: trusted.hostname,
+    port: trusted.port,
+    keyType: trusted.trustedKeyType,
+    fingerprint: trusted.fingerprint,
+    encodedHostKey: trusted.encodedHostKey,
+    resetFirstSeen: true,
+  );
+}
 
 Uint8List _uint32(int value) => Uint8List.fromList([
   (value >> 24) & 0xFF,
