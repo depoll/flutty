@@ -19,6 +19,7 @@ class _SshSessionRuntime {
   Timer? _terminalOutputFlushTimer;
   Timer? _monkeyMuxReplayCoalesceTimer;
   Timer? _terminalParsePumpTimer;
+  Duration _terminalOutputFlushInterval = _defaultTerminalOutputFlushInterval;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
   final _pendingShellOutputs =
@@ -52,7 +53,7 @@ class _SshSessionRuntime {
 
   Terminal? _terminal;
 
-  static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
+  static const _defaultTerminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
   // The replay that follows a window switch is coalesced so it renders as one
   // batch instead of janky pieces. The quiet-period timer resets on every
@@ -726,6 +727,17 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
   }
+
+  @visibleForTesting
+  Duration get debugTerminalOutputFlushInterval => _terminalOutputFlushInterval;
+
+  @visibleForTesting
+  set debugTerminalOutputFlushInterval(Duration value) =>
+      _terminalOutputFlushInterval = value;
+
+  @visibleForTesting
+  void debugFlushPendingTerminalOutput() =>
+      _flushPendingShellOutput(drainAll: true);
 
   /// Queues [data] for parsing and pumps as much as fits in a frame-time
   /// budget. A single large remote replay (e.g. switching to a Copilot window
