@@ -8,6 +8,7 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/key_service.dart';
+import 'package:monkeyssh/domain/services/openssh_key_generator.dart';
 
 void main() {
   late AppDatabase db;
@@ -197,6 +198,99 @@ void main() {
           privateKeyPem: 'not a valid key',
         );
         expect(result, isNull);
+      });
+
+      test(
+        'returns null for an encrypted key with the wrong passphrase',
+        () async {
+          final encryptedPem = await generateOpenSshPrivateKeyPem(
+            keyType: SshKeyType.ed25519,
+            comment: 'unit@test',
+            passphrase: 'correct-passphrase',
+          );
+
+          final result = await keyService.importKey(
+            name: 'Encrypted',
+            privateKeyPem: encryptedPem,
+            passphrase: 'wrong-passphrase',
+          );
+          expect(result, isNull);
+        },
+      );
+
+      test('returns null for an encrypted key with no passphrase', () async {
+        final encryptedPem = await generateOpenSshPrivateKeyPem(
+          keyType: SshKeyType.ed25519,
+          comment: 'unit@test',
+          passphrase: 'correct-passphrase',
+        );
+
+        final result = await keyService.importKey(
+          name: 'Encrypted',
+          privateKeyPem: encryptedPem,
+        );
+        expect(result, isNull);
+      });
+    });
+
+    group('generateKey', () {
+      test('generates and stores an Ed25519 key', () async {
+        final key = await keyService.generateKey(
+          name: 'Generated Ed25519',
+          keyType: SshKeyType.ed25519,
+        );
+
+        expect(key, isNotNull);
+        expect(key!.keyType, 'ssh-ed25519');
+        expect(key.publicKey, startsWith('ssh-ed25519 '));
+        expect(key.privateKey, contains('OPENSSH PRIVATE KEY'));
+        expect(key.fingerprint, startsWith('SHA256:'));
+        expect(keyService.validatePrivateKey(key.privateKey), isTrue);
+        expect(await keyService.getAllKeys(), hasLength(1));
+      });
+
+      test(
+        'generates and stores an RSA key with the canonical prefix',
+        () async {
+          final key = await keyService.generateKey(
+            name: 'Generated RSA',
+            keyType: SshKeyType.rsa2048,
+          );
+
+          expect(key, isNotNull);
+          expect(key!.keyType, 'ssh-rsa');
+          expect(key.publicKey, startsWith('ssh-rsa '));
+          expect(keyService.validatePrivateKey(key.privateKey), isTrue);
+        },
+      );
+
+      test('encrypts the stored key when a passphrase is provided', () async {
+        const passphrase = 'unit-test-passphrase';
+        final key = await keyService.generateKey(
+          name: 'Protected',
+          keyType: SshKeyType.ed25519,
+          passphrase: passphrase,
+        );
+
+        expect(key, isNotNull);
+        // The stored private key really is encrypted with the passphrase.
+        expect(keyService.validatePrivateKey(key!.privateKey), isFalse);
+        expect(
+          keyService.validatePrivateKey(key.privateKey, passphrase: passphrase),
+          isTrue,
+        );
+        expect(key.passphrase, passphrase);
+      });
+
+      test('treats an empty passphrase as unencrypted', () async {
+        final key = await keyService.generateKey(
+          name: 'No passphrase',
+          keyType: SshKeyType.ed25519,
+          passphrase: '',
+        );
+
+        expect(key, isNotNull);
+        expect(keyService.validatePrivateKey(key!.privateKey), isTrue);
       });
     });
 
