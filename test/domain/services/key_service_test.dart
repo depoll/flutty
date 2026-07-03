@@ -200,6 +200,67 @@ void main() {
       });
     });
 
+    group('generateKey', () {
+      test('generates and stores an Ed25519 key', () async {
+        final key = await keyService.generateKey(
+          name: 'Generated Ed25519',
+          keyType: SshKeyType.ed25519,
+        );
+
+        expect(key, isNotNull);
+        expect(key!.keyType, 'ssh-ed25519');
+        expect(key.publicKey, startsWith('ssh-ed25519 '));
+        expect(key.privateKey, contains('OPENSSH PRIVATE KEY'));
+        expect(key.fingerprint, startsWith('SHA256:'));
+        expect(keyService.validatePrivateKey(key.privateKey), isTrue);
+        expect(await keyService.getAllKeys(), hasLength(1));
+      });
+
+      test(
+        'generates and stores an RSA key with the canonical prefix',
+        () async {
+          final key = await keyService.generateKey(
+            name: 'Generated RSA',
+            keyType: SshKeyType.rsa2048,
+          );
+
+          expect(key, isNotNull);
+          expect(key!.keyType, 'ssh-rsa');
+          expect(key.publicKey, startsWith('ssh-rsa '));
+          expect(keyService.validatePrivateKey(key.privateKey), isTrue);
+        },
+      );
+
+      test('encrypts the stored key when a passphrase is provided', () async {
+        const passphrase = 'unit-test-passphrase';
+        final key = await keyService.generateKey(
+          name: 'Protected',
+          keyType: SshKeyType.ed25519,
+          passphrase: passphrase,
+        );
+
+        expect(key, isNotNull);
+        // The stored private key really is encrypted with the passphrase.
+        expect(keyService.validatePrivateKey(key!.privateKey), isFalse);
+        expect(
+          keyService.validatePrivateKey(key.privateKey, passphrase: passphrase),
+          isTrue,
+        );
+        expect(key.passphrase, passphrase);
+      });
+
+      test('treats an empty passphrase as unencrypted', () async {
+        final key = await keyService.generateKey(
+          name: 'No passphrase',
+          keyType: SshKeyType.ed25519,
+          passphrase: '',
+        );
+
+        expect(key, isNotNull);
+        expect(keyService.validatePrivateKey(key!.privateKey), isTrue);
+      });
+    });
+
     group('fingerprint generation via importPublicKey', () {
       test(
         'generates the correct deterministic fingerprint for a known public key',
