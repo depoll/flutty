@@ -8,6 +8,7 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/key_service.dart';
+import 'package:monkeyssh/domain/services/openssh_key_generator.dart';
 
 void main() {
   late AppDatabase db;
@@ -195,6 +196,38 @@ void main() {
         final result = await keyService.importKey(
           name: 'Invalid Key',
           privateKeyPem: 'not a valid key',
+        );
+        expect(result, isNull);
+      });
+
+      test(
+        'returns null for an encrypted key with the wrong passphrase',
+        () async {
+          final encryptedPem = await generateOpenSshPrivateKeyPem(
+            keyType: SshKeyType.ed25519,
+            comment: 'unit@test',
+            passphrase: 'correct-passphrase',
+          );
+
+          final result = await keyService.importKey(
+            name: 'Encrypted',
+            privateKeyPem: encryptedPem,
+            passphrase: 'wrong-passphrase',
+          );
+          expect(result, isNull);
+        },
+      );
+
+      test('returns null for an encrypted key with no passphrase', () async {
+        final encryptedPem = await generateOpenSshPrivateKeyPem(
+          keyType: SshKeyType.ed25519,
+          comment: 'unit@test',
+          passphrase: 'correct-passphrase',
+        );
+
+        final result = await keyService.importKey(
+          name: 'Encrypted',
+          privateKeyPem: encryptedPem,
         );
         expect(result, isNull);
       });
