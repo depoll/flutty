@@ -98,12 +98,12 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
-- **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
-- **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
+- **iOS**: Builds an unsigned release IPA for `/deploy` promotion to TestFlight
+- **Android**: Builds an unsigned release AAB plus a debug-signed APK for direct download in the PR comment
 
 When `/deploy` promotes a PR preview, it reuses the existing unsigned preview artifacts when their build number is still ahead of the latest private deploy. If a newer private build has already been deployed, the workflow automatically rebuilds with a fresh build number before uploading to TestFlight and Play internal.
 
-### Deploy Private (`develop.yml`)
+### Deploy Private (`deploy-private.yml`)
 
 Triggered on push to `main`. Builds the **private** flavor and deploys to:
 - **iOS**: TestFlight (MonkeySSH β)
@@ -141,15 +141,34 @@ Android release workflows fail early if the signing secrets or local `android/ap
 
 ### Sync Metadata (`sync-metadata.yml`)
 
-Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, Android listing icons, or other listing details.
+Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, iOS App Preview videos, Android listing icons, or other listing details.
 
 Supports selecting:
 - **Platform**: iOS, Android, or both
 - **App**: private, production, or both
 
+### GitHub Deployment Environments
+
+Store uploads create GitHub Deployments so PRs and the repository deployment
+view show the latest status for each supported channel:
+
+| Environment | Updated by |
+|-------------|------------|
+| `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
+| `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
+| `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
+| `iOS Production / TestFlight` | Release Internal |
+| `Android Production / Play Internal` | Release Internal |
+| `iOS Production / App Store` | Release |
+| `Android Production / Play Production` | Release |
+| `iOS Private / App Store Metadata` | Sync Metadata |
+| `iOS Production / App Store Metadata` | Sync Metadata |
+| `Android Private / Play Store Metadata` | Sync Metadata |
+| `Android Production / Play Store Metadata` | Sync Metadata |
+
 ### Build Numbers
 
-All builds use epoch-minute build numbers (`$(date +%s) / 60`) — monotonically increasing regardless of how many PRs are active. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
+All deployable builds use epoch-derived build numbers (`$(date +%s) / 10`) — monotonically increasing regardless of how many PRs are active. PR info is stored in build metadata, not the build number.
 
 ## Store Metadata
 
@@ -163,6 +182,8 @@ copy. Android also has per-variant Play Store icon metadata.
 ios/fastlane/
 ├── screenshots/
 │   └── en-US/                  # Shared App Store iPhone and iPad screenshots
+├── app-previews/
+│   └── en-US/                  # Optional App Store product demo videos
 ├── metadata-private/        # MonkeySSH β (preview app)
 │   ├── en-US/
 │   │   ├── name.txt         # "MonkeySSH β"
@@ -214,6 +235,7 @@ Google Play text limits still apply to the repository files: `title.txt` must st
 App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
 Store screenshots can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`). The generator starts a temporary local `sshd` and uniquely named MonkeyMux workspace, boots the normal MonkeySSH app on iOS simulators and an Android emulator with release-demo data, drives real app navigation through a real Copilot CLI terminal, hosts, snippets, the MonkeyMux window selector with the current supported agent family, SFTP, and a real Claude Code terminal, then captures native device screenshots into the Fastlane folders. The generator fails instead of substituting mock screenshots if the real SSH/MonkeyMux workspace cannot be created.
 Generated screenshot counts, dimensions, and OCR content can be validated locally on macOS with `python3 scripts/validate_store_screenshots.py` after installing Pillow.
+Short product demo videos can be recorded with `python3 scripts/generate_store_demo_videos.py [ios|android|both]` and validated with `python3 scripts/validate_store_demo_videos.py [ios|android|all]`. The video generator reuses the real screenshot capture environment, records native simulator/emulator screen video while the app walks Claude Code, the MonkeyMux window switcher, OpenCode, a real image paste, and Copilot, then composes that single recording into store-compliant deliverables. App Store **app previews** are full-screen native captures at the exact device slot resolution — `ios/fastlane/app-previews/en-US/iphone_67_1.mov` (886x1920) and `ipad_13_1.mov` (1200x1600) — with fading caption overlays and a silent audio track, because App Store Connect validates resolution at upload. The **Google Play preview** is a 16:9 landscape branded promo at `store/demo-videos/google-play/monkeyssh-google-play-promo.mp4` (1920x1080); Google Play videos are externally hosted, so this MP4 is uploaded to YouTube and referenced by URL in Play Console rather than synced by Fastlane. The portrait branded canvas is kept for ads under `store/demo-videos/ads/`. The validator enforces per-slot resolution, 15-30s duration, H.264, an audio track on the Apple previews, and that the live app region advances through scenes.
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.

@@ -55,6 +55,11 @@ on:
         type: boolean
         default: true
         description: 'Whether to run the Android build job'
+      android-runner:
+        required: false
+        type: string
+        default: 'ubicloud-standard-4'
+        description: 'Runner label for the Android build job'
       build-ios:
         required: false
         type: boolean
@@ -70,6 +75,11 @@ on:
         type: boolean
         default: true
         description: 'Whether to derive and upload a universal Android APK artifact from the preview AAB when deploy-android-to == none'
+      android-target-platform:
+        required: false
+        type: string
+        default: ''
+        description: 'Optional Flutter Android target platform override, e.g. android-arm64 for fast non-deploy preview builds'
       build-ios-unsigned-ipa:
         required: false
         type: boolean
@@ -188,11 +198,6 @@ on:
         description: 'Final iOS deploy status summary for preview deploy comments'
         value: ${{ jobs.deploy-status-summary.outputs.ios-deploy-status }}
 
-permissions:
-  actions: read
-  contents: read
-  issues: write
-
 env:
   FLUTTER_VERSION: '3.44.0'
 
@@ -200,7 +205,7 @@ jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
     if: inputs.build-android
-    runs-on: ubicloud-standard-4
+    runs-on: ${{ inputs.android-runner }}
     env:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
@@ -259,14 +264,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
         if: inputs.android-reuse-aab-artifact-name == ''
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          cache-cleanup: always
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          add-job-summary: on-failure
+
+      - name: Configure CI Gradle properties
+        if: inputs.android-reuse-aab-artifact-name == ''
+        run: |
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.daemon=false'
+            echo 'org.gradle.vfs.watch=false'
+          } >> ~/.gradle/gradle.properties
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.android-reuse-aab-artifact-name == ''
@@ -302,7 +314,8 @@ jobs:
           printf '%s' "$GOOGLE_SERVICES_JSON" > "android/app/src/${{ inputs.flavor }}/google-services.json"
           echo "FLUTTY_FIREBASE_ENABLED=true" >> "$GITHUB_ENV"
 
-      - name: Install Android CMake
+      - name: Resolve Android SDK path
+        id: android-sdk
         if: inputs.android-reuse-aab-artifact-name == ''
         run: |
           set -euo pipefail
@@ -310,6 +323,23 @@ jobs:
           if [ -z "$ANDROID_SDK" ]; then
             echo "::error title=Missing Android SDK::ANDROID_HOME or ANDROID_SDK_ROOT must be set."
             exit 1
+          fi
+          echo "path=$ANDROID_SDK" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        if: inputs.android-reuse-aab-artifact-name == ''
+        with:
+          path: ${{ steps.android-sdk.outputs.path }}/cmake/3.22.1
+          key: android-cmake-${{ runner.os }}-3.22.1
+
+      - name: Install Android CMake
+        if: inputs.android-reuse-aab-artifact-name == ''
+        env:
+          ANDROID_SDK: ${{ steps.android-sdk.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [ -x "$ANDROID_SDK/cmake/3.22.1/bin/cmake" ]; then
+            exit 0
           fi
           SDKMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
@@ -381,10 +411,17 @@ jobs:
 
       - name: Build signed AAB
         if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
         run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -409,12 +446,18 @@ jobs:
       - name: Build unsigned AAB
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
           FLUTTY_ALLOW_UNSIGNED_RELEASE: 'true'
         run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
             --no-tree-shake-icons \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -424,11 +467,18 @@ jobs:
 
       - name: Build debug AAB for preview artifacts
         if: inputs.build-android-apk && inputs.deploy-android-to == 'none' && !inputs.build-android-unsigned-aab
+        env:
+          ANDROID_TARGET_PLATFORM: ${{ inputs.android-target-platform }}
         run: |
+          EXTRA_ANDROID_FLAGS=()
+          if [ -n "$ANDROID_TARGET_PLATFORM" ]; then
+            EXTRA_ANDROID_FLAGS+=(--target-platform="$ANDROID_TARGET_PLATFORM")
+          fi
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --debug \
             --no-tree-shake-icons \
+            "${EXTRA_ANDROID_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -566,7 +616,7 @@ jobs:
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}${{ inputs.android-target-platform != '' && format('-{0}', inputs.android-target-platform) || '' }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload APK artifact
@@ -624,6 +674,44 @@ jobs:
               print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
           SCRIPT
 
+      - name: Start Android GitHub deployment
+        id: start-android-deployment
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
+          DEPLOYMENT_ENVIRONMENT: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / Play ${{ inputs.deploy-android-to == 'production' && 'Production' || 'Internal' }}
+          DEPLOYMENT_DESCRIPTION: Android ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to Play ${{ inputs.deploy-android-to }}
+          DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
+          DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-android-to == 'production' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const environmentUrl = process.env.DEPLOYMENT_ENVIRONMENT_URL || '';
+            const deployment = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref: process.env.DEPLOYMENT_REF,
+              environment: process.env.DEPLOYMENT_ENVIRONMENT,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: process.env.DEPLOYMENT_PRODUCTION_ENVIRONMENT === 'true',
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: deployment.data.id,
+              state: 'in_progress',
+              description: 'Android Play upload started.',
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: false,
+              ...(environmentUrl ? {environment_url: environmentUrl} : {}),
+            });
+            core.setOutput('deployment-id', String(deployment.data.id));
+
       - name: Validate Play Store service account
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
@@ -653,6 +741,7 @@ jobs:
           python3 scripts/validate_play_store_metadata.py ${{ inputs.flavor }}
 
       - name: Run Fastlane
+        id: android-deploy
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
@@ -671,6 +760,31 @@ jobs:
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
             bundle exec fastlane release skip_metadata:"$SKIP_META" version_code:"$ANDROID_VERSION_CODE"
           fi
+
+      - name: Finish Android GitHub deployment
+        if: always() && inputs.deploy-android-to != 'none' && inputs.run-android-deploy && steps.start-android-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_ID: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
+          DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
+          DEPLOYMENT_STATE: ${{ steps.android-deploy.outcome == 'success' && 'success' || 'failure' }}
+          DEPLOYMENT_DESCRIPTION: ${{ steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const environmentUrl = process.env.DEPLOYMENT_ENVIRONMENT_URL || '';
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: process.env.DEPLOYMENT_STATE,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
+              ...(environmentUrl ? {environment_url: environmentUrl} : {}),
+            });
 
       - name: Remove Android signing material
         if: always() && inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
@@ -941,7 +1055,43 @@ jobs:
               print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
           SCRIPT
 
+      - name: Start iOS GitHub deployment
+        id: start-ios-deployment
+        if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
+          DEPLOYMENT_ENVIRONMENT: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
+          DEPLOYMENT_DESCRIPTION: iOS ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to ${{ inputs.deploy-ios-to }}
+          DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-ios-to == 'appstore' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const deployment = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref: process.env.DEPLOYMENT_REF,
+              environment: process.env.DEPLOYMENT_ENVIRONMENT,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: process.env.DEPLOYMENT_PRODUCTION_ENVIRONMENT === 'true',
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: deployment.data.id,
+              state: 'in_progress',
+              description: 'iOS App Store Connect upload started.',
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: false,
+            });
+            core.setOutput('deployment-id', String(deployment.data.id));
+
       - name: Archive, sign & deploy via Fastlane
+        id: ios-deploy
         if: inputs.deploy-ios-to != 'none'
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
@@ -991,6 +1141,28 @@ jobs:
           elif [ -z "$REUSED_IPA_PATH" ]; then
             bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
+
+      - name: Finish iOS GitHub deployment
+        if: always() && inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy && steps.start-ios-deployment.outputs['deployment-id'] != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPLOYMENT_ID: ${{ steps.start-ios-deployment.outputs['deployment-id'] }}
+          DEPLOYMENT_STATE: ${{ steps.ios-deploy.outcome == 'success' && 'success' || 'failure' }}
+          DEPLOYMENT_DESCRIPTION: ${{ steps.ios-deploy.outcome == 'success' && 'iOS App Store Connect upload completed.' || 'iOS App Store Connect upload failed.' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            await github.rest.repos.createDeploymentStatus({
+              owner,
+              repo,
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: process.env.DEPLOYMENT_STATE,
+              description: process.env.DEPLOYMENT_DESCRIPTION,
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
+            });
 
       - name: Prepare signed IPA artifact
         id: signed-ipa-artifact

@@ -1354,6 +1354,95 @@ func TestInactiveWindowBellMarksAlert(t *testing.T) {
 	}
 }
 
+func TestInactiveWindowUtf8BeforeBellMarksAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte{'x', 0xe2, 0x80, 0x9d, '\a'})
+
+	if !inactiveWindow.alert {
+		t.Fatal("bell after UTF-8 continuation bytes did not mark the window alert")
+	}
+}
+
+func TestInactiveWindowOscTerminatorDoesNotMarkAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte("\x1b]0;build\x07"))
+
+	if inactiveWindow.alert {
+		t.Fatal("OSC title terminator marked the window alert")
+	}
+	if inactiveWindow.paneTitle != "build" {
+		t.Fatalf("pane title = %q, want build", inactiveWindow.paneTitle)
+	}
+}
+
+func TestInactiveWindowOscUtf8PayloadDoesNotMarkAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte{
+		'\x1b', ']', '0', ';', 'u', 't', 'f', '8', ' ', 0xc5, 0x9c, '\a',
+	})
+
+	if inactiveWindow.alert {
+		t.Fatal("OSC title UTF-8 continuation byte caused a false alert")
+	}
+}
+
+func TestInactiveWindowSplitOscTerminatorDoesNotMarkAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte("\x1b]0;bui"))
+	server.handleWindowOutput("@2", []byte("ld\x07"))
+
+	if inactiveWindow.alert {
+		t.Fatal("split OSC title terminator marked the window alert")
+	}
+	if inactiveWindow.paneTitle != "build" {
+		t.Fatalf("pane title = %q, want build", inactiveWindow.paneTitle)
+	}
+}
+
+func TestInactiveWindowBellAfterOscMarksAlert(t *testing.T) {
+	server := newMuxServer("test")
+	inactiveWindow := &muxWindow{id: "@2", index: 1, lastActivity: time.Now()}
+	server.windows = []*muxWindow{
+		{id: "@1", index: 0, lastActivity: time.Now()},
+		inactiveWindow,
+	}
+	server.activeID = "@1"
+
+	server.handleWindowOutput("@2", []byte("\x1b]0;build\x07\a"))
+
+	if !inactiveWindow.alert {
+		t.Fatal("bell after OSC title did not mark the window alert")
+	}
+}
+
 func TestActiveReplayIncludesWindowHistory(t *testing.T) {
 	server := newMuxServer("test")
 	attach := &recordingConn{}
@@ -1736,7 +1825,7 @@ func TestObserveKittyGraphicsRetainsImageAcrossHistoryEviction(t *testing.T) {
 	window.observeKittyGraphicsLocked(
 		bytes.Repeat([]byte("placeholder frame "), 100000))
 
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	if !strings.Contains(replay, "i=10871563") ||
 		!strings.Contains(replay, "iVBORw0KGgo=") {
 		t.Fatalf("retained image lost after eviction-scale output: %q", replay)
@@ -1759,7 +1848,7 @@ func TestObserveKittyGraphicsReassemblesSplitTransmission(t *testing.T) {
 		window.observeKittyGraphicsLocked([]byte{full[i]})
 	}
 
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	for _, want := range []string{"AAAA", "BBBB", "CCCC", "i=5"} {
 		if !strings.Contains(replay, want) {
 			t.Fatalf("split transmission missing %q: %q", want, replay)
@@ -1772,12 +1861,12 @@ func TestObserveKittyGraphicsDeleteRemovesRetainedImage(t *testing.T) {
 
 	window.observeKittyGraphicsLocked(
 		[]byte("\x1b_Ga=T,U=1,i=7,f=100;PAYLOAD\x1b\\"))
-	if got := window.kittyImageReplayLocked(); !strings.Contains(string(got), "PAYLOAD") {
+	if got := window.kittyImageReplayLocked(nil); !strings.Contains(string(got), "PAYLOAD") {
 		t.Fatalf("image id=7 not retained: %q", got)
 	}
 
 	window.observeKittyGraphicsLocked([]byte("\x1b_Ga=d,i=7;\x1b\\"))
-	if got := window.kittyImageReplayLocked(); len(got) != 0 {
+	if got := window.kittyImageReplayLocked(nil); len(got) != 0 {
 		t.Fatalf("deleted image id=7 still retained: %q", got)
 	}
 }
@@ -1795,13 +1884,249 @@ func TestObserveKittyGraphicsCapsRetainedImageCount(t *testing.T) {
 			len(window.kittyImageOrder), maxRetainedKittyImages)
 	}
 	// The oldest images are evicted; the most recent are kept.
-	replay := string(window.kittyImageReplayLocked())
+	replay := string(window.kittyImageReplayLocked(nil))
 	if strings.Contains(replay, "DATA0") {
 		t.Fatalf("oldest image should have been evicted: %q", replay)
 	}
 	newest := fmt.Sprintf("DATA%d", maxRetainedKittyImages+4)
 	if !strings.Contains(replay, newest) {
 		t.Fatalf("newest image %q missing: %q", newest, replay)
+	}
+}
+
+func TestKittyImageReplayCapsCount(t *testing.T) {
+	window := &muxWindow{}
+	// Transmit more images than the replay count cap. Each is tiny so the byte
+	// budget never binds; only the count cap should.
+	const transmitted = maxReplayedKittyImages + 8
+	for i := 0; i < transmitted; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;D%d\x1b\\", i, i)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	replay := string(window.kittyImageReplayLocked(nil))
+	if got := strings.Count(replay, "i="); got > maxReplayedKittyImages {
+		t.Fatalf("replayed %d images, want <= %d", got, maxReplayedKittyImages)
+	}
+	// The most-recent image is replayed; an image older than the cap is not.
+	newest := fmt.Sprintf("D%d\x1b", transmitted-1)
+	if !strings.Contains(replay, newest) {
+		t.Fatalf("newest image %q missing from replay", newest)
+	}
+	oldestKept := transmitted - maxReplayedKittyImages
+	tooOld := fmt.Sprintf("i=%d,", oldestKept-1)
+	if strings.Contains(replay, tooOld) {
+		t.Fatalf("image %q older than the replay cap should be omitted", tooOld)
+	}
+}
+
+func TestKittyImageTransmissionsForReplaysRequestedIdsBeyondReplayCap(t *testing.T) {
+	window := &muxWindow{}
+	// Transmit more images than the replay caps would ever send at once, using
+	// distinct payloads so a request can target an early (older-than-cap) id.
+	const transmitted = maxReplayedKittyImages + 8
+	for i := 0; i < transmitted; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;PAY%d\x1b\\", i, i)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	// An id well outside the "most recent N" replay window is omitted by the
+	// bounded switch replay...
+	const oldID = "0"
+	if strings.Contains(string(window.kittyImageReplayLocked(nil)), "i=0,") {
+		t.Fatalf("precondition: id 0 should be beyond the bounded replay cap")
+	}
+	// ...but a targeted request replays exactly it, ignoring the caps.
+	got := string(window.kittyImageTransmissionsForLocked([]string{oldID}))
+	if !strings.Contains(got, "i=0,") || !strings.Contains(got, "PAY0") {
+		t.Fatalf("requested id 0 not replayed: %q", got)
+	}
+	if strings.Contains(got, "PAY1") {
+		t.Fatalf("only the requested id should be replayed: %q", got)
+	}
+	if strings.Contains(got, "a=T") {
+		t.Fatalf("requested transmit must stay store-only (a=t): %q", got)
+	}
+}
+
+func TestKittyImageTransmissionsForSkipsUnknownAndDeduplicates(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=11,f=100;ALPHA\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=22,f=100;BETA\x1b\\"))
+
+	// Unknown ids are skipped; a duplicated id is emitted once.
+	got := string(window.kittyImageTransmissionsForLocked(
+		[]string{"11", "999", "11", ""}))
+	if strings.Count(got, "i=11,") != 1 {
+		t.Fatalf("id 11 should be replayed exactly once: %q", got)
+	}
+	if strings.Contains(got, "i=22,") {
+		t.Fatalf("unrequested id 22 must not be replayed: %q", got)
+	}
+	if strings.Contains(got, "i=999") {
+		t.Fatalf("unknown id 999 must be skipped: %q", got)
+	}
+	// No ids requested replays nothing.
+	if len(window.kittyImageTransmissionsForLocked(nil)) != 0 {
+		t.Fatalf("empty request must replay nothing")
+	}
+}
+
+func TestKittyImageReplayCapsBytes(t *testing.T) {
+	window := &muxWindow{}
+	// Use ~1 MiB images and transmit enough total to exceed the byte budget so
+	// it binds before the count cap. Derived from the constant so the test stays
+	// valid if the cap changes, while staying within the retention caps.
+	const imgBytes = 1024 * 1024
+	count := maxReplayedKittyImageBytes/imgBytes + 4
+	if count > maxRetainedKittyImages {
+		count = maxRetainedKittyImages
+	}
+	big := strings.Repeat("Z", imgBytes)
+	for i := 0; i < count; i++ {
+		seq := fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\", i, big)
+		window.observeKittyGraphicsLocked([]byte(seq))
+	}
+
+	replay := window.kittyImageReplayLocked(nil)
+	if len(replay) > maxReplayedKittyImageBytes+len(big) {
+		t.Fatalf("replay %d bytes exceeds budget %d (+one image slack)",
+			len(replay), maxReplayedKittyImageBytes)
+	}
+	// At least one image (the most recent) is always replayed.
+	newest := fmt.Sprintf("i=%d,", count-1)
+	if !strings.Contains(string(replay), newest) {
+		t.Fatalf("most-recent image %q missing from byte-capped replay", newest)
+	}
+}
+
+func TestKittyImageReplaySkipsImagesClientAlreadyHolds(t *testing.T) {
+	window := &muxWindow{}
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=101,f=100;AAAABBBBCCCC\x1b\\"))
+	window.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=202,f=100;DDDDEEEEFFFF\x1b\\"))
+
+	// The client reports holding image 101 with its true signature and image
+	// 202 with a stale signature (different content). Only 101 may be skipped.
+	clientHas := map[string]uint32{
+		"101": window.kittyImageToken["101"],
+		"202": window.kittyImageToken["202"] ^ 0x1,
+	}
+	replay := string(window.kittyImageReplayLocked(clientHas))
+	if strings.Contains(replay, "i=101") {
+		t.Fatalf("image 101 should be skipped; client holds it: %q", replay)
+	}
+	if !strings.Contains(replay, "i=202") {
+		t.Fatalf("image 202 has a stale client signature and must be re-sent: %q",
+			replay)
+	}
+	// A nil skip-set (fresh attach) still replays everything.
+	full := string(window.kittyImageReplayLocked(nil))
+	if !strings.Contains(full, "i=101") || !strings.Contains(full, "i=202") {
+		t.Fatalf("nil skip-set must replay every image: %q", full)
+	}
+}
+
+func TestKittyTransmissionPayloadSignatureMatchesClientHash(t *testing.T) {
+	// "aGVsbG8=" is base64 for "hello"; the client's FNV-1a-32 over "hello" is
+	// 3314369016 (verified against the Dart terminalGraphicsSourceSignature).
+	buf := []byte("\x1b_Ga=t,i=1,f=100;aGVsbG8=\x1b\\")
+	if got := kittyTransmissionPayloadSignature(buf); got != 3314369016 {
+		t.Fatalf("payload signature = %d, want 3314369016 (client parity)", got)
+	}
+	// Whitespace in the payload is ignored, matching the client's lenient decode.
+	spaced := []byte("\x1b_Ga=t,i=1,f=100;aGVs bG8=\n\x1b\\")
+	if got := kittyTransmissionPayloadSignature(spaced); got != 3314369016 {
+		t.Fatalf("whitespace payload signature = %d, want 3314369016", got)
+	}
+	// No payload yields 0, which never matches a client-reported signature.
+	if got := kittyTransmissionPayloadSignature([]byte("\x1b_Ga=d,i=1\x1b\\")); got != 0 {
+		t.Fatalf("payload-less transmission signature = %d, want 0", got)
+	}
+	// A multi-chunk (m=1) transmission must hash the concatenation of every
+	// chunk's decoded payload, identically to the same image sent in one chunk.
+	// The client appends each decoded chunk into one buffer before hashing, so
+	// "hel" ("aGVs") + "lo" ("bG8=") must hash the same as "hello" above. Kitty
+	// splits any payload over 4096 base64 bytes this way, so without covering
+	// every chunk no real screenshot's signature would ever match the client.
+	multi := []byte("\x1b_Ga=t,i=1,f=100,m=1;aGVs\x1b\\\x1b_Gm=0;bG8=\x1b\\")
+	if got := kittyTransmissionPayloadSignature(multi); got != 3314369016 {
+		t.Fatalf("multi-chunk payload signature = %d, want 3314369016", got)
+	}
+}
+
+func TestGlobalKittyImageBudgetEvictsAcrossWindows(t *testing.T) {
+	saved := kittyImageGlobalBudgetBytes
+	defer func() { kittyImageGlobalBudgetBytes = saved }()
+	// Tiny budget so a couple of ~1 MiB images exceed it across two windows.
+	kittyImageGlobalBudgetBytes = 2 * 1024 * 1024
+
+	w1 := &muxWindow{id: "@1"}
+	w2 := &muxWindow{id: "@2"}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{w1, w2}
+
+	big := strings.Repeat("Z", 1024*1024)
+	store := func(w *muxWindow, id int) {
+		w.observeKittyGraphicsLocked(
+			[]byte(fmt.Sprintf("\x1b_Ga=T,U=1,i=%d,f=100;%s\x1b\\", id, big)),
+		)
+		server.enforceGlobalKittyImageBudgetLocked()
+	}
+
+	// Store oldest in w1, then newer images in w2; the global cap must evict the
+	// older w1 image even though w1 is under its own per-window cap.
+	store(w1, 1)
+	store(w2, 2)
+	store(w2, 3)
+
+	total := 0
+	for _, w := range server.windows {
+		for _, b := range w.kittyImages {
+			total += len(b)
+		}
+	}
+	if total > kittyImageGlobalBudgetBytes {
+		t.Fatalf("global image bytes %d exceed budget %d", total,
+			kittyImageGlobalBudgetBytes)
+	}
+	if _, ok := w1.kittyImages["1"]; ok {
+		t.Fatalf("oldest image (w1 id=1) should have been globally evicted")
+	}
+	if _, ok := w2.kittyImages["3"]; !ok {
+		t.Fatalf("newest image (w2 id=3) must be retained")
+	}
+}
+
+func TestGlobalKittyImageBudgetKeepsAtLeastOne(t *testing.T) {
+	saved := kittyImageGlobalBudgetBytes
+	defer func() { kittyImageGlobalBudgetBytes = saved }()
+	// Budget smaller than a single image: it must keep the one image rather than
+	// drop everything (which would render blank).
+	kittyImageGlobalBudgetBytes = 1024
+
+	w := &muxWindow{id: "@1"}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{w}
+	w.observeKittyGraphicsLocked(
+		[]byte("\x1b_Ga=T,U=1,i=9,f=100;" + strings.Repeat("Z", 4096) + "\x1b\\"),
+	)
+	server.enforceGlobalKittyImageBudgetLocked()
+
+	if len(w.kittyImages) != 1 {
+		t.Fatalf("expected to keep the single image, have %d", len(w.kittyImages))
+	}
+}
+
+func TestComputeKittyImageGlobalBudgetClampsToRange(t *testing.T) {
+	const floor = 32 * 1024 * 1024
+	const ceiling = 512 * 1024 * 1024
+	got := computeKittyImageGlobalBudgetBytes()
+	if got < floor || got > ceiling {
+		t.Fatalf("budget %d out of clamp range [%d,%d]", got, floor, ceiling)
 	}
 }
 
@@ -3703,8 +4028,8 @@ func TestCreateWindowOptionsForRestoreBuildsAgentResumeCommand(t *testing.T) {
 
 	options := createWindowOptionsForRestore(state, false)
 
-	if got := options.command; got != "copilot --resume 'session'\"'\"'s id'" {
-		t.Fatalf("command = %q, want quoted copilot resume", got)
+	if got := options.command; got != "copilot --resume 'session'\"'\"'s id' || copilot" {
+		t.Fatalf("command = %q, want quoted copilot resume with fresh fallback", got)
 	}
 	if len(options.history) != 0 {
 		t.Fatalf("agent restore history length = %d, want 0", len(options.history))
@@ -3751,8 +4076,8 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 		t.Fatalf("agent session ID = %q, want new-session", got)
 	}
 	options := createWindowOptionsForRestore(restore.Windows[0], true)
-	if got := options.command; got != "agy --dangerously-skip-permissions --conversation 'new-session'" {
-		t.Fatalf("command = %q, want Antigravity resume command", got)
+	if got := options.command; got != "agy --dangerously-skip-permissions --conversation 'new-session' || agy --dangerously-skip-permissions" {
+		t.Fatalf("command = %q, want Antigravity resume command with fresh fallback", got)
 	}
 }
 
@@ -3832,7 +4157,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "copilot",
 				AgentSessionID: "session-123",
 			},
-			want:      "copilot --yolo --resume 'session-123'",
+			want:      "copilot --yolo --resume 'session-123' || copilot --yolo",
 			agentTool: "copilot",
 		},
 		{
@@ -3843,7 +4168,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "codex",
 				AgentSessionID: "codex-session",
 			},
-			want:      "codex --yolo resume 'codex-session'",
+			want:      "codex --yolo resume 'codex-session' || codex --yolo",
 			agentTool: "codex",
 		},
 		{
@@ -3854,7 +4179,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "opencode",
 				AgentSessionID: "_continue",
 			},
-			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue`,
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --continue || OPENCODE_PERMISSION='{"*":"allow"}' opencode`,
 			agentTool: "opencode",
 		},
 		{
@@ -3865,7 +4190,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "opencode",
 				AgentSessionID: "ses_abc",
 			},
-			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --session 'ses_abc'`,
+			want:      `OPENCODE_PERMISSION='{"*":"allow"}' opencode --session 'ses_abc' || OPENCODE_PERMISSION='{"*":"allow"}' opencode`,
 			agentTool: "opencode",
 		},
 		{
@@ -3876,7 +4201,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "claude",
 				AgentSessionID: "de4e84a3-cf16-4cc2-8ba7-34587e984d4a",
 			},
-			want:      `claude --dangerously-skip-permissions --resume 'de4e84a3-cf16-4cc2-8ba7-34587e984d4a'`,
+			want:      `claude --dangerously-skip-permissions --resume 'de4e84a3-cf16-4cc2-8ba7-34587e984d4a' || claude --dangerously-skip-permissions`,
 			agentTool: "claude",
 		},
 		{
@@ -3887,7 +4212,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "gemini",
 				AgentSessionID: "bc1ced23-25ac-4971-8f30-8af35ce2f2f1",
 			},
-			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1'`,
+			want:      `gemini --yolo --resume 'bc1ced23-25ac-4971-8f30-8af35ce2f2f1' || gemini --yolo`,
 			agentTool: "gemini",
 		},
 		{
@@ -3898,7 +4223,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "antigravity",
 				AgentSessionID: "session-456",
 			},
-			want:      `agy --dangerously-skip-permissions --conversation 'session-456'`,
+			want:      `agy --dangerously-skip-permissions --conversation 'session-456' || agy --dangerously-skip-permissions`,
 			agentTool: "antigravity",
 		},
 		{
@@ -3909,7 +4234,7 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 				AgentTool:      "antigravity",
 				AgentSessionID: "_continue",
 			},
-			want:      `agy --dangerously-skip-permissions --continue`,
+			want:      `agy --dangerously-skip-permissions --continue || agy --dangerously-skip-permissions`,
 			agentTool: "antigravity",
 		},
 	}
