@@ -67,6 +67,12 @@ class KeyService {
       return _keyRepository.getById(id);
     } on FormatException {
       return null;
+    } on SSHError {
+      // Malformed OpenSSH structure, or an encrypted key with a missing or
+      // incorrect passphrase (SSHKeyDecryptError). Report as "unimportable"
+      // so the UI shows its "invalid key / incorrect passphrase" message
+      // instead of surfacing an uncaught error (SSHError is not an Exception).
+      return null;
     }
   }
 
