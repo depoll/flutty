@@ -1,0 +1,170 @@
+name: GitHub deployment status
+description: Create or update a GitHub deployment and deployment status.
+
+inputs:
+  action:
+    description: Either "start" to create a deployment or "finish" to update one.
+    required: true
+  deployment-id:
+    description: Existing deployment ID when finishing a deployment.
+    required: false
+    default: ''
+  ref:
+    description: Git ref or SHA to associate with a new deployment.
+    required: false
+    default: ''
+  environment:
+    description: GitHub deployment environment name.
+    required: true
+  state:
+    description: Deployment status state.
+    required: false
+    default: in_progress
+  description:
+    description: Short deployment status description.
+    required: false
+    default: ''
+  environment-url:
+    description: Optional URL for the deployed environment.
+    required: false
+    default: ''
+  log-url:
+    description: Optional URL for deployment logs.
+    required: false
+    default: ''
+  transient-environment:
+    description: Whether this deployment is for a temporary environment.
+    required: false
+    default: 'false'
+  production-environment:
+    description: Whether this deployment is for a production environment.
+    required: false
+    default: 'false'
+  auto-inactive:
+    description: Whether successful deployments should mark prior deployments inactive.
+    required: false
+    default: 'true'
+
+outputs:
+  deployment-id:
+    description: The deployment ID that was created or updated.
+    value: ${{ steps.deployment.outputs.deployment-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Sync deployment status
+      id: deployment
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        DEPLOYMENT_ACTION: ${{ inputs.action }}
+        DEPLOYMENT_ID: ${{ inputs.deployment-id }}
+        DEPLOYMENT_REF: ${{ inputs.ref }}
+        DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+        DEPLOYMENT_STATE: ${{ inputs.state }}
+        DEPLOYMENT_DESCRIPTION: ${{ inputs.description }}
+        DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.environment-url }}
+        DEPLOYMENT_LOG_URL: ${{ inputs.log-url }}
+        DEPLOYMENT_TRANSIENT_ENVIRONMENT: ${{ inputs.transient-environment }}
+        DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.production-environment }}
+        DEPLOYMENT_AUTO_INACTIVE: ${{ inputs.auto-inactive }}
+      with:
+        script: |
+          const owner = context.repo.owner;
+          const repo = context.repo.repo;
+
+          const read = (name) => (process.env[name] || '').trim();
+          const parseBoolean = (value) => ['1', 'true', 'yes'].includes(value.toLowerCase());
+          const shorten = (value) => {
+            if (value.length <= 140) {
+              return value;
+            }
+            return `${value.slice(0, 137)}...`;
+          };
+
+          const mode = read('DEPLOYMENT_ACTION');
+          const environment = read('DEPLOYMENT_ENVIRONMENT');
+          const ref = read('DEPLOYMENT_REF');
+          const deploymentIdInput = read('DEPLOYMENT_ID');
+          const environmentUrl = read('DEPLOYMENT_ENVIRONMENT_URL');
+          const logUrl =
+            read('DEPLOYMENT_LOG_URL') ||
+            `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+          const description = shorten(read('DEPLOYMENT_DESCRIPTION'));
+          const stateAliases = new Map([
+            ['cancelled', 'failure'],
+            ['canceled', 'failure'],
+            ['skipped', 'inactive'],
+          ]);
+          const allowedStates = new Set([
+            'error',
+            'failure',
+            'inactive',
+            'in_progress',
+            'pending',
+            'queued',
+            'success',
+          ]);
+          const requestedState = read('DEPLOYMENT_STATE');
+          const state = stateAliases.get(requestedState) || requestedState;
+
+          if (!environment) {
+            core.setFailed('deployment environment is required');
+            return;
+          }
+          if (!allowedStates.has(state)) {
+            core.setFailed(`unsupported deployment state: ${requestedState}`);
+            return;
+          }
+
+          const createStatus = async (deploymentId) => {
+            const payload = {
+              owner,
+              repo,
+              deployment_id: Number(deploymentId),
+              state,
+              auto_inactive: state === 'success' && parseBoolean(read('DEPLOYMENT_AUTO_INACTIVE')),
+              log_url: logUrl,
+            };
+
+            if (description) {
+              payload.description = description;
+            }
+            if (environmentUrl) {
+              payload.environment_url = environmentUrl;
+            }
+
+            await github.rest.repos.createDeploymentStatus(payload);
+            core.setOutput('deployment-id', String(deploymentId));
+          };
+
+          if (mode === 'start') {
+            if (!ref) {
+              core.setFailed('deployment ref is required when action=start');
+              return;
+            }
+
+            const deployment = await github.rest.repos.createDeployment({
+              owner,
+              repo,
+              ref,
+              environment,
+              description,
+              required_contexts: [],
+              auto_merge: false,
+              transient_environment: parseBoolean(read('DEPLOYMENT_TRANSIENT_ENVIRONMENT')),
+              production_environment: parseBoolean(read('DEPLOYMENT_PRODUCTION_ENVIRONMENT')),
+            });
+
+            await createStatus(deployment.data.id);
+          } else if (mode === 'finish') {
+            if (!deploymentIdInput) {
+              core.warning('No deployment ID was provided; skipping deployment status update.');
+              core.setOutput('deployment-id', '');
+              return;
+            }
+
+            await createStatus(deploymentIdInput);
+          } else {
+            core.setFailed(`unsupported deployment action: ${mode}`);
+          }
