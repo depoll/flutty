@@ -389,6 +389,128 @@ void main() {
       expect(terminal.lines[0].getText(0, 7), 'abcZQef');
     });
 
+    test('reassembles a long APC split across slices via incremental scan', () {
+      // A large image APC must pass through intact when fed in many slices,
+      // and the incremental scan offset must not skip a split `ESC \`
+      // terminator. Threading pendingScanOffset keeps this O(n) (see the
+      // window-switch hang fix) without changing the parsed result.
+      final body = 'QUJDREVGR0g=' * 4000; // ~48 KB, no ESC bytes
+      final apc = '\x1b_Gf=100,a=T;$body\x1b\\';
+
+      String runWithSlice(int sliceSize) {
+        final out = StringBuffer();
+        var pending = '';
+        var scanOffset = 0;
+        var insertMode = false;
+        var offset = 0;
+        while (offset < apc.length) {
+          final end = offset + sliceSize > apc.length
+              ? apc.length
+              : offset + sliceSize;
+          final result = adaptTerminalInsertModeOutputForXterm(
+            input: apc.substring(offset, end),
+            pendingInput: pending,
+            pendingScanOffset: scanOffset,
+            insertMode: insertMode,
+          );
+          out.write(result.output);
+          pending = result.pendingInput;
+          scanOffset = result.pendingScanOffset;
+          insertMode = result.insertMode;
+          offset = end;
+        }
+        expect(pending, isEmpty, reason: 'slice $sliceSize left a partial');
+        return out.toString();
+      }
+
+      // Small odd slices land boundaries inside the body and across `ESC \`.
+      expect(runWithSlice(7), apc);
+      expect(runWithSlice(1024), apc);
+      // A boundary exactly between ESC and the trailing backslash.
+      final beforeTerminator = apc.length - 1;
+      final split = adaptTerminalInsertModeOutputForXterm(
+        input: apc.substring(0, beforeTerminator),
+        pendingInput: '',
+        insertMode: false,
+      );
+      final rest = adaptTerminalInsertModeOutputForXterm(
+        input: apc.substring(beforeTerminator),
+        pendingInput: split.pendingInput,
+        pendingScanOffset: split.pendingScanOffset,
+        insertMode: split.insertMode,
+      );
+      expect(rest.pendingInput, isEmpty);
+      expect('${split.output}${rest.output}', apc);
+    });
+
+    test(
+      'a multi-chunk image survives the adapt+xterm pipeline without leaking '
+      'base64 as text',
+      () {
+        // The real window-switch path pumps the replay through the adapt layer
+        // in fixed slices before xterm parses it. A large image is transmitted
+        // as several m=1 continuation APCs (Kitty caps a chunk at 4096 base64
+        // bytes), so the slice boundaries fall between chunks, mid-payload and
+        // across each chunk's ESC/ST. None of the base64 may reach the terminal
+        // as printable text (the on-screen "gibberish").
+        final rgba = base64.encode(
+          Uint8List.fromList(
+            List<int>.generate(40 * 40 * 4, (i) => (i * 37 + 11) & 0xFF),
+          ),
+        );
+        final chunks = <String>[];
+        for (var offset = 0; offset < rgba.length; offset += 4096) {
+          final end = offset + 4096 > rgba.length ? rgba.length : offset + 4096;
+          final isLast = end >= rgba.length;
+          final more = isLast ? '0' : '1';
+          if (offset == 0) {
+            chunks.add(
+              '\x1b_Ga=t,i=93,f=32,s=40,v=40,m=$more;'
+              '${rgba.substring(offset, end)}\x1b\\',
+            );
+          } else {
+            chunks.add('\x1b_Gm=$more;${rgba.substring(offset, end)}\x1b\\');
+          }
+        }
+        final stream = 'BEGIN${chunks.join()}END';
+        expect(chunks.length, greaterThan(1), reason: 'must be multi-chunk');
+
+        for (final sliceSize in <int>[1, 13, 200, 4096]) {
+          final terminal = Terminal(maxLines: 100);
+          var pending = '';
+          var scanOffset = 0;
+          var insertMode = false;
+          for (var offset = 0; offset < stream.length; offset += sliceSize) {
+            final end = offset + sliceSize > stream.length
+                ? stream.length
+                : offset + sliceSize;
+            final result = adaptTerminalInsertModeOutputForXterm(
+              input: stream.substring(offset, end),
+              pendingInput: pending,
+              pendingScanOffset: scanOffset,
+              insertMode: insertMode,
+            );
+            terminal.write(result.output);
+            pending = result.pendingInput;
+            scanOffset = result.pendingScanOffset;
+            insertMode = result.insertMode;
+          }
+
+          expect(pending, isEmpty, reason: 'slice $sliceSize left a partial');
+          expect(
+            terminal.buffer.getText().replaceAll('\n', ''),
+            'BEGINEND',
+            reason: 'slice $sliceSize leaked image payload into the buffer',
+          );
+          expect(
+            terminal.heldImageSignatures().keys,
+            <int>[93],
+            reason: 'slice $sliceSize must reassemble exactly one image',
+          );
+        }
+      },
+    );
+
     test('does not inject insert blanks into OSC payloads', () {
       final result = adaptTerminalInsertModeOutputForXterm(
         input: '\x1b[4h\x1b]0;nano title\x07Z',
@@ -1567,6 +1689,75 @@ void main() {
       expect(firstLineText(terminal), 'coalesced replay');
       expect(stdoutEvents.join(), contains('coalesced replay'));
       expect(terminalNotifications, 1);
+    });
+
+    test('spreads a large active-window replay across frames instead of one '
+        'blocking write', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+
+      var terminalWrites = 0;
+      terminal.addListener(() => terminalWrites += 1);
+
+      // A Copilot window full of content replays far more than one frame's
+      // parse budget at once. The adapt/parse/control-query pipeline must run
+      // on bounded slices so no single synchronous turn blocks the UI thread.
+      final builder = StringBuffer(monkeyMuxReplayMarker);
+      for (var i = 0; i < 20000; i++) {
+        builder.write('line $i is part of a very large replay payload\r\n');
+      }
+      final replay = builder.toString();
+      expect(replay.length, greaterThan(512 * 1024));
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode(replay)));
+      await pumpEventQueue();
+
+      // Past the coalesce quiet period the replay is drained over several
+      // bounded writes rather than one blocking call, but completes quickly.
+      for (var i = 0; i < 30; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await pumpEventQueue();
+      }
+      expect(terminalWrites, greaterThan(1));
+      expect(firstLineText(terminal), startsWith('line '));
+      expect(firstLineText(terminal), endsWith('large replay payload'));
+    });
+
+    test('flushes a continuously-streaming window within the coalesce '
+        'deadline instead of starving', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+
+      final sw = Stopwatch()..start();
+      var firstChangeAtMs = -1;
+      terminal.addListener(() {
+        if (firstChangeAtMs < 0) {
+          firstChangeAtMs = sw.elapsedMilliseconds;
+        }
+      });
+
+      // Begin the active-window replay, then keep streaming chunks with gaps
+      // shorter than the 24ms quiet period — exactly how a large image/content
+      // replay arrives over the network. The debounce keeps resetting, so
+      // without a hard deadline the content would never render until the whole
+      // replay finishes downloading (the window stays blank). The max-hold must
+      // flush it mid-stream so content appears promptly.
+      shell.stdout.add(
+        Uint8List.fromList(utf8.encode('${monkeyMuxReplayMarker}busy 0 ')),
+      );
+      for (var i = 1; i <= 25; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+        shell.stdout.add(Uint8List.fromList(utf8.encode('busy $i ')));
+        await pumpEventQueue();
+      }
+
+      // Streaming ran ~400ms; the batch must have flushed near the 64ms
+      // deadline, well before output stopped.
+      expect(firstChangeAtMs, greaterThanOrEqualTo(0));
+      expect(firstChangeAtMs, lessThan(250));
+      expect(firstLineText(terminal), startsWith('busy 0'));
     });
 
     test('flushes terminal theme OSC queries without frame delay', () async {

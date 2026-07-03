@@ -102,17 +102,34 @@ class _HostKeyTrustDialog extends StatelessWidget {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () =>
-              Navigator.of(context).pop(HostKeyTrustDecision.reject),
-          child: const Text('Reject'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(action),
-          child: Text(actionLabel),
-        ),
-      ],
+      actions: isReplacement
+          ? [
+              // The host key changed — a possible MITM. Keep the safe choice
+              // (Reject) prominent and demote the dangerous replace to a
+              // low-emphasis action, so trusting a changed key is deliberate,
+              // never the easy default.
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: colorScheme.error),
+                onPressed: () => Navigator.of(context).pop(action),
+                child: Text(actionLabel),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(HostKeyTrustDecision.reject),
+                child: const Text('Reject'),
+              ),
+            ]
+          : [
+              TextButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(HostKeyTrustDecision.reject),
+                child: const Text('Reject'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(action),
+                child: Text(actionLabel),
+              ),
+            ],
     );
   }
 }

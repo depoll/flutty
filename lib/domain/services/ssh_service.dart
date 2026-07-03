@@ -224,11 +224,12 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 /// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
 /// accidentally enabling underline/bold while painting spaces.
 @visibleForTesting
-({String output, String pendingInput, bool insertMode})
+({String output, String pendingInput, bool insertMode, int pendingScanOffset})
 adaptTerminalInsertModeOutputForXterm({
   required String input,
   required String pendingInput,
   required bool insertMode,
+  int pendingScanOffset = 0,
   int? terminalColumns,
   int? terminalRows,
   int? cursorColumn,
@@ -254,12 +255,22 @@ adaptTerminalInsertModeOutputForXterm({
   while (cursor < combinedInput.length) {
     final codeUnit = combinedInput.codeUnitAt(cursor);
     if (codeUnit == _terminalEscapeCodeUnit) {
-      final endIndex = _terminalEscapeSequenceEndIndex(combinedInput, cursor);
+      // Only the carried-over incomplete sequence (always at index 0) can
+      // resume a prior scan; later sequences scan from their own body.
+      final endIndex = _terminalEscapeSequenceEndIndex(
+        combinedInput,
+        cursor,
+        resumeBodyFrom: cursor == 0 ? pendingScanOffset : 0,
+      );
       if (endIndex == null) {
+        // Still incomplete: we have now scanned to the end, so the next call
+        // resumes one character back (to catch a split `ESC \` terminator).
+        final scanned = combinedInput.length - cursor;
         return (
           output: output.toString(),
           pendingInput: combinedInput.substring(cursor),
           insertMode: nextInsertMode,
+          pendingScanOffset: scanned > 1 ? scanned - 1 : 0,
         );
       }
 
@@ -292,6 +303,7 @@ adaptTerminalInsertModeOutputForXterm({
     output: output.toString(),
     pendingInput: '',
     insertMode: nextInsertMode,
+    pendingScanOffset: 0,
   );
 }
 
@@ -697,7 +709,19 @@ String _terminalTmuxPassthroughPendingSuffix(String input) {
   return '';
 }
 
-int? _terminalEscapeSequenceEndIndex(String input, int start) {
+/// Finds the end index of the escape sequence beginning at [start].
+///
+/// [resumeBodyFrom] lets a caller that already scanned part of an incomplete
+/// sequence (carried as `pendingInput`) resume the terminator search instead of
+/// rescanning from the sequence body. This keeps re-feeding a long sequence
+/// (e.g. a multi-megabyte Kitty graphics APC split across slices) O(n) overall
+/// rather than O(n^2). The caller must include a one-character overlap so a
+/// two-byte ST terminator (`ESC \`) split across the boundary is still found.
+int? _terminalEscapeSequenceEndIndex(
+  String input,
+  int start, {
+  int resumeBodyFrom = 0,
+}) {
   if (start + 1 >= input.length) {
     return null;
   }
@@ -705,16 +729,19 @@ int? _terminalEscapeSequenceEndIndex(String input, int start) {
   final introducer = input.codeUnitAt(start + 1);
   switch (introducer) {
     case _terminalCsiIntroducerCodeUnit:
-      return _terminalCsiEndIndex(input, start + 2);
+      return _terminalCsiEndIndex(input, math.max(start + 2, resumeBodyFrom));
     case _terminalDcsIntroducerCodeUnit:
     case _terminalOscIntroducerCodeUnit:
     case _terminalSosIntroducerCodeUnit:
     case _terminalPmIntroducerCodeUnit:
     case _terminalApcIntroducerCodeUnit:
-      return _terminalStringEndIndex(input, start + 2);
+      return _terminalStringEndIndex(
+        input,
+        math.max(start + 2, resumeBodyFrom),
+      );
   }
 
-  var cursor = start + 1;
+  var cursor = math.max(start + 1, resumeBodyFrom);
   while (cursor < input.length &&
       _isTerminalEscapeIntermediate(input.codeUnitAt(cursor))) {
     cursor += 1;
@@ -937,12 +964,20 @@ bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics.pixelHeight > 0;
 
 String _terminalControlQueryPendingSuffix(String input) {
-  final start = input.length > 16 ? input.length - 16 : 0;
-  for (var index = start; index < input.length; index += 1) {
-    final suffix = input.substring(index);
-    if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
-      return suffix;
+  // Retain a trailing partial control query so it can be completed by the next
+  // slice. Scan back far enough to cover the longest supported query (a
+  // multi-parameter mode report can exceed a short window); slicing terminal
+  // output more finely makes such a split more reachable.
+  const maxPendingQueryLength = 64;
+  final windowStart = input.length > maxPendingQueryLength
+      ? input.length - maxPendingQueryLength
+      : 0;
+  for (var index = input.length - 1; index >= windowStart; index -= 1) {
+    if (input.codeUnitAt(index) != _terminalEscapeCodeUnit) {
+      continue;
     }
+    final suffix = input.substring(index);
+    return _terminalControlQueryPrefixPattern.hasMatch(suffix) ? suffix : '';
   }
   return '';
 }

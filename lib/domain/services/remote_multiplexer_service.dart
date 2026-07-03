@@ -56,12 +56,17 @@ abstract interface class RemoteMultiplexerService {
   });
 
   /// Selects a remote window.
+  ///
+  /// [clientImageSignatures] maps Kitty image ids the client already holds to
+  /// their content signature, so a backend that replays retained images (e.g.
+  /// MonkeyMux) can skip re-transmitting ones the client can render from cache.
   Future<void> selectWindow(
     SshSession session,
     String sessionName,
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
   });
 
   /// Closes a remote window.
@@ -172,6 +177,7 @@ class TmuxRemoteMultiplexerService implements RemoteMultiplexerService {
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
   }) => _tmuxService.selectWindow(
     session,
     sessionName,

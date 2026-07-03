@@ -2,6 +2,42 @@ import 'package:test/test.dart';
 import 'package:xterm/core.dart';
 
 void main() {
+  group('Terminal.writeSilently', () {
+    test('applies output to the buffer without notifying listeners', () {
+      final terminal = Terminal();
+      var notifications = 0;
+      terminal.addListener(() => notifications++);
+
+      terminal.writeSilently('hello');
+
+      // The buffer reflects the write, but no repaint was requested.
+      expect(terminal.buffer.lines[0].toString().trimRight(), 'hello');
+      expect(notifications, 0);
+
+      // A subsequent write() flushes the coalesced state with a single notify.
+      terminal.write(' world');
+      expect(terminal.buffer.lines[0].toString().trimRight(), 'hello world');
+      expect(notifications, 1);
+    });
+
+    test('notifyListeners repaints the silently written state', () {
+      final terminal = Terminal();
+      var notifications = 0;
+      terminal.addListener(() => notifications++);
+
+      terminal
+        ..writeSilently('a')
+        ..writeSilently('b')
+        ..writeSilently('c');
+      expect(notifications, 0);
+
+      // The host coalesces several silent slices into one repaint.
+      terminal.notifyListeners();
+      expect(notifications, 1);
+      expect(terminal.buffer.lines[0].toString().trimRight(), 'abc');
+    });
+  });
+
   group('Terminal.inputHandler', () {
     test('can be set to null', () {
       final terminal = Terminal(inputHandler: null);
