@@ -1989,11 +1989,24 @@ class SshService {
     if (staticPassword != null || promptHandler != null) {
       onUserInfoRequest = (request) async {
         final prompts = request.prompts;
-        // Answer a single hidden prompt (a plain password request) with the
-        // stored password so keyboard-interactive/PAM logins reuse it.
+        // A keyboard-interactive info request may legitimately carry zero
+        // prompts (e.g. an informational banner, RFC 4256). It must be
+        // answered with an empty response list rather than prompting the user.
+        if (prompts.isEmpty) {
+          return const <String>[];
+        }
+        // Reuse the stored password only for a single hidden prompt that
+        // clearly asks for a password, so OTP/2FA/password-change challenges
+        // still reach the user instead of silently receiving the saved
+        // password (which the server would reject, breaking the login).
         if (staticPassword != null &&
             prompts.length == 1 &&
-            !prompts.first.echo) {
+            !prompts.first.echo &&
+            _isPlainPasswordPrompt(
+              request.name,
+              request.instruction,
+              prompts.first.promptText,
+            )) {
           return <String>[staticPassword];
         }
         if (promptHandler == null) {
@@ -2024,6 +2037,49 @@ class SshService {
       onPasswordRequest: onPasswordRequest,
       onUserInfoRequest: onUserInfoRequest,
     );
+  }
+
+  /// Whether a single keyboard-interactive prompt is unambiguously asking for
+  /// an account password (rather than an OTP/2FA code or a new password during
+  /// a password change), so a stored password can be safely reused to answer
+  /// it. Errs toward `false`: unknown prompts fall through to the user.
+  static bool _isPlainPasswordPrompt(
+    String name,
+    String instruction,
+    String promptText,
+  ) {
+    final prompt = promptText.toLowerCase();
+    if (!prompt.contains('password') && !prompt.contains('passphrase')) {
+      return false;
+    }
+    final haystack = '$name\n$instruction\n$promptText'.toLowerCase();
+    const nonPasswordMarkers = <String>[
+      'one-time',
+      'one time',
+      'otp',
+      'passcode',
+      'verification',
+      'authenticator',
+      'token',
+      '2fa',
+      'mfa',
+      'second factor',
+      'two-factor',
+      'two factor',
+      'duo',
+      'yubikey',
+      'totp',
+      'hotp',
+      'security key',
+      'new password',
+      'new passphrase',
+      'retype',
+      're-enter',
+      'reenter',
+      'confirm',
+      'change',
+    ];
+    return !nonPasswordMarkers.any(haystack.contains);
   }
 
   /// Awaits SSH authentication with a timeout that pauses while the user is

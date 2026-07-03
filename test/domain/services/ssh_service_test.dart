@@ -3017,6 +3017,172 @@ void main() {
       },
     );
 
+    test(
+      'connect only reuses the stored password for a real password prompt',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([5, 5, 5]);
+        await _seedTrustedHost(
+          knownHostsRepository,
+          hostname: 'pam.example.com',
+          hostKeyBytes: hostKeyBytes,
+        );
+        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+        final client = _MockSshClient();
+        var socketIndex = 0;
+        var promptCalls = 0;
+        SSHUserInfoRequestHandler? capturedUserInfo;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          interactiveAuthPromptHandler: (challenge) async {
+            promptCalls++;
+            return ['user-entered'];
+          },
+          socketConnector: (host, port, {timeout}) async =>
+              sockets[socketIndex++],
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                onUserInfoRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                capturedUserInfo = onUserInfoRequest;
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    _hostKeyCallbackFingerprint(bytes),
+                  );
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'pam.example.com',
+          port: 22,
+          username: 'tester',
+          password: 'stored-pass',
+        );
+
+        final result = await service.connect(config);
+        expect(result.success, isTrue);
+        expect(capturedUserInfo, isNotNull);
+
+        // A plain password prompt reuses the stored password without prompting.
+        expect(
+          await capturedUserInfo!(
+            SSHUserInfoRequest('', '', [SSHUserInfoPrompt('Password:', false)]),
+          ),
+          ['stored-pass'],
+        );
+        expect(promptCalls, 0);
+
+        // A one-time-code prompt must reach the user, not receive the password.
+        expect(
+          await capturedUserInfo!(
+            SSHUserInfoRequest('', '', [
+              SSHUserInfoPrompt('Verification code:', false),
+            ]),
+          ),
+          ['user-entered'],
+        );
+        expect(promptCalls, 1);
+
+        // A forced password-change prompt must also reach the user.
+        expect(
+          await capturedUserInfo!(
+            SSHUserInfoRequest('', 'You are required to change your password', [
+              SSHUserInfoPrompt('New password:', false),
+            ]),
+          ),
+          ['user-entered'],
+        );
+        expect(promptCalls, 2);
+      },
+    );
+
+    test(
+      'connect answers a zero-prompt keyboard-interactive request emptily',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([4, 4, 4]);
+        await _seedTrustedHost(
+          knownHostsRepository,
+          hostname: 'banner.example.com',
+          hostKeyBytes: hostKeyBytes,
+        );
+        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+        final client = _MockSshClient();
+        var socketIndex = 0;
+        var promptCalls = 0;
+        SSHUserInfoRequestHandler? capturedUserInfo;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          interactiveAuthPromptHandler: (challenge) async {
+            promptCalls++;
+            return null;
+          },
+          socketConnector: (host, port, {timeout}) async =>
+              sockets[socketIndex++],
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                onUserInfoRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                capturedUserInfo = onUserInfoRequest;
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    _hostKeyCallbackFingerprint(bytes),
+                  );
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'banner.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+        expect(result.success, isTrue);
+        expect(capturedUserInfo, isNotNull);
+
+        // An informational (zero-prompt) request is answered with no responses
+        // and must not surface an empty credential dialog.
+        expect(
+          await capturedUserInfo!(
+            SSHUserInfoRequest('Notice', 'Welcome to the server', const []),
+          ),
+          isEmpty,
+        );
+        expect(promptCalls, 0);
+      },
+    );
+
     test('connect replaces a changed trusted host key after prompt', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
