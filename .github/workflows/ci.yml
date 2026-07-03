@@ -179,7 +179,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-android:
     name: Build Android
-    needs: [changes, check]
+    needs: changes
     if: needs.changes.outputs.android == 'true'
     runs-on: ubicloud-standard-4
     timeout-minutes: 15
@@ -193,14 +193,19 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ~/.gradle/configuration-cache
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
-          restore-keys: gradle-${{ runner.os }}-
+          cache-cleanup: always
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          add-job-summary: on-failure
+
+      - name: Configure CI Gradle properties
+        run: |
+          mkdir -p ~/.gradle
+          {
+            echo 'org.gradle.daemon=false'
+            echo 'org.gradle.vfs.watch=false'
+          } >> ~/.gradle/gradle.properties
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
@@ -263,7 +268,7 @@ jobs:
 
   build-ios:
     name: Build iOS
-    needs: [changes, check]
+    needs: changes
     if: needs.changes.outputs.ios == 'true'
     runs-on: macos-26
     env:
@@ -339,7 +344,7 @@ jobs:
 
   build-macos:
     name: Build macOS
-    needs: [changes, check]
+    needs: changes
     if: needs.changes.outputs.macos == 'true'
     runs-on: macos-26
     timeout-minutes: 15
@@ -389,7 +394,7 @@ jobs:
 
   build-windows:
     name: Build Windows
-    needs: [changes, check]
+    needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
     timeout-minutes: 15
@@ -420,7 +425,7 @@ jobs:
 
   build-linux:
     name: Build Linux
-    needs: [changes, check]
+    needs: changes
     if: needs.changes.outputs.linux == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
