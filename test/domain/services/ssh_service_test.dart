@@ -1491,7 +1491,12 @@ void main() {
 
     test('coalesces burst stdout into one terminal write per frame', () async {
       final shell = await openShell();
-      final session = shell.session;
+      // Hold coalesced output deterministically: with a long flush interval the
+      // auto-flush timer cannot fire while we assert the burst is still
+      // buffered, so this no longer races the 8ms production interval against a
+      // slow `pumpEventQueue` on a loaded machine.
+      final session = shell.session
+        ..debugTerminalOutputFlushInterval = const Duration(minutes: 5);
       final terminal = session.terminal!;
       final stdoutEvents = <String>[];
       final stdoutSubscription = session.shellStdoutStream.listen(
@@ -1507,10 +1512,15 @@ void main() {
         ..add(Uint8List.fromList(utf8.encode('world')));
       await pumpEventQueue();
 
+      // Both chunks are buffered but not yet written to the terminal.
       expect(firstLineText(terminal), isNot(contains('hello')));
       expect(stdoutEvents, isEmpty);
+      expect(terminalNotifications, 0);
 
-      await Future<void>.delayed(const Duration(milliseconds: 25));
+      // Flush deterministically instead of waiting on the real coalesce timer;
+      // the burst must coalesce into a single terminal write and stdout event.
+      session.debugFlushPendingTerminalOutput();
+      await pumpEventQueue();
 
       expect(firstLineText(terminal), 'hello world');
       expect(stdoutEvents, ['hello world']);

@@ -18,6 +18,7 @@ class _SshSessionRuntime {
   Timer? _shellIoDiagnosticsTimer;
   Timer? _terminalOutputFlushTimer;
   Timer? _monkeyMuxReplayCoalesceTimer;
+  Duration _terminalOutputFlushInterval = _defaultTerminalOutputFlushInterval;
   SSHSession? _pendingShellOutputShell;
   Terminal? _pendingShellOutputTerminal;
   final _pendingShellOutputs =
@@ -41,7 +42,7 @@ class _SshSessionRuntime {
 
   Terminal? _terminal;
 
-  static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
+  static const _defaultTerminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _monkeyMuxReplayCoalesceQuietPeriod = Duration(milliseconds: 24);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
   static const _monkeyMuxActiveWindowReplayMarker =
@@ -643,6 +644,17 @@ class _SshSessionRuntime {
     _pendingShellOutputShell = null;
     _pendingShellOutputTerminal = null;
   }
+
+  @visibleForTesting
+  Duration get debugTerminalOutputFlushInterval => _terminalOutputFlushInterval;
+
+  @visibleForTesting
+  set debugTerminalOutputFlushInterval(Duration value) =>
+      _terminalOutputFlushInterval = value;
+
+  @visibleForTesting
+  void debugFlushPendingTerminalOutput() =>
+      _flushPendingShellOutput(drainAll: true);
 
   ({String stderrData, String stdoutData, String terminalData})
   _drainPendingShellOutputs({required bool drainAll}) {

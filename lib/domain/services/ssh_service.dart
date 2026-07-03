@@ -2698,6 +2698,22 @@ class SshSession {
   void debugHandlePrivateOsc(String code, List<String> args) =>
       _handlePrivateOsc(code, args);
 
+  /// The terminal-output coalescing interval. Exposed so tests can hold
+  /// buffered output deterministically instead of racing the real timer.
+  @visibleForTesting
+  Duration get debugTerminalOutputFlushInterval =>
+      _runtime.debugTerminalOutputFlushInterval;
+
+  @visibleForTesting
+  set debugTerminalOutputFlushInterval(Duration value) =>
+      _runtime.debugTerminalOutputFlushInterval = value;
+
+  /// Synchronously flushes buffered terminal/stdout output. Exposed so tests can
+  /// trigger a coalesced flush without waiting on the real coalescing timer.
+  @visibleForTesting
+  void debugFlushPendingTerminalOutput() =>
+      _runtime.debugFlushPendingTerminalOutput();
+
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
 
