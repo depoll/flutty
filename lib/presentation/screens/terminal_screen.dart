@@ -22,6 +22,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/routes.dart';
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
@@ -59,7 +60,9 @@ import '../../domain/services/tmux_service.dart';
 import '../controllers/terminal_session_controller.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
+import '../widgets/brand_error_state.dart';
 import '../widgets/connection_attempt_dialog.dart';
+import '../widgets/cursor_block.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
@@ -89,6 +92,9 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 );
 const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
   'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
+);
+final _storeDemoClipboardImageBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAUCAIAAABj86gYAAABL0lEQVR42mMUCZjGQEvAwsLCTA8LHi9PprrRspFzUXygGLuAiqbfX5wAMRlhAdlhdbvxGoShWq+FGjjUsOB67WVkmzSbdalpweXKC5j26bYbUNMH2JINioFMLCzMMKuYcaE7a1qxiuOyANlAwhbcWNHEwMBwY0UTppTlZEs00y0nW5JmwZUl9XDNV5bUYypQj3wBV2A73QbZczA27jg4M6cSTeTCghqTlHY499m+lQwMDOqRL6ScwhkYGFhYsEQGTh9gmg63lYWF+dm+lRDT4TY927cSLXrwBdGJGWV40smjXctwiRNlwZEpxbiMllIykFIywGP3vW2LCVhwYEIBHtOJyQe3Ni3AacGenlzyHI4Grq2bq26diG7Bjo4sShyOCS6tmsXCwswYM+PM0K7RANQPWfSOBI5gAAAAAElFTkSuQmCC',
 );
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
@@ -235,6 +241,11 @@ const _monkeyMuxSettledRedrawDisplayRefreshDelays = <Duration>[
 const _monkeyMuxLiveResizeSyncMinGap = Duration(milliseconds: 32);
 const _monkeyMuxFallbackResizeSyncMinGap = Duration(milliseconds: 70);
 const _monkeyMuxPostRedrawDisplayRefreshDelay = Duration(milliseconds: 120);
+// After the terminal settles, ask the MonkeyMux server to replay any Kitty
+// images referenced by on-screen placeholder cells that the client never
+// received. Debounced so an agent redrawing or scrolling many image cells sends
+// at most one request per settle rather than one per output frame.
+const _missingImageRecoveryDebounce = Duration(milliseconds: 350);
 // After a multiplexer window switch, sample the live render object's paint/
 // change counters once the redraw has had time to arrive, then force a repaint.
 // A second, later force catches a redraw that lands after the first sample.
@@ -802,6 +813,26 @@ bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
         .firstOrNull
         ?.terminalMouseReportSgr;
 
+/// Scroll-relevant mouse-reporting signature for the active tmux window.
+///
+/// Used to detect when touch-scroll routing must be recomputed after a window
+/// metadata update that doesn't change the active window itself (for example a
+/// foreground app toggling mouse mode). Returns `null` when there is no active
+/// window so an appearing/disappearing active window is also treated as a
+/// change.
+@visibleForTesting
+({bool? reportsMouseWheel, bool? mouseReportSgr})?
+activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
+  final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
+  if (activeWindow == null) {
+    return null;
+  }
+  return (
+    reportsMouseWheel: activeWindow.terminalReportsMouseWheel,
+    mouseReportSgr: activeWindow.terminalMouseReportSgr,
+  );
+}
+
 /// Resolves the tmux windows the bar should display, including any local
 /// optimistic selection while the tmux snapshot is still catching up.
 @visibleForTesting
@@ -887,10 +918,6 @@ String _stripTerminalPromptEscapeSequences(String text) => text
     .replaceAll(_csiEscapeSequencePattern, '')
     .replaceAll(_singleCharEscapeSequencePattern, '');
 
-bool _isTerminalMouseOrFocusReportOutput(String output) =>
-    _terminalMouseReportOutputPattern.hasMatch(output) ||
-    _terminalFocusReportOutputPattern.hasMatch(output);
-
 bool _isShellCommandName(String? command) {
   final trimmed = command?.trim();
   if (trimmed == null || trimmed.isEmpty) return false;
@@ -907,6 +934,52 @@ bool _isShellCommandName(String? command) {
     default:
       return false;
   }
+}
+
+/// Whether a MonkeyMux terminal mouse/focus control report should be dropped
+/// before it reaches the remote shell.
+///
+/// The app synthesizes mouse-wheel reports for touch scroll and focus reports
+/// when overlays open/close. Sending those escape bytes to a bare shell would
+/// type garbage, but suppressing them for a foreground app that actually
+/// enabled the matching mode (a mouse-reporting TUI, or a coding agent) breaks
+/// touch scroll and focus re-arming.
+///
+/// The foreground command name alone is not reliable: opening the SFTP browser
+/// probes the MonkeyMux pane context, which can report the login shell (e.g.
+/// `zsh`) that a coding agent runs under and overwrite the tracked command.
+/// Gate on the live input-mode state (and the active-window agent tool) so a
+/// report is only suppressed for a genuine bare shell.
+@visibleForTesting
+bool shouldSuppressMonkeyMuxControlReport({
+  required bool isMonkeyMux,
+  required bool isMouseReport,
+  required bool isFocusReport,
+  required bool mouseReportingActive,
+  required bool focusReportingActive,
+  required bool isAgentToolActive,
+  String? currentCommand,
+}) {
+  if (!isMonkeyMux) {
+    return false;
+  }
+  if (!isMouseReport && !isFocusReport) {
+    return false;
+  }
+  if (isMouseReport && mouseReportingActive) {
+    return false;
+  }
+  if (isFocusReport && focusReportingActive) {
+    return false;
+  }
+  if (isAgentToolActive) {
+    return false;
+  }
+  final command = currentCommand?.trim();
+  if (command != null && agentLaunchToolForCommandName(command) != null) {
+    return false;
+  }
+  return _isShellCommandName(command);
 }
 
 final _terminalSensitivePromptPattern = RegExp(
@@ -3009,6 +3082,10 @@ class _PortForwardBrowserOption {
   final String title;
 }
 
+class _StoreDemoAutoConfirmDialogState {
+  bool open = true;
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -3020,6 +3097,8 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.initialTmuxWindowId,
     this.initialTmuxWindowRequiresVisibleSession = false,
     this.initiallyExpandTmuxWindows = false,
+    this.initiallyShowKeyboard = false,
+    this.pasteDemoImage = false,
     super.key,
   });
 
@@ -3043,6 +3122,12 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Whether the tmux window selector should start expanded.
   final bool initiallyExpandTmuxWindows;
+
+  /// Whether the terminal should show the system keyboard after opening.
+  final bool initiallyShowKeyboard;
+
+  /// Whether to paste the store-demo image after opening the terminal.
+  final bool pasteDemoImage;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -3153,6 +3238,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
+  bool _shellCompletionsEnabled = false;
   _NativeSelectionSnapshotData? _nativeSelectionSnapshotCache;
   Timer? _nativeOverlayCollapseTimer;
   int? _connectionId;
@@ -3161,8 +3247,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double? _sessionFontSizeOverride;
   bool _isPinchZooming = false;
   bool _shouldFollowLiveOutput = true;
+  bool _didPasteDemoImage = false;
   double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
+  int _terminalScrollResetGeneration = 0;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   late final TerminalSessionController _sessionController;
   bool _showsTerminalMetadata = false;
@@ -3225,6 +3313,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   bool _isTerminalPathUnderlineRefreshQueued = false;
+  Timer? _terminalPathUnderlineScrollThrottleTimer;
+  int _lastTerminalPathUnderlineRefreshMs = 0;
+  int _terminalPathUnderlineRefreshLogAtMs = 0;
 
   /// Monotonically-increasing counter; incremented whenever the terminal
   /// buffer changes content. Used to invalidate per-row snapshot caches.
@@ -3294,6 +3385,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _muxWindowRefreshProbeTimer;
   Timer? _muxWindowRefreshSafetyNetTimer;
   DateTime? _lastMuxWindowChangeAt;
+  // Debounced demand-driven Kitty image recovery. When the terminal redraws
+  // placeholder cells for images the client never received (a bounded switch or
+  // reconnect replay dropped them, and the app does not re-transmit), the ids
+  // are collected here and re-requested from the MonkeyMux server. Ids already
+  // asked for this window visit are tracked so a genuinely-gone image is not
+  // requested on every output frame; the set resets on each window change.
+  Timer? _missingImageRequestTimer;
+  final Set<int> _requestedMissingImageIds = <int>{};
   _MonkeyMuxResizeSyncKey? _lastMonkeyMuxResizeSync;
   final Set<_MonkeyMuxResizeSyncKey> _pendingMonkeyMuxResizeSyncs =
       <_MonkeyMuxResizeSyncKey>{};
@@ -3902,11 +4001,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionsSubscription = ref.listenManual<bool>(
       shellCompletionsNotifierProvider,
       (previous, next) {
+        _shellCompletionsEnabled = next;
         if (!next) {
           _hideShellCompletionPopup();
         }
       },
     );
+    _shellCompletionsEnabled = ref.read(shellCompletionsNotifierProvider);
     _terminalAppThemeOverrideNotifier = ref.read(
       terminalAppThemeOverrideProvider.notifier,
     );
@@ -3999,6 +4100,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onTerminalStateChanged() {
+    if (!mounted) {
+      return;
+    }
     _nativeSelectionSnapshotCache = null;
     _terminalContentGeneration++;
     _syncShellCompletionOptimisticSnapshotWithTerminal();
@@ -4007,7 +4111,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
-    if (ref.read(shellCompletionsNotifierProvider) &&
+    _scheduleMissingImageRecoveryRequest();
+    if (_shellCompletionsEnabled &&
         _shellCompletionPromptPrefix != null &&
         _shellCompletionDebounceTimer == null &&
         _shellCompletionSuggestions.isEmpty) {
@@ -4018,10 +4123,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isTerminalOutputFollowPaused &&
         !_suppressTerminalAutoScrollFromTerminalRefresh) {
       _queueTerminalScrollToBottom();
-    }
-
-    if (!mounted) {
-      return;
     }
 
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
@@ -4400,19 +4501,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.isUsingAltBuffer ||
       _terminal.mouseMode != MouseMode.none;
 
-  bool _shouldSuppressMonkeyMuxTerminalControlInput(String output) {
-    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
-      return false;
-    }
-    if (!_isTerminalMouseOrFocusReportOutput(output)) {
-      return false;
-    }
-    final command = _tmuxCurrentCommand?.trim();
-    if (command != null && agentLaunchToolForCommandName(command) != null) {
-      return false;
-    }
-    return _isShellCommandName(command);
-  }
+  bool _shouldSuppressMonkeyMuxTerminalControlInput(String output) =>
+      shouldSuppressMonkeyMuxControlReport(
+        isMonkeyMux: _activeMuxBackend == RemoteMuxBackend.monkeyMux,
+        isMouseReport: _terminalMouseReportOutputPattern.hasMatch(output),
+        isFocusReport: _terminalFocusReportOutputPattern.hasMatch(output),
+        mouseReportingActive: _terminalReportsMouseWheelForScroll,
+        focusReportingActive: _terminal.reportFocusMode,
+        isAgentToolActive: _isAgentToolActive,
+        currentCommand: _tmuxCurrentCommand,
+      );
 
   /// Whether outer-tmux focus reports are safe to push through the SSH stream.
   ///
@@ -4565,6 +4663,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName: sessionName,
       reason: 'tmux_window_state_changed',
     );
+  }
+
+  /// Recomputes touch-scroll routing when the active window's mouse-reporting
+  /// metadata changes. The routing getters read live from the tmux bar
+  /// snapshot, so a rebuild is enough to flip `touchScrollToTerminal` and stop
+  /// scrolling from getting stuck until the next window switch.
+  void _handleActiveWindowScrollModeChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   void _refreshMuxPaneContextAfterWindowStateChange(
@@ -5407,7 +5516,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     _syncNativeScrollFromTerminal();
-    _refreshVisibleTerminalPathUnderlines();
+    _scheduleScrollTerminalPathUnderlineRefresh();
+  }
+
+  /// Throttles the visible-path underline refresh while scrolling.
+  ///
+  /// A scroll notification fires many times per fling, and each refresh scans
+  /// the visible rows for file paths and — when the set changes — calls
+  /// `setState`, rebuilding the whole terminal screen. Running that on every
+  /// scroll frame is the dominant build-thread cost while scrolling an active
+  /// window. The visible underlines themselves are row/column anchored, so they
+  /// still track the scroll between refreshes; only new-path detection and the
+  /// tap target rects lag by up to the throttle window, which is imperceptible
+  /// mid-fling. Leading + trailing edges keep the settled position accurate.
+  void _scheduleScrollTerminalPathUnderlineRefresh() {
+    const throttleMs = 120;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final sinceLast = nowMs - _lastTerminalPathUnderlineRefreshMs;
+    if (sinceLast >= throttleMs) {
+      _terminalPathUnderlineScrollThrottleTimer?.cancel();
+      _terminalPathUnderlineScrollThrottleTimer = null;
+      _lastTerminalPathUnderlineRefreshMs = nowMs;
+      _refreshVisibleTerminalPathUnderlines();
+      return;
+    }
+    if (_terminalPathUnderlineScrollThrottleTimer?.isActive ?? false) {
+      return;
+    }
+    _terminalPathUnderlineScrollThrottleTimer = Timer(
+      Duration(milliseconds: throttleMs - sinceLast),
+      () {
+        _terminalPathUnderlineScrollThrottleTimer = null;
+        if (!mounted) {
+          return;
+        }
+        _lastTerminalPathUnderlineRefreshMs =
+            DateTime.now().millisecondsSinceEpoch;
+        _refreshVisibleTerminalPathUnderlines();
+      },
+    );
   }
 
   void _setShouldFollowLiveOutput(bool value) {
@@ -6400,7 +6547,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } else {
           _scheduleTerminalSizeRefresh();
         }
-        _restoreTerminalFocus();
+        _restoreTerminalFocus(
+          forceShowSystemKeyboard: widget.initiallyShowKeyboard,
+        );
+        _maybePasteStoreDemoImage();
 
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
@@ -6495,7 +6645,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       } else {
         _scheduleTerminalSizeRefresh();
       }
-      _restoreTerminalFocus();
+      _restoreTerminalFocus(
+        forceShowSystemKeyboard: widget.initiallyShowKeyboard,
+      );
+      _maybePasteStoreDemoImage();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -6732,6 +6885,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     bool revealLatestOutput = false,
   }) {
+    // A window switch, create, or reattach redraws the screen fresh, so any
+    // image the client still lacks should be re-requested for the new view;
+    // clear the per-visit request tracking (and cancel a pending debounce).
+    _resetMissingImageRecoveryState();
     // The MonkeyMux helper owns the replay/redraw for attach, select, create,
     // and active-window close. A second app-triggered redraw here competes with
     // that replay and can expose old alternate-screen output as visible scroll.
@@ -6777,6 +6934,66 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       },
     );
+  }
+
+  /// Debounces a demand-driven recovery of Kitty images the terminal references
+  /// but does not hold.
+  ///
+  /// Fires from every terminal content change (window switch replay, reconnect
+  /// replay, and an agent CLI scrolling its own view), coalescing bursts of
+  /// output so the resolve scan and any control request run only once the screen
+  /// settles.
+  void _scheduleMissingImageRecoveryRequest() {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    _missingImageRequestTimer?.cancel();
+    _missingImageRequestTimer = Timer(
+      _missingImageRecoveryDebounce,
+      _requestMissingImagesNow,
+    );
+  }
+
+  void _requestMissingImagesNow() {
+    _missingImageRequestTimer = null;
+    if (!mounted || _activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    final unresolved = _terminal.unresolvedPlaceholderImageIds();
+    if (unresolved.isEmpty) {
+      return;
+    }
+    final toRequest = <int>[
+      for (final id in unresolved)
+        if (_requestedMissingImageIds.add(id)) id,
+    ];
+    if (toRequest.isEmpty) {
+      return;
+    }
+    final session = _activeSession();
+    if (session == null) {
+      return;
+    }
+    final sessionName = _activeMonkeyMuxSessionName(session);
+    if (sessionName == null) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'terminal.graphics',
+      'request_missing_images',
+      fields: {
+        'connectionId': session.connectionId,
+        'requested': toRequest.length,
+        'unresolved': unresolved.length,
+      },
+    );
+    unawaited(_monkeyMuxService.requestImages(session, sessionName, toRequest));
+  }
+
+  void _resetMissingImageRecoveryState() {
+    _missingImageRequestTimer?.cancel();
+    _missingImageRequestTimer = null;
+    _requestedMissingImageIds.clear();
   }
 
   /// Throttles the remote MonkeyMux resize so pinch-zoom follows in real time
@@ -8734,6 +8951,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
+      onActiveWindowScrollModeChanged: _handleActiveWindowScrollModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -9043,9 +9261,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       windowId: targetWindowId,
     );
     if (targetWindowId == null) {
-      await backend.selectWindow(windowIndex);
+      await backend.selectWindow(
+        windowIndex,
+        clientImageSignatures: _terminal.heldImageSignatures(),
+      );
     } else {
-      await backend.selectWindow(windowIndex, windowId: targetWindowId);
+      await backend.selectWindow(
+        windowIndex,
+        windowId: targetWindowId,
+        clientImageSignatures: _terminal.heldImageSignatures(),
+      );
     }
     final activeTool =
         targetWindow?.foregroundAgentTool ?? targetWindow?.agentTool;
@@ -9840,7 +10065,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelMonkeyMuxRefreshAndResizeState();
     _muxWindowRefreshProbeTimer?.cancel();
     _muxWindowRefreshSafetyNetTimer?.cancel();
+    _missingImageRequestTimer?.cancel();
     _terminalPathVerificationBatchTimer?.cancel();
+    _terminalPathUnderlineScrollThrottleTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _clearOwnedTerminalCallbacks();
     _terminal.removeListener(_onTerminalStateChanged);
@@ -10111,13 +10338,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       _host?.label ?? 'Terminal',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
+                      style: FluttyTheme.displayMono(
+                        fontSize: 16,
+                        color: theme.colorScheme.onSurface,
+                      ),
                     ),
                     if (titleSubtitle.isNotEmpty)
                       Text(
                         titleSubtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(
+                        style: FluttyTheme.monoStyle.copyWith(
+                          fontSize: 11,
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
@@ -10839,8 +11071,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 360),
-            child: Card(
-              elevation: 4,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(FluttyTheme.radiusLg),
+                border: Border.all(color: theme.colorScheme.outlineVariant),
+              ),
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
@@ -10856,7 +11092,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       showsDisconnectedOverlay
                           ? 'Disconnected'
                           : 'Connection Error',
-                      style: theme.textTheme.titleLarge,
+                      style: FluttyTheme.displayMono(
+                        fontSize: 18,
+                        color: theme.colorScheme.onSurface,
+                      ),
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 8),
@@ -10907,13 +11146,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hasOverlayMessage: overlayMessage != null,
         isMobile: isMobile,
       );
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Connecting...'),
+            const CursorBlock(size: 32),
+            const SizedBox(height: 16),
+            Text(
+              'connecting…',
+              style: FluttyTheme.monoStyle.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ),
       );
@@ -10928,36 +11172,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         hasOverlayMessage: true,
         isMobile: isMobile,
       );
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: 64,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Connection Error',
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                overlayMessage,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isConnecting ? null : _reconnect,
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
+      return BrandErrorState(
+        title: 'Connection Error',
+        message: overlayMessage,
+        onRetry: _reconnect,
       );
     }
 
@@ -11004,6 +11222,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
+      scrollResetGeneration: _terminalScrollResetGeneration,
       resolveLinkTap: _resolveTerminalLinkTap,
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
@@ -11339,6 +11558,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } finally {
         _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
+        _resetTerminalScrollAfterSftpBrowserClosed(
+          focusAlreadyRestored: shouldRestoreKeyboard,
+        );
       }
     },
   );
@@ -12586,6 +12808,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _refreshVisibleTerminalPathUnderlines() {
+    final diagnostics = DiagnosticsLogService.instance;
+    if (!diagnostics.enabled) {
+      _refreshVisibleTerminalPathUnderlinesImpl();
+      return;
+    }
+    final stopwatch = Stopwatch()..start();
+    _refreshVisibleTerminalPathUnderlinesImpl();
+    final micros = stopwatch.elapsedMicroseconds;
+    if (micros < 4000) {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _terminalPathUnderlineRefreshLogAtMs < 1000) {
+      return;
+    }
+    _terminalPathUnderlineRefreshLogAtMs = nowMs;
+    diagnostics.debug(
+      'terminal.paths',
+      'underline_refresh',
+      fields: {
+        'durationMs': (micros / 1000).round(),
+        'underlines': _visibleTerminalPathUnderlines.length,
+      },
+    );
+  }
+
+  void _refreshVisibleTerminalPathUnderlinesImpl() {
     final terminalViewState = _terminalViewKey.currentState;
     final showsUnderlines =
         ref.read(terminalPathLinksNotifierProvider) &&
@@ -13074,7 +13323,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
           } finally {
             _restoreTemporarilyDismissedTerminalKeyboard(shouldRestoreKeyboard);
-            _terminalViewKey.currentState?.forceFullRepaint();
+            _resetTerminalScrollAfterSftpBrowserClosed(
+              forceFullRepaint: true,
+              focusAlreadyRestored: shouldRestoreKeyboard,
+            );
           }
 
           if (mounted && result != null) {
@@ -13082,6 +13334,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
         },
       );
+
+  void _resetTerminalScrollAfterSftpBrowserClosed({
+    bool forceFullRepaint = false,
+    bool focusAlreadyRestored = false,
+  }) {
+    if (!mounted) {
+      return;
+    }
+
+    // The terminal route stays mounted under SFTP, so reset accumulated gesture
+    // deltas before the first scroll after the browser pops.
+    _terminalOutputPauseTouchPointers.clear();
+    setState(() {
+      _terminalScrollResetGeneration += 1;
+    });
+    _syncTerminalLiveOutputAutoScroll();
+
+    if (forceFullRepaint) {
+      _terminalViewKey.currentState?.forceFullRepaint();
+    }
+
+    _rearmForegroundAppMouseReportingAfterOverlay(
+      focusAlreadyRestored: focusAlreadyRestored,
+    );
+  }
+
+  /// Re-emits a focus-in report after an overlay route (the SFTP browser)
+  /// closes.
+  ///
+  /// Opening the browser calls [_temporarilyDismissTerminalKeyboard], which
+  /// unfocuses the terminal and therefore emits a focus-out report. Focus-aware
+  /// TUIs such as Copilot CLI in the alternate screen disable mouse-wheel
+  /// reporting on focus-out, so touch scroll would stay frozen after the
+  /// browser closes until the next window switch re-emits focus reports. The
+  /// keyboard-restore path only refocuses when the soft keyboard was visible,
+  /// so a plain scroll interaction never regained focus and never reported
+  /// focus-in. Restore focus so the terminal emits the matching focus-in report
+  /// (gated on the foreground app's own focus-report mode, so bare shells are
+  /// unaffected) and the app re-enables mouse reporting.
+  ///
+  /// When [focusAlreadyRestored] is true the keyboard-restore path already
+  /// requested focus (and emitted the focus-in report), so skip a second
+  /// focus request to avoid scheduling a duplicate post-frame IME reset in the
+  /// same frame, which can flicker or desync the soft keyboard on mobile.
+  void _rearmForegroundAppMouseReportingAfterOverlay({
+    bool focusAlreadyRestored = false,
+  }) {
+    if (!_isMobilePlatform || focusAlreadyRestored) {
+      return;
+    }
+    _restoreTerminalFocus();
+  }
 
   Future<void> _createSnippetFromSelection() async {
     final text = _currentTerminalSelectionText();
@@ -14110,8 +14414,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       RemoteFileService remoteFileService,
       String uploadDirectory,
     )
-    action,
-  ) async {
+    action, {
+    String? uploadBaseDirectory,
+  }) async {
     final session = _activeSession();
     if (session == null) {
       throw StateError('Connection is not ready yet');
@@ -14121,9 +14426,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _disposeTerminalPathVerificationSftp();
     final sftp = await session.sftp();
     try {
-      final homeDirectory = await remoteFileService.resolveInitialDirectory(
-        sftp,
-      );
+      final resolvedUploadBaseDirectory = uploadBaseDirectory?.trim();
+      final homeDirectory = resolvedUploadBaseDirectory?.isNotEmpty ?? false
+          ? resolvedUploadBaseDirectory!
+          : await remoteFileService.resolveInitialDirectory(sftp);
       final appUploadParentDirectory =
           buildRemoteClipboardUploadParentDirectory(homeDirectory);
       final uploadDirectory = buildRemoteClipboardUploadDirectory(
@@ -14163,9 +14469,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String message,
     required String confirmLabel,
     List<String> details = const [],
+    Duration? autoConfirmAfter,
   }) async {
     if (!mounted) {
       return false;
+    }
+    final dialogState = _StoreDemoAutoConfirmDialogState();
+    if (autoConfirmAfter != null) {
+      unawaited(
+        Future<void>.delayed(autoConfirmAfter, () {
+          if (!mounted || !dialogState.open) {
+            return;
+          }
+          final navigator = Navigator.of(context, rootNavigator: true);
+          if (navigator.canPop()) {
+            navigator.pop(true);
+          }
+        }),
+      );
     }
     final confirmed = await showDialog<bool>(
       context: context,
@@ -14201,6 +14522,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
+    dialogState.open = false;
     return confirmed ?? false;
   }
 
@@ -14334,17 +14656,53 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
-    final shouldUpload = await _confirmClipboardUpload(
-      title: 'Upload clipboard image?',
-      message:
-          'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
-      confirmLabel: 'Upload and paste',
-      details: const ['image.png'],
-    );
-    if (!shouldUpload) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+  void _maybePasteStoreDemoImage() {
+    if (!widget.pasteDemoImage || _didPasteDemoImage || !mounted) {
       return;
+    }
+    _didPasteDemoImage = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(_pasteStoreDemoImage());
+    });
+  }
+
+  Future<void> _pasteStoreDemoImage() async {
+    await _pasteClipboardImage(
+      _storeDemoClipboardImageBytes,
+      autoConfirmAfter: const Duration(milliseconds: 4200),
+      showKeyboardAfterPaste: false,
+      uploadBaseDirectory: _workingDirectoryPath,
+    );
+    if (!mounted) {
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+  }
+
+  Future<void> _pasteClipboardImage(
+    Uint8List imageBytes, {
+    bool confirm = true,
+    Duration? autoConfirmAfter,
+    bool showKeyboardAfterPaste = true,
+    String? uploadBaseDirectory,
+  }) async {
+    if (confirm) {
+      final shouldUpload = await _confirmClipboardUpload(
+        title: 'Upload clipboard image?',
+        message:
+            'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
+        confirmLabel: 'Upload and paste',
+        details: const ['release-checklist.png'],
+        autoConfirmAfter: autoConfirmAfter,
+      );
+      if (!shouldUpload) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
     }
 
     final remotePath = await _withClipboardSftp((
@@ -14362,7 +14720,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         bytes: imageBytes,
       );
       return remotePath;
-    });
+    }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
     await _insertUploadedFileReferences([remotePath]);
     if (!mounted) {
@@ -14377,7 +14735,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
     );
     _terminalController.clearSelection();
-    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _restoreTerminalFocus(
+      showSystemKeyboard: showKeyboardAfterPaste && _isMobilePlatform,
+    );
     _showClipboardMessage('Uploaded clipboard image to $remotePath');
   }
 
@@ -14624,7 +14984,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     children: [
                       Text(
                         'Snippets',
-                        style: Theme.of(context).textTheme.titleLarge,
+                        style: FluttyTheme.displayMono(
+                          fontSize: 18,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
                       ),
                       const Spacer(),
                       TextButton(
@@ -14649,12 +15012,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                           hasVariables ? Icons.tune : Icons.code,
                           color: Theme.of(context).colorScheme.primary,
                         ),
-                        title: Text(snippet.name),
+                        title: Text(
+                          snippet.name,
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 14,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                        ),
                         subtitle: Text(
                           snippet.command.replaceAll('\n', ' '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontFamily: 'monospace'),
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 12,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                          ),
                         ),
                         trailing: hasVariables
                             ? const Chip(label: Text('Has variables'))

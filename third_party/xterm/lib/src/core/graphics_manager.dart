@@ -4,16 +4,42 @@ import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
 import 'package:xterm/src/core/buffer/line.dart';
+import 'package:xterm/src/utils/async_semaphore.dart';
+
+/// Optional observer invoked after each Kitty graphics decode attempt.
+///
+/// The app wires this to its diagnostics log to surface inflate/decode timing
+/// and payload size; it stays null in tests and standalone xterm so the decode
+/// path keeps no dependency on the host application.
+void Function({
+  required int payloadBytes,
+  required int inflateMicros,
+  required int decodeMicros,
+  required bool compressed,
+  required bool success,
+  String? imageId,
+  String? action,
+  bool? reused,
+})? terminalGraphicsDecodeObserver;
+
+/// Bounds all terminal image decodes across eager and deferred graphics paths.
+final AsyncSemaphore terminalGraphicsDecodeGate = AsyncSemaphore(3);
 
 /// A decoded image retained for the Kitty graphics protocol.
 class TerminalImage {
-  TerminalImage(this.id, this.image);
+  TerminalImage(this.id, this.image, {this.sourceSignature = 0});
 
   /// Image id assigned by the [GraphicsManager].
   final int id;
 
   /// The decoded image.
   final ui.Image image;
+
+  /// A cheap hash of the source payload this image was decoded from. Used to
+  /// skip re-decoding when the same id is transmitted again with identical
+  /// bytes (e.g. MonkeyMux replays cached images on every window switch).
+  /// Zero means "unknown" and never matches an incoming signature.
+  final int sourceSignature;
 
   /// Approximate size of the decoded image in bytes (RGBA).
   int get sizeBytes => image.width * image.height * 4;
@@ -156,6 +182,31 @@ class TerminalImageVirtualPlacement {
   final int rows;
 }
 
+/// A transmitted-but-not-yet-decoded image, held so its decode can be deferred
+/// until something actually needs to paint it.
+///
+/// A MonkeyMux window switch replays every retained Kitty image up front
+/// (store-only, `a=t`), but a foreground app such as the Copilot CLI only
+/// re-emits placeholder cells for the few images currently on screen. Decoding
+/// all of them eagerly wastes CPU, memory and raster bandwidth on images the
+/// user never sees; keeping the encoded payload and decoding on first reference
+/// bounds the work to the visible set.
+class _PendingGraphicsImage {
+  _PendingGraphicsImage({
+    required this.payload,
+    required this.format,
+    required this.width,
+    required this.height,
+    required this.sourceSignature,
+  });
+
+  final Uint8List payload;
+  final int format;
+  final int width;
+  final int height;
+  final int sourceSignature;
+}
+
 /// Stores decoded terminal images and their placements with count and memory
 /// caps.
 class GraphicsManager {
@@ -175,9 +226,28 @@ class GraphicsManager {
   final List<TerminalImagePlaceholder> _placeholders = [];
   final Map<int, TerminalImageVirtualPlacement> _virtualPlacements = {};
   final Set<int> _retainedImageIds = {};
+  // Encoded images awaiting a first paint reference (see [_PendingGraphicsImage]
+  // and [storePendingImage]). Insertion-ordered so the oldest can be evicted.
+  final Map<int, _PendingGraphicsImage> _pendingImages = {};
+  final Set<int> _decodingIds = {};
   // Maps a client-assigned image number (`I=`) to the most recent image id it
   // was transmitted with, so later commands can address the image by number.
   final Map<int, int> _imageNumberToId = {};
+
+  /// Invoked after a deferred image finishes decoding so the host can repaint.
+  /// The [Terminal] wires this to `notifyListeners`; it stays null in tests and
+  /// standalone xterm.
+  void Function()? onChanged;
+
+  /// Bounds the encoded bytes retained for not-yet-decoded images. Small
+  /// relative to the decoded-image budget because encoded payloads are far
+  /// smaller than their RGBA bitmaps.
+  static const int _maxPendingBytes = 64 * 1024 * 1024;
+
+  /// Bounds the number of not-yet-decoded images retained.
+  static const int _maxPendingImages = 128;
+
+  int _pendingBytes = 0;
 
   int _nextImageId = 1;
   int _nextPlacementId = 1;
@@ -190,6 +260,103 @@ class GraphicsManager {
 
   /// Active Unicode-placeholder cells, oldest first.
   List<TerminalImagePlaceholder> get placeholders => _placeholders;
+
+  /// The `{imageId: sourceSignature}` of every image the client is guaranteed to
+  /// still hold after a window switch — retained decoded images and pending
+  /// (transmitted but not yet decoded) ones.
+  ///
+  /// Reported to the MonkeyMux server on a window switch so it can omit
+  /// re-transmitting images the client already has, sparing the client from
+  /// re-parsing several megabytes of image data it would immediately discard as
+  /// a duplicate. The signature disambiguates content, so a different window
+  /// that reuses the same protocol id for different bytes is never skipped.
+  ///
+  /// Only images that survive [clear] are reported. A window switch replays
+  /// `CSI ? 1049 h`, which clears the screen and drops every decoded image that
+  /// is not retained (i.e. a physical `a=T` placement rather than a
+  /// Unicode-placeholder virtual image). Reporting such an image would let the
+  /// server skip re-transmitting it, and then the switch's own clear would drop
+  /// it — leaving the redrawn cells with no image to composite (blank until the
+  /// app fully redraws). Pending images survive the clear untouched, so they are
+  /// always safe to report.
+  Map<int, int> heldImageSignatures() {
+    final result = <int, int>{};
+    for (final entry in _images.entries) {
+      if (!_retainedImageIds.contains(entry.key)) {
+        continue;
+      }
+      final signature = entry.value.sourceSignature;
+      if (signature != 0) {
+        result[entry.key] = signature;
+      }
+    }
+    for (final entry in _pendingImages.entries) {
+      final signature = entry.value.sourceSignature;
+      if (signature != 0) {
+        result[entry.key] = signature;
+      }
+    }
+    return result;
+  }
+
+  /// Protocol image ids referenced by attached Kitty Unicode-placeholder cells
+  /// that resolve to no stored or pending image.
+  ///
+  /// The foreground app has drawn placeholder cells for these images, but their
+  /// bytes were never received (or have been evicted) — for example when a
+  /// window switch replay is bounded and drops images the app still shows, or a
+  /// reconnect replays fewer images than the app references. Such placeholders
+  /// render blank until the bytes arrive. A caller can ask the MonkeyMux server
+  /// to replay exactly these ids from its per-window retained cache.
+  ///
+  /// Pending (transmitted but not yet decoded) ids are treated as resolvable and
+  /// excluded: their bytes are already in flight. The result is de-duplicated by
+  /// image id, so a full-screen image made of hundreds of placeholder cells
+  /// contributes a single id.
+  Set<int> unresolvedPlaceholderImageIds() {
+    if (_placeholders.isEmpty) {
+      return const <int>{};
+    }
+    final unresolved = <int>{};
+    final resolvable = <int>{};
+    for (final placeholder in _placeholders) {
+      if (!placeholder.attached) {
+        continue;
+      }
+      final id = placeholder.imageId;
+      if (id <= 0 || unresolved.contains(id) || resolvable.contains(id)) {
+        continue;
+      }
+      if (_canResolvePlaceholderId(id, placeholder.imageIdBitWidth)) {
+        resolvable.add(id);
+      } else {
+        unresolved.add(id);
+      }
+    }
+    return unresolved;
+  }
+
+  /// Whether a placeholder color [id] maps to any stored or pending image,
+  /// directly or via the low-bit masked fallback used by
+  /// [imageByPlaceholderColorId]. Unlike that method this never starts a decode,
+  /// so it is safe to call while merely probing for missing images.
+  bool _canResolvePlaceholderId(int id, int bitWidth) {
+    if (_images.containsKey(id) || _pendingImages.containsKey(id)) {
+      return true;
+    }
+    final mask = bitWidth >= 24 ? 0xFFFFFF : 0xFF;
+    for (final key in _images.keys) {
+      if (_retainedImageIds.contains(key) && (key & mask) == id) {
+        return true;
+      }
+    }
+    for (final key in _pendingImages.keys) {
+      if ((key & mask) == id) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// Approximate decoded image memory currently retained.
   int get currentMemoryBytes => _currentMemoryBytes;
@@ -235,10 +402,18 @@ class GraphicsManager {
   /// foreground color, with higher bits optionally carried by combining
   /// diacritics. When that high-byte metadata is not available, fall back to the
   /// retained protocol image whose low bits match the color value.
+  ///
+  /// If the referenced image is still pending (transmitted but not decoded), its
+  /// decode is started and null is returned; the caller (renderer) paints
+  /// nothing this frame and repaints via [onChanged] once the decode completes.
   TerminalImage? imageByPlaceholderColorId(int id, {required int bitWidth}) {
     final direct = imageById(id);
     if (direct != null) {
       return direct;
+    }
+    if (_pendingImages.containsKey(id)) {
+      unawaited(_beginDecode(id));
+      return null;
     }
 
     final mask = bitWidth >= 24 ? 0xFFFFFF : 0xFF;
@@ -256,17 +431,167 @@ class GraphicsManager {
     }
     if (best != null) {
       best._lastAccess = ++_accessClock;
+      return best;
     }
-    return best;
+
+    // No decoded image matches; a pending one whose low bits match must be
+    // decoded before it can be composited.
+    int? pendingMatch;
+    for (final pendingId in _pendingImages.keys) {
+      if ((pendingId & mask) == id) {
+        pendingMatch = pendingId; // keep scanning: newest insertion wins
+      }
+    }
+    if (pendingMatch != null) {
+      unawaited(_beginDecode(pendingMatch));
+    }
+    return null;
+  }
+
+  /// Resolves a placement's image for painting, starting a deferred decode if
+  /// the image is pending. Returns null (paint nothing this frame) until the
+  /// decode completes and triggers a repaint via [onChanged].
+  TerminalImage? imageForPlacement(int id) {
+    final image = imageById(id);
+    if (image != null) {
+      return image;
+    }
+    if (_pendingImages.containsKey(id)) {
+      unawaited(_beginDecode(id));
+    }
+    return null;
+  }
+
+  /// Whether image [id] has been transmitted but not yet decoded.
+  bool hasPendingImage(int id) => _pendingImages.containsKey(id);
+
+  /// Whether a pending (undecoded) image [id] carries a matching
+  /// [sourceSignature], so a replay can skip re-storing identical bytes. A zero
+  /// signature never matches.
+  bool hasPendingWithSignature(int id, int sourceSignature) {
+    if (id <= 0 || sourceSignature == 0) {
+      return false;
+    }
+    final pending = _pendingImages[id];
+    return pending != null && pending.sourceSignature == sourceSignature;
+  }
+
+  /// Retains an encoded image for [id] without decoding it, to be decoded on
+  /// first paint reference. See [_PendingGraphicsImage].
+  void storePendingImage(
+    int id, {
+    required Uint8List payload,
+    required int format,
+    int width = 0,
+    int height = 0,
+    int sourceSignature = 0,
+  }) {
+    if (id <= 0) {
+      return;
+    }
+    // Already decoded from identical bytes: nothing to defer.
+    if (hasImageWithSignature(id, sourceSignature)) {
+      return;
+    }
+    // New bytes for an id whose previous image is already decoded supersede it;
+    // drop the stale bitmap (keeping any placements/placeholders that reference
+    // the id) so the deferred decode of the new bytes is what gets painted.
+    final stale = _images.remove(id);
+    if (stale != null) {
+      _currentMemoryBytes -= stale.sizeBytes;
+    }
+    final existing = _pendingImages.remove(id);
+    if (existing != null) {
+      _pendingBytes -= existing.payload.length;
+    }
+    _pendingImages[id] = _PendingGraphicsImage(
+      payload: payload,
+      format: format,
+      width: width,
+      height: height,
+      sourceSignature: sourceSignature,
+    );
+    _pendingBytes += payload.length;
+    if (id >= _nextImageId) {
+      _nextImageId = id + 1;
+    }
+    _evictPendingIfNeeded();
+  }
+
+  void _evictPendingIfNeeded() {
+    while (_pendingImages.isNotEmpty &&
+        (_pendingBytes > _maxPendingBytes ||
+            _pendingImages.length > _maxPendingImages)) {
+      final oldest = _pendingImages.keys.first;
+      final removed = _pendingImages.remove(oldest);
+      if (removed != null) {
+        _pendingBytes -= removed.payload.length;
+      }
+      // The image bytes are gone, so its virtual placement (if any) can no
+      // longer back a placeholder; drop it unless a decoded image kept the id.
+      if (!_images.containsKey(oldest)) {
+        _virtualPlacements.remove(oldest);
+      }
+    }
+  }
+
+  Future<void> _beginDecode(int id) async {
+    if (_decodingIds.contains(id)) {
+      return;
+    }
+    final pending = _pendingImages[id];
+    if (pending == null) {
+      return;
+    }
+    _decodingIds.add(id);
+    final observer = terminalGraphicsDecodeObserver;
+    final stopwatch = observer == null ? null : (Stopwatch()..start());
+    ui.Image? image;
+    await terminalGraphicsDecodeGate.acquire();
+    try {
+      image = await decodeTerminalImage(
+        pending.payload,
+        format: pending.format,
+        width: pending.width,
+        height: pending.height,
+      );
+    } finally {
+      terminalGraphicsDecodeGate.release();
+      _decodingIds.remove(id);
+    }
+
+    // The pending entry may have been evicted, deleted (`a=d`) or replaced with
+    // fresh bytes while decoding; only commit when it is still the same image.
+    if (!identical(_pendingImages[id], pending)) {
+      return;
+    }
+    observer?.call(
+      payloadBytes: pending.payload.length,
+      inflateMicros: 0,
+      decodeMicros: stopwatch?.elapsedMicroseconds ?? 0,
+      compressed: false,
+      success: image != null,
+      imageId: id.toString(),
+      action: 'lazy',
+      reused: false,
+    );
+    _pendingImages.remove(id);
+    _pendingBytes -= pending.payload.length;
+    if (image == null) {
+      return;
+    }
+    storeImageWithId(id, image, sourceSignature: pending.sourceSignature);
+    onChanged?.call();
   }
 
   /// Stores [image] and returns its new id.
-  int storeImage(ui.Image image) {
+  int storeImage(ui.Image image, {int sourceSignature = 0}) {
     final sizeBytes = image.width * image.height * 4;
     _evictIfNeeded(sizeBytes);
 
     final id = _nextImageId++;
-    _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _images[id] = TerminalImage(id, image, sourceSignature: sourceSignature)
+      .._lastAccess = ++_accessClock;
     _currentMemoryBytes += sizeBytes;
     return id;
   }
@@ -279,9 +604,9 @@ class GraphicsManager {
   /// referenced image finishes decoding, so dropping them here (as a full
   /// [_dropImage] would) leaves the freshly stored image with nothing to paint
   /// over — the cells render as bare placeholder glyphs instead of the image.
-  int storeImageWithId(int id, ui.Image image) {
+  int storeImageWithId(int id, ui.Image image, {int sourceSignature = 0}) {
     if (id <= 0) {
-      return storeImage(image);
+      return storeImage(image, sourceSignature: sourceSignature);
     }
 
     final sizeBytes = image.width * image.height * 4;
@@ -291,13 +616,27 @@ class GraphicsManager {
     }
     _evictIfNeeded(sizeBytes);
 
-    _images[id] = TerminalImage(id, image).._lastAccess = ++_accessClock;
+    _images[id] = TerminalImage(id, image, sourceSignature: sourceSignature)
+      .._lastAccess = ++_accessClock;
     _retainedImageIds.add(id);
     _currentMemoryBytes += sizeBytes;
     if (id >= _nextImageId) {
       _nextImageId = id + 1;
     }
     return id;
+  }
+
+  /// Whether image [id] is already stored with a matching [sourceSignature].
+  ///
+  /// Lets the transmit path skip re-decoding an identical image that the same
+  /// id was already decoded from (e.g. a window switch replaying cached images
+  /// the client still holds). A zero signature never matches.
+  bool hasImageWithSignature(int id, int sourceSignature) {
+    if (id <= 0 || sourceSignature == 0) {
+      return false;
+    }
+    final existing = _images[id];
+    return existing != null && existing.sourceSignature == sourceSignature;
   }
 
   /// Creates a placement of [imageId] anchored at [anchor], optionally spanning
@@ -554,12 +893,25 @@ class GraphicsManager {
     }
     _placements.clear();
     _placeholders.clear();
-    _virtualPlacements.clear();
     for (final id in _images.keys.toList()) {
       if (!_retainedImageIds.contains(id)) {
         _dropImage(id);
       }
     }
+    // Keep virtual placements for images that survive the clear (retained
+    // decoded images and not-yet-decoded pending ones). A virtual placement
+    // records how a retained image maps onto Unicode-placeholder cells
+    // (its cell columns/rows), and a placeholder-protocol app such as the
+    // Copilot CLI redraws only the placeholder cells after a clear/reattach —
+    // it never re-transmits the image or its virtual placement. Entering the
+    // alternate screen (`CSI ? 1049 h`, part of the MonkeyMux reattach replay)
+    // calls clear(); wiping the virtual placements here left the painter to
+    // guess the image grid from the visible cells and mis-slice it. Dropped
+    // images already had their virtual placement removed by [_dropImage].
+    _virtualPlacements.removeWhere(
+      (id, _) =>
+          !_retainedImageIds.contains(id) && !_pendingImages.containsKey(id),
+    );
   }
 
   /// Drops stored images that no longer have a placement referencing them.
@@ -630,6 +982,11 @@ class GraphicsManager {
     if (image != null) {
       _currentMemoryBytes -= image.sizeBytes;
     }
+    final pending = _pendingImages.remove(imageId);
+    if (pending != null) {
+      _pendingBytes -= pending.payload.length;
+    }
+    _decodingIds.remove(imageId);
     _retainedImageIds.remove(imageId);
     _virtualPlacements.remove(imageId);
     _imageNumberToId.removeWhere((_, id) => id == imageId);
@@ -646,11 +1003,58 @@ class GraphicsManager {
   }
 }
 
+/// Computes a cheap, stable signature of an image payload for dedup and for the
+/// window-switch replay skip protocol.
+///
+/// Used to skip re-decoding an identical image (same id, same bytes) that a
+/// window switch replays, and — reported to the MonkeyMux server — to let the
+/// server omit re-transmitting images the client already holds. Not
+/// cryptographic: a collision merely causes a redundant decode (or, for the skip
+/// protocol, a rare re-send), never corruption.
+///
+/// FNV-1a over 32 bits (so it stays within a Dart small-int and matches a Go
+/// `uint32` exactly, with no signed-shift ambiguity across languages), mixing
+/// the exact length plus an evenly-spaced sample of bytes (<= ~4096) rather than
+/// every byte to stay fast on very large payloads. The server computes the same
+/// hash over the base64-decoded transmission payload, so both sides must keep
+/// the algorithm identical. Returns a non-zero value for non-empty input.
+int terminalGraphicsSourceSignature(Uint8List bytes) {
+  if (bytes.isEmpty) {
+    return 0;
+  }
+  const fnvOffset = 0x811c9dc5;
+  const fnvPrime = 0x01000193;
+  const mask = 0xFFFFFFFF;
+  var hash = fnvOffset;
+  // Mix the exact length (little-endian bytes) so payloads that share a sample
+  // but differ in length still diverge.
+  var length = bytes.length;
+  for (var i = 0; i < 4; i++) {
+    hash = ((hash ^ (length & 0xFF)) * fnvPrime) & mask;
+    length >>= 8;
+  }
+  final step = bytes.length <= 4096 ? 1 : bytes.length ~/ 4096;
+  for (var i = 0; i < bytes.length; i += step) {
+    hash = ((hash ^ bytes[i]) * fnvPrime) & mask;
+  }
+  return hash == 0 ? 1 : hash;
+}
+
+/// Maximum width/height a decoded terminal image is kept at. Source images
+/// larger than this on their longest side are downscaled during decode, with
+/// aspect ratio preserved. A terminal renders images into a small cell grid, so
+/// full-resolution screenshots (often several megapixels) waste large amounts of
+/// decoded RGBA memory and raster bandwidth; on mobile, decoding many at once
+/// can exhaust memory and crash. 1280px keeps images crisp at terminal sizes
+/// while bounding each decode to ~6.5 MB.
+const _maxDecodedImageDimension = 1280;
+
 /// Decodes Kitty graphics payload [bytes] into a [ui.Image].
 ///
 /// Uses Flutter's built-in codecs for `f=100`/`f=98` (PNG/JPEG/GIF first frame)
 /// and [ui.decodeImageFromPixels] for raw pixels (`f=32` RGBA, `f=24` RGB).
-/// Returns null on any failure rather than throwing.
+/// Encoded images larger than [_maxDecodedImageDimension] are downscaled during
+/// decode to bound memory. Returns null on any failure rather than throwing.
 Future<ui.Image?> decodeTerminalImage(
   Uint8List bytes, {
   int format = 100,
@@ -676,11 +1080,46 @@ Future<ui.Image?> decodeTerminalImage(
         onTimeout: () => throw 'timeout',
       );
     }
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    return frame.image;
+    return await _decodeEncodedImageBounded(bytes);
   } catch (_) {
     return null;
+  }
+}
+
+/// Decodes an encoded image (PNG/JPEG/GIF), downscaling to
+/// [_maxDecodedImageDimension] on its longest side when larger.
+Future<ui.Image?> _decodeEncodedImageBounded(Uint8List bytes) async {
+  final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+  ui.ImageDescriptor? descriptor;
+  try {
+    descriptor = await ui.ImageDescriptor.encoded(buffer);
+    final srcWidth = descriptor.width;
+    final srcHeight = descriptor.height;
+    int? targetWidth;
+    int? targetHeight;
+    final longest = srcWidth > srcHeight ? srcWidth : srcHeight;
+    if (longest > _maxDecodedImageDimension && longest > 0) {
+      final scale = _maxDecodedImageDimension / longest;
+      targetWidth =
+          (srcWidth * scale).round().clamp(1, _maxDecodedImageDimension);
+      targetHeight = (srcHeight * scale).round().clamp(
+            1,
+            _maxDecodedImageDimension,
+          );
+    }
+    final codec = await descriptor.instantiateCodec(
+      targetWidth: targetWidth,
+      targetHeight: targetHeight,
+    );
+    try {
+      final frame = await codec.getNextFrame();
+      return frame.image;
+    } finally {
+      codec.dispose();
+    }
+  } finally {
+    descriptor?.dispose();
+    buffer.dispose();
   }
 }
 
