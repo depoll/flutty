@@ -28,6 +28,7 @@ import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
 import 'terminal_hyperlink_tracker.dart';
 import 'terminal_notification.dart';
+import 'terminal_preview_graphics.dart';
 import 'wifi_network_service.dart';
 
 part 'ssh_session_runtime.dart';
@@ -3090,6 +3091,11 @@ class SshSession {
     return TerminalPreviewSnapshot(
       lines: List.unmodifiable(previewLines),
       plainText: previewLines.map((line) => line.text).join('\n'),
+      images: buildTerminalPreviewImages(
+        terminal,
+        startRow: visibleRange.start,
+        endRow: visibleRange.end,
+      ),
     );
   }
 
