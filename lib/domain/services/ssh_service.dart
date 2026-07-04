@@ -2375,6 +2375,22 @@ String _diagnosticSshCommandKind(String command) {
   return 'ssh_exec';
 }
 
+/// Whether [remoteVersion] — the SSH server identification string, e.g.
+/// `SSH-2.0-OpenSSH_for_Windows_9.5` — indicates a Windows remote host.
+///
+/// Windows OpenSSH launches `cmd.exe` or PowerShell (not a POSIX shell) for
+/// interactive sessions and exec channels, so POSIX-only behaviour (the
+/// truecolor login-shell bootstrap, tmux/MonkeyMux, `~/.profile` sourcing,
+/// shell completion, agent-session discovery) must be skipped when this is
+/// true. Returns `false` when the identification string is unknown so hosts
+/// default to the POSIX path.
+bool remoteVersionIndicatesWindows(String? remoteVersion) {
+  if (remoteVersion == null || remoteVersion.isEmpty) {
+    return false;
+  }
+  return remoteVersion.toLowerCase().contains('windows');
+}
+
 class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
   _HostKeyCapturingSocket(this._delegate)
     : _hostKeyParser = _SshHostKeyParser() {
@@ -2603,6 +2619,21 @@ class SshSession {
 
   /// The SSH client.
   final SSHClient client;
+
+  /// The SSH server identification string reported during the handshake, e.g.
+  /// `SSH-2.0-OpenSSH_for_Windows_9.5`. Null until the handshake completes.
+  String? get remoteSoftwareVersion => client.remoteVersion;
+
+  /// Whether the remote host is Windows (its default shell is `cmd.exe` or
+  /// PowerShell rather than a POSIX shell), detected from
+  /// [remoteSoftwareVersion].
+  ///
+  /// When true, POSIX-only session behaviour — the truecolor login-shell
+  /// bootstrap, tmux/MonkeyMux detection, `~/.profile` sourcing, shell
+  /// completion and agent-session discovery — is skipped because those commands
+  /// fail on `cmd.exe`/PowerShell (e.g. `'exec' is not recognized...`).
+  bool get remoteIsWindows =>
+      remoteVersionIndicatesWindows(remoteSoftwareVersion);
 
   /// The connection configuration.
   final SshConnectionConfig config;
