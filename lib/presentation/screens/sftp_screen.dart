@@ -49,6 +49,10 @@ const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _videoPreviewCacheDirectoryName = 'monkeyssh-sftp-video-preview';
+// Update the download dialog at most this often / this many bytes so streaming
+// a large video doesn't rebuild the modal on every chunk and starve the UI.
+const _videoPreviewProgressByteInterval = 512 * 1024;
+const _videoPreviewProgressInterval = Duration(milliseconds: 50);
 const _redactStoreScreenshotIdentities = bool.fromEnvironment(
   'STORE_SCREENSHOT_REDACT_IDENTITIES',
 );
@@ -2272,6 +2276,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       });
       sink = cacheFile.openWrite();
 
+      final progressStopwatch = Stopwatch()..start();
+      var reportedBytes = 0;
+      void publishProgress() {
+        reportedBytes = downloadedBytes;
+        progressStopwatch.reset();
+        progress.value = progress.value.copyWith(
+          downloadedBytes: downloadedBytes,
+        );
+      }
+
       await for (final chunk in remoteFile.read()) {
         cancelToken.throwIfCancelled();
         final nextDownloadedBytes = downloadedBytes + chunk.length;
@@ -2285,9 +2299,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         }
         sink.add(chunk);
         downloadedBytes = nextDownloadedBytes;
-        progress.value = progress.value.copyWith(
-          downloadedBytes: downloadedBytes,
-        );
+        // Throttle UI updates and yield so the SFTP read + dialog rebuilds can't
+        // monopolize the main isolate and freeze the app during the download.
+        if (downloadedBytes - reportedBytes >=
+                _videoPreviewProgressByteInterval ||
+            progressStopwatch.elapsed >= _videoPreviewProgressInterval) {
+          publishProgress();
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+      if (downloadedBytes != reportedBytes) {
+        publishProgress();
       }
 
       completed = true;

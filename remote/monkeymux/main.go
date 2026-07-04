@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	monkeyMuxVersion                  = "0.1.75"
+	monkeyMuxVersion                  = "0.1.86"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -53,11 +53,23 @@ const (
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
-	// Caps for the per-window Kitty image retention used to survive history
-	// eviction across reattaches.
-	maxRetainedKittyImages       = 32
-	maxRetainedKittyImageBytes   = 16 * 1024 * 1024
+	// Per-window Kitty image retention, used to survive history eviction across
+	// reattaches and to back placeholder cells the foreground app re-emits.
+	// Sized for genuinely image-heavy windows (e.g. an agent CLI rendering many
+	// screenshots); the byte cap is the binding limit and is per window, so peak
+	// server memory is this times the number of image-heavy windows.
+	maxRetainedKittyImages       = 128
+	maxRetainedKittyImageBytes   = 64 * 1024 * 1024
 	maxKittyGraphicsPendingBytes = 2 * 1024 * 1024
+	// Caps for how many retained images are *replayed* on a window switch.
+	// Replaying every retained transmission makes the client decode many
+	// megabytes per switch; even with client-side downscaling and dedup, a very
+	// large burst can pressure memory on small devices, so keep this modest. The
+	// foreground app re-emits placeholder cells for the visible screen, so this
+	// only needs to cover the images currently on screen plus a little
+	// scrollback; deeper scrollback images repaint when the app redraws.
+	maxReplayedKittyImages     = 16
+	maxReplayedKittyImageBytes = 8 * 1024 * 1024
 )
 
 const terminalParserResetSequence = "\x1b\\"
@@ -210,6 +222,26 @@ var foregroundProcessGroupForWindow = func(window *muxWindow) int {
 	return pgrp
 }
 
+// restoreRedrawFollowUpDelays are the delays after a restored foreground-redraw
+// window first becomes visible at which we re-issue a forced redraw. A window
+// restored from an upgrade snapshot relaunches its foreground process (for an
+// agent, something like `claude --resume`), and that process can take a while
+// to start listening for SIGWINCH. The immediate synthetic resize can therefore
+// land before the process is ready, leaving the pane blank until the user
+// manually resizes. Re-issuing the redraw a few times catches the process once
+// it is up without waiting on a human.
+var restoreRedrawFollowUpDelays = []time.Duration{
+	250 * time.Millisecond,
+	750 * time.Millisecond,
+	1750 * time.Millisecond,
+}
+
+// scheduleRestoreRedraw runs a restore redraw follow-up after the given delay.
+// It is a package variable so tests can invoke the action synchronously.
+var scheduleRestoreRedraw = func(delay time.Duration, action func()) {
+	time.AfterFunc(delay, action)
+}
+
 const (
 	serverUpdatePolicyPrompt = "prompt"
 	serverUpdatePolicyNever  = "never"
@@ -260,6 +292,16 @@ type controlMessage struct {
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
 	Redraw      bool     `json:"redraw,omitempty"`
+	// HaveImageSignatures maps a Kitty protocol image id (as a string) to the
+	// FNV-1a-32 signature of the base64-decoded payload the client already
+	// holds. Sent with select_window so the replay can skip re-transmitting
+	// images the client can render from its own cache.
+	HaveImageSignatures map[string]uint32 `json:"haveImageSignatures,omitempty"`
+	// ImageIDs lists Kitty protocol image ids (as strings) the client is missing
+	// for the active window: it has drawn placeholder cells that reference them
+	// but never received (or has evicted) their bytes. Sent with request_images
+	// so the server can replay exactly those retained transmissions.
+	ImageIDs []string `json:"imageIds,omitempty"`
 }
 
 type controlResponse struct {
@@ -339,6 +381,15 @@ type muxServer struct {
 	controls   map[*controlClient]struct{}
 	themeHint  []byte
 	closed     bool
+
+	// restoreRedrawPending tracks windows recreated from a restore snapshot
+	// whose freshly-launched foreground process (an agent that was just
+	// relaunched, for example) may not have been ready to repaint when it first
+	// became visible. Such a window can miss the single synthetic resize that
+	// drives its redraw and stay blank until the user manually resizes. The
+	// first time each of these windows becomes the active/attached window we
+	// schedule follow-up redraws and clear it from this set.
+	restoreRedrawPending map[string]bool
 }
 
 type muxWindow struct {
@@ -357,6 +408,8 @@ type muxWindow struct {
 	oscBuffer                  []byte
 	attachOscBuffer            []byte
 	csiBuffer                  []byte
+	terminalBellState          terminalBellParserState
+	terminalBellBytes          int
 	lastActivity               time.Time
 	lastProcessMetadataRefresh time.Time
 	lastBroadcast              time.Time
@@ -385,10 +438,31 @@ type muxWindow struct {
 	// bytes must survive independently of the rolling visible history (which
 	// evicts them once enough newer output arrives) or reattached placeholders
 	// render blank. Keyed by protocol image id; kittyImageOrder tracks recency.
-	kittyImages          map[string][]byte
-	kittyImageOrder      []string
+	kittyImages     map[string][]byte
+	kittyImageOrder []string
+	// kittyImageSeq records a global monotonic store sequence per image id so a
+	// machine-wide budget can evict the globally-oldest image across all
+	// windows. Protected by the server lock, like the maps above.
+	kittyImageSeq map[string]uint64
+	// kittyImageToken holds the FNV-1a-32 signature of each retained image's
+	// base64-decoded transmission payload, keyed by protocol image id. A client
+	// reports the signatures of the images it still holds on a window switch so
+	// the replay can omit re-sending — and the client re-parsing — several
+	// megabytes of image data it already has. Kept in sync with kittyImages.
+	kittyImageToken      map[string]uint32
 	kittyGraphicsPending []byte
 }
+
+type terminalBellParserState int
+
+const (
+	terminalBellParserGround terminalBellParserState = iota
+	terminalBellParserEscape
+	terminalBellParserOsc
+	terminalBellParserOscEscape
+	terminalBellParserString
+	terminalBellParserStringEscape
+)
 
 type windowBroadcastIdentity struct {
 	name      string
@@ -2364,6 +2438,7 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 
 	var activeID string
 	var firstID string
+	var pendingRedraw []string
 	restored := 0
 	for _, state := range restore.Windows {
 		window, err := s.createWindow(
@@ -2378,12 +2453,16 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		if state.Active {
 			activeID = window.id
 		}
+		if s.windowUsesForegroundRedraw(window.id) {
+			pendingRedraw = append(pendingRedraw, window.id)
+		}
 		restored++
 	}
 	if restored == 0 {
 		_, err := s.createWindow(initialWindow)
 		return err
 	}
+	s.markRestoreRedrawPending(pendingRedraw)
 	if activeID == "" {
 		activeID = firstID
 	}
@@ -2391,6 +2470,70 @@ func (s *muxServer) restoreOrCreateInitialWindow(
 		_ = s.selectWindow(activeID)
 	}
 	return nil
+}
+
+func (s *muxServer) windowUsesForegroundRedraw(windowID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	window := s.windowByIDLocked(windowID)
+	return window != nil && !window.closed && window.usesForegroundRedrawReplayLocked()
+}
+
+func (s *muxServer) markRestoreRedrawPending(windowIDs []string) {
+	if len(windowIDs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.restoreRedrawPending == nil {
+		s.restoreRedrawPending = make(map[string]bool, len(windowIDs))
+	}
+	for _, id := range windowIDs {
+		s.restoreRedrawPending[id] = true
+	}
+	s.mu.Unlock()
+}
+
+// takeRestoreRedrawPending reports whether the window still needs post-restore
+// redraw follow-ups and, if so, clears it so the follow-ups run only once.
+func (s *muxServer) takeRestoreRedrawPending(windowID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restoreRedrawPending[windowID] {
+		return false
+	}
+	delete(s.restoreRedrawPending, windowID)
+	return true
+}
+
+// scheduleRestoreRedrawFollowUps re-issues a forced foreground redraw for a
+// freshly restored window a few times after it first becomes visible, so an
+// agent that was still starting up when it first appeared is repainted without
+// the user having to resize the terminal.
+func (s *muxServer) scheduleRestoreRedrawFollowUps(conn net.Conn, windowID string) {
+	if conn == nil || !s.takeRestoreRedrawPending(windowID) {
+		return
+	}
+	for _, delay := range restoreRedrawFollowUpDelays {
+		scheduleRestoreRedraw(delay, func() {
+			s.redrawRestoredWindow(conn, windowID)
+		})
+	}
+}
+
+func (s *muxServer) redrawRestoredWindow(conn net.Conn, windowID string) {
+	s.mu.Lock()
+	if conn == nil || s.attachConn != conn || s.activeID != windowID {
+		s.mu.Unlock()
+		return
+	}
+	window := s.windowByIDLocked(windowID)
+	if window == nil || window.closed || !window.usesForegroundRedrawReplayLocked() {
+		s.mu.Unlock()
+		return
+	}
+	width, height := s.width, s.height
+	s.mu.Unlock()
+	s.resizeWithRedraw(width, height, true)
 }
 
 func createWindowOptionsForRestore(
@@ -2405,9 +2548,11 @@ func createWindowOptionsForRestore(
 	)
 	command := ""
 	if agentTool != "" {
-		command = agentLaunchCommand(agentTool, startInYoloMode)
+		launch := agentLaunchCommand(agentTool, startInYoloMode)
+		command = launch
 		if sessionID := strings.TrimSpace(state.AgentSessionID); sessionID != "" {
-			command = agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			resume := agentResumeCommand(agentTool, sessionID, startInYoloMode)
+			command = agentResumeCommandWithFreshFallback(resume, launch)
 		}
 	}
 	history := []byte(nil)
@@ -2483,14 +2628,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	var snapshots []windowSnapshot
 	var addedSnapshot *windowSnapshot
 	var foregroundProcessGroup int
-	cwd := strings.TrimSpace(options.cwd)
-	if cwd == "" {
-		if current, err := os.Getwd(); err == nil {
-			cwd = current
-		}
-	} else if expanded, err := expandHomePath(cwd); err == nil {
-		cwd = expanded
-	}
+	cwd := resolveStartupDirectory(options.cwd)
 
 	shell := defaultShellPath()
 	cmd := shellCommand(shell)
@@ -2558,7 +2696,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	s.activeID = window.id
 	// Seed the Kitty image cache from any restored history so an image shown
 	// before a server restart can still be replayed on the next reattach.
-	window.observeKittyGraphicsLocked(window.history)
+	if window.observeKittyGraphicsLocked(window.history) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	s.clearAlertsLocked(window.id)
 	attach = s.attachConn
 	replay = s.replayBytesLocked(window)
@@ -2630,17 +2770,20 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
+	terminalBell := window.observeTerminalBellLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
 	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
-	window.observeKittyGraphicsLocked(chunk)
+	if window.observeKittyGraphicsLocked(chunk) {
+		s.enforceGlobalKittyImageBudgetLocked()
+	}
 	if s.activeID == windowID {
 		attach = s.attachConn
 		shouldWrite = attach != nil
-	} else if containsTerminalBell(chunk) {
+	} else if terminalBell {
 		window.alert = true
 	}
 	after := window.broadcastIdentityLocked()
@@ -2780,6 +2923,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	var replay []byte
 	var foregroundProcessGroup int
 	var redrawWindow *muxWindow
+	var activeWindowID string
 	var themeHintData []byte
 	var themeHintWindowID string
 	var sendFocusTransition bool
@@ -2801,6 +2945,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if window := s.windowByIDLocked(s.activeID); window != nil {
 		foregroundProcessGroup = window.foregroundProcessGroupLocked()
 		redrawWindow = window
+		activeWindowID = window.id
 		if len(s.themeHint) > 0 {
 			themeHintData = window.themeHintRefreshDataLocked(s.themeHint)
 			themeHintWindowID = window.id
@@ -2824,6 +2969,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+	s.scheduleRestoreRedrawFollowUps(conn, activeWindowID)
 
 	defer func() {
 		s.mu.Lock()
@@ -2932,11 +3078,14 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("missing target window"))
 			return
 		}
-		if err := s.selectWindow(id); err != nil {
+		if err := s.selectWindowWithSkip(id, request.HaveImageSignatures); err != nil {
 			client.sendError(request, err)
 			return
 		}
 		client.send(controlResponse{ID: request.ID, Type: "window_selected", Status: "ok"})
+	case "request_images":
+		s.replayRequestedImages(request.ImageIDs)
+		client.send(controlResponse{ID: request.ID, Type: "images_replayed", Status: "ok"})
 	case "close_window", "kill_window":
 		id := request.WindowID
 		if id == "" && request.WindowIndex != nil {
@@ -3385,6 +3534,53 @@ func (o *boundedCommandOutput) exceeded() bool {
 }
 
 func (s *muxServer) selectWindow(windowID string) error {
+	return s.selectWindowWithSkip(windowID, nil)
+}
+
+// replayRequestedImages re-sends specific retained Kitty image transmissions to
+// the attach connection. The client calls this after a switch/redraw when it
+// finds placeholder cells referencing images it never received (they fell
+// outside the bounded switch replay). The bytes are the store-only (a=t)
+// transmissions, so they only repopulate the client's image cache — the
+// placeholder cells already on screen then resolve on the next repaint without
+// drawing or moving the cursor. Only the active window is served: the attach
+// connection is viewing it, and requested ids are scoped to what it just drew.
+//
+// The request carries no window id and resolves against whichever window is
+// active when the server processes it. This is deliberate and safe if a window
+// switch races the request: the ids are looked up in the now-active window's
+// retained cache, so ids it does not hold are simply skipped (a no-op), and the
+// client resets its per-visit request set on every window change and re-requests
+// whatever the new window is still missing. The worst case is a redundant or
+// skipped transmission, never a wrong-window image persisting on screen.
+func (s *muxServer) replayRequestedImages(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	var attach net.Conn
+	var payload []byte
+	s.attachMu.Lock()
+	s.mu.Lock()
+	window := s.windowByIDLocked(s.activeID)
+	if window == nil || window.closed {
+		s.mu.Unlock()
+		s.attachMu.Unlock()
+		return
+	}
+	attach = s.attachConn
+	payload = window.kittyImageTransmissionsForLocked(ids)
+	s.mu.Unlock()
+	s.writeAttachLocked(attach, payload)
+	s.attachMu.Unlock()
+}
+
+// selectWindowWithSkip activates a window and streams its reattach replay,
+// omitting retained Kitty images the client reports already holding in
+// clientHas (nil replays every retained image).
+func (s *muxServer) selectWindowWithSkip(
+	windowID string,
+	clientHas map[string]uint32,
+) error {
 	var attach net.Conn
 	var replay []byte
 	var foregroundProcessGroup int
@@ -3401,7 +3597,7 @@ func (s *muxServer) selectWindow(windowID string) error {
 	window.alert = false
 	s.resizeActiveLocked(s.width, s.height)
 	attach = s.attachConn
-	replay = s.replayBytesLocked(window)
+	replay = s.replayBytesLockedWithSkip(window, clientHas)
 	foregroundProcessGroup = window.foregroundProcessGroupLocked()
 	redrawWindow = window
 	s.mu.Unlock()
@@ -3411,6 +3607,7 @@ func (s *muxServer) selectWindow(windowID string) error {
 	if redrew {
 		signalForegroundResize(foregroundProcessGroup)
 	}
+	s.scheduleRestoreRedrawFollowUps(attach, windowID)
 	return nil
 }
 
@@ -3707,6 +3904,16 @@ func (s *muxServer) activeReplayLocked() []byte {
 }
 
 func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
+	return s.replayBytesLockedWithSkip(window, nil)
+}
+
+// replayBytesLockedWithSkip builds the reattach replay, omitting retained Kitty
+// images whose id/signature the client reports already holding in clientHas
+// (nil replays every retained image, as a fresh attach does).
+func (s *muxServer) replayBytesLockedWithSkip(
+	window *muxWindow,
+	clientHas map[string]uint32,
+) []byte {
 	history := stripTerminalQueriesFromReplay(window.historyTailLocked())
 	if window.usesForegroundRedrawReplayLocked() {
 		// The foreground app redraws its own cells on reattach (driven by a
@@ -3718,7 +3925,7 @@ func (s *muxServer) replayBytesLocked(window *muxWindow) []byte {
 		// have nothing to composite and render blank. The retained transmissions
 		// survive eviction from the rolling visible history and are store-only
 		// (a=T downgraded to a=t) so they produce no visible output themselves.
-		history = window.kittyImageReplayLocked()
+		history = window.kittyImageReplayLocked(clientHas)
 	} else {
 		history = trimReplayHistoryForAttach(history)
 	}
@@ -4240,8 +4447,85 @@ func stripFocusReportsFromAttachInput(data []byte) []byte {
 	return output
 }
 
-func containsTerminalBell(data []byte) bool {
-	return bytes.IndexByte(data, '\a') >= 0
+func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	observedBell := false
+	for _, b := range data {
+		switch w.terminalBellState {
+		case terminalBellParserGround:
+			switch b {
+			case '\a':
+				observedBell = true
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			}
+		case terminalBellParserEscape:
+			w.terminalBellBytes++
+			switch b {
+			case ']':
+				w.terminalBellState = terminalBellParserOsc
+			case 'P', 'X', '^', '_':
+				w.terminalBellState = terminalBellParserString
+			case '\x1b':
+				w.terminalBellState = terminalBellParserEscape
+				w.terminalBellBytes = 1
+			case '\a':
+				observedBell = true
+				w.resetTerminalBellParserLocked()
+			default:
+				w.resetTerminalBellParserLocked()
+			}
+		case terminalBellParserOsc:
+			w.terminalBellBytes++
+			switch b {
+			case '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			}
+		case terminalBellParserOscEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserOscEscape
+			default:
+				w.terminalBellState = terminalBellParserOsc
+			}
+		case terminalBellParserString:
+			w.terminalBellBytes++
+			switch b {
+			case '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			}
+		case terminalBellParserStringEscape:
+			w.terminalBellBytes++
+			switch b {
+			case '\\', '\a':
+				w.resetTerminalBellParserLocked()
+			case '\x1b':
+				w.terminalBellState = terminalBellParserStringEscape
+			default:
+				w.terminalBellState = terminalBellParserString
+			}
+		}
+		if w.terminalBellState != terminalBellParserGround &&
+			w.terminalBellBytes > oscBufferLimitBytes {
+			w.resetTerminalBellParserLocked()
+		}
+	}
+	return observedBell
+}
+
+func (w *muxWindow) resetTerminalBellParserLocked() {
+	w.terminalBellState = terminalBellParserGround
+	w.terminalBellBytes = 0
 }
 
 // stripLocallyAnsweredThemeQueries removes OSC 10/11/12/17/19 background-color
@@ -4520,9 +4804,9 @@ func assembleKittyTransmission(
 // so they can be replayed on reattach regardless of how much later output has
 // evicted them from the rolling visible history. Partial transmissions split
 // across chunks are carried forward in kittyGraphicsPending.
-func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
+func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) bool {
 	if len(chunk) == 0 && len(w.kittyGraphicsPending) == 0 {
-		return
+		return false
 	}
 	data := chunk
 	if len(w.kittyGraphicsPending) > 0 {
@@ -4531,15 +4815,19 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		data = append(data, chunk...)
 	}
 
+	changed := false
 	txs, deletes, consumed := scanKittyTransmissions(data)
 	for _, id := range deletes {
-		w.removeKittyImageLocked(id)
+		if w.removeKittyImageLocked(id) {
+			changed = true
+		}
 	}
 	for _, tx := range txs {
 		if tx.id == "" {
 			continue // cannot dedupe or replay without an id
 		}
 		w.storeKittyImageLocked(tx.id, tx.buf)
+		changed = true
 	}
 
 	remainder := data[consumed:]
@@ -4547,33 +4835,46 @@ func (w *muxWindow) observeKittyGraphicsLocked(chunk []byte) {
 		// An unterminated or oversized graphics sequence: drop it rather than
 		// buffer unbounded bytes; parsing resyncs at the next introducer.
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	if len(remainder) == 0 {
 		w.kittyGraphicsPending = nil
-		return
+		return changed
 	}
 	w.kittyGraphicsPending = append([]byte(nil), remainder...)
+	return changed
 }
 
 func (w *muxWindow) storeKittyImageLocked(id string, buf []byte) {
 	if w.kittyImages == nil {
 		w.kittyImages = map[string][]byte{}
 	}
+	if w.kittyImageSeq == nil {
+		w.kittyImageSeq = map[string]uint64{}
+	}
+	if w.kittyImageToken == nil {
+		w.kittyImageToken = map[string]uint32{}
+	}
 	if _, exists := w.kittyImages[id]; exists {
 		w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
 	}
 	w.kittyImageOrder = append(w.kittyImageOrder, id)
 	w.kittyImages[id] = append([]byte(nil), buf...)
+	w.kittyImageToken[id] = kittyTransmissionPayloadSignature(buf)
+	kittyImageStoreSeq++
+	w.kittyImageSeq[id] = kittyImageStoreSeq
 	w.enforceKittyImageCapsLocked()
 }
 
-func (w *muxWindow) removeKittyImageLocked(id string) {
+func (w *muxWindow) removeKittyImageLocked(id string) bool {
 	if _, ok := w.kittyImages[id]; !ok {
-		return
+		return false
 	}
 	delete(w.kittyImages, id)
+	delete(w.kittyImageSeq, id)
+	delete(w.kittyImageToken, id)
 	w.kittyImageOrder = removeStringOnce(w.kittyImageOrder, id)
+	return true
 }
 
 func (w *muxWindow) enforceKittyImageCapsLocked() {
@@ -4588,18 +4889,208 @@ func (w *muxWindow) enforceKittyImageCapsLocked() {
 		w.kittyImageOrder = w.kittyImageOrder[1:]
 		total -= len(w.kittyImages[oldest])
 		delete(w.kittyImages, oldest)
+		delete(w.kittyImageSeq, oldest)
+		delete(w.kittyImageToken, oldest)
 	}
 }
 
-// kittyImageReplayLocked returns the retained image transmissions in recency
-// order so a reattaching client can repopulate its image store.
-func (w *muxWindow) kittyImageReplayLocked() []byte {
+// kittyImageStoreSeq is a global monotonic counter assigning each stored image
+// a store order, used to evict the globally-oldest image under the machine-wide
+// budget. Mutated only while the server lock is held.
+var kittyImageStoreSeq uint64
+
+// kittyImageGlobalBudgetBytes bounds the total Kitty image bytes retained across
+// all windows so a busy multi-window session cannot exhaust memory on a small
+// host (e.g. a Raspberry Pi). Computed once from detected system memory; a var
+// so tests can override it.
+var kittyImageGlobalBudgetBytes = computeKittyImageGlobalBudgetBytes()
+
+// enforceGlobalKittyImageBudgetLocked evicts the globally-oldest retained images
+// across every window until the total retained bytes fit the machine-wide
+// budget. The server lock must be held.
+func (s *muxServer) enforceGlobalKittyImageBudgetLocked() {
+	budget := kittyImageGlobalBudgetBytes
+	if budget <= 0 {
+		return
+	}
+	total := 0
+	count := 0
+	for _, w := range s.windows {
+		for _, b := range w.kittyImages {
+			total += len(b)
+			count++
+		}
+	}
+	// Keep at least one image so a single oversized image is never fully
+	// dropped (it would just render blank otherwise); the per-window caps still
+	// bound any single window.
+	for total > budget && count > 1 {
+		var victimWin *muxWindow
+		var victimID string
+		var victimSeq uint64
+		found := false
+		for _, w := range s.windows {
+			for id, seq := range w.kittyImageSeq {
+				if _, ok := w.kittyImages[id]; !ok {
+					continue
+				}
+				if !found || seq < victimSeq {
+					found = true
+					victimSeq = seq
+					victimWin = w
+					victimID = id
+				}
+			}
+		}
+		if !found || victimWin == nil {
+			return
+		}
+		total -= len(victimWin.kittyImages[victimID])
+		count--
+		victimWin.removeKittyImageLocked(victimID)
+	}
+}
+
+// computeKittyImageGlobalBudgetBytes derives the machine-wide image cache budget
+// from detected system memory, clamped to a safe range. Unknown memory falls
+// back to a conservative default.
+func computeKittyImageGlobalBudgetBytes() int {
+	const (
+		floorBytes    = 32 * 1024 * 1024  // always allow some image caching
+		ceilingBytes  = 512 * 1024 * 1024 // cap on large machines
+		defaultBytes  = 256 * 1024 * 1024 // used when memory is undetectable
+		memoryDivisor = 8                 // ~12.5% of RAM for the image cache
+	)
+	mem := detectSystemMemoryBytes()
+	if mem == 0 {
+		return defaultBytes
+	}
+	budget := int(mem / memoryDivisor)
+	if budget < floorBytes {
+		budget = floorBytes
+	}
+	if budget > ceilingBytes {
+		budget = ceilingBytes
+	}
+	return budget
+}
+
+// detectSystemMemoryBytes returns total physical memory in bytes, or 0 when it
+// cannot be determined on this platform.
+func detectSystemMemoryBytes() uint64 {
+	switch runtime.GOOS {
+	case "linux":
+		return readLinuxMemTotalBytes()
+	case "darwin":
+		return readDarwinMemTotalBytes()
+	}
+	return 0
+}
+
+func readLinuxMemTotalBytes() uint64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "MemTotal:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			if kb, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				return kb * 1024
+			}
+		}
+		break
+	}
+	return 0
+}
+
+func readDarwinMemTotalBytes() uint64 {
+	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return 0
+	}
+	bytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return bytes
+}
+
+// kittyImageReplayLocked returns the most-recent retained image transmissions,
+// bounded by count and bytes, so a reattaching client repopulates the images
+// most likely still on screen without decoding many megabytes on its UI thread.
+// Older retained transmissions are omitted; the foreground app re-emits them on
+// its next redraw if they are still visible.
+//
+// Images whose id maps to a matching signature in clientHas are omitted: the
+// client already holds identical bytes and would re-parse (then discard) them,
+// so re-sending only adds switch latency. The id still counts against the caps
+// so the "most recent N" window is unchanged whether or not the client has them.
+func (w *muxWindow) kittyImageReplayLocked(clientHas map[string]uint32) []byte {
 	if len(w.kittyImageOrder) == 0 {
 		return nil
 	}
+	// Walk newest-first, keeping images until a cap is hit.
+	selected := make([]string, 0, maxReplayedKittyImages)
+	total := 0
+	for i := len(w.kittyImageOrder) - 1; i >= 0; i-- {
+		id := w.kittyImageOrder[i]
+		buf := w.kittyImages[id]
+		if len(selected) >= maxReplayedKittyImages {
+			break
+		}
+		if len(selected) > 0 && total+len(buf) > maxReplayedKittyImageBytes {
+			break
+		}
+		selected = append(selected, id)
+		total += len(buf)
+	}
+	// Emit oldest-kept first so ids are established in chronological order,
+	// skipping any the client already holds with identical content.
 	var out []byte
-	for _, id := range w.kittyImageOrder {
+	for i := len(selected) - 1; i >= 0; i-- {
+		id := selected[i]
+		if len(clientHas) > 0 {
+			if token, ok := clientHas[id]; ok && token == w.kittyImageToken[id] {
+				continue
+			}
+		}
 		out = append(out, w.kittyImages[id]...)
+	}
+	return out
+}
+
+// kittyImageTransmissionsForLocked returns the concatenated store-only
+// transmissions of the requested image ids, in request order, skipping ids that
+// are unknown or duplicated. Unlike kittyImageReplayLocked this ignores the
+// replay caps: the client asks only for the handful of ids it is actually
+// missing, so the payload is naturally bounded by demand rather than by a fixed
+// "most recent N" window.
+func (w *muxWindow) kittyImageTransmissionsForLocked(ids []string) []byte {
+	if len(ids) == 0 || len(w.kittyImages) == 0 {
+		return nil
+	}
+	var out []byte
+	var seen map[string]struct{}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		buf, ok := w.kittyImages[id]
+		if !ok {
+			continue
+		}
+		if seen == nil {
+			seen = make(map[string]struct{}, len(ids))
+		}
+		seen[id] = struct{}{}
+		out = append(out, buf...)
 	}
 	return out
 }
@@ -4611,6 +5102,116 @@ func removeStringOnce(items []string, target string) []string {
 		}
 	}
 	return items
+}
+
+// base64DecodeValue maps an ASCII byte to its 6-bit base64 value, or -1 for any
+// non-base64 byte (whitespace, padding, control). Package-level so the lenient
+// decoder allocates nothing per call.
+var base64DecodeValue = func() [256]int8 {
+	var table [256]int8
+	for i := range table {
+		table[i] = -1
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i := 0; i < len(alphabet); i++ {
+		table[alphabet[i]] = int8(i)
+	}
+	return table
+}()
+
+// decodeLenientBase64 decodes base64 the same way the client parser does:
+// non-base64 bytes (whitespace, padding) are skipped and 6-bit groups are
+// emitted as bytes as they accumulate, tolerating a missing final group. Both
+// sides must decode identically for the payload signatures to match.
+func decodeLenientBase64(payload []byte) []byte {
+	out := make([]byte, 0, len(payload)*3/4+1)
+	var accumulator uint32
+	var bits int
+	for _, c := range payload {
+		v := base64DecodeValue[c]
+		if v < 0 {
+			continue
+		}
+		accumulator = (accumulator << 6) | uint32(v)
+		bits += 6
+		if bits >= 8 {
+			bits -= 8
+			out = append(out, byte((accumulator>>uint(bits))&0xff))
+		}
+	}
+	return out
+}
+
+// kittyTransmissionPayloadSignature returns the FNV-1a-32 signature of the
+// base64-decoded payload of a stored Kitty transmission, matching the client's
+// terminalGraphicsSourceSignature over the same bytes. Returns 0 when there is
+// no payload, which never matches a client-reported signature.
+//
+// A transmission larger than a single APC is split into m=1 continuation chunks
+// (Kitty caps each APC payload at 4096 base64 bytes), and a stored image buffer
+// concatenates every chunk's full APC. The client appends each chunk's decoded
+// payload into one buffer before hashing, so the signature MUST cover the whole
+// concatenated payload — hashing only the first chunk would never match a
+// multi-chunk image (i.e. every non-trivial screenshot), defeating the switch
+// replay skip and forcing the whole image set to be re-sent on every switch.
+func kittyTransmissionPayloadSignature(buf []byte) uint32 {
+	var payload []byte
+	for i := 0; i+2 < len(buf); {
+		if buf[i] != '\x1b' || buf[i+1] != '_' || buf[i+2] != 'G' {
+			i++
+			continue
+		}
+		apcEnd := kittyApcEnd(buf, i)
+		if apcEnd < 0 {
+			break
+		}
+		chunk := buf[i:apcEnd]
+		if semi := bytes.IndexByte(chunk, ';'); semi >= 0 {
+			body := chunk[semi+1:]
+			if end := bytes.Index(body, []byte{'\x1b', '\\'}); end >= 0 {
+				body = body[:end]
+			}
+			if bel := bytes.IndexByte(body, '\a'); bel >= 0 {
+				body = body[:bel]
+			}
+			payload = append(payload, decodeLenientBase64(body)...)
+		}
+		i = apcEnd
+	}
+	if len(payload) == 0 {
+		return 0
+	}
+	return fnv32ImageSignature(payload)
+}
+
+// fnv32ImageSignature mirrors the client's terminalGraphicsSourceSignature: an
+// FNV-1a-32 over the exact length (4 little-endian bytes) plus an evenly-spaced
+// sample of at most ~4096 bytes. Returns a non-zero value for non-empty input.
+func fnv32ImageSignature(b []byte) uint32 {
+	if len(b) == 0 {
+		return 0
+	}
+	const (
+		fnvOffset = uint32(0x811c9dc5)
+		fnvPrime  = uint32(0x01000193)
+	)
+	hash := fnvOffset
+	length := len(b)
+	for i := 0; i < 4; i++ {
+		hash = (hash ^ uint32(length&0xFF)) * fnvPrime
+		length >>= 8
+	}
+	step := 1
+	if len(b) > 4096 {
+		step = len(b) / 4096
+	}
+	for i := 0; i < len(b); i += step {
+		hash = (hash ^ uint32(b[i])) * fnvPrime
+	}
+	if hash == 0 {
+		return 1
+	}
+	return hash
 }
 
 // kittyApcEnd returns the index just past the ST (ESC \) that terminates the
@@ -5175,6 +5776,35 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 
 func canonicalAgentCommandName(command string) string {
 	return firstNonEmptyString(agentToolFromCommandName(command), cleanProcessCommandName(command))
+}
+
+// agentResumeCommandWithFreshFallback wraps a restored agent's --resume command
+// so a resume that exits immediately falls back to launching the agent fresh,
+// keeping the restored window alive instead of letting it vanish.
+//
+// After a MonkeyMux helper upgrade every window is recreated by relaunching its
+// foreground process. For an agent this is something like `copilot --resume
+// <id>`. When that session can no longer be resumed — a window that never
+// committed a session before the restart, a session store that lives on another
+// machine, a stale id — the CLI prints an error and exits non-zero (Copilot CLI
+// reports "No session, task, or name matched" and exits 1). The window's shell
+// then has nothing left to run, so the pane closes and the user loses the whole
+// window. Falling back to a fresh launch preserves the window; a successful
+// resume runs interactively and only exits when the user quits, so the "||"
+// branch is reached solely when the resume itself failed to start. An
+// intentional close signals the whole process group (SIGHUP), which terminates
+// the shell before it can reach the fallback, so closing a window never
+// relaunches the agent.
+func agentResumeCommandWithFreshFallback(resume string, launch string) string {
+	resume = strings.TrimSpace(resume)
+	launch = strings.TrimSpace(launch)
+	if resume == "" {
+		return launch
+	}
+	if launch == "" || launch == resume {
+		return resume
+	}
+	return resume + " || " + launch
 }
 
 func agentToolFromTerminalTitle(title string) string {
@@ -6007,6 +6637,63 @@ func expandHomePath(path string) (string, error) {
 		return home, nil
 	}
 	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+}
+
+// resolveStartupDirectory returns a directory that exists and can be used as a
+// new window's working directory. A restored window can reference a directory
+// that no longer exists — a git worktree, temp build dir, or scratch checkout
+// removed between sessions is common — and starting the PTY there fails with
+// "chdir: no such file or directory", which previously dropped the window from
+// the restore entirely. To keep every window, fall back to the nearest existing
+// ancestor of the requested directory, then the home directory, then the serve
+// process's own working directory.
+func resolveStartupDirectory(requested string) string {
+	candidate := strings.TrimSpace(requested)
+	if candidate == "" {
+		// No directory requested: preserve the historical behavior of
+		// inheriting the serve process's working directory.
+		if current, err := os.Getwd(); err == nil && directoryExists(current) {
+			return current
+		}
+		if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
+			return home
+		}
+		return ""
+	}
+	if expanded, err := expandHomePath(candidate); err == nil {
+		candidate = expanded
+	}
+	if directoryExists(candidate) {
+		return candidate
+	}
+	// The requested directory is gone. Walk up to the nearest existing ancestor
+	// so a removed leaf directory falls back close to where the window used to
+	// live, then fall back to home, then the process's own working directory.
+	for candidate != "" {
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+		candidate = parent
+		if directoryExists(candidate) {
+			return candidate
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && directoryExists(home) {
+		return home
+	}
+	if current, err := os.Getwd(); err == nil && directoryExists(current) {
+		return current
+	}
+	return ""
+}
+
+func directoryExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func firstShellWord(command string) string {

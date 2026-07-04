@@ -1,14 +1,13 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path/path.dart' as p;
 
 import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
+import 'openssh_key_generator.dart';
 
 /// Key type for SSH key generation.
 enum SshKeyType {
@@ -44,10 +43,13 @@ class KeyService {
       if (keyPairs.isEmpty) return null;
 
       final keyPair = keyPairs.first;
-      // Get key type from the key pair itself
-      final keyType = keyPair.type;
       // Convert public key to OpenSSH format: type + space + base64-encoded key
       final publicKeyBytes = keyPair.toPublicKey().encode();
+      // The algorithm name embedded at the start of the public-key blob is the
+      // canonical OpenSSH type token (e.g. 'ssh-rsa', 'ssh-ed25519') — the
+      // value expected in authorized_keys. keyPair.type is a signature type
+      // such as 'rsa-sha2-256', which is not a valid authorized_keys prefix.
+      final keyType = _readPublicKeyAlgorithm(publicKeyBytes);
       final publicKey = '$keyType ${base64.encode(publicKeyBytes)}';
       final fingerprint = computeOpenSshPublicKeyFingerprint(publicKey);
 
@@ -65,75 +67,40 @@ class KeyService {
       return _keyRepository.getById(id);
     } on FormatException {
       return null;
+    } on SSHError {
+      // Malformed OpenSSH structure, or an encrypted key with a missing or
+      // incorrect passphrase (SSHKeyDecryptError). Report as "unimportable"
+      // so the UI shows its "invalid key / incorrect passphrase" message
+      // instead of surfacing an uncaught error (SSHError is not an Exception).
+      return null;
     }
   }
 
-  /// Generate a key pair using the local ssh-keygen tool, then import it.
+  /// Generate an SSH key pair in-process and store it.
+  ///
+  /// Works on every platform: the key is produced in pure Dart in the OpenSSH
+  /// private-key format (optionally encrypted with [passphrase]), so no
+  /// `ssh-keygen` binary is required on mobile.
   Future<SshKey?> generateKey({
     required String name,
     required SshKeyType keyType,
     String? passphrase,
   }) async {
-    if (!Platform.isMacOS && !Platform.isLinux && !Platform.isWindows) {
-      throw Exception(
-        'Key generation is only supported on desktop. Use Import on this platform.',
-      );
-    }
+    final normalizedPassphrase = (passphrase?.isEmpty ?? true)
+        ? null
+        : passphrase;
 
-    final tempDir = await Directory.systemTemp.createTemp('monkeyssh-keygen-');
-    if (!Platform.isWindows) {
-      await Process.run('chmod', ['700', tempDir.path]);
-    }
-    final keyPath = p.join(tempDir.path, 'id_key');
-    final normalizedPassphrase = passphrase?.isEmpty ?? true ? '' : passphrase!;
+    final privateKeyPem = await generateOpenSshPrivateKeyPem(
+      keyType: keyType,
+      comment: name,
+      passphrase: normalizedPassphrase,
+    );
 
-    try {
-      final arguments = <String>[
-        '-t',
-        switch (keyType) {
-          SshKeyType.ed25519 => 'ed25519',
-          SshKeyType.rsa2048 || SshKeyType.rsa4096 => 'rsa',
-        },
-        '-f',
-        keyPath,
-        '-N',
-        normalizedPassphrase,
-        '-C',
-        name,
-      ];
-      if (keyType == SshKeyType.rsa2048) {
-        arguments.addAll(['-b', '2048']);
-      } else if (keyType == SshKeyType.rsa4096) {
-        arguments.addAll(['-b', '4096']);
-      }
-
-      final result = await Process.run('ssh-keygen', arguments);
-      if (result.exitCode != 0) {
-        final error = (result.stderr as String).trim();
-        throw StateError(
-          error.isEmpty
-              ? 'ssh-keygen failed with code ${result.exitCode}'
-              : error,
-        );
-      }
-
-      final privateKeyFile = File(keyPath);
-      final privateKeyPem = await privateKeyFile.readAsString();
-      return importKey(
-        name: name,
-        privateKeyPem: privateKeyPem,
-        passphrase: normalizedPassphrase.isEmpty ? null : normalizedPassphrase,
-      );
-    } on ProcessException catch (e) {
-      throw Exception('ssh-keygen is not available: ${e.message}');
-    } finally {
-      await _wipeGeneratedKeyFiles(keyPath);
-      try {
-        await tempDir.delete(recursive: true);
-      } on FileSystemException {
-        // Best-effort cleanup must not hide the key generation result.
-      }
-    }
+    return importKey(
+      name: name,
+      privateKeyPem: privateKeyPem,
+      passphrase: normalizedPassphrase,
+    );
   }
 
   /// Import a public key only (for reference).
@@ -173,6 +140,9 @@ class KeyService {
   String exportPrivateKey(SshKey key) => key.privateKey;
 
   /// Validate a private key.
+  ///
+  /// Returns false for malformed input, and for an encrypted key when no (or an
+  /// incorrect) [passphrase] is supplied.
   bool validatePrivateKey(String pem, {String? passphrase}) {
     try {
       final keys = passphrase != null && passphrase.isNotEmpty
@@ -180,6 +150,10 @@ class KeyService {
           : SSHKeyPair.fromPem(pem);
       return keys.isNotEmpty;
     } on FormatException {
+      return false;
+    } on SSHError {
+      // e.g. SSHKeyDecryptError for an encrypted key with a missing/wrong
+      // passphrase.
       return false;
     }
   }
@@ -228,30 +202,17 @@ class KeyService {
     return 'unknown';
   }
 
-  Future<void> _wipeGeneratedKeyFiles(String keyPath) async {
-    for (final path in [keyPath, '$keyPath.pub']) {
-      final file = File(path);
-      try {
-        // ignore: avoid_slow_async_io
-        if (!await file.exists()) {
-          continue;
-        }
-        final length = await file.length();
-        if (length > 0) {
-          await file.writeAsBytes(List<int>.filled(length, 0), flush: true);
-        }
-        await file.delete();
-      } on FileSystemException {
-        try {
-          // ignore: avoid_slow_async_io
-          if (await file.exists()) {
-            await file.delete();
-          }
-        } on FileSystemException {
-          // Best-effort cleanup must not hide the key generation result.
-        }
-      }
-    }
+  /// Reads the algorithm name embedded at the start of an OpenSSH public-key
+  /// blob (an SSH length-prefixed string), e.g. 'ssh-ed25519' or 'ssh-rsa'.
+  String _readPublicKeyAlgorithm(List<int> publicKeyBlob) {
+    if (publicKeyBlob.length < 4) return 'unknown';
+    final length =
+        (publicKeyBlob[0] << 24) |
+        (publicKeyBlob[1] << 16) |
+        (publicKeyBlob[2] << 8) |
+        publicKeyBlob[3];
+    if (length <= 0 || 4 + length > publicKeyBlob.length) return 'unknown';
+    return ascii.decode(publicKeyBlob.sublist(4, 4 + length));
   }
 }
 
