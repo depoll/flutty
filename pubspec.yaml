@@ -26,7 +26,7 @@ dependencies:
   path: ^1.9.1
   
   # SSH
-  dartssh2: ^2.18.0
+  dartssh2: ^2.22.0
   
   # Terminal
   # Vendored fork of xterm.dart 4.0.0 (upstream unmaintained since 2024-02).
@@ -44,11 +44,11 @@ dependencies:
   local_auth: ^3.0.1
   
   # File handling
-  file_picker: ^12.0.0-beta.3
-  image_picker: ^1.2.2
+  file_picker: ^12.0.0-beta.7
+  image_picker: ^1.2.3
   image_picker_android: ^0.8.13+17
   image_picker_platform_interface: ^2.11.1
-  share_plus: ^13.1.0
+  share_plus: ^13.2.0
   cryptography: ^2.9.0
   crypto: ^3.0.6
   pointycastle: ^4.0.0
@@ -63,28 +63,28 @@ dependencies:
   
   # Utilities
   uuid: ^4.5.3
-  intl: ^0.20.2
+  intl: ^0.20.3
   collection: ^1.19.1
   equatable: ^2.0.7
   pasteboard: ^0.5.0
   url_launcher: ^6.3.2
-  package_info_plus: ^10.1.0
+  package_info_plus: ^10.2.0
   in_app_purchase: ^3.2.3
   in_app_purchase_android: ^0.5.1
-  in_app_purchase_storekit: ^0.4.8+1
+  in_app_purchase_storekit: ^0.4.10+1
   quick_actions: ^1.1.0
   video_player: ^2.11.1
   http: ^1.6.0
   xml: ^7.0.1
 
   # Network / connectivity
-  network_info_plus: ^8.1.0
+  network_info_plus: ^8.2.0
   permission_handler: ^12.0.1
   wakelock_plus: ^1.5.2
-  sqlite3: ^3.3.3
-  firebase_core: ^4.10.0
-  firebase_analytics: ^12.4.2
-  firebase_crashlytics: ^5.2.3
+  sqlite3: ^3.3.4
+  firebase_core: ^4.11.0
+  firebase_analytics: ^12.4.3
+  firebase_crashlytics: ^5.2.4
 
 dev_dependencies:
   flutter_test:
