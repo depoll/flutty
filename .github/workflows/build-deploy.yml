@@ -194,7 +194,7 @@ permissions:
   issues: write
 
 env:
-  FLUTTER_VERSION: '3.44.0'
+  FLUTTER_VERSION: '3.44.4'
 
 jobs:
   build-android:
