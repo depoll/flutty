@@ -5093,7 +5093,7 @@ final class $$SshKeysTableReferences
     _$AppDatabase db,
   ) => MultiTypedResultKey.fromTable(
     db.hosts,
-    aliasName: $_aliasNameGenerator(db.sshKeys.id, db.hosts.keyId),
+    aliasName: 'ssh_keys__id__hosts__key_id',
   );
 
   $$HostsTableProcessedTableManager get hostsRefs {
@@ -5439,9 +5439,8 @@ final class $$GroupsTableReferences
     extends BaseReferences<_$AppDatabase, $GroupsTable, Group> {
   $$GroupsTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $GroupsTable _parentIdTable(_$AppDatabase db) => db.groups.createAlias(
-    $_aliasNameGenerator(db.groups.parentId, db.groups.id),
-  );
+  static $GroupsTable _parentIdTable(_$AppDatabase db) =>
+      db.groups.createAlias('groups__parent_id__groups__id');
 
   $$GroupsTableProcessedTableManager? get parentId {
     final $_column = $_itemColumn<int>('parent_id');
@@ -5461,7 +5460,7 @@ final class $$GroupsTableReferences
     _$AppDatabase db,
   ) => MultiTypedResultKey.fromTable(
     db.hosts,
-    aliasName: $_aliasNameGenerator(db.groups.id, db.hosts.groupId),
+    aliasName: 'groups__id__hosts__group_id',
   );
 
   $$HostsTableProcessedTableManager get hostsRefs {
@@ -5869,10 +5868,9 @@ final class $$SnippetFoldersTableReferences
     super.$_typedResult,
   );
 
-  static $SnippetFoldersTable _parentIdTable(_$AppDatabase db) =>
-      db.snippetFolders.createAlias(
-        $_aliasNameGenerator(db.snippetFolders.parentId, db.snippetFolders.id),
-      );
+  static $SnippetFoldersTable _parentIdTable(_$AppDatabase db) => db
+      .snippetFolders
+      .createAlias('snippet_folders__parent_id__snippet_folders__id');
 
   $$SnippetFoldersTableProcessedTableManager? get parentId {
     final $_column = $_itemColumn<int>('parent_id');
@@ -5892,7 +5890,7 @@ final class $$SnippetFoldersTableReferences
     _$AppDatabase db,
   ) => MultiTypedResultKey.fromTable(
     db.snippets,
-    aliasName: $_aliasNameGenerator(db.snippetFolders.id, db.snippets.folderId),
+    aliasName: 'snippet_folders__id__snippets__folder_id',
   );
 
   $$SnippetsTableProcessedTableManager get snippetsRefs {
@@ -6285,9 +6283,7 @@ final class $$SnippetsTableReferences
   $$SnippetsTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
   static $SnippetFoldersTable _folderIdTable(_$AppDatabase db) =>
-      db.snippetFolders.createAlias(
-        $_aliasNameGenerator(db.snippets.folderId, db.snippetFolders.id),
-      );
+      db.snippetFolders.createAlias('snippets__folder_id__snippet_folders__id');
 
   $$SnippetFoldersTableProcessedTableManager? get folderId {
     final $_column = $_itemColumn<int>('folder_id');
@@ -6307,10 +6303,7 @@ final class $$SnippetsTableReferences
     _$AppDatabase db,
   ) => MultiTypedResultKey.fromTable(
     db.hosts,
-    aliasName: $_aliasNameGenerator(
-      db.snippets.id,
-      db.hosts.autoConnectSnippetId,
-    ),
+    aliasName: 'snippets__id__hosts__auto_connect_snippet_id',
   );
 
   $$HostsTableProcessedTableManager get hostsRefs {
@@ -6821,9 +6814,8 @@ final class $$HostsTableReferences
     extends BaseReferences<_$AppDatabase, $HostsTable, Host> {
   $$HostsTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $SshKeysTable _keyIdTable(_$AppDatabase db) => db.sshKeys.createAlias(
-    $_aliasNameGenerator(db.hosts.keyId, db.sshKeys.id),
-  );
+  static $SshKeysTable _keyIdTable(_$AppDatabase db) =>
+      db.sshKeys.createAlias('hosts__key_id__ssh_keys__id');
 
   $$SshKeysTableProcessedTableManager? get keyId {
     final $_column = $_itemColumn<int>('key_id');
@@ -6839,9 +6831,8 @@ final class $$HostsTableReferences
     );
   }
 
-  static $GroupsTable _groupIdTable(_$AppDatabase db) => db.groups.createAlias(
-    $_aliasNameGenerator(db.hosts.groupId, db.groups.id),
-  );
+  static $GroupsTable _groupIdTable(_$AppDatabase db) =>
+      db.groups.createAlias('hosts__group_id__groups__id');
 
   $$GroupsTableProcessedTableManager? get groupId {
     final $_column = $_itemColumn<int>('group_id');
@@ -6857,9 +6848,8 @@ final class $$HostsTableReferences
     );
   }
 
-  static $HostsTable _jumpHostIdTable(_$AppDatabase db) => db.hosts.createAlias(
-    $_aliasNameGenerator(db.hosts.jumpHostId, db.hosts.id),
-  );
+  static $HostsTable _jumpHostIdTable(_$AppDatabase db) =>
+      db.hosts.createAlias('hosts__jump_host_id__hosts__id');
 
   $$HostsTableProcessedTableManager? get jumpHostId {
     final $_column = $_itemColumn<int>('jump_host_id');
@@ -6876,9 +6866,7 @@ final class $$HostsTableReferences
   }
 
   static $SnippetsTable _autoConnectSnippetIdTable(_$AppDatabase db) =>
-      db.snippets.createAlias(
-        $_aliasNameGenerator(db.hosts.autoConnectSnippetId, db.snippets.id),
-      );
+      db.snippets.createAlias('hosts__auto_connect_snippet_id__snippets__id');
 
   $$SnippetsTableProcessedTableManager? get autoConnectSnippetId {
     final $_column = $_itemColumn<int>('auto_connect_snippet_id');
@@ -6899,7 +6887,7 @@ final class $$HostsTableReferences
   static MultiTypedResultKey<$PortForwardsTable, List<PortForward>>
   _portForwardsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
     db.portForwards,
-    aliasName: $_aliasNameGenerator(db.hosts.id, db.portForwards.hostId),
+    aliasName: 'hosts__id__port_forwards__host_id',
   );
 
   $$PortForwardsTableProcessedTableManager get portForwardsRefs {
@@ -7936,9 +7924,8 @@ final class $$PortForwardsTableReferences
     extends BaseReferences<_$AppDatabase, $PortForwardsTable, PortForward> {
   $$PortForwardsTableReferences(super.$_db, super.$_table, super.$_typedResult);
 
-  static $HostsTable _hostIdTable(_$AppDatabase db) => db.hosts.createAlias(
-    $_aliasNameGenerator(db.portForwards.hostId, db.hosts.id),
-  );
+  static $HostsTable _hostIdTable(_$AppDatabase db) =>
+      db.hosts.createAlias('port_forwards__host_id__hosts__id');
 
   $$HostsTableProcessedTableManager get hostId {
     final $_column = $_itemColumn<int>('host_id')!;
