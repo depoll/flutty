@@ -1605,6 +1605,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _handleStartupModeSelection(HostStartupMode value) async {
+    final previousMode = _selectedStartupMode;
     if (value == HostStartupMode.agent) {
       final hasAccess = await requireMonetizationFeatureAccess(
         context: context,
@@ -1636,6 +1637,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     setState(() {
       _selectedStartupMode = value;
+      _carryWindowConfigAcrossModeChange(previousMode, value);
       switch (value) {
         case HostStartupMode.none:
         case HostStartupMode.muxAuto:
@@ -1653,6 +1655,65 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _updateDirtyState();
     if (value == HostStartupMode.agent) {
       _syncAutoConnectCommandFromPreset();
+    }
+  }
+
+  /// Carries shared remote-window configuration across a startup-mode change so
+  /// the session name, working directory, and tmux options a user enters for a
+  /// MonkeyMux/tmux startup are retained when switching to (or from) a coding
+  /// agent that reuses the same window backend. Only blank destination fields
+  /// are seeded, so text already entered in the target mode is never
+  /// overwritten.
+  void _carryWindowConfigAcrossModeChange(
+    HostStartupMode from,
+    HostStartupMode to,
+  ) {
+    if (from.usesRemoteMultiplexer && to == HostStartupMode.agent) {
+      final agentUnconfigured = _agentTmuxSessionController.text.trim().isEmpty;
+      _seedControllerIfEmpty(
+        _agentTmuxSessionController,
+        _tmuxSessionController.text,
+      );
+      _seedControllerIfEmpty(
+        _agentWorkingDirectoryController,
+        _tmuxWorkingDirectoryController.text,
+      );
+      _seedControllerIfEmpty(
+        _agentTmuxExtraFlagsController,
+        _tmuxExtraFlagsController.text,
+      );
+      if (agentUnconfigured) {
+        _selectedAgentMuxBackend =
+            from.remoteMuxBackend == RemoteMuxBackend.tmux
+            ? RemoteMuxBackend.tmux
+            : RemoteMuxBackend.monkeyMux;
+        _disableAgentTmuxStatusBar = _disableTmuxStatusBar;
+      }
+    } else if (from == HostStartupMode.agent && to.usesRemoteMultiplexer) {
+      final muxUnconfigured = _tmuxSessionController.text.trim().isEmpty;
+      _seedControllerIfEmpty(
+        _tmuxSessionController,
+        _agentTmuxSessionController.text,
+      );
+      _seedControllerIfEmpty(
+        _tmuxWorkingDirectoryController,
+        _agentWorkingDirectoryController.text,
+      );
+      _seedControllerIfEmpty(
+        _tmuxExtraFlagsController,
+        _agentTmuxExtraFlagsController.text,
+      );
+      if (muxUnconfigured) {
+        _disableTmuxStatusBar = _disableAgentTmuxStatusBar;
+      }
+    }
+  }
+
+  /// Copies [value] into [controller] only when the controller is currently
+  /// blank, preserving any text the user already entered in the destination.
+  void _seedControllerIfEmpty(TextEditingController controller, String value) {
+    if (controller.text.trim().isEmpty && value.trim().isNotEmpty) {
+      controller.text = value;
     }
   }
 
