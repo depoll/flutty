@@ -261,6 +261,43 @@ void main() {
     });
   });
 
+  group('remoteVersionIndicatesWindows', () {
+    test('detects Windows OpenSSH identification strings', () {
+      expect(
+        remoteVersionIndicatesWindows('SSH-2.0-OpenSSH_for_Windows_9.5'),
+        isTrue,
+      );
+      expect(
+        remoteVersionIndicatesWindows('SSH-2.0-OpenSSH_for_Windows_8.1'),
+        isTrue,
+      );
+    });
+
+    test('is case-insensitive', () {
+      expect(
+        remoteVersionIndicatesWindows('SSH-2.0-someserver_WINDOWS_1.0'),
+        isTrue,
+      );
+    });
+
+    test('returns false for POSIX servers', () {
+      expect(remoteVersionIndicatesWindows('SSH-2.0-OpenSSH_9.6'), isFalse);
+      expect(
+        remoteVersionIndicatesWindows('SSH-2.0-OpenSSH_8.9p1 Ubuntu-3'),
+        isFalse,
+      );
+      expect(
+        remoteVersionIndicatesWindows('SSH-2.0-dropbear_2022.83'),
+        isFalse,
+      );
+    });
+
+    test('returns false for unknown or empty identification strings', () {
+      expect(remoteVersionIndicatesWindows(null), isFalse);
+      expect(remoteVersionIndicatesWindows(''), isFalse);
+    });
+  });
+
   group('terminal metadata helpers', () {
     test('parses and formats working directory metadata', () {
       final uri = parseTerminalWorkingDirectoryUri([
@@ -1214,6 +1251,44 @@ void main() {
           ),
         ).called(1);
         verify(() => client.shell(pty: pty)).called(1);
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
+      'requests a plain shell without the bootstrap on Windows remotes',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(
+          () => client.shell(pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => shell.done).thenAnswer((_) => Future<void>.value());
+
+        expect(session.remoteIsWindows, isTrue);
+
+        final result = await session.getShell(pty: pty);
+
+        expect(result, same(shell));
+        verify(() => client.shell(pty: pty)).called(1);
+        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
         await session.closeShell(waitForStreams: false);
       },
     );

@@ -545,6 +545,39 @@ void main() {
     );
 
     test(
+      'skips remote completion and history probes on Windows remotes',
+      () async {
+        final service = ShellCompletionService();
+        final client = _MockSshClient();
+        final session = _buildShellCompletionSession(
+          client,
+          connectionId: 7,
+          hostId: 99,
+        );
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        const invocation = ShellCompletionInvocation(
+          commandLine: 'git checko',
+          cursorOffset: 10,
+          token: 'checko',
+          tokenStart: 4,
+          mode: ShellCompletionMode.argument,
+          commandName: 'git',
+          words: ['git', 'checko'],
+          wordIndex: 1,
+          workingDirectory: r'C:\Users\tester\project',
+        );
+
+        service.primeHistory(session, invocation);
+        final suggestions = await service.complete(session, invocation);
+
+        expect(suggestions, isEmpty);
+        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+      },
+    );
+
+    test(
       'service keeps in-flight history loads scoped to their connection',
       () async {
         final service = ShellCompletionService();
