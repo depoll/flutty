@@ -835,6 +835,16 @@ class _TerminalPreviewPainter extends CustomPainter {
       ..clipRect(Offset.zero & size)
       ..drawRect(Offset.zero & size, Paint()..color = painter.theme.background);
 
+    // Kitty images with a negative z-index sit behind the terminal text.
+    _paintImages(
+      canvas,
+      size,
+      cellWidth: cellWidth,
+      lineHeight: lineHeight,
+      startRow: startRow,
+      belowText: true,
+    );
+
     for (var visibleIndex = 0; visibleIndex < lineCount; visibleIndex++) {
       final row = startRow + visibleIndex;
       final line = preview.lines[row].cells;
@@ -860,7 +870,81 @@ class _TerminalPreviewPainter extends CustomPainter {
       }
       canvas.restore();
     }
+
+    // Non-negative z-index placements and Unicode-placeholder strips draw on top.
+    _paintImages(
+      canvas,
+      size,
+      cellWidth: cellWidth,
+      lineHeight: lineHeight,
+      startRow: startRow,
+      belowText: false,
+    );
     canvas.restore();
+  }
+
+  /// Composites the snapshot's captured Kitty-graphics images, scaling their
+  /// cell-space geometry to the preview's cell metrics. Mirrors the live
+  /// terminal compositing in `monkey_terminal_view.dart`; failures are swallowed
+  /// so an optional preview adornment never crashes the card.
+  void _paintImages(
+    Canvas canvas,
+    Size size, {
+    required double cellWidth,
+    required double lineHeight,
+    required int startRow,
+    required bool belowText,
+  }) {
+    if (preview.images.isEmpty ||
+        !cellWidth.isFinite ||
+        !lineHeight.isFinite ||
+        cellWidth <= 0 ||
+        lineHeight <= 0) {
+      return;
+    }
+    final paint = Paint()..filterQuality = FilterQuality.medium;
+    for (final image in preview.images) {
+      if (belowText ? image.z >= 0 : image.z < 0) {
+        continue;
+      }
+      final double dstWidth;
+      final double dstHeight;
+      if (image.fitToWidth) {
+        final maxWidth = image.colSpan * cellWidth;
+        final scale = image.src.width > maxWidth
+            ? maxWidth / image.src.width
+            : 1.0;
+        dstWidth = image.src.width * scale;
+        dstHeight = image.src.height * scale;
+      } else {
+        dstWidth = image.colSpan * cellWidth;
+        dstHeight = image.rowSpan * lineHeight;
+      }
+      final x = image.col * cellWidth + image.xOffset;
+      final y = (image.row - startRow) * lineHeight + image.yOffset;
+      if (!dstWidth.isFinite ||
+          !dstHeight.isFinite ||
+          dstWidth <= 0 ||
+          dstHeight <= 0 ||
+          !x.isFinite ||
+          !y.isFinite ||
+          y >= size.height ||
+          y + dstHeight <= 0 ||
+          x >= size.width ||
+          x + dstWidth <= 0) {
+        continue;
+      }
+      try {
+        canvas.drawImageRect(
+          image.image,
+          image.src,
+          Rect.fromLTWH(x, y, dstWidth, dstHeight),
+          paint,
+        );
+      } on Object catch (_) {
+        // Preview image compositing is optional adornment; never crash the card.
+      }
+    }
   }
 
   @override
