@@ -1033,6 +1033,27 @@ cwd: /tmp/demo
   });
 
   group('discoverSessionsStream caching', () {
+    test(
+      'returns no sessions and runs no commands on Windows remotes',
+      () async {
+        final client = _MockSshClient();
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: r'C:\Users\demo\project',
+        );
+
+        expect(result.sessions, isEmpty);
+        verifyNever(() => client.execute(any()));
+        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+      },
+    );
+
     test('Copilot discovery uses ACP session/list when available', () async {
       final client = _MockSshClient();
       final commands = <String>[];
