@@ -76,6 +76,27 @@ void main() {
         "'work'",
       );
     });
+
+    test('double-quotes arguments for Windows helpers', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath:
+            r'C:\Users\me\.monkeyssh\bin\monkeymux\0.1.87\windows-amd64\monkeymux.exe',
+        sessionName: 'workspace',
+        workingDirectory: r'C:\src\my app',
+        windowName: 'Codex agent',
+        launchCommand: 'codex --yolo',
+        serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        windows: true,
+      );
+
+      expect(
+        command,
+        r'"C:\Users\me\.monkeyssh\bin\monkeymux\0.1.87\windows-amd64\'
+        'monkeymux.exe" attach --update-policy never '
+        r'--cwd "C:\src\my app" --name "Codex agent" '
+        '--command "codex --yolo" "workspace"',
+      );
+    });
   });
 
   group('MonkeyMuxServerStatus', () {

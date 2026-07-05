@@ -116,6 +116,8 @@ flutter:
     - assets/monkeymux/bin/darwin-arm64/
     - assets/monkeymux/bin/linux-amd64/
     - assets/monkeymux/bin/linux-arm64/
+    - assets/monkeymux/bin/windows-amd64/
+    - assets/monkeymux/bin/windows-arm64/
     - assets/version_codenames.json
   #   - assets/icons/
   #   - assets/fonts/

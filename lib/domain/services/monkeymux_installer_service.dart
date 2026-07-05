@@ -134,6 +134,10 @@ class MonkeyMuxInstallation {
 
   /// Whether this call uploaded the helper instead of reusing an existing copy.
   final bool installedDuringCall;
+
+  /// Whether the resolved platform is Windows, which affects how the helper is
+  /// invoked (native `.exe` path and double-quoted shell arguments).
+  bool get isWindows => platform.startsWith('windows-');
 }
 
 /// Details for a pending MonkeyMux helper install.
@@ -307,11 +311,22 @@ class MonkeyMuxInstallerService {
         homeDirectory,
         '.monkeyssh/bin/monkeymux/${manifest.version}/$platform',
       );
-      final executablePath = joinRemotePath(installDirectory, 'monkeymux');
+      final isWindows = _isWindowsPlatform(platform);
+      final executableName = isWindows ? 'monkeymux.exe' : 'monkeymux';
+      final executableSftpPath = joinRemotePath(
+        installDirectory,
+        executableName,
+      );
+      // SFTP presents Windows paths as `/C:/...`; the shell (attach/control
+      // commands, certutil) needs the native `C:\...` form.
+      final executablePath = isWindows
+          ? _sftpPathToWindowsPath(executableSftpPath)
+          : executableSftpPath;
       if (await _remoteShaMatches(
         session,
         executablePath,
         entry.sha256,
+        isWindows: isWindows,
         priority: priority,
       )) {
         DiagnosticsLogService.instance.info(
@@ -378,6 +393,9 @@ class MonkeyMuxInstallerService {
         '.monkeymux.${session.connectionId}.'
         '${DateTime.now().microsecondsSinceEpoch}.tmp',
       );
+      final temporaryCommandPath = isWindows
+          ? _sftpPathToWindowsPath(temporaryExecutablePath)
+          : temporaryExecutablePath;
       var movedTemporaryExecutable = false;
       try {
         await _remoteFileService.uploadBytes(
@@ -385,33 +403,50 @@ class MonkeyMuxInstallerService {
           remotePath: temporaryExecutablePath,
           bytes: assetBytes,
         );
-        await _runRemoteCommand(
-          session,
-          'chmod 700 ${_shellQuote(temporaryExecutablePath)}',
-          priority: priority,
-        );
+        if (!isWindows) {
+          // Windows has no execute bit; a `.exe` runs by extension.
+          await _runRemoteCommand(
+            session,
+            'chmod 700 ${_shellQuote(temporaryExecutablePath)}',
+            priority: priority,
+          );
+        }
         if (!await _remoteShaMatches(
           session,
-          temporaryExecutablePath,
+          temporaryCommandPath,
           entry.sha256,
+          isWindows: isWindows,
           priority: priority,
         )) {
           throw const MonkeyMuxInstallException(
             'Uploaded MonkeyMux checksum verification failed.',
           );
         }
-        await _runRemoteCommand(
-          session,
-          'mv -f ${_shellQuote(temporaryExecutablePath)} '
-          '${_shellQuote(executablePath)}',
-          priority: priority,
-        );
+        if (isWindows) {
+          // cmd/PowerShell lack an atomic force-move, so replace via SFTP:
+          // drop any stale target, then rename the verified upload into place.
+          try {
+            await sftp.remove(executableSftpPath);
+          } on Object {
+            // The destination usually does not exist yet; ignore.
+          }
+          await sftp.rename(temporaryExecutablePath, executableSftpPath);
+        } else {
+          await _runRemoteCommand(
+            session,
+            'mv -f ${_shellQuote(temporaryExecutablePath)} '
+            '${_shellQuote(executableSftpPath)}',
+            priority: priority,
+          );
+        }
         movedTemporaryExecutable = true;
       } on Object catch (error, stackTrace) {
         if (!movedTemporaryExecutable) {
           await _removeRemoteTemporaryFile(
             session,
             temporaryExecutablePath,
+            sftp: sftp,
+            isWindows: isWindows,
             priority: priority,
           );
         }
@@ -421,6 +456,7 @@ class MonkeyMuxInstallerService {
         session,
         executablePath,
         entry.sha256,
+        isWindows: isWindows,
         priority: priority,
       )) {
         throw const MonkeyMuxInstallException(
@@ -448,20 +484,55 @@ class MonkeyMuxInstallerService {
     SshSession session, {
     SshExecPriority priority = SshExecPriority.low,
   }) async {
-    final output = await _runRemoteCommand(
-      session,
-      r'printf "%s\n%s\n" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"',
-      priority: priority,
+    final platform = _remoteBannerIndicatesWindows(session)
+        ? await _probeWindowsPlatform(session, priority: priority)
+        : await _probePosixPlatform(session, priority: priority);
+    DiagnosticsLogService.instance.info(
+      'monkeymux.install',
+      'platform_probe',
+      fields: {'connectionId': session.connectionId, 'platform': platform},
     );
+    return platform;
+  }
+
+  Future<String> _probePosixPlatform(
+    SshSession session, {
+    required SshExecPriority priority,
+  }) async {
+    String output;
+    try {
+      output = await _runRemoteCommand(
+        session,
+        r'printf "%s\n%s\n" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"',
+        priority: priority,
+      );
+    } on MonkeyMuxInstallException {
+      output = '';
+    }
+    final platform = _parsePosixPlatform(output);
+    if (platform != null) {
+      return platform;
+    }
+    // The POSIX probe produced nothing usable. The host may be a Windows SSH
+    // server whose banner did not identify itself, so fall back to a Windows
+    // probe that self-validates before being trusted.
+    final arch = await _probeWindowsArch(session, priority: priority);
+    if (arch != null) {
+      return 'windows-$arch';
+    }
+    throw const MonkeyMuxInstallException(
+      'Could not detect remote MonkeyMux platform.',
+    );
+  }
+
+  String? _parsePosixPlatform(String output) {
     final lines = output
         .split('\n')
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
     if (lines.length < 2) {
-      throw const MonkeyMuxInstallException(
-        'Could not detect remote MonkeyMux platform.',
-      );
+      return null;
     }
     final osName = switch (lines[0].toLowerCase()) {
       'darwin' => 'darwin',
@@ -473,13 +544,80 @@ class MonkeyMuxInstallerService {
       'aarch64' || 'arm64' => 'arm64',
       final value => value,
     };
-    final platform = '$osName-$arch';
-    DiagnosticsLogService.instance.info(
-      'monkeymux.install',
-      'platform_probe',
-      fields: {'connectionId': session.connectionId, 'platform': platform},
-    );
-    return platform;
+    if (osName.isEmpty || arch.isEmpty) {
+      return null;
+    }
+    return '$osName-$arch';
+  }
+
+  Future<String> _probeWindowsPlatform(
+    SshSession session, {
+    required SshExecPriority priority,
+  }) async {
+    final arch = await _probeWindowsArch(session, priority: priority);
+    return 'windows-${arch ?? 'amd64'}';
+  }
+
+  /// Detects the Windows CPU architecture. Returns `amd64`/`arm64`, or null when
+  /// the host does not look like Windows. Uses `cmd /c` so it works regardless
+  /// of whether the default remote shell is cmd.exe or PowerShell.
+  Future<String?> _probeWindowsArch(
+    SshSession session, {
+    required SshExecPriority priority,
+  }) async {
+    String output;
+    try {
+      output = await _runRawRemoteCommand(
+        session,
+        'cmd /c echo %OS% %PROCESSOR_ARCHITECTURE% %PROCESSOR_ARCHITEW6432%',
+        priority: priority,
+      );
+    } on Object {
+      return null;
+    }
+    final lower = output.toLowerCase();
+    if (!lower.contains('windows_nt')) {
+      return null;
+    }
+    if (lower.contains('arm64')) {
+      return 'arm64';
+    }
+    if (lower.contains('amd64') || lower.contains('x86_64')) {
+      return 'amd64';
+    }
+    return 'amd64';
+  }
+
+  bool _remoteBannerIndicatesWindows(SshSession session) {
+    final banner = session.client.remoteVersion;
+    if (banner == null) {
+      return false;
+    }
+    return banner.toLowerCase().contains('windows');
+  }
+
+  bool _isWindowsPlatform(String platform) => platform.startsWith('windows-');
+
+  /// Converts a Windows OpenSSH SFTP path (for example `/C:/Users/me/x.exe`)
+  /// into the native form a Windows shell expects (`C:\Users\me\x.exe`).
+  String _sftpPathToWindowsPath(String sftpPath) {
+    var normalized = sftpPath;
+    if (normalized.startsWith('/')) {
+      normalized = normalized.substring(1);
+    }
+    return normalized.replaceAll('/', r'\');
+  }
+
+  /// Extracts the SHA-256 digest from `certutil -hashfile` output, tolerating
+  /// the byte-spaced formatting older certutil versions emit.
+  String? _extractCertutilSha(String output) {
+    for (final line in const LineSplitter().convert(output)) {
+      final compact = line.replaceAll(RegExp(r'\s'), '').toLowerCase();
+      if (RegExp(r'^[0-9a-f]{64}$').hasMatch(compact)) {
+        return compact;
+      }
+    }
+    return null;
   }
 
   Future<Uint8List> _loadAssetBytes(MonkeyMuxManifestEntry entry) async {
@@ -507,9 +645,19 @@ class MonkeyMuxInstallerService {
     SshSession session,
     String executablePath,
     String expectedSha, {
+    required bool isWindows,
     required SshExecPriority priority,
   }) async {
     try {
+      if (isWindows) {
+        final output = await _runRawRemoteCommand(
+          session,
+          'certutil -hashfile "$executablePath" SHA256',
+          priority: priority,
+        );
+        final digest = _extractCertutilSha(output);
+        return digest != null && digest == expectedSha.toLowerCase();
+      }
       final output = await _runRemoteCommand(
         session,
         '(sha256sum ${_shellQuote(executablePath)} 2>/dev/null || '
@@ -526,9 +674,15 @@ class MonkeyMuxInstallerService {
   Future<void> _removeRemoteTemporaryFile(
     SshSession session,
     String remotePath, {
+    required SftpClient sftp,
+    required bool isWindows,
     required SshExecPriority priority,
   }) async {
     try {
+      if (isWindows) {
+        await sftp.remove(remotePath);
+        return;
+      }
       await _runRemoteCommand(
         session,
         'rm -f ${_shellQuote(remotePath)}',
@@ -604,6 +758,31 @@ Future<String> _runRemoteCommand(
   try {
     execSession.stderr.drain<void>().ignore();
     return await _readStdoutUntilMarker(execSession);
+  } finally {
+    execSession.close();
+  }
+}, priority: priority);
+
+/// Runs a command without the POSIX completion-marker wrapper, collecting stdout
+/// until the channel closes. Used for probes and Windows shells (cmd.exe /
+/// PowerShell) that cannot evaluate the POSIX marker script.
+Future<String> _runRawRemoteCommand(
+  SshSession session,
+  String command, {
+  SshExecPriority priority = SshExecPriority.normal,
+}) => session.runQueuedExec(() async {
+  final execSession = await session.execute(command);
+  try {
+    execSession.stderr.drain<void>().ignore();
+    final output = StringBuffer();
+    await for (final chunk
+        in execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .timeout(_monkeyMuxInstallTimeout)) {
+      output.write(chunk);
+    }
+    return output.toString();
   } finally {
     execSession.close();
   }

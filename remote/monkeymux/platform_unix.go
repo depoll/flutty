@@ -1,0 +1,299 @@
+//go:build !windows
+
+package main
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
+)
+
+// unixPty wraps a POSIX pseudo-terminal master file.
+type unixPty struct {
+	file *os.File
+}
+
+func (p *unixPty) Read(b []byte) (int, error)  { return p.file.Read(b) }
+func (p *unixPty) Write(b []byte) (int, error) { return p.file.Write(b) }
+func (p *unixPty) Close() error                { return p.file.Close() }
+
+func (p *unixPty) Resize(cols int, rows int) error {
+	return pty.Setsize(p.file, &pty.Winsize{
+		Rows: uint16(rows),
+		Cols: uint16(cols),
+	})
+}
+
+func (p *unixPty) Fd() uintptr { return p.file.Fd() }
+
+// unixProcess wraps the child process attached to a pty master.
+type unixProcess struct {
+	cmd *exec.Cmd
+}
+
+func (p *unixProcess) Pid() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
+func (p *unixProcess) Wait() error {
+	if p.cmd == nil {
+		return nil
+	}
+	return p.cmd.Wait()
+}
+
+func (p *unixProcess) Hangup() {
+	signalCommandProcessGroup(p.cmd, syscall.SIGHUP)
+}
+
+// startWindow launches cmd attached to a new pty sized to cols x rows.
+func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) {
+	file, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Rows: uint16(rows),
+		Cols: uint16(cols),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return &unixPty{file: file}, &unixProcess{cmd: cmd}, nil
+}
+
+// configureDetachedDaemon makes the serve daemon a new session leader so it
+// keeps running after the launching shell exits.
+func configureDetachedDaemon(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+// newRunCommand builds the bounded metadata command in its own process group so
+// it can be signaled as a group on timeout/cancel.
+func newRunCommand(command string) *exec.Cmd {
+	cmd := exec.Command(commandShellPath(), "-c", command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+func commandShellPath() string {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	switch filepath.Base(shell) {
+	case "sh", "bash", "zsh", "ksh", "dash":
+		return shell
+	default:
+		return "/bin/sh"
+	}
+}
+
+func killCommandProcessGroup(cmd *exec.Cmd) {
+	signalCommandProcessGroup(cmd, syscall.SIGKILL)
+}
+
+func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if cmd.Process.Pid > 0 {
+		_ = syscall.Kill(-cmd.Process.Pid, signal)
+	}
+	_ = cmd.Process.Signal(signal)
+}
+
+var signalForegroundResize = func(processGroup int) {
+	if processGroup <= 0 {
+		return
+	}
+	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+var foregroundProcessGroupForWindow = func(window *muxWindow) int {
+	if window == nil || window.pty == nil {
+		return 0
+	}
+	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgrp <= 0 {
+		return 0
+	}
+	return pgrp
+}
+
+func defaultShellPath() string {
+	shell := os.Getenv("SHELL")
+	if strings.TrimSpace(shell) == "" {
+		return "/bin/sh"
+	}
+	return shell
+}
+
+func shellCommand(shell string) *exec.Cmd {
+	cmd := exec.Command(shell)
+	if base := filepath.Base(shell); base != "" {
+		cmd.Args[0] = "-" + base
+	}
+	return cmd
+}
+
+func shellCommandForScript(shell string, command string) *exec.Cmd {
+	cmd := exec.Command(shell, "-i", "-c", command)
+	if base := filepath.Base(shell); base != "" {
+		cmd.Args[0] = "-" + base
+	}
+	return cmd
+}
+
+func readProcessTable() map[int]processInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(
+		ctx,
+		"ps",
+		"-eo",
+		"pid=,ppid=,pgid=,comm=,args=",
+	).Output()
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	processes := map[int]processInfo{}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		args := ""
+		if len(fields) > 4 {
+			args = strings.Join(fields[4:], " ")
+		}
+		processes[pid] = processInfo{
+			pid:  pid,
+			ppid: ppid,
+			pgid: pgid,
+			comm: fields[3],
+			args: args,
+		}
+	}
+	return processes
+}
+
+func commandNameForPID(pid int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=", "-o", "args=").Output()
+	if err == nil && ctx.Err() == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			if command := commandNameFromProcessFields(fields[0], strings.Join(fields[1:], " ")); command != "" {
+				return command
+			}
+		}
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), processMetadataTimeout)
+	defer cancel()
+	output, err = exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil || ctx.Err() != nil {
+		return ""
+	}
+	return cleanProcessCommandName(string(output))
+}
+
+// detectSystemMemoryBytes returns total physical memory in bytes, or 0 when it
+// cannot be determined on this platform.
+func detectSystemMemoryBytes() uint64 {
+	if bytes := readLinuxMemTotalBytes(); bytes > 0 {
+		return bytes
+	}
+	return readDarwinMemTotalBytes()
+}
+
+func readLinuxMemTotalBytes() uint64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "MemTotal:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			if kb, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				return kb * 1024
+			}
+		}
+		break
+	}
+	return 0
+}
+
+func readDarwinMemTotalBytes() uint64 {
+	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return 0
+	}
+	bytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return bytes
+}
+
+func terminalSize() (int, int) {
+	if size, err := pty.GetsizeFull(os.Stdin); err == nil && size.Cols > 0 && size.Rows > 0 {
+		return int(size.Cols), int(size.Rows)
+	}
+	columns, rows, err := term.GetSize(int(os.Stdin.Fd()))
+	if err == nil && columns > 0 && rows > 0 {
+		return columns, rows
+	}
+	return defaultColumns, defaultRows
+}
+
+func forwardResizeSignals(session string) func() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGWINCH)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-signals:
+				width, height := terminalSize()
+				sendResize(session, width, height)
+			case <-done:
+				return
+			}
+		}
+	}()
+	width, height := terminalSize()
+	sendResize(session, width, height)
+	return func() {
+		close(done)
+		signal.Stop(signals)
+	}
+}
