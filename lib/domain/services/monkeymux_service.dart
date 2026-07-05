@@ -89,10 +89,11 @@ String buildMonkeyMuxAttachCommand({
   String? terminalThemeReports,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
+  bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
   final parts = <String>[
-    _shellQuote(executablePath),
+    _monkeyMuxQuoteArg(executablePath, windows: windows),
     'attach',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
@@ -105,17 +106,17 @@ String buildMonkeyMuxAttachCommand({
     ],
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
-      _shellQuote(workingDirectory.trim()),
+      _monkeyMuxQuoteArg(workingDirectory.trim(), windows: windows),
     ],
     if (windowName != null && windowName.trim().isNotEmpty) ...[
       '--name',
-      _shellQuote(windowName.trim()),
+      _monkeyMuxQuoteArg(windowName.trim(), windows: windows),
     ],
     if (launchCommand != null && launchCommand.trim().isNotEmpty) ...[
       '--command',
-      _shellQuote(launchCommand.trim()),
+      _monkeyMuxQuoteArg(launchCommand.trim(), windows: windows),
     ],
-    _shellQuote(sessionName),
+    _monkeyMuxQuoteArg(sessionName, windows: windows),
   ];
   return parts.join(' ');
 }
@@ -511,9 +512,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
-    final controlCommand =
-        '${_shellQuote(installation.executablePath)} control --json '
-        '${_shellQuote(sessionName)}';
+    final controlCommand = _buildMonkeyMuxControlCommand(
+      installation,
+      sessionName,
+    );
     try {
       return await session.runQueuedExec(
         () => _readRunningServerStatus(session, controlCommand),
@@ -538,6 +540,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    if (session.remoteIsWindows) {
+      // This best-effort pre-install probe relies on a POSIX shell glob loop
+      // that Windows shells cannot evaluate. Skip it; the version-specific
+      // status probe (runningServerStatus) runs after install with the correct
+      // Windows quoting, and `attach` still negotiates version mismatches.
+      return null;
+    }
     final command =
         r'for helper in "$HOME"/.monkeyssh/bin/monkeymux/*/*/monkeymux; do '
         r'[ -x "$helper" ] || continue; '
@@ -577,9 +586,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       session,
       priority: priority,
     );
-    final controlCommand =
-        '${_shellQuote(installation.executablePath)} control --json '
-        '${_shellQuote(sessionName)}';
+    final controlCommand = _buildMonkeyMuxControlCommand(
+      installation,
+      sessionName,
+    );
     final commandId = DateTime.now().microsecondsSinceEpoch.toString();
     final request = <String, Object?>{'id': commandId, ...command};
     return session.runQueuedExec(
@@ -1126,9 +1136,7 @@ class _MonkeyMuxWindowChangeObserver {
         session,
       );
       if (_disposed) return;
-      final command =
-          '${_shellQuote(installation.executablePath)} control --json '
-          '${_shellQuote(sessionName)}';
+      final command = _buildMonkeyMuxControlCommand(installation, sessionName);
       final controlSession = await session.execute(command);
       if (_disposed) {
         await _closeControlSession(controlSession, operation: 'start_disposed');
@@ -1545,3 +1553,71 @@ String? _nonEmpty(String? value) {
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
+
+/// Quotes a single MonkeyMux command argument for the remote shell. POSIX hosts
+/// use single-quote escaping; Windows hosts use [_windowsQuoteArg], which
+/// follows the CommandLineToArgvW parsing rules so embedded quotes and trailing
+/// backslashes survive (helper path, session name, working directory, launch
+/// command).
+String _monkeyMuxQuoteArg(String value, {required bool windows}) =>
+    windows ? _windowsQuoteArg(value) : _shellQuote(value);
+
+/// Quotes [value] as a single Windows argument following the
+/// CommandLineToArgvW / C runtime rules (the same algorithm as Go's
+/// `syscall.EscapeArg`). Backslashes are only significant immediately before a
+/// double quote, and a run of backslashes preceding a quote (or the closing
+/// quote) is doubled. This correctly handles values containing spaces, embedded
+/// double quotes (for example `python -c "print(1)"`) and trailing backslashes
+/// (for example `C:\src\`), which naive `"$value"` wrapping would corrupt.
+String _windowsQuoteArg(String value) {
+  if (value.isEmpty) {
+    return '""';
+  }
+  var needsQuotes = false;
+  for (var i = 0; i < value.length; i++) {
+    final unit = value.codeUnitAt(i);
+    if (unit == 0x20 || unit == 0x09) {
+      needsQuotes = true;
+      break;
+    }
+  }
+  final buffer = StringBuffer();
+  if (needsQuotes) {
+    buffer.write('"');
+  }
+  var backslashes = 0;
+  for (var i = 0; i < value.length; i++) {
+    final unit = value.codeUnitAt(i);
+    switch (unit) {
+      case 0x5c: // backslash
+        backslashes++;
+        buffer.writeCharCode(unit);
+      case 0x22: // double quote
+        buffer
+          ..write(r'\' * (backslashes + 1))
+          ..writeCharCode(unit);
+        backslashes = 0;
+      default:
+        backslashes = 0;
+        buffer.writeCharCode(unit);
+    }
+  }
+  if (needsQuotes) {
+    buffer
+      ..write(r'\' * backslashes)
+      ..write('"');
+  }
+  return buffer.toString();
+}
+
+/// Builds the `<helper> control --json <session>` command for an installation,
+/// quoting for the installed platform's shell.
+String _buildMonkeyMuxControlCommand(
+  MonkeyMuxInstallation installation,
+  String sessionName,
+) {
+  final windows = installation.isWindows;
+  return '${_monkeyMuxQuoteArg(installation.executablePath, windows: windows)} '
+      'control --json '
+      '${_monkeyMuxQuoteArg(sessionName, windows: windows)}';
+}

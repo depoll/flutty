@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 import (
@@ -31,7 +33,7 @@ func replayPostHistorySuffixForTest(cursorVisible bool) string {
 		cursorVisibilityReplaySequence(cursorVisible)
 }
 
-func openTestPty(t *testing.T) *os.File {
+func openTestPty(t *testing.T) muxPty {
 	t.Helper()
 	ptmx, tty, err := pty.Open()
 	if err != nil {
@@ -41,11 +43,29 @@ func openTestPty(t *testing.T) *os.File {
 		_ = ptmx.Close()
 		_ = tty.Close()
 	})
-	return ptmx
+	return &unixPty{file: ptmx}
 }
 
-func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
+// wrapPty adapts a raw *os.File (typically an os.Pipe writer) to the muxPty
+// interface used by muxWindow in tests.
+func wrapPty(file *os.File) muxPty {
+	return &unixPty{file: file}
+}
+
+// ptyFile extracts the underlying *os.File from a test muxPty for direct pty
+// ioctls in assertions.
+func ptyFile(t *testing.T, p muxPty) *os.File {
 	t.Helper()
+	up, ok := p.(*unixPty)
+	if !ok {
+		t.Fatalf("pty %T is not a *unixPty", p)
+	}
+	return up.file
+}
+
+func assertPtySize(t *testing.T, p muxPty, columns int, rows int) {
+	t.Helper()
+	file := ptyFile(t, p)
 	size, err := pty.GetsizeFull(file)
 	if err != nil {
 		t.Fatal(err)
@@ -61,8 +81,9 @@ func assertPtySize(t *testing.T, file *os.File, columns int, rows int) {
 	}
 }
 
-func assertPtySizeEventually(t *testing.T, file *os.File, columns int, rows int) {
+func assertPtySizeEventually(t *testing.T, p muxPty, columns int, rows int) {
 	t.Helper()
+	file := ptyFile(t, p)
 	deadline := time.Now().Add(250 * time.Millisecond)
 	var lastSize *pty.Winsize
 	var lastErr error
@@ -90,8 +111,9 @@ func assertPtySizeEventually(t *testing.T, file *os.File, columns int, rows int)
 	)
 }
 
-func setPtySize(t *testing.T, file *os.File, columns int, rows int) {
+func setPtySize(t *testing.T, p muxPty, columns int, rows int) {
 	t.Helper()
+	file := ptyFile(t, p)
 	if err := pty.Setsize(file, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(columns),
@@ -834,7 +856,7 @@ func TestAttachRefreshesFocusAwareThemeHint(t *testing.T) {
 		id:                "@1",
 		index:             0,
 		foregroundCommand: "unknown-tui",
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 		lastActivity:      time.Now(),
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
@@ -1289,7 +1311,7 @@ func TestAttachInputDropsFocusReportsUntilActiveWindowEnablesFocus(t *testing.T)
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	window := &muxWindow{id: "@1", index: 0, pty: writer, lastActivity: time.Now()}
+	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(writer), lastActivity: time.Now()}
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 
@@ -1317,7 +1339,7 @@ func TestAttachInputPreservesFocusReportsForActiveFocusAwareWindow(t *testing.T)
 	window := &muxWindow{
 		id:               "@1",
 		index:            0,
-		pty:              writer,
+		pty:              wrapPty(writer),
 		lastActivity:     time.Now(),
 		focusModeEnabled: true,
 	}
@@ -2167,7 +2189,7 @@ func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 		lastActivity:      time.Now(),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -2217,7 +2239,7 @@ func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 		lastActivity:      time.Now(),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -3234,7 +3256,9 @@ func TestActiveReplayTerminatesUnfinishedControlStringAfterHistory(t *testing.T)
 }
 
 func TestWindowProcessIDReportsShellPid(t *testing.T) {
-	window := &muxWindow{cmd: &exec.Cmd{Process: &os.Process{Pid: 12345}}}
+	window := &muxWindow{
+		proc: &unixProcess{cmd: &exec.Cmd{Process: &os.Process{Pid: 12345}}},
+	}
 
 	if got := window.processID(); got != 12345 {
 		t.Fatalf("processID = %d, want 12345", got)
@@ -4339,7 +4363,7 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 		themeColorQueryPid:         42,
 		themeColorQueryKeys:        map[string]bool{"11": true},
 		lastProcessMetadataRefresh: time.Now(),
-		pty:                        inputWriter,
+		pty:                        wrapPty(inputWriter),
 	}
 	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
 		if candidate == window {
@@ -4379,7 +4403,7 @@ func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
@@ -4426,7 +4450,7 @@ func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
@@ -4471,7 +4495,7 @@ func TestThemeHintAnswersFuturePaletteQuery(t *testing.T) {
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 	}
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
 	defer func() {
@@ -4514,7 +4538,7 @@ func TestThemeHintDoesNotSendBackgroundReportWithoutQuery(t *testing.T) {
 		_ = inputWriter.Close()
 	})
 
-	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: inputWriter}
+	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: wrapPty(inputWriter)}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
@@ -4553,7 +4577,7 @@ func TestThemeHintDoesNotPushUnsolicitedColorReportsToFocusAwareTui(t *testing.T
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
@@ -4610,7 +4634,7 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 			window := &muxWindow{
 				id:                "@1",
 				foregroundCommand: tt.command,
-				pty:               inputWriter,
+				pty:               wrapPty(inputWriter),
 			}
 			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 			server := newMuxServer("test")
@@ -4671,7 +4695,7 @@ func TestThemeHintDoesNotSignalResizeRedraw(t *testing.T) {
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "codex",
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 	}
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 	server := newMuxServer("test")
@@ -4736,7 +4760,7 @@ func TestThemeHintReSendsObservedPaletteReportsToColorSchemeUpdatesTui(t *testin
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
-		pty:               inputWriter,
+		pty:               wrapPty(inputWriter),
 	}
 	foregroundProcessGroup := 42
 	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
@@ -4800,7 +4824,7 @@ func TestThemeHintIgnoresWindowsWithoutThemeCapabilities(t *testing.T) {
 		_ = inputWriter.Close()
 	})
 
-	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: inputWriter}
+	window := &muxWindow{id: "@1", foregroundCommand: "zsh", pty: wrapPty(inputWriter)}
 	server := newMuxServer("test")
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
