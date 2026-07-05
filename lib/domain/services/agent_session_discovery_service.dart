@@ -941,14 +941,46 @@ String? _trimWorkingDirectory(String? value) {
   return withoutTrailingSlash.replaceAll(RegExp('/+'), '/');
 }
 
+/// Matches a Windows-style absolute path (`C:\...`, `C:/...`, or the OSC/file
+/// URI `/C:/...` form).
+final _windowsWorkingDirectoryPattern = RegExp(r'^/?[A-Za-z]:[\\/]');
+
+/// Matches a single backslash.
+final _backslashPattern = RegExp(r'\\');
+
+/// Whether [path] looks like a Windows path (drive-letter root or containing a
+/// backslash separator) rather than a POSIX path.
+bool _looksLikeWindowsPath(String path) {
+  final trimmed = path.trim();
+  return _windowsWorkingDirectoryPattern.hasMatch(trimmed) ||
+      _backslashPattern.hasMatch(trimmed);
+}
+
+/// Normalizes a Windows working directory to a canonical comparable form:
+/// forward slashes, the `/C:/…` URI form reduced to `C:/…`, and lower-cased
+/// (Windows paths are case-insensitive). POSIX paths pass through unchanged.
+String _normalizeWindowsWorkingDirectory(String value) {
+  var result = value.trim().replaceFirstMapped(
+    RegExp('^/([A-Za-z]:)'),
+    (match) => match[1]!,
+  );
+  if (_looksLikeWindowsPath(result)) {
+    result = result.replaceAll(_backslashPattern, '/').toLowerCase();
+  }
+  return result;
+}
+
 /// Normalizes a working directory for cross-worktree comparisons.
 ///
 /// Paths under `repo.worktrees/<branch>/...` are normalized to `repo/...` so
 /// sessions from sibling checkouts can still match the active project scope.
+/// Windows paths are canonicalized (forward slashes, lower-cased, `/C:/`→`C:/`)
+/// so backslash/drive-case/URI variants of the same directory still match.
 @visibleForTesting
 String normalizeWorkingDirectoryForComparison(String value) {
-  final trimmed = _trimWorkingDirectory(value);
-  if (trimmed == null) return value.trim();
+  final windowsNormalized = _normalizeWindowsWorkingDirectory(value);
+  final trimmed = _trimWorkingDirectory(windowsNormalized);
+  if (trimmed == null) return windowsNormalized;
 
   final segments = trimmed.split('/');
   final normalizedSegments = <String>[];
@@ -1797,8 +1829,12 @@ class AgentSessionDiscoveryService {
 
   /// Builds the shell command to resume a specific session.
   ///
-  /// If the session has a [ToolSessionInfo.workingDirectory], the command
-  /// `cd`s there first so the CLI finds its project context.
+  /// If the session has a POSIX [ToolSessionInfo.workingDirectory], the command
+  /// `cd`s there first so the CLI finds its project context. Windows working
+  /// directories are omitted from the command — `cd '<path>' && <resume>` fails
+  /// on cmd.exe (single quotes are literal) and PowerShell 5.1 (no `&&`) — and
+  /// are instead applied via the new window's working directory, which every
+  /// caller passes separately.
   String buildResumeCommand(
     ToolSessionInfo info, {
     bool startInYoloMode = false,
@@ -1813,7 +1849,7 @@ class AgentSessionDiscoveryService {
           );
 
     final dir = info.workingDirectory;
-    if (dir != null && dir.isNotEmpty) {
+    if (dir != null && dir.isNotEmpty && !_looksLikeWindowsPath(dir)) {
       return 'cd ${_shellQuote(dir)} && $resume';
     }
     return resume;
@@ -3362,16 +3398,8 @@ print(json.dumps(sessions))
       return const <String, _RemoteFileSnapshot>{};
     }
     final snapshots = <String, _RemoteFileSnapshot>{};
-    for (
-      var start = 0;
-      start < uniquePaths.length;
-      start += _remoteFileSnapshotBatchSize
-    ) {
-      final batchPaths = uniquePaths
-          .skip(start)
-          .take(_remoteFileSnapshotBatchSize)
-          .toList(growable: false);
-      if (session.remoteIsWindows) {
+    if (session.remoteIsWindows) {
+      for (final batchPaths in windowsSnapshotPathBatches(uniquePaths)) {
         final output = await _execWindowsPowerShell(
           session,
           windowsFileSnapshotScript(
@@ -3382,8 +3410,18 @@ print(json.dumps(sessions))
           ),
         );
         snapshots.addAll(await _parseRemoteFileSnapshotOutput(output));
-        continue;
       }
+      return snapshots;
+    }
+    for (
+      var start = 0;
+      start < uniquePaths.length;
+      start += _remoteFileSnapshotBatchSize
+    ) {
+      final batchPaths = uniquePaths
+          .skip(start)
+          .take(_remoteFileSnapshotBatchSize)
+          .toList(growable: false);
       final command = StringBuffer()
         ..write(r'SEP=$(printf "\037"); ')
         ..write(
@@ -3926,10 +3964,42 @@ String windowsTailFileScript({
     ..write(r'if(Test-Path -LiteralPath $__flPath -PathType Leaf){')
     ..write(r'$__flLines=@(Get-Content -LiteralPath $__flPath -Tail ')
     ..write('$lines')
-    ..write(r' 2>$null);')
+    ..write(r' -Encoding UTF8 2>$null);')
     ..write(r'foreach($__flL in $__flLines){[void]$__flOut.Append($__flL);')
     ..write(r'[void]$__flOut.Append([char]10)}}');
   return powerShellUtf8OutputScript(body.toString());
+}
+
+/// Splits [paths] into snapshot batches whose generated PowerShell stays well
+/// under cmd.exe's ~8191-character command-line limit once wrapped as
+/// `powershell -EncodedCommand` (base64 of the UTF-16LE script roughly triples
+/// its length, and Windows OpenSSH runs exec commands via `cmd.exe /c`). Each
+/// batch also respects [_remoteFileSnapshotBatchSize].
+@visibleForTesting
+List<List<String>> windowsSnapshotPathBatches(List<String> paths) {
+  // Keep the summed quoted-path length per batch small enough that the
+  // fixed-overhead script (~700 chars) plus paths stays under ~2600 chars, so
+  // its base64 payload stays well below 8191.
+  const maxBatchPathChars = 1800;
+  final batches = <List<String>>[];
+  var current = <String>[];
+  var currentChars = 0;
+  for (final path in paths) {
+    final pathChars = path.length + 4;
+    if (current.isNotEmpty &&
+        (current.length >= _remoteFileSnapshotBatchSize ||
+            currentChars + pathChars > maxBatchPathChars)) {
+      batches.add(current);
+      current = <String>[];
+      currentChars = 0;
+    }
+    current.add(path);
+    currentChars += pathChars;
+  }
+  if (current.isNotEmpty) {
+    batches.add(current);
+  }
+  return batches;
 }
 
 /// Builds a PowerShell script that emits `path\x1f mtime \x1f base64` snapshot
@@ -3973,8 +4043,8 @@ String windowsFileSnapshotScript(
     body
       ..write(
         tail
-            ? '\$__flLines=@(Get-Content -LiteralPath \$p -Tail $maxLines 2>\$null);'
-            : '\$__flLines=@(Get-Content -LiteralPath \$p -TotalCount $maxLines 2>\$null);',
+            ? '\$__flLines=@(Get-Content -LiteralPath \$p -Tail $maxLines -Encoding UTF8 2>\$null);'
+            : '\$__flLines=@(Get-Content -LiteralPath \$p -TotalCount $maxLines -Encoding UTF8 2>\$null);',
       )
       ..write(r'$__flText=[string]::Join([char]10,$__flLines);')
       ..write(r'$__flB64=[Convert]::ToBase64String(')

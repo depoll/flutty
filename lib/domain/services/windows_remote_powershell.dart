@@ -47,11 +47,19 @@ String buildWindowsPowerShellCommand(String script) =>
 /// Quotes [value] as a single-quoted PowerShell string literal.
 ///
 /// PowerShell single-quoted strings are literal (no interpolation or escape
-/// sequences), so only the single-quote character needs escaping by doubling it.
-/// This is the safe way to embed remote paths, globs, and completion tokens into
-/// a generated script.
-String powerShellSingleQuote(String value) =>
-    "'${value.replaceAll("'", "''")}'";
+/// sequences). However, PowerShell's tokenizer treats not only the ASCII
+/// apostrophe (U+0027) but also U+2018, U+2019, U+201A and U+201B as
+/// single-quote delimiters, and all of them are valid in Windows file names. To
+/// keep embedding remote paths/globs/tokens injection-safe (a lone curly quote
+/// in a filename would otherwise close the literal early and let the remainder
+/// execute as code), every quote variant PowerShell recognizes is doubled.
+String powerShellSingleQuote(String value) {
+  final escaped = value.replaceAllMapped(
+    RegExp('[\u0027\u2018\u2019\u201a\u201b]'),
+    (match) => '${match[0]}${match[0]}',
+  );
+  return "'$escaped'";
+}
 
 /// PowerShell statements that begin a UTF-8 buffered-output script.
 ///
