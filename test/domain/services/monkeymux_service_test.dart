@@ -77,25 +77,36 @@ void main() {
       );
     });
 
-    test('double-quotes arguments for Windows helpers', () {
+    test('escapes arguments for Windows argv parsing', () {
       final command = buildMonkeyMuxAttachCommand(
-        executablePath:
-            r'C:\Users\me\.monkeyssh\bin\monkeymux\0.1.87\windows-amd64\monkeymux.exe',
+        executablePath: r'C:\Program Files\mm\monkeymux.exe',
         sessionName: 'workspace',
-        workingDirectory: r'C:\src\my app',
+        workingDirectory: r'C:\src\my app\',
         windowName: 'Codex agent',
-        launchCommand: 'codex --yolo',
+        launchCommand: 'python -c "print(1)"',
         serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
         windows: true,
       );
 
+      // Values with spaces are wrapped in double quotes; a trailing backslash
+      // before the closing quote is doubled and embedded quotes are
+      // backslash-escaped so CommandLineToArgvW recovers the exact argument.
       expect(
         command,
-        r'"C:\Users\me\.monkeyssh\bin\monkeymux\0.1.87\windows-amd64\'
-        'monkeymux.exe" attach --update-policy never '
-        r'--cwd "C:\src\my app" --name "Codex agent" '
-        '--command "codex --yolo" "workspace"',
+        r'"C:\Program Files\mm\monkeymux.exe" attach --update-policy never '
+        r'--cwd "C:\src\my app\\" --name "Codex agent" '
+        r'--command "python -c \"print(1)\"" workspace',
       );
+    });
+
+    test('leaves space-free Windows arguments unquoted', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: r'C:\mm\monkeymux.exe',
+        sessionName: 'work',
+        windows: true,
+      );
+
+      expect(command, r'C:\mm\monkeymux.exe attach work');
     });
   });
 

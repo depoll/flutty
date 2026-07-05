@@ -2791,6 +2791,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var redrawWindow *muxWindow
 	var redrew bool
 	var shouldShutdown bool
+	var windowPty muxPty
 
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -2802,7 +2803,11 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
-	_ = window.pty.Close()
+	// Capture the pty and close it after releasing s.mu (see below): on Windows
+	// muxPty.Close() calls ClosePseudoConsole, which blocks until the output
+	// pipe is drained by readWindow -> handleWindowOutput, and that reader needs
+	// s.mu. Closing under the lock would deadlock the whole server.
+	windowPty = window.pty
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		s.activeID = ""
@@ -2827,6 +2832,13 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		redrew = s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
 	}
 	s.attachMu.Unlock()
+
+	// Now that s.mu/s.attachMu are released, tear down the pty. On Windows this
+	// blocks until readWindow drains the final ConPTY output (which needs s.mu),
+	// so it must happen after unlocking.
+	if windowPty != nil {
+		_ = windowPty.Close()
+	}
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",

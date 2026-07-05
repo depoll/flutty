@@ -21,6 +21,28 @@ import (
 // ConPTY (pseudo console) APIs used by MonkeyMux on Windows.
 const conPtyMinimumBuild = 17763
 
+// conPtyMaxDimension bounds pseudo console dimensions so the int->int16
+// conversion for windows.Coord can never wrap into a negative or zero value
+// (which ConPTY rejects). Real terminals are far smaller than this.
+const conPtyMaxDimension = 0x7fff
+
+// conPtyCoord clamps cols/rows into the valid positive int16 range and returns
+// the corresponding windows.Coord. Callers pass raw dimensions from control and
+// attach messages, which are only validated as > 0 upstream.
+func conPtyCoord(cols int, rows int) windows.Coord {
+	return windows.Coord{X: clampConPtyDimension(cols), Y: clampConPtyDimension(rows)}
+}
+
+func clampConPtyDimension(value int) int16 {
+	if value < 1 {
+		return 1
+	}
+	if value > conPtyMaxDimension {
+		return conPtyMaxDimension
+	}
+	return int16(value)
+}
+
 // winPty wraps a Windows pseudo console (ConPTY) and the two pipe endpoints the
 // parent uses to talk to the attached child process.
 type winPty struct {
@@ -45,10 +67,7 @@ func (p *winPty) Resize(cols int, rows int) error {
 	if p.closed {
 		return nil
 	}
-	return windows.ResizePseudoConsole(
-		p.hpc,
-		windows.Coord{X: int16(cols), Y: int16(rows)},
-	)
+	return windows.ResizePseudoConsole(p.hpc, conPtyCoord(cols, rows))
 }
 
 func (p *winPty) Fd() uintptr { return 0 }
@@ -198,7 +217,7 @@ func startConPty(
 		windows.CloseHandle(cmdOut)
 	}
 
-	size := windows.Coord{X: int16(cols), Y: int16(rows)}
+	size := conPtyCoord(cols, rows)
 	if err = windows.CreatePseudoConsole(size, ptyIn, ptyOut, 0, &hpcon); err != nil {
 		closeAll()
 		err = fmt.Errorf("create pseudo console: %w", err)
