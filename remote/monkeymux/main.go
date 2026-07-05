@@ -4913,10 +4913,6 @@ func computeKittyImageGlobalBudgetBytes() int {
 	return budget
 }
 
-// detectSystemMemoryBytes returns total physical memory in bytes, or 0 when it
-// cannot be determined on this platform. The implementation is platform
-// specific (see platform_unix.go / platform_windows.go).
-
 // kittyImageReplayLocked returns the most-recent retained image transmissions,
 // bounded by count and bytes, so a reattaching client repopulates the images
 // most likely still on screen without decoding many megabytes on its UI thread.
