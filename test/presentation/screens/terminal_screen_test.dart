@@ -6542,6 +6542,13 @@ void main() {
           isNotEmpty,
         );
         expect(tester.testTextInput.isVisible, isTrue);
+
+        // The toggle must reactively flip to "hide" once the keyboard is shown,
+        // even though the (stale) bottom inset never changed, so a second tap
+        // hides the keyboard instead of re-showing it.
+        await tester.pump();
+        expect(find.byTooltip('Hide system keyboard'), findsOneWidget);
+        expect(find.byTooltip('Show system keyboard'), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

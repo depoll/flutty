@@ -3215,6 +3215,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
+  bool _keyboardVisibilityRebuildScheduled = false;
   final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
@@ -4072,6 +4073,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
+    _terminalTextInputController.addListener(
+      _handleTerminalKeyboardVisibilityChanged,
+    );
     unawaited(_refreshKeyboardToolbarSnippetMenu());
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
@@ -10113,6 +10117,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _doneSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
+    _terminalTextInputController
+      ..removeListener(_handleTerminalKeyboardVisibilityChanged)
+      ..dispose();
     _toolbarController.dispose();
     super.dispose();
   }
@@ -10601,6 +10608,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
       ),
     );
+  }
+
+  // Rebuilds so the keyboard toggle button reflects the current
+  // input-connection state even when the platform bottom inset does not change
+  // (e.g. a stale inset equal to the keyboard height). Deferred to a post-frame
+  // callback so it is safe to trigger from focus/build-phase changes.
+  void _handleTerminalKeyboardVisibilityChanged() {
+    if (_keyboardVisibilityRebuildScheduled || !mounted) {
+      return;
+    }
+    _keyboardVisibilityRebuildScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _keyboardVisibilityRebuildScheduled = false;
+      if (mounted) {
+        setState(() {});
+      }
+    });
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.
