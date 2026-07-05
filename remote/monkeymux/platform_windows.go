@@ -254,6 +254,13 @@ func startConPty(
 	var startupInfo windows.StartupInfoEx
 	startupInfo.ProcThreadAttributeList = attrs.List()
 	startupInfo.Cb = uint32(unsafe.Sizeof(startupInfo))
+	// STARTF_USESTDHANDLES stops the child from inheriting the parent's real
+	// std handles. Without it, a server launched over an SSH exec channel (whose
+	// stdin is an already-closed/EOF pipe, or NUL when detached) leaks those
+	// handles to the shell, which then reads EOF at its first prompt and exits
+	// immediately. With the flag set and the std handles left zero, the pseudo
+	// console attribute connects the child's stdio to the ConPTY instead.
+	startupInfo.Flags |= windows.STARTF_USESTDHANDLES
 
 	commandLinePtr, cmdErr := windows.UTF16PtrFromString(commandLine)
 	if cmdErr != nil {
@@ -291,11 +298,15 @@ func startConPty(
 	}
 
 	var procInfo windows.ProcessInformation
+	// Inheritable security attributes match the reference ConPTY launchers
+	// (aymanbagabas/go-pty); the pseudo console attribute wires the child stdio.
+	secAttr := &windows.SecurityAttributes{InheritHandle: 1}
+	secAttr.Length = uint32(unsafe.Sizeof(*secAttr))
 	if err = windows.CreateProcess(
 		nil,
 		commandLinePtr,
-		nil,
-		nil,
+		secAttr,
+		secAttr,
 		false,
 		creationFlags,
 		envBlock,
