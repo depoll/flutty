@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
@@ -39,6 +40,43 @@ void main() {
     test('wraps in single quotes and doubles embedded quotes', () {
       expect(powerShellSingleQuote('plain'), "'plain'");
       expect(powerShellSingleQuote("it's"), "'it''s'");
+    });
+
+    test('doubles every PowerShell single-quote variant (injection-safe)', () {
+      // U+2018/2019/201A/201B are also single-quote delimiters in PowerShell's
+      // tokenizer; a lone one would otherwise let the remainder execute.
+      expect(powerShellSingleQuote('a\u2019b'), "'a\u2019\u2019b'");
+      expect(powerShellSingleQuote('a\u2018b'), "'a\u2018\u2018b'");
+      expect(powerShellSingleQuote('a\u201ab'), "'a\u201a\u201ab'");
+      expect(powerShellSingleQuote('a\u201bb'), "'a\u201b\u201bb'");
+      final payload = powerShellSingleQuote('\u2019; Write-Output x; \u2018');
+      expect(payload, "'\u2019\u2019; Write-Output x; \u2018\u2018'");
+    });
+  });
+
+  group('windowsSnapshotPathBatches', () {
+    test('bounds each batch by path-length and count', () {
+      final paths = List.generate(
+        60,
+        (i) =>
+            'C:/Users/x/.codex/sessions/2026/07/05/rollout-$i-'
+            '${'a' * 40}.jsonl',
+      );
+      final batches = windowsSnapshotPathBatches(paths);
+      expect(batches.length, greaterThan(1));
+      for (final batch in batches) {
+        expect(batch.length, lessThanOrEqualTo(40));
+        final chars = batch.fold<int>(0, (sum, p) => sum + p.length + 4);
+        expect(chars, lessThanOrEqualTo(1800));
+      }
+      expect(batches.expand((b) => b).toList(), paths);
+    });
+
+    test('keeps a single over-long path in its own batch', () {
+      final paths = ['C:/${'a' * 3000}.jsonl'];
+      final batches = windowsSnapshotPathBatches(paths);
+      expect(batches, hasLength(1));
+      expect(batches.first, paths);
     });
   });
 
@@ -94,7 +132,12 @@ void main() {
       );
       expect(script, contains(r'Join-Path $env:USERPROFILE'));
       expect(script, contains("'.claude/history.jsonl'"));
-      expect(script, contains(r'Get-Content -LiteralPath $__flPath -Tail 200'));
+      expect(
+        script,
+        contains(
+          r'Get-Content -LiteralPath $__flPath -Tail 200 -Encoding UTF8',
+        ),
+      );
     });
   });
 
@@ -119,13 +162,13 @@ void main() {
       final head = windowsFileSnapshotScript(const [
         'C:/x/y.jsonl',
       ], maxLines: 80);
-      expect(head, contains('-TotalCount 80'));
+      expect(head, contains('-TotalCount 80 -Encoding UTF8'));
       final tail = windowsFileSnapshotScript(
         const ['C:/x/y.jsonl'],
         maxLines: 80,
         tail: true,
       );
-      expect(tail, contains('-Tail 80'));
+      expect(tail, contains('-Tail 80 -Encoding UTF8'));
     });
   });
 
@@ -161,6 +204,70 @@ void main() {
       expect(script, contains("Append('directory')"));
       expect(script, contains("Append('file')"));
     });
+
+    test('escapes wildcard tokens and handles drive roots', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'type C:/Us',
+        cursorOffset: 10,
+        token: 'C:/Us',
+        tokenStart: 5,
+        mode: ShellCompletionMode.path,
+        workingDirectory: r'C:\Users\x',
+      );
+      final script = buildWindowsShellCompletionScript(invocation);
+      // Wildcard chars in the token must be escaped before -like/-Name.
+      expect(script, contains('WildcardPattern]::Escape'));
+      expect(script, isNot(contains(r"-like ($__flBase+'*')")));
+      // A drive-letter directory must keep its trailing slash for Get-ChildItem.
+      expect(script, contains(r"$__flDir -match '^[A-Za-z]:$'"));
+    });
+  });
+
+  group('escapeWindowsCompletionToken', () {
+    test('quotes only values with spaces or metacharacters', () {
+      expect(escapeWindowsCompletionToken('git'), 'git');
+      expect(escapeWindowsCompletionToken('src/main.dart'), 'src/main.dart');
+      expect(
+        escapeWindowsCompletionToken('C:/Program Files'),
+        '"C:/Program Files"',
+      );
+      expect(escapeWindowsCompletionToken(''), '""');
+    });
+  });
+
+  group('windows working-directory + resume', () {
+    test('normalizes Windows working directories for comparison', () {
+      expect(
+        normalizeWorkingDirectoryForComparison(r'C:\Proj\App'),
+        normalizeWorkingDirectoryForComparison('C:/proj/app'),
+      );
+      expect(normalizeWorkingDirectoryForComparison('/C:/Proj'), 'c:/proj');
+      // POSIX paths keep their case.
+      expect(
+        normalizeWorkingDirectoryForComparison('/home/User/Proj'),
+        '/home/User/Proj',
+      );
+    });
+
+    test('buildResumeCommand omits cd for Windows working directories', () {
+      final service = AgentSessionDiscoveryService();
+      final windows = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: 's',
+        workingDirectory: r'C:\proj',
+        summary: 'x',
+        lastActive: DateTime(2026),
+      );
+      expect(service.buildResumeCommand(windows), isNot(contains('cd ')));
+      final posix = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: 's',
+        workingDirectory: '/home/u/proj',
+        summary: 'x',
+        lastActive: DateTime(2026),
+      );
+      expect(service.buildResumeCommand(posix), startsWith('cd '));
+    });
   });
 
   group('buildWindowsShellHistoryScript', () {
@@ -180,7 +287,9 @@ void main() {
       expect(script, contains("Append('bash')"));
       expect(
         script,
-        contains(r'Get-Content -LiteralPath $__flHist -Tail 1200'),
+        contains(
+          r'Get-Content -LiteralPath $__flHist -Tail 1200 -Encoding UTF8',
+        ),
       );
     });
   });
