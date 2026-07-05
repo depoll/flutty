@@ -23,6 +23,7 @@ import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 import '../presentation/screens/upgrade_screen.dart';
+import 'keyboard_dismiss_route_observer.dart';
 import 'routes.dart';
 import 'telemetry_route_observer.dart';
 
@@ -42,7 +43,10 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: appNavigatorKey,
     initialLocation: '/',
-    observers: [TelemetryRouteObserver(telemetryService: telemetryService)],
+    observers: [
+      TelemetryRouteObserver(telemetryService: telemetryService),
+      KeyboardDismissRouteObserver(),
+    ],
     redirect: (context, state) => redirectForAuthState(
       authState: authState,
       matchedLocation: state.matchedLocation,
