@@ -7740,6 +7740,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Host host,
     String sessionName,
   ) async {
+    // Windows remotes run cmd.exe/PowerShell, which host neither tmux nor the
+    // POSIX MonkeyMux helper (installed via uname/chmod). Skip the mux attach so
+    // the session falls back to a plain interactive shell instead of failing.
+    if (session.remoteIsWindows) {
+      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+      return null;
+    }
     final configuredBackend =
         _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
     if (configuredBackend == RemoteMuxBackend.monkeyMux ||
@@ -8012,6 +8019,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Host host,
     AgentLaunchPreset preset,
   ) async {
+    // MonkeyMux relies on a POSIX helper binary that isn't installed on Windows
+    // remotes; skip the launch so the agent falls back to a plain shell.
+    if (session.remoteIsWindows) {
+      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+      return null;
+    }
     final sessionName = preset.tmuxSessionName?.trim();
     if (sessionName == null || sessionName.isEmpty) {
       return null;
@@ -8325,6 +8338,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool preserveExistingTmuxState = false,
     bool isReopeningExistingTerminal = false,
   }) async {
+    // Windows remotes (cmd.exe/PowerShell) don't run tmux or MonkeyMux, so skip
+    // detection entirely. Otherwise the POSIX probe exec channels
+    // (which tmux / has-session / display-message ...) always fail and waste
+    // round-trips on every connect.
+    if (session.remoteIsWindows) {
+      if (mounted) {
+        setState(_clearTmuxState);
+      } else {
+        _clearTmuxState();
+      }
+      return false;
+    }
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
