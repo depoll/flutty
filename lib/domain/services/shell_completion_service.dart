@@ -1023,6 +1023,7 @@ String? _normalizeShellCompletionCommandName(String? commandName) {
   if (normalized.startsWith('-')) {
     normalized = normalized.substring(1);
   }
+  normalized = normalized.toLowerCase();
   if (normalized.endsWith('.exe')) {
     normalized = normalized.substring(0, normalized.length - 4);
   }
@@ -2263,7 +2264,9 @@ if($__c.CommandType -eq 'Application'){$__n=[System.IO.Path]::GetFileNameWithout
 if($__n){if(!(__flEmit 'command' $__n)){break}}
 }
 }else{
-if($__flMode -eq 'argument' -and (__flTryTabExpansion)){return}
+$__flUsePathFallback=$true
+if($__flMode -eq 'argument' -and (__flTryTabExpansion)){$__flUsePathFallback=$false}
+if($__flUsePathFallback){
 $__flPrefix=($__flToken -replace '[^/]*$','')
 $__flBase=($__flToken -replace '.*/','')
 if($__flPrefix){$__flDir=($__flPrefix -replace '/$','');if($__flDir -match '^[A-Za-z]:$'){$__flDir="$__flDir/"}}
@@ -2274,6 +2277,7 @@ foreach($__it in $__flItems){
 $__nm=$__it.Name;$__val="$__flPrefix$__nm"
 if($__it.PSIsContainer){if(!(__flEmit 'directory' $__val)){break}}
 elseif($__flMode -eq 'path'){if(!(__flEmit 'file' $__val)){break}}
+}
 }
 }''';
 

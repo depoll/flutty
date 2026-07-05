@@ -670,7 +670,7 @@ void main() {
       expect(isShellCompletionTmuxShellCommand('cmd.exe'), isTrue);
       expect(
         isShellCompletionTmuxShellCommand(
-          r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+          r'C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.EXE',
         ),
         isTrue,
       );

@@ -472,6 +472,7 @@ bool isShellCompletionTmuxShellCommand(String? command) {
   if (normalized.startsWith('-')) {
     normalized = normalized.substring(1);
   }
+  normalized = normalized.toLowerCase();
   if (normalized.endsWith('.exe')) {
     normalized = normalized.substring(0, normalized.length - 4);
   }
