@@ -1702,8 +1702,26 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   List<Color> _palette;
   final _paragraphCache = ParagraphCache(10240);
+  // Paragraphs for multi-cell foreground runs (see `_paintLineForegroundsInto`),
+  // keyed by run text + resolved style. Kept separate from the per-cell
+  // `_paragraphCache` so the two key spaces can never collide.
+  final _runParagraphCache = ParagraphCache(4096);
   final _inlineUnderlineParagraphCache = ParagraphCache(1024);
   final _cursorCellData = CellData.empty();
+
+  // OpenType features that turn adjacent glyphs into a single ligature or a
+  // context-dependent alternate. A batched run concatenates several cells into
+  // one paragraph, so these must stay disabled: the per-cell path can never
+  // form a ligature (each cell is shaped alone), and letting one appear here
+  // would both change the terminal's look and collapse two grid cells into one
+  // glyph, drifting the rest of the run off the monospace grid.
+  static const _ligatureDisablingFeatures = <FontFeature>[
+    FontFeature.disable('liga'),
+    FontFeature.disable('clig'),
+    FontFeature.disable('calt'),
+    FontFeature.disable('dlig'),
+    FontFeature.disable('hlig'),
+  ];
 
   // Cache of recorded per-line glyph pictures, keyed by a hash of the line's
   // cell content. Painting a full screen of text draws one paragraph per
@@ -1724,6 +1742,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.textStyle = value;
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _runParagraphCache.clear();
     _foregroundPictureCache.clear();
   }
 
@@ -1735,6 +1754,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.textScaler = value;
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _runParagraphCache.clear();
     _foregroundPictureCache.clear();
   }
 
@@ -1747,6 +1767,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     _palette = _buildMonkeyTerminalPalette(value);
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _runParagraphCache.clear();
     _foregroundPictureCache.clear();
   }
 
@@ -1755,6 +1776,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     super.clearFontCache();
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
+    _runParagraphCache.clear();
     _foregroundPictureCache.clear();
   }
 
@@ -1888,17 +1910,182 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   /// Draws [line]'s glyphs at the origin (each cell at `x = column * cellWidth`),
   /// for recording into a cached [Picture]. See [paintLineForegrounds].
+  ///
+  /// Consecutive width-1 text cells that share a foreground style are coalesced
+  /// into a single paragraph and drawn with one `drawParagraph` (a "style run"),
+  /// cutting draw-call overhead on dense, freshly rendered lines — the ones that
+  /// miss the per-line picture cache during high-throughput output. Runs break
+  /// on any style change and at cells that are positioned or painted specially
+  /// (Kitty placeholders, block elements, wide glyphs, concealed cells, and
+  /// undrawn blank cells), which fall back to the per-cell [paintCellForeground]
+  /// so their exact placement and special drawing are preserved.
   void _paintLineForegroundsInto(Canvas canvas, BufferLine line) {
     final cellData = CellData.empty();
     final cellWidth = cellSize.width;
-    for (var i = 0; i < line.length; i++) {
-      line.getCellData(i, cellData);
-      final charWidth = cellData.content >> CellContent.widthShift;
-      paintCellForeground(canvas, Offset(i * cellWidth, 0), cellData);
-      if (charWidth == 2) {
-        i++;
+    final length = line.length;
+
+    // Accumulated style run: a maximal sequence of consecutive width-1 text
+    // cells sharing one foreground style, starting at column [runStartColumn].
+    var runStartColumn = -1;
+    final runCharCodes = <int>[];
+    var runColor = const Color(0x00000000);
+    var runBold = false;
+    var runItalic = false;
+    var runOverline = false;
+    var runStrikethrough = false;
+    Color? runDecorationColor;
+
+    void flushRun() {
+      if (runStartColumn < 0) {
+        return;
       }
+      _flushForegroundRun(
+        canvas,
+        Offset(runStartColumn * cellWidth, 0),
+        runCharCodes,
+        color: runColor,
+        bold: runBold,
+        italic: runItalic,
+        overline: runOverline,
+        strikethrough: runStrikethrough,
+        decorationColor: runDecorationColor,
+      );
+      runStartColumn = -1;
+      runCharCodes.clear();
     }
+
+    for (var i = 0; i < length; i++) {
+      line.getCellData(i, cellData);
+      final content = cellData.content;
+      final charWidth = content >> CellContent.widthShift;
+      final charCode = content & CellContent.codepointMask;
+      final flags = cellData.flags;
+
+      final overline = flags & CellFlags.overline != 0;
+      final strikethrough = flags & CellFlags.strikethrough != 0;
+      // Cells that draw nothing in the foreground pass: an empty cell, a Kitty
+      // graphics placeholder, a concealed (SGR 8) cell, or a plain space whose
+      // background/underline are handled by the other passes. Each ends the run
+      // but is otherwise skipped, matching [paintCellForeground]'s early returns.
+      final drawsNothing =
+          charCode == 0 ||
+          charCode == kittyGraphicsPlaceholderCodePoint ||
+          flags & CellFlags.invisible != 0 ||
+          (charCode == 0x20 && !overline && !strikethrough);
+      // Block-element glyphs are painted as rectangles, and wide (2-cell) glyphs
+      // must sit at an exact offset; neither can join a text run.
+      final paintedSpecially =
+          charWidth == 2 || _isRectPaintedBlockElement(charCode);
+
+      if (drawsNothing) {
+        flushRun();
+        if (charWidth == 2) {
+          i++;
+        }
+        continue;
+      }
+
+      if (paintedSpecially) {
+        flushRun();
+        paintCellForeground(canvas, Offset(i * cellWidth, 0), cellData);
+        if (charWidth == 2) {
+          i++;
+        }
+        continue;
+      }
+
+      final color = resolveMonkeyTerminalCellForegroundColor(cellData);
+      final bold = flags & CellFlags.bold != 0;
+      final italic = flags & CellFlags.italic != 0;
+      // The decoration color only affects the paragraph when an overline or
+      // strikethrough is drawn; keep it null otherwise so cells that differ only
+      // in an unused underline color still coalesce.
+      final decorationColor = (overline || strikethrough)
+          ? (cellData.underlineColor != 0
+                ? resolveForegroundColor(cellData.underlineColor)
+                : null)
+          : null;
+      // Flutter will not draw an overline/strikethrough beneath a lone space, so
+      // a decorated space is shaped as U+00A0 (same monospace advance) exactly
+      // as the per-cell path does.
+      final drawCharCode = (overline || strikethrough) && charCode == 0x20
+          ? 0xA0
+          : charCode;
+
+      final continuesRun =
+          runStartColumn >= 0 &&
+          color == runColor &&
+          bold == runBold &&
+          italic == runItalic &&
+          overline == runOverline &&
+          strikethrough == runStrikethrough &&
+          decorationColor == runDecorationColor;
+      if (!continuesRun) {
+        flushRun();
+        runStartColumn = i;
+        runColor = color;
+        runBold = bold;
+        runItalic = italic;
+        runOverline = overline;
+        runStrikethrough = strikethrough;
+        runDecorationColor = decorationColor;
+      }
+      runCharCodes.add(drawCharCode);
+    }
+    flushRun();
+  }
+
+  /// Lays out (with caching) and draws one foreground style run: the glyphs in
+  /// [charCodes] sharing the given style, at [offset]. Ligatures and contextual
+  /// alternates are disabled so the run stays one glyph per cell, aligned to the
+  /// monospace grid exactly as the per-cell path renders it.
+  void _flushForegroundRun(
+    Canvas canvas,
+    Offset offset,
+    List<int> charCodes, {
+    required Color color,
+    required bool bold,
+    required bool italic,
+    required bool overline,
+    required bool strikethrough,
+    required Color? decorationColor,
+  }) {
+    if (charCodes.isEmpty) {
+      return;
+    }
+    final text = String.fromCharCodes(charCodes);
+    final cacheKey = Object.hash(
+      text,
+      color,
+      bold,
+      italic,
+      overline,
+      strikethrough,
+      decorationColor,
+      textScaler,
+    );
+    var paragraph = _runParagraphCache.getLayoutFromCache(cacheKey);
+    if (paragraph == null) {
+      final style = textStyle
+          .toTextStyle(
+            color: color,
+            bold: bold,
+            italic: italic,
+            // The underline is drawn manually in the underline pass so wavy/
+            // dotted/dashed/double styles render and connect across cells.
+            overline: overline,
+            strikethrough: strikethrough,
+            decorationColor: decorationColor,
+          )
+          .copyWith(fontFeatures: _ligatureDisablingFeatures);
+      paragraph = _runParagraphCache.performAndCacheLayout(
+        text,
+        style,
+        textScaler,
+        cacheKey,
+      );
+    }
+    canvas.drawParagraph(paragraph, offset);
   }
 
   /// A content hash of [line]'s cells, used to key the foreground picture cache.
