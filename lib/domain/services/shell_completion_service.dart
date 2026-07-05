@@ -177,6 +177,12 @@ class ShellCompletionService {
     if (staticSuggestions != null && invocation.token.isEmpty) {
       return staticSuggestions;
     }
+    // Windows shells (cmd.exe/PowerShell) can't run the POSIX completion and
+    // history scripts, so skip the remote probes and return offline static
+    // suggestions only.
+    if (session.remoteIsWindows) {
+      return staticSuggestions ?? const <ShellCompletionSuggestion>[];
+    }
     final allowShellFallback = invocation.token.isNotEmpty;
 
     final cacheKey = _shellCompletionCacheKey(session, invocation);
@@ -213,6 +219,11 @@ class ShellCompletionService {
 
   /// Starts loading shell history for [invocation] without waiting for results.
   void primeHistory(SshSession session, ShellCompletionInvocation invocation) {
+    // Windows shells don't expose POSIX history files (~/.zsh_history, ...) via
+    // the tail/printf script, so skip priming to avoid failing exec channels.
+    if (session.remoteIsWindows) {
+      return;
+    }
     unawaited(
       _loadShellHistory(session, invocation).onError<Object>((error, _) {
         DiagnosticsLogService.instance.debug(

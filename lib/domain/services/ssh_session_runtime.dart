@@ -229,6 +229,23 @@ class _SshSessionRuntime {
       return _session.client.execute(command, pty: ptyConfig);
     }
 
+    // Windows OpenSSH runs the interactive shell through cmd.exe/PowerShell,
+    // which cannot execute the POSIX login-shell bootstrap
+    // ("exec env ... /bin/sh -lc ..."). Running it fails with
+    // "'exec' is not recognized as an internal or external command" and closes
+    // the connection, so request a plain interactive shell instead.
+    if (_session.remoteIsWindows) {
+      DiagnosticsLogService.instance.info(
+        'ssh.shell',
+        'windows_plain_shell',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+      return _session.client.shell(pty: ptyConfig);
+    }
+
     try {
       return await _session.client.execute(
         _trueColorLoginShellCommand,
