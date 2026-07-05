@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'diagnostics_log_service.dart';
 import 'ssh_service.dart';
+import 'windows_remote_powershell.dart';
 
 final _urlEncodedShellWhitespacePattern = RegExp(
   '%(?:09|0a|0d|20)',
@@ -177,12 +178,6 @@ class ShellCompletionService {
     if (staticSuggestions != null && invocation.token.isEmpty) {
       return staticSuggestions;
     }
-    // Windows shells (cmd.exe/PowerShell) can't run the POSIX completion and
-    // history scripts, so skip the remote probes and return offline static
-    // suggestions only.
-    if (session.remoteIsWindows) {
-      return staticSuggestions ?? const <ShellCompletionSuggestion>[];
-    }
     final allowShellFallback = invocation.token.isNotEmpty;
 
     final cacheKey = _shellCompletionCacheKey(session, invocation);
@@ -219,11 +214,6 @@ class ShellCompletionService {
 
   /// Starts loading shell history for [invocation] without waiting for results.
   void primeHistory(SshSession session, ShellCompletionInvocation invocation) {
-    // Windows shells don't expose POSIX history files (~/.zsh_history, ...) via
-    // the tail/printf script, so skip priming to avoid failing exec channels.
-    if (session.remoteIsWindows) {
-      return;
-    }
     unawaited(
       _loadShellHistory(session, invocation).onError<Object>((error, _) {
         DiagnosticsLogService.instance.debug(
@@ -287,7 +277,11 @@ class ShellCompletionService {
           }
           Error.throwWithStackTrace(error, stackTrace);
         });
-    final suggestions = parseShellCompletionOutput(output, invocation);
+    final suggestions = parseShellCompletionOutput(
+      output,
+      invocation,
+      windows: session.remoteIsWindows,
+    );
     final resolvedSuggestions = suggestions.isEmpty && staticSuggestions != null
         ? staticSuggestions
         : suggestions;
@@ -382,7 +376,11 @@ class ShellCompletionService {
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
-    final command = buildShellHistoryRemoteCommand(invocation);
+    final command = session.remoteIsWindows
+        ? buildWindowsPowerShellCommand(
+            buildWindowsShellHistoryScript(invocation),
+          )
+        : buildShellHistoryRemoteCommand(invocation);
     final exec = await session.execute(command);
     try {
       final stdout = StringBuffer();
@@ -424,7 +422,8 @@ class ShellCompletionService {
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
-    if (_shouldTryInteractiveZshCompletion(invocation)) {
+    if (!session.remoteIsWindows &&
+        _shouldTryInteractiveZshCompletion(invocation)) {
       try {
         final result = await _runInteractiveZshCompletionCommand(
           session,
@@ -445,7 +444,11 @@ class ShellCompletionService {
       }
     }
 
-    final command = buildShellCompletionRemoteCommand(invocation);
+    final command = session.remoteIsWindows
+        ? buildWindowsPowerShellCommand(
+            buildWindowsShellCompletionScript(invocation),
+          )
+        : buildShellCompletionRemoteCommand(invocation);
     final exec = await session.execute(command);
     try {
       final stdout = StringBuffer();
@@ -1453,11 +1456,15 @@ String normalizeShellCompletionToken(String token) {
 }
 
 /// Parses side-channel completion helper output.
+///
+/// When [windows] is true, replacement text is quoted for cmd.exe/PowerShell
+/// (double quotes) rather than POSIX backslash escaping.
 @visibleForTesting
 List<ShellCompletionSuggestion> parseShellCompletionOutput(
   String output,
-  ShellCompletionInvocation invocation,
-) {
+  ShellCompletionInvocation invocation, {
+  bool windows = false,
+}) {
   final suggestions = <ShellCompletionSuggestion>[];
   final seen = <String>{};
   var scannedLineCount = 0;
@@ -1482,6 +1489,7 @@ List<ShellCompletionSuggestion> parseShellCompletionOutput(
       rawKind: rawKind,
       value: value,
       invocation: invocation,
+      windows: windows,
     );
     if (suggestion == null) {
       continue;
@@ -1505,6 +1513,7 @@ ShellCompletionSuggestion? _suggestionFromRemoteValue({
   required String rawKind,
   required String value,
   required ShellCompletionInvocation invocation,
+  required bool windows,
 }) {
   final kind = switch (rawKind) {
     'command' => ShellCompletionSuggestionKind.command,
@@ -1517,9 +1526,12 @@ ShellCompletionSuggestion? _suggestionFromRemoteValue({
     return null;
   }
 
-  final escapedValue = escapeShellCompletionToken(value);
+  final escape = windows
+      ? escapeWindowsCompletionToken
+      : escapeShellCompletionToken;
+  final escapedValue = escape(value);
   final directoryValue = _formatDirectoryCompletion(value);
-  final escapedDirectoryValue = escapeShellCompletionToken(directoryValue);
+  final escapedDirectoryValue = escape(directoryValue);
 
   if (rawKind == 'cd_directory') {
     return ShellCompletionSuggestion(
@@ -1653,6 +1665,26 @@ bool _isUnescapedShellTokenChar(String char) {
       char == '.' ||
       char == '/' ||
       char == '~';
+}
+
+/// Quotes a completion [value] for insertion into a Windows shell (cmd.exe or
+/// PowerShell).
+///
+/// POSIX backslash escaping (`Program\ Files`) is invalid on Windows shells, so
+/// values containing a space or a shell metacharacter are wrapped in double
+/// quotes instead (valid in both cmd.exe and PowerShell). Simple values are
+/// returned unchanged. Windows file names cannot contain `"`, so double-quote
+/// wrapping is always safe.
+@visibleForTesting
+String escapeWindowsCompletionToken(String value) {
+  if (value.isEmpty) {
+    return '""';
+  }
+  final needsQuoting = value.contains(RegExp(r'[ \t&|<>^()";,%!]'));
+  if (!needsQuoting) {
+    return value;
+  }
+  return '"${value.replaceAll('"', '')}"';
 }
 
 const _interactiveZshCompletionDoneMarker = '__FLUTTY_ZSH_NATIVE_DONE__';
@@ -2140,3 +2172,84 @@ String _bashCompWordsAssignment(ShellCompletionInvocation invocation) {
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+
+/// Static PowerShell logic for [buildWindowsShellCompletionScript]. Reads the
+/// `$__flMode`/`$__flToken`/`$__flCwd`/`$__flLimit` parameters assigned by the
+/// caller and appends `<kind>\t<value>` lines to `$__flOut`, matching
+/// [parseShellCompletionOutput]. Paths use forward slashes and are relative to
+/// the token, like the POSIX completion fallback.
+const _windowsCompletionLogic = r'''
+if($__flCwd){Set-Location -LiteralPath $__flCwd -ErrorAction SilentlyContinue}
+if($__flMode -eq 'command'){
+$__flPat=[System.Management.Automation.WildcardPattern]::Escape($__flToken)+'*'
+$__flCmds=@(Get-Command -Name $__flPat -ErrorAction SilentlyContinue|Select-Object -First $__flLimit)
+foreach($__c in $__flCmds){
+$__n=$__c.Name
+if($__c.CommandType -eq 'Application'){$__n=[System.IO.Path]::GetFileNameWithoutExtension($__n)}
+if($__n){[void]$__flOut.Append('command');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__n);[void]$__flOut.Append([char]10)}
+}
+}else{
+$__flPrefix=($__flToken -replace '[^/]*$','')
+$__flBase=($__flToken -replace '.*/','')
+if($__flPrefix){$__flDir=($__flPrefix -replace '/$','');if($__flDir -match '^[A-Za-z]:$'){$__flDir="$__flDir/"}}
+else{$__flDir='.'}
+$__flPat=[System.Management.Automation.WildcardPattern]::Escape($__flBase)+'*'
+$__flItems=@(Get-ChildItem -LiteralPath $__flDir -ErrorAction SilentlyContinue|Where-Object {$_.Name -like $__flPat}|Select-Object -First $__flLimit)
+foreach($__it in $__flItems){
+$__nm=$__it.Name;$__val="$__flPrefix$__nm"
+if($__it.PSIsContainer){[void]$__flOut.Append('directory');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__val);[void]$__flOut.Append([char]10)}
+elseif($__flMode -eq 'path'){[void]$__flOut.Append('file');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__val);[void]$__flOut.Append([char]10)}
+}
+}''';
+
+/// Builds a PowerShell script that emits completion candidates for [invocation]
+/// on a Windows remote, matching the `<kind>\t<value>` format that
+/// [parseShellCompletionOutput] parses.
+///
+/// Command mode lists matching commands via `Get-Command` (executable extensions
+/// stripped); directory/path modes enumerate the token's directory. Argument
+/// mode (installed shell completions) has no Windows equivalent and yields
+/// nothing so the caller falls back to static suggestions.
+@visibleForTesting
+String buildWindowsShellCompletionScript(ShellCompletionInvocation invocation) {
+  final limit = invocation.maxSuggestions * 4;
+  final assignments = StringBuffer()
+    ..write(r'$__flMode=')
+    ..write(powerShellSingleQuote(invocation.mode.name))
+    ..write(';')
+    ..write(r'$__flToken=')
+    ..write(powerShellSingleQuote(invocation.token))
+    ..write(';')
+    ..write(r'$__flCwd=')
+    ..write(powerShellSingleQuote(invocation.workingDirectory?.trim() ?? ''))
+    ..write(';')
+    ..write('\$__flLimit=$limit;');
+  return powerShellUtf8OutputScript('$assignments$_windowsCompletionLogic');
+}
+
+/// Builds a PowerShell script that emits recent PowerShell command history on a
+/// Windows remote, matching [parseShellHistoryOutput].
+///
+/// Reads the PSReadLine `ConsoleHost_history.txt` file (the source of the
+/// interactive shell's history) and emits each recent line as a `bash`-sourced
+/// command so the existing parser treats it as a literal command string.
+@visibleForTesting
+String buildWindowsShellHistoryScript(ShellCompletionInvocation invocation) {
+  final body = StringBuffer()
+    ..write(
+      r"$__flHist=Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt';",
+    )
+    ..write(r'[void]$__flOut.Append(')
+    ..write(powerShellSingleQuote('__FLUTTY_HISTORY_START__'))
+    ..write(r');[void]$__flOut.Append([char]10);')
+    ..write(
+      r'if(Test-Path -LiteralPath $__flHist -PathType Leaf){$__flLines=@(Get-Content -LiteralPath $__flHist -Tail 1200 -Encoding UTF8 -ErrorAction SilentlyContinue);',
+    )
+    ..write(
+      r"foreach($__l in $__flLines){[void]$__flOut.Append('bash');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__l);[void]$__flOut.Append([char]10)}}",
+    )
+    ..write(r'[void]$__flOut.Append(')
+    ..write(powerShellSingleQuote(_shellHistoryDoneMarker))
+    ..write(r');[void]$__flOut.Append([char]10);');
+  return powerShellUtf8OutputScript(body.toString());
+}
