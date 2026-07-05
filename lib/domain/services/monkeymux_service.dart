@@ -89,10 +89,11 @@ String buildMonkeyMuxAttachCommand({
   String? terminalThemeReports,
   MonkeyMuxServerUpdatePolicy? serverUpdatePolicy,
   bool startInYoloMode = false,
+  bool windows = false,
 }) {
   final themeHint = terminalThemeReports?.trim();
   final parts = <String>[
-    _shellQuote(executablePath),
+    _monkeyMuxQuoteArg(executablePath, windows: windows),
     'attach',
     if (serverUpdatePolicy != null) ...[
       '--update-policy',
@@ -105,17 +106,17 @@ String buildMonkeyMuxAttachCommand({
     ],
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty) ...[
       '--cwd',
-      _shellQuote(workingDirectory.trim()),
+      _monkeyMuxQuoteArg(workingDirectory.trim(), windows: windows),
     ],
     if (windowName != null && windowName.trim().isNotEmpty) ...[
       '--name',
-      _shellQuote(windowName.trim()),
+      _monkeyMuxQuoteArg(windowName.trim(), windows: windows),
     ],
     if (launchCommand != null && launchCommand.trim().isNotEmpty) ...[
       '--command',
-      _shellQuote(launchCommand.trim()),
+      _monkeyMuxQuoteArg(launchCommand.trim(), windows: windows),
     ],
-    _shellQuote(sessionName),
+    _monkeyMuxQuoteArg(sessionName, windows: windows),
   ];
   return parts.join(' ');
 }
@@ -511,9 +512,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
-    final controlCommand =
-        '${_shellQuote(installation.executablePath)} control --json '
-        '${_shellQuote(sessionName)}';
+    final controlCommand = _buildMonkeyMuxControlCommand(
+      installation,
+      sessionName,
+    );
     try {
       return await session.runQueuedExec(
         () => _readRunningServerStatus(session, controlCommand),
@@ -538,6 +540,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    if (_remoteHostIsWindows(session)) {
+      // This best-effort pre-install probe relies on a POSIX shell glob loop
+      // that Windows shells cannot evaluate. Skip it; the version-specific
+      // status probe (runningServerStatus) runs after install with the correct
+      // Windows quoting, and `attach` still negotiates version mismatches.
+      return null;
+    }
     final command =
         r'for helper in "$HOME"/.monkeyssh/bin/monkeymux/*/*/monkeymux; do '
         r'[ -x "$helper" ] || continue; '
@@ -577,9 +586,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       session,
       priority: priority,
     );
-    final controlCommand =
-        '${_shellQuote(installation.executablePath)} control --json '
-        '${_shellQuote(sessionName)}';
+    final controlCommand = _buildMonkeyMuxControlCommand(
+      installation,
+      sessionName,
+    );
     final commandId = DateTime.now().microsecondsSinceEpoch.toString();
     final request = <String, Object?>{'id': commandId, ...command};
     return session.runQueuedExec(
@@ -1126,9 +1136,7 @@ class _MonkeyMuxWindowChangeObserver {
         session,
       );
       if (_disposed) return;
-      final command =
-          '${_shellQuote(installation.executablePath)} control --json '
-          '${_shellQuote(sessionName)}';
+      final command = _buildMonkeyMuxControlCommand(installation, sessionName);
       final controlSession = await session.execute(command);
       if (_disposed) {
         await _closeControlSession(controlSession, operation: 'start_disposed');
@@ -1545,3 +1553,32 @@ String? _nonEmpty(String? value) {
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
+
+/// Quotes a single MonkeyMux command argument for the remote shell. POSIX hosts
+/// use single-quote escaping; Windows hosts use double quotes, which cmd.exe and
+/// PowerShell both accept for the controlled paths and identifiers MonkeyMux
+/// passes (helper path, session name, working directory, launch command).
+String _monkeyMuxQuoteArg(String value, {required bool windows}) =>
+    windows ? '"$value"' : _shellQuote(value);
+
+/// Whether the remote host announced itself as Windows in its SSH banner
+/// (OpenSSH for Windows). Used to skip POSIX-only probes.
+bool _remoteHostIsWindows(SshSession session) {
+  final banner = session.client.remoteVersion;
+  if (banner == null) {
+    return false;
+  }
+  return banner.toLowerCase().contains('windows');
+}
+
+/// Builds the `<helper> control --json <session>` command for an installation,
+/// quoting for the installed platform's shell.
+String _buildMonkeyMuxControlCommand(
+  MonkeyMuxInstallation installation,
+  String sessionName,
+) {
+  final windows = installation.isWindows;
+  return '${_monkeyMuxQuoteArg(installation.executablePath, windows: windows)} '
+      'control --json '
+      '${_monkeyMuxQuoteArg(sessionName, windows: windows)}';
+}

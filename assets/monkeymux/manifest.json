@@ -1,9 +1,11 @@
 {
-  "version": "0.1.86",
+  "version": "0.1.87",
   "entries": [
-    {"platform":"darwin-amd64","asset":"assets/monkeymux/bin/darwin-amd64/monkeymux.gz","encoding":"gzip","sha256":"b8fb78d556b13a16fcf00b44562c32cf9b1a1ad9952c00b714059308b9f0ebb4","size":3826592},
-    {"platform":"darwin-arm64","asset":"assets/monkeymux/bin/darwin-arm64/monkeymux.gz","encoding":"gzip","sha256":"871b908abb928a7c5e60c616016ddde8621eaa32b6f5ab2e473fb5785bad0b43","size":3621250},
-    {"platform":"linux-amd64","asset":"assets/monkeymux/bin/linux-amd64/monkeymux.gz","encoding":"gzip","sha256":"14c03a81e0a5086249fc516068282fa214d20ff292e00fc991970ac40d9f05c7","size":3776674},
-    {"platform":"linux-arm64","asset":"assets/monkeymux/bin/linux-arm64/monkeymux.gz","encoding":"gzip","sha256":"9dfed8d81c7313214870ef204bbdf34b254907c7ab55d7345a6c739c71d5aacd","size":3604642}
+    {"platform":"darwin-amd64","asset":"assets/monkeymux/bin/darwin-amd64/monkeymux.gz","encoding":"gzip","sha256":"1a58d47f12ae7d0d7a1ffd7955fa7749464fda259da7d9f8e500f8ef0873108a","size":3839120},
+    {"platform":"darwin-arm64","asset":"assets/monkeymux/bin/darwin-arm64/monkeymux.gz","encoding":"gzip","sha256":"74f4679a2559d05f8dfe958ee024990519360275eb9f3dcb456785da76e92697","size":3638018},
+    {"platform":"linux-amd64","asset":"assets/monkeymux/bin/linux-amd64/monkeymux.gz","encoding":"gzip","sha256":"6651a63b18d7eccfea694852440c8e6ee7d9404d9a8cb319dc48b149e06acf92","size":3780770},
+    {"platform":"linux-arm64","asset":"assets/monkeymux/bin/linux-arm64/monkeymux.gz","encoding":"gzip","sha256":"d840a45fdcd10d7e0e4f73ff118435f1ec0802be2fde8509e961bada090ed0a4","size":3604642},
+    {"platform":"windows-amd64","asset":"assets/monkeymux/bin/windows-amd64/monkeymux.gz","encoding":"gzip","sha256":"3fa59c89887984b6d015406f7e24f55dfa48576b616dbc04eeb7f8352ffb36e9","size":4053504},
+    {"platform":"windows-arm64","asset":"assets/monkeymux/bin/windows-arm64/monkeymux.gz","encoding":"gzip","sha256":"22c0616fef664b917ae69deb622821da5ade9fa9172ceafc09b42b7f7120cdb6","size":3753472}
   ]
 }

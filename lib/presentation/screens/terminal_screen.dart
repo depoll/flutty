@@ -7771,6 +7771,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               terminalThemeReports: terminalThemeReports,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
               startInYoloMode: _startClisInYoloMode,
+              windows: installation.isWindows,
             ),
             backend: RemoteMuxBackend.monkeyMux,
           );
@@ -7783,6 +7784,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
             startInYoloMode: _startClisInYoloMode,
+            windows: installation.isWindows,
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
@@ -8066,6 +8068,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalThemeReports: terminalThemeReports,
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
+        windows: installation.isWindows,
       );
     } on Exception catch (error) {
       _suppressRemoteMuxDetectionConnectionId = session.connectionId;
