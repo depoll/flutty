@@ -6654,6 +6654,53 @@ void main() {
     );
 
     testWidgets(
+      'keyboard button shows the keyboard despite a stale bottom inset',
+      (tester) async {
+        // Simulate the broken state: the platform still reserves keyboard space
+        // (a stale bottom inset) while the keyboard itself is not open.
+        tester.view
+          ..physicalSize = const Size(390, 844)
+          ..devicePixelRatio = 1
+          ..viewInsets = const FakeViewPadding(bottom: 500);
+        addTearDown(() {
+          tester.view
+            ..resetPhysicalSize()
+            ..resetDevicePixelRatio()
+            ..resetViewInsets();
+        });
+
+        await pumpScreen(tester);
+
+        // The keyboard is not actually shown, so the toggle must offer to show
+        // it rather than treating the stale inset as a visible keyboard.
+        expect(tester.testTextInput.isVisible, isFalse);
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(find.byTooltip('Hide system keyboard'), findsNothing);
+
+        tester.testTextInput.log.clear();
+        await tester.tap(find.byTooltip('Show system keyboard'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isNotEmpty,
+        );
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        // The toggle must reactively flip to "hide" once the keyboard is shown,
+        // even though the (stale) bottom inset never changed, so a second tap
+        // hides the keyboard instead of re-showing it.
+        await tester.pump();
+        expect(find.byTooltip('Hide system keyboard'), findsOneWidget);
+        expect(find.byTooltip('Show system keyboard'), findsNothing);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'terminal overflow menu stays above the visible mobile keyboard',
       (tester) async {
         tester.view
