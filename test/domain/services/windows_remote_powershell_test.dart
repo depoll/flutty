@@ -197,7 +197,7 @@ void main() {
         tokenStart: 4,
         mode: ShellCompletionMode.argument,
         commandName: 'git',
-        shellCommand: 'pwsh.exe',
+        shellCommand: 'PWSH.EXE',
         words: ['git', 'ch'],
         wordIndex: 1,
         workingDirectory: r'C:\Users\x',
@@ -211,6 +211,7 @@ void main() {
       expect(script, contains(r'TabExpansion2 $__flCommandLine'));
       expect(script, contains(r'$__m.CompletionText'));
       expect(script, contains(r'__flEmit $__flKind $__flText'));
+      expect(script, isNot(contains('(__flTryTabExpansion)){return}')));
     });
 
     test('argument mode does not use PowerShell completers for cmd panes', () {
