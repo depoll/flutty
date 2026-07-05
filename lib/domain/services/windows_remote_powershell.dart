@@ -1,0 +1,79 @@
+/// Helpers for running PowerShell logic on Windows OpenSSH remotes.
+///
+/// Windows remotes run `cmd.exe` or PowerShell rather than a POSIX shell, so the
+/// POSIX command layers used for agent-session discovery and shell completion do
+/// not work there. Instead of relying on fragile inline quoting across cmd.exe,
+/// PowerShell, and the MonkeyMux `run_command` channel, these helpers wrap a
+/// PowerShell script into a single
+/// `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand`
+/// invocation. The `-EncodedCommand` form takes a base64 UTF-16LE payload, which
+/// removes all outer-shell quoting concerns: the same command is valid whether it
+/// is launched from a cmd.exe default shell, a PowerShell default shell, a plain
+/// SSH exec channel, or MonkeyMux's `cmd /c` / `powershell -Command` runner.
+///
+/// Scripts should target Windows PowerShell 5.1 (always present on supported
+/// Windows) and emit their output as UTF-8 bytes written to the raw stdout stream
+/// (see [powerShellUtf8OutputPreamble]/[powerShellUtf8OutputEpilogue]) so line
+/// endings and Unicode paths survive regardless of the host console code page.
+library;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+/// Encodes [script] for `powershell.exe -EncodedCommand`.
+///
+/// PowerShell expects the argument to be the base64 encoding of the UTF-16
+/// little-endian bytes of the script.
+String encodePowerShellCommand(String script) {
+  final units = script.codeUnits;
+  final bytes = Uint8List(units.length * 2);
+  for (var i = 0; i < units.length; i++) {
+    final unit = units[i];
+    bytes[i * 2] = unit & 0xff;
+    bytes[i * 2 + 1] = (unit >> 8) & 0xff;
+  }
+  return base64.encode(bytes);
+}
+
+/// Wraps a PowerShell [script] into a remote command that runs it via
+/// `powershell -EncodedCommand`.
+///
+/// The result is safe to hand to a plain SSH exec channel or the MonkeyMux
+/// control channel on a Windows host without any further quoting.
+String buildWindowsPowerShellCommand(String script) =>
+    'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+    '-EncodedCommand ${encodePowerShellCommand(script)}';
+
+/// Quotes [value] as a single-quoted PowerShell string literal.
+///
+/// PowerShell single-quoted strings are literal (no interpolation or escape
+/// sequences), so only the single-quote character needs escaping by doubling it.
+/// This is the safe way to embed remote paths, globs, and completion tokens into
+/// a generated script.
+String powerShellSingleQuote(String value) =>
+    "'${value.replaceAll("'", "''")}'";
+
+/// PowerShell statements that begin a UTF-8 buffered-output script.
+///
+/// The script appends output to `$__flOut` (a `StringBuilder`) and flushes it via
+/// [powerShellUtf8OutputEpilogue]. Buffering and writing raw UTF-8 bytes avoids
+/// depending on `[Console]::OutputEncoding` (which can throw when stdout is a
+/// redirected pipe with no attached console) and guarantees LF line endings.
+const String powerShellUtf8OutputPreamble =
+    r"$ErrorActionPreference='SilentlyContinue';"
+    r'$ProgressPreference='
+    "'SilentlyContinue';"
+    r'$__flOut=New-Object System.Text.StringBuilder;';
+
+/// PowerShell statements that flush the `$__flOut` buffer as UTF-8 bytes to the
+/// raw standard output stream.
+const String powerShellUtf8OutputEpilogue =
+    r'$__flBytes=[System.Text.Encoding]::UTF8.GetBytes($__flOut.ToString());'
+    r'$__flStream=[System.Console]::OpenStandardOutput();'
+    r'$__flStream.Write($__flBytes,0,$__flBytes.Length);'
+    r'$__flStream.Flush();';
+
+/// Wraps [body] (statements that append to `$__flOut`) in the UTF-8 output
+/// preamble/epilogue and returns the full script text.
+String powerShellUtf8OutputScript(String body) =>
+    '$powerShellUtf8OutputPreamble$body$powerShellUtf8OutputEpilogue';

@@ -10,6 +10,7 @@ import '../models/tmux_state.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'terminal_connection_backend_service.dart';
+import 'windows_remote_powershell.dart';
 
 const _genericSessionSummaries = <String>{
   'untitled',
@@ -1342,13 +1343,6 @@ class AgentSessionDiscoveryService {
     int maxPerTool = 12,
     String? toolName,
   }) async* {
-    // Windows remotes don't host the POSIX tool-state directories
-    // (~/.codex, ~/.claude, ...) and can't run the find/ls/profile-sourcing
-    // discovery scripts, so return no sessions instead of firing failing execs.
-    if (session.remoteIsWindows) {
-      yield DiscoveredSessionsResult(sessions: const []);
-      return;
-    }
     _pruneExpiredCacheEntries();
     final key = _AgentSessionDiscoveryKey.fromSession(
       session,
@@ -1852,10 +1846,18 @@ class AgentSessionDiscoveryService {
               minimum: 120,
               maximum: 400,
             );
-      final output = await _exec(
-        session,
-        'tail -n $tailCount ~/.claude/history.jsonl 2>/dev/null',
-      );
+      final output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsTailFileScript(
+                relativePath: '.claude/history.jsonl',
+                lines: tailCount,
+              ),
+            )
+          : await _exec(
+              session,
+              'tail -n $tailCount ~/.claude/history.jsonl 2>/dev/null',
+            );
       if (output.trim().isEmpty) {
         return const _ToolDiscoveryResult.success('Claude Code', []);
       }
@@ -2022,11 +2024,20 @@ class AgentSessionDiscoveryService {
               maximum: 12,
             )
           : calculateRecentSessionMetadataReadLimit(max);
-      final output = await _exec(
-        session,
-        'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
-        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
-      );
+      final output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsListNewestFilesScript(
+                relativeRoot: '.codex/sessions',
+                includeGlobs: const ['rollout-*.jsonl'],
+                limit: scanLimit,
+              ),
+            )
+          : await _exec(
+              session,
+              'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
+              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+            );
       if (output.trim().isEmpty) {
         return const _ToolDiscoveryResult.success('Codex', []);
       }
@@ -2123,10 +2134,19 @@ class AgentSessionDiscoveryService {
     int scanLimit,
   ) async {
     try {
-      final output = await _exec(
-        session,
-        'tail -n ${scanLimit * 5} ~/.codex/session_index.jsonl 2>/dev/null',
-      );
+      final output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsTailFileScript(
+                relativePath: '.codex/session_index.jsonl',
+                lines: scanLimit * 5,
+              ),
+            )
+          : await _exec(
+              session,
+              'tail -n ${scanLimit * 5} ~/.codex/session_index.jsonl '
+              '2>/dev/null',
+            );
       if (output.trim().isEmpty) {
         return const _CodexSessionIndexResult(entries: {});
       }
@@ -2360,6 +2380,7 @@ class AgentSessionDiscoveryService {
         r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
         '-path "*/chats/*" -type f '
         '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit';
+    const geminiGlobs = ['session-*.json', 'session-*.jsonl'];
     var output = '';
 
     final projectDirectoryNames =
@@ -2375,16 +2396,38 @@ class AgentSessionDiscoveryService {
       final scopedPathFilters = projectDirectoryNames
           .map((name) => '-path ${_shellQuote('*/$name/chats/*')}')
           .join(' -o ');
-      output = await _exec(
-        session,
-        r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
-        '-type f '
-        '\\( $scopedPathFilters \\) '
-        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
-      );
+      output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsListNewestFilesScript(
+                relativeRoot: '.gemini/tmp',
+                includeGlobs: geminiGlobs,
+                limit: scanLimit,
+                pathLikeFilters: projectDirectoryNames
+                    .map((name) => '*/$name/chats/*')
+                    .toList(growable: false),
+              ),
+            )
+          : await _exec(
+              session,
+              r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
+              '-type f '
+              '\\( $scopedPathFilters \\) '
+              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+            );
     }
     if (output.trim().isEmpty) {
-      output = await _exec(session, globalCommand);
+      output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsListNewestFilesScript(
+                relativeRoot: '.gemini/tmp',
+                includeGlobs: geminiGlobs,
+                limit: scanLimit,
+                pathLikeFilters: const ['*/chats/*'],
+              ),
+            )
+          : await _exec(session, globalCommand);
     }
     if (output.trim().isEmpty) {
       return const _ToolDiscoveryResult.success('Gemini CLI', []);
@@ -2473,6 +2516,11 @@ class AgentSessionDiscoveryService {
     int max, {
     bool previewOnly = false,
   }) async {
+    if (session.remoteIsWindows) {
+      // Antigravity discovery runs an embedded `python3` script, which Windows
+      // remotes are not guaranteed to provide. Degrade gracefully.
+      return const _ToolDiscoveryResult.success('Antigravity', []);
+    }
     try {
       const pyScript = r'''
 import os
@@ -2711,6 +2759,12 @@ print(json.dumps(sessions))
     bool useAcp = true,
     bool previewOnly = false,
   }) async {
+    if (session.remoteIsWindows) {
+      // OpenCode discovery reads its SQLite database via the `sqlite3` CLI (and
+      // otherwise the ACP protocol), neither of which is available on a Windows
+      // remote's default shell. Degrade gracefully.
+      return const _ToolDiscoveryResult.success('OpenCode', []);
+    }
     try {
       final scanLimit = previewOnly
           ? _calculateDiscoveryScanLimit(
@@ -2940,6 +2994,34 @@ print(json.dumps(sessions))
     return _stripDoneMarker(result.output);
   }
 
+  /// Runs a PowerShell [script] on a Windows remote and returns its stdout.
+  ///
+  /// Windows shells cannot evaluate the POSIX command layer, so Windows-specific
+  /// discovery builds a PowerShell script (see [windows_remote_powershell]) that
+  /// emits the same output format the POSIX parsers expect. The script is wrapped
+  /// in a single `powershell -EncodedCommand` invocation, which is valid whether
+  /// it runs through a plain SSH exec channel or the MonkeyMux control channel.
+  /// No POSIX profile prefix or done marker is added: the plain-exec reader
+  /// returns on stream EOF and the control channel returns on process exit.
+  Future<String> _execWindowsPowerShell(SshSession session, String script) {
+    final command = buildWindowsPowerShellCommand(script);
+    final controlChannelBackend = _controlChannelCommandBackend(session);
+    if (controlChannelBackend != null) {
+      return controlChannelBackend
+          .runClientCommand(command, priority: SshExecPriority.low)
+          .then((result) => result.output);
+    }
+    return session.runQueuedExec(() async {
+      final execSession = await session.execute(command);
+      try {
+        execSession.stderr.drain<void>().ignore();
+        return await _readStdoutUntilDoneMarker(execSession);
+      } finally {
+        execSession.close();
+      }
+    }, priority: SshExecPriority.low);
+  }
+
   TerminalConnectionBackend? _controlChannelCommandBackend(SshSession session) {
     final terminalBackendService = _terminalBackendService;
     if (terminalBackendService == null) return null;
@@ -3023,6 +3105,12 @@ print(json.dumps(sessions))
     required String? workingDirectory,
     required int max,
   }) async {
+    if (session.remoteIsWindows) {
+      // ACP discovery spawns the provider CLI and speaks a stdio JSON-RPC
+      // protocol through a POSIX profile-sourcing wrapper, which does not work
+      // on Windows shells. File-based discovery covers these providers instead.
+      return null;
+    }
     if (_controlChannelCommandBackend(session) != null) {
       return null;
     }
@@ -3184,6 +3272,27 @@ print(json.dumps(sessions))
     int scanLimit,
     Iterable<String> relatedWorkingDirectories,
   ) async {
+    if (session.remoteIsWindows) {
+      // Windows shells can't run the POSIX find/grep scoping; fall back to the
+      // newest workspace.yaml files across all session-state dirs. The
+      // working-directory scoping is only a narrowing optimization, so this
+      // still surfaces recent Copilot sessions correctly.
+      final output = await _execWindowsPowerShell(
+        session,
+        windowsListNewestFilesScript(
+          relativeRoot: '.copilot/session-state',
+          includeGlobs: const ['workspace.yaml'],
+          limit: scanLimit,
+        ),
+      );
+      return output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+    }
+
     final scopedDirectories = relatedWorkingDirectories
         .map(_trimWorkingDirectory)
         .whereType<String>()
@@ -3262,6 +3371,19 @@ print(json.dumps(sessions))
           .skip(start)
           .take(_remoteFileSnapshotBatchSize)
           .toList(growable: false);
+      if (session.remoteIsWindows) {
+        final output = await _execWindowsPowerShell(
+          session,
+          windowsFileSnapshotScript(
+            batchPaths,
+            maxLines: maxLines,
+            maxBytes: maxBytes,
+            tail: tail,
+          ),
+        );
+        snapshots.addAll(await _parseRemoteFileSnapshotOutput(output));
+        continue;
+      }
       final command = StringBuffer()
         ..write(r'SEP=$(printf "\037"); ')
         ..write(
@@ -3333,10 +3455,21 @@ print(json.dumps(sessions))
     final nameFilters = uniqueSessionIds
         .map((id) => '-name ${_shellQuote('$id.jsonl')}')
         .join(' -o ');
-    final output = await _exec(
-      session,
-      'find ~/.claude/projects -type f \\( $nameFilters \\) -print 2>/dev/null',
-    );
+    final output = session.remoteIsWindows
+        ? await _execWindowsPowerShell(
+            session,
+            windowsFindFilesByNameScript(
+              relativeRoot: '.claude/projects',
+              names: uniqueSessionIds
+                  .map((id) => '$id.jsonl')
+                  .toList(growable: false),
+            ),
+          )
+        : await _exec(
+            session,
+            'find ~/.claude/projects -type f \\( $nameFilters \\) '
+            '-print 2>/dev/null',
+          );
 
     final filesById = <String, String>{};
     for (final rawLine in output.split('\n')) {
@@ -3401,6 +3534,13 @@ print(json.dumps(sessions))
   ) async {
     final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
     if (trimmedWorkingDirectory == null) return const <String>[];
+
+    if (session.remoteIsWindows) {
+      // The related-directory probe uses a POSIX `git ... worktree list`
+      // pipeline that Windows shells cannot run. Use the pure-Dart heuristic
+      // expansion instead of firing a failing exec on every discovery.
+      return buildRelatedWorkingDirectories(trimmedWorkingDirectory);
+    }
 
     try {
       final gitOutput = await _exec(
@@ -3675,6 +3815,178 @@ Map<String, _RemoteFileSnapshot> _parseRemoteFileSnapshotOutputSync(
     }
   }
   return snapshots;
+}
+
+// ── Windows PowerShell discovery command builders ──────────────────────────
+// Windows remotes run cmd.exe/PowerShell, which cannot evaluate the POSIX
+// find/tail/stat command layer. These builders emit PowerShell scripts (run via
+// `powershell -EncodedCommand`; see windows_remote_powershell.dart) that produce
+// the exact output formats the existing POSIX parsers expect: newest-first
+// forward-slash paths, and `path\x1f mtime \x1f base64` snapshot lines. Paths are
+// rooted at `%USERPROFILE%`, matching where the AI CLIs (`os.homedir()`) store
+// their session state on Windows.
+
+/// Builds a PowerShell boolean expression that is true when `$__flN` (a file
+/// leaf name) matches any of [globs] via `-like`. Used instead of
+/// `Get-ChildItem -Include`, which is silently ignored with `-LiteralPath` on
+/// Windows PowerShell 5.1 and would return every file.
+String _windowsNameLikeCondition(List<String> globs) => globs
+    .map(
+      (glob) =>
+          r'($__flN -like '
+          '${powerShellSingleQuote(glob)})',
+    )
+    .join(' -or ');
+
+/// Builds a PowerShell script listing files under `%USERPROFILE%\<relativeRoot>`
+/// that match any of [includeGlobs], newest first, limited to [limit].
+///
+/// Emits one forward-slash path per line, mirroring
+/// `find <root> -name <glob> -type f -exec ls -1t {} + | head -n <limit>`. When
+/// [pathLikeFilters] is non-empty only files whose forward-slash path matches at
+/// least one `-like` pattern are emitted (mirroring `find ... -path <pattern>`).
+@visibleForTesting
+String windowsListNewestFilesScript({
+  required String relativeRoot,
+  required List<String> includeGlobs,
+  required int limit,
+  List<String> pathLikeFilters = const <String>[],
+}) {
+  final body = StringBuffer()
+    ..write(r'$__flRoot=Join-Path $env:USERPROFILE ')
+    ..write(powerShellSingleQuote(relativeRoot))
+    ..write(';')
+    ..write(
+      r'$__flItems=@(Get-ChildItem -LiteralPath $__flRoot -Recurse -File '
+      r'2>$null|Where-Object {$__flN=$_.Name;$__flFn=($_.FullName -replace '
+      r"'\\','/');(",
+    )
+    ..write(_windowsNameLikeCondition(includeGlobs))
+    ..write(')');
+  if (pathLikeFilters.isNotEmpty) {
+    body
+      ..write(' -and (')
+      ..write(
+        pathLikeFilters
+            .map(
+              (f) =>
+                  r'($__flFn -like '
+                  '${powerShellSingleQuote(f)})',
+            )
+            .join(' -or '),
+      )
+      ..write(')');
+  }
+  body
+    ..write('}|Sort-Object LastWriteTimeUtc -Descending')
+    ..write('|Select-Object -First ')
+    ..write('$limit')
+    ..write(');')
+    ..write(r'foreach($__flF in $__flItems){')
+    ..write(r"[void]$__flOut.Append(($__flF.FullName -replace '\\','/'));")
+    ..write(r'[void]$__flOut.Append([char]10)}');
+  return powerShellUtf8OutputScript(body.toString());
+}
+
+/// Builds a PowerShell script listing files under `%USERPROFILE%\<relativeRoot>`
+/// whose leaf name exactly matches any of [names]. Emits one forward-slash path
+/// per line, mirroring `find <root> -type f \( -name a -o -name b \) -print`.
+@visibleForTesting
+String windowsFindFilesByNameScript({
+  required String relativeRoot,
+  required List<String> names,
+}) {
+  final body = StringBuffer()
+    ..write(r'$__flRoot=Join-Path $env:USERPROFILE ')
+    ..write(powerShellSingleQuote(relativeRoot))
+    ..write(';')
+    ..write(
+      r'$__flItems=@(Get-ChildItem -LiteralPath $__flRoot -Recurse -File '
+      r'2>$null|Where-Object {$__flN=$_.Name;(',
+    )
+    ..write(_windowsNameLikeCondition(names))
+    ..write(')});')
+    ..write(r'foreach($__flF in $__flItems){')
+    ..write(r"[void]$__flOut.Append(($__flF.FullName -replace '\\','/'));")
+    ..write(r'[void]$__flOut.Append([char]10)}');
+  return powerShellUtf8OutputScript(body.toString());
+}
+
+/// Builds a PowerShell script that emits the last [lines] lines of
+/// `%USERPROFILE%\<relativePath>`, mirroring `tail -n <lines> <file>`.
+@visibleForTesting
+String windowsTailFileScript({
+  required String relativePath,
+  required int lines,
+}) {
+  final body = StringBuffer()
+    ..write(r'$__flPath=Join-Path $env:USERPROFILE ')
+    ..write(powerShellSingleQuote(relativePath))
+    ..write(';')
+    ..write(r'if(Test-Path -LiteralPath $__flPath -PathType Leaf){')
+    ..write(r'$__flLines=@(Get-Content -LiteralPath $__flPath -Tail ')
+    ..write('$lines')
+    ..write(r' 2>$null);')
+    ..write(r'foreach($__flL in $__flLines){[void]$__flOut.Append($__flL);')
+    ..write(r'[void]$__flOut.Append([char]10)}}');
+  return powerShellUtf8OutputScript(body.toString());
+}
+
+/// Builds a PowerShell script that emits `path\x1f mtime \x1f base64` snapshot
+/// lines for [paths], matching [_parseRemoteFileSnapshotOutputSync].
+///
+/// The content selection mirrors the POSIX reader: [maxBytes] reads the first N
+/// bytes, a null [maxLines]/[maxBytes] reads the whole file, otherwise the first
+/// (or, when [tail] is set, last) [maxLines] lines are read. `mtime` is Unix
+/// epoch seconds; paths are echoed verbatim so they match the map keys the
+/// callers pass in.
+@visibleForTesting
+String windowsFileSnapshotScript(
+  List<String> paths, {
+  int? maxLines,
+  int? maxBytes,
+  bool tail = false,
+}) {
+  final pathsLiteral = paths.map(powerShellSingleQuote).join(',');
+  final body = StringBuffer()
+    ..write(r'$SEP=[char]0x1f;')
+    ..write(r'$__flEpoch=New-Object DateTime(1970,1,1,0,0,0,')
+    ..write('([DateTimeKind]::Utc));')
+    ..write('\$__flPaths=@($pathsLiteral);')
+    ..write(r'foreach($p in $__flPaths){try{')
+    ..write(r'if(-not (Test-Path -LiteralPath $p -PathType Leaf)){continue}')
+    ..write(r'$fi=Get-Item -LiteralPath $p 2>$null;if($null -eq $fi){continue}')
+    ..write(r'$__flMtime=[int64]((($fi.LastWriteTimeUtc)-$__flEpoch)')
+    ..write('.TotalSeconds);');
+  if (maxBytes != null) {
+    body
+      ..write(r'$fs=[System.IO.File]::OpenRead($p);')
+      ..write('\$buf=New-Object byte[] $maxBytes;')
+      ..write(r'$read=$fs.Read($buf,0,$buf.Length);$fs.Dispose();')
+      ..write(r'if($read -lt 0){$read=0};')
+      ..write(r'$__flB64=[Convert]::ToBase64String($buf,0,$read);');
+  } else if (maxLines == null) {
+    body
+      ..write(r'$bytes=[System.IO.File]::ReadAllBytes($p);')
+      ..write(r'$__flB64=[Convert]::ToBase64String($bytes);');
+  } else {
+    body
+      ..write(
+        tail
+            ? '\$__flLines=@(Get-Content -LiteralPath \$p -Tail $maxLines 2>\$null);'
+            : '\$__flLines=@(Get-Content -LiteralPath \$p -TotalCount $maxLines 2>\$null);',
+      )
+      ..write(r'$__flText=[string]::Join([char]10,$__flLines);')
+      ..write(r'$__flB64=[Convert]::ToBase64String(')
+      ..write(r'[System.Text.Encoding]::UTF8.GetBytes($__flText));');
+  }
+  body
+    ..write(r'[void]$__flOut.Append($p);[void]$__flOut.Append($SEP);')
+    ..write(r'[void]$__flOut.Append([string]$__flMtime);')
+    ..write(r'[void]$__flOut.Append($SEP);')
+    ..write(r'[void]$__flOut.Append($__flB64);[void]$__flOut.Append([char]10);')
+    ..write('}catch{}}');
+  return powerShellUtf8OutputScript(body.toString());
 }
 
 DateTime _dateTimeFromEpochValue(int epoch) =>
