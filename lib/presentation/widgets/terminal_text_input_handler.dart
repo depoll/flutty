@@ -129,7 +129,11 @@ bool shouldRequestKeyboardForTerminalPointerUp({
 }
 
 /// Controls a [TerminalTextInputHandler] from an ancestor widget.
-class TerminalTextInputHandlerController {
+///
+/// Notifies listeners whenever the soft keyboard visibility ([isKeyboardVisible])
+/// changes so UI that depends on it can rebuild even when the platform bottom
+/// inset does not change.
+class TerminalTextInputHandlerController extends ChangeNotifier {
   _TerminalTextInputHandlerState? _state;
 
   // ignore: use_setters_to_change_properties
@@ -159,6 +163,10 @@ class TerminalTextInputHandlerController {
 
   /// Whether the handler currently expects the soft keyboard to be visible.
   bool get isKeyboardVisible => _state?._isInputConnectionShown ?? false;
+
+  void _notifyKeyboardVisibilityChanged() {
+    notifyListeners();
+  }
 
   /// Clears the transient IME buffer after external terminal actions.
   ///
@@ -862,7 +870,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (hasInputConnection) {
       _connection?.close();
     }
-    _isInputConnectionShown = false;
+    _setInputConnectionShown(shown: false);
   }
 
   void _suppressNextTouchKeyboardRequest() {
@@ -973,20 +981,28 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       value.selection != _initEditingState.selection ||
       !value.composing.isCollapsed;
 
+  void _setInputConnectionShown({required bool shown}) {
+    if (_isInputConnectionShown == shown) {
+      return;
+    }
+    _isInputConnectionShown = shown;
+    widget.controller?._notifyKeyboardVisibilityChanged();
+  }
+
   void _openInputConnection({bool show = true}) {
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
       if (show) {
         _connection!.show();
-        _isInputConnectionShown = true;
+        _setInputConnectionShown(shown: true);
       }
     } else {
       _connection = TextInput.attach(this, _buildTextInputConfiguration());
-      _isInputConnectionShown = false;
+      _setInputConnectionShown(shown: false);
       if (show) {
         _connection!.show();
-        _isInputConnectionShown = true;
+        _setInputConnectionShown(shown: true);
       }
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
@@ -1039,7 +1055,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
-    _isInputConnectionShown = false;
+    _setInputConnectionShown(shown: false);
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastProcessedUserSelectionWasValid = false;
