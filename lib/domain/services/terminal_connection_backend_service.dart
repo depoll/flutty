@@ -69,7 +69,15 @@ abstract interface class TerminalConnectionBackend {
   });
 
   /// Selects a backend window.
-  Future<void> selectWindow(int windowIndex, {String? windowId});
+  ///
+  /// [clientImageSignatures] optionally maps Kitty image ids the client already
+  /// holds to their content signature so an image-replaying backend can skip
+  /// re-transmitting them.
+  Future<void> selectWindow(
+    int windowIndex, {
+    String? windowId,
+    Map<int, int>? clientImageSignatures,
+  });
 
   /// Closes a backend window.
   Future<void> killWindow(int windowIndex);
@@ -216,10 +224,13 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
   );
 
   @override
-  Future<void> selectWindow(int windowIndex, {String? windowId}) =>
-      Future<void>.error(
-        UnsupportedError('Direct terminal sessions do not support windows.'),
-      );
+  Future<void> selectWindow(
+    int windowIndex, {
+    String? windowId,
+    Map<int, int>? clientImageSignatures,
+  }) => Future<void>.error(
+    UnsupportedError('Direct terminal sessions do not support windows.'),
+  );
 
   @override
   Future<void> killWindow(int windowIndex) => Future<void>.error(
@@ -358,14 +369,18 @@ class _MultiplexedTerminalConnectionBackend
   );
 
   @override
-  Future<void> selectWindow(int windowIndex, {String? windowId}) =>
-      _remoteMultiplexer.selectWindow(
-        _session,
-        _sessionName,
-        windowIndex,
-        windowId: windowId,
-        extraFlags: _extraFlags,
-      );
+  Future<void> selectWindow(
+    int windowIndex, {
+    String? windowId,
+    Map<int, int>? clientImageSignatures,
+  }) => _remoteMultiplexer.selectWindow(
+    _session,
+    _sessionName,
+    windowIndex,
+    windowId: windowId,
+    extraFlags: _extraFlags,
+    clientImageSignatures: clientImageSignatures,
+  );
 
   @override
   Future<void> killWindow(int windowIndex) => _remoteMultiplexer.killWindow(

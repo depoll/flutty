@@ -22,12 +22,14 @@ import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
+import 'interactive_auth_prompt.dart';
 import 'local_notification_service.dart';
 import 'settings_service.dart';
 import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
 import 'terminal_hyperlink_tracker.dart';
 import 'terminal_notification.dart';
+import 'terminal_preview_graphics.dart';
 import 'wifi_network_service.dart';
 
 part 'ssh_session_runtime.dart';
@@ -223,11 +225,12 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 /// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
 /// accidentally enabling underline/bold while painting spaces.
 @visibleForTesting
-({String output, String pendingInput, bool insertMode})
+({String output, String pendingInput, bool insertMode, int pendingScanOffset})
 adaptTerminalInsertModeOutputForXterm({
   required String input,
   required String pendingInput,
   required bool insertMode,
+  int pendingScanOffset = 0,
   int? terminalColumns,
   int? terminalRows,
   int? cursorColumn,
@@ -253,12 +256,22 @@ adaptTerminalInsertModeOutputForXterm({
   while (cursor < combinedInput.length) {
     final codeUnit = combinedInput.codeUnitAt(cursor);
     if (codeUnit == _terminalEscapeCodeUnit) {
-      final endIndex = _terminalEscapeSequenceEndIndex(combinedInput, cursor);
+      // Only the carried-over incomplete sequence (always at index 0) can
+      // resume a prior scan; later sequences scan from their own body.
+      final endIndex = _terminalEscapeSequenceEndIndex(
+        combinedInput,
+        cursor,
+        resumeBodyFrom: cursor == 0 ? pendingScanOffset : 0,
+      );
       if (endIndex == null) {
+        // Still incomplete: we have now scanned to the end, so the next call
+        // resumes one character back (to catch a split `ESC \` terminator).
+        final scanned = combinedInput.length - cursor;
         return (
           output: output.toString(),
           pendingInput: combinedInput.substring(cursor),
           insertMode: nextInsertMode,
+          pendingScanOffset: scanned > 1 ? scanned - 1 : 0,
         );
       }
 
@@ -291,6 +304,7 @@ adaptTerminalInsertModeOutputForXterm({
     output: output.toString(),
     pendingInput: '',
     insertMode: nextInsertMode,
+    pendingScanOffset: 0,
   );
 }
 
@@ -696,7 +710,19 @@ String _terminalTmuxPassthroughPendingSuffix(String input) {
   return '';
 }
 
-int? _terminalEscapeSequenceEndIndex(String input, int start) {
+/// Finds the end index of the escape sequence beginning at [start].
+///
+/// [resumeBodyFrom] lets a caller that already scanned part of an incomplete
+/// sequence (carried as `pendingInput`) resume the terminator search instead of
+/// rescanning from the sequence body. This keeps re-feeding a long sequence
+/// (e.g. a multi-megabyte Kitty graphics APC split across slices) O(n) overall
+/// rather than O(n^2). The caller must include a one-character overlap so a
+/// two-byte ST terminator (`ESC \`) split across the boundary is still found.
+int? _terminalEscapeSequenceEndIndex(
+  String input,
+  int start, {
+  int resumeBodyFrom = 0,
+}) {
   if (start + 1 >= input.length) {
     return null;
   }
@@ -704,16 +730,19 @@ int? _terminalEscapeSequenceEndIndex(String input, int start) {
   final introducer = input.codeUnitAt(start + 1);
   switch (introducer) {
     case _terminalCsiIntroducerCodeUnit:
-      return _terminalCsiEndIndex(input, start + 2);
+      return _terminalCsiEndIndex(input, math.max(start + 2, resumeBodyFrom));
     case _terminalDcsIntroducerCodeUnit:
     case _terminalOscIntroducerCodeUnit:
     case _terminalSosIntroducerCodeUnit:
     case _terminalPmIntroducerCodeUnit:
     case _terminalApcIntroducerCodeUnit:
-      return _terminalStringEndIndex(input, start + 2);
+      return _terminalStringEndIndex(
+        input,
+        math.max(start + 2, resumeBodyFrom),
+      );
   }
 
-  var cursor = start + 1;
+  var cursor = math.max(start + 1, resumeBodyFrom);
   while (cursor < input.length &&
       _isTerminalEscapeIntermediate(input.codeUnitAt(cursor))) {
     cursor += 1;
@@ -936,12 +965,20 @@ bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics.pixelHeight > 0;
 
 String _terminalControlQueryPendingSuffix(String input) {
-  final start = input.length > 16 ? input.length - 16 : 0;
-  for (var index = start; index < input.length; index += 1) {
-    final suffix = input.substring(index);
-    if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
-      return suffix;
+  // Retain a trailing partial control query so it can be completed by the next
+  // slice. Scan back far enough to cover the longest supported query (a
+  // multi-parameter mode report can exceed a short window); slicing terminal
+  // output more finely makes such a split more reachable.
+  const maxPendingQueryLength = 64;
+  final windowStart = input.length > maxPendingQueryLength
+      ? input.length - maxPendingQueryLength
+      : 0;
+  for (var index = input.length - 1; index >= windowStart; index -= 1) {
+    if (input.codeUnitAt(index) != _terminalEscapeCodeUnit) {
+      continue;
     }
+    final suffix = input.substring(index);
+    return _terminalControlQueryPrefixPattern.hasMatch(suffix) ? suffix : '';
   }
   return '';
 }
@@ -1202,6 +1239,7 @@ typedef SshClientFactory =
       required String username,
       SSHHostkeyVerifyHandler? onVerifyHostKey,
       SSHPasswordRequestHandler? onPasswordRequest,
+      SSHUserInfoRequestHandler? onUserInfoRequest,
       List<SSHKeyPair>? identities,
       Duration? keepAliveInterval,
     });
@@ -1266,6 +1304,41 @@ class ConnectionAttemptStatus {
       state == SshConnectionState.reconnecting;
 }
 
+/// Resolved password / keyboard-interactive handlers for a connection.
+class _InteractiveAuthHandlers {
+  const _InteractiveAuthHandlers({
+    this.onPasswordRequest,
+    this.onUserInfoRequest,
+  });
+
+  final SSHPasswordRequestHandler? onPasswordRequest;
+  final SSHUserInfoRequestHandler? onUserInfoRequest;
+}
+
+/// Tracks whether an interactive authentication prompt is currently open so
+/// the authentication timeout can pause while the user types.
+class _InteractiveAuthGate {
+  int _activePrompts = 0;
+
+  /// Invoked whenever a prompt opens or closes.
+  void Function()? onActivityChanged;
+
+  /// Whether at least one interactive prompt is currently awaiting input.
+  bool get isPrompting => _activePrompts > 0;
+
+  /// Runs [action] while marking a prompt as active for its duration.
+  Future<T> guard<T>(Future<T> Function() action) async {
+    _activePrompts++;
+    onActivityChanged?.call();
+    try {
+      return await action();
+    } finally {
+      _activePrompts--;
+      onActivityChanged?.call();
+    }
+  }
+}
+
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
@@ -1274,6 +1347,7 @@ class SshService {
     this.keyRepository,
     this.knownHostsRepository,
     this.hostKeyPromptHandler,
+    this.interactiveAuthPromptHandler,
     WifiNetworkService? wifiNetworkService,
     SshSocketConnector? socketConnector,
     SshClientFactory? clientFactory,
@@ -1299,6 +1373,10 @@ class SshService {
 
   /// UI callback used for TOFU and changed-key prompts.
   final HostKeyPromptHandler? hostKeyPromptHandler;
+
+  /// UI callback used to collect passwords / keyboard-interactive responses
+  /// when the server issues a challenge and no stored credential answers it.
+  final InteractiveAuthPromptHandler? interactiveAuthPromptHandler;
 
   /// Service used to read the current Wi-Fi SSID for jump host bypass.
   final WifiNetworkService wifiNetworkService;
@@ -1588,6 +1666,8 @@ class SshService {
         },
       );
       final verificationService = _createHostKeyVerificationService(config);
+      final authGate = _InteractiveAuthGate();
+      final authHandlers = _buildInteractiveAuthHandlers(config, authGate);
 
       // Handle jump host
       if (config.jumpHost != null) {
@@ -1671,22 +1751,19 @@ class SshService {
             }
             return true;
           },
-          onPasswordRequest: config.password != null
-              ? () => config.password!
-              : null,
+          onPasswordRequest: authHandlers.onPasswordRequest,
+          onUserInfoRequest: authHandlers.onUserInfoRequest,
           identities: _parseIdentities(config),
           keepAliveInterval: config.keepAliveInterval,
         );
 
         // Bound authentication waits so the progress dialog can surface a
         // recoverable error instead of hanging indefinitely.
-        await client.authenticated.timeout(
-          config.connectionTimeout,
-          onTimeout: () => throw TimeoutException(
-            isJumpHost
-                ? 'Jump host authentication timed out'
-                : 'Authentication timed out',
-          ),
+        await _awaitAuthentication(
+          client,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
         );
         report(
           SshConnectionState.connected,
@@ -1729,21 +1806,18 @@ class SshService {
           }
           return trusted;
         },
-        onPasswordRequest: config.password != null
-            ? () => config.password!
-            : null,
+        onPasswordRequest: authHandlers.onPasswordRequest,
+        onUserInfoRequest: authHandlers.onUserInfoRequest,
         identities: _parseIdentities(config),
         keepAliveInterval: config.keepAliveInterval,
       );
 
       try {
-        await client.authenticated.timeout(
-          config.connectionTimeout,
-          onTimeout: () => throw TimeoutException(
-            isJumpHost
-                ? 'Jump host authentication timed out'
-                : 'Authentication timed out',
-          ),
+        await _awaitAuthentication(
+          client,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
         );
       } on SSHHostkeyError {
         if (!rejectedTrustedHostKey) {
@@ -1788,20 +1862,17 @@ class SshService {
             }
             return true;
           },
-          onPasswordRequest: config.password != null
-              ? () => config.password!
-              : null,
+          onPasswordRequest: authHandlers.onPasswordRequest,
+          onUserInfoRequest: authHandlers.onUserInfoRequest,
           identities: _parseIdentities(config),
           keepAliveInterval: config.keepAliveInterval,
         );
 
-        await client.authenticated.timeout(
-          config.connectionTimeout,
-          onTimeout: () => throw TimeoutException(
-            isJumpHost
-                ? 'Jump host authentication timed out'
-                : 'Authentication timed out',
-          ),
+        await _awaitAuthentication(
+          client,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
         );
         report(
           SshConnectionState.connected,
@@ -1913,6 +1984,194 @@ class SshService {
         error: 'Connection failed. Check the host settings and try again.',
       );
     }
+  }
+
+  /// Builds the password / keyboard-interactive handlers for a connection.
+  ///
+  /// When the host has a stored password it is used directly (and also
+  /// answers a simple keyboard-interactive password prompt). Otherwise, if an
+  /// [interactiveAuthPromptHandler] is available, the user is prompted so a
+  /// server-issued password challenge can be answered from the UI.
+  _InteractiveAuthHandlers _buildInteractiveAuthHandlers(
+    SshConnectionConfig config,
+    _InteractiveAuthGate gate,
+  ) {
+    final staticPassword = config.password;
+    final promptHandler = interactiveAuthPromptHandler;
+    final hostLabel = '${config.username}@${config.hostname}:${config.port}';
+
+    SSHPasswordRequestHandler? onPasswordRequest;
+    if (staticPassword != null) {
+      onPasswordRequest = () => staticPassword;
+    } else if (promptHandler != null) {
+      onPasswordRequest = () => gate.guard(() async {
+        final responses = await promptHandler(
+          SshAuthChallenge(
+            hostLabel: hostLabel,
+            username: config.username,
+            name: '',
+            instruction: '',
+            prompts: const [SshAuthPrompt(prompt: 'Password:', echo: false)],
+          ),
+        );
+        if (responses == null || responses.isEmpty) {
+          return null;
+        }
+        return responses.first;
+      });
+    }
+
+    SSHUserInfoRequestHandler? onUserInfoRequest;
+    if (staticPassword != null || promptHandler != null) {
+      onUserInfoRequest = (request) async {
+        final prompts = request.prompts;
+        // A keyboard-interactive info request may legitimately carry zero
+        // prompts (e.g. an informational banner, RFC 4256). It must be
+        // answered with an empty response list rather than prompting the user.
+        if (prompts.isEmpty) {
+          return const <String>[];
+        }
+        // Reuse the stored password only for a single hidden prompt that
+        // clearly asks for a password, so OTP/2FA/password-change challenges
+        // still reach the user instead of silently receiving the saved
+        // password (which the server would reject, breaking the login).
+        if (staticPassword != null &&
+            prompts.length == 1 &&
+            !prompts.first.echo &&
+            _isPlainPasswordPrompt(
+              request.name,
+              request.instruction,
+              prompts.first.promptText,
+            )) {
+          return <String>[staticPassword];
+        }
+        if (promptHandler == null) {
+          return null;
+        }
+        return gate.guard(
+          () => promptHandler(
+            SshAuthChallenge(
+              hostLabel: hostLabel,
+              username: config.username,
+              name: request.name,
+              instruction: request.instruction,
+              prompts: prompts
+                  .map(
+                    (prompt) => SshAuthPrompt(
+                      prompt: prompt.promptText,
+                      echo: prompt.echo,
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ),
+        );
+      };
+    }
+
+    return _InteractiveAuthHandlers(
+      onPasswordRequest: onPasswordRequest,
+      onUserInfoRequest: onUserInfoRequest,
+    );
+  }
+
+  /// Whether a single keyboard-interactive prompt is unambiguously asking for
+  /// an account password (rather than an OTP/2FA code or a new password during
+  /// a password change), so a stored password can be safely reused to answer
+  /// it. Errs toward `false`: unknown prompts fall through to the user.
+  static bool _isPlainPasswordPrompt(
+    String name,
+    String instruction,
+    String promptText,
+  ) {
+    final prompt = promptText.toLowerCase();
+    if (!prompt.contains('password') && !prompt.contains('passphrase')) {
+      return false;
+    }
+    final haystack = '$name\n$instruction\n$promptText'.toLowerCase();
+    const nonPasswordMarkers = <String>[
+      'one-time',
+      'one time',
+      'otp',
+      'passcode',
+      'verification',
+      'authenticator',
+      'token',
+      '2fa',
+      'mfa',
+      'second factor',
+      'two-factor',
+      'two factor',
+      'duo',
+      'yubikey',
+      'totp',
+      'hotp',
+      'security key',
+      'new password',
+      'new passphrase',
+      'retype',
+      're-enter',
+      'reenter',
+      'confirm',
+      'change',
+    ];
+    return !nonPasswordMarkers.any(haystack.contains);
+  }
+
+  /// Awaits SSH authentication with a timeout that pauses while the user is
+  /// answering an interactive prompt, so slow password entry does not abort
+  /// the connection. Each time a prompt closes the timeout is refreshed to
+  /// allow the following network round-trip to complete.
+  Future<void> _awaitAuthentication(
+    SSHClient client,
+    _InteractiveAuthGate gate, {
+    required Duration timeout,
+    required bool isJumpHost,
+  }) {
+    final completer = Completer<void>();
+    Timer? timer;
+
+    void arm() {
+      timer?.cancel();
+      timer = Timer(timeout, () {
+        if (gate.isPrompting) {
+          arm();
+          return;
+        }
+        if (!completer.isCompleted) {
+          completer.completeError(
+            TimeoutException(
+              isJumpHost
+                  ? 'Jump host authentication timed out'
+                  : 'Authentication timed out',
+            ),
+          );
+        }
+      });
+    }
+
+    client.authenticated.then<void>(
+      (_) {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      },
+    );
+
+    gate.onActivityChanged = arm;
+    arm();
+
+    return completer.future.whenComplete(() {
+      timer?.cancel();
+      if (identical(gate.onActivityChanged, arm)) {
+        gate.onActivityChanged = null;
+      }
+    });
   }
 
   HostKeyVerificationService _createHostKeyVerificationService(
@@ -2166,6 +2425,7 @@ class SshService {
     required String username,
     SSHHostkeyVerifyHandler? onVerifyHostKey,
     SSHPasswordRequestHandler? onPasswordRequest,
+    SSHUserInfoRequestHandler? onUserInfoRequest,
     List<SSHKeyPair>? identities,
     Duration? keepAliveInterval,
   }) => SSHClient(
@@ -2173,6 +2433,7 @@ class SshService {
     username: username,
     onVerifyHostKey: onVerifyHostKey,
     onPasswordRequest: onPasswordRequest,
+    onUserInfoRequest: onUserInfoRequest,
     identities: identities,
     keepAliveInterval: keepAliveInterval,
   );
@@ -2729,6 +2990,22 @@ class SshSession {
   void debugHandlePrivateOsc(String code, List<String> args) =>
       _handlePrivateOsc(code, args);
 
+  /// The terminal-output coalescing interval. Exposed so tests can hold
+  /// buffered output deterministically instead of racing the real timer.
+  @visibleForTesting
+  Duration get debugTerminalOutputFlushInterval =>
+      _runtime.debugTerminalOutputFlushInterval;
+
+  @visibleForTesting
+  set debugTerminalOutputFlushInterval(Duration value) =>
+      _runtime.debugTerminalOutputFlushInterval = value;
+
+  /// Synchronously flushes buffered terminal/stdout output. Exposed so tests can
+  /// trigger a coalesced flush without waiting on the real coalescing timer.
+  @visibleForTesting
+  void debugFlushPendingTerminalOutput() =>
+      _runtime.debugFlushPendingTerminalOutput();
+
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
 
@@ -3121,6 +3398,11 @@ class SshSession {
     return TerminalPreviewSnapshot(
       lines: List.unmodifiable(previewLines),
       plainText: previewLines.map((line) => line.text).join('\n'),
+      images: buildTerminalPreviewImages(
+        terminal,
+        startRow: visibleRange.start,
+        endRow: visibleRange.end,
+      ),
     );
   }
 
@@ -3824,6 +4106,9 @@ final sshServiceProvider = Provider<SshService>(
     keyRepository: ref.watch(keyRepositoryProvider),
     knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
     hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
+    interactiveAuthPromptHandler: ref.watch(
+      interactiveAuthPromptHandlerProvider,
+    ),
     wifiNetworkService: ref.watch(wifiNetworkServiceProvider),
   ),
 );

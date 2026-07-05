@@ -1,8 +1,12 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:monkeyssh/domain/models/terminal_preview.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -535,6 +539,73 @@ void main() {
       expect(decoration?.color, testTheme.background);
     },
   );
+
+  testWidgets('composites captured terminal images into the preview', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    late TerminalPreviewSnapshot snapshot;
+    await tester.runAsync(() async {
+      final terminal = Terminal(maxLines: 100)..resize(40, 12);
+      terminal.graphics.storeImageWithId(
+        9,
+        _solidImage(const Color(0xFFFF0000), 32, 32),
+      );
+      terminal
+        ..write('agent output\r\n')
+        ..write(_placeholderGrid(9, cols: 8, rows: 4));
+      snapshot = SshSession.buildTerminalPreviewSnapshot(terminal)!;
+    });
+    expect(snapshot.images, isNotEmpty);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            child: RepaintBoundary(
+              key: boundaryKey,
+              child: ConnectionPreviewStack(
+                entries: [
+                  ConnectionPreviewStackEntry(
+                    title: 'Connection #1',
+                    body: snapshot.plainText,
+                    previewSnapshot: snapshot,
+                    terminalTheme: TerminalThemes.defaultDarkTheme,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    var hasRed = false;
+    await tester.runAsync(() async {
+      final boundary =
+          boundaryKey.currentContext!.findRenderObject()!
+              as RenderRepaintBoundary;
+      final shot = await boundary.toImage();
+      final data = (await shot.toByteData())!;
+      for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
+        final r = data.getUint8(i);
+        final g = data.getUint8(i + 1);
+        final b = data.getUint8(i + 2);
+        if (r > 150 && g < 90 && b < 90) {
+          hasRed = true;
+          break;
+        }
+      }
+    });
+
+    expect(
+      hasRed,
+      isTrue,
+      reason: 'the captured image should be composited into the preview card',
+    );
+  });
 }
 
 List<BoxDecoration> _boxDecorationsWithColor(
@@ -546,3 +617,60 @@ List<BoxDecoration> _boxDecorationsWithColor(
     .whereType<BoxDecoration>()
     .where((decoration) => decoration.color == color)
     .toList(growable: false);
+
+/// Kitty row/column placeholder diacritics (row/column order).
+const _kittyDiacritics = <int>[
+  0x0305,
+  0x030D,
+  0x030E,
+  0x0310,
+  0x0312,
+  0x033D,
+  0x033E,
+  0x033F,
+  0x0346,
+  0x034A,
+  0x034B,
+  0x034C,
+  0x0350,
+  0x0351,
+  0x0352,
+  0x0357,
+  0x035B,
+  0x0363,
+  0x0364,
+  0x0365,
+  0x0366,
+  0x0367,
+  0x0368,
+  0x0369,
+];
+
+ui.Image _solidImage(Color color, int width, int height) {
+  final recorder = ui.PictureRecorder();
+  ui.Canvas(recorder).drawRect(
+    Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+    Paint()..color = color,
+  );
+  return recorder.endRecording().toImageSync(width, height);
+}
+
+String _placeholderGrid(int imageId, {required int cols, required int rows}) {
+  final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+  final r = (imageId >> 16) & 0xFF;
+  final g = (imageId >> 8) & 0xFF;
+  final b = imageId & 0xFF;
+  final buffer = StringBuffer();
+  for (var row = 0; row < rows; row++) {
+    buffer.write('\x1b[38;2;$r;$g;${b}m');
+    for (var col = 0; col < cols; col++) {
+      buffer
+        ..write(placeholder)
+        ..writeCharCode(_kittyDiacritics[row])
+        ..writeCharCode(_kittyDiacritics[col]);
+    }
+    buffer.write('\x1b[39m');
+    if (row < rows - 1) buffer.write('\r\n');
+  }
+  return buffer.toString();
+}
