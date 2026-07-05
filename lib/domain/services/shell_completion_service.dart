@@ -1019,9 +1019,13 @@ String? _normalizeShellCompletionCommandName(String? commandName) {
   if (normalized == null || normalized.isEmpty) {
     return null;
   }
-  normalized = normalized.split('/').last;
+  normalized = normalized.replaceAll(r'\', '/').split('/').last;
   if (normalized.startsWith('-')) {
     normalized = normalized.substring(1);
+  }
+  normalized = normalized.toLowerCase();
+  if (normalized.endsWith('.exe')) {
+    normalized = normalized.substring(0, normalized.length - 4);
   }
   return normalized;
 }
@@ -2173,22 +2177,96 @@ String _bashCompWordsAssignment(ShellCompletionInvocation invocation) {
 
 String _shellQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
+/// PowerShell logic that normalizes the active Windows shell name into `cmd`,
+/// `powershell`, `pwsh`, or an empty string.
+///
+/// When a mux pane reports its foreground command, Dart assigns `$__flShell`
+/// before this script runs. For plain Windows OpenSSH sessions, that foreground
+/// command is not observable from the side channel, so this falls back to the
+/// OpenSSH `DefaultShell` registry value. Missing `DefaultShell` means OpenSSH is
+/// using its default `cmd.exe` shell.
+const _windowsShellDetectionLogic = r'''
+function __flNormalizeShellName([string]$value){
+if(!$value){return ''}
+$value=[System.IO.Path]::GetFileNameWithoutExtension($value).ToLowerInvariant()
+while($value.StartsWith('-')){$value=$value.Substring(1)}
+if($value -eq 'cmd' -or $value -eq 'powershell' -or $value -eq 'pwsh'){return $value}
+return ''
+}
+function __flResolveShellName(){
+$__flResolved=__flNormalizeShellName $__flShell
+if($__flResolved){return $__flResolved}
+try{$__flDefault=(Get-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -ErrorAction Stop).DefaultShell}catch{$__flDefault=''}
+$__flResolved=__flNormalizeShellName $__flDefault
+if($__flResolved){return $__flResolved}
+return 'cmd'
+}
+''';
+
 /// Static PowerShell logic for [buildWindowsShellCompletionScript]. Reads the
 /// `$__flMode`/`$__flToken`/`$__flCwd`/`$__flLimit` parameters assigned by the
 /// caller and appends `<kind>\t<value>` lines to `$__flOut`, matching
 /// [parseShellCompletionOutput]. Paths use forward slashes and are relative to
 /// the token, like the POSIX completion fallback.
 const _windowsCompletionLogic = r'''
+$__flShell=__flResolveShellName
 if($__flCwd){Set-Location -LiteralPath $__flCwd -ErrorAction SilentlyContinue}
+function __flEmit([string]$kind,[string]$value){
+if(!$value -or $__flEmitCount -ge $__flLimit){return $false}
+if($value.IndexOf([char]9) -ge 0 -or $value.IndexOf([char]10) -ge 0 -or $value.IndexOf([char]13) -ge 0){return $true}
+$script:__flEmitCount++
+[void]$__flOut.Append($kind);[void]$__flOut.Append([char]9);[void]$__flOut.Append($value);[void]$__flOut.Append([char]10)
+return ($__flEmitCount -lt $__flLimit)
+}
+function __flNormalizeCompletionText([string]$value){
+if(!$value){return ''}
+$value=$value.TrimEnd()
+if($value.Length -ge 2){
+$first=$value[0];$last=$value[$value.Length-1]
+if(($first -eq "'" -and $last -eq "'") -or ($first -eq '"' -and $last -eq '"')){
+$value=$value.Substring(1,$value.Length-2)
+if($first -eq "'"){$value=$value -replace "''","'"}
+else{$value=$value -replace '`(.)','$1' -replace '""','"'}
+}
+}
+return ($value -replace '\\','/')
+}
+function __flTryTabExpansion(){
+if($__flShell -eq 'cmd'){return $false}
+if(!(Get-Command TabExpansion2 -ErrorAction SilentlyContinue)){return $false}
+$__flCompletion=TabExpansion2 $__flCommandLine $__flCursorOffset
+if(!$__flCompletion -or !$__flCompletion.CompletionMatches){return $false}
+$__flAny=$false
+foreach($__m in $__flCompletion.CompletionMatches){
+if($__flEmitCount -ge $__flLimit){break}
+$__flText=__flNormalizeCompletionText ([string]$__m.CompletionText)
+if(!$__flText){$__flText=__flNormalizeCompletionText ([string]$__m.ListItemText)}
+if(!$__flText){continue}
+$__flType=[string]$__m.ResultType
+$__flKind='argument'
+if($__flType -eq 'Command'){$__flKind='command'}
+elseif($__flType -eq 'ProviderContainer'){$__flKind='directory'}
+elseif($__flType -eq 'ProviderItem'){$__flKind='file'}
+if($__flMode -eq 'argument' -and $__flKind -eq 'command'){continue}
+if($__flMode -eq 'directory' -and $__flKind -ne 'directory'){continue}
+if($__flMode -eq 'path' -and $__flKind -ne 'directory' -and $__flKind -ne 'file'){continue}
+$__flAny=$true
+if(!(__flEmit $__flKind $__flText)){break}
+}
+return $__flAny
+}
 if($__flMode -eq 'command'){
 $__flPat=[System.Management.Automation.WildcardPattern]::Escape($__flToken)+'*'
 $__flCmds=@(Get-Command -Name $__flPat -ErrorAction SilentlyContinue|Select-Object -First $__flLimit)
 foreach($__c in $__flCmds){
 $__n=$__c.Name
 if($__c.CommandType -eq 'Application'){$__n=[System.IO.Path]::GetFileNameWithoutExtension($__n)}
-if($__n){[void]$__flOut.Append('command');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__n);[void]$__flOut.Append([char]10)}
+if($__n){if(!(__flEmit 'command' $__n)){break}}
 }
 }else{
+$__flUsePathFallback=$true
+if($__flMode -eq 'argument' -and (__flTryTabExpansion)){$__flUsePathFallback=$false}
+if($__flUsePathFallback){
 $__flPrefix=($__flToken -replace '[^/]*$','')
 $__flBase=($__flToken -replace '.*/','')
 if($__flPrefix){$__flDir=($__flPrefix -replace '/$','');if($__flDir -match '^[A-Za-z]:$'){$__flDir="$__flDir/"}}
@@ -2197,8 +2275,9 @@ $__flPat=[System.Management.Automation.WildcardPattern]::Escape($__flBase)+'*'
 $__flItems=@(Get-ChildItem -LiteralPath $__flDir -ErrorAction SilentlyContinue|Where-Object {$_.Name -like $__flPat}|Select-Object -First $__flLimit)
 foreach($__it in $__flItems){
 $__nm=$__it.Name;$__val="$__flPrefix$__nm"
-if($__it.PSIsContainer){[void]$__flOut.Append('directory');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__val);[void]$__flOut.Append([char]10)}
-elseif($__flMode -eq 'path'){[void]$__flOut.Append('file');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__val);[void]$__flOut.Append([char]10)}
+if($__it.PSIsContainer){if(!(__flEmit 'directory' $__val)){break}}
+elseif($__flMode -eq 'path'){if(!(__flEmit 'file' $__val)){break}}
+}
 }
 }''';
 
@@ -2207,12 +2286,14 @@ elseif($__flMode -eq 'path'){[void]$__flOut.Append('file');[void]$__flOut.Append
 /// [parseShellCompletionOutput] parses.
 ///
 /// Command mode lists matching commands via `Get-Command` (executable extensions
-/// stripped); directory/path modes enumerate the token's directory. Argument
-/// mode (installed shell completions) has no Windows equivalent and yields
-/// nothing so the caller falls back to static suggestions.
+/// stripped); argument mode asks PowerShell's native `TabExpansion2` completer;
+/// directory/path modes enumerate the token's directory.
 @visibleForTesting
 String buildWindowsShellCompletionScript(ShellCompletionInvocation invocation) {
   final limit = invocation.maxSuggestions * 4;
+  final shellCommand = _normalizeShellCompletionCommandName(
+    invocation.shellCommand,
+  );
   final assignments = StringBuffer()
     ..write(r'$__flMode=')
     ..write(powerShellSingleQuote(invocation.mode.name))
@@ -2223,8 +2304,18 @@ String buildWindowsShellCompletionScript(ShellCompletionInvocation invocation) {
     ..write(r'$__flCwd=')
     ..write(powerShellSingleQuote(invocation.workingDirectory?.trim() ?? ''))
     ..write(';')
+    ..write(r'$__flCommandLine=')
+    ..write(powerShellSingleQuote(invocation.commandLine))
+    ..write(';')
+    ..write('\$__flCursorOffset=${invocation.cursorOffset};')
+    ..write(r'$__flShell=')
+    ..write(powerShellSingleQuote(shellCommand ?? ''))
+    ..write(';')
+    ..write(r'$__flEmitCount=0;')
     ..write('\$__flLimit=$limit;');
-  return powerShellUtf8OutputScript('$assignments$_windowsCompletionLogic');
+  return powerShellUtf8OutputScript(
+    '$assignments$_windowsShellDetectionLogic$_windowsCompletionLogic',
+  );
 }
 
 /// Builds a PowerShell script that emits recent PowerShell command history on a
@@ -2235,18 +2326,41 @@ String buildWindowsShellCompletionScript(ShellCompletionInvocation invocation) {
 /// command so the existing parser treats it as a literal command string.
 @visibleForTesting
 String buildWindowsShellHistoryScript(ShellCompletionInvocation invocation) {
+  final shellCommand = _normalizeShellCompletionCommandName(
+    invocation.shellCommand,
+  );
   final body = StringBuffer()
+    ..write(r'$__flShell=')
+    ..write(powerShellSingleQuote(shellCommand ?? ''))
+    ..write(';')
+    ..write(_windowsShellDetectionLogic)
+    ..write(r'$__flShell=__flResolveShellName;')
     ..write(
-      r"$__flHist=Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt';",
+      r'$__flHistPaths=New-Object System.Collections.Generic.List[string];',
+    )
+    ..write(
+      r'try{$__flOpt=Get-PSReadLineOption -ErrorAction Stop;if($__flOpt.HistorySavePath){$__flHistPaths.Add($__flOpt.HistorySavePath)}}catch{}',
+    )
+    ..write(r'$__flFallbacks=@(')
+    ..write(
+      r"(Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt'),",
+    )
+    ..write(
+      r"(Join-Path $env:APPDATA 'Microsoft\PowerShell\PSReadLine\ConsoleHost_history.txt')",
+    )
+    ..write(');')
+    ..write(
+      r'foreach($__flFb in $__flFallbacks){if($__flFb -and !$__flHistPaths.Contains($__flFb)){$__flHistPaths.Add($__flFb)}}',
     )
     ..write(r'[void]$__flOut.Append(')
     ..write(powerShellSingleQuote('__FLUTTY_HISTORY_START__'))
     ..write(r');[void]$__flOut.Append([char]10);')
+    ..write(r"if($__flShell -ne 'cmd'){")
     ..write(
-      r'if(Test-Path -LiteralPath $__flHist -PathType Leaf){$__flLines=@(Get-Content -LiteralPath $__flHist -Tail 1200 -Encoding UTF8 -ErrorAction SilentlyContinue);',
+      r'foreach($__flHist in $__flHistPaths){if(Test-Path -LiteralPath $__flHist -PathType Leaf){$__flLines=@(Get-Content -LiteralPath $__flHist -Tail 1200 -Encoding UTF8 -ErrorAction SilentlyContinue);',
     )
     ..write(
-      r"foreach($__l in $__flLines){[void]$__flOut.Append('bash');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__l);[void]$__flOut.Append([char]10)}}",
+      r"foreach($__l in $__flLines){[void]$__flOut.Append('bash');[void]$__flOut.Append([char]9);[void]$__flOut.Append($__l);[void]$__flOut.Append([char]10)}break}}}",
     )
     ..write(r'[void]$__flOut.Append(')
     ..write(powerShellSingleQuote(_shellHistoryDoneMarker))
