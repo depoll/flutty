@@ -1721,6 +1721,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     FontFeature.disable('calt'),
     FontFeature.disable('dlig'),
     FontFeature.disable('hlig'),
+    FontFeature.disable('rlig'),
   ];
 
   // Cache of recorded per-line glyph pictures, keyed by a hash of the line's
@@ -1733,6 +1734,12 @@ class MonkeyTerminalPainter extends TerminalPainter {
   // cache), since those change how a given cell content renders.
   final _foregroundPictureCache = <int, Picture>{};
   static const _maxForegroundPictureCacheEntries = 512;
+
+  /// Number of foreground style-run paragraphs currently cached. A coalesced
+  /// line of N same-style cells caches a single N-glyph run paragraph here (not
+  /// N per-cell paragraphs), so tests can assert that batching actually occurs.
+  @visibleForTesting
+  int get runParagraphCacheLength => _runParagraphCache.length;
 
   @override
   set textStyle(TerminalStyle value) {
@@ -1915,10 +1922,14 @@ class MonkeyTerminalPainter extends TerminalPainter {
   /// into a single paragraph and drawn with one `drawParagraph` (a "style run"),
   /// cutting draw-call overhead on dense, freshly rendered lines — the ones that
   /// miss the per-line picture cache during high-throughput output. Runs break
-  /// on any style change and at cells that are positioned or painted specially
-  /// (Kitty placeholders, block elements, wide glyphs, concealed cells, and
-  /// undrawn blank cells), which fall back to the per-cell [paintCellForeground]
-  /// so their exact placement and special drawing are preserved.
+  /// on any style change and at cells that are positioned or painted specially,
+  /// which fall back to the per-cell [paintCellForeground] so their exact
+  /// placement and special drawing are preserved: Kitty placeholders, block
+  /// elements, wide (2-cell) and zero-width (combining-mark) glyphs, concealed
+  /// cells, undrawn blank cells, and any code point that is not
+  /// [_isBatchableForegroundCodePoint] (complex/joining scripts and glyphs that
+  /// may fall back to a non-monospace font, which would shape or advance
+  /// differently once concatenated into one paragraph).
   void _paintLineForegroundsInto(Canvas canvas, BufferLine line) {
     final cellData = CellData.empty();
     final cellWidth = cellSize.width;
@@ -1972,10 +1983,16 @@ class MonkeyTerminalPainter extends TerminalPainter {
           charCode == kittyGraphicsPlaceholderCodePoint ||
           flags & CellFlags.invisible != 0 ||
           (charCode == 0x20 && !overline && !strikethrough);
-      // Block-element glyphs are painted as rectangles, and wide (2-cell) glyphs
-      // must sit at an exact offset; neither can join a text run.
-      final paintedSpecially =
-          charWidth == 2 || _isRectPaintedBlockElement(charCode);
+      // Cells that must be drawn individually at their exact column: block
+      // elements (painted as rectangles), wide (2-cell) and zero-width
+      // (combining-mark) glyphs — which shape and advance with their neighbours
+      // inside one paragraph — and code points that are not safe to concatenate
+      // (complex/joining scripts, non-monospace fallbacks). These break the run
+      // and defer to the per-cell path, preserving the pre-batching output.
+      final drawIndividually =
+          charWidth != 1 ||
+          _isRectPaintedBlockElement(charCode) ||
+          !_isBatchableForegroundCodePoint(charCode);
 
       if (drawsNothing) {
         flushRun();
@@ -1985,7 +2002,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         continue;
       }
 
-      if (paintedSpecially) {
+      if (drawIndividually) {
         flushRun();
         paintCellForeground(canvas, Offset(i * cellWidth, 0), cellData);
         if (charWidth == 2) {
@@ -2434,6 +2451,41 @@ class MonkeyTerminalPainter extends TerminalPainter {
       charCode == 0x2594 ||
       charCode == 0x2595 ||
       (charCode >= 0x2596 && charCode <= 0x259F);
+
+  /// Whether [charCode] may be coalesced into a batched foreground style run.
+  ///
+  /// A run concatenates several cells into a single paragraph, so only code
+  /// points that shape identically whether laid out in isolation or in sequence
+  /// — and that occupy exactly one monospace cell in standard terminal fonts —
+  /// are eligible. This deliberately excludes cursive-joining and complex
+  /// scripts (Arabic, Syriac, Indic, …), whose glyphs would connect or reorder
+  /// once concatenated (mandatory `init`/`medi`/`fina`/`isol` shaping that
+  /// [_ligatureDisablingFeatures] cannot turn off), and code points likely to
+  /// fall back to a proportional font, whose advance would drift the rest of the
+  /// run off the grid. Everything outside this set is drawn one cell at a time by
+  /// [paintCellForeground], exactly as the pre-batching path did, so their
+  /// placement and shaping are unchanged.
+  static bool _isBatchableForegroundCodePoint(int charCode) {
+    // Basic Latin (printable) — the dominant case for high-throughput output
+    // such as `tail -f`/`yes`, logs, and source code.
+    if (charCode >= 0x20 && charCode <= 0x7E) {
+      return true;
+    }
+    // Latin-1 Supplement (printable), minus the soft hyphen (a zero-width
+    // format character). This block holds no combining or cursive-joining code
+    // points, so isolated and in-run shaping match; it includes U+00A0, which
+    // decorated spaces are substituted with.
+    if (charCode >= 0xA0 && charCode <= 0xFF && charCode != 0xAD) {
+      return true;
+    }
+    // Box Drawing — borders, tables, and rules. Present at exactly one cell in
+    // terminal fonts and neither joining nor combining. (Block Elements at
+    // 0x2580+ are handled separately as rectangles.)
+    if (charCode >= 0x2500 && charCode <= 0x257F) {
+      return true;
+    }
+    return false;
+  }
 
   @visibleForTesting
   Color resolveMonkeyTerminalCellForegroundColor(CellData cellData) {
