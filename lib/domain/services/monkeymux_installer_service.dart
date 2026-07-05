@@ -423,12 +423,19 @@ class MonkeyMuxInstallerService {
           );
         }
         if (isWindows) {
-          // cmd/PowerShell lack an atomic force-move, so replace via SFTP:
-          // drop any stale target, then rename the verified upload into place.
+          // SFTP rename cannot overwrite an existing file and there is no
+          // atomic force-move over cmd/PowerShell, so clear any stale target
+          // first, then rename the verified upload into place. Only ignore a
+          // missing target (the common fresh-install case); surface real errors
+          // (for example a permission error or a locked, running helper) so we
+          // abort with the existing binary intact instead of renaming onto a
+          // half-removed target.
           try {
             await sftp.remove(executableSftpPath);
-          } on Object {
-            // The destination usually does not exist yet; ignore.
+          } on SftpStatusError catch (error) {
+            if (error.code != SftpStatusCode.noSuchFile) {
+              rethrow;
+            }
           }
           await sftp.rename(temporaryExecutablePath, executableSftpPath);
         } else {
@@ -484,7 +491,7 @@ class MonkeyMuxInstallerService {
     SshSession session, {
     SshExecPriority priority = SshExecPriority.low,
   }) async {
-    final platform = _remoteBannerIndicatesWindows(session)
+    final platform = session.remoteIsWindows
         ? await _probeWindowsPlatform(session, priority: priority)
         : await _probePosixPlatform(session, priority: priority);
     DiagnosticsLogService.instance.info(
@@ -555,12 +562,22 @@ class MonkeyMuxInstallerService {
     required SshExecPriority priority,
   }) async {
     final arch = await _probeWindowsArch(session, priority: priority);
-    return 'windows-${arch ?? 'amd64'}';
+    if (arch == null) {
+      // The banner confirmed Windows but the architecture probe failed or was
+      // unrecognized. Fail with a clear error rather than guessing amd64 and
+      // installing a helper the host may not be able to run.
+      throw const MonkeyMuxInstallException(
+        'Could not detect the remote Windows CPU architecture.',
+      );
+    }
+    return 'windows-$arch';
   }
 
-  /// Detects the Windows CPU architecture. Returns `amd64`/`arm64`, or null when
-  /// the host does not look like Windows. Uses `cmd /c` so it works regardless
-  /// of whether the default remote shell is cmd.exe or PowerShell.
+  /// Detects the Windows CPU architecture. Returns `amd64`/`arm64` for
+  /// supported hosts, a raw token such as `x86` for a recognized-but-unbundled
+  /// architecture (so the caller surfaces a clear "not bundled" error), or null
+  /// when the host does not look like Windows. Uses `cmd /c` so it works
+  /// regardless of whether the default remote shell is cmd.exe or PowerShell.
   Future<String?> _probeWindowsArch(
     SshSession session, {
     required SshExecPriority priority,
@@ -585,15 +602,13 @@ class MonkeyMuxInstallerService {
     if (lower.contains('amd64') || lower.contains('x86_64')) {
       return 'amd64';
     }
-    return 'amd64';
-  }
-
-  bool _remoteBannerIndicatesWindows(SshSession session) {
-    final banner = session.client.remoteVersion;
-    if (banner == null) {
-      return false;
+    if (lower.contains('x86')) {
+      // 32-bit Windows: no bundled binary. Return the token so the caller fails
+      // with an explicit "not bundled for windows-x86" instead of mis-selecting
+      // the amd64 helper.
+      return 'x86';
     }
-    return banner.toLowerCase().contains('windows');
+    return null;
   }
 
   bool _isWindowsPlatform(String platform) => platform.startsWith('windows-');

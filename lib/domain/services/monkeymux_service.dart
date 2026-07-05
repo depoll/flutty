@@ -540,7 +540,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
-    if (_remoteHostIsWindows(session)) {
+    if (session.remoteIsWindows) {
       // This best-effort pre-install probe relies on a POSIX shell glob loop
       // that Windows shells cannot evaluate. Skip it; the version-specific
       // status probe (runningServerStatus) runs after install with the correct
@@ -1555,20 +1555,59 @@ String? _nonEmpty(String? value) {
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
 
 /// Quotes a single MonkeyMux command argument for the remote shell. POSIX hosts
-/// use single-quote escaping; Windows hosts use double quotes, which cmd.exe and
-/// PowerShell both accept for the controlled paths and identifiers MonkeyMux
-/// passes (helper path, session name, working directory, launch command).
+/// use single-quote escaping; Windows hosts use [_windowsQuoteArg], which
+/// follows the CommandLineToArgvW parsing rules so embedded quotes and trailing
+/// backslashes survive (helper path, session name, working directory, launch
+/// command).
 String _monkeyMuxQuoteArg(String value, {required bool windows}) =>
-    windows ? '"$value"' : _shellQuote(value);
+    windows ? _windowsQuoteArg(value) : _shellQuote(value);
 
-/// Whether the remote host announced itself as Windows in its SSH banner
-/// (OpenSSH for Windows). Used to skip POSIX-only probes.
-bool _remoteHostIsWindows(SshSession session) {
-  final banner = session.client.remoteVersion;
-  if (banner == null) {
-    return false;
+/// Quotes [value] as a single Windows argument following the
+/// CommandLineToArgvW / C runtime rules (the same algorithm as Go's
+/// `syscall.EscapeArg`). Backslashes are only significant immediately before a
+/// double quote, and a run of backslashes preceding a quote (or the closing
+/// quote) is doubled. This correctly handles values containing spaces, embedded
+/// double quotes (for example `python -c "print(1)"`) and trailing backslashes
+/// (for example `C:\src\`), which naive `"$value"` wrapping would corrupt.
+String _windowsQuoteArg(String value) {
+  if (value.isEmpty) {
+    return '""';
   }
-  return banner.toLowerCase().contains('windows');
+  var needsQuotes = false;
+  for (var i = 0; i < value.length; i++) {
+    final unit = value.codeUnitAt(i);
+    if (unit == 0x20 || unit == 0x09) {
+      needsQuotes = true;
+      break;
+    }
+  }
+  final buffer = StringBuffer();
+  if (needsQuotes) {
+    buffer.write('"');
+  }
+  var backslashes = 0;
+  for (var i = 0; i < value.length; i++) {
+    final unit = value.codeUnitAt(i);
+    switch (unit) {
+      case 0x5c: // backslash
+        backslashes++;
+        buffer.writeCharCode(unit);
+      case 0x22: // double quote
+        buffer
+          ..write(r'\' * (backslashes + 1))
+          ..writeCharCode(unit);
+        backslashes = 0;
+      default:
+        backslashes = 0;
+        buffer.writeCharCode(unit);
+    }
+  }
+  if (needsQuotes) {
+    buffer
+      ..write(r'\' * backslashes)
+      ..write('"');
+  }
+  return buffer.toString();
 }
 
 /// Builds the `<helper> control --json <session>` command for an installation,
