@@ -345,6 +345,75 @@ void main() {
       },
     );
 
+    test('style-run batching matches per-cell foreground rendering', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(fontSize: 20),
+        textScaler: TextScaler.noScaling,
+      );
+      const columns = 24;
+      // A line that forces several run breaks: a colored run, a bold color
+      // change, an undrawn gap space, a decorated (SGR 4/58) cell, and a wide
+      // (2-cell) glyph. Batched output must equal the per-cell reference.
+      final terminal = Terminal()
+        ..resize(columns, 2)
+        ..write(
+          '\x1b[37mhello \x1b[1;32mWorld\x1b[0m '
+          '\x1b[4;58:2::255:0:0mx\x1b[0m \x1b[53mA B\x1b[0m \u4e2d\u6587',
+        );
+      final line = terminal.buffer.lines[0];
+
+      final width = (painter.cellSize.width * columns).ceil();
+      final height = painter.cellSize.height.ceil();
+
+      Future<ByteData> render(void Function(Canvas) paint) async {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+        paint(canvas);
+        final image = await recorder.endRecording().toImage(width, height);
+        return (await image.toByteData())!;
+      }
+
+      // Reference: draw every cell individually, the pre-batching behaviour.
+      // Wide-glyph spacer cells are empty, so paintCellForeground draws
+      // nothing for them and the wide glyph is drawn once at its own column.
+      final reference = await render((canvas) {
+        final cellData = CellData.empty();
+        final cellWidth = painter.cellSize.width;
+        for (var i = 0; i < line.length; i++) {
+          line.getCellData(i, cellData);
+          painter.paintCellForeground(
+            canvas,
+            Offset(i * cellWidth, 0),
+            cellData,
+          );
+        }
+      });
+
+      // Batched: the production foreground pass with style-run coalescing.
+      final batched = await render(
+        (canvas) => painter.paintLineForegrounds(canvas, Offset.zero, line),
+      );
+
+      final referenceBytes = reference.buffer.asUint8List();
+      final batchedBytes = batched.buffer.asUint8List();
+      expect(
+        referenceBytes.any((byte) => byte != 0),
+        isTrue,
+        reason: 'the reference must actually draw glyphs',
+      );
+      expect(
+        batchedBytes,
+        referenceBytes,
+        reason: 'style-run batching must be pixel-identical to per-cell',
+      );
+    });
+
     test('colored underline (SGR 58) tints the underline', () async {
       final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
 
