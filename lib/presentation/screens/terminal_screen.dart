@@ -10266,7 +10266,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
-    final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    // A stale platform bottom inset (keyboard space reserved while the keyboard
+    // is not actually open) must not make the toggle think the keyboard is
+    // visible; otherwise the button would run its hide branch and fail to bring
+    // the keyboard up. Require the app's own input-connection state to agree.
+    final systemKeyboardVisible =
+        MediaQuery.viewInsetsOf(context).bottom > 0 &&
+        _terminalTextInputController.isKeyboardVisible;
     if (_isAndroidPlatform) {
       _logAndroidPredictiveBackDiagnostics(context, phase: 'build');
       _queueAndroidPredictiveBackPostFrameDiagnostics(context);
