@@ -56,5 +56,10 @@ best-effort so app updates do not silently discard in-progress windows. If the
 old helper predates safe shutdown support, the prompt says the update may
 abandon existing windows before starting the newer helper.
 
-The initial target matrix is POSIX-first: Linux and macOS on amd64 and arm64.
-Windows support is a later ConPTY-backed follow-up.
+The target matrix covers Linux and macOS on amd64 and arm64, plus Windows on
+amd64 and arm64. On Windows the foreground path is backed by a ConPTY
+(pseudo console) instead of a POSIX pty; window creation, switching, resize,
+byte-relay, and the JSON control channel all work the same way. Windows has no
+controlling-terminal foreground process group, so agent detection there falls
+back to walking the window shell's child processes, and POSIX-only metadata
+probes (process arguments, open files) degrade gracefully.

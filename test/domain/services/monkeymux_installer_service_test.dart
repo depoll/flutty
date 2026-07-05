@@ -35,12 +35,15 @@ class _FakeAssetBundle extends CachingAssetBundle {
 }
 
 class _FakeRemoteFileService extends RemoteFileService {
+  _FakeRemoteFileService({this.homeDirectory = '/home/proof'});
+
+  final String homeDirectory;
   bool uploaded = false;
   int uploadCount = 0;
 
   @override
   Future<String> resolveInitialDirectory(SftpClient sftp) async =>
-      '/home/proof';
+      homeDirectory;
 
   @override
   Future<void> ensureDirectoryExists(
@@ -227,6 +230,111 @@ void main() {
     expect(installation.installedDuringCall, isFalse);
     expect(remoteFileService.uploadCount, 0);
   });
+
+  test('installs the Windows helper via SFTP and native paths', () async {
+    final assetBytes = Uint8List.fromList(
+      utf8.encode('monkeymux-windows-binary'),
+    );
+    final expectedSha = sha256.convert(assetBytes).toString();
+    final remoteFileService = _FakeRemoteFileService(
+      homeDirectory: '/C:/Users/proof',
+    );
+    final installer = MonkeyMuxInstallerService(
+      manifestFuture: Future.value(
+        MonkeyMuxManifest(
+          version: '9.9.9',
+          entries: [
+            MonkeyMuxManifestEntry(
+              platform: 'windows-amd64',
+              asset: 'assets/test/monkeymux',
+              sha256: expectedSha,
+              size: assetBytes.length,
+            ),
+          ],
+        ),
+      ),
+      remoteFileService: remoteFileService,
+      assetBundle: _FakeAssetBundle({'assets/test/monkeymux': assetBytes}),
+    );
+    const connectionId = 135791;
+    final client = _MockSshClient();
+    final sftp = _MockSftpClient();
+    when(sftp.close).thenReturn(null);
+    when(
+      () => client.remoteVersion,
+    ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+    when(client.sftp).thenAnswer((_) async => sftp);
+    final renames = <(String, String)>[];
+    when(() => sftp.remove(any())).thenAnswer((_) async {});
+    when(() => sftp.rename(any(), any())).thenAnswer((invocation) async {
+      renames.add((
+        invocation.positionalArguments[0] as String,
+        invocation.positionalArguments[1] as String,
+      ));
+    });
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      invocation,
+    ) async {
+      final command = invocation.positionalArguments.single as String;
+      return _execSession(
+        _windowsOutputForCommand(
+          command,
+          expectedSha: expectedSha,
+          remoteFileService: remoteFileService,
+        ),
+      );
+    });
+    final session = SshSession(
+      connectionId: connectionId,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'proof',
+      ),
+    );
+    addTearDown(() => installer.clearCache(connectionId));
+
+    final installation = await installer.ensureInstalled(
+      session,
+      confirmInstall: (_) async => true,
+    );
+
+    expect(installation.platform, 'windows-amd64');
+    expect(installation.isWindows, isTrue);
+    expect(
+      installation.executablePath,
+      r'C:\Users\proof\.monkeyssh\bin\monkeymux\9.9.9\windows-amd64\'
+      'monkeymux.exe',
+    );
+    expect(installation.installedDuringCall, isTrue);
+    expect(remoteFileService.uploadCount, 1);
+    expect(renames, hasLength(1));
+    expect(
+      renames.single.$2,
+      '/C:/Users/proof/.monkeyssh/bin/monkeymux/9.9.9/windows-amd64/'
+      'monkeymux.exe',
+    );
+  });
+}
+
+/// Routes remote commands issued on a Windows host to canned raw output (the
+/// Windows deploy path never uses the POSIX completion-marker wrapper).
+String _windowsOutputForCommand(
+  String command, {
+  required String expectedSha,
+  required _FakeRemoteFileService remoteFileService,
+}) {
+  if (command.contains('echo %OS%')) {
+    return 'Windows_NT AMD64 \r\n';
+  }
+  if (command.contains('certutil')) {
+    final digest = remoteFileService.uploaded ? expectedSha : '';
+    return 'SHA256 hash of file:\r\n$digest\r\n'
+        'CertUtil: -hashfile command completed successfully.\r\n';
+  }
+  return '';
 }
 
 String _outputForCommand(

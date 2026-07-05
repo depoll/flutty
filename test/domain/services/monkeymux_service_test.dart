@@ -76,6 +76,38 @@ void main() {
         "'work'",
       );
     });
+
+    test('escapes arguments for Windows argv parsing', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: r'C:\Program Files\mm\monkeymux.exe',
+        sessionName: 'workspace',
+        workingDirectory: r'C:\src\my app\',
+        windowName: 'Codex agent',
+        launchCommand: 'python -c "print(1)"',
+        serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        windows: true,
+      );
+
+      // Values with spaces are wrapped in double quotes; a trailing backslash
+      // before the closing quote is doubled and embedded quotes are
+      // backslash-escaped so CommandLineToArgvW recovers the exact argument.
+      expect(
+        command,
+        r'"C:\Program Files\mm\monkeymux.exe" attach --update-policy never '
+        r'--cwd "C:\src\my app\\" --name "Codex agent" '
+        r'--command "python -c \"print(1)\"" workspace',
+      );
+    });
+
+    test('leaves space-free Windows arguments unquoted', () {
+      final command = buildMonkeyMuxAttachCommand(
+        executablePath: r'C:\mm\monkeymux.exe',
+        sessionName: 'work',
+        windows: true,
+      );
+
+      expect(command, r'C:\mm\monkeymux.exe attach work');
+    });
   });
 
   group('MonkeyMuxServerStatus', () {

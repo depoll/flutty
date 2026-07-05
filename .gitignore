@@ -68,3 +68,4 @@ app.*.map.json
 
 # Local Go build of the MonkeyMux server (distributed via assets/monkeymux/bin/*.gz)
 /remote/monkeymux/monkeymux
+/remote/monkeymux/monkeymux.exe

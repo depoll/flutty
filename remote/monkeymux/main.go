@@ -27,13 +27,35 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
+// muxPty is the terminal endpoint of a running window's child process. On POSIX
+// systems it wraps the pty master file; on Windows it wraps a ConPTY.
+type muxPty interface {
+	Read(p []byte) (int, error)
+	Write(p []byte) (int, error)
+	Close() error
+	// Resize sets the pseudo terminal size in character cells.
+	Resize(cols int, rows int) error
+	// Fd returns the underlying file descriptor on POSIX systems, or 0 when
+	// there is no usable descriptor (Windows).
+	Fd() uintptr
+}
+
+// muxProcess is the child process attached to a window's pty.
+type muxProcess interface {
+	// Pid returns the process identifier, or 0 when it is unavailable.
+	Pid() int
+	// Wait blocks until the process exits.
+	Wait() error
+	// Hangup asks the process (group) to terminate, as if the controlling
+	// terminal went away (SIGHUP on POSIX).
+	Hangup()
+}
+
 const (
-	monkeyMuxVersion                  = "0.1.86"
+	monkeyMuxVersion                  = "0.1.88"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -160,13 +182,6 @@ var (
 	errRunCommandTimeout      = errors.New("command timed out")
 )
 
-var signalForegroundResize = func(processGroup int) {
-	if processGroup <= 0 {
-		return
-	}
-	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
-}
-
 var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 	if window == nil || window.pty == nil || width <= 0 || height <= 0 {
 		return
@@ -201,25 +216,11 @@ func foregroundRedrawTemporarySize(width int, height int) (int, int, bool) {
 	return width, height, false
 }
 
-func applyPtySize(ptyFile *os.File, width int, height int) {
+func applyPtySize(ptyFile muxPty, width int, height int) {
 	if ptyFile == nil || width <= 0 || height <= 0 {
 		return
 	}
-	_ = pty.Setsize(ptyFile, &pty.Winsize{
-		Rows: uint16(height),
-		Cols: uint16(width),
-	})
-}
-
-var foregroundProcessGroupForWindow = func(window *muxWindow) int {
-	if window == nil || window.pty == nil {
-		return 0
-	}
-	pgrp, err := unix.IoctlGetInt(int(window.pty.Fd()), unix.TIOCGPGRP)
-	if err != nil || pgrp <= 0 {
-		return 0
-	}
-	return pgrp
+	_ = ptyFile.Resize(width, height)
 }
 
 // restoreRedrawFollowUpDelays are the delays after a restored foreground-redraw
@@ -402,8 +403,8 @@ type muxWindow struct {
 	foregroundPid              int
 	foregroundCommand          string
 	paneTitle                  string
-	pty                        *os.File
-	cmd                        *exec.Cmd
+	pty                        muxPty
+	proc                       muxProcess
 	history                    []byte
 	oscBuffer                  []byte
 	attachOscBuffer            []byte
@@ -572,17 +573,19 @@ func attachCommand(args []string) {
 	stopResize := forwardResizeSignals(session)
 	defer stopResize()
 
-	errs := make(chan error, 2)
+	// The attach lives for as long as the server keeps the connection open. The
+	// input relay (client stdin -> server) is best-effort: a stdin EOF must not
+	// end the attach. On POSIX the PTY stdin never EOFs during a live session,
+	// but Windows OpenSSH delivers an immediate EOF on exec+PTY channels, and
+	// tearing down on that first-finished copy would drop the terminal the
+	// instant it opened. Driving the lifetime from the server->stdout copy ends
+	// the attach only when the server closes the session or the local output
+	// stream can no longer be written (the SSH channel went away).
 	go func() {
-		_, err := io.Copy(conn, os.Stdin)
-		errs <- err
-	}()
-	go func() {
-		_, err := io.Copy(os.Stdout, conn)
-		errs <- err
+		_, _ = io.Copy(conn, os.Stdin)
 	}()
 
-	if err := <-errs; err != nil && !errors.Is(err, io.EOF) {
+	if _, err := io.Copy(os.Stdout, conn); err != nil && !errors.Is(err, io.EOF) {
 		fatal(err)
 	}
 }
@@ -752,42 +755,57 @@ func ensureServer(
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "serve", "--session", session)
+	serveArgs := []string{"serve", "--session", session}
 	if width > 0 && height > 0 {
-		cmd.Args = append(
-			cmd.Args,
-			"--width",
-			strconv.Itoa(width),
-			"--height",
-			strconv.Itoa(height),
-		)
+		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
 		if err == nil {
 			defer os.Remove(path)
-			cmd.Args = append(cmd.Args, "--restore-file", path)
+			serveArgs = append(serveArgs, "--restore-file", path)
 		}
 	}
 	if strings.TrimSpace(initialWindow.cwd) != "" {
-		cmd.Args = append(cmd.Args, "--cwd", initialWindow.cwd)
+		serveArgs = append(serveArgs, "--cwd", initialWindow.cwd)
 	}
 	if strings.TrimSpace(initialWindow.name) != "" {
-		cmd.Args = append(cmd.Args, "--name", initialWindow.name)
+		serveArgs = append(serveArgs, "--name", initialWindow.name)
 	}
 	if strings.TrimSpace(initialWindow.command) != "" {
-		cmd.Args = append(cmd.Args, "--command", initialWindow.command)
+		serveArgs = append(serveArgs, "--command", initialWindow.command)
 	}
 	if len(initialWindow.themeHint) > 0 {
-		cmd.Args = append(cmd.Args, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
+		serveArgs = append(serveArgs, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
 	}
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Env = inheritedEnvironment(os.Environ())
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return err
+	daemonEnv := inheritedEnvironment(os.Environ())
+	buildServeCmd := func() *exec.Cmd {
+		c := exec.Command(exe, serveArgs...)
+		c.Stdin = nil
+		c.Stdout = nil
+		c.Stderr = nil
+		c.Env = daemonEnv
+		return c
+	}
+	// Detach the server so it outlives the launching shell (the POSIX analog is
+	// setsid). detachedDaemonSysProcAttrs returns the strategies to try in
+	// order; on Windows the first requests a job-object breakaway that some
+	// hosts disallow, so a fresh command is started for each fallback attempt.
+	var cmd *exec.Cmd
+	var startErr error
+	for _, attr := range detachedDaemonSysProcAttrs() {
+		candidate := buildServeCmd()
+		candidate.SysProcAttr = attr
+		if err := candidate.Start(); err != nil {
+			startErr = err
+			continue
+		}
+		cmd = candidate
+		startErr = nil
+		break
+	}
+	if startErr != nil {
+		return startErr
 	}
 	_ = cmd.Process.Release()
 
@@ -1344,51 +1362,6 @@ var commandProcessTableCache processTableCache
 var processOpenFilePathsForMetadata = defaultProcessOpenFilePathsForMetadata
 
 var processWorkingDirectoryForMetadata = defaultProcessWorkingDirectoryForMetadata
-
-func readProcessTable() map[int]processInfo {
-	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(
-		ctx,
-		"ps",
-		"-eo",
-		"pid=,ppid=,pgid=,comm=,args=",
-	).Output()
-	if err != nil || ctx.Err() != nil {
-		return nil
-	}
-	processes := map[int]processInfo{}
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-		ppid, err := strconv.Atoi(fields[1])
-		if err != nil {
-			continue
-		}
-		pgid, err := strconv.Atoi(fields[2])
-		if err != nil {
-			continue
-		}
-		args := ""
-		if len(fields) > 4 {
-			args = strings.Join(fields[4:], " ")
-		}
-		processes[pid] = processInfo{
-			pid:  pid,
-			ppid: ppid,
-			pgid: pgid,
-			comm: fields[3],
-			args: args,
-		}
-	}
-	return processes
-}
 
 func cachedProcessTable(now time.Time) map[int]processInfo {
 	commandProcessTableCache.mu.Lock()
@@ -2660,10 +2633,10 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	cmd.Env = terminalEnvironment(os.Environ())
 
 	s.mu.Lock()
-	size := &pty.Winsize{Rows: uint16(s.height), Cols: uint16(s.width)}
+	cols, rows := s.width, s.height
 	s.mu.Unlock()
 
-	file, err := pty.StartWithSize(cmd, size)
+	windowPty, proc, err := startWindow(cmd, cols, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -2677,11 +2650,11 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		cwd:                      cwd,
 		command:                  filepath.Base(cmd.Path),
 		agentTool:                agentTool,
-		foregroundPid:            cmd.Process.Pid,
+		foregroundPid:            proc.Pid(),
 		foregroundCommand:        filepath.Base(cmd.Path),
 		paneTitle:                paneTitle,
-		pty:                      file,
-		cmd:                      cmd,
+		pty:                      windowPty,
+		proc:                     proc,
 		history:                  append([]byte(nil), options.history...),
 		lastActivity:             time.Now(),
 		cursorVisible:            cursorVisible,
@@ -2715,7 +2688,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	}
 	go s.readWindow(window)
 	go func() {
-		_ = cmd.Wait()
+		_ = proc.Wait()
 		s.markWindowClosed(window.id)
 	}()
 
@@ -2835,6 +2808,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	var redrawWindow *muxWindow
 	var redrew bool
 	var shouldShutdown bool
+	var windowPty muxPty
 
 	s.attachMu.Lock()
 	s.mu.Lock()
@@ -2846,7 +2820,11 @@ func (s *muxServer) markWindowClosed(windowID string) {
 	}
 	window.closed = true
 	window.alert = false
-	_ = window.pty.Close()
+	// Capture the pty and close it after releasing s.mu (see below): on Windows
+	// muxPty.Close() calls ClosePseudoConsole, which blocks until the output
+	// pipe is drained by readWindow -> handleWindowOutput, and that reader needs
+	// s.mu. Closing under the lock would deadlock the whole server.
+	windowPty = window.pty
 	s.reindexWindowsLocked()
 	if s.activeID == windowID {
 		s.activeID = ""
@@ -2871,6 +2849,13 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		redrew = s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
 	}
 	s.attachMu.Unlock()
+
+	// Now that s.mu/s.attachMu are released, tear down the pty. On Windows this
+	// blocks until readWindow drains the final ConPTY output (which needs s.mu),
+	// so it must happen after unlocking.
+	if windowPty != nil {
+		_ = windowPty.Close()
+	}
 
 	s.broadcast(controlResponse{
 		Type:    "window_removed",
@@ -3408,18 +3393,16 @@ func (s *muxServer) runShellCommandContext(
 	}
 	s.mu.Unlock()
 
-	shell := commandShellPath()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	output := newBoundedCommandOutput(runCommandOutputMaxBytes, cancel)
-	cmd := exec.Command(shell, "-c", command)
+	cmd := newRunCommand(command)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
 	cmd.Env = inheritedEnvironment(os.Environ())
 	cmd.Stdout = output
 	cmd.Stderr = output
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return "", 0, err
 	}
@@ -3455,33 +3438,6 @@ func (s *muxServer) runShellCommandContext(
 		}
 	}
 	return output.String(), exitCode, nil
-}
-
-func commandShellPath() string {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	switch filepath.Base(shell) {
-	case "sh", "bash", "zsh", "ksh", "dash":
-		return shell
-	default:
-		return "/bin/sh"
-	}
-}
-
-func killCommandProcessGroup(cmd *exec.Cmd) {
-	signalCommandProcessGroup(cmd, syscall.SIGKILL)
-}
-
-func signalCommandProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	if cmd.Process.Pid > 0 {
-		_ = syscall.Kill(-cmd.Process.Pid, signal)
-	}
-	_ = cmd.Process.Signal(signal)
 }
 
 type boundedCommandOutput struct {
@@ -3619,8 +3575,8 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	var redrawWindow *muxWindow
 	var redrew bool
 	var shouldShutdown bool
-	var command *exec.Cmd
-	var windowPty *os.File
+	var process muxProcess
+	var windowPty muxPty
 	var snapshots []windowSnapshot
 
 	s.attachMu.Lock()
@@ -3654,7 +3610,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 	}
 	window.closed = true
 	window.alert = false
-	command = window.cmd
+	process = window.proc
 	windowPty = window.pty
 	s.reindexWindowsLocked()
 	snapshots = s.snapshotsLocked()
@@ -3685,7 +3641,9 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			signalForegroundResize(foregroundProcessGroup)
 		}
 	}
-	signalCommandProcessGroup(command, syscall.SIGHUP)
+	if process != nil {
+		process.Hangup()
+	}
 	if windowPty != nil {
 		_ = windowPty.Close()
 	}
@@ -3751,10 +3709,7 @@ func (s *muxServer) resizeWindowLocked(window *muxWindow, width int, height int)
 	if window == nil || window.closed || window.pty == nil {
 		return
 	}
-	_ = pty.Setsize(window.pty, &pty.Winsize{
-		Rows: uint16(height),
-		Cols: uint16(width),
-	})
+	_ = window.pty.Resize(width, height)
 }
 
 func (s *muxServer) writeAttachReplayAndResizeLocked(
@@ -4975,50 +4930,6 @@ func computeKittyImageGlobalBudgetBytes() int {
 	return budget
 }
 
-// detectSystemMemoryBytes returns total physical memory in bytes, or 0 when it
-// cannot be determined on this platform.
-func detectSystemMemoryBytes() uint64 {
-	switch runtime.GOOS {
-	case "linux":
-		return readLinuxMemTotalBytes()
-	case "darwin":
-		return readDarwinMemTotalBytes()
-	}
-	return 0
-}
-
-func readLinuxMemTotalBytes() uint64 {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.HasPrefix(line, "MemTotal:") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) >= 2 {
-			if kb, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
-				return kb * 1024
-			}
-		}
-		break
-	}
-	return 0
-}
-
-func readDarwinMemTotalBytes() uint64 {
-	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-	if err != nil {
-		return 0
-	}
-	bytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return bytes
-}
-
 // kittyImageReplayLocked returns the most-recent retained image transmissions,
 // bounded by count and bytes, so a reattaching client repopulates the images
 // most likely still on screen without decoding many megabytes on its UI thread.
@@ -5352,10 +5263,10 @@ func isReplayUnsafeOscNotification(payload []byte) bool {
 }
 
 func (w *muxWindow) processID() int {
-	if w == nil || w.cmd == nil || w.cmd.Process == nil {
+	if w == nil || w.proc == nil {
 		return 0
 	}
-	return w.cmd.Process.Pid
+	return w.proc.Pid()
 }
 
 func (w *muxWindow) metadataProcessIDLocked() int {
@@ -5579,31 +5490,6 @@ func commandNameForProcessGroup(pgrp int) string {
 		}
 	}
 	return fallback
-}
-
-func commandNameForPID(pid int) string {
-	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=", "-o", "args=").Output()
-	if err == nil && ctx.Err() == nil {
-		for _, line := range strings.Split(string(output), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 0 {
-				continue
-			}
-			if command := commandNameFromProcessFields(fields[0], strings.Join(fields[1:], " ")); command != "" {
-				return command
-			}
-		}
-	}
-
-	ctx, cancel = context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err = exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil || ctx.Err() != nil {
-		return ""
-	}
-	return cleanProcessCommandName(string(output))
 }
 
 func commandNameFromProcessFields(command string, args string) string {
@@ -6366,7 +6252,9 @@ func (s *muxServer) close() {
 		_ = control.conn.Close()
 	}
 	for _, window := range windows {
-		signalCommandProcessGroup(window.cmd, syscall.SIGHUP)
+		if window.proc != nil {
+			window.proc.Hangup()
+		}
 		if window.pty != nil {
 			_ = window.pty.Close()
 		}
@@ -6525,30 +6413,6 @@ func waitForServerExit(session string, timeout time.Duration) bool {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false
-}
-
-func defaultShellPath() string {
-	shell := os.Getenv("SHELL")
-	if strings.TrimSpace(shell) == "" {
-		return "/bin/sh"
-	}
-	return shell
-}
-
-func shellCommand(shell string) *exec.Cmd {
-	cmd := exec.Command(shell)
-	if base := filepath.Base(shell); base != "" {
-		cmd.Args[0] = "-" + base
-	}
-	return cmd
-}
-
-func shellCommandForScript(shell string, command string) *exec.Cmd {
-	cmd := exec.Command(shell, "-i", "-c", command)
-	if base := filepath.Base(shell); base != "" {
-		cmd.Args[0] = "-" + base
-	}
-	return cmd
 }
 
 func inheritedEnvironment(base []string) []string {
@@ -6722,17 +6586,6 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func terminalSize() (int, int) {
-	if size, err := pty.GetsizeFull(os.Stdin); err == nil && size.Cols > 0 && size.Rows > 0 {
-		return int(size.Cols), int(size.Rows)
-	}
-	columns, rows, err := term.GetSize(int(os.Stdin.Fd()))
-	if err == nil && columns > 0 && rows > 0 {
-		return columns, rows
-	}
-	return defaultColumns, defaultRows
-}
-
 func makeTerminalRaw() func() {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return func() {}
@@ -6743,29 +6596,6 @@ func makeTerminalRaw() func() {
 	}
 	return func() {
 		_ = term.Restore(int(os.Stdin.Fd()), state)
-	}
-}
-
-func forwardResizeSignals(session string) func() {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGWINCH)
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-signals:
-				width, height := terminalSize()
-				sendResize(session, width, height)
-			case <-done:
-				return
-			}
-		}
-	}()
-	width, height := terminalSize()
-	sendResize(session, width, height)
-	return func() {
-		close(done)
-		signal.Stop(signals)
 	}
 }
 
@@ -6836,11 +6666,4 @@ func snapshotByID(snapshots []windowSnapshot, id string) *windowSnapshot {
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "monkeymux: %v\n", err)
 	os.Exit(1)
-}
-
-func init() {
-	if runtime.GOOS == "windows" {
-		fmt.Fprintln(os.Stderr, "monkeymux: windows is not supported by this POSIX build")
-		os.Exit(1)
-	}
 }

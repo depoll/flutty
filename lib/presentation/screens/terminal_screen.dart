@@ -7740,15 +7740,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Host host,
     String sessionName,
   ) async {
-    // Windows remotes run cmd.exe/PowerShell, which host neither tmux nor the
-    // POSIX MonkeyMux helper (installed via uname/chmod). Skip the mux attach so
-    // the session falls back to a plain interactive shell instead of failing.
-    if (session.remoteIsWindows) {
+    final configuredBackend =
+        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
+    // Windows remotes run cmd.exe/PowerShell, which can't host tmux. MonkeyMux
+    // does work there via its ConPTY helper, so only the tmux backend is
+    // skipped; the monkeyMux/auto path proceeds and, if the helper can't
+    // install or attach, still falls back to a plain shell via the null returns
+    // below.
+    if (session.remoteIsWindows && configuredBackend == RemoteMuxBackend.tmux) {
       _suppressRemoteMuxDetectionConnectionId = session.connectionId;
       return null;
     }
-    final configuredBackend =
-        _configuredRemoteMuxBackend(host) ?? RemoteMuxBackend.auto;
     if (configuredBackend == RemoteMuxBackend.monkeyMux ||
         configuredBackend == RemoteMuxBackend.auto) {
       try {
@@ -7778,6 +7780,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               terminalThemeReports: terminalThemeReports,
               serverUpdatePolicy: MonkeyMuxServerUpdatePolicy.never,
               startInYoloMode: _startClisInYoloMode,
+              windows: installation.isWindows,
             ),
             backend: RemoteMuxBackend.monkeyMux,
           );
@@ -7790,6 +7793,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             terminalThemeReports: terminalThemeReports,
             serverUpdatePolicy: updatePolicy,
             startInYoloMode: _startClisInYoloMode,
+            windows: installation.isWindows,
           ),
           backend: RemoteMuxBackend.monkeyMux,
         );
@@ -8017,12 +8021,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Host host,
     AgentLaunchPreset preset,
   ) async {
-    // MonkeyMux relies on a POSIX helper binary that isn't installed on Windows
-    // remotes; skip the launch so the agent falls back to a plain shell.
-    if (session.remoteIsWindows) {
-      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
-      return null;
-    }
     final sessionName = preset.tmuxSessionName?.trim();
     if (sessionName == null || sessionName.isEmpty) {
       return null;
@@ -8079,6 +8077,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalThemeReports: terminalThemeReports,
         serverUpdatePolicy: updatePolicy,
         startInYoloMode: _startClisInYoloMode,
+        windows: installation.isWindows,
       );
     } on Exception catch (error) {
       _suppressRemoteMuxDetectionConnectionId = session.connectionId;
@@ -8335,18 +8334,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool preserveExistingTmuxState = false,
     bool isReopeningExistingTerminal = false,
   }) async {
-    // Windows remotes (cmd.exe/PowerShell) don't run tmux or MonkeyMux, so skip
-    // detection entirely. Otherwise the POSIX probe exec channels
-    // (which tmux / has-session / display-message ...) always fail and waste
-    // round-trips on every connect.
-    if (session.remoteIsWindows) {
-      if (mounted) {
-        setState(_clearTmuxState);
-      } else {
-        _clearTmuxState();
-      }
-      return false;
-    }
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
@@ -8361,6 +8348,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (configuredBackend == RemoteMuxBackend.auto
             ? _activeMuxBackend
             : (configuredBackend ?? _activeMuxBackend));
+    // Windows remotes (cmd.exe/PowerShell) can't run tmux; only MonkeyMux is
+    // viable there. Skip detection when the resolved backend is tmux so we don't
+    // fire failing POSIX tmux probes on every connect, but let MonkeyMux
+    // detection proceed (its control channel works on Windows). A fresh MonkeyMux
+    // session is still started/reattached by the attach command flow.
+    if (session.remoteIsWindows && muxBackend == RemoteMuxBackend.tmux) {
+      if (mounted) {
+        setState(_clearTmuxState);
+      } else {
+        _clearTmuxState();
+      }
+      return false;
+    }
     final mux = _remoteMultiplexerServiceForBackend(muxBackend);
     final tmuxStateBelongsToSession =
         _tmuxStateConnectionId == session.connectionId;
