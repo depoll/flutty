@@ -55,7 +55,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.88"
+	monkeyMuxVersion                  = "0.1.89"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -1169,6 +1169,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		for i, sessionID := range antigravitySessions {
 			restore.Windows[i].AgentSessionID = sessionID
 		}
+		assignCopilotSessionsByWorkingDirectory(restore)
 		return
 	}
 	processes := readProcessTable()
@@ -1214,6 +1215,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 			}
 		}
 	}
+	assignCopilotSessionsByWorkingDirectory(restore)
 }
 
 type antigravityHistoryEntry struct {
@@ -1391,6 +1393,7 @@ func discoverCopilotSessionIDs(
 		return nil
 	}
 	sessions := map[int]string{}
+	chosenModTime := map[int]time.Time{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -1409,12 +1412,189 @@ func discoverCopilotSessionIDs(
 			if !ok || !strings.Contains(strings.ToLower(process.comm+" "+process.args), "copilot") {
 				continue
 			}
-			if panePid := ancestorPanePID(processes, pid, panePids); panePid > 0 {
-				sessions[panePid] = entry.Name()
+			panePid := ancestorPanePID(processes, pid, panePids)
+			if panePid <= 0 {
+				continue
 			}
+			// When more than one session dir maps to the same pane — a stale
+			// inuse lock whose PID was reused by a live copilot, or a session
+			// left behind by an earlier resume — keep the most recently locked
+			// one so a restored window resumes the live session rather than an
+			// abandoned one.
+			modTime := copilotLockModTime(lock)
+			if previous, exists := chosenModTime[panePid]; exists && !modTime.After(previous) {
+				continue
+			}
+			sessions[panePid] = entry.Name()
+			chosenModTime[panePid] = modTime
 		}
 	}
 	return sessions
+}
+
+// copilotLockModTime reports when a copilot inuse lock was last written, used to
+// prefer the freshest session dir when several map to the same pane.
+func copilotLockModTime(lock string) time.Time {
+	if info, err := os.Stat(lock); err == nil {
+		return info.ModTime()
+	}
+	return time.Time{}
+}
+
+// copilotSessionsByWorkingDirectory groups on-disk copilot sessions by the
+// working directory recorded in each session's events log, most recently
+// active first. It is the on-disk fallback used when the live process table no
+// longer maps a restored copilot window to its session (the helper upgrade
+// already reaped the process, ps timed out, or the inuse lock had been
+// cleared) so the window can still resume the right conversation.
+func copilotSessionsByWorkingDirectory() map[string][]string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	stateDir := filepath.Join(home, ".copilot", "session-state")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	type sessionEntry struct {
+		id      string
+		modTime time.Time
+	}
+	byDirectory := map[string][]sessionEntry{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		eventsPath := filepath.Join(stateDir, entry.Name(), "events.jsonl")
+		workingDirectory := copilotSessionWorkingDirectory(eventsPath)
+		if workingDirectory == "" {
+			continue
+		}
+		modTime := time.Time{}
+		if info, err := os.Stat(eventsPath); err == nil {
+			modTime = info.ModTime()
+		}
+		byDirectory[workingDirectory] = append(
+			byDirectory[workingDirectory],
+			sessionEntry{id: entry.Name(), modTime: modTime},
+		)
+	}
+	result := map[string][]string{}
+	for workingDirectory, list := range byDirectory {
+		sort.SliceStable(list, func(i, j int) bool {
+			return list[i].modTime.After(list[j].modTime)
+		})
+		ids := make([]string, 0, len(list))
+		for _, session := range list {
+			ids = append(ids, session.id)
+		}
+		result[workingDirectory] = ids
+	}
+	return result
+}
+
+// copilotSessionWorkingDirectory returns the normalized working directory a
+// copilot session started in, read from the session.start event at the head of
+// its events log.
+func copilotSessionWorkingDirectory(eventsPath string) string {
+	file, err := os.Open(eventsPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	reader := bufio.NewReader(file)
+	// The cwd is recorded on the session.start event, which heads the log; scan
+	// a few lines defensively in case an unrelated event ever comes first.
+	for scanned := 0; scanned < 8; scanned++ {
+		line, err := reader.ReadString('\n')
+		if strings.TrimSpace(line) != "" {
+			var raw struct {
+				Data struct {
+					Context struct {
+						Cwd string `json:"cwd"`
+					} `json:"context"`
+				} `json:"data"`
+			}
+			if json.Unmarshal([]byte(line), &raw) == nil {
+				if cwd := normalizedCopilotWorkingDirectory(raw.Data.Context.Cwd); cwd != "" {
+					return cwd
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return ""
+}
+
+// normalizedCopilotWorkingDirectory canonicalizes a working directory so a
+// window's cwd and a session's recorded cwd compare equal despite ~ expansion
+// or symlinks (for example /tmp vs /private/tmp on macOS).
+func normalizedCopilotWorkingDirectory(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if expanded, err := expandHomePath(trimmed); err == nil {
+		trimmed = expanded
+	}
+	cleaned := filepath.Clean(trimmed)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
+}
+
+// assignCopilotSessionsByWorkingDirectory is the on-disk fallback for restored
+// copilot windows the live process table no longer maps to a session. Each such
+// window resumes the most recent copilot session recorded for its working
+// directory instead of relaunching blank, so a helper upgrade keeps the
+// conversation open in every copilot window. Sessions already claimed by
+// another window (via the process table or an earlier fallback) are never
+// reused, so windows sharing a directory get distinct sessions.
+func assignCopilotSessionsByWorkingDirectory(restore *serverRestore) {
+	if restore == nil {
+		return
+	}
+	needing := []int{}
+	for i := range restore.Windows {
+		if strings.TrimSpace(restore.Windows[i].AgentSessionID) != "" {
+			continue
+		}
+		if agentToolForRestore(restore.Windows[i]) != "copilot" {
+			continue
+		}
+		needing = append(needing, i)
+	}
+	if len(needing) == 0 {
+		return
+	}
+	sessionsByDirectory := copilotSessionsByWorkingDirectory()
+	if len(sessionsByDirectory) == 0 {
+		return
+	}
+	used := map[string]bool{}
+	for i := range restore.Windows {
+		if id := strings.TrimSpace(restore.Windows[i].AgentSessionID); id != "" {
+			used[id] = true
+		}
+	}
+	for _, i := range needing {
+		workingDirectory := normalizedCopilotWorkingDirectory(restore.Windows[i].Cwd)
+		if workingDirectory == "" {
+			continue
+		}
+		for _, id := range sessionsByDirectory[workingDirectory] {
+			if used[id] {
+				continue
+			}
+			restore.Windows[i].AgentSessionID = id
+			used[id] = true
+			break
+		}
+	}
 }
 
 func discoverCodexSessionIDs(
