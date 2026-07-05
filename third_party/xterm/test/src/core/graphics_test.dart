@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -20,6 +21,68 @@ Future<ui.Image> _buildImage(int width, int height) async {
     Paint()..color = const Color(0xFFFF0000),
   );
   return recorder.endRecording().toImage(width, height);
+}
+
+/// Waits until image [id] has finished its (deferred) decode and is stored.
+Future<void> _awaitImage(Terminal terminal, int id) async {
+  var waited = 0;
+  while (terminal.graphics.imageById(id) == null && waited < 2000) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    waited += 20;
+  }
+}
+
+/// Store-only (`a=t`) and virtual (`a=T,U=1`) images are decoded lazily: the
+/// bytes are retained and only decoded when something paints them. Tests that
+/// assert on the decoded image must first reference it the way the renderer
+/// does on a visible frame, then wait for the async decode.
+Future<void> _decodeDeferredImage(Terminal terminal, int id) async {
+  terminal.graphics.imageForPlacement(id);
+  await _awaitImage(terminal, id);
+}
+
+/// Splits [base64Payload] into a Kitty multi-chunk (`m=1`) transmission the way
+/// the protocol requires for payloads over 4096 base64 bytes: the first APC
+/// carries the control keys, every APC sets `m=1` except the last which sets
+/// `m=0`. MonkeyMux stores and replays exactly this byte stream, so the client
+/// must reassemble it into a single image.
+String _multiChunkTransmission(
+  String base64Payload, {
+  required String firstControl,
+  int chunkSize = 4096,
+}) {
+  final buffer = StringBuffer();
+  var offset = 0;
+  var first = true;
+  while (offset < base64Payload.length) {
+    final end = math.min(offset + chunkSize, base64Payload.length);
+    final chunk = base64Payload.substring(offset, end);
+    final isLast = end >= base64Payload.length;
+    final more = isLast ? '0' : '1';
+    if (first) {
+      buffer.write('\x1b_G$firstControl,m=$more;$chunk\x1b\\');
+      first = false;
+    } else {
+      buffer.write('\x1b_Gm=$more;$chunk\x1b\\');
+    }
+    offset = end;
+  }
+  return buffer.toString();
+}
+
+/// Base64 of a raw RGBA image of [width] x [height] filled with pseudo-random
+/// bytes so it does not compress and is large enough to force multiple chunks.
+String _rawRgbaBase64(int width, int height) {
+  final bytes = Uint8List(width * height * 4);
+  var seed = 0x12345678;
+  for (var i = 0; i < bytes.length; i++) {
+    // xorshift keeps the payload incompressible and deterministic.
+    seed ^= (seed << 13) & 0xFFFFFFFF;
+    seed ^= seed >> 17;
+    seed ^= (seed << 5) & 0xFFFFFFFF;
+    bytes[i] = seed & 0xFF;
+  }
+  return base64.encode(bytes);
 }
 
 void main() {
@@ -47,6 +110,71 @@ void main() {
       expect(placement.row, 0);
 
       final stored = terminal.graphics.imageById(placement.imageId);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+    });
+  });
+
+  testWidgets('a burst of images all decode despite the concurrency gate', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // Transmit more images at once than the decode gate's permits (3) to
+      // exercise queueing. Decoding is deferred until each is referenced, so
+      // reference them all (as the painter would) and confirm none deadlock.
+      const count = 8;
+      for (var id = 1; id <= count; id++) {
+        terminal.write('\x1b_Ga=t,f=100,i=$id;$pngBase64\x1b\\');
+      }
+      for (var id = 1; id <= count; id++) {
+        terminal.graphics.imageForPlacement(id);
+      }
+
+      var waited = 0;
+      bool allStored() => List.generate(count, (i) => i + 1)
+          .every((id) => terminal.graphics.imageById(id) != null);
+      while (!allStored() && waited < 3000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      for (var id = 1; id <= count; id++) {
+        expect(
+          terminal.graphics.imageById(id),
+          isNotNull,
+          reason: 'image $id should have decoded despite throttling',
+        );
+      }
+    });
+  });
+
+  testWidgets('Kitty graphics payload tolerates embedded whitespace', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      // Splice newlines/spaces into the payload; the streaming decoder must
+      // skip them, matching the previous lenient whitespace-stripping behavior.
+      final mid = pngBase64.length ~/ 2;
+      final noisy =
+          '${pngBase64.substring(0, mid)}\n \r\t${pngBase64.substring(mid)}';
+
+      final terminal = Terminal();
+      terminal.write('\x1b_Ga=T,f=100;$noisy\x1b\\');
+
+      var waited = 0;
+      while (!terminal.graphics.hasPlacements && waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+
+      expect(terminal.graphics.placements, hasLength(1));
+      final stored = terminal.graphics
+          .imageById(terminal.graphics.placements.single.imageId);
       expect(stored, isNotNull);
       expect(stored!.image.width, 3);
       expect(stored.image.height, 2);
@@ -151,17 +279,222 @@ void main() {
       final terminal = Terminal();
       terminal.write('\x1b_Ga=t,i=42,f=100;$pngBase64\x1b\\');
 
-      var waited = 0;
-      while (terminal.graphics.imageById(42) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      // Deferred: the bytes are retained but not decoded until referenced.
+      expect(terminal.graphics.imageById(42), isNull);
+      expect(terminal.graphics.hasPendingImage(42), isTrue);
+
+      await _decodeDeferredImage(terminal, 42);
 
       final stored = terminal.graphics.imageById(42);
       expect(stored, isNotNull);
       expect(stored!.image.width, 3);
       expect(stored.image.height, 2);
       expect(terminal.graphics.hasPlacements, isFalse);
+    });
+  });
+
+  testWidgets('transmit-only images are not decoded until referenced', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // A window switch replays every retained image up front (store-only).
+      const count = 5;
+      for (var id = 1; id <= count; id++) {
+        terminal.write('\x1b_Ga=t,f=100,i=$id;$pngBase64\x1b\\');
+      }
+
+      // Give any (unwanted) eager decode ample time to run.
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      for (var id = 1; id <= count; id++) {
+        expect(
+          terminal.graphics.imageById(id),
+          isNull,
+          reason: 'image $id must stay deferred until something paints it',
+        );
+        expect(terminal.graphics.hasPendingImage(id), isTrue);
+      }
+
+      // Reference only image 3, the way the painter would for a visible cell.
+      await _decodeDeferredImage(terminal, 3);
+
+      expect(terminal.graphics.imageById(3), isNotNull);
+      for (final id in [1, 2, 4, 5]) {
+        expect(
+          terminal.graphics.imageById(id),
+          isNull,
+          reason: 'off-screen image $id must not be decoded',
+        );
+        expect(terminal.graphics.hasPendingImage(id), isTrue);
+      }
+    });
+  });
+
+  testWidgets('re-transmitting an identical image id reuses the cached decode',
+      (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // First transmit + reference decodes and stores the image.
+      terminal.write('\x1b_Ga=t,i=77,f=100;$pngBase64\x1b\\');
+      await _decodeDeferredImage(terminal, 77);
+      final first = terminal.graphics.imageById(77);
+      expect(first, isNotNull);
+
+      // Re-transmitting the same id with identical bytes (as a window-switch
+      // replay does) must reuse the existing decoded image, not replace it.
+      terminal.write('\x1b_Ga=t,i=77,f=100;$pngBase64\x1b\\');
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      final second = terminal.graphics.imageById(77);
+      expect(
+        identical(first!.image, second!.image),
+        isTrue,
+        reason: 'identical replay should reuse the same ui.Image',
+      );
+    });
+  });
+
+  testWidgets('re-transmitting an id with new bytes decodes a fresh image', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final smallPng = await _buildPngBase64(3, 2);
+      final largerPng = await _buildPngBase64(5, 4);
+      final terminal = Terminal();
+
+      terminal.write('\x1b_Ga=t,i=88,f=100;$smallPng\x1b\\');
+      await _decodeDeferredImage(terminal, 88);
+      expect(terminal.graphics.imageById(88)!.image.width, 3);
+
+      // Different bytes for the same id must miss the dedup, supersede the stale
+      // image and re-decode once referenced again.
+      terminal.write('\x1b_Ga=t,i=88,f=100;$largerPng\x1b\\');
+      terminal.graphics.imageForPlacement(88);
+      var waited = 0;
+      while ((terminal.graphics.imageById(88)?.image.width ?? 3) != 5 &&
+          waited < 2000) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        waited += 20;
+      }
+      expect(terminal.graphics.imageById(88)!.image.width, 5);
+    });
+  });
+
+  test('terminalGraphicsSourceSignature distinguishes content and is stable',
+      () {
+    final a = Uint8List.fromList(List<int>.generate(5000, (i) => i % 251));
+    final b = Uint8List.fromList(List<int>.generate(5000, (i) => i % 251));
+    final c =
+        Uint8List.fromList(List<int>.generate(5000, (i) => (i + 1) % 251));
+    expect(terminalGraphicsSourceSignature(a), isNot(0));
+    expect(
+      terminalGraphicsSourceSignature(a),
+      terminalGraphicsSourceSignature(b),
+      reason: 'identical bytes hash equally',
+    );
+    expect(
+      terminalGraphicsSourceSignature(a),
+      isNot(terminalGraphicsSourceSignature(c)),
+      reason: 'different bytes hash differently',
+    );
+    expect(terminalGraphicsSourceSignature(Uint8List(0)), 0);
+  });
+
+  test('terminalGraphicsSourceSignature is a 32-bit value', () {
+    // The MonkeyMux server matches this hash as a Go uint32, so it must never
+    // exceed 32 bits or exactly match a known reference value.
+    final bytes = Uint8List.fromList('hello'.codeUnits);
+    final sig = terminalGraphicsSourceSignature(bytes);
+    expect(sig, lessThanOrEqualTo(0xFFFFFFFF));
+    expect(sig, 3314369016, reason: 'must match the Go server FNV-1a-32');
+  });
+
+  testWidgets('heldImageSignatures reports decoded and pending images', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBase64 = await _buildPngBase64(3, 2);
+      final terminal = Terminal();
+
+      // Two store-only images: one decoded (referenced), one left pending.
+      terminal
+        ..write('\x1b_Ga=t,i=71,f=100;$pngBase64\x1b\\')
+        ..write('\x1b_Ga=t,i=72,f=100;$pngBase64\x1b\\');
+      await _decodeDeferredImage(terminal, 71);
+
+      final held = terminal.heldImageSignatures();
+      expect(held.keys, containsAll(<int>[71, 72]));
+      expect(held[71], isNot(0));
+      // Both images share identical bytes, so their signatures match.
+      expect(held[71], held[72]);
+      expect(terminal.graphics.imageById(71), isNotNull);
+      expect(terminal.graphics.hasPendingImage(72), isTrue);
+    });
+  });
+
+  testWidgets(
+    'heldImageSignatures omits an image that would not survive a clear',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(3, 2);
+        final terminal = Terminal();
+
+        // A physical a=T image with no protocol id is stored under an
+        // auto-assigned id and is NOT retained, so entering the alternate
+        // screen (a window switch's `CSI ? 1049 h`) drops it. It must therefore
+        // never be reported as held: doing so would let the server skip
+        // re-transmitting it, and then the switch's own clear would drop it,
+        // leaving the redrawn placement blank.
+        terminal.write('\x1b_Ga=T,f=100;$pngBase64\x1b\\');
+        var waited = 0;
+        while (!terminal.graphics.hasPlacements && waited < 2000) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          waited += 20;
+        }
+        expect(terminal.graphics.hasPlacements, isTrue);
+        expect(
+          terminal.heldImageSignatures(),
+          isEmpty,
+          reason: 'a non-retained image must not be reported as held',
+        );
+
+        // Entering the alternate screen clears it, confirming the image really
+        // does not survive — exactly why it must not be reported.
+        terminal.write('\x1b[?1049h');
+        expect(terminal.graphics.hasPlacements, isFalse);
+      });
+    },
+  );
+
+  testWidgets('decodeTerminalImage downscales an oversized image', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      // A 2400x1200 PNG must come back capped to 1280 on its longest side with
+      // aspect ratio preserved (so it can't blow up decoded memory on mobile).
+      final pngBytes = base64.decode(await _buildPngBase64(2400, 1200));
+      final image = await decodeTerminalImage(pngBytes, format: 100);
+      expect(image, isNotNull);
+      expect(image!.width, 1280);
+      expect(image.height, 640);
+    });
+  });
+
+  testWidgets('decodeTerminalImage leaves a small image untouched', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final pngBytes = base64.decode(await _buildPngBase64(320, 200));
+      final image = await decodeTerminalImage(pngBytes, format: 100);
+      expect(image, isNotNull);
+      expect(image!.width, 320);
+      expect(image.height, 200);
     });
   });
 
@@ -175,11 +508,10 @@ void main() {
       final terminal = Terminal();
       terminal.write('\x1b_Ga=t,i=$imageId,f=100;$pngBase64\x1b\\');
 
-      var waited = 0;
-      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      // Referencing by the placeholder color (low byte 42) triggers the
+      // deferred decode via the low-bits fallback.
+      terminal.graphics.imageByPlaceholderColorId(42, bitWidth: 8);
+      await _awaitImage(terminal, imageId);
 
       final stored = terminal.graphics.imageByPlaceholderColorId(
         42,
@@ -199,25 +531,24 @@ void main() {
       final terminal = Terminal();
       terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=3,r=2;$pngBase64\x1b\\');
 
-      var waited = 0;
-      while (terminal.graphics.imageById(43) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
-
-      final stored = terminal.graphics.imageById(43);
-      expect(stored, isNotNull);
-      expect(stored!.image.width, 3);
-      expect(stored.image.height, 2);
       // U=1 means the client displays the image through Unicode placeholder
       // cells, so the terminal must not create a physical placement (that would
-      // draw a duplicate image at the cursor).
+      // draw a duplicate image at the cursor). The virtual placement is
+      // registered immediately even though the decode is deferred.
       expect(terminal.graphics.hasPlacements, isFalse);
       expect(
         terminal.graphics.virtualPlacementById(43),
         isNotNull,
         reason: 'Unicode placeholder clients reference the virtual placement',
       );
+
+      await _decodeDeferredImage(terminal, 43);
+
+      final stored = terminal.graphics.imageById(43);
+      expect(stored, isNotNull);
+      expect(stored!.image.width, 3);
+      expect(stored.image.height, 2);
+      expect(terminal.graphics.hasPlacements, isFalse);
 
       terminal.write('\x1b[2J');
       expect(
@@ -227,6 +558,46 @@ void main() {
       );
     });
   });
+
+  testWidgets(
+    'virtual placement survives the alt-screen reattach clear',
+    (tester) async {
+      await tester.runAsync(() async {
+        final pngBase64 = await _buildPngBase64(3, 2);
+        final terminal = Terminal();
+
+        // A full-screen TUI such as the Copilot CLI runs in the alternate
+        // screen, so its images (and their virtual placements) live on the alt
+        // buffer. Enter the alt screen, then transmit a virtual image with a
+        // known cell grid (c=8, r=4).
+        terminal.write('\x1b[?1049h');
+        terminal.write('\x1b_Ga=T,U=1,i=43,f=100,c=8,r=4;$pngBase64\x1b\\');
+        final before = terminal.graphics.virtualPlacementById(43);
+        expect(before, isNotNull);
+        expect(before!.cols, 8);
+        expect(before.rows, 4);
+
+        // The MonkeyMux reattach/window-switch replay re-enters the alternate
+        // screen (`CSI ? 1049 h`), which clears it. The image bytes are
+        // retained, and — because the app redraws only placeholder cells and
+        // never re-sends the image or its virtual placement — the virtual
+        // placement (the grid size the painter needs to slice the image) must
+        // survive too. Before the fix this was wiped, so the painter guessed
+        // the grid from visible cells and mis-sliced the image.
+        terminal.write('\x1b[?1049h');
+
+        final after = terminal.graphics.virtualPlacementById(43);
+        expect(
+          after,
+          isNotNull,
+          reason: 'entering the alt screen must not drop the virtual placement '
+              'of a retained image',
+        );
+        expect(after!.cols, 8);
+        expect(after.rows, 4);
+      });
+    },
+  );
 
   testWidgets('Kitty protocol-id image survives clear for placeholder redraw', (
     tester,
@@ -315,11 +686,10 @@ void main() {
       expect(terminal.graphics.placeholders, isNotEmpty);
       final before = terminal.graphics.placeholders.length;
 
-      var waited = 0;
-      while (terminal.graphics.imageById(77) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
+      // The painter references the backing image on the next frame, which
+      // starts the deferred decode; that decode must not drop the placeholders.
+      terminal.graphics.imageForPlacement(77);
+      await _awaitImage(terminal, 77);
 
       expect(terminal.graphics.imageById(77), isNotNull);
       expect(
@@ -376,6 +746,68 @@ void main() {
       ),
       isNotNull,
     );
+  });
+
+  testWidgets(
+      'unresolvedPlaceholderImageIds lists placeholder ids with no image', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    // A placeholder cell referencing image id 77 whose bytes never arrived
+    // (e.g. dropped by a bounded switch/reconnect replay) resolves to nothing.
+    terminal.write('\x1b[38;5;77m$placeholder');
+    final placeholders = terminal.graphics.placeholders;
+    expect(placeholders, hasLength(1));
+    expect(placeholders.single.imageId, 77);
+    expect(terminal.unresolvedPlaceholderImageIds(), {77});
+
+    // Once the bytes arrive (server replay of the requested id), the placeholder
+    // resolves and the id drops out of the missing set.
+    terminal.graphics.storeImageWithId(77, await _buildImage(1, 1));
+    expect(terminal.unresolvedPlaceholderImageIds(), isEmpty);
+  });
+
+  testWidgets('unresolvedPlaceholderImageIds excludes still-pending images', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    // Image 88's bytes are in hand but not yet decoded (a store-only transmit
+    // deferred to first paint). A placeholder for it must not be reported as
+    // missing — re-requesting bytes already held would be wasteful.
+    terminal.graphics.storePendingImage(
+      88,
+      payload: base64.decode('AAAA'),
+      format: 100,
+    );
+    terminal.write('\x1b[38;5;88m$placeholder');
+    expect(terminal.graphics.hasPendingImage(88), isTrue);
+    expect(terminal.graphics.placeholders.single.imageId, 88);
+    expect(terminal.unresolvedPlaceholderImageIds(), isNot(contains(88)));
+  });
+
+  testWidgets('unresolvedPlaceholderImageIds reports only the active buffer', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
+
+    // Draw an unresolved placeholder on the primary screen, then switch to the
+    // alternate screen. Only the active buffer is visible and only it can be
+    // repopulated by a replay, so the inactive primary-screen id must not be
+    // reported while the alt screen is active — reporting it would request bytes
+    // that land on the wrong buffer and get recorded as already handled.
+    terminal.write('\x1b[38;5;55m$placeholder');
+    expect(terminal.unresolvedPlaceholderImageIds(), {55});
+
+    terminal.write('\x1b[?1049h'); // enter alternate screen
+    expect(terminal.unresolvedPlaceholderImageIds(), isEmpty);
+
+    terminal.write('\x1b[?1049l'); // back to the primary screen
+    expect(terminal.unresolvedPlaceholderImageIds(), {55});
   });
 
   testWidgets('a=T advances the cursor below the image by r rows', (
@@ -894,4 +1326,115 @@ void main() {
       );
     });
   });
+
+  test(
+    'an orphaned continuation chunk does not poison the next real image',
+    () {
+      // If a multi-chunk transmission is truncated (its first chunk lost to a
+      // racing replay), a bare `m=1` continuation can arrive with no active
+      // transmission. It must be ignored: decoding it headless fails, and — the
+      // real danger — leaving it "active" would swallow the next real image's
+      // first chunk as a no-op start and finalize that image under empty args,
+      // dropping it. The following real image must still store correctly.
+      final rgba = _rawRgbaBase64(16, 16);
+
+      final terminal = Terminal();
+      // Orphaned continuation: only the more-data flag, no id/action/format.
+      terminal.write('\x1b_Gm=1;${rgba.substring(0, 64)}\x1b\\');
+      expect(
+        terminal.heldImageSignatures().keys,
+        isEmpty,
+        reason: 'a headless continuation must not create an image',
+      );
+
+      // A real, well-formed image immediately after must be unaffected.
+      terminal.write('\x1b_Ga=t,i=94,f=32,s=16,v=16;$rgba\x1b\\');
+      expect(
+        terminal.heldImageSignatures().keys,
+        <int>[94],
+        reason: 'the next real image must not be swallowed by the orphan',
+      );
+    },
+  );
+
+  test(
+    'multi-chunk image reassembles to one image with the full-payload signature',
+    () {
+      // Kitty caps each APC payload at 4096 base64 bytes, so any real image is
+      // transmitted as m=1 continuation chunks. The client must concatenate
+      // every chunk's decoded payload into one image whose signature is taken
+      // over the whole payload — this is what the MonkeyMux skip protocol keys
+      // on, and hashing only the first chunk (the old server bug) would never
+      // let a switch-back skip a real screenshot.
+      final rgba = _rawRgbaBase64(48, 48);
+      final fullPayload = base64.decode(rgba);
+      final expectedSignature = terminalGraphicsSourceSignature(
+        Uint8List.fromList(fullPayload),
+      );
+
+      final transmission = _multiChunkTransmission(
+        rgba,
+        firstControl: 'a=t,i=91,f=32,s=48,v=48',
+      );
+      // Sanity: the payload really did split into several chunks.
+      expect('\x1b_G'.allMatches(transmission).length, greaterThan(1));
+
+      final terminal = Terminal();
+      terminal.write(transmission);
+
+      final held = terminal.heldImageSignatures();
+      expect(
+        held[91],
+        expectedSignature,
+        reason: 'the id must hash over the concatenation of all chunk payloads',
+      );
+      // No stray images from continuation chunks being mis-parsed as their own
+      // headless transmissions.
+      expect(held.keys, <int>[91]);
+    },
+  );
+
+  test(
+    'multi-chunk image split across arbitrary write boundaries never leaks '
+    'base64 as text',
+    () {
+      // A window-switch replay is pumped through the parser in fixed-size
+      // slices that fall at arbitrary byte offsets — mid-control, mid-payload,
+      // and across the ESC/ST that frame each chunk. The parser must hold the
+      // incomplete APC and resume, never dropping the introducer and rendering
+      // the base64 as ground-state text (the on-screen "gibberish").
+      final rgba = _rawRgbaBase64(40, 40);
+      final transmission = _multiChunkTransmission(
+        rgba,
+        firstControl: 'a=t,i=92,f=32,s=40,v=40',
+      );
+
+      // Prefix/suffix with ordinary text so a leak is unmistakable in the
+      // buffer and the parser has real ground-state work around the image.
+      const prefix = 'BEGIN';
+      const suffix = 'END';
+      final stream = '$prefix$transmission$suffix';
+
+      for (final sliceSize in <int>[1, 7, 64, 293, 4096]) {
+        final terminal = Terminal();
+        for (var offset = 0; offset < stream.length; offset += sliceSize) {
+          final end = math.min(offset + sliceSize, stream.length);
+          terminal.write(stream.substring(offset, end));
+        }
+
+        final text = terminal.buffer.getText().replaceAll('\n', '');
+        expect(
+          text,
+          'BEGINEND',
+          reason: 'slice size $sliceSize leaked image payload into the buffer',
+        );
+        expect(
+          terminal.heldImageSignatures().keys,
+          <int>[92],
+          reason:
+              'slice size $sliceSize must still reassemble exactly one image',
+        );
+      }
+    },
+  );
 }

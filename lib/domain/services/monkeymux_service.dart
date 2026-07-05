@@ -355,6 +355,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
   }) async {
     await _runControlCommand(session, sessionName, {
       'type': 'select_window',
@@ -362,7 +363,52 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         'windowId': windowId.trim()
       else
         'windowIndex': windowIndex,
+      if (clientImageSignatures != null && clientImageSignatures.isNotEmpty)
+        'haveImageSignatures': {
+          for (final entry in clientImageSignatures.entries)
+            entry.key.toString(): entry.value,
+        },
     });
+  }
+
+  /// Asks the server to replay specific retained Kitty image transmissions the
+  /// client is missing for the active window.
+  ///
+  /// After a window switch or reconnect, the bounded image replay can omit
+  /// images the foreground app still shows (it draws placeholder cells that
+  /// reference them but never re-transmits the bytes). The client detects those
+  /// unresolved ids and calls this so the server replays exactly them from its
+  /// per-window retained cache. Best-effort: a failure (e.g. an older server
+  /// without this command) is logged and swallowed so image gaps never break
+  /// the session.
+  Future<void> requestImages(
+    SshSession session,
+    String sessionName,
+    Iterable<int> imageIds,
+  ) async {
+    final ids = <String>[
+      for (final id in imageIds)
+        if (id > 0) id.toString(),
+    ];
+    if (ids.isEmpty) {
+      return;
+    }
+    try {
+      await _runControlCommand(session, sessionName, {
+        'type': 'request_images',
+        'imageIds': ids,
+      }, priority: SshExecPriority.low);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'monkeymux.graphics',
+        'request_images_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'count': ids.length,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
+    }
   }
 
   @override
@@ -1408,8 +1454,11 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalMouseReportSgr =
       (value['terminalMouseReportSgr'] as bool? ?? false) ||
       _privateModeEnabled(privateModes, '1006');
-  // MonkeyMux activity is tracked via idle metadata; tmux alert flags would
-  // turn ordinary background output into noisy system notifications.
+  // The MonkeyMux server only raises the `#` alert flag when a background
+  // window emits a terminal bell (agents ring the bell when they need input),
+  // and clears it as soon as the window is selected. Parsing it restores the
+  // alert badge and the push notification for prompts/alerts without turning
+  // ordinary background output into noisy notifications.
   return TmuxWindow(
     index: index is int ? index : 0,
     id: value['id'] as String?,
@@ -1418,6 +1467,7 @@ TmuxWindow? _windowFromJson(Object? value) {
     currentCommand: _nonEmpty(value['currentCommand'] as String?),
     currentPath: _nonEmpty(value['currentPath'] as String?),
     panePid: value['panePid'] as int?,
+    flags: _nonEmpty(value['flags'] as String?),
     paneTitle: _nonEmpty(value['paneTitle'] as String?),
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
     terminalReportsMouseWheel: terminalReportsMouseWheel,

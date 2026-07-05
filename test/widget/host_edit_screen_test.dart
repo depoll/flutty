@@ -313,6 +313,33 @@ bool _textFieldHasFocus(WidgetTester tester, Key fieldKey) {
   return editableText.focusNode.hasFocus;
 }
 
+String _fieldText(WidgetTester tester, Key fieldKey) {
+  final editableText = tester.widget<EditableText>(
+    find.descendant(
+      of: find.byKey(fieldKey),
+      matching: find.byType(EditableText),
+    ),
+  );
+  return editableText.controller.text;
+}
+
+/// Opens the startup-mode dropdown from any current selection and taps [label].
+Future<void> _switchStartupMode(WidgetTester tester, String label) async {
+  final startupModeField = find.byKey(const Key('host-startup-mode-field'));
+  await tester.scrollUntilVisible(
+    startupModeField,
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.ensureVisible(startupModeField);
+  await tester.tap(startupModeField);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.tap(find.text(label).last, warnIfMissed: false);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
 void main() {
   setUpAll(() {
     registerFallbackValue(const AgentLaunchPreset(tool: AgentLaunchTool.codex));
@@ -416,6 +443,107 @@ void main() {
       expect(find.text('MonkeyMux'), findsOneWidget);
       expect(find.text('tmux'), findsOneWidget);
       expect(find.text('Automatic windows'), findsNothing);
+    });
+
+    testWidgets('retains tmux session config when switching to coding agent', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+      await _fillRequiredHostFields(tester);
+      await _switchStartupMode(tester, 'tmux');
+
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-session-field')),
+        'workspace',
+      );
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-working-directory-field')),
+        '~/src/app',
+      );
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-extra-flags-field')),
+        '-x 160',
+      );
+      await tester.pump();
+
+      await _switchStartupMode(tester, 'Launch coding agent');
+
+      expect(
+        _fieldText(tester, const Key('host-agent-tmux-session-field')),
+        'workspace',
+      );
+      expect(
+        _fieldText(tester, const Key('host-agent-working-directory-field')),
+        '~/src/app',
+      );
+      // The agent tmux flags field only renders when the carried-over tmux
+      // backend is applied, so its presence and value confirm both.
+      expect(
+        find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+        findsOneWidget,
+      );
+      expect(
+        _fieldText(tester, const Key('host-agent-tmux-extra-flags-field')),
+        '-x 160',
+      );
+    });
+
+    testWidgets(
+      'retains coding agent session config when switching to tmux startup',
+      (tester) async {
+        await _pumpHostCreateScreen(tester, hasPro: true);
+        await _fillRequiredHostFields(tester);
+        await _switchStartupMode(tester, 'Launch coding agent');
+
+        await tester.enterText(
+          find.byKey(const Key('host-agent-tmux-session-field')),
+          'agent-workspace',
+        );
+        await tester.enterText(
+          find.byKey(const Key('host-agent-working-directory-field')),
+          '~/src/agent',
+        );
+        await tester.pump();
+
+        await _switchStartupMode(tester, 'tmux');
+
+        expect(
+          _fieldText(tester, const Key('host-tmux-session-field')),
+          'agent-workspace',
+        );
+        expect(
+          _fieldText(tester, const Key('host-tmux-working-directory-field')),
+          '~/src/agent',
+        );
+      },
+    );
+
+    testWidgets('does not overwrite existing coding agent values on switch', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+      await _fillRequiredHostFields(tester);
+
+      await _switchStartupMode(tester, 'Launch coding agent');
+      await tester.enterText(
+        find.byKey(const Key('host-agent-tmux-session-field')),
+        'agent-session',
+      );
+      await tester.pump();
+
+      await _switchStartupMode(tester, 'tmux');
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-session-field')),
+        'tmux-session',
+      );
+      await tester.pump();
+
+      await _switchStartupMode(tester, 'Launch coding agent');
+
+      expect(
+        _fieldText(tester, const Key('host-agent-tmux-session-field')),
+        'agent-session',
+      );
     });
 
     testWidgets('scrolls to missing tmux session when saving tmux startup', (
