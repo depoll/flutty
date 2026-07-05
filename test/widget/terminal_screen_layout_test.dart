@@ -667,6 +667,13 @@ void main() {
       expect(isShellCompletionTmuxShellCommand('zsh'), isTrue);
       expect(isShellCompletionTmuxShellCommand('/bin/bash'), isTrue);
       expect(isShellCompletionTmuxShellCommand('-fish'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('cmd.exe'), isTrue);
+      expect(
+        isShellCompletionTmuxShellCommand(
+          r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+        ),
+        isTrue,
+      );
       expect(isShellCompletionTmuxShellCommand('vim'), isFalse);
       expect(isShellCompletionTmuxShellCommand(null), isFalse);
     });

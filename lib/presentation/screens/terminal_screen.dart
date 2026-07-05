@@ -269,6 +269,7 @@ const _shellCompletionTmuxContextTtl = Duration(seconds: 5);
 const _shellCompletionShellCommands = <String>{
   'ash',
   'bash',
+  'cmd',
   'csh',
   'dash',
   'elvish',
@@ -467,9 +468,12 @@ bool isShellCompletionTmuxShellCommand(String? command) {
   if (normalized == null || normalized.isEmpty) {
     return false;
   }
-  normalized = normalized.split('/').last;
+  normalized = normalized.replaceAll(r'\', '/').split('/').last;
   if (normalized.startsWith('-')) {
     normalized = normalized.substring(1);
+  }
+  if (normalized.endsWith('.exe')) {
+    normalized = normalized.substring(0, normalized.length - 4);
   }
   return _shellCompletionShellCommands.contains(normalized);
 }

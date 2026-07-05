@@ -186,7 +186,49 @@ void main() {
       expect(script, contains(r"$__flMode='command'"));
       expect(script, contains(r"$__flToken='gi'"));
       expect(script, contains('Get-Command -Name'));
-      expect(script, contains("Append('command')"));
+      expect(script, contains(r"__flEmit 'command' $__n"));
+    });
+
+    test('argument mode uses native PowerShell TabExpansion2', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git ch',
+        cursorOffset: 6,
+        token: 'ch',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        shellCommand: 'pwsh.exe',
+        words: ['git', 'ch'],
+        wordIndex: 1,
+        workingDirectory: r'C:\Users\x',
+      );
+      final script = buildWindowsShellCompletionScript(invocation);
+      expect(script, contains(r"$__flMode='argument'"));
+      expect(script, contains(r"$__flCommandLine='git ch'"));
+      expect(script, contains(r'$__flCursorOffset=6'));
+      expect(script, contains(r"$__flShell='pwsh'"));
+      expect(script, contains('Get-Command TabExpansion2'));
+      expect(script, contains(r'TabExpansion2 $__flCommandLine'));
+      expect(script, contains(r'$__m.CompletionText'));
+      expect(script, contains(r'__flEmit $__flKind $__flText'));
+    });
+
+    test('argument mode does not use PowerShell completers for cmd panes', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git ch',
+        cursorOffset: 6,
+        token: 'ch',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        shellCommand: 'cmd.exe',
+        words: ['git', 'ch'],
+        wordIndex: 1,
+        workingDirectory: r'C:\Users\x',
+      );
+      final script = buildWindowsShellCompletionScript(invocation);
+      expect(script, contains(r"$__flShell='cmd'"));
+      expect(script, contains(r"if($__flShell -eq 'cmd'){return $false}"));
     });
 
     test('path mode enumerates directories and files', () {
@@ -201,8 +243,8 @@ void main() {
       final script = buildWindowsShellCompletionScript(invocation);
       expect(script, contains(r"$__flMode='path'"));
       expect(script, contains('Get-ChildItem -LiteralPath'));
-      expect(script, contains("Append('directory')"));
-      expect(script, contains("Append('file')"));
+      expect(script, contains(r"__flEmit 'directory' $__val"));
+      expect(script, contains(r"__flEmit 'file' $__val"));
     });
 
     test('escapes wildcard tokens and handles drive roots', () {
@@ -278,10 +320,17 @@ void main() {
         token: '',
         tokenStart: 0,
         mode: ShellCompletionMode.command,
+        shellCommand: 'powershell.exe',
         workingDirectory: r'C:\Users\x',
       );
       final script = buildWindowsShellHistoryScript(invocation);
+      expect(script, contains(r"$__flShell='powershell'"));
+      expect(script, contains('DefaultShell'));
+      expect(script, contains(r"if($__flShell -ne 'cmd')"));
+      expect(script, contains('Get-PSReadLineOption'));
+      expect(script, contains('HistorySavePath'));
       expect(script, contains('ConsoleHost_history.txt'));
+      expect(script, contains(r'Microsoft\PowerShell\PSReadLine'));
       expect(script, contains("Append('__FLUTTY_HISTORY_START__')"));
       expect(script, contains("Append('__FLUTTY_HISTORY_DONE__')"));
       expect(script, contains("Append('bash')"));
@@ -291,6 +340,21 @@ void main() {
           r'Get-Content -LiteralPath $__flHist -Tail 1200 -Encoding UTF8',
         ),
       );
+    });
+
+    test('detects cmd shells before deciding whether to read PSReadLine', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: '',
+        cursorOffset: 0,
+        token: '',
+        tokenStart: 0,
+        mode: ShellCompletionMode.command,
+        shellCommand: 'cmd.exe',
+        workingDirectory: r'C:\Users\x',
+      );
+      final script = buildWindowsShellHistoryScript(invocation);
+      expect(script, contains(r"$__flShell='cmd'"));
+      expect(script, contains(r"if($__flShell -ne 'cmd')"));
     });
   });
 }
