@@ -1342,6 +1342,13 @@ class AgentSessionDiscoveryService {
     int maxPerTool = 12,
     String? toolName,
   }) async* {
+    // Windows remotes don't host the POSIX tool-state directories
+    // (~/.codex, ~/.claude, ...) and can't run the find/ls/profile-sourcing
+    // discovery scripts, so return no sessions instead of firing failing execs.
+    if (session.remoteIsWindows) {
+      yield DiscoveredSessionsResult(sessions: const []);
+      return;
+    }
     _pruneExpiredCacheEntries();
     final key = _AgentSessionDiscoveryKey.fromSession(
       session,
