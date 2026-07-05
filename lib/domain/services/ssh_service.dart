@@ -2890,9 +2890,11 @@ class SshSession {
   /// [remoteSoftwareVersion].
   ///
   /// When true, POSIX-only session behaviour — the truecolor login-shell
-  /// bootstrap, tmux/MonkeyMux detection, `~/.profile` sourcing, shell
-  /// completion and agent-session discovery — is skipped because those commands
-  /// fail on `cmd.exe`/PowerShell (e.g. `'exec' is not recognized...`).
+  /// bootstrap, tmux detection and `~/.profile` sourcing — is skipped because
+  /// those commands fail on `cmd.exe`/PowerShell (e.g.
+  /// `'exec' is not recognized...`). MonkeyMux, agent-session discovery and
+  /// shell completion instead take Windows-aware paths (a ConPTY helper and
+  /// PowerShell `-EncodedCommand` probes respectively).
   bool get remoteIsWindows =>
       remoteVersionIndicatesWindows(remoteSoftwareVersion);
 
