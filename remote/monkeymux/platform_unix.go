@@ -70,10 +70,11 @@ func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) 
 	return &unixPty{file: file}, &unixProcess{cmd: cmd}, nil
 }
 
-// configureDetachedDaemon makes the serve daemon a new session leader so it
-// keeps running after the launching shell exits.
-func configureDetachedDaemon(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+// detachedDaemonSysProcAttrs returns the SysProcAttr to use when starting the
+// detached server daemon. On POSIX a new session (setsid) detaches it from the
+// launching shell's controlling terminal and process group.
+func detachedDaemonSysProcAttrs() []*syscall.SysProcAttr {
+	return []*syscall.SysProcAttr{{Setsid: true}}
 }
 
 // newRunCommand builds the bounded metadata command in its own process group so

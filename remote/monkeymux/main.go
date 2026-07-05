@@ -55,7 +55,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.87"
+	monkeyMuxVersion                  = "0.1.88"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -573,17 +573,19 @@ func attachCommand(args []string) {
 	stopResize := forwardResizeSignals(session)
 	defer stopResize()
 
-	errs := make(chan error, 2)
+	// The attach lives for as long as the server keeps the connection open. The
+	// input relay (client stdin -> server) is best-effort: a stdin EOF must not
+	// end the attach. On POSIX the PTY stdin never EOFs during a live session,
+	// but Windows OpenSSH delivers an immediate EOF on exec+PTY channels, and
+	// tearing down on that first-finished copy would drop the terminal the
+	// instant it opened. Driving the lifetime from the server->stdout copy ends
+	// the attach only when the server closes the session or the local output
+	// stream can no longer be written (the SSH channel went away).
 	go func() {
-		_, err := io.Copy(conn, os.Stdin)
-		errs <- err
-	}()
-	go func() {
-		_, err := io.Copy(os.Stdout, conn)
-		errs <- err
+		_, _ = io.Copy(conn, os.Stdin)
 	}()
 
-	if err := <-errs; err != nil && !errors.Is(err, io.EOF) {
+	if _, err := io.Copy(os.Stdout, conn); err != nil && !errors.Is(err, io.EOF) {
 		fatal(err)
 	}
 }
@@ -753,42 +755,57 @@ func ensureServer(
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "serve", "--session", session)
+	serveArgs := []string{"serve", "--session", session}
 	if width > 0 && height > 0 {
-		cmd.Args = append(
-			cmd.Args,
-			"--width",
-			strconv.Itoa(width),
-			"--height",
-			strconv.Itoa(height),
-		)
+		serveArgs = append(serveArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 	}
 	if restore != nil && len(restore.Windows) > 0 {
 		path, err := writeRestoreFile(session, restore)
 		if err == nil {
 			defer os.Remove(path)
-			cmd.Args = append(cmd.Args, "--restore-file", path)
+			serveArgs = append(serveArgs, "--restore-file", path)
 		}
 	}
 	if strings.TrimSpace(initialWindow.cwd) != "" {
-		cmd.Args = append(cmd.Args, "--cwd", initialWindow.cwd)
+		serveArgs = append(serveArgs, "--cwd", initialWindow.cwd)
 	}
 	if strings.TrimSpace(initialWindow.name) != "" {
-		cmd.Args = append(cmd.Args, "--name", initialWindow.name)
+		serveArgs = append(serveArgs, "--name", initialWindow.name)
 	}
 	if strings.TrimSpace(initialWindow.command) != "" {
-		cmd.Args = append(cmd.Args, "--command", initialWindow.command)
+		serveArgs = append(serveArgs, "--command", initialWindow.command)
 	}
 	if len(initialWindow.themeHint) > 0 {
-		cmd.Args = append(cmd.Args, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
+		serveArgs = append(serveArgs, "--theme-hint-base64", base64.StdEncoding.EncodeToString(initialWindow.themeHint))
 	}
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.Env = inheritedEnvironment(os.Environ())
-	configureDetachedDaemon(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
+	daemonEnv := inheritedEnvironment(os.Environ())
+	buildServeCmd := func() *exec.Cmd {
+		c := exec.Command(exe, serveArgs...)
+		c.Stdin = nil
+		c.Stdout = nil
+		c.Stderr = nil
+		c.Env = daemonEnv
+		return c
+	}
+	// Detach the server so it outlives the launching shell (the POSIX analog is
+	// setsid). detachedDaemonSysProcAttrs returns the strategies to try in
+	// order; on Windows the first requests a job-object breakaway that some
+	// hosts disallow, so a fresh command is started for each fallback attempt.
+	var cmd *exec.Cmd
+	var startErr error
+	for _, attr := range detachedDaemonSysProcAttrs() {
+		candidate := buildServeCmd()
+		candidate.SysProcAttr = attr
+		if err := candidate.Start(); err != nil {
+			startErr = err
+			continue
+		}
+		cmd = candidate
+		startErr = nil
+		break
+	}
+	if startErr != nil {
+		return startErr
 	}
 	_ = cmd.Process.Release()
 

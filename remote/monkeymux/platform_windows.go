@@ -350,12 +350,25 @@ func ensureSystemRoot(env []string) []string {
 	return env
 }
 
-// configureDetachedDaemon detaches the serve daemon from the launching console
-// and process group so it survives after the launching shell exits.
-func configureDetachedDaemon(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+// detachedDaemonSysProcAttrs returns the SysProcAttr strategies to try, in
+// order, when starting the detached server daemon. The daemon must outlive the
+// foreground `attach` shell so the session persists across reconnects. Windows
+// OpenSSH runs the command inside a job object and may terminate that job when
+// the channel closes, so the first strategy requests CREATE_BREAKAWAY_FROM_JOB.
+// Some jobs disallow breakaway (CreateProcess then fails), so a second strategy
+// without it is provided as a fallback; ensureServer starts a fresh command for
+// each attempt.
+func detachedDaemonSysProcAttrs() []*syscall.SysProcAttr {
+	const base = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
+	return []*syscall.SysProcAttr{
+		{
+			HideWindow:    true,
+			CreationFlags: uint32(base | windows.CREATE_BREAKAWAY_FROM_JOB),
+		},
+		{
+			HideWindow:    true,
+			CreationFlags: uint32(base),
+		},
 	}
 }
 
