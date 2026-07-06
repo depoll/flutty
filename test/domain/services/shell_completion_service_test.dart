@@ -28,6 +28,20 @@ SshSession _buildShellCompletionSession(
   ),
 );
 
+/// Decodes a `powershell ... -EncodedCommand <base64>` command back to its
+/// UTF-16LE PowerShell script so Windows-path tests can route mock responses.
+String _decodeEncodedPowerShell(String command) {
+  const marker = '-EncodedCommand ';
+  final index = command.indexOf(marker);
+  if (index < 0) return command;
+  final bytes = base64.decode(command.substring(index + marker.length).trim());
+  final buffer = StringBuffer();
+  for (var i = 0; i + 1 < bytes.length; i += 2) {
+    buffer.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
+  }
+  return buffer.toString();
+}
+
 void _stubHistoryExec(ssh.SSHClient client, List<String> commands) {
   final exec = _MockSshExecSession();
   final output = [
@@ -545,7 +559,7 @@ void main() {
     );
 
     test(
-      'skips remote completion and history probes on Windows remotes',
+      'runs PowerShell completion and history probes on Windows remotes',
       () async {
         final service = ShellCompletionService();
         final client = _MockSshClient();
@@ -557,25 +571,114 @@ void main() {
         when(
           () => client.remoteVersion,
         ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) async {
+          final command = invocation.positionalArguments.first as String;
+          final script = _decodeEncodedPowerShell(command);
+          final output = script.contains('ConsoleHost_history')
+              ? '__FLUTTY_HISTORY_START__\n__FLUTTY_HISTORY_DONE__\n'
+              : 'command\tgit\ncommand\tgitk\n';
+          final exec = _MockSshExecSession();
+          when(() => exec.stdout).thenAnswer(
+            (_) => Stream<Uint8List>.fromIterable([
+              Uint8List.fromList(utf8.encode(output)),
+            ]),
+          );
+          when(
+            () => exec.stderr,
+          ).thenAnswer((_) => const Stream<Uint8List>.empty());
+          when(() => exec.done).thenAnswer((_) => Future<void>.value());
+          when(exec.close).thenAnswer((_) {});
+          return exec;
+        });
         const invocation = ShellCompletionInvocation(
-          commandLine: 'git checko',
-          cursorOffset: 10,
-          token: 'checko',
-          tokenStart: 4,
-          mode: ShellCompletionMode.argument,
-          commandName: 'git',
-          words: ['git', 'checko'],
-          wordIndex: 1,
-          workingDirectory: r'C:\Users\tester\project',
+          commandLine: 'gi',
+          cursorOffset: 2,
+          token: 'gi',
+          tokenStart: 0,
+          mode: ShellCompletionMode.command,
+          workingDirectory: r'C:\Users\tester',
         );
 
-        service.primeHistory(session, invocation);
         final suggestions = await service.complete(session, invocation);
 
-        expect(suggestions, isEmpty);
-        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+        expect(suggestions, isNotEmpty);
+        expect(
+          suggestions.any((suggestion) => suggestion.label == 'git'),
+          true,
+        );
+        final commands = verify(
+          () => client.execute(captureAny(), pty: any(named: 'pty')),
+        ).captured.cast<String>();
+        expect(
+          commands.every((command) => command.contains('-EncodedCommand ')),
+          isTrue,
+        );
       },
     );
+
+    test('uses TabExpansion2 for Windows argument completions', () async {
+      final service = ShellCompletionService();
+      final client = _MockSshClient();
+      final session = _buildShellCompletionSession(
+        client,
+        connectionId: 8,
+        hostId: 100,
+      );
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        final script = _decodeEncodedPowerShell(command);
+        final output = script.contains('HistorySavePath')
+            ? '__FLUTTY_HISTORY_START__\n__FLUTTY_HISTORY_DONE__\n'
+            : 'argument\tcheckout\nargument\tcherry-pick\n';
+        final exec = _MockSshExecSession();
+        when(() => exec.stdout).thenAnswer(
+          (_) => Stream<Uint8List>.fromIterable([
+            Uint8List.fromList(utf8.encode(output)),
+          ]),
+        );
+        when(
+          () => exec.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => exec.done).thenAnswer((_) => Future<void>.value());
+        when(exec.close).thenAnswer((_) {});
+        return exec;
+      });
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git ch',
+        cursorOffset: 6,
+        token: 'ch',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        shellCommand: 'powershell.exe',
+        words: ['git', 'ch'],
+        wordIndex: 1,
+        workingDirectory: r'C:\Users\tester',
+      );
+
+      final suggestions = await service.complete(session, invocation);
+
+      expect(suggestions.map((suggestion) => suggestion.label), [
+        'git checkout',
+        'git cherry-pick',
+      ]);
+      expect(suggestions.first.replacement, 'checkout');
+      final commands = verify(
+        () => client.execute(captureAny(), pty: any(named: 'pty')),
+      ).captured.cast<String>();
+      final completionScript = commands
+          .map(_decodeEncodedPowerShell)
+          .singleWhere((script) => script.contains('TabExpansion2'));
+      expect(completionScript, contains(r"$__flShell='powershell'"));
+      expect(completionScript, contains(r'TabExpansion2 $__flCommandLine'));
+    });
 
     test(
       'service keeps in-flight history loads scoped to their connection',
