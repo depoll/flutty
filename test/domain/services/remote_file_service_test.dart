@@ -203,7 +203,7 @@ void main() {
           buildTerminalAttachmentPasteSegments([
             '/home/u/.cache/monkeyssh/uploads/a.png',
             '/home/u/b.png',
-          ], bracketedPasteMode: true),
+          ], useBracketedPaste: true),
           [
             '$start/home/u/.cache/monkeyssh/uploads/a.png$end ',
             '$start/home/u/b.png$end ',
@@ -217,7 +217,7 @@ void main() {
         buildTerminalAttachmentPasteSegments([
           '/tmp/a.png',
           '/tmp/b.png',
-        ], bracketedPasteMode: false),
+        ], useBracketedPaste: false),
         ["'/tmp/a.png' '/tmp/b.png' "],
       );
     });
@@ -229,7 +229,7 @@ void main() {
       expect(
         buildTerminalAttachmentPasteSegments(
           [r'C:\Users\proof\.cache\monkeyssh\uploads\a.png'],
-          bracketedPasteMode: true,
+          useBracketedPaste: true,
           windows: true,
         ),
         ['$start${r'C:\Users\proof\.cache\monkeyssh\uploads\a.png'}$end '],
@@ -237,7 +237,7 @@ void main() {
       expect(
         buildTerminalAttachmentPasteSegments(
           [r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'],
-          bracketedPasteMode: true,
+          useBracketedPaste: true,
           windows: true,
         ),
         [r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png" '],
@@ -251,29 +251,26 @@ void main() {
       expect(
         buildTerminalAttachmentPasteSegments([
           '/home/john smith/.cache/monkeyssh/uploads/a.png',
-        ], bracketedPasteMode: true),
+        ], useBracketedPaste: true),
         ["'/home/john smith/.cache/monkeyssh/uploads/a.png' "],
       );
       expect(
         buildTerminalAttachmentPasteSegments([
           r'/home/u/$(reboot)/a.png',
-        ], bracketedPasteMode: true),
+        ], useBracketedPaste: true),
         [r"'/home/u/$(reboot)/a.png' "],
       );
     });
 
     test('returns no segments when there are no paths', () {
       expect(
-        buildTerminalAttachmentPasteSegments(
-          const [],
-          bracketedPasteMode: true,
-        ),
+        buildTerminalAttachmentPasteSegments(const [], useBracketedPaste: true),
         isEmpty,
       );
       expect(
         buildTerminalAttachmentPasteSegments(const [
           '',
-        ], bracketedPasteMode: true),
+        ], useBracketedPaste: true),
         isEmpty,
       );
     });

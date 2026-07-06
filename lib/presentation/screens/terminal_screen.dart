@@ -1336,6 +1336,39 @@ bool shouldUsePhotoLibraryPickerForTerminalMedia({
     !isWeb &&
     (platform == TargetPlatform.android || platform == TargetPlatform.iOS);
 
+/// Whether uploaded file references should be framed as bracketed-paste input.
+@visibleForTesting
+bool shouldUseBracketedPasteForUploadedReferences({
+  required bool bracketedPasteMode,
+  required bool isAgentToolActive,
+  String? terminalIconName,
+  String? terminalWindowTitle,
+}) =>
+    bracketedPasteMode ||
+    isAgentToolActive ||
+    _terminalMetadataValueIndicatesAgentTool(terminalIconName) ||
+    _terminalMetadataValueIndicatesAgentTool(terminalWindowTitle);
+
+bool _terminalMetadataValueIndicatesAgentTool(String? value) {
+  final normalized = value?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return false;
+  }
+  if (agentLaunchToolForCommandName(normalized) != null) {
+    return true;
+  }
+  final lowered = normalized.toLowerCase();
+  for (final tool in AgentLaunchTool.values) {
+    final label = tool.label.toLowerCase();
+    if (lowered == label ||
+        lowered.startsWith('$label ') ||
+        lowered.startsWith('$label:')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Returns an Android image picker implementation configured for Photo Picker.
 @visibleForTesting
 ImagePickerAndroid enableAndroidPhotoPickerForTerminalMedia(
@@ -14646,9 +14679,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<String> remotePaths, {
     required bool windows,
   }) async {
+    final useBracketedPaste = shouldUseBracketedPasteForUploadedReferences(
+      bracketedPasteMode: _terminal.bracketedPasteMode,
+      isAgentToolActive: _isAgentToolActive,
+      terminalIconName: _iconName,
+      terminalWindowTitle: _windowTitle,
+    );
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
-      bracketedPasteMode: _terminal.bracketedPasteMode,
+      useBracketedPaste: useBracketedPaste,
       windows: windows,
     );
     for (var i = 0; i < segments.length; i++) {
