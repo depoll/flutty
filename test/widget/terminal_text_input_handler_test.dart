@@ -1418,7 +1418,11 @@ void main() {
               terminal: terminal,
               focusNode: focusNode,
               deleteDetection: true,
-              child: const SizedBox.expand(),
+              manageFocus: false,
+              child: Focus(
+                focusNode: focusNode,
+                child: const SizedBox.expand(),
+              ),
             ),
           ),
         ),
@@ -4887,50 +4891,146 @@ void main() {
       });
     }
 
-    testWidgets(
-      'soft-keyboard shifted text bypasses Kitty hardware key encoding',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>1u');
-        final focusNode = FocusNode();
+    testWidgets('virtual shifted text bypasses Kitty hardware key encoding', (
+      tester,
+    ) async {
+      const virtualShiftKey = PhysicalKeyboardKey(
+        LogicalKeyboardKey.androidPlane + 59,
+      );
+      const virtualCommaKey = PhysicalKeyboardKey(
+        LogicalKeyboardKey.androidPlane + 55,
+      );
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>9u');
+      final focusNode = FocusNode();
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: virtualShiftKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: virtualCommaKey,
+          character: '<',
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: virtualCommaKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: virtualShiftKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      await tester.pump();
+
+      expect(terminalOutput, isEmpty);
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('<', selectionOffset: 1),
+      );
+      await tester.pump();
+
+      expect(terminalOutput, <String>['<']);
+
+      focusNode.dispose();
+    });
+
+    testWidgets('physical shifted text keeps Kitty hardware key encoding', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>9u');
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              manageFocus: false,
+              child: Focus(
                 focusNode: focusNode,
-                deleteDetection: true,
                 child: const SizedBox.expand(),
               ),
             ),
           ),
-        );
+        ),
+      );
 
-        focusNode.requestFocus();
-        await tester.pump();
+      focusNode.requestFocus();
+      await tester.pump();
 
-        expect(tester.testTextInput.isVisible, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
 
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.comma);
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.comma);
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-        await tester.pump();
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: PhysicalKeyboardKey.shiftLeft,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: PhysicalKeyboardKey.comma,
+          character: '<',
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: PhysicalKeyboardKey.comma,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: PhysicalKeyboardKey.shiftLeft,
+          timeStamp: Duration.zero,
+        ),
+      );
+      await tester.pump();
 
-        expect(terminalOutput, isEmpty);
+      expect(terminalOutput.join(), contains('\x1b[44;2u'));
 
-        tester.testTextInput.updateEditingValue(
-          _editingValue('<', selectionOffset: 1),
-        );
-        await tester.pump();
-
-        expect(terminalOutput, <String>['<']);
-
-        focusNode.dispose();
-      },
-    );
+      focusNode.dispose();
+    });
 
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,

@@ -752,7 +752,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     TerminalKey key, {
     required bool hasShortcutModifier,
   }) {
-    if (!_isInputConnectionShown || hasShortcutModifier) {
+    if (!_isInputConnectionShown ||
+        hasShortcutModifier ||
+        !_isVirtualTextInputKeyEvent(event)) {
       return false;
     }
 
@@ -773,6 +775,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _stopHardwareKeyRepeat(logicalKey: event.logicalKey);
     return true;
   }
+
+  bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
+      event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
 
   bool _isTextInputManagedTerminalKey(TerminalKey key) {
     if (key.index >= TerminalKey.keyA.index &&
