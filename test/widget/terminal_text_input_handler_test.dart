@@ -4887,6 +4887,51 @@ void main() {
       });
     }
 
+    testWidgets(
+      'soft-keyboard shifted text bypasses Kitty hardware key encoding',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add)
+          ..write('\x1b[>1u');
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.comma);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.comma);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+
+        expect(terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('<', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        expect(terminalOutput, <String>['<']);
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {
