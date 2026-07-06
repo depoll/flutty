@@ -12,6 +12,7 @@ import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
+import 'windows_remote_powershell.dart';
 
 const _backslashCodeUnit = 0x5C;
 
@@ -422,15 +423,18 @@ class TmuxService {
   /// Detects which supported coding-agent CLIs are available on the
   /// remote host's `PATH`.
   ///
-  /// Resolves binaries via `command -v` inside an interactive instance of
-  /// the user's `$SHELL` (`zsh -ic` / `bash -ic` / …). This is necessary
-  /// because many users add agent CLIs (Claude, npm-global bins, etc.)
-  /// to `PATH` from their interactive rc file (`~/.zshrc`, `~/.bashrc`)
-  /// rather than from a login profile, and SSH exec channels otherwise
-  /// only see the minimal system `PATH` plus what we source from
-  /// `~/.profile` / `~/.bash_profile` / `~/.zprofile`. The detection
-  /// command is built per-binary so it also works on POSIX-strict
-  /// `/bin/sh` (dash), where `command -v` rejects multiple operands.
+  /// POSIX remotes resolve binaries via `command -v` inside an interactive
+  /// instance of the user's `$SHELL` (`zsh -ic` / `bash -ic` / …). This is
+  /// necessary because many users add agent CLIs (Claude, npm-global bins, etc.)
+  /// to `PATH` from their interactive rc file (`~/.zshrc`, `~/.bashrc`) rather
+  /// than from a login profile, and SSH exec channels otherwise only see the
+  /// minimal system `PATH` plus what we source from `~/.profile` /
+  /// `~/.bash_profile` / `~/.zprofile`. The detection command is built
+  /// per-binary so it also works on POSIX-strict `/bin/sh` (dash), where
+  /// `command -v` rejects multiple operands.
+  ///
+  /// Windows remotes use a PowerShell `Get-Command` probe because OpenSSH starts
+  /// exec channels under `cmd.exe`/PowerShell rather than a POSIX shell.
   ///
   /// Detection results, including empty sets, are cached per connection.
   /// Stale cached results are returned immediately while a refresh runs in
@@ -519,11 +523,17 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     final request = () async {
-      final output = await _exec(
-        session,
-        buildAgentToolDetectionCommand(),
-        priority: priority,
-      );
+      final output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              buildWindowsAgentToolDetectionScript(),
+              priority: priority,
+            )
+          : await _exec(
+              session,
+              buildAgentToolDetectionCommand(),
+              priority: priority,
+            );
       final installed = parseInstalledAgentTools(output);
       _installedAgentToolsCache[session.connectionId] =
           _CachedInstalledAgentTools(
@@ -2117,6 +2127,27 @@ class TmuxService {
     return _execUnqueued(session, command);
   }, priority: priority);
 
+  Future<String> _execWindowsPowerShell(
+    SshSession session,
+    String script, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) => session.runQueuedExec(() async {
+    final execSession = await _openExec(
+      session,
+      buildWindowsPowerShellCommand(script),
+    );
+    try {
+      execSession.stderr.drain<void>().ignore();
+      return await _readStdoutUntilClose(
+        execSession,
+        connectionId: session.connectionId,
+        commandKind: 'tool_detection',
+      );
+    } finally {
+      execSession.close();
+    }
+  }, priority: priority);
+
   Future<String> _execTmuxCommand(
     SshSession session,
     String sessionName,
@@ -2280,6 +2311,44 @@ class TmuxService {
     throw const TmuxCommandException(
       'SSH exec channel closed before tmux command completed',
     );
+  }
+
+  Future<String> _readStdoutUntilClose(
+    SSHSession execSession, {
+    required int connectionId,
+    required String commandKind,
+  }) async {
+    final output = StringBuffer();
+    try {
+      await for (final chunk
+          in execSession.stdout
+              .cast<List<int>>()
+              .transform(utf8.decoder)
+              .timeout(_execOutputTimeout)) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.exec',
+          'stdout_chunk',
+          fields: {
+            'connectionId': connectionId,
+            'commandKind': commandKind,
+            'charCount': chunk.length,
+          },
+        );
+        output.write(chunk);
+      }
+    } on TimeoutException {
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'stdout_timeout_partial',
+        fields: {
+          'connectionId': connectionId,
+          'commandKind': commandKind,
+          'outputChars': output.length,
+        },
+      );
+      return output.toString();
+    }
+    return output.toString();
   }
 
   /// Fire-and-forget: sends a tmux command without waiting for output.
@@ -4093,8 +4162,14 @@ final tmuxServiceProvider = Provider<TmuxService>((ref) => const TmuxService());
 
 /// Maps a binary's basename (e.g. `claude`) to the matching [AgentLaunchTool],
 /// or `null` if it does not correspond to a supported CLI.
-AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
-    agentLaunchToolForCommandName(binaryName);
+AgentLaunchTool? agentToolForBinaryName(String binaryName) {
+  final basename = binaryName.trim().split(RegExp(r'[\\/]')).last;
+  final normalized = basename.replaceFirst(
+    _windowsExecutableExtensionPattern,
+    '',
+  );
+  return agentLaunchToolForCommandName(normalized);
+}
 
 /// Builds the shell command used by [TmuxService.detectInstalledAgentTools]
 /// to resolve agent CLI binaries on a remote host.
@@ -4132,22 +4207,62 @@ String buildAgentToolDetectionCommand() {
       '2>/dev/null || true';
 }
 
-/// agent CLIs that resolved to an absolute path.
+/// Builds the PowerShell script used by [TmuxService.detectInstalledAgentTools]
+/// to resolve agent CLI binaries on Windows remotes.
 ///
-/// Lines that do not start with `/` are ignored, so shell function names,
-/// builtins, or aliases (which `command -v` may report as bare names) are
+/// It only accepts external commands (`Application` or `ExternalScript`) so
+/// aliases, functions, and cmdlets are not mistaken for installed CLIs.
+@visibleForTesting
+String buildWindowsAgentToolDetectionScript() {
+  final names =
+      AgentLaunchTool.values
+          .expand((t) => t.candidateCommandNames)
+          .toSet()
+          .toList()
+        ..sort();
+  final quotedNames = names.map(powerShellSingleQuote).join(',');
+  final body = [
+    '\$__flNames=@($quotedNames);',
+    r'foreach($__flName in $__flNames){',
+    r'$__flCmd=Get-Command -Name $__flName -CommandType Application,ExternalScript -ErrorAction SilentlyContinue|Select-Object -First 1;',
+    r'if($__flCmd -eq $null){continue};',
+    r'$__flPath=$__flCmd.Path;',
+    r'if([string]::IsNullOrWhiteSpace($__flPath)){$__flPath=$__flCmd.Source};',
+    r'if([string]::IsNullOrWhiteSpace($__flPath)){$__flPath=$__flCmd.Name};',
+    r'if([string]::IsNullOrWhiteSpace($__flPath)){continue};',
+    r"$__flPath=$__flPath -replace '\\','/';",
+    r'[void]$__flOut.Append($__flPath).Append("`n");',
+    '}',
+  ].join();
+  return powerShellUtf8OutputScript(body);
+}
+
+/// Parses agent CLI detection output, returning supported CLIs that resolved to
+/// an absolute path.
+///
+/// Lines that do not look like POSIX or Windows absolute paths are ignored, so
+/// shell function names, builtins, aliases, cmdlets, or PowerShell functions are
 /// not treated as installed CLIs.
 Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
   final installed = <AgentLaunchTool>{};
   for (final rawLine in output.split('\n')) {
     final line = rawLine.trim();
-    if (line.isEmpty || !line.startsWith('/')) continue;
-    final binary = line.split('/').last;
+    if (!_looksLikeResolvedAgentToolPath(line)) continue;
+    final binary = line.replaceAll(r'\', '/').split('/').last;
     final tool = agentToolForBinaryName(binary);
     if (tool != null) installed.add(tool);
   }
   return installed;
 }
+
+final _windowsAbsolutePathPattern = RegExp(r'^(?:[A-Za-z]:[\\/]|\\\\)');
+final _windowsExecutableExtensionPattern = RegExp(
+  r'\.(?:exe|cmd|bat|ps1|com)$',
+  caseSensitive: false,
+);
+
+bool _looksLikeResolvedAgentToolPath(String line) =>
+    line.startsWith('/') || _windowsAbsolutePathPattern.hasMatch(line);
 
 /// Builds a shell command that maps live AI CLI processes to session metadata.
 ///
