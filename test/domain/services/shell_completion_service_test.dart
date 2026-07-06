@@ -618,6 +618,68 @@ void main() {
       },
     );
 
+    test('uses TabExpansion2 for Windows argument completions', () async {
+      final service = ShellCompletionService();
+      final client = _MockSshClient();
+      final session = _buildShellCompletionSession(
+        client,
+        connectionId: 8,
+        hostId: 100,
+      );
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.first as String;
+        final script = _decodeEncodedPowerShell(command);
+        final output = script.contains('HistorySavePath')
+            ? '__FLUTTY_HISTORY_START__\n__FLUTTY_HISTORY_DONE__\n'
+            : 'argument\tcheckout\nargument\tcherry-pick\n';
+        final exec = _MockSshExecSession();
+        when(() => exec.stdout).thenAnswer(
+          (_) => Stream<Uint8List>.fromIterable([
+            Uint8List.fromList(utf8.encode(output)),
+          ]),
+        );
+        when(
+          () => exec.stderr,
+        ).thenAnswer((_) => const Stream<Uint8List>.empty());
+        when(() => exec.done).thenAnswer((_) => Future<void>.value());
+        when(exec.close).thenAnswer((_) {});
+        return exec;
+      });
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git ch',
+        cursorOffset: 6,
+        token: 'ch',
+        tokenStart: 4,
+        mode: ShellCompletionMode.argument,
+        commandName: 'git',
+        shellCommand: 'powershell.exe',
+        words: ['git', 'ch'],
+        wordIndex: 1,
+        workingDirectory: r'C:\Users\tester',
+      );
+
+      final suggestions = await service.complete(session, invocation);
+
+      expect(suggestions.map((suggestion) => suggestion.label), [
+        'git checkout',
+        'git cherry-pick',
+      ]);
+      expect(suggestions.first.replacement, 'checkout');
+      final commands = verify(
+        () => client.execute(captureAny(), pty: any(named: 'pty')),
+      ).captured.cast<String>();
+      final completionScript = commands
+          .map(_decodeEncodedPowerShell)
+          .singleWhere((script) => script.contains('TabExpansion2'));
+      expect(completionScript, contains(r"$__flShell='powershell'"));
+      expect(completionScript, contains(r'TabExpansion2 $__flCommandLine'));
+    });
+
     test(
       'service keeps in-flight history loads scoped to their connection',
       () async {
