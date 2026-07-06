@@ -438,6 +438,33 @@ void main() {
       },
     );
 
+    test(
+      'detectInstalledAgentTools caches empty Windows output after timeout',
+      () async {
+        final client = _MockSshClient();
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        final session = _buildSession(client, connectionId: 67);
+        const service = TmuxService(
+          execOutputTimeout: Duration(milliseconds: 1),
+        );
+        final execSession = _buildOpenExecSession();
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        final first = await service.detectInstalledAgentTools(session);
+        final second = await service.detectInstalledAgentTools(session);
+
+        expect(first, isEmpty);
+        expect(second, isEmpty);
+        verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+        verify(execSession.close).called(1);
+      },
+    );
+
     test('isTmuxActiveOrThrow ignores unrelated tmux clients', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 22);

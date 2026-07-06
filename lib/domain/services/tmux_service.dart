@@ -2337,19 +2337,16 @@ class TmuxService {
         output.write(chunk);
       }
     } on TimeoutException {
-      if (output.isNotEmpty) {
-        DiagnosticsLogService.instance.debug(
-          'tmux.exec',
-          'stdout_timeout_partial',
-          fields: {
-            'connectionId': connectionId,
-            'commandKind': commandKind,
-            'outputChars': output.length,
-          },
-        );
-        return output.toString();
-      }
-      rethrow;
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'stdout_timeout_partial',
+        fields: {
+          'connectionId': connectionId,
+          'commandKind': commandKind,
+          'outputChars': output.length,
+        },
+      );
+      return output.toString();
     }
     return output.toString();
   }
