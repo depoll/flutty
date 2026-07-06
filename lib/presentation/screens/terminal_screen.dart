@@ -269,6 +269,7 @@ const _shellCompletionTmuxContextTtl = Duration(seconds: 5);
 const _shellCompletionShellCommands = <String>{
   'ash',
   'bash',
+  'cmd',
   'csh',
   'dash',
   'elvish',
@@ -288,6 +289,23 @@ const _shellCompletionShellCommands = <String>{
   'yash',
   'zsh',
 };
+
+class _ClipboardUploadTarget {
+  const _ClipboardUploadTarget({
+    required this.sftpDirectory,
+    required this.windows,
+  });
+
+  final String sftpDirectory;
+  final bool windows;
+
+  SftpFileMode? get directoryMode => windows ? null : remoteUploadDirectoryMode;
+
+  bool get applyPrivateFileMode => !windows;
+
+  String terminalPathForSftpPath(String sftpPath) =>
+      remoteShellPathForSftpPath(sftpPath, windows: windows);
+}
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -467,9 +485,13 @@ bool isShellCompletionTmuxShellCommand(String? command) {
   if (normalized == null || normalized.isEmpty) {
     return false;
   }
-  normalized = normalized.split('/').last;
+  normalized = normalized.replaceAll(r'\', '/').split('/').last;
   if (normalized.startsWith('-')) {
     normalized = normalized.substring(1);
+  }
+  normalized = normalized.toLowerCase();
+  if (normalized.endsWith('.exe')) {
+    normalized = normalized.substring(0, normalized.length - 4);
   }
   return _shellCompletionShellCommands.contains(normalized);
 }
@@ -3875,6 +3897,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   String? get _workingDirectoryPath =>
       _liveWorkingDirectoryPath ?? _tmuxWorkingDirectory;
+
+  String get _clipboardUploadDirectoryDisplay =>
+      remoteClipboardUploadDirectoryDisplayFor(
+        windows: _activeSession()?.remoteIsWindows ?? false,
+      );
 
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
@@ -14467,7 +14494,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Future<T> Function(
       SftpClient sftp,
       RemoteFileService remoteFileService,
-      String uploadDirectory,
+      _ClipboardUploadTarget uploadTarget,
     )
     action, {
     String? uploadBaseDirectory,
@@ -14490,17 +14517,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final uploadDirectory = buildRemoteClipboardUploadDirectory(
         homeDirectory,
       );
+      final uploadTarget = _ClipboardUploadTarget(
+        sftpDirectory: uploadDirectory,
+        windows: session.remoteIsWindows,
+      );
       await remoteFileService.ensureDirectoryExists(
         sftp,
         appUploadParentDirectory,
-        mode: remoteUploadDirectoryMode,
+        mode: uploadTarget.directoryMode,
       );
       await remoteFileService.ensureDirectoryExists(
         sftp,
         uploadDirectory,
-        mode: remoteUploadDirectoryMode,
+        mode: uploadTarget.directoryMode,
       );
-      return await action(sftp, remoteFileService, uploadDirectory);
+      return await action(sftp, remoteFileService, uploadTarget);
     } on TimeoutException {
       session.discardSftpClient(sftp);
       rethrow;
@@ -14600,12 +14631,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// attachment. The pre-built segments are written straight to the session
   /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
   /// which would strip the bracketed-paste markers.
-  Future<void> _insertUploadedFileReferences(List<String> remotePaths) async {
-    final session = _activeSession();
+  Future<void> _insertUploadedFileReferences(
+    List<String> remotePaths, {
+    required bool windows,
+  }) async {
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
       bracketedPasteMode: _terminal.bracketedPasteMode,
-      windows: session?.remoteIsWindows ?? false,
+      windows: windows,
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
@@ -14622,7 +14655,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard files?',
       message:
-          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectoryDisplay on the connected host and paste their remote paths into the terminal.',
+          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay on the connected host and paste their remote paths into the terminal.',
       confirmLabel: 'Upload and paste',
       details: [
         for (var index = 0; index < clipboardFiles.length; index++)
@@ -14640,7 +14673,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePaths = await _withClipboardSftp((
       sftp,
       remoteFileService,
-      uploadDirectory,
+      uploadTarget,
     ) async {
       final remotePaths = <String>[];
       for (var index = 0; index < clipboardFiles.length; index++) {
@@ -14660,7 +14693,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           sourceName = clipboardFile.name;
           remotePath = joinRemotePath(
-            uploadDirectory,
+            uploadTarget.sftpDirectory,
             buildClipboardUploadFileName(
               sourceName,
               timestamp,
@@ -14671,11 +14704,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             bytes: clipboardFile.bytes,
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         } else {
           sourceName = path.basename(localPath);
           remotePath = joinRemotePath(
-            uploadDirectory,
+            uploadTarget.sftpDirectory,
             buildClipboardUploadFileName(
               sourceName,
               timestamp,
@@ -14686,15 +14720,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             stream: File(localPath).openRead(),
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         }
-        remotePaths.add(remotePath);
+        remotePaths.add(uploadTarget.terminalPathForSftpPath(remotePath));
       }
-      return remotePaths;
+      return (paths: remotePaths, windows: uploadTarget.windows);
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(remotePaths);
+    await _insertUploadedFileReferences(
+      remotePaths.paths,
+      windows: remotePaths.windows,
+    );
     if (!mounted) {
       return;
     }
@@ -14709,7 +14747,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectoryDisplay',
+      'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay',
     );
   }
 
@@ -14751,7 +14789,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final shouldUpload = await _confirmClipboardUpload(
         title: 'Upload clipboard image?',
         message:
-            'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
+            'This will upload the clipboard image to $_clipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
         details: const ['release-checklist.png'],
         autoConfirmAfter: autoConfirmAfter,
@@ -14765,21 +14803,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePath = await _withClipboardSftp((
       sftp,
       remoteFileService,
-      uploadDirectory,
+      uploadTarget,
     ) async {
       final remotePath = joinRemotePath(
-        uploadDirectory,
+        uploadTarget.sftpDirectory,
         buildClipboardImageFileName(DateTime.now()),
       );
       await remoteFileService.uploadBytes(
         sftp: sftp,
         remotePath: remotePath,
         bytes: imageBytes,
+        applyPrivateMode: uploadTarget.applyPrivateFileMode,
       );
-      return remotePath;
+      return (
+        path: uploadTarget.terminalPathForSftpPath(remotePath),
+        windows: uploadTarget.windows,
+      );
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    await _insertUploadedFileReferences([remotePath]);
+    await _insertUploadedFileReferences([
+      remotePath.path,
+    ], windows: remotePath.windows);
     if (!mounted) {
       return;
     }
@@ -14795,7 +14839,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _restoreTerminalFocus(
       showSystemKeyboard: showKeyboardAfterPaste && _isMobilePlatform,
     );
-    _showClipboardMessage('Uploaded clipboard image to $remotePath');
+    _showClipboardMessage('Uploaded clipboard image to ${remotePath.path}');
   }
 
   Future<void> _pasteSelectedFiles(
@@ -14812,7 +14856,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload selected $itemLabel?',
       message:
-          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $remoteClipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
+          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
       confirmLabel: 'Upload and paste',
       details: [
         for (var index = 0; index < selectedFiles.length; index++)
@@ -14831,7 +14875,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePaths = await _withClipboardSftp((
       sftp,
       remoteFileService,
-      uploadDirectory,
+      uploadTarget,
     ) async {
       final remotePaths = <String>[];
       for (var index = 0; index < selectedFiles.length; index++) {
@@ -14841,7 +14885,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           index: index,
         );
         final remotePath = joinRemotePath(
-          uploadDirectory,
+          uploadTarget.sftpDirectory,
           buildClipboardUploadFileName(sourceName, timestamp, sequence: index),
         );
         final readStream = resolvePickedTerminalUploadReadStream(file);
@@ -14850,6 +14894,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             stream: readStream,
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         } else {
           final Uint8List bytes;
@@ -14862,15 +14907,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             bytes: bytes,
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         }
-        remotePaths.add(remotePath);
+        remotePaths.add(uploadTarget.terminalPathForSftpPath(remotePath));
       }
-      return remotePaths;
+      return (paths: remotePaths, windows: uploadTarget.windows);
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(remotePaths);
+    await _insertUploadedFileReferences(
+      remotePaths.paths,
+      windows: remotePaths.windows,
+    );
     if (!mounted) {
       return;
     }
@@ -14882,7 +14931,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.length} $itemLabelPlural'} to $remoteClipboardUploadDirectoryDisplay',
+      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay',
     );
   }
 

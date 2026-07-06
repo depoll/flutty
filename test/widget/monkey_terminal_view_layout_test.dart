@@ -345,6 +345,172 @@ void main() {
       },
     );
 
+    test('style-run batching matches per-cell foreground rendering', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(fontSize: 20),
+        textScaler: TextScaler.noScaling,
+      );
+      const columns = 24;
+      // A line that forces several run breaks: a colored run, a bold color
+      // change, an undrawn gap space, a decorated (SGR 4/58) cell, and a wide
+      // (2-cell) glyph. Batched output must equal the per-cell reference.
+      final terminal = Terminal()
+        ..resize(columns, 2)
+        ..write(
+          '\x1b[37mhello \x1b[1;32mWorld\x1b[0m '
+          '\x1b[4;58:2::255:0:0mx\x1b[0m \x1b[53mA B\x1b[0m \u4e2d\u6587',
+        );
+      final line = terminal.buffer.lines[0];
+
+      final width = (painter.cellSize.width * columns).ceil();
+      final height = painter.cellSize.height.ceil();
+
+      Future<ByteData> render(void Function(Canvas) paint) async {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+        paint(canvas);
+        final image = await recorder.endRecording().toImage(width, height);
+        return (await image.toByteData())!;
+      }
+
+      // Reference: draw every cell individually, the pre-batching behaviour.
+      // Wide-glyph spacer cells are empty, so paintCellForeground draws
+      // nothing for them and the wide glyph is drawn once at its own column.
+      final reference = await render((canvas) {
+        final cellData = CellData.empty();
+        final cellWidth = painter.cellSize.width;
+        for (var i = 0; i < line.length; i++) {
+          line.getCellData(i, cellData);
+          painter.paintCellForeground(
+            canvas,
+            Offset(i * cellWidth, 0),
+            cellData,
+          );
+        }
+      });
+
+      // Batched: the production foreground pass with style-run coalescing.
+      final batched = await render(
+        (canvas) => painter.paintLineForegrounds(canvas, Offset.zero, line),
+      );
+
+      final referenceBytes = reference.buffer.asUint8List();
+      final batchedBytes = batched.buffer.asUint8List();
+      expect(
+        referenceBytes.any((byte) => byte != 0),
+        isTrue,
+        reason: 'the reference must actually draw glyphs',
+      );
+      expect(
+        batchedBytes,
+        referenceBytes,
+        reason: 'style-run batching must be pixel-identical to per-cell',
+      );
+    });
+
+    test(
+      'coalesces consecutive same-style cells into one run paragraph',
+      () async {
+        final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+        final painter = MonkeyTerminalPainter(
+          theme: theme,
+          textStyle: const TerminalStyle(fontSize: 20),
+          textScaler: TextScaler.noScaling,
+        );
+        // Four distinct glyphs sharing one style: batching must cache a single
+        // 4-glyph run paragraph, not one paragraph per cell. (Without coalescing
+        // these would be four separate length-1 runs, i.e. four cache entries.)
+        final terminal = Terminal()
+          ..resize(8, 1)
+          ..write('\x1b[37mABCD');
+        expect(
+          painter.runParagraphCacheLength,
+          0,
+          reason: 'a fresh painter has cached no runs yet',
+        );
+
+        final recorder = ui.PictureRecorder();
+        painter.paintLineForegrounds(
+          Canvas(recorder),
+          Offset.zero,
+          terminal.buffer.lines[0],
+        );
+        recorder.endRecording();
+
+        expect(
+          painter.runParagraphCacheLength,
+          1,
+          reason: 'four same-style cells coalesce into one run paragraph',
+        );
+      },
+    );
+
+    test('style-run batching falls back to per-cell for combining marks, '
+        'complex scripts, and emoji', () async {
+      final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(fontSize: 20),
+        textScaler: TextScaler.noScaling,
+      );
+      const columns = 32;
+      // Cells that must NOT be coalesced into a run: a combining mark (width
+      // 0, which would shape with its neighbour and desync the grid), a
+      // cursive-joining script (Arabic, which would connect when concatenated
+      // but is drawn isolated per cell), and an emoji (wide, non-monospace
+      // fallback). All must fall back to the per-cell path unchanged.
+      final terminal = Terminal()
+        ..resize(columns, 2)
+        ..write('\x1b[37mabc e\u0301f \u0627\u0644\u0645 \u{1F600} xyz');
+      final line = terminal.buffer.lines[0];
+
+      final width = (painter.cellSize.width * columns).ceil();
+      final height = painter.cellSize.height.ceil();
+
+      Future<ByteData> render(void Function(Canvas) paint) async {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder)
+          ..drawRect(
+            Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+            Paint()..color = theme.background,
+          );
+        paint(canvas);
+        final image = await recorder.endRecording().toImage(width, height);
+        return (await image.toByteData())!;
+      }
+
+      // Reference: every cell drawn individually (the pre-batching path).
+      final reference = await render((canvas) {
+        final cellData = CellData.empty();
+        final cellWidth = painter.cellSize.width;
+        for (var i = 0; i < line.length; i++) {
+          line.getCellData(i, cellData);
+          painter.paintCellForeground(
+            canvas,
+            Offset(i * cellWidth, 0),
+            cellData,
+          );
+        }
+      });
+
+      final batched = await render(
+        (canvas) => painter.paintLineForegrounds(canvas, Offset.zero, line),
+      );
+
+      expect(
+        batched.buffer.asUint8List(),
+        reference.buffer.asUint8List(),
+        reason:
+            'non-batchable cells must render identically to the per-cell path',
+      );
+    });
+
     test('colored underline (SGR 58) tints the underline', () async {
       final theme = TerminalThemes.defaultDarkTheme.toXtermTheme();
 
