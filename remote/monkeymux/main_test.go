@@ -1762,6 +1762,7 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 					"\x1b[c" +
 					"\x1b[>0c" +
 					"\x1b[6n" +
+					"\x1b[>q" +
 					"\x1b]11;?\x07" +
 					"\x1b]2;Gemini\x07" +
 					"after",
@@ -1777,6 +1778,7 @@ func TestReplayStripsTerminalResponseQueries(t *testing.T) {
 		"\x1b[c",
 		"\x1b[>0c",
 		"\x1b[6n",
+		"\x1b[>q",
 		"\x1b]11;?\x07",
 	} {
 		if strings.Contains(replay, stripped) {

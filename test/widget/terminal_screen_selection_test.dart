@@ -120,6 +120,13 @@ void main() {
       expect(trimTerminalFilePathCandidate('/etc/hosts)6'), '/etc/hosts');
       expect(trimTerminalFilePathCandidate('~/README)6'), '~/README');
     });
+
+    test('normalizes Windows drive separators', () {
+      expect(
+        trimTerminalFilePathCandidate(r'C:\Users\demo\notes.txt:42'),
+        'C:/Users/demo/notes.txt',
+      );
+    });
   });
 
   group('resolveTerminalFilePathVerificationCandidates', () {
@@ -145,6 +152,12 @@ void main() {
       expect(
         resolveTerminalFilePathVerificationCandidates('/srv/app/lib/main.dart'),
         ['/srv/app/lib/main.dart'],
+      );
+      expect(
+        resolveTerminalFilePathVerificationCandidates(
+          r'C:\Users\demo\notes.txt',
+        ),
+        ['C:/Users/demo/notes.txt'],
       );
     });
 
@@ -175,6 +188,13 @@ void main() {
       expect(
         resolveTerminalFilePathExistenceCandidates('/srv/app/lib/main.dart'),
         ['/srv/app/lib/main.dart', '/srv/app/lib', '/srv/app', '/srv'],
+      );
+    });
+
+    test('walks back directory prefixes for a Windows drive path', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates(r'C:\Users\demo\notes.txt'),
+        ['C:/Users/demo/notes.txt', 'C:/Users/demo', 'C:/Users'],
       );
     });
 
@@ -422,6 +442,20 @@ void main() {
       expect(
         text.substring(detectedPaths.first.start, detectedPaths.first.end),
         '/var/log/app.log',
+      );
+    });
+
+    test('detects Windows drive-letter paths', () {
+      const text = r'Open C:\Users\demo\Documents\notes.txt now';
+      final detectedPaths = detectTerminalFilePaths(text);
+
+      expect(detectedPaths.map((path) => path.path), [
+        'C:/Users/demo/Documents/notes.txt',
+      ]);
+      expect(detectedPaths.single.start, text.indexOf(r'C:\Users'));
+      expect(
+        text.substring(detectedPaths.single.start, detectedPaths.single.end),
+        r'C:\Users\demo\Documents\notes.txt',
       );
     });
   });
@@ -1301,6 +1335,8 @@ void main() {
   group('isSupportedTerminalFilePath', () {
     test('allows explicit paths and conservative relative file paths', () {
       expect(isSupportedTerminalFilePath('/var/log/app.log'), isTrue);
+      expect(isSupportedTerminalFilePath(r'C:\Users\demo\notes.txt'), isTrue);
+      expect(isSupportedTerminalFilePath('C:/Users/demo/notes.txt'), isTrue);
       expect(isSupportedTerminalFilePath('~/.ssh/config'), isTrue);
       expect(isSupportedTerminalFilePath('lib/main.dart'), isTrue);
       expect(isSupportedTerminalFilePath('../lib/main.dart'), isTrue);
@@ -1320,6 +1356,13 @@ void main() {
       );
       expect(
         shouldActivateTerminalFilePath('~/.ssh/config', hasVerifiedPath: false),
+        isTrue,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          r'C:\Users\demo\notes.txt',
+          hasVerifiedPath: false,
+        ),
         isTrue,
       );
     });
@@ -1641,6 +1684,16 @@ void main() {
       expect(
         terminalRowMayContainPath(
           buildLineWithText('cat ~/Documents/notes.txt'),
+          80,
+        ),
+        isTrue,
+      );
+    });
+
+    test('returns true for a row with a Windows drive-letter path', () {
+      expect(
+        terminalRowMayContainPath(
+          buildLineWithText(r'type C:\Users\demo\notes.txt'),
           80,
         ),
         isTrue,
