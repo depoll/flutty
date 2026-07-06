@@ -276,7 +276,7 @@ String? _normalizeAgentCommandName(String? commandName) {
   if (basename.isEmpty) {
     return null;
   }
-  return basename.replaceFirst(RegExp(r'\.exe$'), '');
+  return basename.replaceFirst(RegExp(r'\.(?:exe|cmd|bat|ps1|com)$'), '');
 }
 
 String? _readLeadingShellToken(String value) {
