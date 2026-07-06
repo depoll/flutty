@@ -139,7 +139,13 @@ class KeytabInputHandler implements TerminalInputHandler {
       alt: event.alt,
       shift: event.shift,
       newLineMode: event.state.lineFeedMode,
-      appCursorKeys: event.state.appKeypadMode,
+      // Cursor-key application mode (DECCKM, `CSI ? 1 h`) — not the application
+      // keypad mode (DECKPAM) — decides whether arrows/Home/End emit SS3 (`ESC
+      // O A`) or CSI (`ESC [ A`). Conflating the two made a program that turned
+      // on application keypad mode alone (e.g. PowerShell/PSReadLine) receive
+      // SS3 arrows it never asked for, so it inserted the literal characters
+      // instead of moving through history.
+      appCursorKeys: event.state.cursorKeysMode,
       appKeyPad: event.state.appKeypadMode,
       appScreen: event.altBuffer,
       macos: event.platform == TerminalTargetPlatform.macos,
