@@ -110,11 +110,35 @@ String _sftpTelemetryFailureCategory(Object error) {
   return 'unknown';
 }
 
-/// Returns the parent directory for a POSIX remote path.
+/// Returns the parent directory for a remote SFTP path.
 @visibleForTesting
-String parentRemotePath(String remotePath) {
-  final parent = path.posix.dirname(remotePath);
-  return parent.isEmpty || parent == '.' ? '/' : parent;
+String parentRemotePath(String remotePath) => parentSftpPath(remotePath);
+
+/// A single clickable segment in the SFTP breadcrumb row.
+typedef SftpBreadcrumbItem = ({String path, String label});
+
+/// Builds clickable breadcrumb segments for an SFTP path.
+@visibleForTesting
+List<SftpBreadcrumbItem> buildSftpBreadcrumbItems(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath) ?? remotePath;
+  final root = sftpPathRoot(normalizedPath) ?? '/';
+  final items = <SftpBreadcrumbItem>[(path: root, label: root)];
+  if (normalizedPath == root) {
+    return items;
+  }
+
+  final relativePath = root == '/'
+      ? normalizedPath.replaceFirst(RegExp('^/+'), '')
+      : normalizedPath.substring(root.length);
+  var pathSoFar = root;
+  for (final part in relativePath.split('/')) {
+    if (part.isEmpty) {
+      continue;
+    }
+    pathSoFar = joinRemotePath(pathSoFar, part);
+    items.add((path: pathSoFar, label: part));
+  }
+  return items;
 }
 
 /// Appends a visited remote path to browser history without duplicating the top.
@@ -1399,13 +1423,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Widget _buildBreadcrumbs() {
-    final realParts = _currentPath
-        .split('/')
-        .where((part) => part.isNotEmpty)
-        .toList();
-    final displayParts = _displaySftpPath(
-      _currentPath,
-    ).split('/').where((p) => p.isNotEmpty).toList();
+    final breadcrumbItems = buildSftpBreadcrumbItems(_currentPath);
+    final displayParts = buildSftpBreadcrumbItems(
+      _displaySftpPath(_currentPath),
+    ).map((item) => item.label).toList();
     final theme = Theme.of(context);
 
     return Container(
@@ -1428,7 +1449,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.arrow_upward, size: 20),
-            onPressed: _currentPath != '/'
+            onPressed: !isSftpPathRoot(_currentPath)
                 ? () => unawaited(_navigateUp())
                 : null,
             tooltip: 'Up',
@@ -1440,33 +1461,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  InkWell(
-                    onTap: () => unawaited(_navigateTo('/')),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 4,
-                        vertical: 8,
+                  for (var i = 0; i < breadcrumbItems.length; i++) ...[
+                    if (i > 0)
+                      Icon(
+                        Icons.chevron_right,
+                        size: 16,
+                        color: theme.colorScheme.outline,
                       ),
-                      child: Text(
-                        '/',
-                        style: FluttyTheme.monoStyle.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ),
-                  for (var i = 0; i < realParts.length; i++) ...[
-                    Icon(
-                      Icons.chevron_right,
-                      size: 16,
-                      color: theme.colorScheme.outline,
-                    ),
                     InkWell(
-                      onTap: () {
-                        final path =
-                            '/${realParts.sublist(0, i + 1).join('/')}';
-                        unawaited(_navigateTo(path));
-                      },
+                      onTap: () =>
+                          unawaited(_navigateTo(breadcrumbItems[i].path)),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 4,
@@ -1474,16 +1478,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                         ),
                         child: Text(
                           _displaySftpBreadcrumbPart(
-                            realParts[i],
+                            breadcrumbItems[i].label,
                             displayParts: displayParts,
                             index: i,
-                            isLast: i == realParts.length - 1,
+                            isLast: i == breadcrumbItems.length - 1,
                           ),
                           style: FluttyTheme.monoStyle.copyWith(
-                            fontWeight: i == realParts.length - 1
+                            fontWeight: i == breadcrumbItems.length - 1
                                 ? FontWeight.w600
                                 : FontWeight.w400,
-                            color: i == realParts.length - 1
+                            color: i == breadcrumbItems.length - 1
                                 ? theme.colorScheme.onSurface
                                 : theme.colorScheme.onSurfaceVariant,
                           ),
