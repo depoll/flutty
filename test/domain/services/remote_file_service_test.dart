@@ -23,6 +23,48 @@ void main() {
     });
 
     test(
+      'joins Windows drive-letter SFTP paths without forcing POSIX root',
+      () {
+        expect(
+          joinRemotePath('C:/Users/demo', 'Documents/notes.txt'),
+          'C:/Users/demo/Documents/notes.txt',
+        );
+        expect(
+          joinRemotePath('C:/Users/demo', r'Documents\notes.txt'),
+          'C:/Users/demo/Documents/notes.txt',
+        );
+        expect(
+          joinRemotePath('/C:/Users/demo', 'Documents/notes.txt'),
+          '/C:/Users/demo/Documents/notes.txt',
+        );
+      },
+    );
+
+    test('normalizes Windows drive-letter SFTP paths', () {
+      expect(
+        normalizeSftpAbsolutePath(r'C:\Users\demo\..\Public'),
+        'C:/Users/Public',
+      );
+      expect(
+        normalizeSftpAbsolutePath('/C:/Users/demo/../Public'),
+        '/C:/Users/Public',
+      );
+      expect(sftpPathRoot('C:/Users/demo'), 'C:/');
+      expect(sftpPathRoot('/C:/Users/demo'), '/C:/');
+      expect(isSftpPathRoot('C:/'), isTrue);
+      expect(isSftpPathRoot('/C:/'), isTrue);
+    });
+
+    test('resolves Windows drive-letter SFTP parents', () {
+      expect(parentSftpPath('C:/Users/demo'), 'C:/Users');
+      expect(parentSftpPath('C:/Users'), 'C:/');
+      expect(parentSftpPath('C:/'), 'C:/');
+      expect(parentSftpPath('/C:/Users/demo'), '/C:/Users');
+      expect(parentSftpPath('/C:/Users'), '/C:/');
+      expect(parentSftpPath('/C:/'), '/C:/');
+    });
+
+    test(
       'tolerates concurrent mkdir races when ensuring directories',
       () async {
         const remotePath = '/tmp/monkeyssh';
