@@ -5,6 +5,8 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
+final _sftpWindowsDriveRootPattern = RegExp(r'^/?[A-Za-z]:(?:/|$)');
+
 /// Display path for files pasted directly into a terminal session.
 const remoteClipboardUploadDirectoryDisplay = '~/.cache/monkeyssh/uploads';
 
@@ -60,6 +62,92 @@ String buildRemoteClipboardUploadParentDirectory(
   RemotePathStyle style = RemotePathStyle.sftp,
 }) => joinRemotePath(homeDirectory, '.cache/monkeyssh', style: style);
 
+String _normalizeSftpPathSeparators(String value) =>
+    value.replaceAll(r'\', '/');
+
+({String root, String rest})? _splitSftpWindowsDriveRoot(String remotePath) {
+  final match = _sftpWindowsDriveRootPattern.matchAsPrefix(remotePath);
+  if (match == null) {
+    return null;
+  }
+
+  final matchedRoot = remotePath.substring(0, match.end);
+  final root = matchedRoot.endsWith('/') ? matchedRoot : '$matchedRoot/';
+  return (root: root, rest: remotePath.substring(match.end));
+}
+
+List<String> _normalizeSftpPathSegments(String pathSuffix) {
+  final segments = <String>[];
+  for (final segment in pathSuffix.split('/')) {
+    if (segment.isEmpty || segment == '.') {
+      continue;
+    }
+    if (segment == '..') {
+      if (segments.isNotEmpty) {
+        segments.removeLast();
+      }
+      continue;
+    }
+    segments.add(segment);
+  }
+  return segments;
+}
+
+/// Whether [remotePath] is an absolute SFTP path.
+bool isSftpAbsolutePath(String remotePath) =>
+    normalizeSftpAbsolutePath(remotePath) != null;
+
+/// Returns the root segment for an absolute SFTP path.
+String? sftpPathRoot(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+  if (normalizedPath == null) {
+    return null;
+  }
+  if (normalizedPath == '/') {
+    return '/';
+  }
+  return _splitSftpWindowsDriveRoot(normalizedPath)?.root;
+}
+
+/// Whether [remotePath] is the root of an SFTP path hierarchy.
+bool isSftpPathRoot(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+  if (normalizedPath == null) {
+    return false;
+  }
+  return normalizedPath == sftpPathRoot(normalizedPath);
+}
+
+/// Returns the parent directory for an absolute SFTP path.
+String parentSftpPath(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+  if (normalizedPath == null) {
+    final parent = path.posix.dirname(_normalizeSftpPathSeparators(remotePath));
+    return parent.isEmpty || parent == '.' ? '/' : parent;
+  }
+  if (normalizedPath == '/') {
+    return '/';
+  }
+
+  final windowsRoot = _splitSftpWindowsDriveRoot(normalizedPath);
+  if (windowsRoot != null) {
+    if (normalizedPath == windowsRoot.root) {
+      return windowsRoot.root;
+    }
+    final trimmedPath = normalizedPath.endsWith('/')
+        ? normalizedPath.substring(0, normalizedPath.length - 1)
+        : normalizedPath;
+    final slashIndex = trimmedPath.lastIndexOf('/');
+    if (slashIndex < windowsRoot.root.length) {
+      return windowsRoot.root;
+    }
+    return trimmedPath.substring(0, slashIndex);
+  }
+
+  final parent = path.posix.dirname(normalizedPath);
+  return parent.isEmpty || parent == '.' ? '/' : parent;
+}
+
 /// Joins a remote directory and child name into a normalized absolute path.
 String joinRemotePath(
   String directory,
@@ -69,11 +157,24 @@ String joinRemotePath(
   if (style == RemotePathStyle.windows) {
     return _joinWindowsRemotePath(directory, name);
   }
-  final cleanName = name.replaceFirst(RegExp('^/+'), '');
-  final baseDirectory = directory.isEmpty ? '/' : directory;
+
+  final baseDirectory =
+      normalizeSftpAbsolutePath(directory) ??
+      (directory.isEmpty ? '/' : _normalizeSftpPathSeparators(directory));
+  final nameWithRemoteSeparators =
+      _splitSftpWindowsDriveRoot(baseDirectory) == null
+      ? name
+      : _normalizeSftpPathSeparators(name);
+  final cleanName = nameWithRemoteSeparators.replaceFirst(RegExp('^/+'), '');
   final joined = path.posix.join(baseDirectory, cleanName);
-  final normalized = path.posix.normalize(joined);
-  return normalized.startsWith('/') ? normalized : '/$normalized';
+  final normalized = normalizeSftpAbsolutePath(joined);
+  if (normalized != null) {
+    return normalized;
+  }
+  final normalizedRelative = path.posix.normalize(joined);
+  return normalizedRelative.startsWith('/')
+      ? normalizedRelative
+      : '/$normalizedRelative';
 }
 
 String _joinWindowsRemotePath(String directory, String name) {
@@ -101,28 +202,26 @@ String remoteShellPathForSftpPath(String sftpPath, {required bool windows}) =>
     windows ? sftpPathToWindowsShellPath(sftpPath) : sftpPath;
 
 /// Normalizes an absolute remote path by collapsing `.`, `..`, and extra `/`.
-String? normalizeSftpAbsolutePath(String? path) {
-  final trimmedPath = path?.trim();
-  if (trimmedPath == null ||
-      trimmedPath.isEmpty ||
-      !trimmedPath.startsWith('/')) {
+String? normalizeSftpAbsolutePath(String? remotePath) {
+  final trimmedPath = remotePath?.trim();
+  if (trimmedPath == null || trimmedPath.isEmpty) {
     return null;
   }
 
-  final segments = <String>[];
-  for (final segment in trimmedPath.split('/')) {
-    if (segment.isEmpty || segment == '.') {
-      continue;
-    }
-    if (segment == '..') {
-      if (segments.isNotEmpty) {
-        segments.removeLast();
-      }
-      continue;
-    }
-    segments.add(segment);
+  final normalizedSeparators = _normalizeSftpPathSeparators(trimmedPath);
+  final windowsRoot = _splitSftpWindowsDriveRoot(normalizedSeparators);
+  if (windowsRoot != null) {
+    final segments = _normalizeSftpPathSegments(windowsRoot.rest);
+    return segments.isEmpty
+        ? windowsRoot.root
+        : '${windowsRoot.root}${segments.join('/')}';
   }
 
+  if (!normalizedSeparators.startsWith('/')) {
+    return null;
+  }
+
+  final segments = _normalizeSftpPathSegments(normalizedSeparators);
   return segments.isEmpty ? '/' : '/${segments.join('/')}';
 }
 
@@ -137,7 +236,7 @@ String? resolveRequestedSftpPath(
     return null;
   }
 
-  if (trimmedPath.startsWith('/')) {
+  if (isSftpAbsolutePath(trimmedPath)) {
     return normalizeSftpAbsolutePath(trimmedPath);
   }
 
@@ -337,7 +436,7 @@ class RemoteFileService {
       }
     }
 
-    final parentPath = path.posix.dirname(remotePath);
+    final parentPath = parentSftpPath(remotePath);
     if (parentPath != remotePath) {
       await ensureDirectoryExists(sftp, parentPath);
     }
