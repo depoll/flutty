@@ -441,6 +441,12 @@ void main() {
         AgentLaunchTool.openCode,
       );
       expect(
+        agentLaunchToolForCommandName(
+          r'C:\Users\demo\AppData\Roaming\npm\copilot.cmd',
+        ),
+        AgentLaunchTool.copilotCli,
+      );
+      expect(
         agentLaunchToolForCommandName('gemini --yolo'),
         AgentLaunchTool.geminiCli,
       );
