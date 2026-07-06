@@ -527,6 +527,34 @@ void main() {
       );
     });
 
+    test('tones tinted black composer panels on light themes', () {
+      const theme = TerminalThemes.defaultLightTheme;
+
+      final background = resolveMonkeyTerminalReadableBackgroundColor(
+        foreground: theme.foreground,
+        background: theme.black,
+        terminalBackground: theme.background,
+      );
+
+      expect(background, isNot(theme.black));
+      expect(
+        background.computeLuminance(),
+        greaterThan(theme.black.computeLuminance()),
+      );
+      expect(
+        _contrastRatio(background, theme.background),
+        greaterThanOrEqualTo(1.04),
+      );
+      expect(
+        _contrastRatio(background, theme.background),
+        lessThanOrEqualTo(1.75),
+      );
+      expect(
+        _contrastRatio(theme.foreground, background),
+        greaterThanOrEqualTo(4.5),
+      );
+    });
+
     test('keeps bright-black backgrounds readable across built-in themes', () {
       for (final themeData in TerminalThemes.all) {
         final theme = themeData.toXtermTheme();

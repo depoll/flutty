@@ -63,6 +63,7 @@ const _minimumCursorTextContrast = 4.5;
 const _minimumCellTextContrast = 4.5;
 const _minimumCellBackgroundContrast = 1.04;
 const _maximumNeutralCellBackgroundContrast = 1.75;
+const _maximumNeutralChannelSpread = 36;
 const _backgroundAlphaCandidates = <int>[
   0x26,
   0x33,
@@ -375,7 +376,7 @@ bool _isNeutralTerminalColor(Color color) {
   final blue = value & 0xFF;
   final maxChannel = math.max(red, math.max(green, blue));
   final minChannel = math.min(red, math.min(green, blue));
-  return maxChannel - minChannel <= 24;
+  return maxChannel - minChannel <= _maximumNeutralChannelSpread;
 }
 
 /// Resolves a readable paint color for text cells.
