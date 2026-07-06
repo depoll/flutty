@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
 
@@ -377,44 +378,56 @@ void main() {
     });
   });
 
-  group('shouldUseBracketedPasteForUploadedReferences', () {
-    test('uses bracketed paste when a known agent is active or titled', () {
+  group('terminalBracketedPasteModeForUploads', () {
+    test('uses local or mux window bracketed paste mode', () {
       expect(
-        shouldUseBracketedPasteForUploadedReferences(
-          bracketedPasteMode: false,
-          isAgentToolActive: true,
-        ),
-        isTrue,
-      );
-      expect(
-        shouldUseBracketedPasteForUploadedReferences(
-          bracketedPasteMode: false,
-          isAgentToolActive: false,
+        terminalBracketedPasteModeForUploads(
+          localTerminalBracketedPasteMode: false,
         ),
         isFalse,
       );
       expect(
-        shouldUseBracketedPasteForUploadedReferences(
-          bracketedPasteMode: true,
-          isAgentToolActive: false,
+        terminalBracketedPasteModeForUploads(
+          localTerminalBracketedPasteMode: true,
         ),
         isTrue,
       );
       expect(
-        shouldUseBracketedPasteForUploadedReferences(
-          bracketedPasteMode: false,
-          isAgentToolActive: false,
-          terminalIconName: 'Copilot CLI',
+        terminalBracketedPasteModeForUploads(
+          localTerminalBracketedPasteMode: false,
+          activeWindowBracketedPasteMode: true,
         ),
         isTrue,
       );
-      expect(
-        shouldUseBracketedPasteForUploadedReferences(
-          bracketedPasteMode: false,
-          isAgentToolActive: false,
-          terminalWindowTitle: 'Claude Code: project',
+    });
+  });
+
+  group('resolveTmuxBarActiveWindowBracketedPasteMode', () {
+    test('reads bracketed paste mode from the active mux window', () {
+      final windows = [
+        const TmuxWindow(
+          index: 0,
+          name: 'shell',
+          isActive: false,
+          terminalBracketedPasteMode: true,
         ),
-        isTrue,
+        const TmuxWindow(
+          index: 1,
+          name: 'composer',
+          isActive: true,
+          terminalBracketedPasteMode: true,
+        ),
+      ];
+
+      expect(resolveTmuxBarActiveWindowBracketedPasteMode(windows), isTrue);
+    });
+
+    test('leaves unknown mux state unknown', () {
+      expect(
+        resolveTmuxBarActiveWindowBracketedPasteMode(const [
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+        ]),
+        isNull,
       );
     });
   });

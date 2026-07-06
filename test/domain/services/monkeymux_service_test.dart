@@ -185,12 +185,13 @@ void main() {
         'index': 0,
         'name': 'Mouse app',
         'active': true,
-        'privateModes': {'1002': true, '1006': true},
+        'privateModes': {'1002': true, '1006': true, '2004': true},
       });
 
       expect(window, isNotNull);
       expect(window!.terminalReportsMouseWheel, isTrue);
       expect(window.terminalMouseReportSgr, isTrue);
+      expect(window.terminalBracketedPasteMode, isTrue);
     });
 
     test('surfaces the alert flag so prompts trigger push notifications', () {

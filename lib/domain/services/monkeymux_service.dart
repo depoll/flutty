@@ -1462,6 +1462,9 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalMouseReportSgr =
       (value['terminalMouseReportSgr'] as bool? ?? false) ||
       _privateModeEnabled(privateModes, '1006');
+  final terminalBracketedPasteMode =
+      (value['terminalBracketedPasteMode'] as bool? ?? false) ||
+      _privateModeEnabled(privateModes, '2004');
   // The MonkeyMux server only raises the `#` alert flag when a background
   // window emits a terminal bell (agents ring the bell when they need input),
   // and clears it as soon as the window is selected. Parsing it restores the
@@ -1480,6 +1483,7 @@ TmuxWindow? _windowFromJson(Object? value) {
     agentTool: _agentToolFromMonkeyMuxMetadata(value['agentTool'] as String?),
     terminalReportsMouseWheel: terminalReportsMouseWheel,
     terminalMouseReportSgr: terminalMouseReportSgr,
+    terminalBracketedPasteMode: terminalBracketedPasteMode,
     lastActivityEpochSeconds: value['lastActivityEpochSeconds'] as int?,
   );
 }

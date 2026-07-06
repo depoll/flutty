@@ -812,6 +812,15 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     .firstOrNull
     ?.foregroundAgentTool;
 
+/// Resolves bracketed paste mode state tracked for the active mux window.
+@visibleForTesting
+bool? resolveTmuxBarActiveWindowBracketedPasteMode(
+  Iterable<TmuxWindow>? windows,
+) => windows
+    ?.where((window) => window.isActive)
+    .firstOrNull
+    ?.terminalBracketedPasteMode;
+
 String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
   RemoteMuxBackend.auto => 'auto',
   RemoteMuxBackend.tmux => 'tmux',
@@ -1335,39 +1344,6 @@ bool shouldUsePhotoLibraryPickerForTerminalMedia({
 }) =>
     !isWeb &&
     (platform == TargetPlatform.android || platform == TargetPlatform.iOS);
-
-/// Whether uploaded file references should be framed as bracketed-paste input.
-@visibleForTesting
-bool shouldUseBracketedPasteForUploadedReferences({
-  required bool bracketedPasteMode,
-  required bool isAgentToolActive,
-  String? terminalIconName,
-  String? terminalWindowTitle,
-}) =>
-    bracketedPasteMode ||
-    isAgentToolActive ||
-    _terminalMetadataValueIndicatesAgentTool(terminalIconName) ||
-    _terminalMetadataValueIndicatesAgentTool(terminalWindowTitle);
-
-bool _terminalMetadataValueIndicatesAgentTool(String? value) {
-  final normalized = value?.trim();
-  if (normalized == null || normalized.isEmpty) {
-    return false;
-  }
-  if (agentLaunchToolForCommandName(normalized) != null) {
-    return true;
-  }
-  final lowered = normalized.toLowerCase();
-  for (final tool in AgentLaunchTool.values) {
-    final label = tool.label.toLowerCase();
-    if (lowered == label ||
-        lowered.startsWith('$label ') ||
-        lowered.startsWith('$label:')) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /// Returns an Android image picker implementation configured for Photo Picker.
 @visibleForTesting
@@ -2691,6 +2667,15 @@ bool terminalReportsMouseWheelForScroll({
 }) =>
     localTerminalReportsMouseWheel || (activeWindowReportsMouseWheel ?? false);
 
+/// Resolves effective bracketed paste state for uploaded terminal references.
+@visibleForTesting
+bool terminalBracketedPasteModeForUploads({
+  required bool localTerminalBracketedPasteMode,
+  bool? activeWindowBracketedPasteMode,
+}) =>
+    localTerminalBracketedPasteMode ||
+    (activeWindowBracketedPasteMode ?? false);
+
 /// Whether the active terminal context is a known agent tool for scroll policy.
 @visibleForTesting
 bool isAgentToolActiveForTerminalScroll({
@@ -3692,6 +3677,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool? get _activeWindowMouseReportSgr =>
       resolveTmuxBarActiveWindowMouseReportSgr(_currentTmuxWindowsSnapshot);
+
+  bool? get _activeWindowBracketedPasteMode =>
+      resolveTmuxBarActiveWindowBracketedPasteMode(_currentTmuxWindowsSnapshot);
 
   bool get _terminalReportsMouseWheelForScroll =>
       terminalReportsMouseWheelForScroll(
@@ -14679,11 +14667,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<String> remotePaths, {
     required bool windows,
   }) async {
-    final useBracketedPaste = shouldUseBracketedPasteForUploadedReferences(
-      bracketedPasteMode: _terminal.bracketedPasteMode,
-      isAgentToolActive: _isAgentToolActive,
-      terminalIconName: _iconName,
-      terminalWindowTitle: _windowTitle,
+    final useBracketedPaste = terminalBracketedPasteModeForUploads(
+      localTerminalBracketedPasteMode: _terminal.bracketedPasteMode,
+      activeWindowBracketedPasteMode: _activeWindowBracketedPasteMode,
     );
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
