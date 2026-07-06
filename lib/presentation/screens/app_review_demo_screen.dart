@@ -43,7 +43,7 @@ class _AppReviewDemoScreenState extends ConsumerState<AppReviewDemoScreen> {
                 icon: Icons.dns_outlined,
                 title: 'Hosts and jump host',
                 description:
-                    'A MonkeyMux workspace, a tmux fallback host, an SFTP host, and a bastion jump host.',
+                    'A MonkeyMux workspace, an agent workspace, an SFTP host, and a bastion jump host.',
               ),
               _DemoFeatureTile(
                 icon: Icons.key_outlined,

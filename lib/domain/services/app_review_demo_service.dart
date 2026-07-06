@@ -92,7 +92,7 @@ class AppReviewDemoService {
   static const _snippetFolderName = 'App Review Demo';
   static const _keyName = 'App Review Demo Key';
   static const _workspaceHostLabel = 'App Review Demo · MonkeyMux workspace';
-  static const _tmuxHostLabel = 'App Review Demo · tmux fallback';
+  static const _agentHostLabel = 'App Review Demo · MonkeyMux agents';
   static const _sftpHostLabel = 'App Review Demo · SFTP and tunnels';
   static const _bastionHostLabel = 'App Review Demo · bastion jump host';
   static const _demoSeededAtSetting = 'app_review_demo_seeded_at';
@@ -196,8 +196,8 @@ class AppReviewDemoService {
       createdHosts += 1;
     }
 
-    final tmuxHost = await _ensureHost(
-      label: _tmuxHostLabel,
+    final agentHost = await _ensureHost(
+      label: _agentHostLabel,
       hostname: '127.0.0.1',
       port: 2202,
       username: 'reviewer',
@@ -205,20 +205,19 @@ class AppReviewDemoService {
       groupId: groupId,
       color: '#8BCBE5',
       notes:
-          'Shows the tmux fallback path and saved startup flags for hosts that '
-          'do not use MonkeyMux.',
-      tags: 'app-review,demo,tmux',
+          'Shows additional MonkeyMux windows and saved startup presets for '
+          'agent-oriented review workflows.',
+      tags: 'app-review,demo,monkeymux,agents',
       terminalThemeLightId: TerminalThemes.monkeyLight.id,
       terminalThemeDarkId: TerminalThemes.githubDarkDefault.id,
       autoConnectSnippetId: logsSnippet.id,
       autoConnectRequiresConfirmation: true,
-      tmuxSessionName: 'review-tmux',
+      tmuxSessionName: 'review-agents',
       tmuxWorkingDirectory: '~/work/monkeyssh-demo',
-      tmuxExtraFlags: '-x 160 -y 48',
-      remoteMuxBackend: RemoteMuxBackend.tmux,
+      remoteMuxBackend: RemoteMuxBackend.monkeyMux,
       sortOrder: 2,
     );
-    if (tmuxHost.created) {
+    if (agentHost.created) {
       createdHosts += 1;
     }
 
@@ -272,12 +271,12 @@ class AppReviewDemoService {
       ),
     );
     await _agentLaunchPresetService.setPresetForHost(
-      tmuxHost.id,
+      agentHost.id,
       const AgentLaunchPreset(
         tool: AgentLaunchTool.claudeCode,
         workingDirectory: '~/work/monkeyssh-demo',
-        tmuxSessionName: 'review-tmux',
-        remoteMuxBackend: RemoteMuxBackend.tmux,
+        tmuxSessionName: 'review-agents',
+        remoteMuxBackend: RemoteMuxBackend.monkeyMux,
       ),
     );
     await _hostCliLaunchPreferencesService.setPreferencesForHost(
@@ -417,7 +416,11 @@ class AppReviewDemoService {
         autoConnectRequiresConfirmation: Value(autoConnectRequiresConfirmation),
         tmuxSessionName: Value(tmuxSessionName),
         tmuxWorkingDirectory: Value(tmuxWorkingDirectory),
-        tmuxExtraFlags: Value(tmuxExtraFlags),
+        tmuxExtraFlags: Value(
+          remoteMuxBackend == RemoteMuxBackend.monkeyMux
+              ? null
+              : tmuxExtraFlags,
+        ),
         remoteMuxBackend: Value(remoteMuxBackend?.storageValue),
         sortOrder: Value(sortOrder),
       ),

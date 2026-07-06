@@ -69,7 +69,7 @@ void main() {
       hosts.map((host) => host.label),
       containsAll([
         'App Review Demo · MonkeyMux workspace',
-        'App Review Demo · tmux fallback',
+        'App Review Demo · MonkeyMux agents',
         'App Review Demo · SFTP and tunnels',
         'App Review Demo · bastion jump host',
       ]),
@@ -85,6 +85,13 @@ void main() {
     expect(workspaceHost.tmuxSessionName, 'review-workspace');
     expect(workspaceHost.terminalThemeDarkId, TerminalThemes.dracula.id);
     expect(workspaceHost.autoConnectRequiresConfirmation, isTrue);
+
+    final agentHost = hosts.singleWhere(
+      (host) => host.label == 'App Review Demo · MonkeyMux agents',
+    );
+    expect(agentHost.remoteMuxBackend, RemoteMuxBackend.monkeyMux.storageValue);
+    expect(agentHost.tmuxSessionName, 'review-agents');
+    expect(agentHost.tmuxExtraFlags, isNull);
 
     final preset = await agentLaunchPresetService.getPresetForHost(
       workspaceHost.id,

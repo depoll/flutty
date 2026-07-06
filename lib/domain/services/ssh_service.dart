@@ -3488,6 +3488,7 @@ class SshSession {
         break;
       }
     }
+
     if (lastNonEmpty < 0) {
       return null;
     }
@@ -3963,6 +3964,21 @@ class SshSession {
   }
 }
 
+/// Whether [session] is backed by MonkeySSH's in-app App Review demo transport.
+bool isAppReviewDemoSession(SshSession session) =>
+    session.client is _AppReviewDemoSshClient;
+
+/// Writes synthetic remote output into the App Review demo terminal, if active.
+void writeAppReviewDemoTerminalOutput(SshSession session, String text) {
+  if (!isAppReviewDemoSession(session)) {
+    return;
+  }
+  final shell = session._runtime.shell;
+  if (shell is _AppReviewDemoSshSession) {
+    shell.writeDemoOutput(text);
+  }
+}
+
 class _SshConnectionHealthFailure {
   const _SshConnectionHealthFailure({
     required this.connectionId,
@@ -4380,14 +4396,27 @@ class _AppReviewDemoSshSession implements SSHSession {
   }
 
   void _writePrompt() {
-    _writeText(r'reviewer@monkeyssh-demo:~/work/monkeyssh-demo$ ');
+    _writeText(r'reviewer@demo:~/demo$ ');
   }
 
   void _writeText(String text) {
     if (_closed || _stdoutController.isClosed) {
       return;
     }
-    _stdoutController.add(Uint8List.fromList(utf8.encode(text)));
+    _stdoutController.add(
+      Uint8List.fromList(utf8.encode(_normalizeDemoTerminalOutput(text))),
+    );
+  }
+
+  void writeDemoOutput(String text) {
+    if (_closed) {
+      return;
+    }
+    _writeText('\r\n$text');
+    if (!text.endsWith('\n') && !text.endsWith('\r')) {
+      _writeText('\r\n');
+    }
+    _writePrompt();
   }
 
   Future<void> _finish({int? exitCode}) async {
@@ -4661,15 +4690,24 @@ String _demoInteractiveBanner(Host host) =>
     '''
 \x1b]0;${host.label}\x07\x1b]7;file://localhost/home/reviewer/work/monkeyssh-demo\x07MonkeySSH App Review Demo
 
-Connected to an in-app local demo shell for ${host.label}.
-No external SSH server or private credentials are required.
+Connected locally for:
+  ${host.label}
 
-Sample workspace:
-  /home/reviewer/work/monkeyssh-demo/README.md
+No external SSH server or credentials are required.
 
-Try: ls, pwd, cat README.md, monkeymux windows, copilot
+Sample workspace: ~/work/monkeyssh-demo
+
+Try:
+  ls
+  pwd
+  cat README.md
+  monkeymux windows
+  copilot
 
 ''';
+
+String _normalizeDemoTerminalOutput(String text) =>
+    text.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n');
 
 String _demoInteractiveCommandOutput(String command) {
   final normalized = command.toLowerCase();

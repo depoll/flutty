@@ -9,6 +9,9 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/app_review_demo_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
+import 'package:monkeyssh/domain/services/monkeymux_service.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 void main() {
@@ -67,5 +70,37 @@ void main() {
     final sftp = await session.sftp();
     final files = await sftp.listdir('/home/reviewer/work/monkeyssh-demo');
     expect(files.map((file) => file.filename), contains('README.md'));
+
+    final mux = MonkeyMuxService(
+      installer: MonkeyMuxInstallerService(
+        manifestFuture: Future.value(
+          const MonkeyMuxManifest(version: 'demo', entries: []),
+        ),
+        remoteFileService: const RemoteFileService(),
+      ),
+    );
+    final windows = await mux.listWindows(session, 'review-workspace');
+    expect(windows, hasLength(4));
+    expect(
+      windows.singleWhere((window) => window.isActive).name,
+      'Copilot CLI',
+    );
+
+    await mux.createWindow(
+      session,
+      'review-workspace',
+      command: 'codex --yolo',
+      name: 'Codex',
+    );
+    final withCodex = await mux.listWindows(session, 'review-workspace');
+    expect(withCodex, hasLength(5));
+    expect(withCodex.singleWhere((window) => window.isActive).name, 'Codex');
+
+    await mux.selectWindow(session, 'review-workspace', 1);
+    final selected = await mux.listWindows(session, 'review-workspace');
+    expect(
+      selected.singleWhere((window) => window.isActive).name,
+      'Claude Code',
+    );
   });
 }
