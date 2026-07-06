@@ -2658,7 +2658,7 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 		id:           "@1",
 		index:        0,
 		name:         "Mouse app",
-		privateModes: map[string]bool{"1002": true, "1006": true},
+		privateModes: map[string]bool{"1002": true, "1006": true, "2004": true},
 		lastActivity: time.Now(),
 	}
 
@@ -2670,11 +2670,17 @@ func TestWindowSnapshotReportsTerminalMouseModes(t *testing.T) {
 	if !snapshot.TerminalMouseReportSgr {
 		t.Fatal("snapshot did not report SGR mouse mode")
 	}
+	if !snapshot.TerminalBracketedPaste {
+		t.Fatal("snapshot did not report bracketed paste mode")
+	}
 	if !snapshot.PrivateModes["1002"] {
 		t.Fatalf("snapshot private modes = %#v, want SGR drag mode", snapshot.PrivateModes)
 	}
 	if !snapshot.PrivateModes["1006"] {
 		t.Fatalf("snapshot private modes = %#v, want SGR report mode", snapshot.PrivateModes)
+	}
+	if !snapshot.PrivateModes["2004"] {
+		t.Fatalf("snapshot private modes = %#v, want bracketed paste mode", snapshot.PrivateModes)
 	}
 }
 
@@ -2755,9 +2761,10 @@ func TestRestoreFromSnapshotPreservesMouseDragMode(t *testing.T) {
 			ID:                        "@1",
 			Index:                     0,
 			Name:                      "Mouse app",
-			PrivateModes:              map[string]bool{"1002": true, "1006": true},
+			PrivateModes:              map[string]bool{"1002": true, "1006": true, "2004": true},
 			TerminalReportsMouseWheel: true,
 			TerminalMouseReportSgr:    true,
+			TerminalBracketedPaste:    true,
 		},
 	})
 
@@ -2771,6 +2778,9 @@ func TestRestoreFromSnapshotPreservesMouseDragMode(t *testing.T) {
 	if !modes["1006"] {
 		t.Fatalf("restore private modes = %#v, want SGR report mode", modes)
 	}
+	if !modes["2004"] {
+		t.Fatalf("restore private modes = %#v, want bracketed paste mode", modes)
+	}
 }
 
 func TestRestoreFromLegacySnapshotPrefersSgrMouseDrag(t *testing.T) {
@@ -2781,6 +2791,7 @@ func TestRestoreFromLegacySnapshotPrefersSgrMouseDrag(t *testing.T) {
 			Name:                      "Mouse app",
 			TerminalReportsMouseWheel: true,
 			TerminalMouseReportSgr:    true,
+			TerminalBracketedPaste:    true,
 		},
 	})
 
@@ -2793,6 +2804,9 @@ func TestRestoreFromLegacySnapshotPrefersSgrMouseDrag(t *testing.T) {
 	}
 	if !modes["1006"] {
 		t.Fatalf("restore private modes = %#v, want SGR report mode", modes)
+	}
+	if !modes["2004"] {
+		t.Fatalf("restore private modes = %#v, want bracketed paste mode", modes)
 	}
 }
 

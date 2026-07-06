@@ -172,11 +172,13 @@ void main() {
         'active': true,
         'terminalReportsMouseWheel': true,
         'terminalMouseReportSgr': true,
+        'terminalBracketedPasteMode': true,
       });
 
       expect(window, isNotNull);
       expect(window!.terminalReportsMouseWheel, isTrue);
       expect(window.terminalMouseReportSgr, isTrue);
+      expect(window.terminalBracketedPasteMode, isTrue);
     });
 
     test('maps helper private mode metadata onto tmux windows', () {
