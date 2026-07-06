@@ -10,6 +10,17 @@ void main() {
       );
     });
 
+    test('keeps Windows drive paths absolute while normalizing separators', () {
+      expect(
+        resolveRequestedSftpPath(r'C:\Users\demo\..\Public\notes.txt'),
+        'C:/Users/Public/notes.txt',
+      );
+      expect(
+        resolveRequestedSftpPath('/C:/Users/demo/../Public/notes.txt'),
+        '/C:/Users/Public/notes.txt',
+      );
+    });
+
     test('resolves tilde-prefixed paths against the remote home directory', () {
       expect(
         resolveRequestedSftpPath(
@@ -34,6 +45,13 @@ void main() {
           workingDirectory: '/home/depoll/project',
         ),
         '/home/depoll/project/lib/main.dart',
+      );
+      expect(
+        resolveRequestedSftpPath(
+          r'..\logs\app.log',
+          workingDirectory: r'C:\Users\depoll\project\lib',
+        ),
+        'C:/Users/depoll/project/logs/app.log',
       );
     });
   });
