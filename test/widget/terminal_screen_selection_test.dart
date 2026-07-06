@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
 
@@ -442,6 +443,22 @@ void main() {
         isFalse,
       );
       expect(terminal.bracketedPasteMode, isTrue);
+    });
+
+    test('inherited local mode frames uploaded path segments', () {
+      final terminal = Terminal();
+
+      inheritTerminalBracketedPasteModeFromMuxWindow(
+        terminal: terminal,
+        activeWindowBracketedPasteMode: true,
+      );
+
+      expect(
+        buildTerminalAttachmentPasteSegments(const [
+          '/home/u/.cache/monkeyssh/uploads/a.png',
+        ], bracketedPasteMode: terminal.bracketedPasteMode),
+        const ['\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ '],
+      );
     });
   });
 

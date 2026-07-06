@@ -196,6 +196,35 @@ void main() {
       expect(window.terminalBracketedPasteMode, isTrue);
     });
 
+    test(
+      'leaves bracketed paste mode unknown when helper omits mode metadata',
+      () {
+        final window = parseMonkeyMuxWindowSnapshotForTesting({
+          'id': '@1',
+          'index': 0,
+          'name': 'Shell',
+          'active': true,
+        });
+
+        expect(window, isNotNull);
+        expect(window!.terminalBracketedPasteMode, isNull);
+      },
+    );
+
+    test('uses explicit helper bracketed paste mode when present', () {
+      final window = parseMonkeyMuxWindowSnapshotForTesting({
+        'id': '@1',
+        'index': 0,
+        'name': 'Shell',
+        'active': true,
+        'terminalBracketedPasteMode': false,
+        'privateModes': {'2004': true},
+      });
+
+      expect(window, isNotNull);
+      expect(window!.terminalBracketedPasteMode, isFalse);
+    });
+
     test('surfaces the alert flag so prompts trigger push notifications', () {
       final window = parseMonkeyMuxWindowSnapshotForTesting({
         'id': '@2',
