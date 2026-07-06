@@ -2554,7 +2554,6 @@ void main() {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
-        final detectionChannel = _MockShellChannel();
         final executedCommands = <String>[];
 
         host = _buildHost(
@@ -2578,18 +2577,9 @@ void main() {
         when(
           () => sshClient.execute(any(), pty: any(named: 'pty')),
         ).thenAnswer((invocation) async {
-          if (invocation.namedArguments[#pty] == null) {
-            return detectionChannel;
-          }
           executedCommands.add(invocation.positionalArguments.single as String);
           return shellChannel;
         });
-        when(() => detectionChannel.stdout).thenAnswer(
-          (_) => Stream<Uint8List>.fromIterable([
-            Uint8List.fromList(utf8.encode('cmd')),
-          ]),
-        );
-        when(detectionChannel.close).thenAnswer((_) {});
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
@@ -2704,6 +2694,7 @@ void main() {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final detectionChannel = _MockShellChannel();
         final executedCommands = <String>[];
 
         host = _buildHost(
@@ -2733,9 +2724,18 @@ void main() {
         when(
           () => sshClient.execute(any(), pty: any(named: 'pty')),
         ).thenAnswer((invocation) async {
+          if (invocation.namedArguments[#pty] == null) {
+            return detectionChannel;
+          }
           executedCommands.add(invocation.positionalArguments.single as String);
           return shellChannel;
         });
+        when(() => detectionChannel.stdout).thenAnswer(
+          (_) => Stream<Uint8List>.fromIterable([
+            Uint8List.fromList(utf8.encode('cmd')),
+          ]),
+        );
+        when(detectionChannel.close).thenAnswer((_) {});
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});

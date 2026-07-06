@@ -1013,6 +1013,29 @@ void main() {
       expect(foreground, isNot(theme.brightBlack));
     });
 
+    test('keeps low-contrast box-drawing decoration colors unchanged', () {
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[38;2;129;139;152m────────');
+      final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final cellData = CellData.empty();
+      terminal.buffer.lines[0].getCellData(0, cellData);
+
+      expect(
+        painter.resolveMonkeyTerminalCellForegroundColor(cellData),
+        const Color(0xFF818B98),
+      );
+      expect(
+        _contrastRatio(const Color(0xFF818B98), theme.background),
+        lessThan(4.5),
+      );
+    });
+
     test('keeps readable foreground-only ANSI colors unchanged', () {
       final terminal = Terminal()
         ..resize(24, 2)

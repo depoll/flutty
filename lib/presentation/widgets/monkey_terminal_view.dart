@@ -2504,9 +2504,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
         background: background,
       );
     }
-    if (_isRectPaintedBlockElement(
-      cellData.content & CellContent.codepointMask,
-    )) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (_isRectPaintedBlockElement(charCode) ||
+        _isBoxDrawingElement(charCode)) {
       return color;
     }
 
@@ -2524,6 +2524,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
   bool _cellPaintsBackground(CellData cellData) =>
       cellData.flags & CellFlags.inverse != 0 ||
       _cellBackgroundColorType(cellData) != CellColor.normal;
+
+  bool _isBoxDrawingElement(int charCode) =>
+      charCode >= 0x2500 && charCode <= 0x257F;
 
   Color _resolveCellBackgroundPaintColor(
     CellData cellData, {

@@ -1516,6 +1516,7 @@ void main() {
       'wraps Windows startup commands with terminal capability env',
       () async {
         final client = _MockSshClient();
+        final detection = _MockExecSession();
         final shell = _MockExecSession();
         final session = SshSession(
           connectionId: 1,
@@ -1532,9 +1533,15 @@ void main() {
         when(
           () => client.remoteVersion,
         ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => shell);
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) async {
+          if (invocation.namedArguments[#pty] == null) {
+            return detection;
+          }
+          return shell;
+        });
+        _stubSessionStreams(detection, stdout: 'cmd');
         _stubSessionStreams(shell);
 
         final result = await session.getShell(
@@ -1558,6 +1565,128 @@ void main() {
             environment: any(named: 'environment'),
           ),
         );
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
+      'wraps PowerShell-default startup commands with terminal capability env',
+      () async {
+        final client = _MockSshClient();
+        final detection = _MockExecSession();
+        final shell = _MockExecSession();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) async {
+          if (invocation.namedArguments[#pty] == null) {
+            return detection;
+          }
+          return shell;
+        });
+        _stubSessionStreams(detection, stdout: 'powershell');
+        _stubSessionStreams(shell);
+
+        final result = await session.getShell(
+          pty: pty,
+          command:
+              r'"C:\Program Files\MonkeyMux\monkeymux.exe" attach "my work"',
+        );
+
+        expect(result, same(shell));
+        final commands = verify(
+          () => client.execute(captureAny(), pty: any(named: 'pty')),
+        ).captured.cast<String>();
+        expect(
+          commands.last,
+          startsWith('powershell.exe -NoLogo -NoProfile -EncodedCommand '),
+        );
+        final script = _decodePowerShellScriptFromCommand(commands.last);
+        expect(
+          script,
+          contains(
+            r"$env:COLORTERM='truecolor';$env:TERM_PROGRAM='kitty';"
+            r"$env:KITTY_WINDOW_ID='1';$env:FORCE_HYPERLINK='1'",
+          ),
+        );
+        expect(
+          script,
+          contains(
+            r'$__flCommand='
+            '\'"C:\\Program Files\\MonkeyMux\\monkeymux.exe" '
+            'attach "my work"\';',
+          ),
+        );
+        expect(
+          script,
+          contains(r'cmd.exe /d /c $__flCommand; exit $LASTEXITCODE'),
+        );
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
+      'falls back to bare Windows startup commands when capability wrapper is rejected',
+      () async {
+        final client = _MockSshClient();
+        final detection = _MockExecSession();
+        final shell = _MockExecSession();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+        var prefixedAttempts = 0;
+
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) {
+          if (invocation.namedArguments[#pty] == null) {
+            return Future<SSHSession>.value(detection);
+          }
+          final command = invocation.positionalArguments.single as String;
+          if (command != 'copilot --version') {
+            prefixedAttempts++;
+            return Future<SSHSession>.error(
+              SSHChannelRequestError('prefixed command rejected'),
+            );
+          }
+          return Future<SSHSession>.value(shell);
+        });
+        _stubSessionStreams(detection, stdout: 'cmd');
+        _stubSessionStreams(shell);
+
+        final result = await session.getShell(
+          pty: pty,
+          command: 'copilot --version',
+        );
+
+        expect(result, same(shell));
+        expect(prefixedAttempts, 1);
+        verify(() => client.execute('copilot --version', pty: pty)).called(1);
         await session.closeShell(waitForStreams: false);
       },
     );

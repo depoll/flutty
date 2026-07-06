@@ -251,10 +251,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     final ptyConfig = pty ?? const SSHPtyConfig();
     if (command != null) {
       if (_session.remoteIsWindows) {
-        return _session.client.execute(
-          _windowsCapabilityCommand(command),
-          pty: ptyConfig,
-        );
+        return _openWindowsCapabilityCommandShell(ptyConfig, command);
       }
       return _session.client.execute(command, pty: ptyConfig);
     }
@@ -278,6 +275,28 @@ if(!$__flResolved){$__flResolved='cmd'}
         },
       );
       return _session.client.shell(pty: ptyConfig);
+    }
+  }
+
+  Future<SSHSession> _openWindowsCapabilityCommandShell(
+    SSHPtyConfig ptyConfig,
+    String command,
+  ) async {
+    final shellKind = await _detectWindowsShellKind();
+    final wrappedCommand = _windowsCapabilityCommand(shellKind, command);
+    try {
+      return await _session.client.execute(wrappedCommand, pty: ptyConfig);
+    } on SSHChannelRequestError {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'windows_prefixed_command_rejected',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+          'shellKind': shellKind.name,
+        },
+      );
+      return _session.client.execute(command, pty: ptyConfig);
     }
   }
 
@@ -367,8 +386,20 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
   }
 
-  String _windowsCapabilityCommand(String command) =>
-      '${_windowsCmdCapabilityPrefix(closeAfterCommand: true)}&& $command"';
+  String _windowsCapabilityCommand(
+    _WindowsShellKind shellKind,
+    String command,
+  ) {
+    switch (shellKind) {
+      case _WindowsShellKind.cmd:
+        return '${_windowsCmdCapabilityPrefix(closeAfterCommand: true)}&& '
+            '$command"';
+      case _WindowsShellKind.powershell:
+        return _windowsPowerShellCapabilityCommand('powershell.exe', command);
+      case _WindowsShellKind.pwsh:
+        return _windowsPowerShellCapabilityCommand('pwsh.exe', command);
+    }
+  }
 
   String _windowsCmdCapabilityPrefix({required bool closeAfterCommand}) =>
       'cmd.exe /d /${closeAfterCommand ? 'c' : 'k'} '
@@ -376,6 +407,27 @@ if(!$__flResolved){$__flResolved='cmd'}
       'set TERM_PROGRAM=kitty&& '
       'set KITTY_WINDOW_ID=1&& '
       'set FORCE_HYPERLINK=1';
+
+  String _windowsPowerShellCapabilityCommand(
+    String executable,
+    String command,
+  ) {
+    final environmentScript = _terminalCapabilityEnvironment.entries
+        .map(
+          (entry) =>
+              r'$env:'
+              '${entry.key}=${powerShellSingleQuote(entry.value)}',
+        )
+        .join(';');
+    final script =
+        '$environmentScript;'
+        r'$__flCommand='
+        '${powerShellSingleQuote(command)};'
+        r'cmd.exe /d /c $__flCommand; '
+        r'exit $LASTEXITCODE';
+    return '$executable -NoLogo -NoProfile '
+        '-EncodedCommand ${encodePowerShellCommand(script)}';
+  }
 
   String _windowsPowerShellCapabilityShellCommand(String executable) {
     final script = _terminalCapabilityEnvironment.entries
