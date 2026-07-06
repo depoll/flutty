@@ -27,6 +27,7 @@ const _profileSourcingPrefix =
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
 const _geminiSessionMetadataMaxBytes = 64 * 1024;
+const _openCodeStorageSessionMetadataMaxBytes = 64 * 1024;
 const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
 const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
 const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
@@ -36,6 +37,12 @@ const _execDoneMarker = '__flutty_agent_discovery_exec_done__';
 final RegExp _execDoneMarkerLinePattern = RegExp(
   '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
 );
+const _windowsUserProfileRootEnvironmentVariables = <String>['USERPROFILE'];
+const _windowsUserDataRootEnvironmentVariables = <String>[
+  'USERPROFILE',
+  'LOCALAPPDATA',
+  'APPDATA',
+];
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -278,7 +285,11 @@ String? _directorySummaryFallback(
 }
 
 String _pathLastSegment(String path) =>
-    path.split('/').where((segment) => segment.isNotEmpty).lastOrNull ?? path;
+    path
+        .split(RegExp(r'[/\\]'))
+        .where((segment) => segment.isNotEmpty)
+        .lastOrNull ??
+    path;
 
 AgentLaunchTool? _agentLaunchToolForSessionToolName(String toolName) {
   final normalizedToolName = toolName.trim();
@@ -864,6 +875,16 @@ String? _readJsonStringFromRaw(String raw, String key) {
   }
 }
 
+int? _readJsonNumberFromRaw(String raw, String key) {
+  final pattern = RegExp(
+    '"${RegExp.escape(key)}"\\s*:\\s*(-?\\d+)',
+    multiLine: true,
+  );
+  final match = pattern.firstMatch(raw);
+  if (match == null) return null;
+  return int.tryParse(match.group(1)!);
+}
+
 List<Object?>? _readJsonStringArrayFromRaw(String raw, String key) {
   final startPattern = RegExp(
     '"${RegExp.escape(key)}"\\s*:\\s*\\[',
@@ -930,6 +951,99 @@ List<ToolSessionInfo> parseAcpSessionListResult(
     );
   }
   return sessions;
+}
+
+/// Parses OpenCode's JSON storage session metadata from
+/// `storage/session/<project>/<session>.json`.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  String? parentId,
+  bool isArchived,
+  bool parsedAny,
+})
+parseOpenCodeStorageSessionMetadata(String raw) {
+  final decoded = _tryDecodeJsonObject(raw);
+  if (decoded == null) {
+    final sessionId =
+        _readJsonStringFromRaw(raw, 'id') ??
+        _readJsonStringFromRaw(raw, 'sessionId') ??
+        _readJsonStringFromRaw(raw, 'sessionID');
+    final summary =
+        _readJsonStringFromRaw(raw, 'title') ??
+        _readJsonStringFromRaw(raw, 'summary') ??
+        _readJsonStringFromRaw(raw, 'name');
+    final workingDirectory =
+        _readJsonStringFromRaw(raw, 'directory') ??
+        _readJsonStringFromRaw(raw, 'cwd');
+    final parentId =
+        _readJsonStringFromRaw(raw, 'parentID') ??
+        _readJsonStringFromRaw(raw, 'parent_id');
+    final updatedAt =
+        _parseDateTimeValue(_readJsonNumberFromRaw(raw, 'updated')) ??
+        _parseDateTimeValue(_readJsonStringFromRaw(raw, 'updatedAt'));
+    final isArchived =
+        _readJsonNumberFromRaw(raw, 'archived') != null ||
+        _readJsonNumberFromRaw(raw, 'time_archived') != null;
+
+    return (
+      sessionId: sessionId,
+      summary: summary,
+      workingDirectory: workingDirectory,
+      updatedAt: updatedAt,
+      parentId: parentId,
+      isArchived: isArchived,
+      parsedAny:
+          sessionId != null ||
+          summary != null ||
+          workingDirectory != null ||
+          parentId != null ||
+          updatedAt != null ||
+          isArchived,
+    );
+  }
+
+  final time = _readMapField(decoded, 'time');
+  final sessionId =
+      _readStringField(decoded, 'id') ??
+      _readStringField(decoded, 'sessionId') ??
+      _readStringField(decoded, 'sessionID');
+  final summary =
+      _readStringField(decoded, 'title') ??
+      _readStringField(decoded, 'summary') ??
+      _readStringField(decoded, 'name');
+  final workingDirectory =
+      _readStringField(decoded, 'directory') ??
+      _readStringField(decoded, 'cwd');
+  final parentId =
+      _readStringField(decoded, 'parentID') ??
+      _readStringField(decoded, 'parent_id');
+  final updatedAt =
+      _parseDateTimeValue(time?['updated']) ??
+      _parseDateTimeValue(decoded['updatedAt']) ??
+      _parseDateTimeValue(decoded['updated']) ??
+      _parseDateTimeValue(decoded['time_updated']);
+  final isArchived =
+      time?['archived'] != null || decoded['time_archived'] != null;
+
+  return (
+    sessionId: sessionId,
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parentId: parentId,
+    isArchived: isArchived,
+    parsedAny:
+        sessionId != null ||
+        summary != null ||
+        workingDirectory != null ||
+        parentId != null ||
+        updatedAt != null ||
+        isArchived,
+  );
 }
 
 String? _trimWorkingDirectory(String? value) {
@@ -2553,9 +2667,13 @@ class AgentSessionDiscoveryService {
     bool previewOnly = false,
   }) async {
     if (session.remoteIsWindows) {
-      // Antigravity discovery runs an embedded `python3` script, which Windows
-      // remotes are not guaranteed to provide. Degrade gracefully.
-      return const _ToolDiscoveryResult.success('Antigravity', []);
+      return _discoverWindowsAntigravitySessions(
+        session,
+        workingDirectory,
+        relatedWorkingDirectories,
+        max,
+        previewOnly: previewOnly,
+      );
     }
     try {
       const pyScript = r'''
@@ -2782,6 +2900,181 @@ print(json.dumps(sessions))
     }
   }
 
+  Future<_ToolDiscoveryResult> _discoverWindowsAntigravitySessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+      final sessions = <ToolSessionInfo>[];
+      final seenSessionIds = <String>{};
+      var hadError = false;
+
+      final jsonPathOutput = await _execWindowsPowerShell(
+        session,
+        windowsListNewestFilesScript(
+          relativeRoot: '.antigravity/sessions',
+          additionalRelativeRoots: const [
+            '.agy/sessions',
+            '.antigravitycli',
+            '.agycli',
+          ],
+          includeGlobs: const ['*.json'],
+          limit: scanLimit,
+          rootEnvironmentVariables: _windowsUserDataRootEnvironmentVariables,
+        ),
+      );
+      final jsonPaths = jsonPathOutput
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final jsonSnapshots = await _readRemoteFileSnapshots(
+        session,
+        jsonPaths,
+        maxBytes: _openCodeStorageSessionMetadataMaxBytes,
+      );
+
+      for (final path in jsonPaths) {
+        final snapshot = jsonSnapshots[path];
+        if (snapshot == null) {
+          hadError = true;
+          continue;
+        }
+        try {
+          final metadata = parseAntigravitySessionMetadata(snapshot.content);
+          if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
+            hadError = true;
+            continue;
+          }
+          final sessionId =
+              metadata.sessionId ?? _fileNameWithoutExtension(path);
+          if (sessionId.isEmpty || !seenSessionIds.add(sessionId)) continue;
+          sessions.add(
+            ToolSessionInfo(
+              toolName: 'Antigravity',
+              sessionId: sessionId,
+              workingDirectory: metadata.workingDirectory,
+              lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
+              summary: metadata.summary ?? _truncateId(sessionId),
+            ),
+          );
+        } on Object {
+          hadError = true;
+        }
+      }
+
+      final conversationPathOutput = await _execWindowsPowerShell(
+        session,
+        windowsListNewestFilesScript(
+          relativeRoot: '.gemini/antigravity-cli',
+          includeGlobs: const ['*.pb'],
+          limit: scanLimit,
+          pathLikeFilters: const ['*/conversations/*', '*/implicit/*'],
+        ),
+      );
+      final conversationPaths = conversationPathOutput
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      if (conversationPaths.isNotEmpty) {
+        final historyOutput = await _execWindowsPowerShell(
+          session,
+          windowsTailFileScript(
+            relativePath: '.gemini/antigravity-cli/history.jsonl',
+            lines: scanLimit * 5,
+          ),
+        );
+        final historyById = _parseAntigravityHistoryJsonl(historyOutput);
+        final annotationPaths = conversationPaths
+            .map(_antigravityAnnotationPathForConversationFile)
+            .whereType<String>()
+            .toList(growable: false);
+        final annotationSnapshots = await _readRemoteFileSnapshots(
+          session,
+          annotationPaths,
+          maxLines: 20,
+        );
+        final conversationSnapshots = await _readRemoteFileSnapshots(
+          session,
+          conversationPaths,
+          maxBytes: 0,
+        );
+
+        for (final path in conversationPaths) {
+          final sessionId = _fileNameWithoutExtension(path);
+          if (sessionId.isEmpty || !seenSessionIds.add(sessionId)) continue;
+          final history = historyById[sessionId];
+          final annotationPath = _antigravityAnnotationPathForConversationFile(
+            path,
+          );
+          final annotationTitle = annotationPath == null
+              ? null
+              : _extractAntigravityAnnotationTitle(
+                  annotationSnapshots[annotationPath]?.content ?? '',
+                );
+          sessions.add(
+            ToolSessionInfo(
+              toolName: 'Antigravity',
+              sessionId: sessionId,
+              workingDirectory: history?.workingDirectory,
+              lastActive:
+                  history?.updatedAt ?? conversationSnapshots[path]?.modifiedAt,
+              summary:
+                  history?.summary ?? annotationTitle ?? _truncateId(sessionId),
+            ),
+          );
+        }
+      }
+
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+      return _ToolDiscoveryResult.success(
+        'Antigravity',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Antigravity');
+    }
+  }
+
   // ── OpenCode ───────────────────────────────────────────────────────────
   // `opencode session list --format json` is the cleanest source of truth.
   // It returns renamed titles, directory, and timestamps. Falls back to
@@ -2796,10 +3089,13 @@ print(json.dumps(sessions))
     bool previewOnly = false,
   }) async {
     if (session.remoteIsWindows) {
-      // OpenCode discovery reads its SQLite database via the `sqlite3` CLI (and
-      // otherwise the ACP protocol), neither of which is available on a Windows
-      // remote's default shell. Degrade gracefully.
-      return const _ToolDiscoveryResult.success('OpenCode', []);
+      return _discoverWindowsOpenCodeSessions(
+        session,
+        workingDirectory,
+        relatedWorkingDirectories,
+        max,
+        previewOnly: previewOnly,
+      );
     }
     try {
       final scanLimit = previewOnly
@@ -2907,6 +3203,153 @@ print(json.dumps(sessions))
       }
 
       return _ToolDiscoveryResult.success('OpenCode', [], hadError: hadError);
+    } on Object {
+      return const _ToolDiscoveryResult.failure('OpenCode');
+    }
+  }
+
+  Future<_ToolDiscoveryResult> _discoverWindowsOpenCodeSessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 12,
+              maximum: 24,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+      var hadError = false;
+
+      final cliOutput = await _execWindowsPowerShell(
+        session,
+        windowsOpenCodeSessionListScript(scanLimit),
+      );
+      if (cliOutput.trim().startsWith('[')) {
+        try {
+          final sessions = _parseOpenCodeCliJson(cliOutput);
+          final scopedSessions =
+              workingDirectory != null && workingDirectory.isNotEmpty
+              ? sessions
+                    .where(
+                      (info) => matchesDiscoveredSessionWorkingDirectory(
+                        workingDirectory,
+                        info.workingDirectory,
+                        relatedWorkingDirectories: relatedWorkingDirectories,
+                      ),
+                    )
+                    .toList(growable: false)
+              : sessions;
+          return _ToolDiscoveryResult.success(
+            'OpenCode',
+            sortAndLimitDiscoveredSessions(
+              scopedSessions.isNotEmpty ? scopedSessions : sessions,
+              max,
+            ),
+          );
+        } on Object {
+          hadError = true;
+        }
+      }
+
+      final storagePathOutput = await _execWindowsPowerShell(
+        session,
+        windowsListNewestFilesScript(
+          relativeRoot: '.local/share/opencode/storage/session',
+          additionalRelativeRoots: const ['opencode/storage/session'],
+          includeGlobs: const ['*.json'],
+          limit: scanLimit,
+          rootEnvironmentVariables: _windowsUserDataRootEnvironmentVariables,
+        ),
+      );
+      if (storagePathOutput.trim().isEmpty) {
+        return _ToolDiscoveryResult.success(
+          'OpenCode',
+          const <ToolSessionInfo>[],
+          hadError: hadError,
+        );
+      }
+
+      final storagePaths = storagePathOutput
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final snapshots = await _readRemoteFileSnapshots(
+        session,
+        storagePaths,
+        maxBytes: _openCodeStorageSessionMetadataMaxBytes,
+      );
+      final sessions = <ToolSessionInfo>[];
+      for (final path in storagePaths) {
+        final snapshot = snapshots[path];
+        if (snapshot == null) {
+          hadError = true;
+          continue;
+        }
+        try {
+          final metadata = parseOpenCodeStorageSessionMetadata(
+            snapshot.content,
+          );
+          if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
+            hadError = true;
+            continue;
+          }
+          if (metadata.isArchived ||
+              (metadata.parentId != null && metadata.parentId!.isNotEmpty)) {
+            continue;
+          }
+          final sessionId = metadata.sessionId;
+          if (sessionId == null || sessionId.isEmpty) continue;
+          sessions.add(
+            ToolSessionInfo(
+              toolName: 'OpenCode',
+              sessionId: sessionId,
+              workingDirectory: metadata.workingDirectory,
+              lastActive: metadata.updatedAt ?? snapshot.modifiedAt,
+              summary: metadata.summary ?? _truncateId(sessionId),
+            ),
+          );
+        } on Object {
+          hadError = true;
+        }
+      }
+
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+      return _ToolDiscoveryResult.success(
+        'OpenCode',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
     } on Object {
       return const _ToolDiscoveryResult.failure('OpenCode');
     }
@@ -3806,6 +4249,18 @@ class _CodexSessionIndexEntry {
   final DateTime? updatedAt;
 }
 
+class _AntigravityHistoryEntry {
+  const _AntigravityHistoryEntry({
+    this.summary,
+    this.workingDirectory,
+    this.updatedAt,
+  });
+
+  final String? summary;
+  final String? workingDirectory;
+  final DateTime? updatedAt;
+}
+
 class _RemoteFileSnapshot {
   const _RemoteFileSnapshot({required this.content, this.modifiedAt});
 
@@ -3855,14 +4310,81 @@ Map<String, _RemoteFileSnapshot> _parseRemoteFileSnapshotOutputSync(
   return snapshots;
 }
 
+Map<String, _AntigravityHistoryEntry> _parseAntigravityHistoryJsonl(
+  String output,
+) {
+  final entries = <String, _AntigravityHistoryEntry>{};
+  for (final line in const LineSplitter().convert(output)) {
+    if (line.trim().isEmpty) continue;
+    final decoded = _tryDecodeJsonObject(line);
+    if (decoded == null) continue;
+    final conversationId = _readStringField(decoded, 'conversationId');
+    if (conversationId == null || conversationId.isEmpty) continue;
+    entries[conversationId] = _AntigravityHistoryEntry(
+      summary: _readStringField(decoded, 'display'),
+      workingDirectory: _readStringField(decoded, 'workspace'),
+      updatedAt: _parseDateTimeValue(decoded['timestamp']),
+    );
+  }
+  return entries;
+}
+
+String _fileNameWithoutExtension(String path) {
+  final fileName = path
+      .split(RegExp(r'[/\\]'))
+      .where((segment) => segment.isNotEmpty)
+      .lastOrNull;
+  if (fileName == null || fileName.isEmpty) return '';
+  final dotIndex = fileName.lastIndexOf('.');
+  return dotIndex <= 0 ? fileName : fileName.substring(0, dotIndex);
+}
+
+String? _antigravityAnnotationPathForConversationFile(String path) {
+  final normalizedPath = path.replaceAll(_backslashPattern, '/');
+  final match = RegExp(
+    r'^(.*)/(?:conversations|implicit)/([^/]+)\.pb$',
+  ).firstMatch(normalizedPath);
+  if (match == null) return null;
+  return '${match.group(1)!}/annotations/${match.group(2)!}.pbtxt';
+}
+
+String? _extractAntigravityAnnotationTitle(String raw) {
+  final match = RegExp(r'title\s*:\s*"((?:\\.|[^"\\])*)"').firstMatch(raw);
+  if (match == null) return null;
+  try {
+    final decoded = jsonDecode('"${match.group(1)}"');
+    if (decoded is String && decoded.trim().isNotEmpty) {
+      return _summarizeSessionText(decoded);
+    }
+  } on FormatException {
+    return null;
+  }
+  return null;
+}
+
 // ── Windows PowerShell discovery command builders ──────────────────────────
 // Windows remotes run cmd.exe/PowerShell, which cannot evaluate the POSIX
 // find/tail/stat command layer. These builders emit PowerShell scripts (run via
 // `powershell -EncodedCommand`; see windows_remote_powershell.dart) that produce
 // the exact output formats the existing POSIX parsers expect: newest-first
-// forward-slash paths, and `path\x1f mtime \x1f base64` snapshot lines. Paths are
-// rooted at `%USERPROFILE%`, matching where the AI CLIs (`os.homedir()`) store
-// their session state on Windows.
+// forward-slash paths, and `path\x1f mtime \x1f base64` snapshot lines. Most
+// provider state lives below `%USERPROFILE%`, while app-data based tools may use
+// `%LOCALAPPDATA%` or `%APPDATA%`; the list helpers support all three roots.
+
+String _windowsPowerShellArrayLiteral(Iterable<String> values) =>
+    values.map(powerShellSingleQuote).join(',');
+
+String _windowsEnvironmentVariableArrayLiteral(Iterable<String> names) {
+  final references = <String>[];
+  for (final name in names) {
+    final normalized = name.trim().toUpperCase();
+    if (!RegExp(r'^[A-Z_][A-Z0-9_]*$').hasMatch(normalized)) {
+      throw ArgumentError.value(name, 'names', 'Invalid environment variable');
+    }
+    references.add('\$env:$normalized');
+  }
+  return references.join(',');
+}
 
 /// Builds a PowerShell boolean expression that is true when `$__flN` (a file
 /// leaf name) matches any of [globs] via `-like`. Used instead of
@@ -3876,31 +4398,49 @@ String _windowsNameLikeCondition(List<String> globs) => globs
     )
     .join(' -or ');
 
-/// Builds a PowerShell script listing files under `%USERPROFILE%\<relativeRoot>`
-/// that match any of [includeGlobs], newest first, limited to [limit].
+/// Builds a PowerShell script listing files under [relativeRoot] below one or
+/// more Windows user roots that match any of [includeGlobs], newest first,
+/// limited to [limit].
 ///
 /// Emits one forward-slash path per line, mirroring
 /// `find <root> -name <glob> -type f -exec ls -1t {} + | head -n <limit>`. When
 /// [pathLikeFilters] is non-empty only files whose forward-slash path matches at
 /// least one `-like` pattern are emitted (mirroring `find ... -path <pattern>`).
+/// [additionalRelativeRoots] and [rootEnvironmentVariables] let callers include
+/// `%LOCALAPPDATA%` / `%APPDATA%` layouts without duplicating script builders.
 @visibleForTesting
 String windowsListNewestFilesScript({
   required String relativeRoot,
   required List<String> includeGlobs,
   required int limit,
+  List<String> additionalRelativeRoots = const <String>[],
   List<String> pathLikeFilters = const <String>[],
+  List<String> rootEnvironmentVariables =
+      _windowsUserProfileRootEnvironmentVariables,
 }) {
+  final relativeRootsLiteral = _windowsPowerShellArrayLiteral([
+    relativeRoot,
+    ...additionalRelativeRoots,
+  ]);
+  final rootEnvironmentVariablesLiteral =
+      _windowsEnvironmentVariableArrayLiteral(rootEnvironmentVariables);
   final body = StringBuffer()
-    ..write(r'$__flRoot=Join-Path $env:USERPROFILE ')
-    ..write(powerShellSingleQuote(relativeRoot))
-    ..write(';')
+    ..write('\$__flRelRoots=@($relativeRootsLiteral);')
+    ..write('\$__flRootBases=@($rootEnvironmentVariablesLiteral);')
+    ..write(r'$__flRoots=@();')
+    ..write(r'foreach($__flBase in $__flRootBases){')
+    ..write(r'if([string]::IsNullOrWhiteSpace([string]$__flBase)){continue}')
+    ..write(r'foreach($__flRelRoot in $__flRelRoots){')
+    ..write(r'$__flRoots+=(Join-Path $__flBase $__flRelRoot)}}')
+    ..write(r'$__flItems=@();foreach($__flRoot in $__flRoots){')
     ..write(
-      r'$__flItems=@(Get-ChildItem -LiteralPath $__flRoot -Recurse -File '
-      r'2>$null|Where-Object {$__flN=$_.Name;$__flFn=($_.FullName -replace '
-      r"'\\','/');(",
+      r'$__flItems+=@(Get-ChildItem -LiteralPath $__flRoot -Recurse -File ',
     )
-    ..write(_windowsNameLikeCondition(includeGlobs))
-    ..write(')');
+    ..write(
+      r'2>$null|Where-Object {$__flN=$_.Name;$__flFn=($_.FullName -replace ',
+    )
+    ..write(r"'\\','/');(")
+    ..write(_windowsNameLikeCondition(includeGlobs));
   if (pathLikeFilters.isNotEmpty) {
     body
       ..write(' -and (')
@@ -3916,12 +4456,17 @@ String windowsListNewestFilesScript({
       ..write(')');
   }
   body
-    ..write('}|Sort-Object LastWriteTimeUtc -Descending')
+    ..write(')})};')
+    ..write(r'$__flItems=@($__flItems|Sort-Object LastWriteTimeUtc -Descending')
     ..write('|Select-Object -First ')
     ..write('$limit')
     ..write(');')
+    ..write(r'$__flSeen=@{};')
     ..write(r'foreach($__flF in $__flItems){')
-    ..write(r"[void]$__flOut.Append(($__flF.FullName -replace '\\','/'));")
+    ..write(r"$__flPath=($__flF.FullName -replace '\\','/');")
+    ..write(r'if($__flSeen.ContainsKey($__flPath)){continue}')
+    ..write(r'$__flSeen[$__flPath]=$true;')
+    ..write(r'[void]$__flOut.Append($__flPath);')
     ..write(r'[void]$__flOut.Append([char]10)}');
   return powerShellUtf8OutputScript(body.toString());
 }
@@ -3967,6 +4512,22 @@ String windowsTailFileScript({
     ..write(r' -Encoding UTF8 2>$null);')
     ..write(r'foreach($__flL in $__flLines){[void]$__flOut.Append($__flL);')
     ..write(r'[void]$__flOut.Append([char]10)}}');
+  return powerShellUtf8OutputScript(body.toString());
+}
+
+/// Builds a PowerShell script that invokes OpenCode's native session-list
+/// command when the CLI is available on a Windows remote.
+@visibleForTesting
+String windowsOpenCodeSessionListScript(int limit) {
+  final body = StringBuffer()
+    ..write('if(Get-Command opencode -ErrorAction SilentlyContinue){')
+    ..write(r'$__flLines=@(& opencode session list --format json -n ')
+    ..write('$limit')
+    ..write(r' 2>$null);')
+    ..write(r'if($LASTEXITCODE -eq 0 -or $__flLines.Count -gt 0){')
+    ..write(r'foreach($__flL in $__flLines){')
+    ..write(r'[void]$__flOut.Append([string]$__flL);')
+    ..write(r'[void]$__flOut.Append([char]10)}}}');
   return powerShellUtf8OutputScript(body.toString());
 }
 

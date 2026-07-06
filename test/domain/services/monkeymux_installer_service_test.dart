@@ -57,6 +57,7 @@ class _FakeRemoteFileService extends RemoteFileService {
     required SftpClient sftp,
     required String remotePath,
     required Uint8List bytes,
+    bool applyPrivateMode = true,
   }) async {
     uploaded = true;
     uploadCount++;
