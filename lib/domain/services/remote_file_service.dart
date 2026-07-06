@@ -171,16 +171,40 @@ bool looksLikeBinaryContent(Uint8List bytes) {
 /// Escapes a path so it can be pasted directly into a POSIX shell.
 String shellEscapePosix(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
+/// Escapes a path so it can be pasted directly into cmd.exe or PowerShell.
+String shellEscapeWindows(String value) {
+  if (value.isEmpty) {
+    return '""';
+  }
+  final needsQuoting = value.contains(RegExp(r'[ \t&|<>^()";,%!]'));
+  if (!needsQuoting) {
+    return value;
+  }
+  return '"${value.replaceAll('"', '')}"';
+}
+
+/// Converts an SFTP remote path into the path form to paste into the terminal.
+String terminalPathForRemotePath(String remotePath, {required bool windows}) {
+  if (!windows) {
+    return remotePath;
+  }
+  return remotePath.replaceFirstMapped(
+    RegExp(r'^/([A-Za-z]:)(/|$)'),
+    (match) => '${match.group(1)!}${match.group(2)!}',
+  );
+}
+
 /// Bracketed-paste introducer and terminator (`CSI 200~` / `CSI 201~`).
 const _bracketedPasteStart = '\x1b[200~';
 const _bracketedPasteEnd = '\x1b[201~';
 
 /// Whether [path] is safe to paste unquoted (only path separators and the
-/// strict upload-filename allowlist). Uploaded filenames are sanitized, but the
-/// directory prefix derives from the remote home directory, which a hostile or
-/// misconfigured server could fill with spaces or shell metacharacters.
+/// strict upload-filename allowlist, plus `:` for Windows drive prefixes).
+/// Uploaded filenames are sanitized, but the directory prefix derives from the
+/// remote home directory, which a hostile or misconfigured server could fill
+/// with spaces or shell metacharacters.
 bool _isUnquotedSafeAttachmentPath(String path) =>
-    RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path);
+    RegExp(r'^[A-Za-z0-9._/:-]+$').hasMatch(path);
 
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
@@ -196,9 +220,10 @@ bool _isUnquotedSafeAttachmentPath(String path) =>
 ///
 /// Otherwise — bracketed paste mode is off, or a path contains characters that
 /// would be unsafe unquoted (e.g. a remote home directory with spaces or shell
-/// metacharacters) — the paths are shell-escaped and returned as a single
-/// segment. That form shows no preview (a path with spaces would not produce a
-/// chip anyway) but can never break the shell or inject commands.
+/// metacharacters) — the paths are shell-escaped for the current remote shell
+/// and returned as a single segment. That form shows no preview (a path with
+/// spaces would not produce a chip anyway) but keeps the inserted text quoted
+/// for the active remote shell.
 ///
 /// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
@@ -206,8 +231,12 @@ bool _isUnquotedSafeAttachmentPath(String path) =>
 List<String> buildTerminalAttachmentPasteSegments(
   Iterable<String> remotePaths, {
   required bool bracketedPasteMode,
+  bool windows = false,
 }) {
   final paths = remotePaths
+      .map(
+        (remotePath) => terminalPathForRemotePath(remotePath, windows: windows),
+      )
       .where((remotePath) => remotePath.isNotEmpty)
       .toList();
   if (paths.isEmpty) {
@@ -216,7 +245,8 @@ List<String> buildTerminalAttachmentPasteSegments(
   final canRenderChips =
       bracketedPasteMode && paths.every(_isUnquotedSafeAttachmentPath);
   if (!canRenderChips) {
-    return ['${paths.map(shellEscapePosix).join(' ')} '];
+    final escapePath = windows ? shellEscapeWindows : shellEscapePosix;
+    return ['${paths.map(escapePath).join(' ')} '];
   }
   return [
     for (final remotePath in paths)

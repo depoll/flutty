@@ -132,6 +132,27 @@ void main() {
       },
     );
 
+    test('builds bracketed pastes for Windows OpenSSH SFTP drive paths', () {
+      const start = '\x1b[200~';
+      const end = '\x1b[201~';
+      const windowsPath = 'C:/Users/david/.cache/monkeyssh/uploads/a.png';
+      expect(
+        terminalPathForRemotePath(
+          '/C:/Users/david/.cache/monkeyssh/uploads/a.png',
+          windows: true,
+        ),
+        windowsPath,
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          ['/C:/Users/david/.cache/monkeyssh/uploads/a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+        ),
+        ['$start$windowsPath$end '],
+      );
+    });
+
     test('inserts one shell-escaped segment when bracketed paste is off', () {
       expect(
         buildTerminalAttachmentPasteSegments([
@@ -139,6 +160,17 @@ void main() {
           '/tmp/b.png',
         ], bracketedPasteMode: false),
         ["'/tmp/a.png' '/tmp/b.png' "],
+      );
+    });
+
+    test('uses Windows shell escaping for unsafe Windows upload paths', () {
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          ['/C:/Users/john smith/.cache/monkeyssh/uploads/a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+        ),
+        ['"C:/Users/john smith/.cache/monkeyssh/uploads/a.png" '],
       );
     });
 

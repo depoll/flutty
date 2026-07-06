@@ -14601,9 +14601,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
   /// which would strip the bracketed-paste markers.
   Future<void> _insertUploadedFileReferences(List<String> remotePaths) async {
+    final session = _activeSession();
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
       bracketedPasteMode: _terminal.bracketedPasteMode,
+      windows: session?.remoteIsWindows ?? false,
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
