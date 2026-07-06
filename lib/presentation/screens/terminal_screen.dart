@@ -7524,6 +7524,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (command: null, handled: false);
     }
     if (isAppReviewDemoHost(host)) {
+      final sessionName =
+          _initialTmuxSessionName ?? host.tmuxSessionName ?? 'review-workspace';
+      _applyPreparedRemoteMuxCommand(session, (
+        backend: RemoteMuxBackend.monkeyMux,
+        command: 'app-review-demo-monkeymux',
+        sessionName: sessionName,
+        tool: null,
+      ));
       _suppressRemoteMuxDetectionConnectionId = session.connectionId;
       return (command: null, handled: true);
     }

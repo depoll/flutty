@@ -151,6 +151,8 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _agentMetadataPeriodicSessions =
       <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
   static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
+  static final _appReviewDemoMuxStates =
+      <_MonkeyMuxWatchKey, _AppReviewDemoMonkeyMuxState>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
 
   /// Clears MonkeyMux caches and watchers for a connection.
@@ -161,6 +163,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       fields: {'connectionId': connectionId},
     );
     _installer.clearCache(connectionId);
+    final demoKeys = _appReviewDemoMuxStates.keys
+        .where((key) => key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final key in demoKeys) {
+      _appReviewDemoMuxStates.remove(key)?.dispose();
+    }
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -217,6 +225,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? extraFlags,
   }) {
     final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+    if (isAppReviewDemoSession(session)) {
+      final windows = _appReviewDemoMuxState(key).windows;
+      _replaceCachedWindows(key, windows);
+      return Future<List<TmuxWindow>>.value(windows);
+    }
     final existingRequest = _windowListRequests[key];
     if (existingRequest != null) {
       return existingRequest;
@@ -251,6 +264,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? extraFlags,
   }) {
     final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+    if (isAppReviewDemoSession(session)) {
+      final state = _appReviewDemoMuxState(key);
+      scheduleMicrotask(state.emitWindowList);
+      return state.stream;
+    }
     final observer = _observers.putIfAbsent(
       key,
       () => _MonkeyMuxWindowChangeObserver(
@@ -308,6 +326,15 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     SshExecPriority priority = SshExecPriority.normal,
     String? extraFlags,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      final active = _appReviewDemoMuxState(
+        _MonkeyMuxWatchKey(session.connectionId, sessionName),
+      ).activeWindow;
+      return TmuxPaneContext(
+        currentPath: active.currentPath,
+        currentCommand: active.currentCommand,
+      );
+    }
     final response = await _runControlCommand(session, sessionName, {
       'type': 'query_active_context',
     }, priority: priority);
@@ -339,6 +366,21 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? workingDirectory,
     String? extraFlags,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+      final state = _appReviewDemoMuxState(key);
+      final window = state.createWindow(
+        command: command,
+        name: name,
+        workingDirectory: workingDirectory,
+      );
+      _replaceCachedWindows(key, state.windows);
+      writeAppReviewDemoTerminalOutput(
+        session,
+        'MonkeyMux created window ${window.index}: ${window.displayTitle}',
+      );
+      return;
+    }
     await _runControlCommand(session, sessionName, {
       'type': 'create_window',
       if (command != null && command.trim().isNotEmpty)
@@ -358,6 +400,17 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String? extraFlags,
     Map<int, int>? clientImageSignatures,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+      final state = _appReviewDemoMuxState(key);
+      final window = state.selectWindow(windowIndex, windowId: windowId);
+      _replaceCachedWindows(key, state.windows);
+      writeAppReviewDemoTerminalOutput(
+        session,
+        'MonkeyMux switched to window ${window.index}: ${window.displayTitle}',
+      );
+      return;
+    }
     await _runControlCommand(session, sessionName, {
       'type': 'select_window',
       if (windowId != null && windowId.trim().isNotEmpty)
@@ -387,6 +440,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     Iterable<int> imageIds,
   ) async {
+    if (isAppReviewDemoSession(session)) {
+      return;
+    }
     final ids = <String>[
       for (final id in imageIds)
         if (id > 0) id.toString(),
@@ -419,6 +475,19 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     int windowIndex, {
     String? extraFlags,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
+      final state = _appReviewDemoMuxState(key);
+      final closed = state.killWindow(windowIndex);
+      _replaceCachedWindows(key, state.windows);
+      if (closed != null) {
+        writeAppReviewDemoTerminalOutput(
+          session,
+          'MonkeyMux closed window ${closed.index}: ${closed.displayTitle}',
+        );
+      }
+      return;
+    }
     await _runControlCommand(session, sessionName, {
       'type': 'close_window',
       'windowIndex': windowIndex,
@@ -436,9 +505,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   /// UI should throttle resize syncs to avoid flooding the SSH connection with
   /// one-shot exec channels.
   bool hasLiveControlChannel(SshSession session, String sessionName) =>
-      _observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)]
-          ?.isControlChannelReady ??
-      false;
+      isAppReviewDemoSession(session) ||
+      (_observers[_MonkeyMuxWatchKey(session.connectionId, sessionName)]
+              ?.isControlChannelReady ??
+          false);
 
   @override
   Future<bool> hasForegroundClientOrThrow(
@@ -446,6 +516,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     String? extraFlags,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      return true;
+    }
     final response = await _runControlCommand(session, sessionName, {
       'type': 'query_attach_state',
     });
@@ -465,6 +538,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     TerminalThemeData theme, {
     String? extraFlags,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      return;
+    }
     await _runControlCommand(session, sessionName, {
       'type': 'theme_changed',
       'data': buildTerminalThemeHintReports(theme),
@@ -480,6 +556,9 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     bool redraw = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      return;
+    }
     await _runControlCommand(session, sessionName, {
       'type': 'resize',
       'width': columns,
@@ -495,6 +574,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    if (isAppReviewDemoSession(session)) {
+      return TerminalClientCommandResult(
+        output: 'demo command completed: $command\n',
+        exitCode: 0,
+      );
+    }
     final response = await _runControlCommand(session, sessionName, {
       'type': 'run_command',
       'command': command,
@@ -1447,6 +1532,189 @@ class _MonkeyMuxWatchKey {
 
   @override
   int get hashCode => Object.hash(connectionId, sessionName);
+}
+
+_AppReviewDemoMonkeyMuxState _appReviewDemoMuxState(_MonkeyMuxWatchKey key) =>
+    MonkeyMuxService._appReviewDemoMuxStates.putIfAbsent(
+      key,
+      _AppReviewDemoMonkeyMuxState.new,
+    );
+
+class _AppReviewDemoMonkeyMuxState {
+  _AppReviewDemoMonkeyMuxState()
+    : _windows = List<_AppReviewDemoWindowSpec>.of(_initialWindows());
+
+  static const _workspace = '/home/reviewer/work/monkeyssh-demo';
+
+  final _controller = StreamController<TmuxWindowChangeEvent>.broadcast();
+  final List<_AppReviewDemoWindowSpec> _windows;
+  int _activeIndex = 0;
+  int _nextId = 10;
+
+  Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
+
+  TmuxWindow get activeWindow => windows.firstWhere(
+    (window) => window.isActive,
+    orElse: () => windows.first,
+  );
+
+  List<TmuxWindow> get windows => [
+    for (var index = 0; index < _windows.length; index += 1)
+      _windows[index].toWindow(index: index, isActive: index == _activeIndex),
+  ];
+
+  TmuxWindow createWindow({
+    String? command,
+    String? name,
+    String? workingDirectory,
+  }) {
+    final tool =
+        agentLaunchToolForCommandText(command) ??
+        agentLaunchToolForCommandText(name);
+    final id = _nextId++;
+    final windowName =
+        _nonEmpty(name) ??
+        tool?.label ??
+        _nonEmpty(command)?.split(RegExp(r'\s+')).first ??
+        'shell $id';
+    final spec = _AppReviewDemoWindowSpec(
+      id: '@$id',
+      panePid: 7300 + id,
+      name: windowName,
+      currentCommand: tool?.commandName ?? _nonEmpty(command) ?? 'zsh',
+      currentPath: _nonEmpty(workingDirectory) ?? _workspace,
+      paneTitle: tool == null ? windowName : '${tool.label} · demo window',
+      agentTool: tool,
+      agentSessionTitle: tool == null ? null : 'Demo ${tool.label} session',
+    );
+    _windows.add(spec);
+    _activeIndex = _windows.length - 1;
+    emitWindowList();
+    return spec.toWindow(index: _activeIndex, isActive: true);
+  }
+
+  TmuxWindow selectWindow(int windowIndex, {String? windowId}) {
+    final targetIndex = windowId == null
+        ? windowIndex
+        : _windows.indexWhere((window) => window.id == windowId);
+    if (targetIndex >= 0 && targetIndex < _windows.length) {
+      _activeIndex = targetIndex;
+    }
+    emitWindowList();
+    return activeWindow;
+  }
+
+  TmuxWindow? killWindow(int windowIndex) {
+    if (_windows.length <= 1 ||
+        windowIndex < 0 ||
+        windowIndex >= _windows.length) {
+      return null;
+    }
+    final closed = _windows.removeAt(windowIndex);
+    if (_activeIndex >= _windows.length) {
+      _activeIndex = _windows.length - 1;
+    } else if (windowIndex < _activeIndex) {
+      _activeIndex -= 1;
+    }
+    emitWindowList();
+    return closed.toWindow(index: windowIndex, isActive: false);
+  }
+
+  void emitWindowList() {
+    if (!_controller.isClosed) {
+      _controller.add(TmuxWindowListEvent(windows));
+    }
+  }
+
+  void dispose() {
+    if (!_controller.isClosed) {
+      unawaited(_controller.close());
+    }
+  }
+
+  static List<_AppReviewDemoWindowSpec> _initialWindows() => const [
+    _AppReviewDemoWindowSpec(
+      id: '@0',
+      panePid: 7300,
+      name: 'Copilot CLI',
+      currentCommand: 'copilot',
+      currentPath: _workspace,
+      paneTitle: 'Copilot CLI · planning review notes',
+      agentTool: AgentLaunchTool.copilotCli,
+      agentSessionTitle: 'Planning review notes',
+    ),
+    _AppReviewDemoWindowSpec(
+      id: '@1',
+      panePid: 7301,
+      name: 'Claude Code',
+      currentCommand: 'claude',
+      currentPath: _workspace,
+      paneTitle: 'Claude Code · running tests',
+      agentTool: AgentLaunchTool.claudeCode,
+      agentSessionTitle: 'Running focused tests',
+    ),
+    _AppReviewDemoWindowSpec(
+      id: '@2',
+      panePid: 7302,
+      name: 'OpenCode',
+      currentCommand: 'opencode',
+      currentPath: '$_workspace/src',
+      paneTitle: 'OpenCode · editing README.md',
+      agentTool: AgentLaunchTool.openCode,
+      agentSessionTitle: 'Editing README.md',
+    ),
+    _AppReviewDemoWindowSpec(
+      id: '@3',
+      panePid: 7303,
+      name: 'SFTP',
+      currentCommand: 'zsh',
+      currentPath: _workspace,
+      paneTitle: 'SFTP · sample workspace',
+    ),
+  ];
+}
+
+class _AppReviewDemoWindowSpec {
+  const _AppReviewDemoWindowSpec({
+    required this.id,
+    required this.panePid,
+    required this.name,
+    required this.currentCommand,
+    required this.currentPath,
+    required this.paneTitle,
+    this.agentTool,
+    this.agentSessionTitle,
+  });
+
+  final String id;
+  final int panePid;
+  final String name;
+  final String currentCommand;
+  final String currentPath;
+  final String paneTitle;
+  final AgentLaunchTool? agentTool;
+  final String? agentSessionTitle;
+
+  TmuxWindow toWindow({required int index, required bool isActive}) =>
+      TmuxWindow(
+        index: index,
+        id: id,
+        panePid: panePid,
+        name: name,
+        isActive: isActive,
+        currentCommand: currentCommand,
+        currentPath: currentPath,
+        flags: isActive ? '*' : null,
+        paneTitle: paneTitle,
+        paneStartCommand: currentCommand,
+        agentTool: agentTool,
+        activeAgentSessionId: agentTool == null ? null : 'demo-$panePid',
+        agentSessionTitle: agentSessionTitle,
+        activeAgentSessionConfidence: agentTool == null
+            ? null
+            : AgentSessionConfidence.medium,
+        idleSeconds: isActive ? 2 : 30,
+      );
 }
 
 TmuxWindow? _windowFromJson(Object? value) {
