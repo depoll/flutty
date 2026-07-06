@@ -22,6 +22,24 @@ void main() {
       expect(joinRemotePath('', 'example.txt'), '/example.txt');
     });
 
+    test('joins Windows remote paths for terminal insertion', () {
+      expect(
+        joinRemotePath(
+          '/C:/Users/proof',
+          '.cache/monkeyssh/uploads',
+          style: RemotePathStyle.windows,
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads',
+      );
+      expect(
+        buildRemoteClipboardUploadDirectory(
+          r'C:\Users\proof',
+          style: RemotePathStyle.windows,
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads',
+      );
+    });
+
     test(
       'tolerates concurrent mkdir races when ensuring directories',
       () async {
@@ -112,6 +130,26 @@ void main() {
 
     test('escapes uploaded paths for terminal insertion', () {
       expect(shellEscapePosix("/tmp/it's.txt"), r"'/tmp/it'\''s.txt'");
+      expect(
+        shellEscapeWindows(r'C:\Users\John Smith\image.png'),
+        r'"C:\Users\John Smith\image.png"',
+      );
+    });
+
+    test('converts Windows SFTP paths for terminal insertion', () {
+      expect(
+        sftpPathToWindowsShellPath(
+          '/C:/Users/proof/.cache/monkeyssh/uploads/image.png',
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads\image.png',
+      );
+      expect(
+        remoteShellPathForSftpPath(
+          '/C:/Users/proof/.cache/monkeyssh/uploads/image.png',
+          windows: true,
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads\image.png',
+      );
     });
 
     test(
@@ -132,27 +170,6 @@ void main() {
       },
     );
 
-    test('builds bracketed pastes for Windows OpenSSH SFTP drive paths', () {
-      const start = '\x1b[200~';
-      const end = '\x1b[201~';
-      const windowsPath = 'C:/Users/david/.cache/monkeyssh/uploads/a.png';
-      expect(
-        terminalPathForRemotePath(
-          '/C:/Users/david/.cache/monkeyssh/uploads/a.png',
-          windows: true,
-        ),
-        windowsPath,
-      );
-      expect(
-        buildTerminalAttachmentPasteSegments(
-          ['/C:/Users/david/.cache/monkeyssh/uploads/a.png'],
-          bracketedPasteMode: true,
-          windows: true,
-        ),
-        ['$start$windowsPath$end '],
-      );
-    });
-
     test('inserts one shell-escaped segment when bracketed paste is off', () {
       expect(
         buildTerminalAttachmentPasteSegments([
@@ -163,14 +180,25 @@ void main() {
       );
     });
 
-    test('uses Windows shell escaping for unsafe Windows upload paths', () {
+    test('uses native Windows paths for terminal attachment pastes', () {
+      const start = '\x1b[200~';
+      const end = '\x1b[201~';
+
       expect(
         buildTerminalAttachmentPasteSegments(
-          ['/C:/Users/john smith/.cache/monkeyssh/uploads/a.png'],
+          [r'C:\Users\proof\.cache\monkeyssh\uploads\a.png'],
           bracketedPasteMode: true,
           windows: true,
         ),
-        ['"C:/Users/john smith/.cache/monkeyssh/uploads/a.png" '],
+        ['$start${r'C:\Users\proof\.cache\monkeyssh\uploads\a.png'}$end '],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          [r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+        ),
+        [r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png" '],
       );
     });
 

@@ -320,7 +320,7 @@ class MonkeyMuxInstallerService {
       // SFTP presents Windows paths as `/C:/...`; the shell (attach/control
       // commands, certutil) needs the native `C:\...` form.
       final executablePath = isWindows
-          ? _sftpPathToWindowsPath(executableSftpPath)
+          ? sftpPathToWindowsShellPath(executableSftpPath)
           : executableSftpPath;
       if (await _remoteShaMatches(
         session,
@@ -394,7 +394,7 @@ class MonkeyMuxInstallerService {
         '${DateTime.now().microsecondsSinceEpoch}.tmp',
       );
       final temporaryCommandPath = isWindows
-          ? _sftpPathToWindowsPath(temporaryExecutablePath)
+          ? sftpPathToWindowsShellPath(temporaryExecutablePath)
           : temporaryExecutablePath;
       var movedTemporaryExecutable = false;
       try {
@@ -612,16 +612,6 @@ class MonkeyMuxInstallerService {
   }
 
   bool _isWindowsPlatform(String platform) => platform.startsWith('windows-');
-
-  /// Converts a Windows OpenSSH SFTP path (for example `/C:/Users/me/x.exe`)
-  /// into the native form a Windows shell expects (`C:\Users\me\x.exe`).
-  String _sftpPathToWindowsPath(String sftpPath) {
-    var normalized = sftpPath;
-    if (normalized.startsWith('/')) {
-      normalized = normalized.substring(1);
-    }
-    return normalized.replaceAll('/', r'\');
-  }
 
   /// Extracts the SHA-256 digest from `certutil -hashfile` output, tolerating
   /// the byte-spaced formatting older certutil versions emit.
