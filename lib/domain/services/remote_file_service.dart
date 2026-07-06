@@ -355,7 +355,7 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [bracketedPasteMode] is enabled *and* every path is safe to paste
+/// When [bracketedPasteMode] is true *and* every path is safe to paste
 /// unquoted, each path is returned as its own bracketed-paste segment
 /// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
 /// these segments sequentially with a short delay between them: an agent CLI
@@ -364,12 +364,12 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 /// distinct reads. The trailing space also keeps the paths usable as distinct
 /// shell arguments.
 ///
-/// Otherwise — bracketed paste mode is off, or a path contains characters that
-/// would be unsafe unquoted (e.g. a remote home directory with spaces or shell
-/// metacharacters) — the paths are shell-escaped for the current remote shell
-/// and returned as a single segment. That form shows no preview (a path with
-/// spaces would not produce a chip anyway) but keeps the inserted text quoted
-/// for the active remote shell.
+/// Otherwise — when bracketed paste is not requested, or when a path contains
+/// characters that would be unsafe unquoted (e.g. a remote home directory with
+/// spaces or shell metacharacters) — the paths are shell-escaped for the current
+/// remote shell and returned as a single segment. That form shows no preview (a
+/// path with spaces would not produce a chip anyway) but keeps the inserted text
+/// quoted for the active remote shell.
 ///
 /// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the

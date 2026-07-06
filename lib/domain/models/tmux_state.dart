@@ -117,6 +117,7 @@ class TmuxWindow {
     this.activeAgentSessionConfidence,
     this.terminalReportsMouseWheel,
     this.terminalMouseReportSgr,
+    this.terminalBracketedPasteMode,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
@@ -215,6 +216,9 @@ class TmuxWindow {
   /// Whether the foreground application requested SGR mouse reporting.
   final bool? terminalMouseReportSgr;
 
+  /// Whether the foreground application requested bracketed paste mode.
+  final bool? terminalBracketedPasteMode;
+
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
 
@@ -270,6 +274,7 @@ class TmuxWindow {
     AgentSessionConfidence? activeAgentSessionConfidence,
     bool? terminalReportsMouseWheel,
     bool? terminalMouseReportSgr,
+    bool? terminalBracketedPasteMode,
     bool clearActiveAgentSessionMetadata = false,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
@@ -297,6 +302,8 @@ class TmuxWindow {
         terminalReportsMouseWheel ?? this.terminalReportsMouseWheel,
     terminalMouseReportSgr:
         terminalMouseReportSgr ?? this.terminalMouseReportSgr,
+    terminalBracketedPasteMode:
+        terminalBracketedPasteMode ?? this.terminalBracketedPasteMode,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
@@ -588,6 +595,7 @@ class TmuxWindow {
           activeAgentSessionConfidence == other.activeAgentSessionConfidence &&
           terminalReportsMouseWheel == other.terminalReportsMouseWheel &&
           terminalMouseReportSgr == other.terminalMouseReportSgr &&
+          terminalBracketedPasteMode == other.terminalBracketedPasteMode &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -609,6 +617,7 @@ class TmuxWindow {
     activeAgentSessionConfidence,
     terminalReportsMouseWheel,
     terminalMouseReportSgr,
+    terminalBracketedPasteMode,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );

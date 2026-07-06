@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
 
@@ -373,6 +375,89 @@ void main() {
           isWeb: false,
         ),
         isFalse,
+      );
+    });
+  });
+
+  group('resolveTmuxBarActiveWindowBracketedPasteMode', () {
+    test('reads bracketed paste mode from the active mux window', () {
+      final windows = [
+        const TmuxWindow(
+          index: 0,
+          name: 'shell',
+          isActive: false,
+          terminalBracketedPasteMode: true,
+        ),
+        const TmuxWindow(
+          index: 1,
+          name: 'composer',
+          isActive: true,
+          terminalBracketedPasteMode: true,
+        ),
+      ];
+
+      expect(resolveTmuxBarActiveWindowBracketedPasteMode(windows), isTrue);
+    });
+
+    test('leaves unknown mux state unknown', () {
+      expect(
+        resolveTmuxBarActiveWindowBracketedPasteMode(const [
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+        ]),
+        isNull,
+      );
+    });
+  });
+
+  group('inheritTerminalBracketedPasteModeFromMuxWindow', () {
+    test('applies known active mux window bracketed paste mode locally', () {
+      final terminal = Terminal();
+
+      expect(terminal.bracketedPasteMode, isFalse);
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: true,
+        ),
+        isTrue,
+      );
+      expect(terminal.bracketedPasteMode, isTrue);
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: false,
+        ),
+        isTrue,
+      );
+      expect(terminal.bracketedPasteMode, isFalse);
+    });
+
+    test('leaves local mode alone when mux window mode is unknown', () {
+      final terminal = Terminal()..setBracketedPasteMode(true);
+
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: null,
+        ),
+        isFalse,
+      );
+      expect(terminal.bracketedPasteMode, isTrue);
+    });
+
+    test('inherited local mode frames uploaded path segments', () {
+      final terminal = Terminal();
+
+      inheritTerminalBracketedPasteModeFromMuxWindow(
+        terminal: terminal,
+        activeWindowBracketedPasteMode: true,
+      );
+
+      expect(
+        buildTerminalAttachmentPasteSegments(const [
+          '/home/u/.cache/monkeyssh/uploads/a.png',
+        ], bracketedPasteMode: terminal.bracketedPasteMode),
+        const ['\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ '],
       );
     });
   });

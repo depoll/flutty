@@ -338,6 +338,7 @@ type windowSnapshot struct {
 	LastActivityEpochSeconds  int64           `json:"lastActivityEpochSeconds,omitempty"`
 	TerminalReportsMouseWheel bool            `json:"terminalReportsMouseWheel,omitempty"`
 	TerminalMouseReportSgr    bool            `json:"terminalMouseReportSgr,omitempty"`
+	TerminalBracketedPaste    bool            `json:"terminalBracketedPasteMode,omitempty"`
 	PrivateModes              map[string]bool `json:"privateModes,omitempty"`
 }
 
@@ -979,6 +980,9 @@ func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
 	}
 	if window.TerminalMouseReportSgr {
 		modes["1006"] = true
+	}
+	if window.TerminalBracketedPaste {
+		modes["2004"] = true
 	}
 	if len(modes) == 0 {
 		return nil
@@ -3572,6 +3576,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
+		TerminalBracketedPaste:    window.privateModes["2004"],
 		PrivateModes:              copyPrivateModes(window.privateModes),
 	}
 }
