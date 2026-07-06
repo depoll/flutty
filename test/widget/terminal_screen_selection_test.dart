@@ -377,6 +377,48 @@ void main() {
     });
   });
 
+  group('shouldUseBracketedPasteForUploadedReferences', () {
+    test('uses bracketed paste when a known agent is active or titled', () {
+      expect(
+        shouldUseBracketedPasteForUploadedReferences(
+          bracketedPasteMode: false,
+          isAgentToolActive: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUseBracketedPasteForUploadedReferences(
+          bracketedPasteMode: false,
+          isAgentToolActive: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldUseBracketedPasteForUploadedReferences(
+          bracketedPasteMode: true,
+          isAgentToolActive: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUseBracketedPasteForUploadedReferences(
+          bracketedPasteMode: false,
+          isAgentToolActive: false,
+          terminalIconName: 'Copilot CLI',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUseBracketedPasteForUploadedReferences(
+          bracketedPasteMode: false,
+          isAgentToolActive: false,
+          terminalWindowTitle: 'Claude Code: project',
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('enableAndroidPhotoPickerForTerminalMedia', () {
     test('enables the existing Android image picker implementation', () {
       final imagePicker = ImagePickerAndroid();
