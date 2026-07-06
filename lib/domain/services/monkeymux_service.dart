@@ -1462,9 +1462,11 @@ TmuxWindow? _windowFromJson(Object? value) {
   final terminalMouseReportSgr =
       (value['terminalMouseReportSgr'] as bool? ?? false) ||
       _privateModeEnabled(privateModes, '1006');
-  final terminalBracketedPasteMode =
-      (value['terminalBracketedPasteMode'] as bool? ?? false) ||
-      _privateModeEnabled(privateModes, '2004');
+  final explicitTerminalBracketedPasteMode =
+      value['terminalBracketedPasteMode'];
+  final terminalBracketedPasteMode = explicitTerminalBracketedPasteMode is bool
+      ? explicitTerminalBracketedPasteMode
+      : _privateModeValue(privateModes, '2004');
   // The MonkeyMux server only raises the `#` alert flag when a background
   // window emits a terminal bell (agents ring the bell when they need input),
   // and clears it as soon as the window is selected. Parsing it restores the
@@ -1504,6 +1506,9 @@ Map<String, bool> _privateModesFromJson(Object? value) {
 
 bool _privateModeEnabled(Map<String, bool> privateModes, String mode) =>
     privateModes[mode] ?? false;
+
+bool? _privateModeValue(Map<String, bool> privateModes, String mode) =>
+    privateModes.containsKey(mode) ? privateModes[mode] : null;
 
 Set<int> _monkeyMuxAgentPanePids(Iterable<TmuxWindow> windows) => windows
     .where(

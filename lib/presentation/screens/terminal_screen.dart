@@ -14683,6 +14683,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<String> remotePaths, {
     required bool windows,
   }) async {
+    _syncTerminalModesFromActiveMuxWindow();
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
       bracketedPasteMode: _terminal.bracketedPasteMode,
