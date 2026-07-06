@@ -355,7 +355,7 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [useBracketedPaste] is true *and* every path is safe to paste
+/// When [bracketedPasteMode] is true *and* every path is safe to paste
 /// unquoted, each path is returned as its own bracketed-paste segment
 /// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
 /// these segments sequentially with a short delay between them: an agent CLI
@@ -376,7 +376,7 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 /// bracketed-paste control sequences.
 List<String> buildTerminalAttachmentPasteSegments(
   Iterable<String> remotePaths, {
-  required bool useBracketedPaste,
+  required bool bracketedPasteMode,
   bool windows = false,
 }) {
   final paths = remotePaths
@@ -386,7 +386,7 @@ List<String> buildTerminalAttachmentPasteSegments(
     return const [];
   }
   final canRenderChips =
-      useBracketedPaste &&
+      bracketedPasteMode &&
       paths.every(
         (remotePath) =>
             _isUnquotedSafeAttachmentPath(remotePath, windows: windows),
