@@ -40,6 +40,20 @@ Stream<Uint8List> _utf8Stream(String value) => value.isEmpty
 
 void _ignoreInvocation(Invocation _) {}
 
+/// Decodes a `powershell ... -EncodedCommand <base64>` command back to its
+/// UTF-16LE PowerShell script so Windows-path tests can route mock responses.
+String _decodeEncodedPowerShell(String command) {
+  const marker = '-EncodedCommand ';
+  final index = command.indexOf(marker);
+  if (index < 0) return command;
+  final bytes = base64.decode(command.substring(index + marker.length).trim());
+  final buffer = StringBuffer();
+  for (var i = 0; i + 1 < bytes.length; i += 2) {
+    buffer.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
+  }
+  return buffer.toString();
+}
+
 SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
   final session = _MockExecSession();
   when(() => session.stdout).thenAnswer((_) => _utf8Stream(stdout));
@@ -1033,26 +1047,62 @@ cwd: /tmp/demo
   });
 
   group('discoverSessionsStream caching', () {
-    test(
-      'returns no sessions and runs no commands on Windows remotes',
-      () async {
-        final client = _MockSshClient();
-        when(
-          () => client.remoteVersion,
-        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+    test('discovers sessions via PowerShell on Windows remotes', () async {
+      final client = _MockSshClient();
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
 
-        final discovery = AgentSessionDiscoveryService();
-        final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          workingDirectory: r'C:\Users\demo\project',
-        );
+      final issuedScripts = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        final script = _decodeEncodedPowerShell(command);
+        issuedScripts.add(script);
+        // Copilot workspace listing.
+        if (script.contains('.copilot/session-state') &&
+            !script.contains('[char]0x1f')) {
+          return _buildExecSession(
+            stdout: 'C:/Users/demo/.copilot/session-state/abc/workspace.yaml\n',
+          );
+        }
+        // Snapshot read of the workspace.yaml.
+        if (script.contains('[char]0x1f') &&
+            script.contains('workspace.yaml')) {
+          final content = base64.encode(
+            utf8.encode('id: abc\ncwd: C:\\proj\nsummary: My session\n'),
+          );
+          return _buildExecSession(
+            stdout:
+                'C:/Users/demo/.copilot/session-state/abc/workspace.yaml'
+                '\x1f1700000000\x1f$content\n',
+          );
+        }
+        return _buildExecSession();
+      });
 
-        expect(result.sessions, isEmpty);
-        verifyNever(() => client.execute(any()));
-        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
-      },
-    );
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(session);
+
+      // Every issued command is a PowerShell EncodedCommand, never POSIX.
+      final commands = verify(
+        () => client.execute(captureAny()),
+      ).captured.cast<String>();
+      expect(commands, isNotEmpty);
+      expect(
+        commands.every((command) => command.contains('-EncodedCommand ')),
+        isTrue,
+      );
+      expect(
+        issuedScripts.any((script) => script.contains('Get-ChildItem')),
+        isTrue,
+      );
+      final copilot = result.sessions.where(
+        (info) => info.toolName == 'Copilot CLI',
+      );
+      expect(copilot, isNotEmpty);
+      expect(copilot.first.summary, 'My session');
+    });
 
     test('Copilot discovery uses ACP session/list when available', () async {
       final client = _MockSshClient();
