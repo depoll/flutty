@@ -110,6 +110,27 @@ void main() {
       expect(script, contains(r"$__flN -like 'session-*.jsonl'"));
       expect(script, contains(r"$__flFn -like '*/chats/*'"));
     });
+
+    test('can search app-data roots and additional relative roots', () {
+      final script = windowsListNewestFilesScript(
+        relativeRoot: '.local/share/opencode/storage/session',
+        additionalRelativeRoots: const ['opencode/storage/session'],
+        includeGlobs: const ['*.json'],
+        limit: 24,
+        rootEnvironmentVariables: const [
+          'USERPROFILE',
+          'LOCALAPPDATA',
+          'APPDATA',
+        ],
+      );
+
+      expect(script, contains(r'$env:USERPROFILE'));
+      expect(script, contains(r'$env:LOCALAPPDATA'));
+      expect(script, contains(r'$env:APPDATA'));
+      expect(script, contains("'.local/share/opencode/storage/session'"));
+      expect(script, contains("'opencode/storage/session'"));
+      expect(script, contains(r'$__flSeen.ContainsKey($__flPath)'));
+    });
   });
 
   group('windowsFindFilesByNameScript', () {
@@ -138,6 +159,16 @@ void main() {
           r'Get-Content -LiteralPath $__flPath -Tail 200 -Encoding UTF8',
         ),
       );
+    });
+  });
+
+  group('windowsOpenCodeSessionListScript', () {
+    test('runs the native CLI session list command when available', () {
+      final script = windowsOpenCodeSessionListScript(12);
+
+      expect(script, contains('Get-Command opencode'));
+      expect(script, contains('opencode session list --format json -n 12'));
+      expect(script, contains(r'$__flOut.Append([string]$__flL)'));
     });
   });
 
