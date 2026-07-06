@@ -1054,5 +1054,79 @@ void main() {
         theme.brightCyan,
       );
     });
+
+    test('tones dark filled-block bars toward a light theme', () {
+      // A dark-mode CLI (e.g. Copilot following Windows dark mode) paints its
+      // composer rules as full-block glyphs in a near-black truecolor. On the
+      // light theme those must read as a toned surface, not a harsh dark bar.
+      const theme = TerminalThemes.defaultLightTheme;
+      final painter = MonkeyTerminalPainter(
+        theme: theme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final cellData = CellData.empty();
+
+      for (final bar in const [Color(0xFF141B22), Color(0xFF202020)]) {
+        final r = (bar.toARGB32() >> 16) & 0xFF;
+        final g = (bar.toARGB32() >> 8) & 0xFF;
+        final b = bar.toARGB32() & 0xFF;
+        final terminal = Terminal()
+          ..resize(24, 2)
+          ..write('\x1b[38;2;$r;$g;${b}m\u2588\u2588\u2588');
+        terminal.buffer.lines[0].getCellData(0, cellData);
+        final resolved = painter.resolveMonkeyTerminalCellForegroundColor(
+          cellData,
+        );
+        expect(
+          resolved.computeLuminance(),
+          greaterThan(bar.computeLuminance() + 0.2),
+          reason: 'dark block should be lightened',
+        );
+        expect(
+          _contrastRatio(resolved, theme.background),
+          lessThanOrEqualTo(1.75),
+          reason: 'toned block should sit near the theme surface',
+        );
+      }
+    });
+
+    test('keeps saturated block art unchanged on a light theme', () {
+      const theme = TerminalThemes.defaultLightTheme;
+      final painter = MonkeyTerminalPainter(
+        theme: theme.toXtermTheme(),
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\x1b[38;2;215;119;87m\u2588\u2588');
+      final cellData = CellData.empty();
+      terminal.buffer.lines[0].getCellData(0, cellData);
+
+      expect(
+        painter.resolveMonkeyTerminalCellForegroundColor(cellData),
+        const Color(0xFFD77757),
+      );
+    });
+
+    test('keeps default-ink block bars in the theme foreground', () {
+      final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+      final painter = MonkeyTerminalPainter(
+        theme: theme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final terminal = Terminal()
+        ..resize(24, 2)
+        ..write('\u2588\u2588');
+      final cellData = CellData.empty();
+      terminal.buffer.lines[0].getCellData(0, cellData);
+
+      expect(
+        painter.resolveMonkeyTerminalCellForegroundColor(cellData),
+        theme.foreground,
+      );
+    });
   });
 }

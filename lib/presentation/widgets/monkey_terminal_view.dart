@@ -2505,8 +2505,25 @@ class MonkeyTerminalPainter extends TerminalPainter {
       );
     }
     final charCode = cellData.content & CellContent.codepointMask;
-    if (_isRectPaintedBlockElement(charCode) ||
-        _isBoxDrawingElement(charCode)) {
+    if (_isRectPaintedBlockElement(charCode)) {
+      // A filled block glyph (▀ ▄ █ quadrants …) reads as a painted surface,
+      // not text. When the app set an explicit block color, tone neutral
+      // (near-gray) ones toward the terminal theme exactly as an explicit cell
+      // background is toned, so a dark-mode TUI's solid rules/caps on a light
+      // theme (and vice versa) harmonize with the theme instead of showing as
+      // harsh bars. Saturated block art (logos, charts, spinners) is
+      // non-neutral and passes through unchanged, and the theme's own default
+      // ink is left alone.
+      if (_cellSetsExplicitForeground(cellData)) {
+        return resolveMonkeyTerminalReadableBackgroundColor(
+          foreground: theme.foreground,
+          background: color,
+          terminalBackground: theme.background,
+        );
+      }
+      return color;
+    }
+    if (_isBoxDrawingElement(charCode)) {
       return color;
     }
 
@@ -2527,6 +2544,13 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   bool _isBoxDrawingElement(int charCode) =>
       charCode >= 0x2500 && charCode <= 0x257F;
+
+  bool _cellSetsExplicitForeground(CellData cellData) {
+    final type = cellData.foreground & CellColor.typeMask;
+    return type == CellColor.rgb ||
+        type == CellColor.palette ||
+        type == CellColor.named;
+  }
 
   Color _resolveCellBackgroundPaintColor(
     CellData cellData, {
