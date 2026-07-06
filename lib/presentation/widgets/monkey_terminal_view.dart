@@ -21,7 +21,6 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
-import 'package:xterm/src/core/color.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/cell_flags.dart';
 import 'package:xterm/src/core/buffer/line.dart';
@@ -64,7 +63,6 @@ const _minimumCursorTextContrast = 4.5;
 const _minimumCellTextContrast = 4.5;
 const _minimumCellBackgroundContrast = 1.04;
 const _maximumNeutralCellBackgroundContrast = 1.75;
-const _maximumNeutralChannelSpread = 36;
 const _backgroundAlphaCandidates = <int>[
   0x26,
   0x33,
@@ -377,32 +375,7 @@ bool _isNeutralTerminalColor(Color color) {
   final blue = value & 0xFF;
   final maxChannel = math.max(red, math.max(green, blue));
   final minChannel = math.min(red, math.min(green, blue));
-  return maxChannel - minChannel <= _maximumNeutralChannelSpread;
-}
-
-@visibleForTesting
-Color resolveMonkeyTerminalBlockForegroundColor({
-  required Color foreground,
-  required int encodedForeground,
-  required Color terminalForeground,
-  required Color terminalBackground,
-}) {
-  if (!_isThemeNeutralBlockForeground(encodedForeground)) {
-    return foreground;
-  }
-
-  return resolveMonkeyTerminalReadableBackgroundColor(
-    foreground: terminalForeground,
-    background: foreground,
-    terminalBackground: terminalBackground,
-  );
-}
-
-bool _isThemeNeutralBlockForeground(int cellColor) {
-  final colorType = cellColor & CellColor.typeMask;
-  final colorValue = cellColor & CellColor.valueMask;
-  return (colorType == CellColor.named || colorType == CellColor.palette) &&
-      (colorValue == NamedColor.black || colorValue == NamedColor.brightBlack);
+  return maxChannel - minChannel <= 24;
 }
 
 /// Resolves a readable paint color for text cells.
@@ -2518,9 +2491,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
   Color resolveMonkeyTerminalCellForegroundColor(CellData cellData) {
     final cellFlags = cellData.flags;
     final inverse = cellFlags & CellFlags.inverse != 0;
-    final encodedForeground = inverse
-        ? cellData.background
-        : cellData.foreground;
     var color = inverse
         ? resolveBackgroundColor(cellData.background)
         : resolveForegroundColor(cellData.foreground);
@@ -2537,12 +2507,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     if (_isRectPaintedBlockElement(
       cellData.content & CellContent.codepointMask,
     )) {
-      return resolveMonkeyTerminalBlockForegroundColor(
-        foreground: color,
-        encodedForeground: encodedForeground,
-        terminalForeground: theme.foreground,
-        terminalBackground: theme.background,
-      );
+      return color;
     }
 
     final background = _cellPaintsBackground(cellData)
