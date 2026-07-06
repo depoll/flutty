@@ -10,12 +10,14 @@ TmuxWindow _window({
   required bool isActive,
   bool? reportsMouseWheel,
   bool? mouseReportSgr,
+  bool? bracketedPasteMode,
 }) => TmuxWindow(
   index: index,
   name: 'w$index',
   isActive: isActive,
   terminalReportsMouseWheel: reportsMouseWheel,
   terminalMouseReportSgr: mouseReportSgr,
+  terminalBracketedPasteMode: bracketedPasteMode,
 );
 
 void main() {
@@ -230,37 +232,43 @@ void main() {
     });
   });
 
-  group('active window scroll-mode signature', () {
+  group('active window terminal-mode signature', () {
     test('is null when no window is active', () {
       expect(
-        activeTmuxWindowScrollModeSignature([
+        activeTmuxWindowTerminalModeSignature([
           _window(index: 0, isActive: false, reportsMouseWheel: true),
         ]),
         isNull,
       );
     });
 
-    test('captures the active window mouse-reporting state', () {
-      final signature = activeTmuxWindowScrollModeSignature([
-        _window(index: 0, isActive: true, reportsMouseWheel: true),
+    test('captures the active window terminal mode state', () {
+      final signature = activeTmuxWindowTerminalModeSignature([
+        _window(
+          index: 0,
+          isActive: true,
+          reportsMouseWheel: true,
+          bracketedPasteMode: true,
+        ),
         _window(index: 1, isActive: false, reportsMouseWheel: false),
       ]);
       expect(signature?.reportsMouseWheel, isTrue);
       expect(signature?.mouseReportSgr, isNull);
+      expect(signature?.bracketedPasteMode, isTrue);
     });
 
     test('changes when the active window toggles mouse mode', () {
-      final before = activeTmuxWindowScrollModeSignature([
+      final before = activeTmuxWindowTerminalModeSignature([
         _window(index: 0, isActive: true, reportsMouseWheel: false),
       ]);
-      final after = activeTmuxWindowScrollModeSignature([
+      final after = activeTmuxWindowTerminalModeSignature([
         _window(index: 0, isActive: true, reportsMouseWheel: true),
       ]);
       expect(before == after, isFalse);
     });
 
     test('changes when the active window toggles SGR reporting', () {
-      final before = activeTmuxWindowScrollModeSignature([
+      final before = activeTmuxWindowTerminalModeSignature([
         _window(
           index: 0,
           isActive: true,
@@ -268,7 +276,7 @@ void main() {
           mouseReportSgr: false,
         ),
       ]);
-      final after = activeTmuxWindowScrollModeSignature([
+      final after = activeTmuxWindowTerminalModeSignature([
         _window(
           index: 0,
           isActive: true,
@@ -279,14 +287,29 @@ void main() {
       expect(before == after, isFalse);
     });
 
+    test('changes when the active window toggles bracketed paste', () {
+      final before = activeTmuxWindowTerminalModeSignature([
+        _window(index: 0, isActive: true, bracketedPasteMode: false),
+      ]);
+      final after = activeTmuxWindowTerminalModeSignature([
+        _window(index: 0, isActive: true, bracketedPasteMode: true),
+      ]);
+      expect(before == after, isFalse);
+    });
+
     test('ignores mouse-mode changes on non-active windows', () {
-      final before = activeTmuxWindowScrollModeSignature([
+      final before = activeTmuxWindowTerminalModeSignature([
         _window(index: 0, isActive: true, reportsMouseWheel: false),
         _window(index: 1, isActive: false, reportsMouseWheel: false),
       ]);
-      final after = activeTmuxWindowScrollModeSignature([
+      final after = activeTmuxWindowTerminalModeSignature([
         _window(index: 0, isActive: true, reportsMouseWheel: false),
-        _window(index: 1, isActive: false, reportsMouseWheel: true),
+        _window(
+          index: 1,
+          isActive: false,
+          reportsMouseWheel: true,
+          bracketedPasteMode: true,
+        ),
       ]);
       expect(before == after, isTrue);
     });
