@@ -31,6 +31,7 @@ import 'terminal_hyperlink_tracker.dart';
 import 'terminal_notification.dart';
 import 'terminal_preview_graphics.dart';
 import 'wifi_network_service.dart';
+import 'windows_remote_powershell.dart';
 
 part 'ssh_session_runtime.dart';
 
