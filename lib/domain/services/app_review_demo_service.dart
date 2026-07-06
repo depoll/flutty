@@ -15,6 +15,19 @@ import 'agent_launch_preset_service.dart';
 import 'host_cli_launch_preferences_service.dart';
 import 'settings_service.dart';
 
+/// Returns whether [host] is one of the seeded offline App Review demo hosts.
+bool isAppReviewDemoHost(Host host) {
+  if (!host.label.startsWith(AppReviewDemoService.demoHostLabelPrefix)) {
+    return false;
+  }
+  final tags = host.tags
+      ?.split(',')
+      .map((tag) => tag.trim())
+      .where((tag) => tag.isNotEmpty)
+      .toSet();
+  return tags?.containsAll(const {'app-review', 'demo'}) ?? false;
+}
+
 /// Result returned after preparing the local App Review demo workspace.
 class AppReviewDemoSetupResult {
   /// Creates a setup result.
@@ -83,6 +96,9 @@ class AppReviewDemoService {
   static const _sftpHostLabel = 'App Review Demo · SFTP and tunnels';
   static const _bastionHostLabel = 'App Review Demo · bastion jump host';
   static const _demoSeededAtSetting = 'app_review_demo_seeded_at';
+
+  /// Shared prefix used to identify seeded demo hosts.
+  static const demoHostLabelPrefix = 'App Review Demo ·';
 
   /// Returns whether the review demo has been prepared on this device.
   Future<bool> isPrepared() async =>
