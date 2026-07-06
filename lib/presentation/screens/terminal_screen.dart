@@ -1150,10 +1150,10 @@ final _terminalLinkPattern = RegExp(
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
+  r'''(?:[A-Za-z]:[\\/](?:[^\s<>"'$#&|;]+)?|~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
 final _terminalFilePathLineSuffixPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#&|;]+)?/?|/(?:[^\s<>"'$#&|;]+)?|\.\.?/(?:[^\s<>"'$#&|;]+)?|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
+  r'''(?:[A-Za-z]:[\\/](?:[^\s<>"'$#&|;]+)?|~(?:/[^\s<>"'$#&|;]+)?/?|/(?:[^\s<>"'$#&|;]+)?|\.\.?/(?:[^\s<>"'$#&|;]+)?|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
 );
 final _terminalFilePathStackTraceSuffixPattern = RegExp(
   r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
@@ -1429,7 +1429,11 @@ String trimTerminalFilePathCandidate(String text) {
     '',
   );
   candidate = _trimWrappedTerminalFilePathCountSuffix(candidate);
-  return trimTerminalLinkCandidate(candidate);
+  candidate = trimTerminalLinkCandidate(candidate);
+  if (RegExp(r'^/?[A-Za-z]:[\\/]').hasMatch(candidate)) {
+    return candidate.replaceAll(r'\', '/');
+  }
+  return candidate;
 }
 
 String _trimWrappedTerminalFilePathCountSuffix(String text) {
@@ -1741,8 +1745,12 @@ List<String> resolveTerminalFilePathExistenceCandidates(String path) {
   for (final parse in resolveTerminalFilePathVerificationCandidates(path)) {
     add(parse);
     var prefix = parse;
+    final root = sftpPathRoot(prefix);
     var slashIndex = prefix.lastIndexOf('/');
     while (slashIndex > 0) {
+      if (root != null && slashIndex < root.length) {
+        break;
+      }
       prefix = prefix.substring(0, slashIndex);
       add(prefix);
       slashIndex = prefix.lastIndexOf('/');
@@ -1868,10 +1876,10 @@ String? resolveTerminalPathTouchTargetTap(
   return null;
 }
 
-/// Whether a terminal path is anchored to `/` or `~`.
+/// Whether a terminal path is anchored to `/`, `~`, or a Windows drive root.
 @visibleForTesting
 bool isExplicitTerminalFilePath(String path) =>
-    path.startsWith('/') || path == '~' || path.startsWith('~/');
+    isSftpAbsolutePath(path) || path == '~' || path.startsWith('~/');
 
 /// Whether a relative terminal path looks file-like enough to probe safely.
 @visibleForTesting
@@ -1956,6 +1964,7 @@ bool _terminalTextRangeHasGutterDecoration(String text, int start, int end) {
 bool _startsFreshTerminalFilePathLine(String text) =>
     text == '~' ||
     text.startsWith('~/') ||
+    RegExp(r'^[A-Za-z]:[\\/]').hasMatch(text) ||
     text.startsWith('/') ||
     text.startsWith('./') ||
     text.startsWith('../');
@@ -2046,9 +2055,9 @@ bool isTerminalPathContinuationAcrossLines({
 ///
 /// Performs a quick scan of raw codepoints to filter rows that are unlikely
 /// to contain file paths, avoiding the more expensive snapshot-building work.
-/// Returns `true` if any column contains `/` (0x2F) or `~` (0x7E), both of
-/// which are necessary for any detectable absolute, home-relative, or
-/// relative path.
+/// Returns `true` if any column contains `/` (0x2F), `\` (0x5C), or `~` (0x7E),
+/// which are necessary for detectable POSIX, Windows drive-letter,
+/// home-relative, or relative paths.
 ///
 /// Only intended as a fast pre-filter; rows that return `true` are not
 /// guaranteed to actually contain a valid path.
@@ -2056,7 +2065,9 @@ bool isTerminalPathContinuationAcrossLines({
 bool terminalRowMayContainPath(BufferLine line, int viewWidth) {
   for (var col = 0; col < viewWidth; col++) {
     final cp = line.getCodePoint(col);
-    if (cp == 0x2f /* '/' */ || cp == 0x7e /* '~' */ ) return true;
+    if (cp == 0x2f /* / */ || cp == 0x5c /* \ */ || cp == 0x7e /* ~ */ ) {
+      return true;
+    }
   }
   return false;
 }
