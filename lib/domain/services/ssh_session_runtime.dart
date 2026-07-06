@@ -1,5 +1,7 @@
 part of 'ssh_service.dart';
 
+enum _WindowsShellKind { cmd, powershell, pwsh }
+
 class _SshSessionRuntime {
   _SshSessionRuntime(this._session);
 
@@ -94,16 +96,38 @@ class _SshSessionRuntime {
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
-  // app hints. Launch the user's login shell with those hints instead of
-  // relying on server-gated env requests that OpenSSH commonly rejects by
-  // default. Keep TERM itself unchanged: xterm-kitty terminfo is often absent
-  // on remote hosts, while TERM_PROGRAM/KITTY_WINDOW_ID are enough for image
-  // capable CLIs to choose Kitty graphics sequences. FORCE_HYPERLINK=1 makes
-  // OSC 8 capable CLIs (Copilot, gh, ...) emit hyperlinks even though their
-  // capability probes don't recognize this TERM/TERM_PROGRAM combination;
-  // MonkeySSH renders and opens OSC 8 links, so advertising support is safe.
+  // app hints. POSIX remotes get a login-shell bootstrap; Windows remotes first
+  // try SSH env requests and then shell-specific prefixes because OpenSSH
+  // commonly rejects env requests unless AcceptEnv is configured. Keep TERM
+  // itself unchanged: xterm-kitty terminfo is often absent on remote hosts,
+  // while TERM_PROGRAM/KITTY_WINDOW_ID are enough for image capable CLIs to
+  // choose Kitty graphics sequences. FORCE_HYPERLINK=1 makes OSC 8 capable CLIs
+  // (Copilot, gh, ...) emit hyperlinks even though their capability probes don't
+  // recognize this TERM/TERM_PROGRAM combination; MonkeySSH renders and opens
+  // OSC 8 links, so advertising support is safe.
+  static const _terminalCapabilityEnvironment = {
+    'COLORTERM': 'truecolor',
+    'TERM_PROGRAM': 'kitty',
+    'KITTY_WINDOW_ID': '1',
+    'FORCE_HYPERLINK': '1',
+  };
   static const _trueColorLoginShellCommand =
       r"""exec env COLORTERM=truecolor TERM_PROGRAM=kitty KITTY_WINDOW_ID=1 FORCE_HYPERLINK=1 /bin/sh -lc 'if [ -n "$SHELL" ]; then exec "$SHELL" -l; else exec /bin/sh; fi'""";
+  static const _windowsShellDetectionTimeout = Duration(seconds: 2);
+  static const _windowsShellDetectionCommand = r'''
+$ErrorActionPreference='SilentlyContinue'
+function __flNormalizeShellName([string]$value){
+if(!$value){return ''}
+$value=[System.IO.Path]::GetFileNameWithoutExtension($value).ToLowerInvariant()
+while($value.StartsWith('-')){$value=$value.Substring(1)}
+if($value -eq 'cmd' -or $value -eq 'powershell' -or $value -eq 'pwsh'){$value}else{''}
+}
+$__flDefault=''
+try{$__flDefault=(Get-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -ErrorAction Stop).DefaultShell}catch{}
+$__flResolved=__flNormalizeShellName $__flDefault
+if(!$__flResolved){$__flResolved='cmd'}
+[Console]::Out.Write($__flResolved)
+''';
 
   /// UTF-8 decoder that tolerates malformed bytes by emitting U+FFFD instead
   /// of throwing a [FormatException]. The shell stream carries raw terminal
@@ -229,21 +253,8 @@ class _SshSessionRuntime {
       return _session.client.execute(command, pty: ptyConfig);
     }
 
-    // Windows OpenSSH runs the interactive shell through cmd.exe/PowerShell,
-    // which cannot execute the POSIX login-shell bootstrap
-    // ("exec env ... /bin/sh -lc ..."). Running it fails with
-    // "'exec' is not recognized as an internal or external command" and closes
-    // the connection, so request a plain interactive shell instead.
     if (_session.remoteIsWindows) {
-      DiagnosticsLogService.instance.info(
-        'ssh.shell',
-        'windows_plain_shell',
-        fields: {
-          'connectionId': _session.connectionId,
-          'hostId': _session.hostId,
-        },
-      );
-      return _session.client.shell(pty: ptyConfig);
+      return _openWindowsCapabilityShell(ptyConfig);
     }
 
     try {
@@ -262,6 +273,132 @@ class _SshSessionRuntime {
       );
       return _session.client.shell(pty: ptyConfig);
     }
+  }
+
+  Future<SSHSession> _openWindowsCapabilityShell(SSHPtyConfig ptyConfig) async {
+    try {
+      final shell = await _session.client.shell(
+        pty: ptyConfig,
+        environment: _terminalCapabilityEnvironment,
+      );
+      DiagnosticsLogService.instance.info(
+        'ssh.shell',
+        'windows_env_shell',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+      return shell;
+    } on SSHChannelRequestError {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'windows_env_rejected',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+    }
+
+    final shellKind = await _detectWindowsShellKind();
+    final command = _windowsCapabilityShellCommand(shellKind);
+    try {
+      final shell = await _session.client.execute(command, pty: ptyConfig);
+      DiagnosticsLogService.instance.info(
+        'ssh.shell',
+        'windows_prefixed_shell',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+          'shellKind': shellKind.name,
+        },
+      );
+      return shell;
+    } on SSHChannelRequestError {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'windows_prefixed_shell_rejected',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+          'shellKind': shellKind.name,
+        },
+      );
+      return _session.client.shell(pty: ptyConfig);
+    }
+  }
+
+  Future<_WindowsShellKind> _detectWindowsShellKind() async {
+    final command = buildWindowsPowerShellCommand(
+      _windowsShellDetectionCommand,
+    );
+    SSHSession? detectionSession;
+    try {
+      detectionSession = await _session.client.execute(command);
+      final output = await _shellStreamDecoder
+          .bind(detectionSession.stdout)
+          .join()
+          .timeout(_windowsShellDetectionTimeout);
+      return _parseWindowsShellKind(output);
+    } on SSHChannelRequestError {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'windows_shell_detection_rejected',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+      return _WindowsShellKind.cmd;
+    } on TimeoutException {
+      DiagnosticsLogService.instance.warning(
+        'ssh.shell',
+        'windows_shell_detection_timed_out',
+        fields: {
+          'connectionId': _session.connectionId,
+          'hostId': _session.hostId,
+        },
+      );
+      return _WindowsShellKind.cmd;
+    } finally {
+      detectionSession?.close();
+    }
+  }
+
+  _WindowsShellKind _parseWindowsShellKind(String output) {
+    final normalized = output.trim().toLowerCase();
+    return switch (normalized) {
+      'powershell' => _WindowsShellKind.powershell,
+      'pwsh' => _WindowsShellKind.pwsh,
+      _ => _WindowsShellKind.cmd,
+    };
+  }
+
+  String _windowsCapabilityShellCommand(_WindowsShellKind shellKind) {
+    switch (shellKind) {
+      case _WindowsShellKind.cmd:
+        return 'cmd.exe /d /k "set COLORTERM=truecolor&& '
+            'set TERM_PROGRAM=kitty&& '
+            'set KITTY_WINDOW_ID=1&& '
+            'set FORCE_HYPERLINK=1"';
+      case _WindowsShellKind.powershell:
+        return _windowsPowerShellCapabilityShellCommand('powershell.exe');
+      case _WindowsShellKind.pwsh:
+        return _windowsPowerShellCapabilityShellCommand('pwsh.exe');
+    }
+  }
+
+  String _windowsPowerShellCapabilityShellCommand(String executable) {
+    final script = _terminalCapabilityEnvironment.entries
+        .map(
+          (entry) =>
+              r'$env:'
+              '${entry.key}=${powerShellSingleQuote(entry.value)}',
+        )
+        .join(';');
+    return '$executable -NoLogo -NoExit '
+        '-EncodedCommand ${encodePowerShellCommand(script)}';
   }
 
   /// Close only the interactive shell channel while keeping the SSH client.
