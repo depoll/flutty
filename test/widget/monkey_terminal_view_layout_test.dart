@@ -555,6 +555,45 @@ void main() {
       );
     });
 
+    test('tones ANSI-black block composer caps on light themes', () {
+      final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+
+      final capColor = resolveMonkeyTerminalBlockForegroundColor(
+        foreground: theme.black,
+        encodedForeground: CellColor.named | NamedColor.black,
+        terminalForeground: theme.foreground,
+        terminalBackground: theme.background,
+      );
+
+      expect(capColor, isNot(theme.black));
+      expect(
+        capColor.computeLuminance(),
+        greaterThan(theme.black.computeLuminance()),
+      );
+      expect(
+        _contrastRatio(capColor, theme.background),
+        greaterThanOrEqualTo(1.04),
+      );
+      expect(
+        _contrastRatio(capColor, theme.background),
+        lessThanOrEqualTo(1.75),
+      );
+    });
+
+    test('preserves true-color black block art', () {
+      final theme = TerminalThemes.defaultLightTheme.toXtermTheme();
+      const trueBlack = Color(0xFF000000);
+
+      final blockColor = resolveMonkeyTerminalBlockForegroundColor(
+        foreground: trueBlack,
+        encodedForeground: CellColor.rgb,
+        terminalForeground: theme.foreground,
+        terminalBackground: theme.background,
+      );
+
+      expect(blockColor, trueBlack);
+    });
+
     test('keeps bright-black backgrounds readable across built-in themes', () {
       for (final themeData in TerminalThemes.all) {
         final theme = themeData.toXtermTheme();
