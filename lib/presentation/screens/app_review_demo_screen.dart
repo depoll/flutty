@@ -79,29 +79,32 @@ class _AppReviewDemoScreenState extends ConsumerState<AppReviewDemoScreen> {
                 number: '3',
                 title: 'Review connection-dependent controls',
                 description:
-                    'The demo rows show MonkeyMux/tmux startup, SFTP, tunnels, snippets, and Pro-only saved settings without requiring private SSH credentials.',
+                    'Tapping a demo host returns here instead of dialing SSH, so review can continue without private credentials.',
               ),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.icon(
-                    onPressed: () => context.goNamed(Routes.home),
-                    icon: const Icon(Icons.home_outlined, size: 18),
-                    label: const Text('Open Hosts'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () => context.go('/?tab=connections'),
-                    icon: const Icon(Icons.terminal, size: 18),
-                    label: const Text('Connections'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () => context.pushNamed(Routes.portForwards),
-                    icon: const Icon(Icons.alt_route_outlined, size: 18),
-                    label: const Text('Port Forwards'),
-                  ),
-                ],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () => context.goNamed(Routes.home),
+                      icon: const Icon(Icons.home_outlined, size: 18),
+                      label: const Text('Open Hosts'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => context.go('/?tab=connections'),
+                      icon: const Icon(Icons.terminal, size: 18),
+                      label: const Text('Connections'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => context.pushNamed(Routes.portForwards),
+                      icon: const Icon(Icons.alt_route_outlined, size: 18),
+                      label: const Text('Port Forwards'),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
