@@ -1403,8 +1403,9 @@ void main() {
       },
     );
 
-    test('requests terminal capability env on Windows remotes', () async {
+    test('opens a cmd capability prefix on Windows remotes', () async {
       final client = _MockSshClient();
+      final detection = _MockExecSession();
       final shell = _MockExecSession();
       final session = SshSession(
         connectionId: 1,
@@ -1417,22 +1418,19 @@ void main() {
         ),
       );
       const pty = SSHPtyConfig(width: 120, height: 30);
-      const terminalCapabilityEnvironment = {
-        'COLORTERM': 'truecolor',
-        'TERM_PROGRAM': 'kitty',
-        'KITTY_WINDOW_ID': '1',
-        'FORCE_HYPERLINK': '1',
-      };
 
       when(
         () => client.remoteVersion,
       ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
-      when(
-        () => client.shell(
-          pty: any(named: 'pty'),
-          environment: any(named: 'environment'),
-        ),
-      ).thenAnswer((_) async => shell);
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        if (invocation.namedArguments[#pty] == null) {
+          return detection;
+        }
+        return shell;
+      });
+      _stubSessionStreams(detection, stdout: 'cmd');
       _stubSessionStreams(shell);
 
       expect(session.remoteIsWindows, isTrue);
@@ -1440,19 +1438,27 @@ void main() {
       final result = await session.getShell(pty: pty);
 
       expect(result, same(shell));
-      final capturedShellArgs = verify(
+      final commands = verify(
+        () => client.execute(captureAny(), pty: any(named: 'pty')),
+      ).captured.cast<String>();
+      expect(
+        commands.last,
+        'cmd.exe /d /k "set COLORTERM=truecolor&& '
+        'set TERM_PROGRAM=kitty&& '
+        'set KITTY_WINDOW_ID=1&& '
+        'set FORCE_HYPERLINK=1"',
+      );
+      verifyNever(
         () => client.shell(
-          pty: captureAny(named: 'pty'),
-          environment: captureAny(named: 'environment'),
+          pty: any(named: 'pty'),
+          environment: any(named: 'environment'),
         ),
-      ).captured;
-      expect(capturedShellArgs, [pty, terminalCapabilityEnvironment]);
-      verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+      );
       await session.closeShell(waitForStreams: false);
     });
 
     test(
-      'falls back to a cmd capability prefix when Windows env is rejected',
+      'falls back to a plain shell when Windows capability prefix is rejected',
       () async {
         final client = _MockSshClient();
         final detection = _MockExecSession();
@@ -1472,20 +1478,19 @@ void main() {
         when(
           () => client.remoteVersion,
         ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
-        when(
-          () => client.shell(
-            pty: any(named: 'pty'),
-            environment: any(named: 'environment'),
-          ),
-        ).thenThrow(SSHChannelRequestError('env rejected'));
         when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
           invocation,
-        ) async {
+        ) {
           if (invocation.namedArguments[#pty] == null) {
-            return detection;
+            return Future<SSHSession>.value(detection);
           }
-          return shell;
+          return Future<SSHSession>.error(
+            SSHChannelRequestError('prefixed shell rejected'),
+          );
         });
+        when(
+          () => client.shell(pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
         _stubSessionStreams(detection, stdout: 'cmd');
         _stubSessionStreams(shell);
 
@@ -1501,6 +1506,57 @@ void main() {
           'set TERM_PROGRAM=kitty&& '
           'set KITTY_WINDOW_ID=1&& '
           'set FORCE_HYPERLINK=1"',
+        );
+        verify(() => client.shell(pty: pty)).called(1);
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
+      'wraps Windows startup commands with terminal capability env',
+      () async {
+        final client = _MockSshClient();
+        final shell = _MockExecSession();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => shell);
+        _stubSessionStreams(shell);
+
+        final result = await session.getShell(
+          pty: pty,
+          command: 'copilot --version',
+        );
+
+        expect(result, same(shell));
+        verify(
+          () => client.execute(
+            'cmd.exe /d /c "set COLORTERM=truecolor&& '
+            'set TERM_PROGRAM=kitty&& '
+            'set KITTY_WINDOW_ID=1&& '
+            'set FORCE_HYPERLINK=1&& copilot --version"',
+            pty: pty,
+          ),
+        ).called(1);
+        verifyNever(
+          () => client.shell(
+            pty: any(named: 'pty'),
+            environment: any(named: 'environment'),
+          ),
         );
         await session.closeShell(waitForStreams: false);
       },
@@ -1527,12 +1583,6 @@ void main() {
         when(
           () => client.remoteVersion,
         ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
-        when(
-          () => client.shell(
-            pty: any(named: 'pty'),
-            environment: any(named: 'environment'),
-          ),
-        ).thenThrow(SSHChannelRequestError('env rejected'));
         when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
           invocation,
         ) async {

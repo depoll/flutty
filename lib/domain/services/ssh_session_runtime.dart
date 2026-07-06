@@ -96,12 +96,12 @@ class _SshSessionRuntime {
   static const _monkeyMuxActiveWindowReplayMarker =
       '\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l';
   // SSH pty negotiation sets TERM but cannot advertise COLORTERM or terminal
-  // app hints. POSIX remotes get a login-shell bootstrap; Windows remotes first
-  // try SSH env requests and then shell-specific prefixes because OpenSSH
-  // commonly rejects env requests unless AcceptEnv is configured. Keep TERM
-  // itself unchanged: xterm-kitty terminfo is often absent on remote hosts,
-  // while TERM_PROGRAM/KITTY_WINDOW_ID are enough for image capable CLIs to
-  // choose Kitty graphics sequences. FORCE_HYPERLINK=1 makes OSC 8 capable CLIs
+  // app hints. POSIX remotes get a login-shell bootstrap; Windows remotes use
+  // shell-specific prefixes because Windows OpenSSH can acknowledge env requests
+  // while still leaving the variables absent from cmd.exe/PowerShell. Keep TERM
+  // itself unchanged: xterm-kitty terminfo is often absent on remote hosts, while
+  // TERM_PROGRAM/KITTY_WINDOW_ID are enough for image capable CLIs to choose
+  // Kitty graphics sequences. FORCE_HYPERLINK=1 makes OSC 8 capable CLIs
   // (Copilot, gh, ...) emit hyperlinks even though their capability probes don't
   // recognize this TERM/TERM_PROGRAM combination; MonkeySSH renders and opens
   // OSC 8 links, so advertising support is safe.
@@ -250,6 +250,12 @@ if(!$__flResolved){$__flResolved='cmd'}
   Future<SSHSession> _openShell({SSHPtyConfig? pty, String? command}) async {
     final ptyConfig = pty ?? const SSHPtyConfig();
     if (command != null) {
+      if (_session.remoteIsWindows) {
+        return _session.client.execute(
+          _windowsCapabilityCommand(command),
+          pty: ptyConfig,
+        );
+      }
       return _session.client.execute(command, pty: ptyConfig);
     }
 
@@ -276,31 +282,6 @@ if(!$__flResolved){$__flResolved='cmd'}
   }
 
   Future<SSHSession> _openWindowsCapabilityShell(SSHPtyConfig ptyConfig) async {
-    try {
-      final shell = await _session.client.shell(
-        pty: ptyConfig,
-        environment: _terminalCapabilityEnvironment,
-      );
-      DiagnosticsLogService.instance.info(
-        'ssh.shell',
-        'windows_env_shell',
-        fields: {
-          'connectionId': _session.connectionId,
-          'hostId': _session.hostId,
-        },
-      );
-      return shell;
-    } on SSHChannelRequestError {
-      DiagnosticsLogService.instance.warning(
-        'ssh.shell',
-        'windows_env_rejected',
-        fields: {
-          'connectionId': _session.connectionId,
-          'hostId': _session.hostId,
-        },
-      );
-    }
-
     final shellKind = await _detectWindowsShellKind();
     final command = _windowsCapabilityShellCommand(shellKind);
     try {
@@ -378,16 +359,23 @@ if(!$__flResolved){$__flResolved='cmd'}
   String _windowsCapabilityShellCommand(_WindowsShellKind shellKind) {
     switch (shellKind) {
       case _WindowsShellKind.cmd:
-        return 'cmd.exe /d /k "set COLORTERM=truecolor&& '
-            'set TERM_PROGRAM=kitty&& '
-            'set KITTY_WINDOW_ID=1&& '
-            'set FORCE_HYPERLINK=1"';
+        return '${_windowsCmdCapabilityPrefix(closeAfterCommand: false)}"';
       case _WindowsShellKind.powershell:
         return _windowsPowerShellCapabilityShellCommand('powershell.exe');
       case _WindowsShellKind.pwsh:
         return _windowsPowerShellCapabilityShellCommand('pwsh.exe');
     }
   }
+
+  String _windowsCapabilityCommand(String command) =>
+      '${_windowsCmdCapabilityPrefix(closeAfterCommand: true)}&& $command"';
+
+  String _windowsCmdCapabilityPrefix({required bool closeAfterCommand}) =>
+      'cmd.exe /d /${closeAfterCommand ? 'c' : 'k'} '
+      '"set COLORTERM=truecolor&& '
+      'set TERM_PROGRAM=kitty&& '
+      'set KITTY_WINDOW_ID=1&& '
+      'set FORCE_HYPERLINK=1';
 
   String _windowsPowerShellCapabilityShellCommand(String executable) {
     final script = _terminalCapabilityEnvironment.entries

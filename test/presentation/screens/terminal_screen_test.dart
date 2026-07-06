@@ -2554,6 +2554,7 @@ void main() {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
         final monkeyMuxInstallerService = _MockMonkeyMuxInstallerService();
+        final detectionChannel = _MockShellChannel();
         final executedCommands = <String>[];
 
         host = _buildHost(
@@ -2577,9 +2578,18 @@ void main() {
         when(
           () => sshClient.execute(any(), pty: any(named: 'pty')),
         ).thenAnswer((invocation) async {
+          if (invocation.namedArguments[#pty] == null) {
+            return detectionChannel;
+          }
           executedCommands.add(invocation.positionalArguments.single as String);
           return shellChannel;
         });
+        when(() => detectionChannel.stdout).thenAnswer(
+          (_) => Stream<Uint8List>.fromIterable([
+            Uint8List.fromList(utf8.encode('cmd')),
+          ]),
+        );
+        when(detectionChannel.close).thenAnswer((_) {});
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
@@ -2821,15 +2831,24 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
         await tester.pump();
 
-        // The MonkeyMux attach is exec'd (Windows OpenSSH runs it through
-        // cmd.exe) with the native path and no POSIX single-quoting.
+        // The MonkeyMux attach is exec'd through cmd.exe with terminal
+        // capability hints, the native path, and no POSIX single-quoting.
         expect(executedCommands, hasLength(1));
+        expect(
+          executedCommands.single,
+          startsWith(
+            'cmd.exe /d /c "set COLORTERM=truecolor&& '
+            'set TERM_PROGRAM=kitty&& '
+            'set KITTY_WINDOW_ID=1&& '
+            'set FORCE_HYPERLINK=1&& ',
+          ),
+        );
         expect(
           executedCommands.single,
           contains(r'C:\Users\me\mm\monkeymux.exe attach'),
         );
         expect(executedCommands.single, isNot(contains("'")));
-        expect(executedCommands.single, endsWith(' $sessionName'));
+        expect(executedCommands.single, endsWith(' $sessionName"'));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
