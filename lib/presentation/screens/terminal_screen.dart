@@ -821,6 +821,20 @@ bool? resolveTmuxBarActiveWindowBracketedPasteMode(
     .firstOrNull
     ?.terminalBracketedPasteMode;
 
+/// Applies active mux-window bracketed-paste state to the local terminal.
+@visibleForTesting
+bool inheritTerminalBracketedPasteModeFromMuxWindow({
+  required Terminal terminal,
+  required bool? activeWindowBracketedPasteMode,
+}) {
+  if (activeWindowBracketedPasteMode == null ||
+      terminal.bracketedPasteMode == activeWindowBracketedPasteMode) {
+    return false;
+  }
+  terminal.setBracketedPasteMode(activeWindowBracketedPasteMode);
+  return true;
+}
+
 String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
   RemoteMuxBackend.auto => 'auto',
   RemoteMuxBackend.tmux => 'tmux',
@@ -844,16 +858,16 @@ bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
         .firstOrNull
         ?.terminalMouseReportSgr;
 
-/// Scroll-relevant mouse-reporting signature for the active tmux window.
+/// Terminal mode signature for the active tmux window.
 ///
-/// Used to detect when touch-scroll routing must be recomputed after a window
+/// Used to detect when local terminal state must be updated after a window
 /// metadata update that doesn't change the active window itself (for example a
-/// foreground app toggling mouse mode). Returns `null` when there is no active
-/// window so an appearing/disappearing active window is also treated as a
-/// change.
+/// foreground app toggling mouse or bracketed-paste mode). Returns `null` when
+/// there is no active window so an appearing/disappearing active window is also
+/// treated as a change.
 @visibleForTesting
-({bool? reportsMouseWheel, bool? mouseReportSgr})?
-activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
+({bool? reportsMouseWheel, bool? mouseReportSgr, bool? bracketedPasteMode})?
+activeTmuxWindowTerminalModeSignature(Iterable<TmuxWindow>? windows) {
   final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
   if (activeWindow == null) {
     return null;
@@ -861,6 +875,7 @@ activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
   return (
     reportsMouseWheel: activeWindow.terminalReportsMouseWheel,
     mouseReportSgr: activeWindow.terminalMouseReportSgr,
+    bracketedPasteMode: activeWindow.terminalBracketedPasteMode,
   );
 }
 
@@ -2667,15 +2682,6 @@ bool terminalReportsMouseWheelForScroll({
 }) =>
     localTerminalReportsMouseWheel || (activeWindowReportsMouseWheel ?? false);
 
-/// Resolves effective bracketed paste state for uploaded terminal references.
-@visibleForTesting
-bool terminalBracketedPasteModeForUploads({
-  required bool localTerminalBracketedPasteMode,
-  bool? activeWindowBracketedPasteMode,
-}) =>
-    localTerminalBracketedPasteMode ||
-    (activeWindowBracketedPasteMode ?? false);
-
 /// Whether the active terminal context is a known agent tool for scroll policy.
 @visibleForTesting
 bool isAgentToolActiveForTerminalScroll({
@@ -3677,9 +3683,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool? get _activeWindowMouseReportSgr =>
       resolveTmuxBarActiveWindowMouseReportSgr(_currentTmuxWindowsSnapshot);
-
-  bool? get _activeWindowBracketedPasteMode =>
-      resolveTmuxBarActiveWindowBracketedPasteMode(_currentTmuxWindowsSnapshot);
 
   bool get _terminalReportsMouseWheelForScroll =>
       terminalReportsMouseWheelForScroll(
@@ -4697,6 +4700,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _syncTerminalModesFromActiveMuxWindow();
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
         _refreshTerminalAfterMonkeyMuxWindowChange(session);
@@ -4728,15 +4732,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  /// Recomputes touch-scroll routing when the active window's mouse-reporting
-  /// metadata changes. The routing getters read live from the tmux bar
-  /// snapshot, so a rebuild is enough to flip `touchScrollToTerminal` and stop
-  /// scrolling from getting stuck until the next window switch.
-  void _handleActiveWindowScrollModeChanged() {
+  /// Syncs local terminal mode state when the active mux window's terminal-mode
+  /// metadata changes without a full active-window switch.
+  void _handleActiveWindowTerminalModeChanged() {
     if (!mounted) {
       return;
     }
+    _syncTerminalModesFromActiveMuxWindow();
     setState(() {});
+  }
+
+  void _syncTerminalModesFromActiveMuxWindow() {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    inheritTerminalBracketedPasteModeFromMuxWindow(
+      terminal: _terminal,
+      activeWindowBracketedPasteMode:
+          resolveTmuxBarActiveWindowBracketedPasteMode(
+            _currentTmuxWindowsSnapshot,
+          ),
+    );
   }
 
   void _refreshMuxPaneContextAfterWindowStateChange(
@@ -9039,7 +9055,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
-      onActiveWindowScrollModeChanged: _handleActiveWindowScrollModeChanged,
+      onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -14667,13 +14683,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<String> remotePaths, {
     required bool windows,
   }) async {
-    final useBracketedPaste = terminalBracketedPasteModeForUploads(
-      localTerminalBracketedPasteMode: _terminal.bracketedPasteMode,
-      activeWindowBracketedPasteMode: _activeWindowBracketedPasteMode,
-    );
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
-      useBracketedPaste: useBracketedPaste,
+      bracketedPasteMode: _terminal.bracketedPasteMode,
       windows: windows,
     );
     for (var i = 0; i < segments.length; i++) {

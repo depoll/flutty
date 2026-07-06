@@ -378,30 +378,6 @@ void main() {
     });
   });
 
-  group('terminalBracketedPasteModeForUploads', () {
-    test('uses local or mux window bracketed paste mode', () {
-      expect(
-        terminalBracketedPasteModeForUploads(
-          localTerminalBracketedPasteMode: false,
-        ),
-        isFalse,
-      );
-      expect(
-        terminalBracketedPasteModeForUploads(
-          localTerminalBracketedPasteMode: true,
-        ),
-        isTrue,
-      );
-      expect(
-        terminalBracketedPasteModeForUploads(
-          localTerminalBracketedPasteMode: false,
-          activeWindowBracketedPasteMode: true,
-        ),
-        isTrue,
-      );
-    });
-  });
-
   group('resolveTmuxBarActiveWindowBracketedPasteMode', () {
     test('reads bracketed paste mode from the active mux window', () {
       final windows = [
@@ -429,6 +405,43 @@ void main() {
         ]),
         isNull,
       );
+    });
+  });
+
+  group('inheritTerminalBracketedPasteModeFromMuxWindow', () {
+    test('applies known active mux window bracketed paste mode locally', () {
+      final terminal = Terminal();
+
+      expect(terminal.bracketedPasteMode, isFalse);
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: true,
+        ),
+        isTrue,
+      );
+      expect(terminal.bracketedPasteMode, isTrue);
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: false,
+        ),
+        isTrue,
+      );
+      expect(terminal.bracketedPasteMode, isFalse);
+    });
+
+    test('leaves local mode alone when mux window mode is unknown', () {
+      final terminal = Terminal()..setBracketedPasteMode(true);
+
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: null,
+        ),
+        isFalse,
+      );
+      expect(terminal.bracketedPasteMode, isTrue);
     });
   });
 
