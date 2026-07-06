@@ -337,9 +337,11 @@ const _bracketedPasteStart = '\x1b[200~';
 const _bracketedPasteEnd = '\x1b[201~';
 
 /// Whether [path] is safe to paste unquoted (only path separators and the
-/// strict upload-filename allowlist). Uploaded filenames are sanitized, but the
-/// directory prefix derives from the remote home directory, which a hostile or
-/// misconfigured server could fill with spaces or shell metacharacters.
+/// strict upload-filename allowlist). Windows shell paths also allow `:`
+/// drive prefixes and `\` separators.
+/// Uploaded filenames are sanitized, but the directory prefix derives from the
+/// remote home directory, which a hostile or misconfigured server could fill
+/// with spaces or shell metacharacters.
 bool _isUnquotedSafeAttachmentPath(String path, {required bool windows}) {
   final safePathPattern = windows
       ? RegExp(r'^[A-Za-z0-9._/\\:-]+$')
@@ -364,9 +366,10 @@ String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
 ///
 /// Otherwise — bracketed paste mode is off, or a path contains characters that
 /// would be unsafe unquoted (e.g. a remote home directory with spaces or shell
-/// metacharacters) — the paths are shell-escaped and returned as a single
-/// segment. That form shows no preview (a path with spaces would not produce a
-/// chip anyway) but can never break the shell or inject commands.
+/// metacharacters) — the paths are shell-escaped for the current remote shell
+/// and returned as a single segment. That form shows no preview (a path with
+/// spaces would not produce a chip anyway) but keeps the inserted text quoted
+/// for the active remote shell.
 ///
 /// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
