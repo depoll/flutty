@@ -116,6 +116,27 @@ class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
+void _stubSessionStreams(_MockExecSession session, {String stdout = ''}) {
+  when(() => session.stdout).thenAnswer(
+    (_) => Stream<Uint8List>.fromIterable([
+      Uint8List.fromList(utf8.encode(stdout)),
+    ]),
+  );
+  when(() => session.stderr).thenAnswer((_) => const Stream.empty());
+  when(() => session.done).thenAnswer((_) => Future<void>.value());
+  when(session.close).thenAnswer((_) {});
+}
+
+String _decodePowerShellScriptFromCommand(String command) {
+  final encoded = command.split('-EncodedCommand ').last;
+  final bytes = base64.decode(encoded);
+  final buffer = StringBuffer();
+  for (var i = 0; i + 1 < bytes.length; i += 2) {
+    buffer.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
+  }
+  return buffer.toString();
+}
+
 class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   _FakeHostKeySocket(this._hostKeyBytes);
 
@@ -1382,10 +1403,59 @@ void main() {
       },
     );
 
+    test('requests terminal capability env on Windows remotes', () async {
+      final client = _MockSshClient();
+      final shell = _MockExecSession();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      const pty = SSHPtyConfig(width: 120, height: 30);
+      const terminalCapabilityEnvironment = {
+        'COLORTERM': 'truecolor',
+        'TERM_PROGRAM': 'kitty',
+        'KITTY_WINDOW_ID': '1',
+        'FORCE_HYPERLINK': '1',
+      };
+
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+      when(
+        () => client.shell(
+          pty: any(named: 'pty'),
+          environment: any(named: 'environment'),
+        ),
+      ).thenAnswer((_) async => shell);
+      _stubSessionStreams(shell);
+
+      expect(session.remoteIsWindows, isTrue);
+
+      final result = await session.getShell(pty: pty);
+
+      expect(result, same(shell));
+      final capturedShellArgs = verify(
+        () => client.shell(
+          pty: captureAny(named: 'pty'),
+          environment: captureAny(named: 'environment'),
+        ),
+      ).captured;
+      expect(capturedShellArgs, [pty, terminalCapabilityEnvironment]);
+      verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+      await session.closeShell(waitForStreams: false);
+    });
+
     test(
-      'requests a plain shell without the bootstrap on Windows remotes',
+      'falls back to a cmd capability prefix when Windows env is rejected',
       () async {
         final client = _MockSshClient();
+        final detection = _MockExecSession();
         final shell = _MockExecSession();
         final session = SshSession(
           connectionId: 1,
@@ -1403,19 +1473,94 @@ void main() {
           () => client.remoteVersion,
         ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
         when(
-          () => client.shell(pty: any(named: 'pty')),
-        ).thenAnswer((_) async => shell);
-        when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
-        when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
-        when(() => shell.done).thenAnswer((_) => Future<void>.value());
-
-        expect(session.remoteIsWindows, isTrue);
+          () => client.shell(
+            pty: any(named: 'pty'),
+            environment: any(named: 'environment'),
+          ),
+        ).thenThrow(SSHChannelRequestError('env rejected'));
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) async {
+          if (invocation.namedArguments[#pty] == null) {
+            return detection;
+          }
+          return shell;
+        });
+        _stubSessionStreams(detection, stdout: 'cmd');
+        _stubSessionStreams(shell);
 
         final result = await session.getShell(pty: pty);
 
         expect(result, same(shell));
-        verify(() => client.shell(pty: pty)).called(1);
-        verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
+        final commands = verify(
+          () => client.execute(captureAny(), pty: any(named: 'pty')),
+        ).captured.cast<String>();
+        expect(
+          commands.last,
+          'cmd.exe /d /k "set COLORTERM=truecolor&& '
+          'set TERM_PROGRAM=kitty&& '
+          'set KITTY_WINDOW_ID=1&& '
+          'set FORCE_HYPERLINK=1"',
+        );
+        await session.closeShell(waitForStreams: false);
+      },
+    );
+
+    test(
+      'falls back to a PowerShell capability prefix for PowerShell remotes',
+      () async {
+        final client = _MockSshClient();
+        final detection = _MockExecSession();
+        final shell = _MockExecSession();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 2,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        const pty = SSHPtyConfig(width: 120, height: 30);
+
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+        when(
+          () => client.shell(
+            pty: any(named: 'pty'),
+            environment: any(named: 'environment'),
+          ),
+        ).thenThrow(SSHChannelRequestError('env rejected'));
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          invocation,
+        ) async {
+          if (invocation.namedArguments[#pty] == null) {
+            return detection;
+          }
+          return shell;
+        });
+        _stubSessionStreams(detection, stdout: 'powershell');
+        _stubSessionStreams(shell);
+
+        final result = await session.getShell(pty: pty);
+
+        expect(result, same(shell));
+        final commands = verify(
+          () => client.execute(captureAny(), pty: any(named: 'pty')),
+        ).captured.cast<String>();
+        expect(
+          commands.last,
+          startsWith('powershell.exe -NoLogo -NoExit -EncodedCommand '),
+        );
+        expect(
+          _decodePowerShellScriptFromCommand(commands.last),
+          contains(
+            r"$env:COLORTERM='truecolor';$env:TERM_PROGRAM='kitty';"
+            r"$env:KITTY_WINDOW_ID='1';$env:FORCE_HYPERLINK='1'",
+          ),
+        );
         await session.closeShell(waitForStreams: false);
       },
     );

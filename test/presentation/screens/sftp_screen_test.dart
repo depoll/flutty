@@ -63,6 +63,28 @@ void main() {
       expect(parentRemotePath('/'), '/');
     });
 
+    test('parentRemotePath resolves Windows drive parents', () {
+      expect(parentRemotePath('C:/Users/demo'), 'C:/Users');
+      expect(parentRemotePath('C:/Users'), 'C:/');
+      expect(parentRemotePath('C:/'), 'C:/');
+      expect(parentRemotePath('/C:/Users/demo'), '/C:/Users');
+      expect(parentRemotePath('/C:/Users'), '/C:/');
+      expect(parentRemotePath('/C:/'), '/C:/');
+    });
+
+    test('breadcrumbs preserve Windows drive roots', () {
+      expect(buildSftpBreadcrumbItems('C:/Users/demo'), [
+        (path: 'C:/', label: 'C:/'),
+        (path: 'C:/Users', label: 'Users'),
+        (path: 'C:/Users/demo', label: 'demo'),
+      ]);
+      expect(buildSftpBreadcrumbItems('/C:/Users/demo'), [
+        (path: '/C:/', label: '/C:/'),
+        (path: '/C:/Users', label: 'Users'),
+        (path: '/C:/Users/demo', label: 'demo'),
+      ]);
+    });
+
     test('pushSftpPathHistory appends new locations without duplicates', () {
       expect(pushSftpPathHistory(const ['/tmp'], '/tmp'), ['/tmp']);
       expect(pushSftpPathHistory(const ['/tmp'], '/tmp/monkeyssh'), [
@@ -104,6 +126,17 @@ void main() {
           tmuxPaneDirectory: '/home/depoll/project',
         ),
         ['/home/depoll', '/home/depoll/project'],
+      );
+    });
+
+    test('location shortcuts keep Windows home directories', () {
+      expect(
+        resolveSftpLocationShortcuts(
+          homeDirectory: r'C:\Users\depoll',
+          connectionStartDirectory: 'C:/Users/depoll/./',
+          tmuxPaneDirectory: 'C:/Users/depoll/project',
+        ),
+        ['C:/Users/depoll', 'C:/Users/depoll/project'],
       );
     });
 
@@ -681,6 +714,71 @@ void main() {
       expect(find.text('notes.txt'), findsOneWidget);
       expect(sftpOpenAttempts, 2);
       verify(staleSftp.close).called(1);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('opens a Windows remote home directory from SFTP realpath', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'windows.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async => sftp);
+      when(() => sftp.absolute('.')).thenAnswer((_) async => r'C:\Users\demo');
+      when(() => sftp.listdir('C:/Users/demo')).thenAnswer(
+        (_) async => [
+          SftpName(
+            filename: 'Documents',
+            longname: 'Documents',
+            attr: SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+          ),
+          SftpName(
+            filename: 'notes.txt',
+            longname: 'notes.txt',
+            attr: SftpFileAttrs(mode: const SftpFileMode.value(1 << 15)),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+          ],
+          child: const MaterialApp(
+            home: SftpScreen(hostId: 1, connectionId: 7),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('C:/'), findsOneWidget);
+      expect(find.text('Users'), findsOneWidget);
+      expect(find.text('demo'), findsOneWidget);
+      expect(find.text('Documents'), findsOneWidget);
+      expect(find.text('notes.txt'), findsOneWidget);
+      verify(() => sftp.listdir('C:/Users/demo')).called(1);
 
       await tester.pumpWidget(const SizedBox.shrink());
     });
