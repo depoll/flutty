@@ -10,7 +10,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
-import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
@@ -21,7 +20,6 @@ import 'package:monkeyssh/domain/models/terminal_preview.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
-import 'package:monkeyssh/domain/services/app_review_demo_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
@@ -577,75 +575,6 @@ void main() {
         find.textContaining('live terminals show up here'),
         findsOneWidget,
       );
-    });
-
-    testWidgets('app review demo host opens the offline demo route', (
-      tester,
-    ) async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(db.close);
-      final router = GoRouter(
-        initialLocation: '/',
-        routes: [
-          GoRoute(path: '/', builder: (context, state) => const HomeScreen()),
-          GoRoute(
-            path: '/settings/app-review-demo',
-            name: Routes.appReviewDemo,
-            builder: (context, state) => Scaffold(
-              body: Text(
-                'App Review demo ${state.uri.queryParameters['hostId']}',
-              ),
-            ),
-          ),
-        ],
-      );
-      addTearDown(router.dispose);
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            transferIntentServiceProvider.overrideWith(
-              (ref) => _TestTransferIntentService(),
-            ),
-            homeScreenShortcutServiceProvider.overrideWith(
-              (ref) => _TestHomeScreenShortcutService(),
-            ),
-            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
-              (ref) => Stream<Set<int>>.value(const <int>{}),
-            ),
-            activeSessionsProvider.overrideWith(
-              _TestActiveSessionsNotifier.new,
-            ),
-            allHostsProvider.overrideWith(
-              (ref) => Stream.value([
-                _buildHost(
-                  id: 42,
-                  label:
-                      '${AppReviewDemoService.demoHostLabelPrefix} MonkeyMux workspace',
-                  sortOrder: 0,
-                  tags: 'app-review,demo,monkeymux',
-                ),
-              ]),
-            ),
-          ],
-          child: MediaQuery(
-            data: const MediaQueryData(size: Size(400, 800)),
-            child: MaterialApp.router(routerConfig: router),
-          ),
-        ),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
-
-      await tester.tap(
-        find.text(
-          '${AppReviewDemoService.demoHostLabelPrefix} MonkeyMux workspace',
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('App Review demo 42'), findsOneWidget);
     });
 
     testWidgets('repeated connection taps push one terminal route', (

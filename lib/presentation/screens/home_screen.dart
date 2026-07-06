@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/app_metadata.dart';
-import '../../app/routes.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -22,7 +21,6 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
-import '../../domain/services/app_review_demo_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
@@ -1232,11 +1230,6 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _openHostConnection(BuildContext context, WidgetRef ref) async {
-    if (isAppReviewDemoHost(host)) {
-      await _openAppReviewDemo(context);
-      return;
-    }
-
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
 
@@ -1361,11 +1354,6 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _openNewConnection(BuildContext context, WidgetRef ref) async {
-    if (isAppReviewDemoHost(host)) {
-      await _openAppReviewDemo(context);
-      return;
-    }
-
     final result = await connectToHostWithProgressDialog(context, ref, host);
 
     if (!context.mounted) {
@@ -1385,16 +1373,6 @@ class _HostRow extends ConsumerWidget {
         '/terminal/${host.id}?connectionId=${result.connectionId}',
       );
     }
-  }
-
-  Future<void> _openAppReviewDemo(BuildContext context) async {
-    if (!context.mounted) {
-      return;
-    }
-    await context.pushNamed(
-      Routes.appReviewDemo,
-      queryParameters: {'hostId': host.id.toString()},
-    );
   }
 
   Future<void> _showContextMenu(

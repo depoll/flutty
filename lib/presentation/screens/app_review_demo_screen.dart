@@ -79,7 +79,7 @@ class _AppReviewDemoScreenState extends ConsumerState<AppReviewDemoScreen> {
                 number: '3',
                 title: 'Review connection-dependent controls',
                 description:
-                    'Tapping a demo host returns here instead of dialing SSH, so review can continue without private credentials.',
+                    'Tap a seeded host to open an in-app local demo shell with sample SFTP files and tunnel responses.',
               ),
               const SizedBox(height: 8),
               Padding(
