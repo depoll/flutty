@@ -224,6 +224,18 @@ out of scope.
   image-heavy frames faster than it can draw them, so frames queue and the
   window switch stalls for hundreds of ms. Keep on re-sync.
 
+* Fix: cursor-key application mode. `KeytabInputHandler` derived the keytab
+  `AppCuKeys` flag from `appKeypadMode` (DECKPAM / `ESC =`) instead of
+  `cursorKeysMode` (DECCKM / `CSI ? 1 h`), so `cursorKeysMode` was tracked but
+  never consumed. Arrows/Home/End then emitted SS3 (`ESC O A`) whenever a
+  program turned on application *keypad* mode — even with cursor keys in their
+  normal (CSI) state — and stayed CSI when a program asked for application
+  *cursor* keys alone. Windows PowerShell/PSReadLine enables application keypad
+  mode at the prompt while leaving cursor keys normal, so it received SS3 arrows
+  it never requested and inserted the literal `OA`/`OB`… characters instead of
+  recalling history. `appCursorKeys` now reads `cursorKeysMode`. This is an
+  upstream 4.0.0 bug — keep the `event.state.cursorKeysMode` wiring on re-sync.
+
 
 ## [3.6.1-pre] - 2023-04-28
 * Add Termianl.onPrivateOSC callback

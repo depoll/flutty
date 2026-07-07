@@ -55,7 +55,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.89"
+	monkeyMuxVersion                  = "0.1.90"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -72,6 +72,7 @@ const (
 	windowFullReplayHistoryLimitBytes = 512 * 1024
 	windowReplayLimitBytes            = 32 * 1024
 	csiBufferLimitBytes               = 64
+	pendingTerminalQueryLimitBytes    = 512
 	themeHintLimitBytes               = 1024
 	restoreFileMode                   = 0o600
 	restoreSchemaVersion              = 1
@@ -337,6 +338,7 @@ type windowSnapshot struct {
 	LastActivityEpochSeconds  int64           `json:"lastActivityEpochSeconds,omitempty"`
 	TerminalReportsMouseWheel bool            `json:"terminalReportsMouseWheel,omitempty"`
 	TerminalMouseReportSgr    bool            `json:"terminalMouseReportSgr,omitempty"`
+	TerminalBracketedPaste    bool            `json:"terminalBracketedPasteMode,omitempty"`
 	PrivateModes              map[string]bool `json:"privateModes,omitempty"`
 }
 
@@ -433,6 +435,16 @@ type muxWindow struct {
 	redrawForwardingGeneration int
 	redrawForwardingReplay     []byte
 	redrawForwardingBuffer     []byte
+	// pendingTerminalQueries holds capability/status queries (device attributes,
+	// DSR, XTVERSION) the child emitted while no terminal was showing this window
+	// — e.g. an agent (Copilot CLI) relaunched during an upgrade restore, which
+	// queries the terminal at startup before the client reattaches. They are
+	// stored in history too, but foreground-redraw windows never replay history,
+	// so without re-delivering them on attach the terminal never answers and the
+	// agent times out into a less rich rendering mode. pendingTerminalQueryCarry
+	// holds a query sequence split across pty reads until the rest arrives.
+	pendingTerminalQueries    []byte
+	pendingTerminalQueryCarry []byte
 	// Kitty graphics image transmissions retained for replay on reattach.
 	// Placeholder-protocol clients (e.g. Copilot CLI) transmit an image once
 	// and thereafter only re-emit placeholder cells, so the one-time image
@@ -968,6 +980,9 @@ func privateModesFromWindowSnapshot(window windowSnapshot) map[string]bool {
 	}
 	if window.TerminalMouseReportSgr {
 		modes["1006"] = true
+	}
+	if window.TerminalBracketedPaste {
+		modes["2004"] = true
 	}
 	if len(modes) == 0 {
 		return nil
@@ -2939,6 +2954,14 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	} else if terminalBell {
 		window.alert = true
 	}
+	if attach == nil {
+		// No terminal is showing this window, so its capability queries will not
+		// be forwarded and answered. Buffer them so they can be delivered — and
+		// answered — once a terminal attaches or the window is selected.
+		window.appendPendingTerminalQueriesLocked(chunk)
+	} else {
+		window.pendingTerminalQueryCarry = nil
+	}
 	after := window.broadcastIdentityLocked()
 	if before != after ||
 		(!wasAlert && window.alert) ||
@@ -3121,6 +3144,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	s.mu.Unlock()
 	s.attachMu.Lock()
 	redrew := s.writeAttachReplayAndResizeLocked(conn, replay, redrawWindow)
+	s.flushPendingTerminalQueriesLocked(conn, activeWindowID)
 	s.attachMu.Unlock()
 	if len(themeHintData) > 0 {
 		_ = s.writeWindow(themeHintWindowID, themeHintData)
@@ -3552,6 +3576,7 @@ func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
 		LastActivityEpochSeconds:  window.lastActivity.Unix(),
 		TerminalReportsMouseWheel: window.reportsMouseWheelLocked(),
 		TerminalMouseReportSgr:    window.mouseTrackingActiveLocked() && window.privateModes["1006"],
+		TerminalBracketedPaste:    window.privateModes["2004"],
 		PrivateModes:              copyPrivateModes(window.privateModes),
 	}
 }
@@ -3738,6 +3763,7 @@ func (s *muxServer) selectWindowWithSkip(
 	redrawWindow = window
 	s.mu.Unlock()
 	redrew := s.writeAttachReplayAndResizeLocked(attach, replay, redrawWindow)
+	s.flushPendingTerminalQueriesLocked(attach, windowID)
 	s.attachMu.Unlock()
 	s.broadcastWindowList("active_window_changed")
 	if redrew {
@@ -4348,6 +4374,35 @@ func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []b
 		s.writeAttachLocked(conn, data)
 	}
 	s.attachMu.Unlock()
+}
+
+// flushPendingTerminalQueriesLocked delivers to the freshly attached terminal any
+// capability/status queries the active window's child emitted while no terminal
+// was showing it. An agent (e.g. Copilot CLI) relaunched during an upgrade
+// restore queries the terminal at startup, before the client reattaches; those
+// queries land in history but foreground-redraw windows do not replay history, so
+// the terminal would otherwise never answer and the agent falls back to a less
+// rich rendering mode. Re-emitting just the queries makes the terminal answer
+// them, and the answers route back to the active window's child via the normal
+// attach-input path. Must be called with attachMu held.
+func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID string) {
+	if conn == nil {
+		return
+	}
+	s.mu.Lock()
+	window := s.windowByIDLocked(windowID)
+	var pending []byte
+	if window != nil && !window.closed &&
+		s.activeID == windowID && s.attachConn == conn &&
+		len(window.pendingTerminalQueries) > 0 {
+		pending = window.pendingTerminalQueries
+		window.pendingTerminalQueries = nil
+		window.pendingTerminalQueryCarry = nil
+	}
+	s.mu.Unlock()
+	if len(pending) > 0 {
+		s.writeAttachLocked(conn, pending)
+	}
 }
 
 func (s *muxServer) writeActive(data []byte) {
@@ -5398,6 +5453,13 @@ func isReplayUnsafeCsiQuery(sequence []byte) bool {
 			params == "?25" ||
 			params == "?26" ||
 			params == "?53"
+	case 'q':
+		// XTVERSION (CSI > q): the child asks the terminal to identify itself,
+		// which agents such as Copilot CLI use to unlock richer rendering. The
+		// space-intermediate DECSCUSR cursor-style control (CSI Ps SP q) is not
+		// a query. Replaying an already-answered XTVERSION would make the
+		// terminal send a second, unsolicited identity report.
+		return strings.HasPrefix(params, ">")
 	default:
 		return false
 	}
@@ -6025,6 +6087,62 @@ func (w *muxWindow) storePartialCsiLocked(data []byte) {
 		return
 	}
 	w.csiBuffer = append(w.csiBuffer[:0], data...)
+}
+
+// appendPendingTerminalQueriesLocked scans a chunk of the window's child output
+// for terminal capability/status queries (device attributes, DSR, XTVERSION)
+// and buffers them in pendingTerminalQueries. It is called only while no
+// terminal is showing the window, so these queries are not being forwarded to a
+// terminal that could answer them; flushPendingTerminalQueriesLocked re-delivers
+// them once one attaches. A query split across pty reads is carried in
+// pendingTerminalQueryCarry until the rest arrives. OSC colour/theme queries are
+// intentionally ignored here: the server already answers those locally from the
+// theme hint (see stripLocallyAnsweredThemeQueriesLocked).
+func (w *muxWindow) appendPendingTerminalQueriesLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	data := chunk
+	if len(w.pendingTerminalQueryCarry) > 0 {
+		combined := make([]byte, 0, len(w.pendingTerminalQueryCarry)+len(chunk))
+		combined = append(combined, w.pendingTerminalQueryCarry...)
+		combined = append(combined, chunk...)
+		data = combined
+		w.pendingTerminalQueryCarry = nil
+	}
+	for len(data) > 0 {
+		escapeIndex := bytes.IndexByte(data, '\x1b')
+		if escapeIndex < 0 {
+			return
+		}
+		if escapeIndex+1 >= len(data) {
+			w.storePartialPendingTerminalQueryLocked(data[escapeIndex:])
+			return
+		}
+		if data[escapeIndex+1] != '[' {
+			data = data[escapeIndex+1:]
+			continue
+		}
+		end := csiSequenceEnd(data, escapeIndex+2)
+		if end < 0 {
+			w.storePartialPendingTerminalQueryLocked(data[escapeIndex:])
+			return
+		}
+		sequence := data[escapeIndex : end+1]
+		if isReplayUnsafeCsiQuery(sequence) &&
+			len(w.pendingTerminalQueries)+len(sequence) <= pendingTerminalQueryLimitBytes {
+			w.pendingTerminalQueries = append(w.pendingTerminalQueries, sequence...)
+		}
+		data = data[end+1:]
+	}
+}
+
+func (w *muxWindow) storePartialPendingTerminalQueryLocked(data []byte) {
+	if len(data) > csiBufferLimitBytes {
+		w.pendingTerminalQueryCarry = nil
+		return
+	}
+	w.pendingTerminalQueryCarry = append(w.pendingTerminalQueryCarry[:0], data...)
 }
 
 func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
