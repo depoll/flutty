@@ -1418,7 +1418,11 @@ void main() {
               terminal: terminal,
               focusNode: focusNode,
               deleteDetection: true,
-              child: const SizedBox.expand(),
+              manageFocus: false,
+              child: Focus(
+                focusNode: focusNode,
+                child: const SizedBox.expand(),
+              ),
             ),
           ),
         ),
@@ -4886,6 +4890,147 @@ void main() {
         await _disposeTerminalHarness(tester, harness);
       });
     }
+
+    testWidgets('virtual shifted text bypasses Kitty hardware key encoding', (
+      tester,
+    ) async {
+      const virtualShiftKey = PhysicalKeyboardKey(
+        LogicalKeyboardKey.androidPlane + 59,
+      );
+      const virtualCommaKey = PhysicalKeyboardKey(
+        LogicalKeyboardKey.androidPlane + 55,
+      );
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>9u');
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: virtualShiftKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: virtualCommaKey,
+          character: '<',
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: virtualCommaKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: virtualShiftKey,
+          timeStamp: Duration.zero,
+        ),
+      );
+      await tester.pump();
+
+      expect(terminalOutput, isEmpty);
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('<', selectionOffset: 1),
+      );
+      await tester.pump();
+
+      expect(terminalOutput, <String>['<']);
+
+      focusNode.dispose();
+    });
+
+    testWidgets('physical shifted text keeps Kitty hardware key encoding', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add)
+        ..write('\x1b[>9u');
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              manageFocus: false,
+              child: Focus(
+                focusNode: focusNode,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: PhysicalKeyboardKey.shiftLeft,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyDownEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: PhysicalKeyboardKey.comma,
+          character: '<',
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.comma,
+          physicalKey: PhysicalKeyboardKey.comma,
+          timeStamp: Duration.zero,
+        ),
+      );
+      HardwareKeyboard.instance.handleKeyEvent(
+        const KeyUpEvent(
+          logicalKey: LogicalKeyboardKey.shiftLeft,
+          physicalKey: PhysicalKeyboardKey.shiftLeft,
+          timeStamp: Duration.zero,
+        ),
+      );
+      await tester.pump();
+
+      expect(terminalOutput.join(), contains('\x1b[44;2u'));
+
+      focusNode.dispose();
+    });
 
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,

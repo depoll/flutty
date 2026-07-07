@@ -5,8 +5,14 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
+final _sftpWindowsDriveRootPattern = RegExp(r'^/?[A-Za-z]:(?:/|$)');
+
 /// Display path for files pasted directly into a terminal session.
 const remoteClipboardUploadDirectoryDisplay = '~/.cache/monkeyssh/uploads';
+
+/// Windows display path for files pasted directly into a terminal session.
+const remoteClipboardWindowsUploadDirectoryDisplay =
+    r'%USERPROFILE%\.cache\monkeyssh\uploads';
 
 /// Private directory permissions for terminal upload staging directories.
 final remoteUploadDirectoryMode = SftpFileMode(
@@ -29,34 +35,50 @@ final remoteUploadFileMode = SftpFileMode(
   otherExecute: false,
 );
 
-/// Builds the remote directory for files pasted directly into a terminal.
-String buildRemoteClipboardUploadDirectory(String homeDirectory) =>
-    joinRemotePath(homeDirectory, '.cache/monkeyssh/uploads');
+/// Remote path syntax to use when building paths.
+enum RemotePathStyle {
+  /// SFTP/POSIX path syntax using `/` separators.
+  sftp,
 
-/// Builds the app-owned parent directory for terminal uploads.
-String buildRemoteClipboardUploadParentDirectory(String homeDirectory) =>
-    joinRemotePath(homeDirectory, '.cache/monkeyssh');
-
-/// Joins a remote directory and child name into a normalized absolute path.
-String joinRemotePath(String directory, String name) {
-  final cleanName = name.replaceFirst(RegExp('^/+'), '');
-  final baseDirectory = directory.isEmpty ? '/' : directory;
-  final joined = path.posix.join(baseDirectory, cleanName);
-  final normalized = path.posix.normalize(joined);
-  return normalized.startsWith('/') ? normalized : '/$normalized';
+  /// Windows shell path syntax using `\` separators.
+  windows,
 }
 
-/// Normalizes an absolute remote path by collapsing `.`, `..`, and extra `/`.
-String? normalizeSftpAbsolutePath(String? path) {
-  final trimmedPath = path?.trim();
-  if (trimmedPath == null ||
-      trimmedPath.isEmpty ||
-      !trimmedPath.startsWith('/')) {
+/// Returns the user-facing terminal upload directory display path.
+String remoteClipboardUploadDirectoryDisplayFor({required bool windows}) =>
+    windows
+    ? remoteClipboardWindowsUploadDirectoryDisplay
+    : remoteClipboardUploadDirectoryDisplay;
+
+/// Builds the remote directory for files pasted directly into a terminal.
+String buildRemoteClipboardUploadDirectory(
+  String homeDirectory, {
+  RemotePathStyle style = RemotePathStyle.sftp,
+}) => joinRemotePath(homeDirectory, '.cache/monkeyssh/uploads', style: style);
+
+/// Builds the app-owned parent directory for terminal uploads.
+String buildRemoteClipboardUploadParentDirectory(
+  String homeDirectory, {
+  RemotePathStyle style = RemotePathStyle.sftp,
+}) => joinRemotePath(homeDirectory, '.cache/monkeyssh', style: style);
+
+String _normalizeSftpPathSeparators(String value) =>
+    value.replaceAll(r'\', '/');
+
+({String root, String rest})? _splitSftpWindowsDriveRoot(String remotePath) {
+  final match = _sftpWindowsDriveRootPattern.matchAsPrefix(remotePath);
+  if (match == null) {
     return null;
   }
 
+  final matchedRoot = remotePath.substring(0, match.end);
+  final root = matchedRoot.endsWith('/') ? matchedRoot : '$matchedRoot/';
+  return (root: root, rest: remotePath.substring(match.end));
+}
+
+List<String> _normalizeSftpPathSegments(String pathSuffix) {
   final segments = <String>[];
-  for (final segment in trimmedPath.split('/')) {
+  for (final segment in pathSuffix.split('/')) {
     if (segment.isEmpty || segment == '.') {
       continue;
     }
@@ -68,7 +90,138 @@ String? normalizeSftpAbsolutePath(String? path) {
     }
     segments.add(segment);
   }
+  return segments;
+}
 
+/// Whether [remotePath] is an absolute SFTP path.
+bool isSftpAbsolutePath(String remotePath) =>
+    normalizeSftpAbsolutePath(remotePath) != null;
+
+/// Returns the root segment for an absolute SFTP path.
+String? sftpPathRoot(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+  if (normalizedPath == null) {
+    return null;
+  }
+  if (normalizedPath == '/') {
+    return '/';
+  }
+  return _splitSftpWindowsDriveRoot(normalizedPath)?.root;
+}
+
+/// Whether [remotePath] is the root of an SFTP path hierarchy.
+bool isSftpPathRoot(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+  if (normalizedPath == null) {
+    return false;
+  }
+  return normalizedPath == sftpPathRoot(normalizedPath);
+}
+
+/// Returns the parent directory for an absolute SFTP path.
+String parentSftpPath(String remotePath) {
+  final normalizedPath = normalizeSftpAbsolutePath(remotePath);
+  if (normalizedPath == null) {
+    final parent = path.posix.dirname(_normalizeSftpPathSeparators(remotePath));
+    return parent.isEmpty || parent == '.' ? '/' : parent;
+  }
+  if (normalizedPath == '/') {
+    return '/';
+  }
+
+  final windowsRoot = _splitSftpWindowsDriveRoot(normalizedPath);
+  if (windowsRoot != null) {
+    if (normalizedPath == windowsRoot.root) {
+      return windowsRoot.root;
+    }
+    final trimmedPath = normalizedPath.endsWith('/')
+        ? normalizedPath.substring(0, normalizedPath.length - 1)
+        : normalizedPath;
+    final slashIndex = trimmedPath.lastIndexOf('/');
+    if (slashIndex < windowsRoot.root.length) {
+      return windowsRoot.root;
+    }
+    return trimmedPath.substring(0, slashIndex);
+  }
+
+  final parent = path.posix.dirname(normalizedPath);
+  return parent.isEmpty || parent == '.' ? '/' : parent;
+}
+
+/// Joins a remote directory and child name into a normalized absolute path.
+String joinRemotePath(
+  String directory,
+  String name, {
+  RemotePathStyle style = RemotePathStyle.sftp,
+}) {
+  if (style == RemotePathStyle.windows) {
+    return _joinWindowsRemotePath(directory, name);
+  }
+
+  final baseDirectory =
+      normalizeSftpAbsolutePath(directory) ??
+      (directory.isEmpty ? '/' : _normalizeSftpPathSeparators(directory));
+  final nameWithRemoteSeparators =
+      _splitSftpWindowsDriveRoot(baseDirectory) == null
+      ? name
+      : _normalizeSftpPathSeparators(name);
+  final cleanName = nameWithRemoteSeparators.replaceFirst(RegExp('^/+'), '');
+  final joined = path.posix.join(baseDirectory, cleanName);
+  final normalized = normalizeSftpAbsolutePath(joined);
+  if (normalized != null) {
+    return normalized;
+  }
+  final normalizedRelative = path.posix.normalize(joined);
+  return normalizedRelative.startsWith('/')
+      ? normalizedRelative
+      : '/$normalizedRelative';
+}
+
+String _joinWindowsRemotePath(String directory, String name) {
+  final cleanName = name.replaceFirst(RegExp(r'^[\\/]+'), '');
+  final baseDirectory = directory.isEmpty
+      ? r'\'
+      : sftpPathToWindowsShellPath(directory);
+  return path.windows.normalize(path.windows.join(baseDirectory, cleanName));
+}
+
+/// Converts a Windows OpenSSH SFTP path into a native Windows shell path.
+///
+/// OpenSSH SFTP reports drive paths as `/C:/Users/...`; cmd.exe and PowerShell
+/// expect `C:\Users\...`.
+String sftpPathToWindowsShellPath(String sftpPath) {
+  var normalized = sftpPath.trim();
+  if (RegExp(r'^/[A-Za-z]:($|/)').hasMatch(normalized)) {
+    normalized = normalized.substring(1);
+  }
+  return normalized.replaceAll('/', r'\');
+}
+
+/// Converts an SFTP path into the path syntax expected by the remote shell.
+String remoteShellPathForSftpPath(String sftpPath, {required bool windows}) =>
+    windows ? sftpPathToWindowsShellPath(sftpPath) : sftpPath;
+
+/// Normalizes an absolute remote path by collapsing `.`, `..`, and extra `/`.
+String? normalizeSftpAbsolutePath(String? remotePath) {
+  final trimmedPath = remotePath?.trim();
+  if (trimmedPath == null || trimmedPath.isEmpty) {
+    return null;
+  }
+
+  final normalizedSeparators = _normalizeSftpPathSeparators(trimmedPath);
+  final windowsRoot = _splitSftpWindowsDriveRoot(normalizedSeparators);
+  if (windowsRoot != null) {
+    final segments = _normalizeSftpPathSegments(windowsRoot.rest);
+    return segments.isEmpty
+        ? windowsRoot.root
+        : '${windowsRoot.root}${segments.join('/')}';
+  }
+
+  if (!normalizedSeparators.startsWith('/')) {
+    return null;
+  }
+
+  final segments = _normalizeSftpPathSegments(normalizedSeparators);
   return segments.isEmpty ? '/' : '/${segments.join('/')}';
 }
 
@@ -83,7 +236,7 @@ String? resolveRequestedSftpPath(
     return null;
   }
 
-  if (trimmedPath.startsWith('/')) {
+  if (isSftpAbsolutePath(trimmedPath)) {
     return normalizeSftpAbsolutePath(trimmedPath);
   }
 
@@ -171,21 +324,38 @@ bool looksLikeBinaryContent(Uint8List bytes) {
 /// Escapes a path so it can be pasted directly into a POSIX shell.
 String shellEscapePosix(String value) => "'${value.replaceAll("'", r"'\''")}'";
 
+/// Escapes a path so it can be pasted directly into a Windows shell.
+String shellEscapeWindows(String value) {
+  if (value.isEmpty) {
+    return '""';
+  }
+  return '"${value.replaceAll('"', '')}"';
+}
+
 /// Bracketed-paste introducer and terminator (`CSI 200~` / `CSI 201~`).
 const _bracketedPasteStart = '\x1b[200~';
 const _bracketedPasteEnd = '\x1b[201~';
 
 /// Whether [path] is safe to paste unquoted (only path separators and the
-/// strict upload-filename allowlist). Uploaded filenames are sanitized, but the
-/// directory prefix derives from the remote home directory, which a hostile or
-/// misconfigured server could fill with spaces or shell metacharacters.
-bool _isUnquotedSafeAttachmentPath(String path) =>
-    RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(path);
+/// strict upload-filename allowlist). Windows shell paths also allow `:`
+/// drive prefixes and `\` separators.
+/// Uploaded filenames are sanitized, but the directory prefix derives from the
+/// remote home directory, which a hostile or misconfigured server could fill
+/// with spaces or shell metacharacters.
+bool _isUnquotedSafeAttachmentPath(String path, {required bool windows}) {
+  final safePathPattern = windows
+      ? RegExp(r'^[A-Za-z0-9._/\\:-]+$')
+      : RegExp(r'^[A-Za-z0-9._/-]+$');
+  return safePathPattern.hasMatch(path);
+}
+
+String _shellEscapeAttachmentPath(String path, {required bool windows}) =>
+    windows ? shellEscapeWindows(path) : shellEscapePosix(path);
 
 /// Builds the terminal-input segments that reference uploaded [remotePaths]
 /// after a paste upload.
 ///
-/// When [bracketedPasteMode] is enabled *and* every path is safe to paste
+/// When [bracketedPasteMode] is true *and* every path is safe to paste
 /// unquoted, each path is returned as its own bracketed-paste segment
 /// (`CSI 200~ <path> CSI 201~ ` with a trailing space). The caller must write
 /// these segments sequentially with a short delay between them: an agent CLI
@@ -194,11 +364,12 @@ bool _isUnquotedSafeAttachmentPath(String path) =>
 /// distinct reads. The trailing space also keeps the paths usable as distinct
 /// shell arguments.
 ///
-/// Otherwise — bracketed paste mode is off, or a path contains characters that
-/// would be unsafe unquoted (e.g. a remote home directory with spaces or shell
-/// metacharacters) — the paths are shell-escaped and returned as a single
-/// segment. That form shows no preview (a path with spaces would not produce a
-/// chip anyway) but can never break the shell or inject commands.
+/// Otherwise — when bracketed paste is not requested, or when a path contains
+/// characters that would be unsafe unquoted (e.g. a remote home directory with
+/// spaces or shell metacharacters) — the paths are shell-escaped for the current
+/// remote shell and returned as a single segment. That form shows no preview (a
+/// path with spaces would not produce a chip anyway) but keeps the inserted text
+/// quoted for the active remote shell.
 ///
 /// Segments must be written straight to the session input sink (e.g.
 /// `Terminal.onOutput`), not through `Terminal.paste`, which would strip the
@@ -206,6 +377,7 @@ bool _isUnquotedSafeAttachmentPath(String path) =>
 List<String> buildTerminalAttachmentPasteSegments(
   Iterable<String> remotePaths, {
   required bool bracketedPasteMode,
+  bool windows = false,
 }) {
   final paths = remotePaths
       .where((remotePath) => remotePath.isNotEmpty)
@@ -214,9 +386,15 @@ List<String> buildTerminalAttachmentPasteSegments(
     return const [];
   }
   final canRenderChips =
-      bracketedPasteMode && paths.every(_isUnquotedSafeAttachmentPath);
+      bracketedPasteMode &&
+      paths.every(
+        (remotePath) =>
+            _isUnquotedSafeAttachmentPath(remotePath, windows: windows),
+      );
   if (!canRenderChips) {
-    return ['${paths.map(shellEscapePosix).join(' ')} '];
+    return [
+      '${paths.map((path) => _shellEscapeAttachmentPath(path, windows: windows)).join(' ')} ',
+    ];
   }
   return [
     for (final remotePath in paths)
@@ -261,7 +439,7 @@ class RemoteFileService {
       }
     }
 
-    final parentPath = path.posix.dirname(remotePath);
+    final parentPath = parentSftpPath(remotePath);
     if (parentPath != remotePath) {
       await ensureDirectoryExists(sftp, parentPath);
     }
@@ -312,6 +490,7 @@ class RemoteFileService {
     required SftpClient sftp,
     required String remotePath,
     required Stream<List<int>> stream,
+    bool applyPrivateMode = true,
   }) async {
     final remoteFile = await sftp.open(
       remotePath,
@@ -325,7 +504,9 @@ class RemoteFileService {
     } finally {
       await remoteFile.close();
     }
-    await sftp.setStat(remotePath, SftpFileAttrs(mode: remoteUploadFileMode));
+    if (applyPrivateMode) {
+      await sftp.setStat(remotePath, SftpFileAttrs(mode: remoteUploadFileMode));
+    }
   }
 
   /// Uploads raw bytes into a remote file path.
@@ -333,10 +514,12 @@ class RemoteFileService {
     required SftpClient sftp,
     required String remotePath,
     required Uint8List bytes,
+    bool applyPrivateMode = true,
   }) => uploadStream(
     sftp: sftp,
     remotePath: remotePath,
     stream: Stream<List<int>>.value(bytes),
+    applyPrivateMode: applyPrivateMode,
   );
 
   Stream<Uint8List> _normalizeByteStream(Stream<List<int>> stream) => stream

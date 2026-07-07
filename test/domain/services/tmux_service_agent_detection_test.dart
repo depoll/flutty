@@ -35,6 +35,20 @@ void main() {
       }
     });
 
+    test('windows script queries every supported external agent CLI', () {
+      final script = buildWindowsAgentToolDetectionScript();
+      expect(script, contains('Get-Command -Name'));
+      expect(script, contains('-CommandType Application,ExternalScript'));
+      expect(script, contains(r'$__flOut'));
+      for (final tool in AgentLaunchTool.values) {
+        expect(
+          script,
+          contains("'${tool.commandName}'"),
+          reason: 'Windows detection script must look up ${tool.commandName}',
+        );
+      }
+    });
+
     test('tolerates missing binaries without failing the outer shell', () {
       final command = buildAgentToolDetectionCommand();
       // 2>/dev/null suppresses noisy "not found" messages from rc files
@@ -70,11 +84,29 @@ void main() {
       expect(parseInstalledAgentTools(output), {AgentLaunchTool.claudeCode});
     });
 
+    test('parses Windows absolute paths and command shim extensions', () {
+      const output =
+          r'C:\Users\demo\AppData\Roaming\npm\claude.ps1'
+          '\n'
+          'C:/Users/demo/AppData/Roaming/npm/copilot.cmd\n'
+          r'C:\tools\codex.exe'
+          '\n'
+          r'\\server\share\gemini.bat'
+          '\n';
+      expect(parseInstalledAgentTools(output), {
+        AgentLaunchTool.claudeCode,
+        AgentLaunchTool.copilotCli,
+        AgentLaunchTool.codex,
+        AgentLaunchTool.geminiCli,
+      });
+    });
+
     test('ignores bare names (shell builtins, aliases, missing CLIs)', () {
       // `command -v` may print bare names for builtins/aliases or omit
       // unknown commands entirely. Only absolute paths should count.
       const output =
           'claude\n'
+          'claude.cmd\n'
           '/usr/local/bin/copilot\n'
           'codex: not found\n';
       expect(parseInstalledAgentTools(output), {AgentLaunchTool.copilotCli});
@@ -110,6 +142,12 @@ void main() {
       for (final tool in AgentLaunchTool.values) {
         expect(agentToolForBinaryName(tool.commandName), tool);
       }
+    });
+
+    test('maps Windows command shim names back to their tools', () {
+      expect(agentToolForBinaryName('copilot.cmd'), AgentLaunchTool.copilotCli);
+      expect(agentToolForBinaryName('claude.ps1'), AgentLaunchTool.claudeCode);
+      expect(agentToolForBinaryName('codex.exe'), AgentLaunchTool.codex);
     });
 
     test('returns null for unknown binaries', () {
