@@ -469,6 +469,15 @@ func isCmdShell(shell string) bool {
 	return base == "cmd" || base == "cmd.exe"
 }
 
+// holdAgentWindowCommand mirrors the POSIX helper's signature. The reported
+// fast-exit failure (a locked macOS login keychain that makes cursor-agent print
+// an error and exit immediately) is macOS-specific, and the Windows shell exit
+// semantics differ, so the command is returned unchanged here for now.
+func holdAgentWindowCommand(shell string, command string) string {
+	_ = shell
+	return command
+}
+
 // readProcessTable enumerates running processes via the Toolhelp snapshot API.
 // Windows has no process groups, so pgid is approximated with the parent pid so
 // that direct children of a window's shell can be correlated. Full argument

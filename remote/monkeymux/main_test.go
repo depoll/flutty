@@ -895,6 +895,80 @@ func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
 	assertPtySize(t, window.pty, 132, 43)
 }
 
+func TestHoldAgentWindowCommandWrapsFastFailure(t *testing.T) {
+	wrapped := holdAgentWindowCommand("/bin/zsh", "cursor-agent --resume abc")
+
+	for _, needle := range []string{
+		"cursor-agent --resume abc", // runs the original command
+		"__mm_rc=$?",                // captures the exit status
+		"[ \"$__mm_rc\" -ne 0 ]",    // only holds on a non-zero exit
+		"-lt 12 ]",                  // ...that happened quickly after launch
+		"stty sane",                 // restores the terminal before the shell
+		"exec '/bin/zsh' -i",        // drops to an interactive shell
+	} {
+		if !strings.Contains(wrapped, needle) {
+			t.Fatalf("wrapped command missing %q\n got: %s", needle, wrapped)
+		}
+	}
+
+	if got := holdAgentWindowCommand("/bin/zsh", "   "); got != "" {
+		t.Fatalf("blank command should stay empty, got %q", got)
+	}
+}
+
+func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+
+	// `false` exits non-zero immediately; an agent window must stay open (the
+	// wrapper drops to a shell) so the failure output remains readable.
+	window, err := server.createWindow(createWindowOptions{
+		agentTool: "cursor-agent",
+		command:   "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		closed := window.closed
+		server.mu.Unlock()
+		if closed {
+			t.Fatal("agent window closed after a fast failure; expected it to stay open")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestCreateWindowClosesNonAgentWindowOnExit(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+
+	// A non-agent window is not wrapped, so it closes when its command exits.
+	window, err := server.createWindow(createWindowOptions{
+		command: "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		server.mu.Lock()
+		closed := window.closed
+		server.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("non-agent window stayed open after its command exited")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
