@@ -895,6 +895,80 @@ func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
 	assertPtySize(t, window.pty, 132, 43)
 }
 
+func TestHoldAgentWindowCommandWrapsFastFailure(t *testing.T) {
+	wrapped := holdAgentWindowCommand("/bin/zsh", "cursor-agent --resume abc")
+
+	for _, needle := range []string{
+		"cursor-agent --resume abc", // runs the original command
+		"__mm_rc=$?",                // captures the exit status
+		"[ \"$__mm_rc\" -ne 0 ]",    // only holds on a non-zero exit
+		"-lt 12 ]",                  // ...that happened quickly after launch
+		"stty sane",                 // restores the terminal before the shell
+		"exec '/bin/zsh' -i",        // drops to an interactive shell
+	} {
+		if !strings.Contains(wrapped, needle) {
+			t.Fatalf("wrapped command missing %q\n got: %s", needle, wrapped)
+		}
+	}
+
+	if got := holdAgentWindowCommand("/bin/zsh", "   "); got != "" {
+		t.Fatalf("blank command should stay empty, got %q", got)
+	}
+}
+
+func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+
+	// `false` exits non-zero immediately; an agent window must stay open (the
+	// wrapper drops to a shell) so the failure output remains readable.
+	window, err := server.createWindow(createWindowOptions{
+		agentTool: "cursor-agent",
+		command:   "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		closed := window.closed
+		server.mu.Unlock()
+		if closed {
+			t.Fatal("agent window closed after a fast failure; expected it to stay open")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestCreateWindowClosesNonAgentWindowOnExit(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+
+	// A non-agent window is not wrapped, so it closes when its command exits.
+	window, err := server.createWindow(createWindowOptions{
+		command: "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		server.mu.Lock()
+		closed := window.closed
+		server.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("non-agent window stayed open after its command exited")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -3541,6 +3615,7 @@ func TestFirstShellWordSkipsWrappers(t *testing.T) {
 		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
 		{command: `GEMINI_API_KEY=redacted gemini --yolo`, want: "gemini"},
 		{command: `OPENCODE_PERMISSION='{"*":"allow"}' opencode`, want: "opencode"},
+		{command: "cd ~/repo && cursor-agent --resume abc", want: "cursor-agent"},
 	}
 
 	for _, tt := range tests {
@@ -3578,6 +3653,8 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
 		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
 		{tool: "antigravity", args: `agy --conversation "antigravity session"`, want: "antigravity session"},
+		{tool: "cursor-agent", args: "cursor-agent --resume chat-7", want: "chat-7"},
+		{tool: "cursor-agent", args: `cursor-agent --resume="chat eight"`, want: "chat eight"},
 	}
 
 	for _, tt := range tests {
@@ -4287,6 +4364,88 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 	}
 }
 
+func TestCursorAgentToolMapping(t *testing.T) {
+	for _, name := range []string{
+		"cursor-agent",
+		"/Users/demo/.local/bin/cursor-agent",
+	} {
+		if got := agentToolFromCommandName(name); got != "cursor-agent" {
+			t.Fatalf("agentToolFromCommandName(%q) = %q, want cursor-agent", name, got)
+		}
+	}
+	// The generic `agent` launcher is a Node wrapper; detect it by its
+	// versioned install path rather than the ambiguous argv[0].
+	nodeWrapper := "/Users/demo/.local/bin/agent --use-system-ca " +
+		"/Users/demo/.local/share/cursor-agent/versions/2026.07.01/index.js"
+	if got := agentToolFromCommandText(nodeWrapper); got != "cursor-agent" {
+		t.Fatalf("agentToolFromCommandText(node wrapper) = %q, want cursor-agent", got)
+	}
+	// A bare `agent` command/window name is too generic to claim for Cursor.
+	if got := agentToolFromCommandName("agent"); got != "" {
+		t.Fatalf("agentToolFromCommandName(agent) = %q, want empty", got)
+	}
+	if got := agentToolFromTerminalTitle("Cursor Agent"); got != "cursor-agent" {
+		t.Fatalf("agentToolFromTerminalTitle = %q, want cursor-agent", got)
+	}
+	if got := agentLaunchCommand("cursor-agent", false); got != "cursor-agent" {
+		t.Fatalf("agentLaunchCommand = %q, want cursor-agent", got)
+	}
+	if got := agentLaunchCommand("cursor-agent", true); got != "cursor-agent --force" {
+		t.Fatalf("agentLaunchCommand yolo = %q, want cursor-agent --force", got)
+	}
+}
+
+func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project")
+	chatsDir := filepath.Join(home, ".cursor", "chats", "workspacehash")
+
+	writeChat := func(chatID string, cwd string, updatedAtMs int64) {
+		dir := filepath.Join(chatsDir, chatID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		meta := fmt.Sprintf(
+			`{"title":"Chat %s","cwd":%q,"updatedAtMs":%d,"hasConversation":true}`,
+			chatID, cwd, updatedAtMs,
+		)
+		if err := os.WriteFile(
+			filepath.Join(dir, "meta.json"),
+			[]byte(meta),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeChat("old-chat", project, 1000)
+	writeChat("new-chat", project, 2000)
+	writeChat("other-chat", "/tmp/other", 3000)
+
+	restore := &serverRestore{
+		Windows: []restoreWindowState{
+			{
+				Name:           "Cursor Agent",
+				Cwd:            project,
+				CurrentCommand: "cursor-agent",
+				AgentTool:      "cursor-agent",
+			},
+		},
+	}
+
+	enrichRestoreWithAgentSessionIDs(restore)
+
+	if got := restore.Windows[0].AgentSessionID; got != "new-chat" {
+		t.Fatalf("agent session ID = %q, want new-chat", got)
+	}
+	options := createWindowOptionsForRestore(restore.Windows[0], true)
+	want := "cursor-agent --force --resume 'new-chat' || cursor-agent --force"
+	if got := options.command; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+}
+
 func TestReadRestoreFileKeepsCallerOwnedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "caller-restore.json")
 	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
@@ -4442,6 +4601,28 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			},
 			want:      `agy --dangerously-skip-permissions --continue || agy --dangerously-skip-permissions`,
 			agentTool: "antigravity",
+		},
+		{
+			name: "cursor-agent resume by id",
+			state: restoreWindowState{
+				Name:           "Cursor Agent",
+				CurrentCommand: "cursor-agent",
+				AgentTool:      "cursor-agent",
+				AgentSessionID: "chat-9",
+			},
+			want:      "cursor-agent --force --resume 'chat-9' || cursor-agent --force",
+			agentTool: "cursor-agent",
+		},
+		{
+			name: "cursor-agent resume continue",
+			state: restoreWindowState{
+				Name:           "Cursor Agent",
+				CurrentCommand: "cursor-agent",
+				AgentTool:      "cursor-agent",
+				AgentSessionID: "_continue",
+			},
+			want:      "cursor-agent --force --continue || cursor-agent --force",
+			agentTool: "cursor-agent",
 		},
 	}
 

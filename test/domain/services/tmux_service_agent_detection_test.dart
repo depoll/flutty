@@ -124,7 +124,8 @@ void main() {
           '/b/codex\n'
           '/b/gemini\n'
           '/b/opencode\n'
-          '/b/antigravity\n';
+          '/b/antigravity\n'
+          '/b/cursor-agent\n';
       expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
     });
 
