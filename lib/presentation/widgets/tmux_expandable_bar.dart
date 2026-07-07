@@ -25,7 +25,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
     this.onWindowStateChanged,
-    this.onActiveWindowScrollModeChanged,
+    this.onActiveWindowTerminalModeChanged,
     this.onWindowLoadStalled,
     this.onSessionEnded,
     super.key,
@@ -83,12 +83,11 @@ class _TmuxExpandableBar extends StatefulWidget {
   })?
   onWindowStateChanged;
 
-  /// Called when the active window's scroll-relevant mouse-reporting metadata
-  /// (mouse-wheel / SGR reporting) changes without the active window itself
-  /// changing — for example when the foreground app enters or leaves mouse
-  /// mode. Lets the parent recompute touch-scroll routing so scrolling doesn't
-  /// stay stuck until the next window switch.
-  final VoidCallback? onActiveWindowScrollModeChanged;
+  /// Called when the active window's terminal-mode metadata changes without the
+  /// active window itself changing — for example when the foreground app enters
+  /// or leaves mouse or bracketed-paste mode. Lets the parent inherit the active
+  /// mux window's local terminal modes without waiting for a window switch.
+  final VoidCallback? onActiveWindowTerminalModeChanged;
 
   final Future<void> Function(SshSession session, String sessionName)?
   onWindowLoadStalled;
@@ -457,7 +456,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   );
 
   void _applyWindows(List<TmuxWindow> windows) {
-    final previousScrollModeSignature = activeTmuxWindowScrollModeSignature(
+    final previousTerminalModeSignature = activeTmuxWindowTerminalModeSignature(
       _windows,
     );
     // Detect new alerts that weren't in the previous window list.
@@ -521,13 +520,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _pendingSelectedWindowIndex = nextPendingSelectedWindowIndex;
     });
 
-    // Mouse-mode toggles arrive as `window_updated` events that don't change
+    // Terminal-mode toggles arrive as `window_updated` events that don't change
     // the active window or its theme identity, so they wouldn't otherwise
-    // notify the parent. Surface them explicitly so touch-scroll routing is
-    // recomputed and scrolling doesn't get stuck until the next window switch.
-    if (activeTmuxWindowScrollModeSignature(windows) !=
-        previousScrollModeSignature) {
-      widget.onActiveWindowScrollModeChanged?.call();
+    // notify the parent. Surface them explicitly so local mode state stays in
+    // sync and touch-scroll routing doesn't get stuck until the next switch.
+    if (activeTmuxWindowTerminalModeSignature(windows) !=
+        previousTerminalModeSignature) {
+      widget.onActiveWindowTerminalModeChanged?.call();
     }
   }
 

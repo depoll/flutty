@@ -7,6 +7,7 @@ import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/port_forward_browser_service.dart';
 import '../domain/services/telemetry_service.dart';
+import '../presentation/screens/app_review_demo_screen.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
@@ -273,6 +274,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/settings',
         name: Routes.settings,
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        path: '/settings/app-review-demo',
+        name: Routes.appReviewDemo,
+        builder: (context, state) => const AppReviewDemoScreen(),
       ),
       GoRoute(
         path: '/upgrade',

@@ -332,6 +332,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   Timer? _hardwareKeyRepeatStartTimer;
   Timer? _hardwareKeyRepeatTimer;
   LogicalKeyboardKey? _hardwareRepeatingLogicalKey;
+  final Set<LogicalKeyboardKey> _textInputHandledHardwareKeys =
+      <LogicalKeyboardKey>{};
   ({
     TerminalKey key,
     bool ctrl,
@@ -740,6 +742,91 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _hardwareKeyRepeatTimer = null;
     _hardwareRepeatingLogicalKey = null;
     _hardwareRepeatInput = null;
+    if (logicalKey == null) {
+      _textInputHandledHardwareKeys.clear();
+    }
+  }
+
+  bool _shouldLetTextInputHandleHardwareKey(
+    KeyEvent event,
+    TerminalKey key, {
+    required bool hasShortcutModifier,
+  }) {
+    if (!_isInputConnectionShown ||
+        hasShortcutModifier ||
+        !_isVirtualTextInputKeyEvent(event)) {
+      return false;
+    }
+
+    if (event is KeyUpEvent) {
+      return _textInputHandledHardwareKeys.remove(event.logicalKey);
+    }
+
+    if (event is KeyRepeatEvent &&
+        _textInputHandledHardwareKeys.contains(event.logicalKey)) {
+      return true;
+    }
+
+    if (event is! KeyDownEvent || !_isTextInputManagedTerminalKey(key)) {
+      return false;
+    }
+
+    _textInputHandledHardwareKeys.add(event.logicalKey);
+    _stopHardwareKeyRepeat(logicalKey: event.logicalKey);
+    return true;
+  }
+
+  bool _isVirtualTextInputKeyEvent(KeyEvent event) =>
+      event.physicalKey.usbHidUsage >= LogicalKeyboardKey.startOfPlatformPlanes;
+
+  bool _isTextInputManagedTerminalKey(TerminalKey key) {
+    if (key.index >= TerminalKey.keyA.index &&
+        key.index <= TerminalKey.keyZ.index) {
+      return true;
+    }
+    if (key.index >= TerminalKey.digit1.index &&
+        key.index <= TerminalKey.digit0.index) {
+      return true;
+    }
+
+    switch (key) {
+      case TerminalKey.space:
+      case TerminalKey.minus:
+      case TerminalKey.equal:
+      case TerminalKey.bracketLeft:
+      case TerminalKey.bracketRight:
+      case TerminalKey.backslash:
+      case TerminalKey.semicolon:
+      case TerminalKey.quote:
+      case TerminalKey.backquote:
+      case TerminalKey.comma:
+      case TerminalKey.period:
+      case TerminalKey.slash:
+      case TerminalKey.numpad0:
+      case TerminalKey.numpad1:
+      case TerminalKey.numpad2:
+      case TerminalKey.numpad3:
+      case TerminalKey.numpad4:
+      case TerminalKey.numpad5:
+      case TerminalKey.numpad6:
+      case TerminalKey.numpad7:
+      case TerminalKey.numpad8:
+      case TerminalKey.numpad9:
+      case TerminalKey.numpadDecimal:
+      case TerminalKey.numpadDivide:
+      case TerminalKey.numpadMultiply:
+      case TerminalKey.numpadSubtract:
+      case TerminalKey.numpadAdd:
+      case TerminalKey.numpadEqual:
+      case TerminalKey.numpadComma:
+      case TerminalKey.intlBackslash:
+      case TerminalKey.shiftLeft:
+      case TerminalKey.shiftRight:
+      case TerminalKey.shift:
+        return true;
+      default:
+        return false;
+    }
   }
 
   void _trackHandledHardwareCursorKey(
@@ -801,6 +888,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final key = keyToTerminalKey(event.logicalKey);
     if (key == null) {
       return KeyEventResult.ignored;
+    }
+
+    if (_shouldLetTextInputHandleHardwareKey(
+      event,
+      key,
+      hasShortcutModifier: hasShortcutModifier,
+    )) {
+      return KeyEventResult.skipRemainingHandlers;
     }
 
     final ctrl = HardwareKeyboard.instance.isControlPressed;

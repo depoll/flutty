@@ -1120,6 +1120,43 @@ cwd: /tmp/demo
     });
   });
 
+  group('parseOpenCodeStorageSessionMetadata', () {
+    test('maps JSON storage sessions to unified metadata', () {
+      final metadata = parseOpenCodeStorageSessionMetadata(r'''
+{
+  "id": "ses_123",
+  "directory": "C:\\Users\\demo\\repo",
+  "title": "Fix Windows discovery",
+  "time": {"updated": 1770000000000}
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.sessionId, 'ses_123');
+      expect(metadata.workingDirectory, r'C:\Users\demo\repo');
+      expect(metadata.summary, 'Fix Windows discovery');
+      expect(
+        metadata.updatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1770000000000),
+      );
+      expect(metadata.parentId, isNull);
+      expect(metadata.isArchived, isFalse);
+    });
+
+    test('identifies archived child sessions', () {
+      final metadata = parseOpenCodeStorageSessionMetadata('''
+{
+  "id": "child",
+  "parentID": "parent",
+  "time": {"archived": 1770000000000}
+}
+''');
+
+      expect(metadata.parentId, 'parent');
+      expect(metadata.isArchived, isTrue);
+    });
+  });
+
   group('discoverSessionsStream caching', () {
     test('discovers sessions via PowerShell on Windows remotes', () async {
       final client = _MockSshClient();
@@ -1176,6 +1213,106 @@ cwd: /tmp/demo
       );
       expect(copilot, isNotEmpty);
       expect(copilot.first.summary, 'My session');
+    });
+
+    test(
+      'OpenCode discovery reads Windows JSON storage without sqlite3',
+      () async {
+        final client = _MockSshClient();
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+
+        const storagePath =
+            'C:/Users/demo/.local/share/opencode/storage/session/project/'
+            'ses_123.json';
+        final sessionJson = jsonEncode({
+          'id': 'ses_123',
+          'directory': r'C:\Users\demo\repo',
+          'title': 'Review Windows discovery',
+          'time': {'updated': 1770000000000},
+        });
+
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          final script = _decodeEncodedPowerShell(command);
+          if (script.contains('opencode session list --format json')) {
+            return _buildExecSession();
+          }
+          if (script.contains('.local/share/opencode/storage/session') &&
+              !script.contains('[char]0x1f')) {
+            return _buildExecSession(stdout: '$storagePath\n');
+          }
+          if (script.contains('[char]0x1f') && script.contains(storagePath)) {
+            return _buildExecSession(
+              stdout: _remoteSnapshotLine(storagePath, sessionJson, mtime: 1),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          workingDirectory: r'C:\Users\demo\repo',
+          toolName: 'OpenCode',
+        );
+
+        expect(result.sessions, hasLength(1));
+        expect(result.sessions.single.toolName, 'OpenCode');
+        expect(result.sessions.single.sessionId, 'ses_123');
+        expect(result.sessions.single.summary, 'Review Windows discovery');
+        expect(result.sessions.single.workingDirectory, r'C:\Users\demo\repo');
+        expect(
+          verify(() => client.execute(captureAny())).captured.cast<String>(),
+          everyElement(contains('-EncodedCommand ')),
+        );
+      },
+    );
+
+    test('Antigravity discovery reads Windows JSON sessions', () async {
+      final client = _MockSshClient();
+      when(
+        () => client.remoteVersion,
+      ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+
+      const antigravityPath = 'C:/Users/demo/.antigravity/sessions/ag-123.json';
+      final sessionJson = jsonEncode({
+        'id': 'ag-123',
+        'summary': 'Review Antigravity history',
+        'workingDirectory': r'C:\Users\demo\repo',
+        'updatedAt': '2026-07-05T20:15:00.000Z',
+      });
+
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        final script = _decodeEncodedPowerShell(command);
+        if (script.contains('.antigravity/sessions') &&
+            !script.contains('[char]0x1f')) {
+          return _buildExecSession(stdout: '$antigravityPath\n');
+        }
+        if (script.contains('[char]0x1f') && script.contains(antigravityPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(antigravityPath, sessionJson, mtime: 1),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: r'C:\Users\demo\repo',
+        toolName: 'Antigravity',
+      );
+
+      expect(result.sessions, hasLength(1));
+      expect(result.sessions.single.toolName, 'Antigravity');
+      expect(result.sessions.single.sessionId, 'ag-123');
+      expect(result.sessions.single.summary, 'Review Antigravity history');
+      expect(result.sessions.single.workingDirectory, r'C:\Users\demo\repo');
     });
 
     test('Copilot discovery uses ACP session/list when available', () async {
