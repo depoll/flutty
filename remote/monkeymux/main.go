@@ -26,6 +26,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf16"
 
 	"golang.org/x/term"
 )
@@ -55,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.91"
+	monkeyMuxVersion                  = "0.1.92"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -137,7 +138,10 @@ var (
 		{"1047", "1049"},
 		{"1000", "1002", "1003"},
 	}
-	trackedPrivateModes = map[string]struct{}{
+	// conPtySwallowedThemeQueryKeys are the theme-query keys whose queries
+	// ConPTY consumes inside conhost instead of forwarding out of the pty.
+	conPtySwallowedThemeQueryKeys = []string{"10", "11"}
+	trackedPrivateModes           = map[string]struct{}{
 		"1":    {},
 		"6":    {},
 		"7":    {},
@@ -421,6 +425,12 @@ type muxWindow struct {
 	lastBroadcast              time.Time
 	cursorVisible              bool
 	cursorVisibilityKnown      bool
+	// win32InputMode mirrors DEC private mode 9001, which ConPTY (conhost)
+	// enables at startup on Windows to request that terminal input — including
+	// escape-sequence replies — be delivered as win32-input-mode key events.
+	// ConPTY's input parser drops raw OSC/DCS sequences, so synthetic replies
+	// written into the window pty must be re-encoded while this mode is on.
+	win32InputMode             bool
 	privateModes               map[string]bool
 	insertModeEnabled          bool
 	insertModeKnown            bool
@@ -3130,13 +3140,16 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	wasAlert := window.alert
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
+	// Modes are observed before metadata so a `CSI ? 9001 h` arriving in the
+	// same chunk as a colour query is already reflected when the query is
+	// answered below (and when the answer is encoded in writeWindow).
+	window.observeTerminalModesLocked(chunk)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
 	terminalBell := window.observeTerminalBellLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
-	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	if window.observeKittyGraphicsLocked(chunk) {
 		s.enforceGlobalKittyImageBudgetLocked()
@@ -4682,12 +4695,55 @@ func (s *muxServer) sendFocusRefresh(windowID string) {
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
+	win32InputMode := window != nil && window.win32InputMode
 	s.mu.Unlock()
 	if window == nil || window.closed {
 		return fmt.Errorf("window %q not found", windowID)
 	}
+	if win32InputMode {
+		// ConPTY's input parser drops raw OSC/DCS sequences, so synthetic
+		// replies (theme hints, clipboard responses, relayed query answers)
+		// must be re-encoded as win32-input-mode key events to survive the
+		// trip through conhost to the child process.
+		data = encodeTerminalResponsesForWin32InputMode(data)
+	}
 	_, err := window.pty.Write(data)
 	return err
+}
+
+// terminalOscOrDcsSequencePattern matches complete OSC (`ESC ] ... BEL|ST`) and
+// DCS (`ESC P ... ST`) sequences. CSI sequences and plain text are left alone:
+// ConPTY's input parser passes those through unmodified.
+var terminalOscOrDcsSequencePattern = regexp.MustCompile(
+	`\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)`,
+)
+
+// encodeTerminalResponsesForWin32InputMode re-encodes any OSC/DCS sequences in
+// data as win32-input-mode key events (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`), the format
+// ConPTY expects for terminal input while DEC private mode 9001 is enabled.
+// All other bytes pass through untouched.
+func encodeTerminalResponsesForWin32InputMode(data []byte) []byte {
+	if !bytes.Contains(data, []byte("\x1b]")) && !bytes.Contains(data, []byte("\x1bP")) {
+		return data
+	}
+	var output bytes.Buffer
+	cursor := 0
+	for _, match := range terminalOscOrDcsSequencePattern.FindAllIndex(data, -1) {
+		output.Write(data[cursor:match[0]])
+		writeWin32InputModeKeyEvents(&output, data[match[0]:match[1]])
+		cursor = match[1]
+	}
+	output.Write(data[cursor:])
+	return output.Bytes()
+}
+
+func writeWin32InputModeKeyEvents(output *bytes.Buffer, sequence []byte) {
+	for _, codeUnit := range utf16.Encode([]rune(string(sequence))) {
+		// Only the Unicode char, key-down, and repeat-count fields are set,
+		// mirroring how Windows Terminal forwards characters that have no
+		// associated virtual key.
+		fmt.Fprintf(output, "\x1b[0;0;%d;1;0;1_", codeUnit)
+	}
 }
 
 func (s *muxServer) activeWindow() *muxWindow {
@@ -6369,6 +6425,10 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 		w.cursorVisibilityKnown = true
 		return
 	}
+	if mode == "9001" {
+		w.win32InputMode = enabled
+		return
+	}
 	if mode == "1004" {
 		w.focusModeEnabled = enabled
 		if enabled {
@@ -6525,6 +6585,14 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 	queryKeys := themeQueryKeysFromOscPayload(payload)
 	if len(queryKeys) == 0 {
 		return nil
+	}
+	if w.win32InputMode {
+		// ConPTY forwards the child's OSC 4 palette queries out of the pty but
+		// swallows its OSC 10/11 default-colour queries, so a colour
+		// interrogation observed under win32-input-mode implies the swallowed
+		// default foreground/background queries as well. Answering them
+		// unprompted is the only way the child ever learns those colours.
+		queryKeys = appendThemeQueryKeys(queryKeys, conPtySwallowedThemeQueryKeys)
 	}
 	queryPid := w.activeForegroundPidLocked()
 	if queryPid <= 0 {

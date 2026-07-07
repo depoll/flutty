@@ -2356,6 +2356,172 @@ func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T
 	}
 }
 
+func TestEncodeTerminalResponsesForWin32InputMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "plain text passes through", input: "hello\r", want: "hello\r"},
+		{
+			name:  "csi passes through",
+			input: "\x1b[I\x1b[?997;2n",
+			want:  "\x1b[I\x1b[?997;2n",
+		},
+		{
+			name:  "osc with bel is encoded",
+			input: "\x1b]11;?\x07",
+			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;93;1;0;1_\x1b[0;0;49;1;0;1_" +
+				"\x1b[0;0;49;1;0;1_\x1b[0;0;59;1;0;1_\x1b[0;0;63;1;0;1_" +
+				"\x1b[0;0;7;1;0;1_",
+		},
+		{
+			name:  "osc with st is encoded",
+			input: "\x1b]11;?\x1b\\",
+			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;93;1;0;1_\x1b[0;0;49;1;0;1_" +
+				"\x1b[0;0;49;1;0;1_\x1b[0;0;59;1;0;1_\x1b[0;0;63;1;0;1_" +
+				"\x1b[0;0;27;1;0;1_\x1b[0;0;92;1;0;1_",
+		},
+		{
+			name:  "dcs is encoded",
+			input: "\x1bP>|mux\x1b\\",
+			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;80;1;0;1_\x1b[0;0;62;1;0;1_" +
+				"\x1b[0;0;124;1;0;1_\x1b[0;0;109;1;0;1_\x1b[0;0;117;1;0;1_" +
+				"\x1b[0;0;120;1;0;1_\x1b[0;0;27;1;0;1_\x1b[0;0;92;1;0;1_",
+		},
+		{
+			name:  "mixed output only encodes the osc portion",
+			input: "a\x1b]10;rgb:aaaa/bbbb/cccc\x07\x1b[Ib",
+			want: "a" + win32EncodeSequence("\x1b]10;rgb:aaaa/bbbb/cccc\x07") +
+				"\x1b[Ib",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := string(encodeTerminalResponsesForWin32InputMode(
+				[]byte(testCase.input),
+			))
+			if got != testCase.want {
+				t.Fatalf(
+					"encodeTerminalResponsesForWin32InputMode(%q) = %q, want %q",
+					testCase.input,
+					got,
+					testCase.want,
+				)
+			}
+		})
+	}
+}
+
+func win32EncodeSequence(sequence string) string {
+	var buffer bytes.Buffer
+	writeWin32InputModeKeyEvents(&buffer, []byte(sequence))
+	return buffer.String()
+}
+
+// TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults covers the ConPTY
+// (Windows) theme path: conhost enables DEC private mode 9001 at startup,
+// swallows the child's OSC 10/11 default-colour queries, forwards its OSC 4
+// palette queries, and drops raw OSC written into the pty input. When a
+// palette query is observed under win32-input-mode, the answer must volunteer
+// the default foreground/background reports as well, and everything written
+// into the pty must be win32-input-mode encoded.
+func TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "copilot",
+		foregroundPid:     42,
+		pty:               wrapPty(inputWriter),
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	const foregroundReport = "\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	const paletteReport = "\x1b]4;0;rgb:0000/0000/0000\x1b\\"
+	server.themeHint = []byte(foregroundReport + backgroundReport + paletteReport)
+
+	server.handleWindowOutput("@1", []byte("\x1b[?9001h\x1b]4;0;?\x1b\\"))
+
+	encodedPalette := win32EncodeSequence(paletteReport)
+	encodedForeground := win32EncodeSequence(foregroundReport)
+	encodedBackground := win32EncodeSequence(backgroundReport)
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, encodedPalette) &&
+			strings.Contains(output, encodedForeground) &&
+			strings.Contains(output, encodedBackground)
+	})
+	if strings.Contains(got, "\x1b]") {
+		t.Fatalf("window pty got raw OSC bytes under win32-input-mode: %q", got)
+	}
+}
+
+// TestWin32InputModeResetRestoresRawThemeAnswers verifies that once DEC
+// private mode 9001 is reset, theme answers are written raw again and default
+// colour reports are no longer volunteered.
+func TestWin32InputModeResetRestoresRawThemeAnswers(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               wrapPty(inputWriter),
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	server.themeHint = []byte(backgroundReport)
+
+	server.handleWindowOutput("@1", []byte("\x1b[?9001h\x1b[?9001l\x1b]11;?\x1b\\"))
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("window pty got = %q, want raw background report %q", got, backgroundReport)
+	}
+}
+
 // TestActiveOutputKeepsUnansweredPaletteQueryInAttach verifies that when the
 // theme hint cannot answer every key in a multi-key OSC 4 palette query, the
 // query is left intact so the SSH client can still reply.
