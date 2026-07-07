@@ -8,3 +8,17 @@ The private beta app queries only the private App Store product IDs:
 - monkeyssh_pro_monthly
 - monkeyssh_pro_annual
 - monkeyssh_pro_lifetime
+
+MonkeySSH includes an offline App Review Demo that does not require an account, private SSH server, or external credentials.
+
+To access it:
+1. Open MonkeySSH.
+2. Go to Settings.
+3. Scroll to About.
+4. Tap App Review Demo.
+5. Tap Load demo data.
+6. Open the seeded App Review Demo hosts from the Hosts screen.
+
+The demo hosts connect to an in-app local demo transport. They include pre-populated hosts, keys, snippets, SFTP sample files, port-forward rules, host-specific themes, and local MonkeyMux windows. The MonkeyMux demo supports switching windows and creating additional windows, with panes representing Copilot CLI, Claude Code, OpenCode, Codex, Gemini CLI, Antigravity, and SFTP/shell workflows.  Note that within these connections, everything is mocked -- normally these would run on a remote machine which you must have privileged access to -- so, the actual interfaces of these CLIs, files, etc., would be fully functional rather than what you see in the app.
+
+No username or password is required for the demo.
