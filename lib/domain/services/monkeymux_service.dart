@@ -129,12 +129,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     Duration agentSessionMetadataPeriodicRefreshInterval = const Duration(
       seconds: 10,
     ),
+    @visibleForTesting Duration? controlResponseTimeout,
   }) : _installer = installer,
        _agentSessionMetadataPeriodicRefreshInterval =
-           agentSessionMetadataPeriodicRefreshInterval;
+           agentSessionMetadataPeriodicRefreshInterval,
+       _controlResponseTimeout = controlResponseTimeout;
 
   final MonkeyMuxInstallerService _installer;
   final Duration _agentSessionMetadataPeriodicRefreshInterval;
+
+  /// Overrides the per-command control-response timeout in tests. When null,
+  /// production timeouts based on the command type are used.
+  final Duration? _controlResponseTimeout;
 
   static final _observers =
       <_MonkeyMuxWatchKey, _MonkeyMuxWindowChangeObserver>{};
@@ -306,6 +312,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
           _observers.remove(key);
           _cancelAgentMetadataPeriodicRefresh(key);
         },
+        controlResponseTimeoutOverride: _controlResponseTimeout,
       ),
     );
     final cachedWindows = _windowSnapshotCache[key];
@@ -1122,6 +1129,7 @@ class _MonkeyMuxWindowChangeObserver {
     required this.onWindowList,
     required this.onWindowSnapshot,
     required this.onDispose,
+    this.controlResponseTimeoutOverride,
   }) : _controller = StreamController<TmuxWindowChangeEvent>.broadcast() {
     _controller
       ..onListen = _ensureStarted
@@ -1134,6 +1142,10 @@ class _MonkeyMuxWindowChangeObserver {
   final ValueChanged<List<TmuxWindow>> onWindowList;
   final ValueChanged<TmuxWindow> onWindowSnapshot;
   final VoidCallback onDispose;
+
+  /// Overrides the per-command control-response timeout in tests. When null,
+  /// production timeouts based on the command type are used.
+  final Duration? controlResponseTimeoutOverride;
   final StreamController<TmuxWindowChangeEvent> _controller;
   final _normalCommandQueue = Queue<_MonkeyMuxControlRequest>();
   final _lowCommandQueue = Queue<_MonkeyMuxControlRequest>();
@@ -1255,12 +1267,35 @@ class _MonkeyMuxWindowChangeObserver {
       _pendingCommands[request.id] = request;
       try {
         controlSession.write(utf8.encode('${jsonEncode(request.payload)}\n'));
+        request.scheduleTimeout(
+          controlResponseTimeoutOverride ??
+              _oneShotResponseTimeout(request.payload),
+          () => _handleRequestTimeout(request),
+        );
       } on Object catch (error, stackTrace) {
         _pendingCommands.remove(request.id);
         _handleError(error, stackTrace);
         Error.throwWithStackTrace(error, stackTrace);
       }
     }
+  }
+
+  void _handleRequestTimeout(_MonkeyMuxControlRequest request) {
+    if (_disposed) return;
+    if (!_pendingCommands.containsKey(request.id)) return;
+    DiagnosticsLogService.instance.warning(
+      'monkeymux.watch',
+      'request_timeout',
+      fields: {'connectionId': session.connectionId},
+    );
+    // A missing response means the shared control channel is wedged: further
+    // commands would also stall. Fail the in-flight requests and recycle the
+    // channel so the next command runs on a fresh session instead of leaving
+    // the UI stuck on a perpetual spinner.
+    _handleError(
+      TimeoutException('MonkeyMux control command timed out.'),
+      StackTrace.current,
+    );
   }
 
   void _handleLine(String line) {
@@ -1421,17 +1456,31 @@ class _MonkeyMuxControlRequest {
   final String id;
   final Map<String, Object?> payload;
   final _completer = Completer<_MonkeyMuxControlResponse>();
+  Timer? _timeoutTimer;
 
   Future<_MonkeyMuxControlResponse> get future => _completer.future;
 
+  /// Arms a one-shot timer that fires when no response arrives in time.
+  ///
+  /// The control channel is shared across commands, so a lost, dropped, or
+  /// unparseable response would otherwise leave this request pending forever
+  /// and stall the window switcher on a perpetual spinner.
+  void scheduleTimeout(Duration timeout, void Function() onTimeout) {
+    _timeoutTimer ??= Timer(timeout, onTimeout);
+  }
+
   void complete(_MonkeyMuxControlResponse response) {
     if (!_completer.isCompleted) {
+      _timeoutTimer?.cancel();
+      _timeoutTimer = null;
       _completer.complete(response);
     }
   }
 
   void completeError(Object error, StackTrace stackTrace) {
     if (!_completer.isCompleted) {
+      _timeoutTimer?.cancel();
+      _timeoutTimer = null;
       _completer.completeError(error, stackTrace);
     }
   }
