@@ -167,34 +167,78 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
-/// Extracts terminal color-scheme update mode changes from shell output.
+/// Extracts terminal control mode changes from shell output.
 ///
 /// Some TUIs enable DEC private mode 2031 to request a report when the
-/// terminal switches between light and dark color schemes. xterm.dart does not
-/// currently model that mode, so MonkeySSH tracks it while scanning the same
-/// shell output used for other terminal control queries.
-({bool? colorSchemeUpdatesMode, String pendingInput})
+/// terminal switches between light and dark color schemes. Windows ConPTY
+/// requests DEC private mode 9001 (win32-input-mode) when a session starts.
+/// xterm.dart does not currently model either mode, so MonkeySSH tracks them
+/// while scanning the same shell output used for other terminal control
+/// queries.
+({bool? colorSchemeUpdatesMode, bool? win32InputMode, String pendingInput})
 extractTerminalControlModeUpdates({
   required String input,
   required String pendingInput,
 }) {
   final combinedInput = pendingInput + input;
   bool? colorSchemeUpdatesMode;
+  bool? win32InputMode;
 
   for (final match in _terminalPrivateModeSetResetPattern.allMatches(
     combinedInput,
   )) {
     final params = match.group(1)?.split(';') ?? const <String>[];
-    if (!params.contains('2031')) {
-      continue;
+    final isSet = match.group(2) == 'h';
+    if (params.contains('2031')) {
+      colorSchemeUpdatesMode = isSet;
     }
-    colorSchemeUpdatesMode = match.group(2) == 'h';
+    if (params.contains('9001')) {
+      win32InputMode = isSet;
+    }
   }
 
   return (
     colorSchemeUpdatesMode: colorSchemeUpdatesMode,
+    win32InputMode: win32InputMode,
     pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
   );
+}
+
+/// Re-encodes OSC and DCS responses so they survive a Windows ConPTY.
+///
+/// Windows ConPTY (conhost, used by Win32-OpenSSH) requests win32-input-mode
+/// (`CSI ? 9001 h`) when a session starts. Its input-side parser strips raw
+/// OSC and DCS sequences arriving on the input stream, so replies to terminal
+/// color queries never reach the remote app. Wrapping each code unit of those
+/// sequences as a win32-input-mode key event (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) makes
+/// ConPTY decode them back to the original bytes for the foreground app. CSI
+/// responses and regular keyboard input already pass through unmodified, so
+/// only OSC/DCS sequences are re-encoded.
+String encodeTerminalResponsesForWin32InputMode(String data) {
+  if (!data.contains('\x1b]') && !data.contains('\x1bP')) {
+    return data;
+  }
+  final output = StringBuffer();
+  var cursor = 0;
+  for (final match in _terminalOscOrDcsSequencePattern.allMatches(data)) {
+    output.write(data.substring(cursor, match.start));
+    _writeWin32InputModeKeyEvents(output, match.group(0)!);
+    cursor = match.end;
+  }
+  output.write(data.substring(cursor));
+  return output.toString();
+}
+
+void _writeWin32InputModeKeyEvents(StringBuffer output, String sequence) {
+  for (final codeUnit in sequence.codeUnits) {
+    // CSI Vk;Sc;Uc;Kd;Cs;Rc _ with only the Unicode char, key-down, and
+    // repeat-count fields set, mirroring how Windows Terminal forwards
+    // characters that have no associated virtual key.
+    output
+      ..write('\x1b[0;0;')
+      ..write(codeUnit)
+      ..write(';1;0;1_');
+  }
 }
 
 /// Normalizes terminal-generated output before it is sent to the remote shell.
@@ -541,6 +585,9 @@ final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
+final _terminalOscOrDcsSequencePattern = RegExp(
+  r'\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)',
+);
 final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
@@ -3005,6 +3052,13 @@ class SshSession {
   bool get terminalColorSchemeUpdatesMode =>
       _runtime.terminalColorSchemeUpdatesMode;
 
+  /// Whether the remote requested win32-input-mode (DEC private mode 9001).
+  ///
+  /// Only Windows ConPTY (conhost) requests this mode, so it doubles as a
+  /// protocol-level signal that a ConPTY sits between MonkeySSH and the
+  /// foreground app.
+  bool get terminalWin32InputMode => _runtime.terminalWin32InputMode;
+
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
@@ -3198,6 +3252,25 @@ class SshSession {
     _terminalPreview = null;
     _terminalPreviewSnapshot = null;
     _windowTitle = null;
+    _lastVolunteeredThemeDefaultsAt = null;
+  }
+
+  DateTime? _lastVolunteeredThemeDefaultsAt;
+
+  /// A color interrogation arrives as a burst of palette queries; volunteer
+  /// the default foreground/background reports once per burst rather than
+  /// once per query.
+  static const _volunteeredThemeDefaultsWindow = Duration(seconds: 1);
+
+  bool _shouldVolunteerThemeDefaults() {
+    final now = DateTime.now();
+    final last = _lastVolunteeredThemeDefaultsAt;
+    if (last != null &&
+        now.difference(last) < _volunteeredThemeDefaultsWindow) {
+      return false;
+    }
+    _lastVolunteeredThemeDefaultsAt = now;
+    return true;
   }
 
   void _handleWindowTitleChange(String title) {
@@ -3267,7 +3340,24 @@ class SshSession {
           },
         );
       } else {
-        shell.write(utf8.encode(themeOscResponse));
+        final win32InputMode = _runtime.terminalWin32InputMode;
+        var payload = themeOscResponse;
+        final volunteersThemeDefaults =
+            win32InputMode && code == '4' && _shouldVolunteerThemeDefaults();
+        if (volunteersThemeDefaults) {
+          // Windows ConPTY consumes OSC 10/11 queries without forwarding or
+          // answering them, so an app interrogating terminal colors (visible
+          // through its OSC 4 palette queries, which do pass through) never
+          // learns the default foreground/background. Volunteer those reports
+          // alongside the palette answer while the app is parsing replies.
+          payload += buildTerminalThemeDefaultColorReports(terminalTheme!);
+        }
+        if (win32InputMode) {
+          // ConPTY strips raw OSC replies from the input stream; re-encode
+          // them as win32-input-mode key events so they reach the app.
+          payload = encodeTerminalResponsesForWin32InputMode(payload);
+        }
+        shell.write(utf8.encode(payload));
         DiagnosticsLogService.instance.debug(
           'terminal.osc',
           'theme_query_answered',
@@ -3275,7 +3365,9 @@ class SshSession {
             'connectionId': connectionId,
             'code': code,
             'themeId': terminalTheme!.id,
-            'responseBytes': themeOscResponse.length,
+            'responseBytes': payload.length,
+            'win32InputMode': win32InputMode,
+            'volunteeredThemeDefaults': volunteersThemeDefaults,
           },
         );
       }
