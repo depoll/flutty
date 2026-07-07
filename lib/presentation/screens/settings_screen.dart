@@ -1331,6 +1331,14 @@ class _AboutSection extends ConsumerWidget {
           onTap: () => unawaited(_copyGitHubUrl(context)),
         ),
         ListTile(
+          leading: const Icon(Icons.fact_check_outlined),
+          title: const Text('App Review Demo'),
+          subtitle: const Text(
+            'Load a pre-populated local workspace for review',
+          ),
+          onTap: () => context.pushNamed(Routes.appReviewDemo),
+        ),
+        ListTile(
           leading: const Icon(Icons.description_outlined),
           title: const Text('Licenses'),
           subtitle: const Text('Open source licenses'),
