@@ -1763,39 +1763,42 @@ ${_ansi('38;5;245', 'tab agents   ctrl+p commands')}
       window.name.toLowerCase().contains('claude')) {
     return '''
 ${_ansi('38;5;208;1', '✻ Claude Code v2.1.201')}
-${_ansi('38;5;238', '╭────────────────────────────────────────────╮')}
-${_ansi('38;5;238', '│')}              ${_ansi('38;5;252;1', 'Welcome back!')}              ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '│')}                                        ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '│')}  ${_ansi('38;5;208', '▐▛███▜▌')}   Working directory         ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '│')}  ${_ansi('38;5;208', '▝▜█████▛▘')} ${_ansi('38;5;110', path.replaceFirst('/home/reviewer/', '~/'))} ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '│')}   ${_ansi('38;5;208', '▘▘ ▝▝')}                              ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '╰────────────────────────────────────────────╯')}
+
+${_ansi('38;5;245', 'Welcome back')}
+${_ansi('38;5;245', 'Opus 4.8 · /fast')}
+
+${_ansi('38;5;208', '▌')} ${_ansi('38;5;252;1', 'Working directory')}
+  ${_ansi('38;5;110', path.replaceFirst('/home/reviewer/', '~/'))}
 
 ${_ansi('38;5;208', '●')} Plan
-  ${_ansi('38;5;70', '✓')} App Review demo flow
-  ${_ansi('38;5;70', '✓')} MonkeyMux windows
-  ${_ansi('38;5;70', '✓')} flutter analyze
+ ${_ansi('38;5;70', '✓')} App Review demo flow
+ ${_ansi('38;5;70', '✓')} MonkeyMux windows
+ ${_ansi('38;5;70', '✓')} flutter analyze
 
-${_ansi('38;5;245', '────────────────────────────── ↯ /fast ─')}
+${_ansi('38;5;245', '──────────── ↯ /fast ─')}
 ${_ansi('38;5;208', '❯')} Try "make the demo panes feel real"
 ''';
   }
   if (tool == AgentLaunchTool.openCode ||
       window.name.toLowerCase().contains('opencode')) {
     return '''
-${_ansi('48;2;10;10;10;38;2;238;238;238;1', '        OPEN CODE        ')}
+${_ansi('48;2;10;10;10;38;2;238;238;238;1', '      OPEN CODE      ')}
 
-${_ansi('38;2;92;156;245', '┃')} ${_ansi('48;2;30;30;30;38;2;128;128;128', 'Ask anything... "What is this project?" ')}
-${_ansi('38;2;92;156;245', '╹')} ${_ansi('38;2;30;30;30', '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀')}
+${_ansi('38;2;92;156;245', '┃')} ${_ansi('48;2;30;30;30;38;2;128;128;128', 'Ask anything...')}
+${_ansi('38;2;92;156;245', '╹')} ${_ansi('38;2;30;30;30', '▀▀▀▀▀▀▀▀▀▀▀▀')}
 
 ${_ansi('38;2;92;156;245', 'Build')} ${_ansi('38;5;245', '· Claude Opus 4.8 Fast')}
 ${_ansi('38;5;245', 'GitHub Copilot provider')}
 
-${_ansi('38;5;36', '┌ files ───────┬ editor ───────────────┐')}
-${_ansi('38;5;36', '│')} README.md   ${_ansi('38;5;36', '│')} 1 # App Review Demo       ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')} src/main    ${_ansi('38;5;36', '│')} 2 Local MonkeyMux panes   ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')} logs/app    ${_ansi('38;5;36', '│')} 3 switch like real CLIs   ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '└──────────────┴───────────────────────┘')}
+${_ansi('38;5;36', 'files')}
+  README.md
+  src/main.dart
+  logs/app.log
+
+${_ansi('38;5;36', 'editor  README.md')}
+ 1 # App Review Demo
+ 2 Local MonkeyMux panes
+ 3 switch like real CLIs
 
 ${_ansi('38;5;252', 'tab')} ${_ansi('38;5;245', 'agents')}   ${_ansi('38;5;252', 'ctrl+p')} ${_ansi('38;5;245', 'commands')}
 ''';
@@ -1804,9 +1807,9 @@ ${_ansi('38;5;252', 'tab')} ${_ansi('38;5;245', 'agents')}   ${_ansi('38;5;252',
       window.name.toLowerCase().contains('codex')) {
     return '''
 ${_ansi('38;5;51;1', 'Codex CLI (demo)')} ${_ansi('38;5;245', 'gpt-5.3-codex')}
-${_ansi('38;5;238', '╭────────────────────────────────────────────╮')}
-${_ansi('38;5;238', '│')} ${_ansi('38;5;51', '✨')} ${_ansi('38;5;252;1', 'Task')} render local MonkeyMux panes     ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '╰────────────────────────────────────────────╯')}
+
+${_ansi('38;5;51', '✨')} ${_ansi('38;5;252;1', 'Task')}
+  render local MonkeyMux panes
 
 ${_ansi('38;5;51', 'thinking')} inspect live TUI references
 ${_ansi('38;5;51', 'thinking')} build compact ANSI mock screens
@@ -1823,11 +1826,11 @@ ${_ansi('38;5;245', '› Ask Codex for a follow-up')}
       window.name.toLowerCase().contains('gemini')) {
     return '''
 ${_ansi('38;5;99;1', '✦ Gemini CLI (demo)')} ${_ansi('38;5;245', '2.5 Pro')}
-${_ansi('38;5;99', '╭──────── loaded context ─────────╮')}
-${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} PRODUCT.md                  ${_ansi('38;5;99', '│')}
-${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} DESIGN.md                   ${_ansi('38;5;99', '│')}
-${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} lib/domain/services        ${_ansi('38;5;99', '│')}
-${_ansi('38;5;99', '╰─────────────────────────────────╯')}
+
+${_ansi('38;5;99', 'loaded context')}
+ ${_ansi('38;5;45', '✓')} PRODUCT.md
+ ${_ansi('38;5;45', '✓')} DESIGN.md
+ ${_ansi('38;5;45', '✓')} lib/domain/services
 
 ${_ansi('38;5;45;1', 'Gemini summary')}
   Local MonkeyMux state is active.
@@ -1840,9 +1843,9 @@ ${_ansi('48;5;57;38;5;231', '  Enter prompt  ')} ${_ansi('38;5;245', 'ctrl+j new
       window.name.toLowerCase().contains('antigravity')) {
     return '''
 ${_ansi('48;5;54;38;5;231;1', ' Antigravity (demo) ')}
-${_ansi('38;5;141', '╭──────── objective ─────────╮')}
-${_ansi('38;5;141', '│')} Verify mobile SSH agents ${_ansi('38;5;141', '│')}
-${_ansi('38;5;141', '╰────────────────────────────╯')}
+
+${_ansi('38;5;141', 'objective')}
+  Verify mobile SSH agents
 
 Workspace
   ${_ansi('38;5;111', '~/work/monkeyssh-demo')}
