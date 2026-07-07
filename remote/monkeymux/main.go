@@ -2998,6 +2998,18 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		agentToolFromCommandText(options.command),
 		agentToolFromCommandName(name),
 	)
+	// Keep agent windows open when the agent exits abnormally right after
+	// launching, so a fast startup failure (for example a locked macOS login
+	// keychain that makes cursor-agent print an error and exit immediately)
+	// stays on screen instead of the window closing before it can be read.
+	if len(options.args) == 0 &&
+		strings.TrimSpace(options.command) != "" &&
+		agentTool != "" {
+		cmd = shellCommandForScript(
+			shell,
+			holdAgentWindowCommand(shell, strings.TrimSpace(options.command)),
+		)
+	}
 	paneTitle := firstNonEmptyString(options.paneTitle, name)
 	cursorVisible := true
 	if options.cursorVisibilityKnown {

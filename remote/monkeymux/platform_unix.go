@@ -154,6 +154,40 @@ func shellCommandForScript(shell string, command string) *exec.Cmd {
 	return cmd
 }
 
+// agentWindowHoldThresholdSeconds bounds how soon after launch an abnormal agent
+// exit still holds the window open. Startup failures surface within a couple of
+// seconds; a later exit is treated as the user ending the session normally, so
+// the window closes as usual.
+const agentWindowHoldThresholdSeconds = 12
+
+// holdAgentWindowCommand wraps an agent launch command so the window survives a
+// fast, abnormal exit. If the agent exits non-zero within
+// agentWindowHoldThresholdSeconds, the terminal is restored to a sane state and
+// an interactive shell replaces it, keeping the failure output on screen and
+// letting the user recover (for example, `security unlock-keychain` on a locked
+// macOS login keychain) and relaunch. A clean exit, or one after the session has
+// been running for a while, lets the window close normally. An intentional
+// window close signals SIGHUP to the whole process group, terminating this
+// wrapping shell before the fallback runs, so closing a window never lingers.
+func holdAgentWindowCommand(shell string, command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return command
+	}
+	notice := "[MonkeySSH] Agent exited (status %s) right after launch. " +
+		"Keeping this window open so you can read the error above; " +
+		"fix it and relaunch, or close the window."
+	return "__mm_t0=$(date +%s 2>/dev/null || echo 0); " +
+		command + "; __mm_rc=$?; " +
+		"__mm_t1=$(date +%s 2>/dev/null || echo 0); " +
+		"if [ \"$__mm_rc\" -ne 0 ] && " +
+		"[ \"$((__mm_t1 - __mm_t0))\" -lt " +
+		strconv.Itoa(agentWindowHoldThresholdSeconds) + " ]; then " +
+		"stty sane 2>/dev/null; " +
+		"printf '\\r\\n" + notice + "\\r\\n' \"$__mm_rc\"; " +
+		"exec " + shellQuote(shell) + " -i; fi"
+}
+
 func readProcessTable() map[int]processInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
 	defer cancel()
