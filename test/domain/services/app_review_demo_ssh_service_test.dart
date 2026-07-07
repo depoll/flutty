@@ -80,7 +80,7 @@ void main() {
       ),
     );
     final copilotScreen = session.shellStdoutStream.firstWhere(
-      (chunk) => chunk.contains('GitHub Copilot CLI (demo)'),
+      (chunk) => chunk.contains('GitHub Copilot CLI'),
     );
     final windows = await mux.listWindows(session, 'review-workspace');
     expect(await copilotScreen, contains('Review PR #643'));
@@ -105,7 +105,7 @@ void main() {
     expect(withCodex.singleWhere((window) => window.isActive).name, 'Codex');
 
     final claudeScreen = session.shellStdoutStream.firstWhere(
-      (chunk) => chunk.contains('Claude Code (demo)'),
+      (chunk) => chunk.contains('Claude Code v'),
     );
     await mux.selectWindow(session, 'review-workspace', 1);
     expect(await claudeScreen, contains('Working directory'));
