@@ -20,6 +20,9 @@ enum AgentLaunchTool {
 
   /// Antigravity CLI.
   antigravity,
+
+  /// Cursor Agent CLI.
+  cursorAgent,
 }
 
 /// Presentation helpers for [AgentLaunchTool].
@@ -32,6 +35,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
     AgentLaunchTool.antigravity => 'Antigravity',
+    AgentLaunchTool.cursorAgent => 'Cursor Agent',
   };
 
   /// Shell command used to launch this tool.
@@ -42,6 +46,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => 'opencode',
     AgentLaunchTool.geminiCli => 'gemini',
     AgentLaunchTool.antigravity => 'agy',
+    AgentLaunchTool.cursorAgent => 'cursor-agent',
   };
 
   /// All candidate command names that can refer to this tool.
@@ -56,6 +61,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
       'antigravity',
       'antigravity-cli',
     ],
+    AgentLaunchTool.cursorAgent => const ['cursor-agent'],
   };
 
   /// Whether this tool supports session resume.
@@ -66,6 +72,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
     AgentLaunchTool.antigravity => true,
+    AgentLaunchTool.cursorAgent => true,
   };
 
   /// Matching discovered-session provider name, if this tool supports recent
@@ -77,6 +84,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
     AgentLaunchTool.antigravity => 'Antigravity',
+    AgentLaunchTool.cursorAgent => 'Cursor Agent',
   };
 
   /// Whether this tool supports launching directly into YOLO mode.
@@ -91,6 +99,7 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => const [],
     AgentLaunchTool.geminiCli => const ['--yolo'],
     AgentLaunchTool.antigravity => const ['--dangerously-skip-permissions'],
+    AgentLaunchTool.cursorAgent => const ['--force'],
   };
 
   /// Environment variables that enable YOLO mode for this tool.
@@ -117,6 +126,7 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
     'opencode' || 'open-code' => AgentLaunchTool.openCode,
     'gemini' || 'gemini-cli' => AgentLaunchTool.geminiCli,
     'agy' || 'antigravity' || 'antigravity-cli' => AgentLaunchTool.antigravity,
+    'cursor-agent' => AgentLaunchTool.cursorAgent,
     _ => null,
   };
 }
@@ -353,6 +363,7 @@ final _antigravityDangerouslySkipPermissionsPattern = RegExp(
 final _openCodeDangerouslySkipPermissionsPattern = RegExp(
   r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
 );
+final _cursorForcePattern = RegExp(r'(?<!\S)(?:--force|--yolo|-f)(?=\s|$)');
 
 /// Builds the shell command for a saved agent launch preset.
 String buildAgentLaunchCommand(
@@ -448,6 +459,10 @@ List<String> _buildAgentResumeArguments(
     sessionId == '_continue'
         ? const ['--continue']
         : ['--session', _quoteShellArgument(sessionId)],
+  AgentLaunchTool.cursorAgent =>
+    sessionId == '_continue'
+        ? const ['--continue']
+        : ['--resume', _quoteShellArgument(sessionId)],
 };
 
 String? _normalizeAgentToolArguments({
@@ -489,6 +504,10 @@ String? _normalizeAgentToolArguments({
     AgentLaunchTool.antigravity => _stripArgumentPatterns(
       trimmedAdditionalArguments,
       [_antigravityDangerouslySkipPermissionsPattern],
+    ),
+    AgentLaunchTool.cursorAgent => _stripArgumentPatterns(
+      trimmedAdditionalArguments,
+      [_cursorForcePattern],
     ),
   };
 
