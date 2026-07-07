@@ -1,10 +1,18 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 void main() {
   group('RemoteMuxBackendPresentation', () {
@@ -396,4 +404,140 @@ void main() {
       expect(windows.single.agentSessionTitle, 'Current Copilot session');
     });
   });
+
+  group('MonkeyMux control channel timeout', () {
+    setUpAll(() => registerFallbackValue(Uint8List(0)));
+
+    test(
+      'listWindows fails instead of hanging when no response arrives',
+      () async {
+        final client = _MockSshClient();
+        final installer = _MockMonkeyMuxInstaller();
+        final session = _buildSession(client, connectionId: 900);
+        // A control channel that opens successfully but never emits a response
+        // line reproduces the stuck window switcher: without a timeout the
+        // request completer would never resolve.
+        final stdoutController = StreamController<Uint8List>();
+        final controlSession = _buildSilentControlSession(stdoutController);
+
+        when(
+          () => installer.ensureInstalled(session),
+        ).thenAnswer((_) async => _fakeInstallation);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => controlSession);
+
+        final service = MonkeyMuxService(
+          installer: installer,
+          agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+          controlResponseTimeout: const Duration(milliseconds: 80),
+        );
+
+        // Registering the observer routes listWindows through the persistent
+        // control channel, which is the path that previously lacked a timeout.
+        final stuckReload = (service..watchWindowChanges(session, 'work'))
+            .listWindows(session, 'work');
+
+        await expectLater(stuckReload, throwsA(isA<TimeoutException>()));
+
+        // A subsequent reload succeeds once the control channel responds, proving
+        // the timeout unblocks the window switcher instead of wedging it.
+        final reconnectController = StreamController<Uint8List>();
+        final reconnectSession = _buildRespondingControlSession(
+          reconnectController,
+          window: _fakeWindowJson,
+        );
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => reconnectSession);
+
+        final windows = await service.listWindows(session, 'work');
+        expect(windows, hasLength(1));
+        expect(windows.single.name, 'Codex');
+
+        await reconnectController.close();
+        await stdoutController.close();
+        await service.clearCache(900);
+      },
+    );
+  });
+}
+
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockExecSession extends Mock implements SSHSession {}
+
+class _MockByteSink extends Mock implements StreamSink<Uint8List> {}
+
+class _MockMonkeyMuxInstaller extends Mock
+    implements MonkeyMuxInstallerService {}
+
+const _fakeInstallation = MonkeyMuxInstallation(
+  executablePath: '/home/tester/.monkeyssh/bin/monkeymux',
+  platform: 'linux-amd64',
+  version: '0.1.89',
+);
+
+const _fakeWindowJson = <String, Object?>{
+  'id': '@1',
+  'index': 0,
+  'name': 'Codex',
+  'active': true,
+  'currentCommand': 'codex',
+};
+
+SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
+    SshSession(
+      connectionId: connectionId,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'tester',
+      ),
+    );
+
+SSHSession _buildSilentControlSession(
+  StreamController<Uint8List> stdoutController,
+) {
+  final session = _MockExecSession();
+  final stdinSink = _MockByteSink();
+  when(stdinSink.close).thenAnswer((_) async {});
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
+  when(() => session.done).thenAnswer((_) => Completer<void>().future);
+  when(() => session.stdin).thenAnswer((_) => stdinSink);
+  when(session.close).thenAnswer((_) {});
+  when(() => session.write(any())).thenAnswer((_) {});
+  return session;
+}
+
+SSHSession _buildRespondingControlSession(
+  StreamController<Uint8List> stdoutController, {
+  required Map<String, Object?> window,
+}) {
+  final session = _MockExecSession();
+  final stdinSink = _MockByteSink();
+  when(stdinSink.close).thenAnswer((_) async {});
+  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
+  when(() => session.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
+  when(() => session.done).thenAnswer((_) => Completer<void>().future);
+  when(() => session.stdin).thenAnswer((_) => stdinSink);
+  when(session.close).thenAnswer((_) {});
+  when(() => session.write(any())).thenAnswer((invocation) {
+    final data = invocation.positionalArguments.single as List<int>;
+    final request = jsonDecode(utf8.decode(data)) as Map<String, Object?>;
+    final response = jsonEncode({
+      'id': request['id'],
+      'type': 'window_list',
+      'status': 'ok',
+      'windows': [window],
+    });
+    scheduleMicrotask(
+      () =>
+          stdoutController.add(Uint8List.fromList(utf8.encode('$response\n'))),
+    );
+  });
+  return session;
 }
