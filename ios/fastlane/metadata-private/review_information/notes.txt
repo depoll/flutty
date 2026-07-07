@@ -7,7 +7,6 @@ The purchase flow shows the subscription title, monthly/annual renewal lengths, 
 The private beta app queries only the private App Store product IDs:
 - monkeyssh_pro_monthly
 - monkeyssh_pro_annual
-- monkeyssh_pro_lifetime
 
 MonkeySSH includes an offline App Review Demo that does not require an account, private SSH server, or external credentials.
 
