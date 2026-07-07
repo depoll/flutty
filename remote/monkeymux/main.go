@@ -56,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.91"
+	monkeyMuxVersion                  = "0.1.92"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -277,6 +277,9 @@ var (
 		},
 		"antigravity": {
 			regexp.MustCompile(`(?:^|\s)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"cursor-agent": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
 		},
 	}
 )
@@ -1173,6 +1176,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	}
 	panePids := map[int]struct{}{}
 	hasAntigravityWindows := false
+	hasCursorWindows := false
 	for _, window := range restore.Windows {
 		if strings.TrimSpace(window.AgentSessionID) != "" {
 			continue
@@ -1180,6 +1184,9 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		tool := agentToolForRestore(window)
 		if tool == "antigravity" {
 			hasAntigravityWindows = true
+		}
+		if tool == "cursor-agent" {
+			hasCursorWindows = true
 		}
 		if tool == "" || window.PanePid <= 0 {
 			continue
@@ -1190,8 +1197,15 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	if hasAntigravityWindows {
 		antigravitySessions = discoverAntigravitySessionIDs(restore)
 	}
+	cursorSessions := map[int]string{}
+	if hasCursorWindows {
+		cursorSessions = discoverCursorSessionIDs(restore)
+	}
 	if len(panePids) == 0 {
 		for i, sessionID := range antigravitySessions {
+			restore.Windows[i].AgentSessionID = sessionID
+		}
+		for i, sessionID := range cursorSessions {
 			restore.Windows[i].AgentSessionID = sessionID
 		}
 		assignCopilotSessionsByWorkingDirectory(restore)
@@ -1236,6 +1250,11 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		}
 		if tool == "antigravity" {
 			if sessionID := antigravitySessions[i]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+			}
+		}
+		if tool == "cursor-agent" {
+			if sessionID := cursorSessions[i]; sessionID != "" {
 				restore.Windows[i].AgentSessionID = sessionID
 			}
 		}
@@ -1346,6 +1365,168 @@ func antigravitySessionIDForWorkspace(
 }
 
 func normalizedAntigravityWorkspacePath(value string) string {
+	workspace := strings.TrimSpace(value)
+	if workspace == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(workspace), "file://") {
+		if path := pathFromOsc7(workspace); path != "" {
+			workspace = path
+		}
+	}
+	if expanded, err := expandHomePath(workspace); err == nil {
+		workspace = expanded
+	}
+	return filepath.Clean(workspace)
+}
+
+// ── Cursor Agent ─────────────────────────────────────────────────────────────
+// Cursor persists chats under ~/.cursor/chats/<workspaceHash>/<chatId>/meta.json.
+// A fresh `cursor-agent` launch carries no resumable id in its process args, so
+// after a MonkeyMux helper update recreates its windows the id is recovered from
+// the chat store keyed by the pane's working directory (matching meta.json cwd).
+
+type cursorChatEntry struct {
+	chatID    string
+	cwd       string
+	updatedAt int64
+}
+
+func discoverCursorSessionIDs(restore *serverRestore) map[int]string {
+	entries := readCursorChatEntries()
+	if len(entries) == 0 {
+		return nil
+	}
+	latestSessionID := latestCursorSessionID(entries)
+	needsFallback := cursorRestoreWindowCount(restore) == 1
+	sessions := map[int]string{}
+	for i, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) != "" ||
+			agentToolForRestore(window) != "cursor-agent" {
+			continue
+		}
+		if sessionID := cursorSessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+			sessions[i] = sessionID
+			continue
+		}
+		if needsFallback && latestSessionID != "" {
+			sessions[i] = latestSessionID
+		}
+	}
+	return sessions
+}
+
+func cursorRestoreWindowCount(restore *serverRestore) int {
+	if restore == nil {
+		return 0
+	}
+	count := 0
+	for _, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) == "" &&
+			agentToolForRestore(window) == "cursor-agent" {
+			count++
+		}
+	}
+	return count
+}
+
+// readCursorChatEntries reads recent Cursor chat metadata, ordered oldest to
+// newest so the newest match wins a reverse scan.
+func readCursorChatEntries() []cursorChatEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	chatsRoot := filepath.Join(home, ".cursor", "chats")
+	workspaceDirs, err := os.ReadDir(chatsRoot)
+	if err != nil {
+		return nil
+	}
+	entries := []cursorChatEntry{}
+	for _, workspaceDir := range workspaceDirs {
+		if !workspaceDir.IsDir() {
+			continue
+		}
+		chatDirs, err := os.ReadDir(filepath.Join(chatsRoot, workspaceDir.Name()))
+		if err != nil {
+			continue
+		}
+		for _, chatDir := range chatDirs {
+			if !chatDir.IsDir() {
+				continue
+			}
+			metaPath := filepath.Join(
+				chatsRoot,
+				workspaceDir.Name(),
+				chatDir.Name(),
+				"meta.json",
+			)
+			if entry, ok := readCursorChatMeta(metaPath, chatDir.Name()); ok {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	sort.SliceStable(entries, func(a, b int) bool {
+		return entries[a].updatedAt < entries[b].updatedAt
+	})
+	return entries
+}
+
+func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cursorChatEntry{}, false
+	}
+	var raw struct {
+		Cwd             string `json:"cwd"`
+		UpdatedAtMs     int64  `json:"updatedAtMs"`
+		CreatedAtMs     int64  `json:"createdAtMs"`
+		HasConversation *bool  `json:"hasConversation"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return cursorChatEntry{}, false
+	}
+	if raw.HasConversation != nil && !*raw.HasConversation {
+		return cursorChatEntry{}, false
+	}
+	sessionID := strings.TrimSpace(chatID)
+	if sessionID == "" {
+		return cursorChatEntry{}, false
+	}
+	updatedAt := raw.UpdatedAtMs
+	if updatedAt == 0 {
+		updatedAt = raw.CreatedAtMs
+	}
+	return cursorChatEntry{
+		chatID:    sessionID,
+		cwd:       normalizedCursorWorkspacePath(raw.Cwd),
+		updatedAt: updatedAt,
+	}, true
+}
+
+func latestCursorSessionID(entries []cursorChatEntry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if sessionID := strings.TrimSpace(entries[i].chatID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func cursorSessionIDForWorkspace(entries []cursorChatEntry, workspace string) string {
+	normalizedWorkspace := normalizedCursorWorkspacePath(workspace)
+	if normalizedWorkspace == "" {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].cwd == normalizedWorkspace {
+			return entries[i].chatID
+		}
+	}
+	return ""
+}
+
+func normalizedCursorWorkspacePath(value string) string {
 	workspace := strings.TrimSpace(value)
 	if workspace == "" {
 		return ""
@@ -2827,6 +3008,18 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		agentToolFromCommandText(options.command),
 		agentToolFromCommandName(name),
 	)
+	// Keep agent windows open when the agent exits abnormally right after
+	// launching, so a fast startup failure (for example a locked macOS login
+	// keychain that makes cursor-agent print an error and exit immediately)
+	// stays on screen instead of the window closing before it can be read.
+	if len(options.args) == 0 &&
+		strings.TrimSpace(options.command) != "" &&
+		agentTool != "" {
+		cmd = shellCommandForScript(
+			shell,
+			holdAgentWindowCommand(shell, strings.TrimSpace(options.command)),
+		)
+	}
 	paneTitle := firstNonEmptyString(options.paneTitle, name)
 	cursorVisible := true
 	if options.cursorVisibilityKnown {
@@ -5841,6 +6034,11 @@ func agentCommandNameFromProcessArgs(args string) string {
 	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
 		strings.Contains(lowered, "/claude-code/"):
 		return "claude"
+	case strings.Contains(lowered, "cursor-agent/versions/"):
+		// The `cursor-agent`/`agent` launchers are Node wrappers whose argv[0]
+		// (often the generic `agent`) is ambiguous, so match the versioned
+		// install path instead.
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -5868,6 +6066,8 @@ func agentToolFromCommandName(command string) string {
 		return "gemini"
 	case "agy", "antigravity", "antigravity-cli":
 		return "antigravity"
+	case "cursor-agent":
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -5905,6 +6105,11 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "agy --dangerously-skip-permissions"
 		}
 		return "agy"
+	case "cursor-agent":
+		if startInYoloMode {
+			return "cursor-agent --force"
+		}
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -5953,6 +6158,15 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return commandPrefix + "--continue"
 		}
 		return commandPrefix + "--conversation " + quotedSessionID
+	case "cursor-agent":
+		commandPrefix := "cursor-agent"
+		if startInYoloMode {
+			commandPrefix = "cursor-agent --force"
+		}
+		if sessionID == "_continue" {
+			return commandPrefix + " --continue"
+		}
+		return commandPrefix + " --resume " + quotedSessionID
 	default:
 		return ""
 	}
@@ -6012,6 +6226,10 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "agy" || normalized == "antigravity" ||
 		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
 		return "antigravity"
+	case normalized == "cursor agent" ||
+		normalized == "cursor-agent" || normalized == "cursor cli" ||
+		strings.HasPrefix(normalized, "cursor agent "):
+		return "cursor-agent"
 	default:
 		return ""
 	}

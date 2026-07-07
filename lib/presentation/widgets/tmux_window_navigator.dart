@@ -1116,6 +1116,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
     AgentLaunchTool.geminiCli,
     AgentLaunchTool.openCode,
     AgentLaunchTool.antigravity,
+    AgentLaunchTool.cursorAgent,
   ];
 
   @override

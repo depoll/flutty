@@ -27,6 +27,26 @@ void main() {
       expect(find.byIcon(Icons.smart_toy_outlined), findsNothing);
     });
 
+    testWidgets('renders a branded svg for every supported tool', (
+      tester,
+    ) async {
+      for (final tool in AgentLaunchTool.values) {
+        await tester.pumpWidget(_wrap(AgentToolIcon(tool: tool)));
+        await tester.pump();
+
+        expect(
+          find.byType(SvgPicture),
+          findsOneWidget,
+          reason: '${tool.name} should render a branded svg',
+        );
+        expect(
+          find.byIcon(Icons.smart_toy_outlined),
+          findsNothing,
+          reason: '${tool.name} should not fall back to a Material icon',
+        );
+      }
+    });
+
     testWidgets('falls back to a Material icon for unknown tools', (
       tester,
     ) async {
