@@ -1730,6 +1730,8 @@ void _renderAppReviewDemoWindow(SshSession session, TmuxWindow window) {
   );
 }
 
+String _ansi(String code, String text) => '\x1b[${code}m$text\x1b[0m';
+
 String _appReviewDemoWindowScreen(TmuxWindow window) {
   final title = window.displayTitle;
   final path = window.currentPath ?? '/home/reviewer/work/monkeyssh-demo';
@@ -1737,126 +1739,126 @@ String _appReviewDemoWindowScreen(TmuxWindow window) {
   if (tool == AgentLaunchTool.copilotCli ||
       window.name.toLowerCase().contains('copilot')) {
     return '''
-GitHub Copilot CLI (demo)
-Window ${window.index}: $title
+${_ansi('48;5;24;38;5;231;1', ' GitHub Copilot CLI (demo) ')} ${_ansi('38;5;245', 'agent  gpt-5.5  Window ${window.index}')}
+${_ansi('38;5;39', '╭─ prompt ─────────────────────────────────────────────╮')}
+${_ansi('38;5;39', '│')} Review PR #643                                      ${_ansi('38;5;39', '│')}
+${_ansi('38;5;39', '╰───────────────────────────────────────────────────────╯')}
 
-> Review PR #643
+${_ansi('38;5;75;1', '●')} Reading workspace
+  ${_ansi('38;5;70', '✓')} lib/domain/services/monkeymux_service.dart
+  ${_ansi('38;5;70', '✓')} lib/domain/services/ssh_service.dart
 
-[1/4] Inspecting App Review demo mode       done
-[2/4] Checking local MonkeyMux windows      done
-[3/4] Running focused Flutter tests         done
-[4/4] Preparing App Review notes            done
+${_ansi('38;5;75;1', '●')} Plan
+  ${_ansi('38;5;70', '✓')} make demo MonkeyMux windows interactive
+  ${_ansi('38;5;70', '✓')} repaint terminal on selection
+  ${_ansi('38;5;70', '✓')} keep review data local
 
-Suggested next step:
-  /deploy
+${_ansi('38;5;75;1', '●')} Suggested next step
+  ${_ansi('38;5;231;48;5;25', ' /deploy ')}
 
-Files:
-  lib/domain/services/monkeymux_service.dart
-  lib/domain/services/ssh_service.dart
+${_ansi('38;5;240', '────────────────────────────────────────────────────────')}
+${_ansi('38;5;245', 'Copilot is ready. Ask a follow-up or switch MonkeyMux windows.')}
 ''';
   }
   if (tool == AgentLaunchTool.claudeCode ||
       window.name.toLowerCase().contains('claude')) {
     return '''
-Claude Code (demo)
-Window ${window.index}: $title
+${_ansi('38;5;208;1', '✻ Claude Code (demo)')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
+${_ansi('38;5;238', '╭──────────────────────────────────────────────────────╮')}
+${_ansi('38;5;238', '│')} ${_ansi('38;5;252;1', 'Working directory')}  ${_ansi('38;5;110', path)} ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '╰──────────────────────────────────────────────────────╯')}
 
-Working directory:
-  $path
+${_ansi('38;5;208', '●')} Plan
+  ${_ansi('38;5;70', '✓')} tighten App Review demo flow
+  ${_ansi('38;5;70', '✓')} make MonkeyMux windows interactive
+  ${_ansi('38;5;70', '✓')} run flutter analyze
 
-Plan
-  - tighten App Review demo flow
-  - make MonkeyMux windows interactive
-  - run flutter analyze
+${_ansi('38;5;208', '●')} Edits
+  ${_ansi('38;5;214', 'M')} lib/domain/services/app_review_demo_service.dart
+  ${_ansi('38;5;214', 'M')} test/domain/services/app_review_demo_ssh_service_test.dart
 
-Edit summary
-  M lib/domain/services/app_review_demo_service.dart
-  M test/domain/services/app_review_demo_ssh_service_test.dart
-
-Result: ready for review
+${_ansi('38;5;70;1', '✔')} Result: ready for review
+${_ansi('38;5;245', 'Use the MonkeyMux bar to inspect another agent pane.')}
 ''';
   }
   if (tool == AgentLaunchTool.openCode ||
       window.name.toLowerCase().contains('opencode')) {
     return '''
-OpenCode (demo)
-Window ${window.index}: $title
-
-README.md
-  1  # MonkeySSH App Review Demo
-  2
-  3  Local MonkeyMux windows exercise switching,
-  4  SFTP, snippets, and port forwards.
-  5
-  6  App Review can explore without credentials.
-
-NORMAL  utf-8  ~/work/monkeyssh-demo/README.md
+${_ansi('48;5;22;38;5;231;1', ' OpenCode (demo) ')} ${_ansi('38;5;245', 'README.md  Window ${window.index}')}
+${_ansi('38;5;36', '┌ files ─────────────┬ editor ─────────────────────────┐')}
+${_ansi('38;5;36', '│')}  README.md        ${_ansi('38;5;36', '│')}  1  # MonkeySSH App Review Demo        ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')}  package.json     ${_ansi('38;5;36', '│')}  2                                      ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')}  src/main.dart     ${_ansi('38;5;36', '│')}  3  Local MonkeyMux windows exercise   ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')}  logs/app.log      ${_ansi('38;5;36', '│')}  4  switching, SFTP, snippets, tunnels. ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')}                  ${_ansi('38;5;36', '│')}  5                                      ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')}                  ${_ansi('38;5;36', '│')}  6  App Review can explore locally.     ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '└──────────────────┴──────────────────────────────────┘')}
+${_ansi('48;5;235;38;5;252', ' NORMAL ')} ${_ansi('38;5;245', 'utf-8  ~/work/monkeyssh-demo/README.md')}
 ''';
   }
   if (tool == AgentLaunchTool.codex ||
       window.name.toLowerCase().contains('codex')) {
     return '''
-Codex CLI (demo)
-Window ${window.index}: $title
+${_ansi('38;5;51;1', 'Codex CLI (demo)')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
+${_ansi('38;5;238', '╭──────────────────────────────────────────────────────╮')}
+${_ansi('38;5;238', '│')} ${_ansi('38;5;231;1', 'Task')} implement local MonkeyMux demo window rendering ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '╰──────────────────────────────────────────────────────╯')}
 
-codex --yolo
+${_ansi('38;5;51', 'thinking')} model local windows as an in-memory mux
+${_ansi('38;5;51', 'thinking')} repaint terminal on select/create/close
 
-Task
-  implement local MonkeyMux demo window rendering
+${_ansi('38;5;70', '✓')} service branch added
+${_ansi('38;5;70', '✓')} tests cover create and select
+${_ansi('38;5;70', '✓')} analyzer clean
 
-Reasoning
-  - model windows in memory
-  - repaint the terminal on switch
-  - keep review data local
-
-Patch ready
+${_ansi('48;5;23;38;5;231', ' Patch ready ')}
 ''';
   }
   if (tool == AgentLaunchTool.geminiCli ||
       window.name.toLowerCase().contains('gemini')) {
     return '''
-Gemini CLI (demo)
-Window ${window.index}: $title
+${_ansi('38;5;99;1', '✦ Gemini CLI (demo)')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
+${_ansi('38;5;99', '╭──────────────── context ────────────────╮')}
+${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} PRODUCT.md                              ${_ansi('38;5;99', '│')}
+${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} DESIGN.md                               ${_ansi('38;5;99', '│')}
+${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} lib/domain/services/                 ${_ansi('38;5;99', '│')}
+${_ansi('38;5;99', '╰──────────────────────────────────────────╯')}
 
-Context loaded:
-  PRODUCT.md
-  DESIGN.md
-  lib/domain/services/
-
-Summary
-  The App Review demo now uses local MonkeyMux state.
+${_ansi('38;5;45;1', 'Summary')}
+  The App Review demo uses local MonkeyMux state.
   Switching windows changes this terminal screen.
+
+${_ansi('38;5;245', 'Ready for another prompt.')}
 ''';
   }
   if (tool == AgentLaunchTool.antigravity ||
       window.name.toLowerCase().contains('antigravity')) {
     return '''
-Antigravity (demo)
-Window ${window.index}: $title
+${_ansi('48;5;54;38;5;231;1', ' Antigravity (demo) ')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
+${_ansi('38;5;141', '┌ objective ───────────────────────────────────────────┐')}
+${_ansi('38;5;141', '│')} Verify mobile SSH agent workflows from the review device. ${_ansi('38;5;141', '│')}
+${_ansi('38;5;141', '└──────────────────────────────────────────────────────┘')}
 
 Workspace
-  ~/work/monkeyssh-demo
-
-Active objective
-  Verify mobile SSH agent workflows from the review device.
+  ${_ansi('38;5;111', '~/work/monkeyssh-demo')}
 
 Status
-  local demo transport online
-  MonkeyMux navigator online
+  ${_ansi('38;5;70', '●')} local demo transport online
+  ${_ansi('38;5;70', '●')} MonkeyMux navigator online
+  ${_ansi('38;5;70', '●')} window switching changes the visible pane
 ''';
   }
   return '''
-MonkeySSH SFTP / Shell (demo)
-Window ${window.index}: $title
+${_ansi('48;5;236;38;5;231;1', ' MonkeySSH SFTP / Shell (demo) ')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
 
 $path
 
-  [dir] logs
-  [dir] screenshots
-  [dir] src
-  144B  README.md
-   68B  package.json
-   39B  deploy-demo.sh
+${_ansi('38;5;33', 'drwxr-xr-x')}  logs
+${_ansi('38;5;33', 'drwxr-xr-x')}  screenshots
+${_ansi('38;5;33', 'drwxr-xr-x')}  src
+${_ansi('38;5;245', '-rw-r--r--')}  144  README.md
+${_ansi('38;5;245', '-rw-r--r--')}   68  package.json
+${_ansi('38;5;245', '-rwxr-xr-x')}   39  deploy-demo.sh
 
 Tip:
   Tap the folder button to browse the same sample files in SFTP.
