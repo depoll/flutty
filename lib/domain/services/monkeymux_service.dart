@@ -1739,105 +1739,110 @@ String _appReviewDemoWindowScreen(TmuxWindow window) {
   if (tool == AgentLaunchTool.copilotCli ||
       window.name.toLowerCase().contains('copilot')) {
     return '''
-${_ansi('48;5;24;38;5;231;1', ' GitHub Copilot CLI (demo) ')} ${_ansi('38;5;245', 'agent  gpt-5.5  Window ${window.index}')}
-${_ansi('38;5;39', '╭─ prompt ─────────────────────────────────────────────╮')}
-${_ansi('38;5;39', '│')} Review PR #643                                      ${_ansi('38;5;39', '│')}
-${_ansi('38;5;39', '╰───────────────────────────────────────────────────────╯')}
+${_ansi('48;5;24;38;5;231;1', ' GitHub Copilot CLI ')} ${_ansi('38;5;245', 'Build · gpt-5.5')}
 
-${_ansi('38;5;75;1', '●')} Reading workspace
-  ${_ansi('38;5;70', '✓')} lib/domain/services/monkeymux_service.dart
-  ${_ansi('38;5;70', '✓')} lib/domain/services/ssh_service.dart
+${_ansi('38;5;39', '┃')} ${_ansi('48;5;235;38;5;231', ' Ask Copilot to build or review code         ')}
+${_ansi('38;5;39', '┃')} Review PR #643
+${_ansi('38;5;39', '╹')} ${_ansi('38;5;238', '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀')}
 
-${_ansi('38;5;75;1', '●')} Plan
-  ${_ansi('38;5;70', '✓')} make demo MonkeyMux windows interactive
-  ${_ansi('38;5;70', '✓')} repaint terminal on selection
-  ${_ansi('38;5;70', '✓')} keep review data local
+${_ansi('38;5;75', '●')} ${_ansi('38;5;252;1', 'Reading workspace')}
+  ${_ansi('38;5;70', '✓')} monkeymux_service.dart
+  ${_ansi('38;5;70', '✓')} ssh_service.dart
 
-${_ansi('38;5;75;1', '●')} Suggested next step
-  ${_ansi('38;5;231;48;5;25', ' /deploy ')}
+${_ansi('38;5;75', '●')} ${_ansi('38;5;252;1', 'Plan')}
+  ${_ansi('38;5;70', '✓')} local MonkeyMux state
+  ${_ansi('38;5;70', '✓')} repaint terminal on switch
+  ${_ansi('38;5;70', '✓')} deterministic App Review data
 
-${_ansi('38;5;240', '────────────────────────────────────────────────────────')}
-${_ansi('38;5;245', 'Copilot is ready. Ask a follow-up or switch MonkeyMux windows.')}
+${_ansi('48;5;25;38;5;231', ' /deploy ')} ${_ansi('38;5;245', 'ready')}
+
+${_ansi('38;5;245', 'tab agents   ctrl+p commands')}
 ''';
   }
   if (tool == AgentLaunchTool.claudeCode ||
       window.name.toLowerCase().contains('claude')) {
     return '''
-${_ansi('38;5;208;1', '✻ Claude Code (demo)')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
-${_ansi('38;5;238', '╭──────────────────────────────────────────────────────╮')}
-${_ansi('38;5;238', '│')} ${_ansi('38;5;252;1', 'Working directory')}  ${_ansi('38;5;110', path)} ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '╰──────────────────────────────────────────────────────╯')}
+${_ansi('38;5;208;1', '✻ Claude Code v2.1.201')}
+${_ansi('38;5;238', '╭────────────────────────────────────────────╮')}
+${_ansi('38;5;238', '│')}              ${_ansi('38;5;252;1', 'Welcome back!')}              ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '│')}                                        ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '│')}  ${_ansi('38;5;208', '▐▛███▜▌')}   Working directory         ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '│')}  ${_ansi('38;5;208', '▝▜█████▛▘')} ${_ansi('38;5;110', path.replaceFirst('/home/reviewer/', '~/'))} ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '│')}   ${_ansi('38;5;208', '▘▘ ▝▝')}                              ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '╰────────────────────────────────────────────╯')}
 
 ${_ansi('38;5;208', '●')} Plan
-  ${_ansi('38;5;70', '✓')} tighten App Review demo flow
-  ${_ansi('38;5;70', '✓')} make MonkeyMux windows interactive
-  ${_ansi('38;5;70', '✓')} run flutter analyze
+  ${_ansi('38;5;70', '✓')} App Review demo flow
+  ${_ansi('38;5;70', '✓')} MonkeyMux windows
+  ${_ansi('38;5;70', '✓')} flutter analyze
 
-${_ansi('38;5;208', '●')} Edits
-  ${_ansi('38;5;214', 'M')} lib/domain/services/app_review_demo_service.dart
-  ${_ansi('38;5;214', 'M')} test/domain/services/app_review_demo_ssh_service_test.dart
-
-${_ansi('38;5;70;1', '✔')} Result: ready for review
-${_ansi('38;5;245', 'Use the MonkeyMux bar to inspect another agent pane.')}
+${_ansi('38;5;245', '────────────────────────────── ↯ /fast ─')}
+${_ansi('38;5;208', '❯')} Try "make the demo panes feel real"
 ''';
   }
   if (tool == AgentLaunchTool.openCode ||
       window.name.toLowerCase().contains('opencode')) {
     return '''
-${_ansi('48;5;22;38;5;231;1', ' OpenCode (demo) ')} ${_ansi('38;5;245', 'README.md  Window ${window.index}')}
-${_ansi('38;5;36', '┌ files ─────────────┬ editor ─────────────────────────┐')}
-${_ansi('38;5;36', '│')}  README.md        ${_ansi('38;5;36', '│')}  1  # MonkeySSH App Review Demo        ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')}  package.json     ${_ansi('38;5;36', '│')}  2                                      ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')}  src/main.dart     ${_ansi('38;5;36', '│')}  3  Local MonkeyMux windows exercise   ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')}  logs/app.log      ${_ansi('38;5;36', '│')}  4  switching, SFTP, snippets, tunnels. ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')}                  ${_ansi('38;5;36', '│')}  5                                      ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '│')}                  ${_ansi('38;5;36', '│')}  6  App Review can explore locally.     ${_ansi('38;5;36', '│')}
-${_ansi('38;5;36', '└──────────────────┴──────────────────────────────────┘')}
-${_ansi('48;5;235;38;5;252', ' NORMAL ')} ${_ansi('38;5;245', 'utf-8  ~/work/monkeyssh-demo/README.md')}
+${_ansi('48;2;10;10;10;38;2;238;238;238;1', '        OPEN CODE        ')}
+
+${_ansi('38;2;92;156;245', '┃')} ${_ansi('48;2;30;30;30;38;2;128;128;128', 'Ask anything... "What is this project?" ')}
+${_ansi('38;2;92;156;245', '╹')} ${_ansi('38;2;30;30;30', '▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀')}
+
+${_ansi('38;2;92;156;245', 'Build')} ${_ansi('38;5;245', '· Claude Opus 4.8 Fast')}
+${_ansi('38;5;245', 'GitHub Copilot provider')}
+
+${_ansi('38;5;36', '┌ files ───────┬ editor ───────────────┐')}
+${_ansi('38;5;36', '│')} README.md   ${_ansi('38;5;36', '│')} 1 # App Review Demo       ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')} src/main    ${_ansi('38;5;36', '│')} 2 Local MonkeyMux panes   ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '│')} logs/app    ${_ansi('38;5;36', '│')} 3 switch like real CLIs   ${_ansi('38;5;36', '│')}
+${_ansi('38;5;36', '└──────────────┴───────────────────────┘')}
+
+${_ansi('38;5;252', 'tab')} ${_ansi('38;5;245', 'agents')}   ${_ansi('38;5;252', 'ctrl+p')} ${_ansi('38;5;245', 'commands')}
 ''';
   }
   if (tool == AgentLaunchTool.codex ||
       window.name.toLowerCase().contains('codex')) {
     return '''
-${_ansi('38;5;51;1', 'Codex CLI (demo)')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
-${_ansi('38;5;238', '╭──────────────────────────────────────────────────────╮')}
-${_ansi('38;5;238', '│')} ${_ansi('38;5;231;1', 'Task')} implement local MonkeyMux demo window rendering ${_ansi('38;5;238', '│')}
-${_ansi('38;5;238', '╰──────────────────────────────────────────────────────╯')}
+${_ansi('38;5;51;1', 'Codex CLI (demo)')} ${_ansi('38;5;245', 'gpt-5.3-codex')}
+${_ansi('38;5;238', '╭────────────────────────────────────────────╮')}
+${_ansi('38;5;238', '│')} ${_ansi('38;5;51', '✨')} ${_ansi('38;5;252;1', 'Task')} render local MonkeyMux panes     ${_ansi('38;5;238', '│')}
+${_ansi('38;5;238', '╰────────────────────────────────────────────╯')}
 
-${_ansi('38;5;51', 'thinking')} model local windows as an in-memory mux
-${_ansi('38;5;51', 'thinking')} repaint terminal on select/create/close
+${_ansi('38;5;51', 'thinking')} inspect live TUI references
+${_ansi('38;5;51', 'thinking')} build compact ANSI mock screens
 
 ${_ansi('38;5;70', '✓')} service branch added
-${_ansi('38;5;70', '✓')} tests cover create and select
+${_ansi('38;5;70', '✓')} tests cover create/select
 ${_ansi('38;5;70', '✓')} analyzer clean
 
 ${_ansi('48;5;23;38;5;231', ' Patch ready ')}
+${_ansi('38;5;245', '› Ask Codex for a follow-up')}
 ''';
   }
   if (tool == AgentLaunchTool.geminiCli ||
       window.name.toLowerCase().contains('gemini')) {
     return '''
-${_ansi('38;5;99;1', '✦ Gemini CLI (demo)')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
-${_ansi('38;5;99', '╭──────────────── context ────────────────╮')}
-${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} PRODUCT.md                              ${_ansi('38;5;99', '│')}
-${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} DESIGN.md                               ${_ansi('38;5;99', '│')}
-${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} lib/domain/services/                 ${_ansi('38;5;99', '│')}
-${_ansi('38;5;99', '╰──────────────────────────────────────────╯')}
+${_ansi('38;5;99;1', '✦ Gemini CLI (demo)')} ${_ansi('38;5;245', '2.5 Pro')}
+${_ansi('38;5;99', '╭──────── loaded context ─────────╮')}
+${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} PRODUCT.md                  ${_ansi('38;5;99', '│')}
+${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} DESIGN.md                   ${_ansi('38;5;99', '│')}
+${_ansi('38;5;99', '│')} ${_ansi('38;5;45', '✓')} lib/domain/services        ${_ansi('38;5;99', '│')}
+${_ansi('38;5;99', '╰─────────────────────────────────╯')}
 
-${_ansi('38;5;45;1', 'Summary')}
-  The App Review demo uses local MonkeyMux state.
-  Switching windows changes this terminal screen.
+${_ansi('38;5;45;1', 'Gemini summary')}
+  Local MonkeyMux state is active.
+  Window switches repaint the terminal.
 
-${_ansi('38;5;245', 'Ready for another prompt.')}
+${_ansi('48;5;57;38;5;231', '  Enter prompt  ')} ${_ansi('38;5;245', 'ctrl+j newline')}
 ''';
   }
   if (tool == AgentLaunchTool.antigravity ||
       window.name.toLowerCase().contains('antigravity')) {
     return '''
-${_ansi('48;5;54;38;5;231;1', ' Antigravity (demo) ')} ${_ansi('38;5;245', 'Window ${window.index} · $title')}
-${_ansi('38;5;141', '┌ objective ───────────────────────────────────────────┐')}
-${_ansi('38;5;141', '│')} Verify mobile SSH agent workflows from the review device. ${_ansi('38;5;141', '│')}
-${_ansi('38;5;141', '└──────────────────────────────────────────────────────┘')}
+${_ansi('48;5;54;38;5;231;1', ' Antigravity (demo) ')}
+${_ansi('38;5;141', '╭──────── objective ─────────╮')}
+${_ansi('38;5;141', '│')} Verify mobile SSH agents ${_ansi('38;5;141', '│')}
+${_ansi('38;5;141', '╰────────────────────────────╯')}
 
 Workspace
   ${_ansi('38;5;111', '~/work/monkeyssh-demo')}
@@ -1845,7 +1850,9 @@ Workspace
 Status
   ${_ansi('38;5;70', '●')} local demo transport online
   ${_ansi('38;5;70', '●')} MonkeyMux navigator online
-  ${_ansi('38;5;70', '●')} window switching changes the visible pane
+  ${_ansi('38;5;70', '●')} pane rendering follows window focus
+
+${_ansi('38;5;245', 'Actions: plan · inspect · patch · verify')}
 ''';
   }
   return '''
