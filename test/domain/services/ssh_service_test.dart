@@ -963,6 +963,79 @@ void main() {
       expect(disabled.pendingInput, isEmpty);
     });
 
+    test('extracts win32-input-mode changes', () {
+      final enabled = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?9001hafter',
+        pendingInput: '',
+      );
+
+      expect(enabled.win32InputMode, isTrue);
+      expect(enabled.colorSchemeUpdatesMode, isNull);
+      expect(enabled.pendingInput, isEmpty);
+
+      final first = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?900',
+        pendingInput: '',
+      );
+
+      expect(first.win32InputMode, isNull);
+      expect(first.pendingInput, '\x1b[?900');
+
+      final disabled = extractTerminalControlModeUpdates(
+        input: '1lafter',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(disabled.win32InputMode, isFalse);
+      expect(disabled.pendingInput, isEmpty);
+    });
+
+    test('encodes OSC responses as win32-input-mode key events', () {
+      const response = '\x1b]11;rgb:ffff/ffff/ffff\x1b\\';
+
+      final encoded = encodeTerminalResponsesForWin32InputMode(response);
+
+      expect(
+        encoded,
+        response.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join(),
+      );
+    });
+
+    test('encodes BEL-terminated OSC and DCS responses', () {
+      const osc = '\x1b]11;rgb:0000/0000/0000\x07';
+      const dcs = '\x1bP>|MonkeySSH\x1b\\';
+
+      expect(
+        encodeTerminalResponsesForWin32InputMode(osc),
+        osc.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join(),
+      );
+      expect(
+        encodeTerminalResponsesForWin32InputMode(dcs),
+        dcs.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join(),
+      );
+    });
+
+    test(
+      'leaves plain text and CSI responses unchanged for win32 input mode',
+      () {
+        const data = 'hello\x1b[?997;2n\x1b[5;7R';
+
+        expect(encodeTerminalResponsesForWin32InputMode(data), data);
+      },
+    );
+
+    test('encodes only embedded OSC sequences within mixed output', () {
+      const osc = '\x1b]10;rgb:1111/2222/3333\x1b\\';
+      const data = 'a\x1b[1m$osc\x1b[?1004h';
+
+      expect(
+        encodeTerminalResponsesForWin32InputMode(data),
+        'a\x1b[1m'
+        '${osc.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join()}'
+        '\x1b[?1004h',
+      );
+    });
+
     test(
       'preserves split terminal theme mode report queries across chunks',
       () {
@@ -1864,6 +1937,155 @@ void main() {
         ),
       );
     });
+
+    test(
+      'win32-encodes theme OSC answers while ConPTY win32-input-mode is on',
+      () async {
+        final shell = await openShell();
+        shell.session.terminalTheme =
+            monkey_themes.TerminalThemes.defaultLightTheme;
+
+        shell.stdout.add(
+          Uint8List.fromList(utf8.encode('\x1b[?9001h\x1b]11;?\x1b\\')),
+        );
+        await pumpEventQueue();
+
+        final response = buildTerminalThemeOscResponse(
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
+          code: '11',
+          args: const ['?'],
+        )!;
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          response.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join(),
+        );
+      },
+    );
+
+    test(
+      'answers theme OSC queries raw again after win32-input-mode is reset',
+      () async {
+        final shell = await openShell();
+        shell.session.terminalTheme =
+            monkey_themes.TerminalThemes.defaultLightTheme;
+
+        shell.stdout.add(
+          Uint8List.fromList(
+            utf8.encode('\x1b[?9001h\x1b[?9001l\x1b]11;?\x1b\\'),
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          buildTerminalThemeOscResponse(
+            theme: monkey_themes.TerminalThemes.defaultLightTheme,
+            code: '11',
+            args: const ['?'],
+          ),
+        );
+      },
+    );
+
+    test('volunteers default color reports once per palette interrogation '
+        'under win32-input-mode', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      const theme = monkey_themes.TerminalThemes.defaultLightTheme;
+      session.terminalTheme = theme;
+
+      // ConPTY forwards OSC 4 palette queries but consumes the OSC 10/11
+      // default-color queries that TUIs send alongside them, so the app
+      // must volunteer the defaults with the palette answers.
+      shell.stdout.add(
+        Uint8List.fromList(
+          utf8.encode('\x1b[?9001h\x1b]4;0;?\x1b\\\x1b]4;1;?\x1b\\'),
+        ),
+      );
+      await pumpEventQueue();
+
+      String decodeWin32KeyEvents(String data) => data.replaceAllMapped(
+        RegExp(r'\x1b\[0;0;(\d+);1;0;1_'),
+        (match) => String.fromCharCode(int.parse(match.group(1)!)),
+      );
+
+      final written = decodeWin32KeyEvents(
+        utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+      );
+      final defaults = buildTerminalThemeDefaultColorReports(theme);
+      expect(
+        written,
+        contains(
+          buildTerminalThemeOscResponse(
+            theme: theme,
+            code: '4',
+            args: const ['0', '?'],
+          ),
+        ),
+      );
+      expect(
+        written,
+        contains(
+          buildTerminalThemeOscResponse(
+            theme: theme,
+            code: '4',
+            args: const ['1', '?'],
+          ),
+        ),
+      );
+      expect(
+        RegExp(RegExp.escape(defaults)).allMatches(written).length,
+        1,
+        reason: 'defaults volunteered once per interrogation burst',
+      );
+    });
+
+    test(
+      'does not volunteer default color reports without win32-input-mode',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        const theme = monkey_themes.TerminalThemes.defaultLightTheme;
+        session.terminalTheme = theme;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b]4;0;?\x1b\\')));
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          buildTerminalThemeOscResponse(
+            theme: theme,
+            code: '4',
+            args: const ['0', '?'],
+          ),
+        );
+      },
+    );
+
+    test(
+      'win32-encodes synthetic OSC reports sent through terminal output',
+      () async {
+        final shell = await openShell();
+        final session = shell.session;
+        const theme = monkey_themes.TerminalThemes.defaultLightTheme;
+        session.terminalTheme = theme;
+        final terminal = session.terminal!;
+
+        shell.stdout.add(Uint8List.fromList(utf8.encode('\x1b[?9001h')));
+        await pumpEventQueue();
+        shell.shellWrites.clear();
+
+        final report = buildTerminalThemeBackgroundColorReport(theme);
+        terminal.onOutput!.call('${report}typed');
+        await pumpEventQueue();
+
+        expect(
+          utf8.decode(shell.shellWrites.expand((chunk) => chunk).toList()),
+          '${report.codeUnits.map((unit) => '\x1b[0;0;$unit;1;0;1_').join()}'
+          'typed',
+        );
+      },
+    );
 
     test(
       'flushes tmux-wrapped terminal theme OSC queries without frame delay',
