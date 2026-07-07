@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs, avoid_redundant_argument_values
 
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -111,6 +112,40 @@ void main() {
         shortcutItems.last.localizedSubtitle,
         'root@beta.example.com:2202',
       );
+    });
+
+    test('omits an icon when no icon name is provided', () {
+      final shortcutItems = buildHomeScreenShortcutItems(<Host>[
+        _buildHost(id: 1, label: 'alpha', sortOrder: 0),
+      ]);
+
+      expect(shortcutItems.single.icon, isNull);
+    });
+
+    test('applies the provided icon name to every shortcut item', () {
+      final shortcutItems = buildHomeScreenShortcutItems(<Host>[
+        _buildHost(id: 1, label: 'alpha', sortOrder: 0),
+        _buildHost(id: 2, label: 'beta', sortOrder: 1),
+      ], iconName: homeScreenShortcutHostIconResourceName);
+
+      expect(
+        shortcutItems.map((item) => item.icon),
+        everyElement(equals('ic_shortcut_host')),
+      );
+    });
+  });
+
+  group('home screen shortcut host icon name', () {
+    tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    test('is the Android drawable resource on Android', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      expect(homeScreenShortcutHostIconName, 'ic_shortcut_host');
+    });
+
+    test('is null on iOS (no bundled asset-catalog icon)', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      expect(homeScreenShortcutHostIconName, isNull);
     });
   });
 
