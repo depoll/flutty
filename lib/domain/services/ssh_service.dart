@@ -3969,13 +3969,22 @@ bool isAppReviewDemoSession(SshSession session) =>
     session.client is _AppReviewDemoSshClient;
 
 /// Writes synthetic remote output into the App Review demo terminal, if active.
-void writeAppReviewDemoTerminalOutput(SshSession session, String text) {
+void writeAppReviewDemoTerminalOutput(
+  SshSession session,
+  String text, {
+  bool replaceScreen = false,
+  bool showPrompt = true,
+}) {
   if (!isAppReviewDemoSession(session)) {
     return;
   }
   final shell = session._runtime.shell;
   if (shell is _AppReviewDemoSshSession) {
-    shell.writeDemoOutput(text);
+    shell.writeDemoOutput(
+      text,
+      replaceScreen: replaceScreen,
+      showPrompt: showPrompt,
+    );
   }
 }
 
@@ -4408,15 +4417,25 @@ class _AppReviewDemoSshSession implements SSHSession {
     );
   }
 
-  void writeDemoOutput(String text) {
+  void writeDemoOutput(
+    String text, {
+    bool replaceScreen = false,
+    bool showPrompt = true,
+  }) {
     if (_closed) {
       return;
     }
-    _writeText('\r\n$text');
-    if (!text.endsWith('\n') && !text.endsWith('\r')) {
+    if (replaceScreen) {
+      _writeText('\x1b[2J\x1b[H$text');
+    } else {
+      _writeText('\r\n$text');
+    }
+    if (showPrompt && !text.endsWith('\n') && !text.endsWith('\r')) {
       _writeText('\r\n');
     }
-    _writePrompt();
+    if (showPrompt) {
+      _writePrompt();
+    }
   }
 
   Future<void> _finish({int? exitCode}) async {
@@ -4691,7 +4710,7 @@ String _demoInteractiveBanner(Host host) =>
 \x1b]0;${host.label}\x07\x1b]7;file://localhost/home/reviewer/work/monkeyssh-demo\x07MonkeySSH App Review Demo
 
 Connected locally for:
-  ${host.label}
+  ${_shortDemoHostLabel(host.label)}
 
 No external SSH server or credentials are required.
 
@@ -4705,6 +4724,9 @@ Try:
   copilot
 
 ''';
+
+String _shortDemoHostLabel(String label) =>
+    label.replaceFirst('${AppReviewDemoService.demoHostLabelPrefix} ', '');
 
 String _normalizeDemoTerminalOutput(String text) =>
     text.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n');

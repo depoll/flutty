@@ -226,8 +226,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   }) {
     final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
     if (isAppReviewDemoSession(session)) {
-      final windows = _appReviewDemoMuxState(key).windows;
+      final state = _appReviewDemoMuxState(key);
+      final windows = state.windows;
       _replaceCachedWindows(key, windows);
+      if (state.consumeInitialRender()) {
+        _renderAppReviewDemoWindow(session, state.activeWindow);
+      }
       return Future<List<TmuxWindow>>.value(windows);
     }
     final existingRequest = _windowListRequests[key];
@@ -375,10 +379,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         workingDirectory: workingDirectory,
       );
       _replaceCachedWindows(key, state.windows);
-      writeAppReviewDemoTerminalOutput(
-        session,
-        'MonkeyMux created window ${window.index}: ${window.displayTitle}',
-      );
+      _renderAppReviewDemoWindow(session, window);
       return;
     }
     await _runControlCommand(session, sessionName, {
@@ -405,10 +406,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       final state = _appReviewDemoMuxState(key);
       final window = state.selectWindow(windowIndex, windowId: windowId);
       _replaceCachedWindows(key, state.windows);
-      writeAppReviewDemoTerminalOutput(
-        session,
-        'MonkeyMux switched to window ${window.index}: ${window.displayTitle}',
-      );
+      _renderAppReviewDemoWindow(session, window);
       return;
     }
     await _runControlCommand(session, sessionName, {
@@ -481,10 +479,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       final closed = state.killWindow(windowIndex);
       _replaceCachedWindows(key, state.windows);
       if (closed != null) {
-        writeAppReviewDemoTerminalOutput(
-          session,
-          'MonkeyMux closed window ${closed.index}: ${closed.displayTitle}',
-        );
+        _renderAppReviewDemoWindow(session, state.activeWindow);
       }
       return;
     }
@@ -1550,6 +1545,7 @@ class _AppReviewDemoMonkeyMuxState {
   final List<_AppReviewDemoWindowSpec> _windows;
   int _activeIndex = 0;
   int _nextId = 10;
+  bool _renderedInitial = false;
 
   Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
 
@@ -1562,6 +1558,14 @@ class _AppReviewDemoMonkeyMuxState {
     for (var index = 0; index < _windows.length; index += 1)
       _windows[index].toWindow(index: index, isActive: index == _activeIndex),
   ];
+
+  bool consumeInitialRender() {
+    if (_renderedInitial) {
+      return false;
+    }
+    _renderedInitial = true;
+    return true;
+  }
 
   TmuxWindow createWindow({
     String? command,
@@ -1715,6 +1719,148 @@ class _AppReviewDemoWindowSpec {
             : AgentSessionConfidence.medium,
         idleSeconds: isActive ? 2 : 30,
       );
+}
+
+void _renderAppReviewDemoWindow(SshSession session, TmuxWindow window) {
+  writeAppReviewDemoTerminalOutput(
+    session,
+    _appReviewDemoWindowScreen(window),
+    replaceScreen: true,
+    showPrompt: false,
+  );
+}
+
+String _appReviewDemoWindowScreen(TmuxWindow window) {
+  final title = window.displayTitle;
+  final path = window.currentPath ?? '/home/reviewer/work/monkeyssh-demo';
+  final tool = window.foregroundAgentTool;
+  if (tool == AgentLaunchTool.copilotCli ||
+      window.name.toLowerCase().contains('copilot')) {
+    return '''
+GitHub Copilot CLI (demo)
+Window ${window.index}: $title
+
+> Review PR #643
+
+[1/4] Inspecting App Review demo mode       done
+[2/4] Checking local MonkeyMux windows      done
+[3/4] Running focused Flutter tests         done
+[4/4] Preparing App Review notes            done
+
+Suggested next step:
+  /deploy
+
+Files:
+  lib/domain/services/monkeymux_service.dart
+  lib/domain/services/ssh_service.dart
+''';
+  }
+  if (tool == AgentLaunchTool.claudeCode ||
+      window.name.toLowerCase().contains('claude')) {
+    return '''
+Claude Code (demo)
+Window ${window.index}: $title
+
+Working directory:
+  $path
+
+Plan
+  - tighten App Review demo flow
+  - make MonkeyMux windows interactive
+  - run flutter analyze
+
+Edit summary
+  M lib/domain/services/app_review_demo_service.dart
+  M test/domain/services/app_review_demo_ssh_service_test.dart
+
+Result: ready for review
+''';
+  }
+  if (tool == AgentLaunchTool.openCode ||
+      window.name.toLowerCase().contains('opencode')) {
+    return '''
+OpenCode (demo)
+Window ${window.index}: $title
+
+README.md
+  1  # MonkeySSH App Review Demo
+  2
+  3  Local MonkeyMux windows exercise switching,
+  4  SFTP, snippets, and port forwards.
+  5
+  6  App Review can explore without credentials.
+
+NORMAL  utf-8  ~/work/monkeyssh-demo/README.md
+''';
+  }
+  if (tool == AgentLaunchTool.codex ||
+      window.name.toLowerCase().contains('codex')) {
+    return '''
+Codex CLI (demo)
+Window ${window.index}: $title
+
+codex --yolo
+
+Task
+  implement local MonkeyMux demo window rendering
+
+Reasoning
+  - model windows in memory
+  - repaint the terminal on switch
+  - keep review data local
+
+Patch ready
+''';
+  }
+  if (tool == AgentLaunchTool.geminiCli ||
+      window.name.toLowerCase().contains('gemini')) {
+    return '''
+Gemini CLI (demo)
+Window ${window.index}: $title
+
+Context loaded:
+  PRODUCT.md
+  DESIGN.md
+  lib/domain/services/
+
+Summary
+  The App Review demo now uses local MonkeyMux state.
+  Switching windows changes this terminal screen.
+''';
+  }
+  if (tool == AgentLaunchTool.antigravity ||
+      window.name.toLowerCase().contains('antigravity')) {
+    return '''
+Antigravity (demo)
+Window ${window.index}: $title
+
+Workspace
+  ~/work/monkeyssh-demo
+
+Active objective
+  Verify mobile SSH agent workflows from the review device.
+
+Status
+  local demo transport online
+  MonkeyMux navigator online
+''';
+  }
+  return '''
+MonkeySSH SFTP / Shell (demo)
+Window ${window.index}: $title
+
+$path
+
+  [dir] logs
+  [dir] screenshots
+  [dir] src
+  144B  README.md
+   68B  package.json
+   39B  deploy-demo.sh
+
+Tip:
+  Tap the folder button to browse the same sample files in SFTP.
+''';
 }
 
 TmuxWindow? _windowFromJson(Object? value) {

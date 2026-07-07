@@ -79,24 +79,36 @@ void main() {
         remoteFileService: const RemoteFileService(),
       ),
     );
+    final copilotScreen = session.shellStdoutStream.firstWhere(
+      (chunk) => chunk.contains('GitHub Copilot CLI (demo)'),
+    );
     final windows = await mux.listWindows(session, 'review-workspace');
+    expect(await copilotScreen, contains('Review PR #643'));
     expect(windows, hasLength(4));
     expect(
       windows.singleWhere((window) => window.isActive).name,
       'Copilot CLI',
     );
 
+    final codexScreen = session.shellStdoutStream.firstWhere(
+      (chunk) => chunk.contains('Codex CLI (demo)'),
+    );
     await mux.createWindow(
       session,
       'review-workspace',
       command: 'codex --yolo',
       name: 'Codex',
     );
+    expect(await codexScreen, contains('Patch ready'));
     final withCodex = await mux.listWindows(session, 'review-workspace');
     expect(withCodex, hasLength(5));
     expect(withCodex.singleWhere((window) => window.isActive).name, 'Codex');
 
+    final claudeScreen = session.shellStdoutStream.firstWhere(
+      (chunk) => chunk.contains('Claude Code (demo)'),
+    );
     await mux.selectWindow(session, 'review-workspace', 1);
+    expect(await claudeScreen, contains('Working directory'));
     final selected = await mux.listWindows(session, 'review-workspace');
     expect(
       selected.singleWhere((window) => window.isActive).name,
