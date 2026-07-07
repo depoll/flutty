@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:xterm/xterm.dart';
 
@@ -120,6 +122,13 @@ void main() {
       expect(trimTerminalFilePathCandidate('/etc/hosts)6'), '/etc/hosts');
       expect(trimTerminalFilePathCandidate('~/README)6'), '~/README');
     });
+
+    test('normalizes Windows drive separators', () {
+      expect(
+        trimTerminalFilePathCandidate(r'C:\Users\demo\notes.txt:42'),
+        'C:/Users/demo/notes.txt',
+      );
+    });
   });
 
   group('resolveTerminalFilePathVerificationCandidates', () {
@@ -145,6 +154,12 @@ void main() {
       expect(
         resolveTerminalFilePathVerificationCandidates('/srv/app/lib/main.dart'),
         ['/srv/app/lib/main.dart'],
+      );
+      expect(
+        resolveTerminalFilePathVerificationCandidates(
+          r'C:\Users\demo\notes.txt',
+        ),
+        ['C:/Users/demo/notes.txt'],
       );
     });
 
@@ -175,6 +190,13 @@ void main() {
       expect(
         resolveTerminalFilePathExistenceCandidates('/srv/app/lib/main.dart'),
         ['/srv/app/lib/main.dart', '/srv/app/lib', '/srv/app', '/srv'],
+      );
+    });
+
+    test('walks back directory prefixes for a Windows drive path', () {
+      expect(
+        resolveTerminalFilePathExistenceCandidates(r'C:\Users\demo\notes.txt'),
+        ['C:/Users/demo/notes.txt', 'C:/Users/demo', 'C:/Users'],
       );
     });
 
@@ -357,6 +379,89 @@ void main() {
     });
   });
 
+  group('resolveTmuxBarActiveWindowBracketedPasteMode', () {
+    test('reads bracketed paste mode from the active mux window', () {
+      final windows = [
+        const TmuxWindow(
+          index: 0,
+          name: 'shell',
+          isActive: false,
+          terminalBracketedPasteMode: true,
+        ),
+        const TmuxWindow(
+          index: 1,
+          name: 'composer',
+          isActive: true,
+          terminalBracketedPasteMode: true,
+        ),
+      ];
+
+      expect(resolveTmuxBarActiveWindowBracketedPasteMode(windows), isTrue);
+    });
+
+    test('leaves unknown mux state unknown', () {
+      expect(
+        resolveTmuxBarActiveWindowBracketedPasteMode(const [
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+        ]),
+        isNull,
+      );
+    });
+  });
+
+  group('inheritTerminalBracketedPasteModeFromMuxWindow', () {
+    test('applies known active mux window bracketed paste mode locally', () {
+      final terminal = Terminal();
+
+      expect(terminal.bracketedPasteMode, isFalse);
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: true,
+        ),
+        isTrue,
+      );
+      expect(terminal.bracketedPasteMode, isTrue);
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: false,
+        ),
+        isTrue,
+      );
+      expect(terminal.bracketedPasteMode, isFalse);
+    });
+
+    test('leaves local mode alone when mux window mode is unknown', () {
+      final terminal = Terminal()..setBracketedPasteMode(true);
+
+      expect(
+        inheritTerminalBracketedPasteModeFromMuxWindow(
+          terminal: terminal,
+          activeWindowBracketedPasteMode: null,
+        ),
+        isFalse,
+      );
+      expect(terminal.bracketedPasteMode, isTrue);
+    });
+
+    test('inherited local mode frames uploaded path segments', () {
+      final terminal = Terminal();
+
+      inheritTerminalBracketedPasteModeFromMuxWindow(
+        terminal: terminal,
+        activeWindowBracketedPasteMode: true,
+      );
+
+      expect(
+        buildTerminalAttachmentPasteSegments(const [
+          '/home/u/.cache/monkeyssh/uploads/a.png',
+        ], bracketedPasteMode: terminal.bracketedPasteMode),
+        const ['\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ '],
+      );
+    });
+  });
+
   group('enableAndroidPhotoPickerForTerminalMedia', () {
     test('enables the existing Android image picker implementation', () {
       final imagePicker = ImagePickerAndroid();
@@ -422,6 +527,20 @@ void main() {
       expect(
         text.substring(detectedPaths.first.start, detectedPaths.first.end),
         '/var/log/app.log',
+      );
+    });
+
+    test('detects Windows drive-letter paths', () {
+      const text = r'Open C:\Users\demo\Documents\notes.txt now';
+      final detectedPaths = detectTerminalFilePaths(text);
+
+      expect(detectedPaths.map((path) => path.path), [
+        'C:/Users/demo/Documents/notes.txt',
+      ]);
+      expect(detectedPaths.single.start, text.indexOf(r'C:\Users'));
+      expect(
+        text.substring(detectedPaths.single.start, detectedPaths.single.end),
+        r'C:\Users\demo\Documents\notes.txt',
       );
     });
   });
@@ -1301,6 +1420,8 @@ void main() {
   group('isSupportedTerminalFilePath', () {
     test('allows explicit paths and conservative relative file paths', () {
       expect(isSupportedTerminalFilePath('/var/log/app.log'), isTrue);
+      expect(isSupportedTerminalFilePath(r'C:\Users\demo\notes.txt'), isTrue);
+      expect(isSupportedTerminalFilePath('C:/Users/demo/notes.txt'), isTrue);
       expect(isSupportedTerminalFilePath('~/.ssh/config'), isTrue);
       expect(isSupportedTerminalFilePath('lib/main.dart'), isTrue);
       expect(isSupportedTerminalFilePath('../lib/main.dart'), isTrue);
@@ -1320,6 +1441,13 @@ void main() {
       );
       expect(
         shouldActivateTerminalFilePath('~/.ssh/config', hasVerifiedPath: false),
+        isTrue,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          r'C:\Users\demo\notes.txt',
+          hasVerifiedPath: false,
+        ),
         isTrue,
       );
     });
@@ -1641,6 +1769,16 @@ void main() {
       expect(
         terminalRowMayContainPath(
           buildLineWithText('cat ~/Documents/notes.txt'),
+          80,
+        ),
+        isTrue,
+      );
+    });
+
+    test('returns true for a row with a Windows drive-letter path', () {
+      expect(
+        terminalRowMayContainPath(
+          buildLineWithText(r'type C:\Users\demo\notes.txt'),
           80,
         ),
         isTrue,

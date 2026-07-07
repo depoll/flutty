@@ -36,6 +36,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/app_review_demo_service.dart';
 import '../../domain/services/clipboard_content_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
@@ -269,6 +270,7 @@ const _shellCompletionTmuxContextTtl = Duration(seconds: 5);
 const _shellCompletionShellCommands = <String>{
   'ash',
   'bash',
+  'cmd',
   'csh',
   'dash',
   'elvish',
@@ -288,6 +290,23 @@ const _shellCompletionShellCommands = <String>{
   'yash',
   'zsh',
 };
+
+class _ClipboardUploadTarget {
+  const _ClipboardUploadTarget({
+    required this.sftpDirectory,
+    required this.windows,
+  });
+
+  final String sftpDirectory;
+  final bool windows;
+
+  SftpFileMode? get directoryMode => windows ? null : remoteUploadDirectoryMode;
+
+  bool get applyPrivateFileMode => !windows;
+
+  String terminalPathForSftpPath(String sftpPath) =>
+      remoteShellPathForSftpPath(sftpPath, windows: windows);
+}
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -467,9 +486,13 @@ bool isShellCompletionTmuxShellCommand(String? command) {
   if (normalized == null || normalized.isEmpty) {
     return false;
   }
-  normalized = normalized.split('/').last;
+  normalized = normalized.replaceAll(r'\', '/').split('/').last;
   if (normalized.startsWith('-')) {
     normalized = normalized.substring(1);
+  }
+  normalized = normalized.toLowerCase();
+  if (normalized.endsWith('.exe')) {
+    normalized = normalized.substring(0, normalized.length - 4);
   }
   return _shellCompletionShellCommands.contains(normalized);
 }
@@ -790,6 +813,29 @@ AgentLaunchTool? resolveTmuxBarActiveWindowTool(
     .firstOrNull
     ?.foregroundAgentTool;
 
+/// Resolves bracketed paste mode state tracked for the active mux window.
+@visibleForTesting
+bool? resolveTmuxBarActiveWindowBracketedPasteMode(
+  Iterable<TmuxWindow>? windows,
+) => windows
+    ?.where((window) => window.isActive)
+    .firstOrNull
+    ?.terminalBracketedPasteMode;
+
+/// Applies active mux-window bracketed-paste state to the local terminal.
+@visibleForTesting
+bool inheritTerminalBracketedPasteModeFromMuxWindow({
+  required Terminal terminal,
+  required bool? activeWindowBracketedPasteMode,
+}) {
+  if (activeWindowBracketedPasteMode == null ||
+      terminal.bracketedPasteMode == activeWindowBracketedPasteMode) {
+    return false;
+  }
+  terminal.setBracketedPasteMode(activeWindowBracketedPasteMode);
+  return true;
+}
+
 String _telemetryMuxBackendName(RemoteMuxBackend backend) => switch (backend) {
   RemoteMuxBackend.auto => 'auto',
   RemoteMuxBackend.tmux => 'tmux',
@@ -813,16 +859,16 @@ bool? resolveTmuxBarActiveWindowMouseReportSgr(Iterable<TmuxWindow>? windows) =>
         .firstOrNull
         ?.terminalMouseReportSgr;
 
-/// Scroll-relevant mouse-reporting signature for the active tmux window.
+/// Terminal mode signature for the active tmux window.
 ///
-/// Used to detect when touch-scroll routing must be recomputed after a window
+/// Used to detect when local terminal state must be updated after a window
 /// metadata update that doesn't change the active window itself (for example a
-/// foreground app toggling mouse mode). Returns `null` when there is no active
-/// window so an appearing/disappearing active window is also treated as a
-/// change.
+/// foreground app toggling mouse or bracketed-paste mode). Returns `null` when
+/// there is no active window so an appearing/disappearing active window is also
+/// treated as a change.
 @visibleForTesting
-({bool? reportsMouseWheel, bool? mouseReportSgr})?
-activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
+({bool? reportsMouseWheel, bool? mouseReportSgr, bool? bracketedPasteMode})?
+activeTmuxWindowTerminalModeSignature(Iterable<TmuxWindow>? windows) {
   final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
   if (activeWindow == null) {
     return null;
@@ -830,6 +876,7 @@ activeTmuxWindowScrollModeSignature(Iterable<TmuxWindow>? windows) {
   return (
     reportsMouseWheel: activeWindow.terminalReportsMouseWheel,
     mouseReportSgr: activeWindow.terminalMouseReportSgr,
+    bracketedPasteMode: activeWindow.terminalBracketedPasteMode,
   );
 }
 
@@ -1128,10 +1175,10 @@ final _terminalLinkPattern = RegExp(
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
+  r'''(?:[A-Za-z]:[\\/](?:[^\s<>"'$#&|;]+)?|~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
 final _terminalFilePathLineSuffixPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#&|;]+)?/?|/(?:[^\s<>"'$#&|;]+)?|\.\.?/(?:[^\s<>"'$#&|;]+)?|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
+  r'''(?:[A-Za-z]:[\\/](?:[^\s<>"'$#&|;]+)?|~(?:/[^\s<>"'$#&|;]+)?/?|/(?:[^\s<>"'$#&|;]+)?|\.\.?/(?:[^\s<>"'$#&|;]+)?|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
 );
 final _terminalFilePathStackTraceSuffixPattern = RegExp(
   r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
@@ -1407,7 +1454,11 @@ String trimTerminalFilePathCandidate(String text) {
     '',
   );
   candidate = _trimWrappedTerminalFilePathCountSuffix(candidate);
-  return trimTerminalLinkCandidate(candidate);
+  candidate = trimTerminalLinkCandidate(candidate);
+  if (RegExp(r'^/?[A-Za-z]:[\\/]').hasMatch(candidate)) {
+    return candidate.replaceAll(r'\', '/');
+  }
+  return candidate;
 }
 
 String _trimWrappedTerminalFilePathCountSuffix(String text) {
@@ -1719,8 +1770,12 @@ List<String> resolveTerminalFilePathExistenceCandidates(String path) {
   for (final parse in resolveTerminalFilePathVerificationCandidates(path)) {
     add(parse);
     var prefix = parse;
+    final root = sftpPathRoot(prefix);
     var slashIndex = prefix.lastIndexOf('/');
     while (slashIndex > 0) {
+      if (root != null && slashIndex < root.length) {
+        break;
+      }
       prefix = prefix.substring(0, slashIndex);
       add(prefix);
       slashIndex = prefix.lastIndexOf('/');
@@ -1846,10 +1901,10 @@ String? resolveTerminalPathTouchTargetTap(
   return null;
 }
 
-/// Whether a terminal path is anchored to `/` or `~`.
+/// Whether a terminal path is anchored to `/`, `~`, or a Windows drive root.
 @visibleForTesting
 bool isExplicitTerminalFilePath(String path) =>
-    path.startsWith('/') || path == '~' || path.startsWith('~/');
+    isSftpAbsolutePath(path) || path == '~' || path.startsWith('~/');
 
 /// Whether a relative terminal path looks file-like enough to probe safely.
 @visibleForTesting
@@ -1934,6 +1989,7 @@ bool _terminalTextRangeHasGutterDecoration(String text, int start, int end) {
 bool _startsFreshTerminalFilePathLine(String text) =>
     text == '~' ||
     text.startsWith('~/') ||
+    RegExp(r'^[A-Za-z]:[\\/]').hasMatch(text) ||
     text.startsWith('/') ||
     text.startsWith('./') ||
     text.startsWith('../');
@@ -2024,9 +2080,9 @@ bool isTerminalPathContinuationAcrossLines({
 ///
 /// Performs a quick scan of raw codepoints to filter rows that are unlikely
 /// to contain file paths, avoiding the more expensive snapshot-building work.
-/// Returns `true` if any column contains `/` (0x2F) or `~` (0x7E), both of
-/// which are necessary for any detectable absolute, home-relative, or
-/// relative path.
+/// Returns `true` if any column contains `/` (0x2F), `\` (0x5C), or `~` (0x7E),
+/// which are necessary for detectable POSIX, Windows drive-letter,
+/// home-relative, or relative paths.
 ///
 /// Only intended as a fast pre-filter; rows that return `true` are not
 /// guaranteed to actually contain a valid path.
@@ -2034,7 +2090,9 @@ bool isTerminalPathContinuationAcrossLines({
 bool terminalRowMayContainPath(BufferLine line, int viewWidth) {
   for (var col = 0; col < viewWidth; col++) {
     final cp = line.getCodePoint(col);
-    if (cp == 0x2f /* '/' */ || cp == 0x7e /* '~' */ ) return true;
+    if (cp == 0x2f /* / */ || cp == 0x5c /* \ */ || cp == 0x7e /* ~ */ ) {
+      return true;
+    }
   }
   return false;
 }
@@ -3876,6 +3934,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? get _workingDirectoryPath =>
       _liveWorkingDirectoryPath ?? _tmuxWorkingDirectory;
 
+  String get _clipboardUploadDirectoryDisplay =>
+      remoteClipboardUploadDirectoryDisplayFor(
+        windows: _activeSession()?.remoteIsWindows ?? false,
+      );
+
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
@@ -4638,6 +4701,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool activeWindowChanged,
   }) {
     if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+      _syncTerminalModesFromActiveMuxWindow();
       if (activeWindowChanged) {
         _prepareTerminalForMuxWindowChange();
         _refreshTerminalAfterMonkeyMuxWindowChange(session);
@@ -4669,15 +4733,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  /// Recomputes touch-scroll routing when the active window's mouse-reporting
-  /// metadata changes. The routing getters read live from the tmux bar
-  /// snapshot, so a rebuild is enough to flip `touchScrollToTerminal` and stop
-  /// scrolling from getting stuck until the next window switch.
-  void _handleActiveWindowScrollModeChanged() {
+  /// Syncs local terminal mode state when the active mux window's terminal-mode
+  /// metadata changes without a full active-window switch.
+  void _handleActiveWindowTerminalModeChanged() {
     if (!mounted) {
       return;
     }
+    _syncTerminalModesFromActiveMuxWindow();
     setState(() {});
+  }
+
+  void _syncTerminalModesFromActiveMuxWindow() {
+    if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return;
+    }
+    inheritTerminalBracketedPasteModeFromMuxWindow(
+      terminal: _terminal,
+      activeWindowBracketedPasteMode:
+          resolveTmuxBarActiveWindowBracketedPasteMode(
+            _currentTmuxWindowsSnapshot,
+          ),
+    );
   }
 
   void _refreshMuxPaneContextAfterWindowStateChange(
@@ -7522,6 +7598,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (host == null) {
       return (command: null, handled: false);
     }
+    if (isAppReviewDemoHost(host)) {
+      final sessionName =
+          _initialTmuxSessionName ?? host.tmuxSessionName ?? 'review-workspace';
+      _applyPreparedRemoteMuxCommand(session, (
+        backend: RemoteMuxBackend.monkeyMux,
+        command: 'app-review-demo-monkeymux',
+        sessionName: sessionName,
+        tool: null,
+      ));
+      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+      return (command: null, handled: true);
+    }
 
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
@@ -8980,7 +9068,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onSidebarDragOffsetChanged: _handleTmuxSidebarDragOffsetChanged,
       onWindowStateChanged: _handleTmuxWindowStateChanged,
-      onActiveWindowScrollModeChanged: _handleActiveWindowScrollModeChanged,
+      onActiveWindowTerminalModeChanged: _handleActiveWindowTerminalModeChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       onSessionEnded: _handleMuxSessionEnded,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -14467,7 +14555,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     Future<T> Function(
       SftpClient sftp,
       RemoteFileService remoteFileService,
-      String uploadDirectory,
+      _ClipboardUploadTarget uploadTarget,
     )
     action, {
     String? uploadBaseDirectory,
@@ -14490,17 +14578,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final uploadDirectory = buildRemoteClipboardUploadDirectory(
         homeDirectory,
       );
+      final uploadTarget = _ClipboardUploadTarget(
+        sftpDirectory: uploadDirectory,
+        windows: session.remoteIsWindows,
+      );
       await remoteFileService.ensureDirectoryExists(
         sftp,
         appUploadParentDirectory,
-        mode: remoteUploadDirectoryMode,
+        mode: uploadTarget.directoryMode,
       );
       await remoteFileService.ensureDirectoryExists(
         sftp,
         uploadDirectory,
-        mode: remoteUploadDirectoryMode,
+        mode: uploadTarget.directoryMode,
       );
-      return await action(sftp, remoteFileService, uploadDirectory);
+      return await action(sftp, remoteFileService, uploadTarget);
     } on TimeoutException {
       session.discardSftpClient(sftp);
       rethrow;
@@ -14600,10 +14692,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// attachment. The pre-built segments are written straight to the session
   /// input via [Terminal.onOutput]; they must not go through [Terminal.paste],
   /// which would strip the bracketed-paste markers.
-  Future<void> _insertUploadedFileReferences(List<String> remotePaths) async {
+  Future<void> _insertUploadedFileReferences(
+    List<String> remotePaths, {
+    required bool windows,
+  }) async {
+    _syncTerminalModesFromActiveMuxWindow();
     final segments = buildTerminalAttachmentPasteSegments(
       remotePaths,
       bracketedPasteMode: _terminal.bracketedPasteMode,
+      windows: windows,
     );
     for (var i = 0; i < segments.length; i++) {
       if (!mounted) {
@@ -14620,7 +14717,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard files?',
       message:
-          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectoryDisplay on the connected host and paste their remote paths into the terminal.',
+          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay on the connected host and paste their remote paths into the terminal.',
       confirmLabel: 'Upload and paste',
       details: [
         for (var index = 0; index < clipboardFiles.length; index++)
@@ -14638,7 +14735,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePaths = await _withClipboardSftp((
       sftp,
       remoteFileService,
-      uploadDirectory,
+      uploadTarget,
     ) async {
       final remotePaths = <String>[];
       for (var index = 0; index < clipboardFiles.length; index++) {
@@ -14658,7 +14755,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           sourceName = clipboardFile.name;
           remotePath = joinRemotePath(
-            uploadDirectory,
+            uploadTarget.sftpDirectory,
             buildClipboardUploadFileName(
               sourceName,
               timestamp,
@@ -14669,11 +14766,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             bytes: clipboardFile.bytes,
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         } else {
           sourceName = path.basename(localPath);
           remotePath = joinRemotePath(
-            uploadDirectory,
+            uploadTarget.sftpDirectory,
             buildClipboardUploadFileName(
               sourceName,
               timestamp,
@@ -14684,15 +14782,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             stream: File(localPath).openRead(),
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         }
-        remotePaths.add(remotePath);
+        remotePaths.add(uploadTarget.terminalPathForSftpPath(remotePath));
       }
-      return remotePaths;
+      return (paths: remotePaths, windows: uploadTarget.windows);
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(remotePaths);
+    await _insertUploadedFileReferences(
+      remotePaths.paths,
+      windows: remotePaths.windows,
+    );
     if (!mounted) {
       return;
     }
@@ -14707,7 +14809,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectoryDisplay',
+      'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay',
     );
   }
 
@@ -14749,7 +14851,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final shouldUpload = await _confirmClipboardUpload(
         title: 'Upload clipboard image?',
         message:
-            'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
+            'This will upload the clipboard image to $_clipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
         confirmLabel: 'Upload and paste',
         details: const ['release-checklist.png'],
         autoConfirmAfter: autoConfirmAfter,
@@ -14763,21 +14865,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePath = await _withClipboardSftp((
       sftp,
       remoteFileService,
-      uploadDirectory,
+      uploadTarget,
     ) async {
       final remotePath = joinRemotePath(
-        uploadDirectory,
+        uploadTarget.sftpDirectory,
         buildClipboardImageFileName(DateTime.now()),
       );
       await remoteFileService.uploadBytes(
         sftp: sftp,
         remotePath: remotePath,
         bytes: imageBytes,
+        applyPrivateMode: uploadTarget.applyPrivateFileMode,
       );
-      return remotePath;
+      return (
+        path: uploadTarget.terminalPathForSftpPath(remotePath),
+        windows: uploadTarget.windows,
+      );
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    await _insertUploadedFileReferences([remotePath]);
+    await _insertUploadedFileReferences([
+      remotePath.path,
+    ], windows: remotePath.windows);
     if (!mounted) {
       return;
     }
@@ -14793,7 +14901,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _restoreTerminalFocus(
       showSystemKeyboard: showKeyboardAfterPaste && _isMobilePlatform,
     );
-    _showClipboardMessage('Uploaded clipboard image to $remotePath');
+    _showClipboardMessage('Uploaded clipboard image to ${remotePath.path}');
   }
 
   Future<void> _pasteSelectedFiles(
@@ -14810,7 +14918,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload selected $itemLabel?',
       message:
-          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $remoteClipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
+          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
       confirmLabel: 'Upload and paste',
       details: [
         for (var index = 0; index < selectedFiles.length; index++)
@@ -14829,7 +14937,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePaths = await _withClipboardSftp((
       sftp,
       remoteFileService,
-      uploadDirectory,
+      uploadTarget,
     ) async {
       final remotePaths = <String>[];
       for (var index = 0; index < selectedFiles.length; index++) {
@@ -14839,7 +14947,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           index: index,
         );
         final remotePath = joinRemotePath(
-          uploadDirectory,
+          uploadTarget.sftpDirectory,
           buildClipboardUploadFileName(sourceName, timestamp, sequence: index),
         );
         final readStream = resolvePickedTerminalUploadReadStream(file);
@@ -14848,6 +14956,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             stream: readStream,
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         } else {
           final Uint8List bytes;
@@ -14860,15 +14969,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp: sftp,
             remotePath: remotePath,
             bytes: bytes,
+            applyPrivateMode: uploadTarget.applyPrivateFileMode,
           );
         }
-        remotePaths.add(remotePath);
+        remotePaths.add(uploadTarget.terminalPathForSftpPath(remotePath));
       }
-      return remotePaths;
+      return (paths: remotePaths, windows: uploadTarget.windows);
     });
 
     _followLiveOutput();
-    await _insertUploadedFileReferences(remotePaths);
+    await _insertUploadedFileReferences(
+      remotePaths.paths,
+      windows: remotePaths.windows,
+    );
     if (!mounted) {
       return;
     }
@@ -14880,7 +14993,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.length} $itemLabelPlural'} to $remoteClipboardUploadDirectoryDisplay',
+      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.paths.length} $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay',
     );
   }
 

@@ -304,6 +304,7 @@ Host _buildHost({
   String? tmuxSessionName,
   String? tmuxExtraFlags,
   RemoteMuxBackend? remoteMuxBackend,
+  String? tags,
 }) => Host(
   id: id,
   label: label,
@@ -317,7 +318,7 @@ Host _buildHost({
   isFavorite: false,
   color: null,
   notes: null,
-  tags: null,
+  tags: tags,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   lastConnectedAt: null,

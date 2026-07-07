@@ -36,6 +36,9 @@ abstract final class Routes {
   /// Settings route.
   static const settings = 'settings';
 
+  /// App Review demo route.
+  static const appReviewDemo = 'app-review-demo';
+
   /// Authentication setup route.
   static const authSetup = 'auth-setup';
 

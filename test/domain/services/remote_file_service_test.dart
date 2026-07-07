@@ -22,6 +22,66 @@ void main() {
       expect(joinRemotePath('', 'example.txt'), '/example.txt');
     });
 
+    test('joins Windows remote paths for terminal insertion', () {
+      expect(
+        joinRemotePath(
+          '/C:/Users/proof',
+          '.cache/monkeyssh/uploads',
+          style: RemotePathStyle.windows,
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads',
+      );
+      expect(
+        buildRemoteClipboardUploadDirectory(
+          r'C:\Users\proof',
+          style: RemotePathStyle.windows,
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads',
+      );
+    });
+
+    test(
+      'joins Windows drive-letter SFTP paths without forcing POSIX root',
+      () {
+        expect(
+          joinRemotePath('C:/Users/demo', 'Documents/notes.txt'),
+          'C:/Users/demo/Documents/notes.txt',
+        );
+        expect(
+          joinRemotePath('C:/Users/demo', r'Documents\notes.txt'),
+          'C:/Users/demo/Documents/notes.txt',
+        );
+        expect(
+          joinRemotePath('/C:/Users/demo', 'Documents/notes.txt'),
+          '/C:/Users/demo/Documents/notes.txt',
+        );
+      },
+    );
+
+    test('normalizes Windows drive-letter SFTP paths', () {
+      expect(
+        normalizeSftpAbsolutePath(r'C:\Users\demo\..\Public'),
+        'C:/Users/Public',
+      );
+      expect(
+        normalizeSftpAbsolutePath('/C:/Users/demo/../Public'),
+        '/C:/Users/Public',
+      );
+      expect(sftpPathRoot('C:/Users/demo'), 'C:/');
+      expect(sftpPathRoot('/C:/Users/demo'), '/C:/');
+      expect(isSftpPathRoot('C:/'), isTrue);
+      expect(isSftpPathRoot('/C:/'), isTrue);
+    });
+
+    test('resolves Windows drive-letter SFTP parents', () {
+      expect(parentSftpPath('C:/Users/demo'), 'C:/Users');
+      expect(parentSftpPath('C:/Users'), 'C:/');
+      expect(parentSftpPath('C:/'), 'C:/');
+      expect(parentSftpPath('/C:/Users/demo'), '/C:/Users');
+      expect(parentSftpPath('/C:/Users'), '/C:/');
+      expect(parentSftpPath('/C:/'), '/C:/');
+    });
+
     test(
       'tolerates concurrent mkdir races when ensuring directories',
       () async {
@@ -112,6 +172,26 @@ void main() {
 
     test('escapes uploaded paths for terminal insertion', () {
       expect(shellEscapePosix("/tmp/it's.txt"), r"'/tmp/it'\''s.txt'");
+      expect(
+        shellEscapeWindows(r'C:\Users\John Smith\image.png'),
+        r'"C:\Users\John Smith\image.png"',
+      );
+    });
+
+    test('converts Windows SFTP paths for terminal insertion', () {
+      expect(
+        sftpPathToWindowsShellPath(
+          '/C:/Users/proof/.cache/monkeyssh/uploads/image.png',
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads\image.png',
+      );
+      expect(
+        remoteShellPathForSftpPath(
+          '/C:/Users/proof/.cache/monkeyssh/uploads/image.png',
+          windows: true,
+        ),
+        r'C:\Users\proof\.cache\monkeyssh\uploads\image.png',
+      );
     });
 
     test(
@@ -139,6 +219,28 @@ void main() {
           '/tmp/b.png',
         ], bracketedPasteMode: false),
         ["'/tmp/a.png' '/tmp/b.png' "],
+      );
+    });
+
+    test('uses native Windows paths for terminal attachment pastes', () {
+      const start = '\x1b[200~';
+      const end = '\x1b[201~';
+
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          [r'C:\Users\proof\.cache\monkeyssh\uploads\a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+        ),
+        ['$start${r'C:\Users\proof\.cache\monkeyssh\uploads\a.png'}$end '],
+      );
+      expect(
+        buildTerminalAttachmentPasteSegments(
+          [r'C:\Users\John Smith\.cache\monkeyssh\uploads\a.png'],
+          bracketedPasteMode: true,
+          windows: true,
+        ),
+        [r'"C:\Users\John Smith\.cache\monkeyssh\uploads\a.png" '],
       );
     });
 
