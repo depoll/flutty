@@ -49,6 +49,7 @@ class _SshSessionRuntime {
   int? _lastTerminalParseNotifyAtMs;
   bool _isCoalescingMonkeyMuxReplay = false;
   bool _terminalColorSchemeUpdatesMode = false;
+  bool _terminalWin32InputMode = false;
   bool _terminalInsertMode = false;
 
   Terminal? _terminal;
@@ -123,6 +124,8 @@ class _SshSessionRuntime {
 
   bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
 
+  bool get terminalWin32InputMode => _terminalWin32InputMode;
+
   Stream<String> get shellStdoutStream =>
       _shellStdoutController?.stream ?? const Stream.empty();
 
@@ -158,8 +161,16 @@ class _SshSessionRuntime {
   }
 
   void writeToShell(String data) {
-    _shell?.write(utf8.encode(data));
+    _shell?.write(utf8.encode(_encodeForWin32InputModeIfNeeded(data)));
   }
+
+  /// Encodes OSC/DCS responses as win32-input-mode key events when the remote
+  /// ConPTY has requested that mode, so the responses survive conhost's
+  /// input-side parser and reach the foreground app.
+  String _encodeForWin32InputModeIfNeeded(String data) =>
+      _terminalWin32InputMode
+      ? encodeTerminalResponsesForWin32InputMode(data)
+      : data;
 
   Future<SSHSession> getShell({
     SSHPtyConfig? pty,
@@ -344,6 +355,7 @@ class _SshSessionRuntime {
     // replay slice resume parsing at a stale position and corrupt it.
     _terminalInsertModePendingScanOffset = 0;
     _terminalColorSchemeUpdatesMode = false;
+    _terminalWin32InputMode = false;
     _terminalInsertMode = false;
     _lastTerminalParseNotifyAtMs = null;
     _terminal = null;
@@ -498,7 +510,9 @@ class _SshSessionRuntime {
 
     // Wire terminal keyboard output → shell stdin (persistent).
     terminal.onOutput = (data) {
-      final output = normalizeTerminalOutputForRemoteShell(data);
+      final output = _encodeForWin32InputModeIfNeeded(
+        normalizeTerminalOutputForRemoteShell(data),
+      );
       _recordShellIo(stdinChars: output.length);
       shell.write(utf8.encode(output));
     };
@@ -906,6 +920,11 @@ class _SshSessionRuntime {
     _terminalInsertModePendingInput = terminalOutput.pendingInput;
     _terminalInsertModePendingScanOffset = terminalOutput.pendingScanOffset;
     _terminalInsertMode = terminalOutput.insertMode;
+    // Track control-mode updates before the xterm parser dispatches any OSC
+    // queries in this slice, so a query that arrives in the same chunk as a
+    // mode change (for example ConPTY's win32-input-mode request) is answered
+    // under the new mode.
+    _trackTerminalControlModeUpdates(slice);
     if (terminalOutput.output.isNotEmpty) {
       terminal.writeSilently(terminalOutput.output);
     }
@@ -1014,7 +1033,7 @@ class _SshSessionRuntime {
     }
   }
 
-  void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
+  void _trackTerminalControlModeUpdates(String data) {
     final modeUpdateResult = extractTerminalControlModeUpdates(
       input: data,
       pendingInput: _terminalControlModeUpdatePendingInput,
@@ -1025,7 +1044,22 @@ class _SshSessionRuntime {
         nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
       _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
     }
+    final nextWin32InputMode = modeUpdateResult.win32InputMode;
+    if (nextWin32InputMode != null &&
+        nextWin32InputMode != _terminalWin32InputMode) {
+      _terminalWin32InputMode = nextWin32InputMode;
+      DiagnosticsLogService.instance.info(
+        'terminal.osc',
+        'win32_input_mode_changed',
+        fields: {
+          'connectionId': _session.connectionId,
+          'win32InputMode': nextWin32InputMode,
+        },
+      );
+    }
+  }
 
+  void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
     final result = buildTerminalWindowControlQueryResponses(
       input: data,
       pendingInput: _terminalWindowQueryPendingInput,
