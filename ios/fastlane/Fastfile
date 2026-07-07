@@ -77,6 +77,67 @@ platform :ios do
     end
   end
 
+  private_lane :patch_deliver_review_information_sync do
+    begin
+      require 'deliver/upload_metadata'
+    rescue LoadError => e
+      UI.important("Could not load Fastlane upload metadata patch target: #{e.message}")
+      next
+    end
+
+    unless defined?(Deliver::UploadMetadata) &&
+           Deliver::UploadMetadata.private_method_defined?(:review_information)
+      UI.important(
+        'Fastlane Deliver::UploadMetadata#review_information was not found; ' \
+        'skipping MonkeySSH review information patch.',
+      )
+      next
+    end
+
+    next if Deliver::UploadMetadata.private_method_defined?(
+      :monkeyssh_original_review_information,
+    )
+
+    Deliver::UploadMetadata.class_eval do
+      alias_method :monkeyssh_original_review_information,
+                   :review_information
+
+      def review_information(version)
+        info = options[:app_review_information]
+        unless info.nil? || info.empty?
+          normalized = info.transform_keys(&:to_sym)
+          required_contact_keys = %i[
+            first_name
+            last_name
+            phone_number
+            email_address
+          ]
+          missing = required_contact_keys.select do |key|
+            normalized[key].to_s.strip.empty?
+          end
+          # App Store Connect rejects a review-detail update unless every
+          # contact attribute is present, so syncing reviewer notes alone
+          # (e.g. review_information/notes.txt without contact secrets) fails.
+          # Skip the update instead of aborting the whole metadata sync.
+          unless missing.empty?
+            UI.important(
+              'Skipping App Store review information sync because required ' \
+              "App Review contact fields are missing: #{missing.join(', ')}. " \
+              'Set the APP_REVIEW_CONTACT_* environment variables to sync ' \
+              'reviewer notes.',
+            )
+            return
+          end
+        end
+
+        monkeyssh_original_review_information(version)
+      end
+
+      private :review_information,
+              :monkeyssh_original_review_information
+    end
+  end
+
   desc 'Sync certificates and profiles for a given type and app identifier'
   private_lane :sync_certs do |options|
     app_id = options[:app_identifier]
@@ -469,6 +530,14 @@ platform :ios do
     meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
 
     patch_deliver_review_attachment_fetch
+    patch_deliver_review_information_sync
+
+    review_contact_information = {
+      first_name: ENV['APP_REVIEW_CONTACT_FIRST_NAME'],
+      last_name: ENV['APP_REVIEW_CONTACT_LAST_NAME'],
+      phone_number: ENV['APP_REVIEW_CONTACT_PHONE'],
+      email_address: ENV['APP_REVIEW_CONTACT_EMAIL'],
+    }.reject { |_key, value| value.to_s.strip.empty? }
 
     deliver_options = {
       api_key: get_api_key,
@@ -482,6 +551,9 @@ platform :ios do
       automatic_release: false,
       force: true,
     }
+    unless review_contact_information.empty?
+      deliver_options[:app_review_information] = review_contact_information
+    end
     if Dir.glob(File.join(APP_PREVIEWS_PATH, '**', '*.{mov,mp4,m4v}')).any?
       deliver_options[:app_previews_path] = APP_PREVIEWS_PATH
     end
