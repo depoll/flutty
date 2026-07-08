@@ -17,6 +17,7 @@ import '../../data/repositories/known_hosts_repository.dart';
 import '../models/remote_multiplexer.dart';
 import '../models/terminal_preview.dart';
 import '../models/terminal_theme.dart';
+import 'app_review_demo_service.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
@@ -166,34 +167,78 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
-/// Extracts terminal color-scheme update mode changes from shell output.
+/// Extracts terminal control mode changes from shell output.
 ///
 /// Some TUIs enable DEC private mode 2031 to request a report when the
-/// terminal switches between light and dark color schemes. xterm.dart does not
-/// currently model that mode, so MonkeySSH tracks it while scanning the same
-/// shell output used for other terminal control queries.
-({bool? colorSchemeUpdatesMode, String pendingInput})
+/// terminal switches between light and dark color schemes. Windows ConPTY
+/// requests DEC private mode 9001 (win32-input-mode) when a session starts.
+/// xterm.dart does not currently model either mode, so MonkeySSH tracks them
+/// while scanning the same shell output used for other terminal control
+/// queries.
+({bool? colorSchemeUpdatesMode, bool? win32InputMode, String pendingInput})
 extractTerminalControlModeUpdates({
   required String input,
   required String pendingInput,
 }) {
   final combinedInput = pendingInput + input;
   bool? colorSchemeUpdatesMode;
+  bool? win32InputMode;
 
   for (final match in _terminalPrivateModeSetResetPattern.allMatches(
     combinedInput,
   )) {
     final params = match.group(1)?.split(';') ?? const <String>[];
-    if (!params.contains('2031')) {
-      continue;
+    final isSet = match.group(2) == 'h';
+    if (params.contains('2031')) {
+      colorSchemeUpdatesMode = isSet;
     }
-    colorSchemeUpdatesMode = match.group(2) == 'h';
+    if (params.contains('9001')) {
+      win32InputMode = isSet;
+    }
   }
 
   return (
     colorSchemeUpdatesMode: colorSchemeUpdatesMode,
+    win32InputMode: win32InputMode,
     pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
   );
+}
+
+/// Re-encodes OSC and DCS responses so they survive a Windows ConPTY.
+///
+/// Windows ConPTY (conhost, used by Win32-OpenSSH) requests win32-input-mode
+/// (`CSI ? 9001 h`) when a session starts. Its input-side parser strips raw
+/// OSC and DCS sequences arriving on the input stream, so replies to terminal
+/// color queries never reach the remote app. Wrapping each code unit of those
+/// sequences as a win32-input-mode key event (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) makes
+/// ConPTY decode them back to the original bytes for the foreground app. CSI
+/// responses and regular keyboard input already pass through unmodified, so
+/// only OSC/DCS sequences are re-encoded.
+String encodeTerminalResponsesForWin32InputMode(String data) {
+  if (!data.contains('\x1b]') && !data.contains('\x1bP')) {
+    return data;
+  }
+  final output = StringBuffer();
+  var cursor = 0;
+  for (final match in _terminalOscOrDcsSequencePattern.allMatches(data)) {
+    output.write(data.substring(cursor, match.start));
+    _writeWin32InputModeKeyEvents(output, match.group(0)!);
+    cursor = match.end;
+  }
+  output.write(data.substring(cursor));
+  return output.toString();
+}
+
+void _writeWin32InputModeKeyEvents(StringBuffer output, String sequence) {
+  for (final codeUnit in sequence.codeUnits) {
+    // CSI Vk;Sc;Uc;Kd;Cs;Rc _ with only the Unicode char, key-down, and
+    // repeat-count fields set, mirroring how Windows Terminal forwards
+    // characters that have no associated virtual key.
+    output
+      ..write('\x1b[0;0;')
+      ..write(codeUnit)
+      ..write(';1;0;1_');
+  }
 }
 
 /// Normalizes terminal-generated output before it is sent to the remote shell.
@@ -540,6 +585,9 @@ final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
+final _terminalOscOrDcsSequencePattern = RegExp(
+  r'\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)',
+);
 final _terminalCursorPositionReportPattern = RegExp(
   r'\x1b\[([0-9]+);([0-9]+)R',
 );
@@ -1443,6 +1491,14 @@ class SshService {
         },
       );
 
+      if (isAppReviewDemoHost(host)) {
+        return _connectToAppReviewDemoHost(
+          host,
+          useHostThemeOverrides: useHostThemeOverrides,
+          onProgress: onProgress,
+        );
+      }
+
       List<SshKey>? cachedAutoKeys;
       var didLoadAutoKeys = false;
       Future<List<SshKey>?> loadAutoKeys() async {
@@ -1630,6 +1686,54 @@ class SshService {
             'Connection setup failed. Check saved credentials and try again.',
       );
     }
+  }
+
+  Future<SshConnectionResult> _connectToAppReviewDemoHost(
+    Host host, {
+    required bool useHostThemeOverrides,
+    ConnectionProgressCallback? onProgress,
+  }) async {
+    onProgress?.call(
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connecting,
+        message: 'Starting local App Review demo session…',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    onProgress?.call(
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.authenticating,
+        message: 'Preparing in-app demo shell…',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+
+    final config = SshConnectionConfig.fromHost(host);
+    final client = _AppReviewDemoSshClient(host);
+    final connectionId = _nextConnectionId++;
+    _sessions[connectionId] = SshSession(
+      connectionId: connectionId,
+      hostId: host.id,
+      client: client,
+      config: config,
+      terminalThemeLightId: useHostThemeOverrides
+          ? host.terminalThemeLightId
+          : null,
+      terminalThemeDarkId: useHostThemeOverrides
+          ? host.terminalThemeDarkId
+          : null,
+    );
+    await hostRepository?.updateLastConnected(host.id);
+    DiagnosticsLogService.instance.info(
+      'ssh.connect',
+      'app_review_demo_connected',
+      fields: {'hostId': host.id, 'connectionId': connectionId},
+    );
+    return SshConnectionResult(
+      success: true,
+      client: client,
+      connectionId: connectionId,
+    );
   }
 
   /// Connect with a configuration.
@@ -2948,6 +3052,13 @@ class SshSession {
   bool get terminalColorSchemeUpdatesMode =>
       _runtime.terminalColorSchemeUpdatesMode;
 
+  /// Whether the remote requested win32-input-mode (DEC private mode 9001).
+  ///
+  /// Only Windows ConPTY (conhost) requests this mode, so it doubles as a
+  /// protocol-level signal that a ConPTY sits between MonkeySSH and the
+  /// foreground app.
+  bool get terminalWin32InputMode => _runtime.terminalWin32InputMode;
+
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
@@ -3141,6 +3252,25 @@ class SshSession {
     _terminalPreview = null;
     _terminalPreviewSnapshot = null;
     _windowTitle = null;
+    _lastVolunteeredThemeDefaultsAt = null;
+  }
+
+  DateTime? _lastVolunteeredThemeDefaultsAt;
+
+  /// A color interrogation arrives as a burst of palette queries; volunteer
+  /// the default foreground/background reports once per burst rather than
+  /// once per query.
+  static const _volunteeredThemeDefaultsWindow = Duration(seconds: 1);
+
+  bool _shouldVolunteerThemeDefaults() {
+    final now = DateTime.now();
+    final last = _lastVolunteeredThemeDefaultsAt;
+    if (last != null &&
+        now.difference(last) < _volunteeredThemeDefaultsWindow) {
+      return false;
+    }
+    _lastVolunteeredThemeDefaultsAt = now;
+    return true;
   }
 
   void _handleWindowTitleChange(String title) {
@@ -3210,7 +3340,24 @@ class SshSession {
           },
         );
       } else {
-        shell.write(utf8.encode(themeOscResponse));
+        final win32InputMode = _runtime.terminalWin32InputMode;
+        var payload = themeOscResponse;
+        final volunteersThemeDefaults =
+            win32InputMode && code == '4' && _shouldVolunteerThemeDefaults();
+        if (volunteersThemeDefaults) {
+          // Windows ConPTY consumes OSC 10/11 queries without forwarding or
+          // answering them, so an app interrogating terminal colors (visible
+          // through its OSC 4 palette queries, which do pass through) never
+          // learns the default foreground/background. Volunteer those reports
+          // alongside the palette answer while the app is parsing replies.
+          payload += buildTerminalThemeDefaultColorReports(terminalTheme!);
+        }
+        if (win32InputMode) {
+          // ConPTY strips raw OSC replies from the input stream; re-encode
+          // them as win32-input-mode key events so they reach the app.
+          payload = encodeTerminalResponsesForWin32InputMode(payload);
+        }
+        shell.write(utf8.encode(payload));
         DiagnosticsLogService.instance.debug(
           'terminal.osc',
           'theme_query_answered',
@@ -3218,7 +3365,9 @@ class SshSession {
             'connectionId': connectionId,
             'code': code,
             'themeId': terminalTheme!.id,
-            'responseBytes': themeOscResponse.length,
+            'responseBytes': payload.length,
+            'win32InputMode': win32InputMode,
+            'volunteeredThemeDefaults': volunteersThemeDefaults,
           },
         );
       }
@@ -3432,6 +3581,7 @@ class SshSession {
         break;
       }
     }
+
     if (lastNonEmpty < 0) {
       return null;
     }
@@ -3907,6 +4057,30 @@ class SshSession {
   }
 }
 
+/// Whether [session] is backed by MonkeySSH's in-app App Review demo transport.
+bool isAppReviewDemoSession(SshSession session) =>
+    session.client is _AppReviewDemoSshClient;
+
+/// Writes synthetic remote output into the App Review demo terminal, if active.
+void writeAppReviewDemoTerminalOutput(
+  SshSession session,
+  String text, {
+  bool replaceScreen = false,
+  bool showPrompt = true,
+}) {
+  if (!isAppReviewDemoSession(session)) {
+    return;
+  }
+  final shell = session._runtime.shell;
+  if (shell is _AppReviewDemoSshSession) {
+    shell.writeDemoOutput(
+      text,
+      replaceScreen: replaceScreen,
+      showPrompt: showPrompt,
+    );
+  }
+}
+
 class _SshConnectionHealthFailure {
   const _SshConnectionHealthFailure({
     required this.connectionId,
@@ -4057,6 +4231,722 @@ class _ActiveTunnel {
   // ignore: cancel_subscriptions
   StreamSubscription<dynamic>? subscription;
 }
+
+class _AppReviewDemoSshClient implements SSHClient {
+  _AppReviewDemoSshClient(this.host);
+
+  final Host host;
+  final _done = Completer<void>();
+  bool _isClosed = false;
+  _AppReviewDemoSftpClient? _sftp;
+
+  @override
+  String? get remoteVersion => 'SSH-2.0-MonkeySSH_App_Review_Demo';
+
+  @override
+  bool get isClosed => _isClosed;
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  Future<void> get authenticated => Future<void>.value();
+
+  @override
+  String get username => host.username;
+
+  @override
+  Future<SSHSession> shell({
+    SSHPtyConfig? pty = const SSHPtyConfig(),
+    SSHX11Config? x11,
+    Map<String, String>? environment,
+  }) async => _AppReviewDemoSshSession.interactive(host);
+
+  @override
+  Future<SSHSession> execute(
+    String command, {
+    SSHPtyConfig? pty,
+    SSHX11Config? x11,
+    Map<String, String>? environment,
+  }) async {
+    if (pty != null && _looksLikeLoginShellCommand(command)) {
+      return _AppReviewDemoSshSession.interactive(host);
+    }
+    return _AppReviewDemoSshSession.completed(_demoExecOutput(command));
+  }
+
+  @override
+  Future<SftpClient> sftp() async => _sftp ??= _AppReviewDemoSftpClient();
+
+  @override
+  Future<SSHForwardChannel> forwardLocal(
+    String remoteHost,
+    int remotePort, {
+    String localHost = 'localhost',
+    int localPort = 0,
+  }) async => _AppReviewDemoForwardChannel(
+    remoteHost: remoteHost,
+    remotePort: remotePort,
+  );
+
+  @override
+  Future<SSHRemoteForward?> forwardRemote({
+    String? host,
+    int? port,
+    SSHRemoteConnectionFilter? filter,
+  }) async => null;
+
+  @override
+  Future<Uint8List> run(
+    String command, {
+    bool runInPty = false,
+    bool stdout = true,
+    bool stderr = true,
+    Map<String, String>? environment,
+  }) async => Uint8List.fromList(utf8.encode(_demoExecOutput(command)));
+
+  @override
+  Future<SSHRunResult> runWithResult(
+    String command, {
+    bool runInPty = false,
+    bool stdout = true,
+    bool stderr = true,
+    Map<String, String>? environment,
+  }) async {
+    final output = Uint8List.fromList(utf8.encode(_demoExecOutput(command)));
+    return SSHRunResult(
+      output: output,
+      stdout: stdout ? output : Uint8List(0),
+      stderr: Uint8List(0),
+      exitCode: 0,
+      exitSignal: null,
+    );
+  }
+
+  @override
+  void close() {
+    if (_isClosed) {
+      return;
+    }
+    _isClosed = true;
+    _sftp?.close();
+    if (!_done.isCompleted) {
+      _done.complete();
+    }
+  }
+
+  static bool _looksLikeLoginShellCommand(String command) =>
+      command.contains('COLORTERM=truecolor') ||
+      command.contains('TERM_PROGRAM=kitty') ||
+      command.contains('/bin/sh -lc');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _AppReviewDemoSshSession implements SSHSession {
+  _AppReviewDemoSshSession._({required this.exitCode})
+    : _stdinController = StreamController<Uint8List>(),
+      _stdoutController = StreamController<Uint8List>(),
+      _stderrController = StreamController<Uint8List>() {
+    _stdinSubscription = _stdinController.stream.listen(_handleInput);
+  }
+
+  factory _AppReviewDemoSshSession.interactive(Host host) {
+    final session = _AppReviewDemoSshSession._(exitCode: null);
+    scheduleMicrotask(() {
+      session
+        .._writeText(_demoInteractiveBanner(host))
+        .._writePrompt();
+    });
+    return session;
+  }
+
+  factory _AppReviewDemoSshSession.completed(String stdout) {
+    final session = _AppReviewDemoSshSession._(exitCode: 0);
+    scheduleMicrotask(() async {
+      if (stdout.isNotEmpty) {
+        session._writeText(stdout);
+      }
+      await session._finish(exitCode: 0);
+    });
+    return session;
+  }
+
+  @override
+  final int? exitCode;
+
+  @override
+  SSHSessionExitSignal? get exitSignal => null;
+
+  late final StreamSubscription<Uint8List> _stdinSubscription;
+  final StreamController<Uint8List> _stdinController;
+  final StreamController<Uint8List> _stdoutController;
+  final StreamController<Uint8List> _stderrController;
+  final _done = Completer<void>();
+  final _exitCompleter = Completer<int?>();
+  final _input = StringBuffer();
+  bool _closed = false;
+
+  @override
+  StreamSink<Uint8List> get stdin => _stdinController.sink;
+
+  @override
+  Stream<Uint8List> get stdout => _stdoutController.stream;
+
+  @override
+  Stream<Uint8List> get stderr => _stderrController.stream;
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  void write(Uint8List data) {
+    if (!_closed) {
+      _handleInput(data);
+    }
+  }
+
+  @override
+  void resizeTerminal(
+    int width,
+    int height, [
+    int pixelWidth = 0,
+    int pixelHeight = 0,
+  ]) {}
+
+  @override
+  void close() {
+    unawaited(_finish(exitCode: exitCode));
+  }
+
+  @override
+  Future<int?> waitForExit({Duration? timeout}) {
+    final future = _exitCompleter.future;
+    return timeout == null
+        ? future
+        : future.timeout(timeout, onTimeout: () => null);
+  }
+
+  @override
+  void kill(SSHSignal signal) {
+    _writeText('^C\r\n');
+    close();
+  }
+
+  void _handleInput(Uint8List data) {
+    if (_closed) {
+      return;
+    }
+    final text = utf8.decode(data, allowMalformed: true);
+    for (var i = 0; i < text.length; i += 1) {
+      final codeUnit = text.codeUnitAt(i);
+      if (codeUnit == 0x03) {
+        _input.clear();
+        _writeText('^C\r\n');
+        _writePrompt();
+        continue;
+      }
+      if (codeUnit == 0x04) {
+        close();
+        continue;
+      }
+      if (codeUnit == 0x7F || codeUnit == 0x08) {
+        final current = _input.toString();
+        if (current.isNotEmpty) {
+          _input
+            ..clear()
+            ..write(current.substring(0, current.length - 1));
+          _writeText('\b \b');
+        }
+        continue;
+      }
+      if (codeUnit == 0x0D || codeUnit == 0x0A) {
+        final command = _input.toString().trim();
+        _input.clear();
+        _writeText('\r\n');
+        _runInteractiveCommand(command);
+        if (!_closed) {
+          _writePrompt();
+        }
+        continue;
+      }
+      if (codeUnit == 0x1B) {
+        continue;
+      }
+      final char = String.fromCharCode(codeUnit);
+      _input.write(char);
+      _writeText(char);
+    }
+  }
+
+  void _runInteractiveCommand(String command) {
+    if (command.isEmpty) {
+      return;
+    }
+    final normalized = command.toLowerCase();
+    if (normalized == 'clear') {
+      _writeText('\x1b[2J\x1b[H');
+      return;
+    }
+    if (normalized == 'exit' || normalized == 'logout') {
+      _writeText('logout\r\n');
+      close();
+      return;
+    }
+    _writeText(_demoInteractiveCommandOutput(command));
+  }
+
+  void _writePrompt() {
+    _writeText(r'reviewer@demo:~/demo$ ');
+  }
+
+  void _writeText(String text) {
+    if (_closed || _stdoutController.isClosed) {
+      return;
+    }
+    _stdoutController.add(
+      Uint8List.fromList(utf8.encode(_normalizeDemoTerminalOutput(text))),
+    );
+  }
+
+  void writeDemoOutput(
+    String text, {
+    bool replaceScreen = false,
+    bool showPrompt = true,
+  }) {
+    if (_closed) {
+      return;
+    }
+    if (replaceScreen) {
+      _writeText('\x1b[2J\x1b[H$text');
+    } else {
+      _writeText('\r\n$text');
+    }
+    if (showPrompt && !text.endsWith('\n') && !text.endsWith('\r')) {
+      _writeText('\r\n');
+    }
+    if (showPrompt) {
+      _writePrompt();
+    }
+  }
+
+  Future<void> _finish({int? exitCode}) async {
+    if (_closed) {
+      return;
+    }
+    _closed = true;
+    await _stdinSubscription.cancel();
+    await _stdinController.close();
+    await _stdoutController.close();
+    await _stderrController.close();
+    if (!_exitCompleter.isCompleted) {
+      _exitCompleter.complete(exitCode);
+    }
+    if (!_done.isCompleted) {
+      _done.complete();
+    }
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _AppReviewDemoSftpClient implements SftpClient {
+  _AppReviewDemoSftpClient();
+
+  static const _home = '/home/reviewer';
+  static const _workspace = '/home/reviewer/work/monkeyssh-demo';
+  final _files = Map<String, String>.from(_demoSftpFiles);
+  bool _closed = false;
+
+  @override
+  Future<SftpHandsake> get handshake =>
+      Future<SftpHandsake>.value(SftpHandsake(3, const {}));
+
+  @override
+  Future<String> absolute(String path) async => _normalizeDemoSftpPath(path);
+
+  @override
+  Future<List<SftpName>> listdir(String path) async {
+    final directory = _normalizeDemoSftpPath(path);
+    final entries = <SftpName>[];
+    for (final child in _demoSftpDirectoryChildren(directory)) {
+      final childPath = _joinDemoSftpPath(directory, child);
+      final isDirectory = _demoSftpDirectories.contains(childPath);
+      entries.add(
+        SftpName(
+          filename: child,
+          longname: child,
+          attr: isDirectory
+              ? _demoDirectoryAttrs()
+              : _demoFileAttrs(_files[childPath]?.length ?? 0),
+        ),
+      );
+    }
+    return entries;
+  }
+
+  @override
+  Future<SftpFileAttrs> stat(String path, {bool followLink = true}) async {
+    final normalized = _normalizeDemoSftpPath(path);
+    if (_demoSftpDirectories.contains(normalized)) {
+      return _demoDirectoryAttrs();
+    }
+    final content = _files[normalized];
+    if (content != null) {
+      return _demoFileAttrs(content.length);
+    }
+    throw StateError('No such file: $path');
+  }
+
+  @override
+  Future<SftpFile> open(
+    String path, {
+    SftpFileOpenMode mode = SftpFileOpenMode.read,
+  }) async {
+    final normalized = _normalizeDemoSftpPath(path);
+    _files.putIfAbsent(normalized, () => '');
+    return _AppReviewDemoSftpFile(
+      attrs: _demoFileAttrs(_files[normalized]!.length),
+      readContent: () => _files[normalized] ?? '',
+      writeContent: (value) => _files[normalized] = value,
+    );
+  }
+
+  @override
+  Future<void> mkdir(String path, [SftpFileAttrs? attrs]) async {}
+
+  @override
+  Future<void> rmdir(String dirname) async {}
+
+  @override
+  Future<void> remove(String filename) async {
+    _files.remove(_normalizeDemoSftpPath(filename));
+  }
+
+  @override
+  Future<void> rename(String oldPath, String newPath) async {
+    final oldNormalized = _normalizeDemoSftpPath(oldPath);
+    final content = _files.remove(oldNormalized);
+    if (content != null) {
+      _files[_normalizeDemoSftpPath(newPath)] = content;
+    }
+  }
+
+  @override
+  void close() {
+    _closed = true;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    if (_closed) {
+      throw StateError('Connection closed');
+    }
+    return super.noSuchMethod(invocation);
+  }
+}
+
+class _AppReviewDemoSftpFile implements SftpFile {
+  _AppReviewDemoSftpFile({
+    required SftpFileAttrs attrs,
+    required String Function() readContent,
+    required void Function(String value) writeContent,
+  }) : _attrs = attrs,
+       _readContent = readContent,
+       _writeContent = writeContent;
+
+  final String Function() _readContent;
+  final void Function(String value) _writeContent;
+  SftpFileAttrs _attrs;
+  bool _isClosed = false;
+
+  @override
+  bool get isClosed => _isClosed;
+
+  @override
+  Future<SftpFileAttrs> stat() async => _attrs;
+
+  @override
+  Stream<Uint8List> read({
+    int? length,
+    int offset = 0,
+    void Function(int bytesRead)? onProgress,
+    int chunkSize = 16 * 1024,
+    int maxPendingRequests = 64,
+  }) async* {
+    final bytes = Uint8List.fromList(utf8.encode(_readContent()));
+    final start = offset.clamp(0, bytes.length);
+    final requestedLength = length ?? bytes.length - start;
+    final end = (start + requestedLength).clamp(start, bytes.length);
+    final chunk = Uint8List.sublistView(bytes, start, end);
+    if (chunk.isNotEmpty) {
+      onProgress?.call(chunk.length);
+      yield chunk;
+    }
+  }
+
+  @override
+  Future<Uint8List> readBytes({int? length, int offset = 0}) async {
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in read(length: length, offset: offset)) {
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
+
+  @override
+  Future<void> writeBytes(Uint8List data, {int offset = 0}) async {
+    final text = utf8.decode(data, allowMalformed: true);
+    _writeContent(text);
+    _attrs = _demoFileAttrs(text.length);
+  }
+
+  @override
+  Future<void> close() async {
+    _isClosed = true;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _AppReviewDemoForwardChannel implements SSHForwardChannel {
+  _AppReviewDemoForwardChannel({
+    required String remoteHost,
+    required int remotePort,
+  }) : _response = _demoForwardHttpResponse(remoteHost, remotePort) {
+    _sinkController.stream.drain<void>().ignore();
+    scheduleMicrotask(() async {
+      _streamController.add(Uint8List.fromList(utf8.encode(_response)));
+      await close();
+    });
+  }
+
+  final String _response;
+  final _streamController = StreamController<Uint8List>();
+  final _sinkController = StreamController<List<int>>();
+  final _done = Completer<void>();
+  bool _closed = false;
+
+  @override
+  Stream<Uint8List> get stream => _streamController.stream;
+
+  @override
+  StreamSink<List<int>> get sink => _sinkController.sink;
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  Future<void> close() async {
+    if (_closed) {
+      return;
+    }
+    _closed = true;
+    await _sinkController.close();
+    await _streamController.close();
+    if (!_done.isCompleted) {
+      _done.complete();
+    }
+  }
+
+  @override
+  void destroy() {
+    unawaited(close());
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+const _demoSftpDirectories = <String>{
+  '/',
+  '/home',
+  '/home/reviewer',
+  '/home/reviewer/work',
+  '/home/reviewer/work/monkeyssh-demo',
+  '/home/reviewer/work/monkeyssh-demo/logs',
+  '/home/reviewer/work/monkeyssh-demo/src',
+  '/home/reviewer/work/monkeyssh-demo/screenshots',
+};
+
+const _demoSftpFiles = <String, String>{
+  '/home/reviewer/work/monkeyssh-demo/README.md': '''
+# MonkeySSH App Review Demo
+
+This is an in-app local demo workspace. It does not require a private SSH
+server, but it behaves like a connected terminal for review.
+''',
+  '/home/reviewer/work/monkeyssh-demo/package.json': '''
+{"scripts":{"dev":"vite --host 127.0.0.1","test":"flutter test"}}
+''',
+  '/home/reviewer/work/monkeyssh-demo/deploy-demo.sh': '''
+#!/bin/sh
+echo "dry-run deploy complete"
+''',
+  '/home/reviewer/work/monkeyssh-demo/logs/app.log': '''
+01:08:22 connected local review shell
+01:08:23 loaded MonkeyMux workspace metadata
+01:08:24 opened sample SFTP tree
+''',
+  '/home/reviewer/work/monkeyssh-demo/src/main.dart': '''
+void main() {
+  print('MonkeySSH App Review Demo');
+}
+''',
+};
+
+String _demoInteractiveBanner(Host host) =>
+    '''
+\x1b]0;${host.label}\x07\x1b]7;file://localhost/home/reviewer/work/monkeyssh-demo\x07MonkeySSH App Review Demo
+
+Connected locally for:
+  ${_shortDemoHostLabel(host.label)}
+
+No external SSH server or credentials are required.
+
+Sample workspace: ~/work/monkeyssh-demo
+
+Try:
+  ls
+  pwd
+  cat README.md
+  monkeymux windows
+  copilot
+
+''';
+
+String _shortDemoHostLabel(String label) =>
+    label.replaceFirst('${AppReviewDemoService.demoHostLabelPrefix} ', '');
+
+String _normalizeDemoTerminalOutput(String text) =>
+    text.replaceAll('\r\n', '\n').replaceAll('\n', '\r\n');
+
+String _demoInteractiveCommandOutput(String command) {
+  final normalized = command.toLowerCase();
+  if (normalized == 'pwd') {
+    return '/home/reviewer/work/monkeyssh-demo\r\n';
+  }
+  if (normalized == 'whoami') {
+    return 'reviewer\r\n';
+  }
+  if (normalized == 'ls' || normalized == 'ls -la') {
+    return 'README.md  deploy-demo.sh  logs  package.json  screenshots  src\r\n';
+  }
+  if (normalized == 'cat readme.md' ||
+      normalized == 'cat README.md'.toLowerCase()) {
+    return '${_demoSftpFiles['/home/reviewer/work/monkeyssh-demo/README.md']}\r\n';
+  }
+  if (normalized.contains('monkeymux') || normalized.contains('tmux')) {
+    return '''
+review-workspace
+  0  Copilot CLI     planning App Review notes
+  1  Claude Code    running focused tests
+  2  OpenCode       editing README.md
+  3  SFTP           browsing /home/reviewer/work/monkeyssh-demo
+''';
+  }
+  if (normalized.contains('copilot')) {
+    return '''
+Copilot CLI demo
+  ✓ inspected staged changes
+  ✓ prepared review notes
+  → ready for /deploy
+''';
+  }
+  if (normalized.contains('deploy-demo')) {
+    return 'dry-run deploy complete\r\n';
+  }
+  return 'demo shell: command "$command" completed locally\r\n';
+}
+
+String _demoExecOutput(String command) {
+  final normalized = command.toLowerCase();
+  if (normalized.contains('pwd')) {
+    return '/home/reviewer/work/monkeyssh-demo\n';
+  }
+  if (normalized.contains('tmux') && normalized.contains('list')) {
+    return 'review-workspace: 4 windows\n';
+  }
+  if (normalized.contains('command -v') ||
+      normalized.contains('which ') ||
+      normalized.contains('uname')) {
+    return '';
+  }
+  return '';
+}
+
+String _demoForwardHttpResponse(String remoteHost, int remotePort) {
+  const body = '''
+<!doctype html>
+<title>MonkeySSH App Review Demo</title>
+<h1>MonkeySSH forwarded preview</h1>
+<p>This page was served by the in-app demo tunnel.</p>
+''';
+  return 'HTTP/1.1 200 OK\r\n'
+      'content-type: text/html; charset=utf-8\r\n'
+      'content-length: ${utf8.encode(body).length}\r\n'
+      'connection: close\r\n'
+      '\r\n'
+      '$body';
+}
+
+List<String> _demoSftpDirectoryChildren(String directory) {
+  final children = <String>{};
+  for (final path in [..._demoSftpDirectories, ..._demoSftpFiles.keys]) {
+    if (path == directory || !path.startsWith('$directory/')) {
+      continue;
+    }
+    final remainder = path.substring(
+      directory == '/' ? 1 : directory.length + 1,
+    );
+    if (remainder.isEmpty || remainder.contains('/')) {
+      continue;
+    }
+    children.add(remainder);
+  }
+  return children.toList()..sort();
+}
+
+String _normalizeDemoSftpPath(String input) {
+  var path = input.trim();
+  if (path.isEmpty || path == '.') {
+    return _AppReviewDemoSftpClient._workspace;
+  }
+  if (path == '~') {
+    return _AppReviewDemoSftpClient._home;
+  }
+  if (path.startsWith('~/')) {
+    path = '${_AppReviewDemoSftpClient._home}/${path.substring(2)}';
+  }
+  if (!path.startsWith('/')) {
+    path = '${_AppReviewDemoSftpClient._workspace}/$path';
+  }
+  while (path.contains('//')) {
+    path = path.replaceAll('//', '/');
+  }
+  if (path.length > 1 && path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  return path;
+}
+
+String _joinDemoSftpPath(String directory, String child) =>
+    directory == '/' ? '/$child' : '$directory/$child';
+
+SftpFileAttrs _demoDirectoryAttrs() => SftpFileAttrs(
+  size: 0,
+  mode: const SftpFileMode.value(0x4000 | 0x01ED),
+  modifyTime: 1783325486,
+);
+
+SftpFileAttrs _demoFileAttrs(int size) => SftpFileAttrs(
+  size: size,
+  mode: const SftpFileMode.value(0x8000 | 0x01A4),
+  modifyTime: 1783325486,
+);
 
 String _telemetryAuthMethodFromHost(Host? host) {
   if (host == null) {

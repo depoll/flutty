@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon (API 26+) for host quick-action shortcuts. Uses the shared
+     MonkeySSH brand teal so the shortcut reads as ours; the launcher masks it
+     to the device icon shape and badges it with the app icon when pinned. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+  <background android:drawable="@color/ic_launcher_background"/>
+  <foreground android:drawable="@drawable/ic_shortcut_host_foreground"/>
+</adaptive-icon>

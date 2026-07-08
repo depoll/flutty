@@ -895,6 +895,80 @@ func TestCreateWindowUsesServerTerminalSize(t *testing.T) {
 	assertPtySize(t, window.pty, 132, 43)
 }
 
+func TestHoldAgentWindowCommandWrapsFastFailure(t *testing.T) {
+	wrapped := holdAgentWindowCommand("/bin/zsh", "cursor-agent --resume abc")
+
+	for _, needle := range []string{
+		"cursor-agent --resume abc", // runs the original command
+		"__mm_rc=$?",                // captures the exit status
+		"[ \"$__mm_rc\" -ne 0 ]",    // only holds on a non-zero exit
+		"-lt 12 ]",                  // ...that happened quickly after launch
+		"stty sane",                 // restores the terminal before the shell
+		"exec '/bin/zsh' -i",        // drops to an interactive shell
+	} {
+		if !strings.Contains(wrapped, needle) {
+			t.Fatalf("wrapped command missing %q\n got: %s", needle, wrapped)
+		}
+	}
+
+	if got := holdAgentWindowCommand("/bin/zsh", "   "); got != "" {
+		t.Fatalf("blank command should stay empty, got %q", got)
+	}
+}
+
+func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+
+	// `false` exits non-zero immediately; an agent window must stay open (the
+	// wrapper drops to a shell) so the failure output remains readable.
+	window, err := server.createWindow(createWindowOptions{
+		agentTool: "cursor-agent",
+		command:   "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		closed := window.closed
+		server.mu.Unlock()
+		if closed {
+			t.Fatal("agent window closed after a fast failure; expected it to stay open")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestCreateWindowClosesNonAgentWindowOnExit(t *testing.T) {
+	server := newMuxServer("test")
+	t.Cleanup(server.close)
+
+	// A non-agent window is not wrapped, so it closes when its command exits.
+	window, err := server.createWindow(createWindowOptions{
+		command: "false",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		server.mu.Lock()
+		closed := window.closed
+		server.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("non-agent window stayed open after its command exited")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestSameSizeResizeDoesNotSignalFocusAwareTui(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -2282,6 +2356,327 @@ func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T
 	}
 }
 
+func TestEncodeTerminalResponsesForWin32InputMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "plain text passes through", input: "hello\r", want: "hello\r"},
+		{
+			name:  "csi passes through",
+			input: "\x1b[I\x1b[?997;2n",
+			want:  "\x1b[I\x1b[?997;2n",
+		},
+		{
+			name:  "osc with bel is encoded",
+			input: "\x1b]11;?\x07",
+			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;93;1;0;1_\x1b[0;0;49;1;0;1_" +
+				"\x1b[0;0;49;1;0;1_\x1b[0;0;59;1;0;1_\x1b[0;0;63;1;0;1_" +
+				"\x1b[0;0;7;1;0;1_",
+		},
+		{
+			name:  "osc with st is encoded",
+			input: "\x1b]11;?\x1b\\",
+			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;93;1;0;1_\x1b[0;0;49;1;0;1_" +
+				"\x1b[0;0;49;1;0;1_\x1b[0;0;59;1;0;1_\x1b[0;0;63;1;0;1_" +
+				"\x1b[0;0;27;1;0;1_\x1b[0;0;92;1;0;1_",
+		},
+		{
+			name:  "dcs is encoded",
+			input: "\x1bP>|mux\x1b\\",
+			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;80;1;0;1_\x1b[0;0;62;1;0;1_" +
+				"\x1b[0;0;124;1;0;1_\x1b[0;0;109;1;0;1_\x1b[0;0;117;1;0;1_" +
+				"\x1b[0;0;120;1;0;1_\x1b[0;0;27;1;0;1_\x1b[0;0;92;1;0;1_",
+		},
+		{
+			name:  "mixed output only encodes the osc portion",
+			input: "a\x1b]10;rgb:aaaa/bbbb/cccc\x07\x1b[Ib",
+			want: "a" + win32EncodeSequence("\x1b]10;rgb:aaaa/bbbb/cccc\x07") +
+				"\x1b[Ib",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := string(encodeTerminalResponsesForWin32InputMode(
+				[]byte(testCase.input),
+			))
+			if got != testCase.want {
+				t.Fatalf(
+					"encodeTerminalResponsesForWin32InputMode(%q) = %q, want %q",
+					testCase.input,
+					got,
+					testCase.want,
+				)
+			}
+		})
+	}
+}
+
+func win32EncodeSequence(sequence string) string {
+	var buffer bytes.Buffer
+	writeWin32InputModeKeyEvents(&buffer, []byte(sequence))
+	return buffer.String()
+}
+
+func TestStripWin32InputModeRequests(t *testing.T) {
+	cases := []struct {
+		name      string
+		prev      string
+		data      string
+		wantOut   string
+		wantCarry string
+	}{
+		{
+			name:    "strips enable request",
+			data:    "\x1b[?9001h",
+			wantOut: "",
+		},
+		{
+			name:    "strips disable request",
+			data:    "\x1b[?9001l",
+			wantOut: "",
+		},
+		{
+			name:    "keeps other private modes",
+			data:    "\x1b[?9001h\x1b[?1004h\x1b[?25l",
+			wantOut: "\x1b[?1004h\x1b[?25l",
+		},
+		{
+			name:    "leaves cursor key untouched",
+			data:    "\x1b[Aecho\r",
+			wantOut: "\x1b[Aecho\r",
+		},
+		{
+			name:    "leaves title osc untouched",
+			data:    "\x1b]0;title\x07",
+			wantOut: "\x1b]0;title\x07",
+		},
+		{
+			name:    "strips request between output",
+			data:    "before\x1b[?9001hafter",
+			wantOut: "beforeafter",
+		},
+		{
+			name:      "buffers split request prefix",
+			data:      "text\x1b[?90",
+			wantOut:   "text",
+			wantCarry: "\x1b[?90",
+		},
+		{
+			name:    "completes split request from carry",
+			prev:    "\x1b[?90",
+			data:    "01h\x1b[A",
+			wantOut: "\x1b[A",
+		},
+		{
+			name:    "flushes non-request escape prefix",
+			prev:    "\x1b[?90",
+			data:    "0m done",
+			wantOut: "\x1b[?900m done",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			out, carry := stripWin32InputModeRequests(
+				[]byte(testCase.prev),
+				[]byte(testCase.data),
+			)
+			if string(out) != testCase.wantOut {
+				t.Fatalf("out = %q, want %q", out, testCase.wantOut)
+			}
+			if string(carry) != testCase.wantCarry {
+				t.Fatalf("carry = %q, want %q", carry, testCase.wantCarry)
+			}
+		})
+	}
+}
+
+func TestWin32InputModeRequestStripperWriteHandlesSplitAcrossWrites(t *testing.T) {
+	var sink bytes.Buffer
+	stripper := newWin32InputModeRequestStripper(&sink)
+	// A win32-input-mode request split across two writes must still be removed
+	// so the ConPTY hosting the attach process never sees it.
+	if _, err := stripper.Write([]byte("prompt\x1b[?90")); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := stripper.Write([]byte("01h\x1b[A")); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if got := sink.String(); got != "prompt\x1b[A" {
+		t.Fatalf("stripped output = %q, want %q", got, "prompt\x1b[A")
+	}
+}
+
+func TestWin32InputModeRequestStripperFlushEmitsUnterminatedCarry(t *testing.T) {
+	var sink bytes.Buffer
+	stripper := newWin32InputModeRequestStripper(&sink)
+	// A chunk ending on a partial request prefix is buffered, not emitted...
+	if _, err := stripper.Write([]byte("tail\x1b[?90")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := sink.String(); got != "tail" {
+		t.Fatalf("pre-flush output = %q, want %q", got, "tail")
+	}
+	// ...but if the stream ends there, Flush must not drop those bytes.
+	if err := stripper.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := sink.String(); got != "tail\x1b[?90" {
+		t.Fatalf("post-flush output = %q, want %q", got, "tail\x1b[?90")
+	}
+	// Flush is idempotent once the carry is drained.
+	if err := stripper.Flush(); err != nil {
+		t.Fatalf("second flush: %v", err)
+	}
+	if got := sink.String(); got != "tail\x1b[?90" {
+		t.Fatalf("double-flush output = %q, want unchanged %q", got, "tail\x1b[?90")
+	}
+}
+
+func TestThemeHintRefreshDataSuppressesOscUnderWin32InputMode(t *testing.T) {
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	// A focus-aware agent window normally receives an unsolicited OSC 11 refresh.
+	baseline := &muxWindow{focusModeEnabled: true, agentTool: "codex"}
+	if got := baseline.themeHintRefreshDataLocked(hint); len(got) == 0 {
+		t.Fatalf("baseline themeHintRefreshDataLocked = %q, want an OSC push", got)
+	}
+
+	// Under win32-input-mode (Windows ConPTY) that OSC would be delivered to the
+	// app as literal typed characters, so it must be suppressed.
+	win32 := &muxWindow{
+		focusModeEnabled: true,
+		agentTool:        "codex",
+		win32InputMode:   true,
+	}
+	if got := win32.themeHintRefreshDataLocked(hint); len(got) != 0 {
+		t.Fatalf("win32 themeHintRefreshDataLocked = %q, want no OSC push", got)
+	}
+}
+
+func TestThemeHintRefreshDataKeepsCopilotModeReportUnderWin32InputMode(t *testing.T) {
+	hint := []byte("\x1b[?997;2n\x1b]11;rgb:1111/2222/3333\x1b\\")
+	// Copilot receives a CSI DEC 2031 mode report (safe to relay through ConPTY,
+	// which parses CSI into input events rather than typed text) but not the OSC
+	// color report that would surface as literal composer text.
+	window := &muxWindow{
+		focusModeEnabled: true,
+		agentTool:        "copilot",
+		win32InputMode:   true,
+	}
+	got := string(window.themeHintRefreshDataLocked(hint))
+	if strings.Contains(got, "]11;") {
+		t.Fatalf("themeHintRefreshDataLocked = %q, must not include OSC 11", got)
+	}
+	if !strings.Contains(got, "\x1b[?997;2n") {
+		t.Fatalf("themeHintRefreshDataLocked = %q, want the mode report", got)
+	}
+}
+
+// TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults covers the ConPTY
+// (Windows) theme path: conhost enables DEC private mode 9001 at startup,
+// swallows the child's OSC 10/11 default-colour queries, forwards its OSC 4
+// palette queries, and drops raw OSC written into the pty input. When a
+// palette query is observed under win32-input-mode, the answer must volunteer
+// the default foreground/background reports as well, and everything written
+// into the pty must be win32-input-mode encoded.
+func TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "copilot",
+		foregroundPid:     42,
+		pty:               wrapPty(inputWriter),
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	const foregroundReport = "\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\"
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	const paletteReport = "\x1b]4;0;rgb:0000/0000/0000\x1b\\"
+	server.themeHint = []byte(foregroundReport + backgroundReport + paletteReport)
+
+	server.handleWindowOutput("@1", []byte("\x1b[?9001h\x1b]4;0;?\x1b\\"))
+
+	encodedPalette := win32EncodeSequence(paletteReport)
+	encodedForeground := win32EncodeSequence(foregroundReport)
+	encodedBackground := win32EncodeSequence(backgroundReport)
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, encodedPalette) &&
+			strings.Contains(output, encodedForeground) &&
+			strings.Contains(output, encodedBackground)
+	})
+	if strings.Contains(got, "\x1b]") {
+		t.Fatalf("window pty got raw OSC bytes under win32-input-mode: %q", got)
+	}
+}
+
+// TestWin32InputModeResetRestoresRawThemeAnswers verifies that once DEC
+// private mode 9001 is reset, theme answers are written raw again and default
+// colour reports are no longer volunteered.
+func TestWin32InputModeResetRestoresRawThemeAnswers(t *testing.T) {
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inputReader.Close()
+		_ = inputWriter.Close()
+	})
+
+	window := &muxWindow{
+		id:                "@1",
+		foregroundCommand: "unknown-tui",
+		foregroundPid:     42,
+		pty:               wrapPty(inputWriter),
+		lastActivity:      time.Now(),
+	}
+	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
+	defer func() {
+		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
+	}()
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return 42
+		}
+		return 0
+	}
+
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
+	server.themeHint = []byte(backgroundReport)
+
+	server.handleWindowOutput("@1", []byte("\x1b[?9001h\x1b[?9001l\x1b]11;?\x1b\\"))
+
+	got := readPipeUntil(t, inputReader, func(output string) bool {
+		return strings.Contains(output, backgroundReport)
+	})
+	if got != backgroundReport {
+		t.Fatalf("window pty got = %q, want raw background report %q", got, backgroundReport)
+	}
+}
+
 // TestActiveOutputKeepsUnansweredPaletteQueryInAttach verifies that when the
 // theme hint cannot answer every key in a multi-key OSC 4 palette query, the
 // query is left intact so the SSH client can still reply.
@@ -3375,6 +3770,7 @@ func TestFirstShellWordSkipsWrappers(t *testing.T) {
 		{command: "cd ~/repo && npx @google/gemini-cli --yolo", want: "gemini"},
 		{command: `GEMINI_API_KEY=redacted gemini --yolo`, want: "gemini"},
 		{command: `OPENCODE_PERMISSION='{"*":"allow"}' opencode`, want: "opencode"},
+		{command: "cd ~/repo && cursor-agent --resume abc", want: "cursor-agent"},
 	}
 
 	for _, tt := range tests {
@@ -3412,6 +3808,8 @@ func TestAgentSessionIDFromArgsParsesResumeCommands(t *testing.T) {
 		{tool: "gemini", args: `gemini --resume="gemini session"`, want: "gemini session"},
 		{tool: "opencode", args: "opencode --session opencode-9", want: "opencode-9"},
 		{tool: "antigravity", args: `agy --conversation "antigravity session"`, want: "antigravity session"},
+		{tool: "cursor-agent", args: "cursor-agent --resume chat-7", want: "chat-7"},
+		{tool: "cursor-agent", args: `cursor-agent --resume="chat eight"`, want: "chat eight"},
 	}
 
 	for _, tt := range tests {
@@ -4121,6 +4519,88 @@ func TestEnrichRestoreWithAgentSessionIDsUsesAntigravityHistory(t *testing.T) {
 	}
 }
 
+func TestCursorAgentToolMapping(t *testing.T) {
+	for _, name := range []string{
+		"cursor-agent",
+		"/Users/demo/.local/bin/cursor-agent",
+	} {
+		if got := agentToolFromCommandName(name); got != "cursor-agent" {
+			t.Fatalf("agentToolFromCommandName(%q) = %q, want cursor-agent", name, got)
+		}
+	}
+	// The generic `agent` launcher is a Node wrapper; detect it by its
+	// versioned install path rather than the ambiguous argv[0].
+	nodeWrapper := "/Users/demo/.local/bin/agent --use-system-ca " +
+		"/Users/demo/.local/share/cursor-agent/versions/2026.07.01/index.js"
+	if got := agentToolFromCommandText(nodeWrapper); got != "cursor-agent" {
+		t.Fatalf("agentToolFromCommandText(node wrapper) = %q, want cursor-agent", got)
+	}
+	// A bare `agent` command/window name is too generic to claim for Cursor.
+	if got := agentToolFromCommandName("agent"); got != "" {
+		t.Fatalf("agentToolFromCommandName(agent) = %q, want empty", got)
+	}
+	if got := agentToolFromTerminalTitle("Cursor Agent"); got != "cursor-agent" {
+		t.Fatalf("agentToolFromTerminalTitle = %q, want cursor-agent", got)
+	}
+	if got := agentLaunchCommand("cursor-agent", false); got != "cursor-agent" {
+		t.Fatalf("agentLaunchCommand = %q, want cursor-agent", got)
+	}
+	if got := agentLaunchCommand("cursor-agent", true); got != "cursor-agent --force" {
+		t.Fatalf("agentLaunchCommand yolo = %q, want cursor-agent --force", got)
+	}
+}
+
+func TestEnrichRestoreWithAgentSessionIDsUsesCursorChatStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "project")
+	chatsDir := filepath.Join(home, ".cursor", "chats", "workspacehash")
+
+	writeChat := func(chatID string, cwd string, updatedAtMs int64) {
+		dir := filepath.Join(chatsDir, chatID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		meta := fmt.Sprintf(
+			`{"title":"Chat %s","cwd":%q,"updatedAtMs":%d,"hasConversation":true}`,
+			chatID, cwd, updatedAtMs,
+		)
+		if err := os.WriteFile(
+			filepath.Join(dir, "meta.json"),
+			[]byte(meta),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeChat("old-chat", project, 1000)
+	writeChat("new-chat", project, 2000)
+	writeChat("other-chat", "/tmp/other", 3000)
+
+	restore := &serverRestore{
+		Windows: []restoreWindowState{
+			{
+				Name:           "Cursor Agent",
+				Cwd:            project,
+				CurrentCommand: "cursor-agent",
+				AgentTool:      "cursor-agent",
+			},
+		},
+	}
+
+	enrichRestoreWithAgentSessionIDs(restore)
+
+	if got := restore.Windows[0].AgentSessionID; got != "new-chat" {
+		t.Fatalf("agent session ID = %q, want new-chat", got)
+	}
+	options := createWindowOptionsForRestore(restore.Windows[0], true)
+	want := "cursor-agent --force --resume 'new-chat' || cursor-agent --force"
+	if got := options.command; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+}
+
 func TestReadRestoreFileKeepsCallerOwnedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "caller-restore.json")
 	restore := serverRestore{SchemaVersion: restoreSchemaVersion}
@@ -4276,6 +4756,28 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 			},
 			want:      `agy --dangerously-skip-permissions --continue || agy --dangerously-skip-permissions`,
 			agentTool: "antigravity",
+		},
+		{
+			name: "cursor-agent resume by id",
+			state: restoreWindowState{
+				Name:           "Cursor Agent",
+				CurrentCommand: "cursor-agent",
+				AgentTool:      "cursor-agent",
+				AgentSessionID: "chat-9",
+			},
+			want:      "cursor-agent --force --resume 'chat-9' || cursor-agent --force",
+			agentTool: "cursor-agent",
+		},
+		{
+			name: "cursor-agent resume continue",
+			state: restoreWindowState{
+				Name:           "Cursor Agent",
+				CurrentCommand: "cursor-agent",
+				AgentTool:      "cursor-agent",
+				AgentSessionID: "_continue",
+			},
+			want:      "cursor-agent --force --continue || cursor-agent --force",
+			agentTool: "cursor-agent",
 		},
 	}
 

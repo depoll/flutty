@@ -488,7 +488,52 @@ void main() {
       expect(find.text('App version'), findsOneWidget);
       expect(find.text('0.1.1 "Allen\'s Swamp Monkey" (123)'), findsOneWidget);
       expect(find.text('GitHub'), findsOneWidget);
+      expect(find.text('App Review Demo'), findsOneWidget);
       expect(find.text('Licenses'), findsOneWidget);
+    });
+
+    testWidgets('navigates to App Review demo from About', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const SettingsScreen(),
+          ),
+          GoRoute(
+            path: '/settings/app-review-demo',
+            name: Routes.appReviewDemo,
+            builder: (context, state) =>
+                const Scaffold(body: Text('App Review demo destination')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('App Review Demo'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('App Review Demo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('App Review demo destination'), findsOneWidget);
     });
 
     testWidgets('displays preview metadata when available', (tester) async {

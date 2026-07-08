@@ -16,11 +16,31 @@ const homeScreenShortcutHostTypePrefix = 'host:';
 /// Maximum number of hosts surfaced in the app icon's quick actions.
 const maxHomeScreenShortcutItems = 4;
 
+/// Android drawable/mipmap resource name used as the icon for host
+/// home-screen shortcuts.
+///
+/// The `quick_actions` Android plugin resolves this via
+/// `Resources.getIdentifier(name, "drawable"|"mipmap", ...)`. The resource is
+/// a MonkeySSH-teal server glyph; launchers badge pinned shortcuts with the
+/// app icon automatically.
+const homeScreenShortcutHostIconResourceName = 'ic_shortcut_host';
+
 /// Whether the current platform supports app-icon home-screen shortcuts.
 bool get supportsHomeScreenShortcutActions =>
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS);
+
+/// The native shortcut icon name for host shortcuts, or `null` when the
+/// current platform bundles no themed host icon.
+///
+/// Only Android ships a themed host icon
+/// ([homeScreenShortcutHostIconResourceName]). iOS resolves the icon from the
+/// asset catalog, where none is bundled, so it keeps the system default.
+String? get homeScreenShortcutHostIconName =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+    ? homeScreenShortcutHostIconResourceName
+    : null;
 
 /// Builds the platform shortcut payload for a host ID.
 String buildHomeScreenShortcutHostType(int hostId) {
@@ -151,12 +171,20 @@ String _buildHomeScreenShortcutSubtitle(Host host) {
 }
 
 /// Builds the platform shortcut items for the selected hosts.
-List<ShortcutItem> buildHomeScreenShortcutItems(Iterable<Host> hosts) => hosts
+///
+/// [iconName] is the optional native icon resource name applied to every item;
+/// pass [homeScreenShortcutHostIconName] to use the themed host icon where the
+/// platform bundles one.
+List<ShortcutItem> buildHomeScreenShortcutItems(
+  Iterable<Host> hosts, {
+  String? iconName,
+}) => hosts
     .map(
       (host) => ShortcutItem(
         type: buildHomeScreenShortcutHostType(host.id),
         localizedTitle: host.label,
         localizedSubtitle: _buildHomeScreenShortcutSubtitle(host),
+        icon: iconName,
       ),
     )
     .toList(growable: false);
@@ -251,6 +279,7 @@ class HomeScreenShortcutService {
     await initialize();
     final shortcutItems = buildHomeScreenShortcutItems(
       selectHomeScreenShortcutHosts(hosts, pinnedHostIds: pinnedHostIds),
+      iconName: homeScreenShortcutHostIconName,
     );
 
     try {

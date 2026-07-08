@@ -1013,6 +1013,11 @@ Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
   AgentLaunchTool.openCode => const {'opencode', 'open code'},
   AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
   AgentLaunchTool.antigravity => const {'agy', 'antigravity'},
+  AgentLaunchTool.cursorAgent => const {
+    'cursor agent',
+    'cursor-agent',
+    'cursor cli',
+  },
 };
 
 AgentLaunchTool? _agentToolFromTerminalTitle(String? value) {
@@ -1128,6 +1133,9 @@ String? agentSessionIdFromLaunchCommand(
     ],
     AgentLaunchTool.antigravity => const [
       r'''(?<!\S)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.cursorAgent => const [
+      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
     ],
   };
 

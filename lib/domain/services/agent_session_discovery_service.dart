@@ -92,6 +92,7 @@ const _knownDiscoveredSessionTools = <String>[
   'Gemini CLI',
   'OpenCode',
   'Antigravity',
+  'Cursor Agent',
 ];
 
 /// Orders discovered-session providers for UI rendering in a stable list.
@@ -631,6 +632,46 @@ parseClaudeSessionMetadata(String raw) {
     agentName: agentName,
     lastPrompt: lastPrompt,
     userSummary: userSummary,
+    parsedAny: parsedAny,
+  );
+}
+
+/// Parses Cursor Agent session metadata from a chat `meta.json` file.
+@visibleForTesting
+({
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool hasConversation,
+  bool parsedAny,
+})
+parseCursorSessionMetadata(String raw) {
+  final decoded = _tryDecodeJsonObject(raw.trim());
+  if (decoded == null) {
+    return (
+      summary: null,
+      workingDirectory: null,
+      updatedAt: null,
+      hasConversation: true,
+      parsedAny: false,
+    );
+  }
+
+  final summary = _readStringField(decoded, 'title');
+  final workingDirectory = _readStringField(decoded, 'cwd');
+  final updatedAt =
+      _parseDateTimeValue(decoded['updatedAtMs']) ??
+      _parseDateTimeValue(decoded['createdAtMs']);
+  final hasConversationValue = decoded['hasConversation'];
+  final hasConversation = hasConversationValue is! bool || hasConversationValue;
+  final parsedAny =
+      summary != null || workingDirectory != null || updatedAt != null;
+
+  return (
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    hasConversation: hasConversation,
     parsedAny: parsedAny,
   );
 }
@@ -1755,6 +1796,13 @@ class AgentSessionDiscoveryService {
               effectiveMaxPerTool,
               previewOnly: previewOnly,
             ),
+            _discoverCursorSessions(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              effectiveMaxPerTool,
+              previewOnly: previewOnly,
+            ),
           ]
         : [
             _discoverSessionsForTool(
@@ -1805,6 +1853,12 @@ class AgentSessionDiscoveryService {
       maxPerTool,
     ),
     'Antigravity' => _discoverAntigravitySessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Cursor Agent' => _discoverCursorSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -3073,6 +3127,146 @@ print(json.dumps(sessions))
     } on Object {
       return const _ToolDiscoveryResult.failure('Antigravity');
     }
+  }
+
+  // ── Cursor Agent ─────────────────────────────────────────────────────────
+  // Sessions: ~/.cursor/chats/<workspaceHash>/<chatId>/meta.json
+  // meta.json: {title, createdAtMs, updatedAtMs, cwd, hasConversation}.
+  // The chat id (used with `cursor-agent --resume <id>`) is the directory name
+  // that contains meta.json.
+
+  Future<_ToolDiscoveryResult> _discoverCursorSessions(
+    SshSession session,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max, {
+    bool previewOnly = false,
+  }) async {
+    try {
+      final scanLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 8,
+              minimum: 24,
+              maximum: 40,
+            )
+          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final metadataReadLimit = previewOnly
+          ? _calculateDiscoveryScanLimit(
+              max,
+              multiplier: 4,
+              minimum: 6,
+              maximum: 12,
+            )
+          : calculateRecentSessionMetadataReadLimit(max);
+      final output = session.remoteIsWindows
+          ? await _execWindowsPowerShell(
+              session,
+              windowsListNewestFilesScript(
+                relativeRoot: '.cursor/chats',
+                includeGlobs: const ['meta.json'],
+                limit: scanLimit,
+              ),
+            )
+          : await _exec(
+              session,
+              'find ~/.cursor/chats -name meta.json -type f '
+              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+            );
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Cursor Agent', []);
+      }
+
+      final metaPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+      final recentMetaPaths = metaPaths
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final metaSnapshots = await _readRemoteFileSnapshots(
+        session,
+        recentMetaPaths,
+        maxLines: 20,
+      );
+      final sessions = <ToolSessionInfo>[];
+      var hadError = false;
+
+      for (final filePath in recentMetaPaths) {
+        final chatId = _cursorChatIdFromMetaPath(filePath);
+        if (chatId == null) continue;
+
+        String? summary;
+        String? sessionWorkingDirectory;
+        DateTime? lastActive;
+
+        final snapshot = metaSnapshots[filePath];
+        if (snapshot == null) {
+          hadError = true;
+        } else {
+          try {
+            final metadata = parseCursorSessionMetadata(snapshot.content);
+            if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
+              hadError = true;
+            }
+            if (!metadata.hasConversation) {
+              continue;
+            }
+            summary = metadata.summary;
+            sessionWorkingDirectory = metadata.workingDirectory;
+            lastActive = metadata.updatedAt;
+          } on Object {
+            hadError = true;
+          }
+          lastActive ??= snapshot.modifiedAt;
+        }
+
+        sessions.add(
+          ToolSessionInfo(
+            toolName: 'Cursor Agent',
+            sessionId: chatId,
+            workingDirectory: sessionWorkingDirectory,
+            lastActive: lastActive,
+            summary: summary ?? _truncateId(chatId),
+          ),
+        );
+      }
+      final scopedSessions =
+          workingDirectory != null && workingDirectory.isNotEmpty
+          ? sessions
+                .where(
+                  (info) => matchesDiscoveredSessionWorkingDirectory(
+                    workingDirectory,
+                    info.workingDirectory,
+                    relatedWorkingDirectories: relatedWorkingDirectories,
+                  ),
+                )
+                .toList(growable: false)
+          : sessions;
+      return _ToolDiscoveryResult.success(
+        'Cursor Agent',
+        sortAndLimitDiscoveredSessions(
+          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          max,
+        ),
+        hadError: hadError,
+      );
+    } on Object {
+      return const _ToolDiscoveryResult.failure('Cursor Agent');
+    }
+  }
+
+  /// Extracts the Cursor chat id (the resume identifier) from the path of a
+  /// chat `meta.json` file, i.e. the name of the directory that contains it.
+  String? _cursorChatIdFromMetaPath(String path) {
+    final segments = path
+        .split('/')
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    if (segments.length < 2) return null;
+    return segments[segments.length - 2];
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────

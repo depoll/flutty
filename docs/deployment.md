@@ -207,6 +207,19 @@ ios/fastlane/
 Fastlane `deliver` no longer uploads iOS App Store icons through metadata sync;
 App Store Connect uses the app icon embedded in the selected build.
 
+`review_information/notes.txt` holds the App Review notes shown to Apple's
+reviewers. App Store Connect only accepts a review-detail update when the full
+App Review contact is also supplied, so the sync reads the contact from CI
+secrets (never committed, since this repo is public):
+
+- `APP_REVIEW_CONTACT_FIRST_NAME`
+- `APP_REVIEW_CONTACT_LAST_NAME`
+- `APP_REVIEW_CONTACT_EMAIL`
+- `APP_REVIEW_CONTACT_PHONE` (E.164 format, e.g. `+14155550123`)
+
+When these secrets are unset, the notes sync is skipped with a warning and the
+rest of the metadata still syncs.
+
 ### Android (Google Play)
 
 ```

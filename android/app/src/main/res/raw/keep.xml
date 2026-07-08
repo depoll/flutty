@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Keep the host home-screen shortcut icon from being removed by the release
+  resource shrinker.
+
+  Flutter's Gradle plugin enables resource shrinking for release builds
+  (FlutterPlugin sets isMinifyEnabled/isShrinkResources on the release build
+  type), so it is on even though this project's build.gradle.kts does not set
+  it explicitly.
+
+  The shortcut icon is referenced only at runtime by name: the quick_actions
+  plugin resolves ShortcutItem.icon via Resources.getIdentifier, and that name
+  originates as a Dart string. The resource shrinker cannot see that reference,
+  so in release builds it marks the icon "not reachable" and strips it, leaving
+  the shortcut with a blank icon. Explicitly keep it here.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@mipmap/ic_shortcut_host,@drawable/ic_shortcut_host_foreground" />
