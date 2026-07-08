@@ -2419,6 +2419,135 @@ func win32EncodeSequence(sequence string) string {
 	return buffer.String()
 }
 
+func TestStripWin32InputModeRequests(t *testing.T) {
+	cases := []struct {
+		name      string
+		prev      string
+		data      string
+		wantOut   string
+		wantCarry string
+	}{
+		{
+			name:    "strips enable request",
+			data:    "\x1b[?9001h",
+			wantOut: "",
+		},
+		{
+			name:    "strips disable request",
+			data:    "\x1b[?9001l",
+			wantOut: "",
+		},
+		{
+			name:    "keeps other private modes",
+			data:    "\x1b[?9001h\x1b[?1004h\x1b[?25l",
+			wantOut: "\x1b[?1004h\x1b[?25l",
+		},
+		{
+			name:    "leaves cursor key untouched",
+			data:    "\x1b[Aecho\r",
+			wantOut: "\x1b[Aecho\r",
+		},
+		{
+			name:    "leaves title osc untouched",
+			data:    "\x1b]0;title\x07",
+			wantOut: "\x1b]0;title\x07",
+		},
+		{
+			name:    "strips request between output",
+			data:    "before\x1b[?9001hafter",
+			wantOut: "beforeafter",
+		},
+		{
+			name:      "buffers split request prefix",
+			data:      "text\x1b[?90",
+			wantOut:   "text",
+			wantCarry: "\x1b[?90",
+		},
+		{
+			name:    "completes split request from carry",
+			prev:    "\x1b[?90",
+			data:    "01h\x1b[A",
+			wantOut: "\x1b[A",
+		},
+		{
+			name:    "flushes non-request escape prefix",
+			prev:    "\x1b[?90",
+			data:    "0m done",
+			wantOut: "\x1b[?900m done",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			out, carry := stripWin32InputModeRequests(
+				[]byte(testCase.prev),
+				[]byte(testCase.data),
+			)
+			if string(out) != testCase.wantOut {
+				t.Fatalf("out = %q, want %q", out, testCase.wantOut)
+			}
+			if string(carry) != testCase.wantCarry {
+				t.Fatalf("carry = %q, want %q", carry, testCase.wantCarry)
+			}
+		})
+	}
+}
+
+func TestWin32InputModeRequestStripperWriteHandlesSplitAcrossWrites(t *testing.T) {
+	var sink bytes.Buffer
+	stripper := newWin32InputModeRequestStripper(&sink)
+	// A win32-input-mode request split across two writes must still be removed
+	// so the ConPTY hosting the attach process never sees it.
+	if _, err := stripper.Write([]byte("prompt\x1b[?90")); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := stripper.Write([]byte("01h\x1b[A")); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if got := sink.String(); got != "prompt\x1b[A" {
+		t.Fatalf("stripped output = %q, want %q", got, "prompt\x1b[A")
+	}
+}
+
+func TestThemeHintRefreshDataSuppressesOscUnderWin32InputMode(t *testing.T) {
+	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
+
+	// A focus-aware agent window normally receives an unsolicited OSC 11 refresh.
+	baseline := &muxWindow{focusModeEnabled: true, agentTool: "codex"}
+	if got := baseline.themeHintRefreshDataLocked(hint); len(got) == 0 {
+		t.Fatalf("baseline themeHintRefreshDataLocked = %q, want an OSC push", got)
+	}
+
+	// Under win32-input-mode (Windows ConPTY) that OSC would be delivered to the
+	// app as literal typed characters, so it must be suppressed.
+	win32 := &muxWindow{
+		focusModeEnabled: true,
+		agentTool:        "codex",
+		win32InputMode:   true,
+	}
+	if got := win32.themeHintRefreshDataLocked(hint); len(got) != 0 {
+		t.Fatalf("win32 themeHintRefreshDataLocked = %q, want no OSC push", got)
+	}
+}
+
+func TestThemeHintRefreshDataKeepsCopilotModeReportUnderWin32InputMode(t *testing.T) {
+	hint := []byte("\x1b[?997;2n\x1b]11;rgb:1111/2222/3333\x1b\\")
+	// Copilot receives a CSI DEC 2031 mode report (safe to relay through ConPTY,
+	// which parses CSI into input events rather than typed text) but not the OSC
+	// color report that would surface as literal composer text.
+	window := &muxWindow{
+		focusModeEnabled: true,
+		agentTool:        "copilot",
+		win32InputMode:   true,
+	}
+	got := string(window.themeHintRefreshDataLocked(hint))
+	if strings.Contains(got, "]11;") {
+		t.Fatalf("themeHintRefreshDataLocked = %q, must not include OSC 11", got)
+	}
+	if !strings.Contains(got, "\x1b[?997;2n") {
+		t.Fatalf("themeHintRefreshDataLocked = %q, want the mode report", got)
+	}
+}
+
 // TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults covers the ConPTY
 // (Windows) theme path: conhost enables DEC private mode 9001 at startup,
 // swallows the child's OSC 10/11 default-colour queries, forwards its OSC 4
