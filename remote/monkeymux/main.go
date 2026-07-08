@@ -56,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.92"
+	monkeyMuxVersion                  = "0.1.93"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -610,7 +610,8 @@ func attachCommand(args []string) {
 		_, _ = io.Copy(conn, os.Stdin)
 	}()
 
-	if _, err := io.Copy(os.Stdout, conn); err != nil && !errors.Is(err, io.EOF) {
+	if _, err := io.Copy(attachOutputWriter(os.Stdout), conn); err != nil &&
+		!errors.Is(err, io.EOF) {
 		fatal(err)
 	}
 }
@@ -4746,6 +4747,106 @@ func writeWin32InputModeKeyEvents(output *bytes.Buffer, sequence []byte) {
 	}
 }
 
+// win32InputModeRequests are the DEC private mode 9001 (win32-input-mode)
+// enable/disable sequences a foreground child emits to negotiate rich keyboard
+// input with its terminal.
+var win32InputModeRequests = [][]byte{
+	[]byte("\x1b[?9001h"),
+	[]byte("\x1b[?9001l"),
+}
+
+// win32InputModeRequestStripper removes win32-input-mode (DEC private mode 9001)
+// requests from a stream of window output before it reaches os.Stdout.
+//
+// On Windows the `monkeymux attach` process runs inside the SSH server's own
+// ConPTY (conhost). That conhost watches the attach process's output for a
+// `CSI ? 9001 h` and, on seeing one, switches its input delivery to
+// win32-input-mode — decomposing the client's raw VT input (e.g. an arrow key's
+// `ESC [ A`) into individual character key events. Those char events survive the
+// relay to the window's own ConPTY as a bare ESC followed by literal `[A`, which
+// PSReadLine and other line editors treat as an Escape keypress plus typed text
+// instead of a cursor key (so Up/Down stop recalling history). The window's
+// child still negotiates win32-input-mode directly with its own ConPTY, so
+// hiding the request from the outer conhost is safe and keeps arrow keys intact.
+type win32InputModeRequestStripper struct {
+	dst   io.Writer
+	carry []byte
+}
+
+func newWin32InputModeRequestStripper(dst io.Writer) *win32InputModeRequestStripper {
+	return &win32InputModeRequestStripper{dst: dst}
+}
+
+func (s *win32InputModeRequestStripper) Write(p []byte) (int, error) {
+	out, carry := stripWin32InputModeRequests(s.carry, p)
+	s.carry = carry
+	if len(out) > 0 {
+		if _, err := s.dst.Write(out); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+// stripWin32InputModeRequests removes any complete win32-input-mode requests from
+// prev+data and returns the bytes to emit plus a carry holding a trailing partial
+// that could still complete into a request on the next write. A trailing byte run
+// is only carried when it is a strict prefix of a request sequence, so ordinary
+// escape sequences are never delayed by more than the bytes they share with the
+// `ESC [ ? 9 0 0 1` prefix.
+func stripWin32InputModeRequests(prev, data []byte) (out, carry []byte) {
+	buf := data
+	if len(prev) > 0 {
+		buf = append(append(make([]byte, 0, len(prev)+len(data)), prev...), data...)
+	}
+	out = make([]byte, 0, len(buf))
+	i := 0
+	for i < len(buf) {
+		next := bytes.IndexByte(buf[i:], '\x1b')
+		if next < 0 {
+			out = append(out, buf[i:]...)
+			return out, nil
+		}
+		escape := i + next
+		out = append(out, buf[i:escape]...)
+		rest := buf[escape:]
+		if stripped, ok := matchWin32InputModeRequest(rest); ok {
+			i = escape + stripped
+			continue
+		}
+		if isWin32InputModeRequestPrefix(rest) {
+			carry = append(make([]byte, 0, len(rest)), rest...)
+			return out, carry
+		}
+		out = append(out, '\x1b')
+		i = escape + 1
+	}
+	return out, nil
+}
+
+// matchWin32InputModeRequest reports whether rest begins with a complete
+// win32-input-mode request and, if so, its length.
+func matchWin32InputModeRequest(rest []byte) (length int, ok bool) {
+	for _, request := range win32InputModeRequests {
+		if bytes.HasPrefix(rest, request) {
+			return len(request), true
+		}
+	}
+	return 0, false
+}
+
+// isWin32InputModeRequestPrefix reports whether rest is a non-empty strict prefix
+// of a win32-input-mode request (so it might complete into one on the next
+// write).
+func isWin32InputModeRequestPrefix(rest []byte) bool {
+	for _, request := range win32InputModeRequests {
+		if len(rest) < len(request) && bytes.HasPrefix(request, rest) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *muxServer) activeWindow() *muxWindow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -5856,10 +5957,22 @@ func (w *muxWindow) themeHintFocusTransitionLocked() bool {
 }
 
 func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
-	var refreshKeys []string
-	refreshKeys = appendThemeQueryKeys(refreshKeys, w.themeHintRefreshKeysLocked())
-	refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
-	themeHintData := themeHintResponsesForKeys(themeHint, refreshKeys)
+	var themeHintData []byte
+	// On Windows ConPTY (win32-input-mode) an OSC color report written into the
+	// window pty is re-encoded as win32-input-mode key events, which conhost
+	// then delivers to the foreground app as a run of typed characters. Apps
+	// that read console input records instead of a VT stream (e.g. Codex) render
+	// that as literal `]11;rgb:...` text in their composer. Unsolicited refresh
+	// pushes have no matching read on the app side, so skip the OSC reports
+	// there; the live query-response path in handleWindowOutput still answers
+	// OSC color queries the app actually makes, and focus-aware apps still get a
+	// FocusIn nudge to re-query through that safe path.
+	if !w.win32InputMode {
+		var refreshKeys []string
+		refreshKeys = appendThemeQueryKeys(refreshKeys, w.themeHintRefreshKeysLocked())
+		refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
+		themeHintData = themeHintResponsesForKeys(themeHint, refreshKeys)
+	}
 	if w.agentThemeHintModeReportLocked() {
 		themeHintData = append(terminalThemeModeReportFromHint(themeHint), themeHintData...)
 	}

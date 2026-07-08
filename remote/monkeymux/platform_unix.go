@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -117,6 +118,13 @@ var signalForegroundResize = func(processGroup int) {
 		return
 	}
 	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
+}
+
+// attachOutputWriter returns w unchanged: POSIX pseudo-terminals do not
+// interpret win32-input-mode (DEC private mode 9001) requests, so the outer
+// conhost corruption the Windows implementation guards against cannot occur.
+func attachOutputWriter(w io.Writer) io.Writer {
+	return w
 }
 
 var foregroundProcessGroupForWindow = func(window *muxWindow) int {
