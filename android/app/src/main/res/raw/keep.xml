@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Keep the host home-screen shortcut icon from being removed by the release
+  resource shrinker.
+
+  These resources are referenced only at runtime by name (the quick_actions
+  plugin resolves ShortcutItem.icon via Resources.getIdentifier), and that name
+  originates as a Dart string. The Android resource shrinker cannot see that
+  reference, so it marks the icon "not reachable" and strips it from release
+  builds — which is why the shortcut shows a blank icon. Explicitly keep it.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@mipmap/ic_shortcut_host,@drawable/ic_shortcut_host_foreground" />
