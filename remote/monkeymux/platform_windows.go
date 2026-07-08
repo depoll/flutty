@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -425,6 +426,16 @@ func killCommandProcessGroup(cmd *exec.Cmd) {
 // signalForegroundResize is a no-op on Windows: ResizePseudoConsole already
 // notifies the attached child of size changes.
 var signalForegroundResize = func(processGroup int) {}
+
+// attachOutputWriter wraps the attach process's stdout so win32-input-mode
+// requests emitted by the window's child are hidden from the SSH server's own
+// ConPTY (conhost) that hosts this attach process. Without this, that conhost
+// switches its input delivery to win32-input-mode and corrupts relayed cursor
+// keys (Up/Down stop recalling shell history). See
+// win32InputModeRequestStripper.
+func attachOutputWriter(w io.Writer) io.Writer {
+	return newWin32InputModeRequestStripper(w)
+}
 
 // foregroundProcessGroupForWindow approximates the POSIX foreground process
 // group with the window's own process id. Windows has no controlling-terminal
