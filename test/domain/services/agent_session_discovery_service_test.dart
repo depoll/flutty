@@ -925,6 +925,50 @@ cwd: /tmp/demo
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
     });
 
+    test('decodes percent-encoded folderUri paths', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "Untitled",
+  "projectResources": {
+    "resources": [
+      {
+        "gitFolder": {
+          "folderUri": "file:///Users/depoll/My%20Code/flutty",
+          "allowWrite": true
+        }
+      }
+    ]
+  }
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.workingDirectory, '/Users/depoll/My Code/flutty');
+    });
+
+    test('maps Windows drive-letter folderUri to a backslash path', () {
+      final metadata = parseAntigravitySessionMetadata('''
+{
+  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
+  "name": "Untitled",
+  "projectResources": {
+    "resources": [
+      {
+        "gitFolder": {
+          "folderUri": "file:///C:/Users/demo/My%20Repo",
+          "allowWrite": true
+        }
+      }
+    ]
+  }
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.workingDirectory, r'C:\Users\demo\My Repo');
+    });
+
     test('falls back to name when it is an absolute path', () {
       final metadata = parseAntigravitySessionMetadata('''
 {
