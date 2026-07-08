@@ -715,7 +715,7 @@ parseAntigravitySessionMetadata(String raw) {
             try {
               final uri = Uri.tryParse(folderUriStr);
               if (uri != null && uri.isScheme('file')) {
-                workingDirectory = uri.toFilePath();
+                workingDirectory = _uriToFilePath(uri);
                 break;
               }
             } on Object {
@@ -776,7 +776,7 @@ _parsePartialAntigravitySessionMetadata(String raw) {
       try {
         final uri = Uri.tryParse(folderUriStr);
         if (uri != null && uri.isScheme('file')) {
-          workingDirectory = uri.toFilePath();
+          workingDirectory = _uriToFilePath(uri);
         }
       } on Object {
         // Ignore uri parsing errors
@@ -4877,6 +4877,18 @@ List<dynamic>? _readListField(Map<String, dynamic>? map, String key) {
 String? _readStringField(Map<String, dynamic>? map, String key) {
   final value = map?[key];
   return value is String ? value : null;
+}
+
+String _uriToFilePath(Uri uri) {
+  final path = uri.path;
+  if (path.length >= 3 &&
+      path[0] == '/' &&
+      path[2] == ':' &&
+      ((path[1].codeUnitAt(0) >= 65 && path[1].codeUnitAt(0) <= 90) ||
+          (path[1].codeUnitAt(0) >= 97 && path[1].codeUnitAt(0) <= 122))) {
+    return path.substring(1).replaceAll('/', r'\');
+  }
+  return path;
 }
 
 DateTime? _parseDateTimeValue(Object? value) {
