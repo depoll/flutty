@@ -1382,9 +1382,10 @@ Future<PlatformFile> platformFileFromPickedTerminalMedia(
   if (filePath.isEmpty) {
     throw FileSystemException('Unable to read selected media', file.name);
   }
-  final name = file.name.trim().isNotEmpty
+  var name = file.name.trim().isNotEmpty
       ? file.name.trim()
       : path.basename(filePath);
+  name = path.basename(name);
   return PlatformFile(
     name: name.isEmpty ? 'selected-media-${index + 1}' : name,
     path: filePath,
