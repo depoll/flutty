@@ -158,7 +158,7 @@ jobs:
             core.setOutput('run-url', runUrl);
 
       - name: Comment iOS status on PR
-        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3
         with:
           header: preview-build-ios
           number: ${{ needs.resolve.outputs.pr-number }}
