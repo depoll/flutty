@@ -2508,6 +2508,32 @@ func TestWin32InputModeRequestStripperWriteHandlesSplitAcrossWrites(t *testing.T
 	}
 }
 
+func TestWin32InputModeRequestStripperFlushEmitsUnterminatedCarry(t *testing.T) {
+	var sink bytes.Buffer
+	stripper := newWin32InputModeRequestStripper(&sink)
+	// A chunk ending on a partial request prefix is buffered, not emitted...
+	if _, err := stripper.Write([]byte("tail\x1b[?90")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := sink.String(); got != "tail" {
+		t.Fatalf("pre-flush output = %q, want %q", got, "tail")
+	}
+	// ...but if the stream ends there, Flush must not drop those bytes.
+	if err := stripper.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := sink.String(); got != "tail\x1b[?90" {
+		t.Fatalf("post-flush output = %q, want %q", got, "tail\x1b[?90")
+	}
+	// Flush is idempotent once the carry is drained.
+	if err := stripper.Flush(); err != nil {
+		t.Fatalf("second flush: %v", err)
+	}
+	if got := sink.String(); got != "tail\x1b[?90" {
+		t.Fatalf("double-flush output = %q, want unchanged %q", got, "tail\x1b[?90")
+	}
+}
+
 func TestThemeHintRefreshDataSuppressesOscUnderWin32InputMode(t *testing.T) {
 	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
 

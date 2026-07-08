@@ -610,9 +610,16 @@ func attachCommand(args []string) {
 		_, _ = io.Copy(conn, os.Stdin)
 	}()
 
-	if _, err := io.Copy(attachOutputWriter(os.Stdout), conn); err != nil &&
-		!errors.Is(err, io.EOF) {
-		fatal(err)
+	attachOut := attachOutputWriter(os.Stdout)
+	_, copyErr := io.Copy(attachOut, conn)
+	// Flush any partial sequence the output filter buffered so trailing bytes are
+	// not dropped when the session ends mid-sequence (no-op unless the writer
+	// buffers, e.g. the Windows win32-input-mode request stripper).
+	if flusher, ok := attachOut.(interface{ Flush() error }); ok {
+		_ = flusher.Flush()
+	}
+	if copyErr != nil && !errors.Is(copyErr, io.EOF) {
+		fatal(copyErr)
 	}
 }
 
@@ -4786,6 +4793,19 @@ func (s *win32InputModeRequestStripper) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// Flush writes any buffered partial sequence to the destination. It must be
+// called once the source stream ends so a trailing run that looked like the
+// start of a win32-input-mode request (but was never completed) is not dropped.
+func (s *win32InputModeRequestStripper) Flush() error {
+	if len(s.carry) == 0 {
+		return nil
+	}
+	carry := s.carry
+	s.carry = nil
+	_, err := s.dst.Write(carry)
+	return err
 }
 
 // stripWin32InputModeRequests removes any complete win32-input-mode requests from
