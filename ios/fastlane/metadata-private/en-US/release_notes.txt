@@ -1,1 +1,9 @@
-Initial beta release with mobile SSH, SFTP, MonkeyMux/tmux window switching, scoped coding-agent session history, launch presets for Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, Antigravity, and Cursor Agent, snippets, port forwarding, encrypted transfers/migration, and opt-in analytics/crash reporting that starts off.
+What's new in this 0.2.0 beta
+
+- Windows remotes: connect to Windows OpenSSH hosts and switch windows with MonkeyMux over ConPTY, with agent-session discovery and shell completion.
+- Cursor Agent CLI joins the launch presets alongside Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Antigravity.
+- In-app browser to preview forwarded ports without leaving the app.
+- Sharper terminal rendering, including inline Kitty graphics and images.
+- Smoother on-screen keyboard handling and terminal input fixes.
+
+Thanks for testing the beta — please report anything that feels off.
