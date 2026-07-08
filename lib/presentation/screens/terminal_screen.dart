@@ -1385,7 +1385,11 @@ Future<PlatformFile> platformFileFromPickedTerminalMedia(
   var name = file.name.trim().isNotEmpty
       ? file.name.trim()
       : path.basename(filePath);
-  name = path.basename(name);
+  // Strip any directory prefix regardless of separator style: some platforms
+  // return names with a temp-dir prefix using `/` (or `\` from web/Windows
+  // sources), and `path.basename` only splits on the local platform's
+  // separator, so split on both explicitly.
+  name = name.split(RegExp(r'[/\\]')).last;
   return PlatformFile(
     name: name.isEmpty ? 'selected-media-${index + 1}' : name,
     path: filePath,
