@@ -1382,9 +1382,14 @@ Future<PlatformFile> platformFileFromPickedTerminalMedia(
   if (filePath.isEmpty) {
     throw FileSystemException('Unable to read selected media', file.name);
   }
-  final name = file.name.trim().isNotEmpty
+  var name = file.name.trim().isNotEmpty
       ? file.name.trim()
       : path.basename(filePath);
+  // Strip any directory prefix regardless of separator style: some platforms
+  // return names with a temp-dir prefix using `/` (or `\` from web/Windows
+  // sources), and `path.basename` only splits on the local platform's
+  // separator, so split on both explicitly.
+  name = name.split(RegExp(r'[/\\]')).last;
   return PlatformFile(
     name: name.isEmpty ? 'selected-media-${index + 1}' : name,
     path: filePath,

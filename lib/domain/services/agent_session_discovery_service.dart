@@ -715,7 +715,7 @@ parseAntigravitySessionMetadata(String raw) {
             try {
               final uri = Uri.tryParse(folderUriStr);
               if (uri != null && uri.isScheme('file')) {
-                workingDirectory = uri.toFilePath();
+                workingDirectory = _uriToFilePath(uri);
                 break;
               }
             } on Object {
@@ -776,7 +776,7 @@ _parsePartialAntigravitySessionMetadata(String raw) {
       try {
         final uri = Uri.tryParse(folderUriStr);
         if (uri != null && uri.isScheme('file')) {
-          workingDirectory = uri.toFilePath();
+          workingDirectory = _uriToFilePath(uri);
         }
       } on Object {
         // Ignore uri parsing errors
@@ -4878,6 +4878,31 @@ String? _readStringField(Map<String, dynamic>? map, String key) {
   final value = map?[key];
   return value is String ? value : null;
 }
+
+/// Converts a `file:` [uri] to a filesystem path without letting the local
+/// platform rewrite separators for remote hosts.
+///
+/// Remote session `folderUri`s are usually POSIX (`file:///Users/...`), so the
+/// default `Uri.toFilePath()` is wrong on a Windows client because it would
+/// flip the separators to backslashes. Drive-letter URIs (`file:///C:/...`) are
+/// treated as Windows paths; everything else is treated as POSIX. Delegating to
+/// `Uri.toFilePath(windows:)` keeps the percent-decoding behavior these paths
+/// previously relied on (e.g. `%20` -> space). Authority-bearing URIs throw and
+/// are handled by the callers.
+String _uriToFilePath(Uri uri) {
+  final path = uri.path;
+  final hasDriveLetter =
+      path.length >= 3 &&
+      path[0] == '/' &&
+      path[2] == ':' &&
+      _isAsciiLetter(path.codeUnitAt(1));
+  return uri.toFilePath(windows: hasDriveLetter);
+}
+
+/// Whether [codeUnit] is an ASCII letter (`A`-`Z` or `a`-`z`).
+bool _isAsciiLetter(int codeUnit) =>
+    (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7A);
 
 DateTime? _parseDateTimeValue(Object? value) {
   if (value is String) return DateTime.tryParse(value);
