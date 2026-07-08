@@ -26,6 +26,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf16"
 
 	"golang.org/x/term"
 )
@@ -55,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.90"
+	monkeyMuxVersion                  = "0.1.93"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -137,7 +138,10 @@ var (
 		{"1047", "1049"},
 		{"1000", "1002", "1003"},
 	}
-	trackedPrivateModes = map[string]struct{}{
+	// conPtySwallowedThemeQueryKeys are the theme-query keys whose queries
+	// ConPTY consumes inside conhost instead of forwarding out of the pty.
+	conPtySwallowedThemeQueryKeys = []string{"10", "11"}
+	trackedPrivateModes           = map[string]struct{}{
 		"1":    {},
 		"6":    {},
 		"7":    {},
@@ -273,6 +277,9 @@ var (
 		},
 		"antigravity": {
 			regexp.MustCompile(`(?:^|\s)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
+		},
+		"cursor-agent": {
+			regexp.MustCompile(`(?:^|\s)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`),
 		},
 	}
 )
@@ -418,6 +425,12 @@ type muxWindow struct {
 	lastBroadcast              time.Time
 	cursorVisible              bool
 	cursorVisibilityKnown      bool
+	// win32InputMode mirrors DEC private mode 9001, which ConPTY (conhost)
+	// enables at startup on Windows to request that terminal input — including
+	// escape-sequence replies — be delivered as win32-input-mode key events.
+	// ConPTY's input parser drops raw OSC/DCS sequences, so synthetic replies
+	// written into the window pty must be re-encoded while this mode is on.
+	win32InputMode             bool
 	privateModes               map[string]bool
 	insertModeEnabled          bool
 	insertModeKnown            bool
@@ -597,8 +610,16 @@ func attachCommand(args []string) {
 		_, _ = io.Copy(conn, os.Stdin)
 	}()
 
-	if _, err := io.Copy(os.Stdout, conn); err != nil && !errors.Is(err, io.EOF) {
-		fatal(err)
+	attachOut := attachOutputWriter(os.Stdout)
+	_, copyErr := io.Copy(attachOut, conn)
+	// Flush any partial sequence the output filter buffered so trailing bytes are
+	// not dropped when the session ends mid-sequence (no-op unless the writer
+	// buffers, e.g. the Windows win32-input-mode request stripper).
+	if flusher, ok := attachOut.(interface{ Flush() error }); ok {
+		_ = flusher.Flush()
+	}
+	if copyErr != nil && !errors.Is(copyErr, io.EOF) {
+		fatal(copyErr)
 	}
 }
 
@@ -1163,6 +1184,7 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	}
 	panePids := map[int]struct{}{}
 	hasAntigravityWindows := false
+	hasCursorWindows := false
 	for _, window := range restore.Windows {
 		if strings.TrimSpace(window.AgentSessionID) != "" {
 			continue
@@ -1170,6 +1192,9 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		tool := agentToolForRestore(window)
 		if tool == "antigravity" {
 			hasAntigravityWindows = true
+		}
+		if tool == "cursor-agent" {
+			hasCursorWindows = true
 		}
 		if tool == "" || window.PanePid <= 0 {
 			continue
@@ -1180,8 +1205,15 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	if hasAntigravityWindows {
 		antigravitySessions = discoverAntigravitySessionIDs(restore)
 	}
+	cursorSessions := map[int]string{}
+	if hasCursorWindows {
+		cursorSessions = discoverCursorSessionIDs(restore)
+	}
 	if len(panePids) == 0 {
 		for i, sessionID := range antigravitySessions {
+			restore.Windows[i].AgentSessionID = sessionID
+		}
+		for i, sessionID := range cursorSessions {
 			restore.Windows[i].AgentSessionID = sessionID
 		}
 		assignCopilotSessionsByWorkingDirectory(restore)
@@ -1226,6 +1258,11 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 		}
 		if tool == "antigravity" {
 			if sessionID := antigravitySessions[i]; sessionID != "" {
+				restore.Windows[i].AgentSessionID = sessionID
+			}
+		}
+		if tool == "cursor-agent" {
+			if sessionID := cursorSessions[i]; sessionID != "" {
 				restore.Windows[i].AgentSessionID = sessionID
 			}
 		}
@@ -1336,6 +1373,168 @@ func antigravitySessionIDForWorkspace(
 }
 
 func normalizedAntigravityWorkspacePath(value string) string {
+	workspace := strings.TrimSpace(value)
+	if workspace == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(workspace), "file://") {
+		if path := pathFromOsc7(workspace); path != "" {
+			workspace = path
+		}
+	}
+	if expanded, err := expandHomePath(workspace); err == nil {
+		workspace = expanded
+	}
+	return filepath.Clean(workspace)
+}
+
+// ── Cursor Agent ─────────────────────────────────────────────────────────────
+// Cursor persists chats under ~/.cursor/chats/<workspaceHash>/<chatId>/meta.json.
+// A fresh `cursor-agent` launch carries no resumable id in its process args, so
+// after a MonkeyMux helper update recreates its windows the id is recovered from
+// the chat store keyed by the pane's working directory (matching meta.json cwd).
+
+type cursorChatEntry struct {
+	chatID    string
+	cwd       string
+	updatedAt int64
+}
+
+func discoverCursorSessionIDs(restore *serverRestore) map[int]string {
+	entries := readCursorChatEntries()
+	if len(entries) == 0 {
+		return nil
+	}
+	latestSessionID := latestCursorSessionID(entries)
+	needsFallback := cursorRestoreWindowCount(restore) == 1
+	sessions := map[int]string{}
+	for i, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) != "" ||
+			agentToolForRestore(window) != "cursor-agent" {
+			continue
+		}
+		if sessionID := cursorSessionIDForWorkspace(entries, window.Cwd); sessionID != "" {
+			sessions[i] = sessionID
+			continue
+		}
+		if needsFallback && latestSessionID != "" {
+			sessions[i] = latestSessionID
+		}
+	}
+	return sessions
+}
+
+func cursorRestoreWindowCount(restore *serverRestore) int {
+	if restore == nil {
+		return 0
+	}
+	count := 0
+	for _, window := range restore.Windows {
+		if strings.TrimSpace(window.AgentSessionID) == "" &&
+			agentToolForRestore(window) == "cursor-agent" {
+			count++
+		}
+	}
+	return count
+}
+
+// readCursorChatEntries reads recent Cursor chat metadata, ordered oldest to
+// newest so the newest match wins a reverse scan.
+func readCursorChatEntries() []cursorChatEntry {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	chatsRoot := filepath.Join(home, ".cursor", "chats")
+	workspaceDirs, err := os.ReadDir(chatsRoot)
+	if err != nil {
+		return nil
+	}
+	entries := []cursorChatEntry{}
+	for _, workspaceDir := range workspaceDirs {
+		if !workspaceDir.IsDir() {
+			continue
+		}
+		chatDirs, err := os.ReadDir(filepath.Join(chatsRoot, workspaceDir.Name()))
+		if err != nil {
+			continue
+		}
+		for _, chatDir := range chatDirs {
+			if !chatDir.IsDir() {
+				continue
+			}
+			metaPath := filepath.Join(
+				chatsRoot,
+				workspaceDir.Name(),
+				chatDir.Name(),
+				"meta.json",
+			)
+			if entry, ok := readCursorChatMeta(metaPath, chatDir.Name()); ok {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	sort.SliceStable(entries, func(a, b int) bool {
+		return entries[a].updatedAt < entries[b].updatedAt
+	})
+	return entries
+}
+
+func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cursorChatEntry{}, false
+	}
+	var raw struct {
+		Cwd             string `json:"cwd"`
+		UpdatedAtMs     int64  `json:"updatedAtMs"`
+		CreatedAtMs     int64  `json:"createdAtMs"`
+		HasConversation *bool  `json:"hasConversation"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return cursorChatEntry{}, false
+	}
+	if raw.HasConversation != nil && !*raw.HasConversation {
+		return cursorChatEntry{}, false
+	}
+	sessionID := strings.TrimSpace(chatID)
+	if sessionID == "" {
+		return cursorChatEntry{}, false
+	}
+	updatedAt := raw.UpdatedAtMs
+	if updatedAt == 0 {
+		updatedAt = raw.CreatedAtMs
+	}
+	return cursorChatEntry{
+		chatID:    sessionID,
+		cwd:       normalizedCursorWorkspacePath(raw.Cwd),
+		updatedAt: updatedAt,
+	}, true
+}
+
+func latestCursorSessionID(entries []cursorChatEntry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if sessionID := strings.TrimSpace(entries[i].chatID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func cursorSessionIDForWorkspace(entries []cursorChatEntry, workspace string) string {
+	normalizedWorkspace := normalizedCursorWorkspacePath(workspace)
+	if normalizedWorkspace == "" {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].cwd == normalizedWorkspace {
+			return entries[i].chatID
+		}
+	}
+	return ""
+}
+
+func normalizedCursorWorkspacePath(value string) string {
 	workspace := strings.TrimSpace(value)
 	if workspace == "" {
 		return ""
@@ -2817,6 +3016,18 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		agentToolFromCommandText(options.command),
 		agentToolFromCommandName(name),
 	)
+	// Keep agent windows open when the agent exits abnormally right after
+	// launching, so a fast startup failure (for example a locked macOS login
+	// keychain that makes cursor-agent print an error and exit immediately)
+	// stays on screen instead of the window closing before it can be read.
+	if len(options.args) == 0 &&
+		strings.TrimSpace(options.command) != "" &&
+		agentTool != "" {
+		cmd = shellCommandForScript(
+			shell,
+			holdAgentWindowCommand(shell, strings.TrimSpace(options.command)),
+		)
+	}
 	paneTitle := firstNonEmptyString(options.paneTitle, name)
 	cursorVisible := true
 	if options.cursorVisibilityKnown {
@@ -2937,13 +3148,16 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 	wasAlert := window.alert
 	window.lastActivity = now
 	window.refreshProcessMetadataLocked(now)
+	// Modes are observed before metadata so a `CSI ? 9001 h` arriving in the
+	// same chunk as a colour query is already reflected when the query is
+	// answered below (and when the answer is encoded in writeWindow).
+	window.observeTerminalModesLocked(chunk)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
 	terminalBell := window.observeTerminalBellLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
 	}
-	window.observeTerminalModesLocked(chunk)
 	window.appendHistoryLocked(chunk)
 	if window.observeKittyGraphicsLocked(chunk) {
 		s.enforceGlobalKittyImageBudgetLocked()
@@ -4489,12 +4703,168 @@ func (s *muxServer) sendFocusRefresh(windowID string) {
 func (s *muxServer) writeWindow(windowID string, data []byte) error {
 	s.mu.Lock()
 	window := s.windowByIDLocked(windowID)
+	win32InputMode := window != nil && window.win32InputMode
 	s.mu.Unlock()
 	if window == nil || window.closed {
 		return fmt.Errorf("window %q not found", windowID)
 	}
+	if win32InputMode {
+		// ConPTY's input parser drops raw OSC/DCS sequences, so synthetic
+		// replies (theme hints, clipboard responses, relayed query answers)
+		// must be re-encoded as win32-input-mode key events to survive the
+		// trip through conhost to the child process.
+		data = encodeTerminalResponsesForWin32InputMode(data)
+	}
 	_, err := window.pty.Write(data)
 	return err
+}
+
+// terminalOscOrDcsSequencePattern matches complete OSC (`ESC ] ... BEL|ST`) and
+// DCS (`ESC P ... ST`) sequences. CSI sequences and plain text are left alone:
+// ConPTY's input parser passes those through unmodified.
+var terminalOscOrDcsSequencePattern = regexp.MustCompile(
+	`\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)`,
+)
+
+// encodeTerminalResponsesForWin32InputMode re-encodes any OSC/DCS sequences in
+// data as win32-input-mode key events (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`), the format
+// ConPTY expects for terminal input while DEC private mode 9001 is enabled.
+// All other bytes pass through untouched.
+func encodeTerminalResponsesForWin32InputMode(data []byte) []byte {
+	if !bytes.Contains(data, []byte("\x1b]")) && !bytes.Contains(data, []byte("\x1bP")) {
+		return data
+	}
+	var output bytes.Buffer
+	cursor := 0
+	for _, match := range terminalOscOrDcsSequencePattern.FindAllIndex(data, -1) {
+		output.Write(data[cursor:match[0]])
+		writeWin32InputModeKeyEvents(&output, data[match[0]:match[1]])
+		cursor = match[1]
+	}
+	output.Write(data[cursor:])
+	return output.Bytes()
+}
+
+func writeWin32InputModeKeyEvents(output *bytes.Buffer, sequence []byte) {
+	for _, codeUnit := range utf16.Encode([]rune(string(sequence))) {
+		// Only the Unicode char, key-down, and repeat-count fields are set,
+		// mirroring how Windows Terminal forwards characters that have no
+		// associated virtual key.
+		fmt.Fprintf(output, "\x1b[0;0;%d;1;0;1_", codeUnit)
+	}
+}
+
+// win32InputModeRequests are the DEC private mode 9001 (win32-input-mode)
+// enable/disable sequences a foreground child emits to negotiate rich keyboard
+// input with its terminal.
+var win32InputModeRequests = [][]byte{
+	[]byte("\x1b[?9001h"),
+	[]byte("\x1b[?9001l"),
+}
+
+// win32InputModeRequestStripper removes win32-input-mode (DEC private mode 9001)
+// requests from a stream of window output before it reaches os.Stdout.
+//
+// On Windows the `monkeymux attach` process runs inside the SSH server's own
+// ConPTY (conhost). That conhost watches the attach process's output for a
+// `CSI ? 9001 h` and, on seeing one, switches its input delivery to
+// win32-input-mode — decomposing the client's raw VT input (e.g. an arrow key's
+// `ESC [ A`) into individual character key events. Those char events survive the
+// relay to the window's own ConPTY as a bare ESC followed by literal `[A`, which
+// PSReadLine and other line editors treat as an Escape keypress plus typed text
+// instead of a cursor key (so Up/Down stop recalling history). The window's
+// child still negotiates win32-input-mode directly with its own ConPTY, so
+// hiding the request from the outer conhost is safe and keeps arrow keys intact.
+type win32InputModeRequestStripper struct {
+	dst   io.Writer
+	carry []byte
+}
+
+func newWin32InputModeRequestStripper(dst io.Writer) *win32InputModeRequestStripper {
+	return &win32InputModeRequestStripper{dst: dst}
+}
+
+func (s *win32InputModeRequestStripper) Write(p []byte) (int, error) {
+	out, carry := stripWin32InputModeRequests(s.carry, p)
+	s.carry = carry
+	if len(out) > 0 {
+		if _, err := s.dst.Write(out); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+// Flush writes any buffered partial sequence to the destination. It must be
+// called once the source stream ends so a trailing run that looked like the
+// start of a win32-input-mode request (but was never completed) is not dropped.
+func (s *win32InputModeRequestStripper) Flush() error {
+	if len(s.carry) == 0 {
+		return nil
+	}
+	carry := s.carry
+	s.carry = nil
+	_, err := s.dst.Write(carry)
+	return err
+}
+
+// stripWin32InputModeRequests removes any complete win32-input-mode requests from
+// prev+data and returns the bytes to emit plus a carry holding a trailing partial
+// that could still complete into a request on the next write. A trailing byte run
+// is only carried when it is a strict prefix of a request sequence, so ordinary
+// escape sequences are never delayed by more than the bytes they share with the
+// `ESC [ ? 9 0 0 1` prefix.
+func stripWin32InputModeRequests(prev, data []byte) (out, carry []byte) {
+	buf := data
+	if len(prev) > 0 {
+		buf = append(append(make([]byte, 0, len(prev)+len(data)), prev...), data...)
+	}
+	out = make([]byte, 0, len(buf))
+	i := 0
+	for i < len(buf) {
+		next := bytes.IndexByte(buf[i:], '\x1b')
+		if next < 0 {
+			out = append(out, buf[i:]...)
+			return out, nil
+		}
+		escape := i + next
+		out = append(out, buf[i:escape]...)
+		rest := buf[escape:]
+		if stripped, ok := matchWin32InputModeRequest(rest); ok {
+			i = escape + stripped
+			continue
+		}
+		if isWin32InputModeRequestPrefix(rest) {
+			carry = append(make([]byte, 0, len(rest)), rest...)
+			return out, carry
+		}
+		out = append(out, '\x1b')
+		i = escape + 1
+	}
+	return out, nil
+}
+
+// matchWin32InputModeRequest reports whether rest begins with a complete
+// win32-input-mode request and, if so, its length.
+func matchWin32InputModeRequest(rest []byte) (length int, ok bool) {
+	for _, request := range win32InputModeRequests {
+		if bytes.HasPrefix(rest, request) {
+			return len(request), true
+		}
+	}
+	return 0, false
+}
+
+// isWin32InputModeRequestPrefix reports whether rest is a non-empty strict prefix
+// of a win32-input-mode request (so it might complete into one on the next
+// write).
+func isWin32InputModeRequestPrefix(rest []byte) bool {
+	for _, request := range win32InputModeRequests {
+		if len(rest) < len(request) && bytes.HasPrefix(request, rest) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *muxServer) activeWindow() *muxWindow {
@@ -5607,10 +5977,22 @@ func (w *muxWindow) themeHintFocusTransitionLocked() bool {
 }
 
 func (w *muxWindow) themeHintRefreshDataLocked(themeHint []byte) []byte {
-	var refreshKeys []string
-	refreshKeys = appendThemeQueryKeys(refreshKeys, w.themeHintRefreshKeysLocked())
-	refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
-	themeHintData := themeHintResponsesForKeys(themeHint, refreshKeys)
+	var themeHintData []byte
+	// On Windows ConPTY (win32-input-mode) an OSC color report written into the
+	// window pty is re-encoded as win32-input-mode key events, which conhost
+	// then delivers to the foreground app as a run of typed characters. Apps
+	// that read console input records instead of a VT stream (e.g. Codex) render
+	// that as literal `]11;rgb:...` text in their composer. Unsolicited refresh
+	// pushes have no matching read on the app side, so skip the OSC reports
+	// there; the live query-response path in handleWindowOutput still answers
+	// OSC color queries the app actually makes, and focus-aware apps still get a
+	// FocusIn nudge to re-query through that safe path.
+	if !w.win32InputMode {
+		var refreshKeys []string
+		refreshKeys = appendThemeQueryKeys(refreshKeys, w.themeHintRefreshKeysLocked())
+		refreshKeys = appendThemeQueryKeys(refreshKeys, w.agentThemeHintRefreshKeysLocked())
+		themeHintData = themeHintResponsesForKeys(themeHint, refreshKeys)
+	}
 	if w.agentThemeHintModeReportLocked() {
 		themeHintData = append(terminalThemeModeReportFromHint(themeHint), themeHintData...)
 	}
@@ -5785,6 +6167,11 @@ func agentCommandNameFromProcessArgs(args string) string {
 	case strings.Contains(lowered, "@anthropic-ai/claude-code") ||
 		strings.Contains(lowered, "/claude-code/"):
 		return "claude"
+	case strings.Contains(lowered, "cursor-agent/versions/"):
+		// The `cursor-agent`/`agent` launchers are Node wrappers whose argv[0]
+		// (often the generic `agent`) is ambiguous, so match the versioned
+		// install path instead.
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -5812,6 +6199,8 @@ func agentToolFromCommandName(command string) string {
 		return "gemini"
 	case "agy", "antigravity", "antigravity-cli":
 		return "antigravity"
+	case "cursor-agent":
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -5849,6 +6238,11 @@ func agentLaunchCommand(tool string, startInYoloMode bool) string {
 			return "agy --dangerously-skip-permissions"
 		}
 		return "agy"
+	case "cursor-agent":
+		if startInYoloMode {
+			return "cursor-agent --force"
+		}
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -5897,6 +6291,15 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 			return commandPrefix + "--continue"
 		}
 		return commandPrefix + "--conversation " + quotedSessionID
+	case "cursor-agent":
+		commandPrefix := "cursor-agent"
+		if startInYoloMode {
+			commandPrefix = "cursor-agent --force"
+		}
+		if sessionID == "_continue" {
+			return commandPrefix + " --continue"
+		}
+		return commandPrefix + " --resume " + quotedSessionID
 	default:
 		return ""
 	}
@@ -5956,6 +6359,10 @@ func agentToolFromTerminalTitle(title string) string {
 	case normalized == "agy" || normalized == "antigravity" ||
 		strings.HasPrefix(normalized, "agy ") || strings.HasPrefix(normalized, "antigravity "):
 		return "antigravity"
+	case normalized == "cursor agent" ||
+		normalized == "cursor-agent" || normalized == "cursor cli" ||
+		strings.HasPrefix(normalized, "cursor agent "):
+		return "cursor-agent"
 	default:
 		return ""
 	}
@@ -6151,6 +6558,10 @@ func (w *muxWindow) setPrivateModeLocked(mode string, enabled bool) {
 		w.cursorVisibilityKnown = true
 		return
 	}
+	if mode == "9001" {
+		w.win32InputMode = enabled
+		return
+	}
 	if mode == "1004" {
 		w.focusModeEnabled = enabled
 		if enabled {
@@ -6307,6 +6718,14 @@ func (w *muxWindow) applyOscPayloadLocked(payload string) []string {
 	queryKeys := themeQueryKeysFromOscPayload(payload)
 	if len(queryKeys) == 0 {
 		return nil
+	}
+	if w.win32InputMode {
+		// ConPTY forwards the child's OSC 4 palette queries out of the pty but
+		// swallows its OSC 10/11 default-colour queries, so a colour
+		// interrogation observed under win32-input-mode implies the swallowed
+		// default foreground/background queries as well. Answering them
+		// unprompted is the only way the child ever learns those colours.
+		queryKeys = appendThemeQueryKeys(queryKeys, conPtySwallowedThemeQueryKeys)
 	}
 	queryPid := w.activeForegroundPidLocked()
 	if queryPid <= 0 {

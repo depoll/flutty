@@ -40,6 +40,13 @@ void main() {
         ),
         'agy --dangerously-skip-permissions',
       );
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.cursorAgent,
+          startInYoloMode: true,
+        ),
+        'cursor-agent --force',
+      );
     });
   });
 
@@ -93,6 +100,14 @@ void main() {
         ),
         "agy --dangerously-skip-permissions --conversation 'agy-session'",
       );
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.cursorAgent,
+          'cursor-session',
+          startInYoloMode: true,
+        ),
+        "cursor-agent --force --resume 'cursor-session'",
+      );
     });
 
     test('preserves OpenCode continue resume command in yolo mode', () {
@@ -116,6 +131,24 @@ void main() {
         'agy --dangerously-skip-permissions --continue',
       );
     });
+
+    test('preserves Cursor Agent continue resume command in yolo mode', () {
+      expect(
+        buildAgentResumeCommand(
+          AgentLaunchTool.cursorAgent,
+          '_continue',
+          startInYoloMode: true,
+        ),
+        'cursor-agent --force --continue',
+      );
+    });
+
+    test('builds Cursor Agent resume by chat id', () {
+      expect(
+        buildAgentResumeCommand(AgentLaunchTool.cursorAgent, 'chat-42'),
+        "cursor-agent --resume 'chat-42'",
+      );
+    });
   });
 
   group('agentLaunchToolForCommandText', () {
@@ -129,6 +162,14 @@ void main() {
       expect(
         agentLaunchToolForCommandText('cd ~/repo && codex resume abc'),
         AgentLaunchTool.codex,
+      );
+      expect(
+        agentLaunchToolForCommandText('cursor-agent --resume abc'),
+        AgentLaunchTool.cursorAgent,
+      );
+      expect(
+        agentLaunchToolForCommandText('cd ~/repo && cursor-agent --force'),
+        AgentLaunchTool.cursorAgent,
       );
     });
 
@@ -387,6 +428,7 @@ void main() {
       AgentLaunchTool.openCode,
       AgentLaunchTool.geminiCli,
       AgentLaunchTool.antigravity,
+      AgentLaunchTool.cursorAgent,
     ]) {
       final preset = AgentLaunchPreset(tool: tool);
       final decoded = AgentLaunchPreset.fromJson(preset.toJson());
@@ -416,6 +458,7 @@ void main() {
       expect(AgentLaunchTool.openCode.label, 'OpenCode');
       expect(AgentLaunchTool.geminiCli.label, 'Gemini CLI');
       expect(AgentLaunchTool.antigravity.label, 'Antigravity');
+      expect(AgentLaunchTool.cursorAgent.label, 'Cursor Agent');
     });
 
     test('new tool command names are correct', () {
@@ -423,6 +466,7 @@ void main() {
       expect(AgentLaunchTool.openCode.commandName, 'opencode');
       expect(AgentLaunchTool.geminiCli.commandName, 'gemini');
       expect(AgentLaunchTool.antigravity.commandName, 'agy');
+      expect(AgentLaunchTool.cursorAgent.commandName, 'cursor-agent');
     });
 
     test('command lookup resolves bare names, paths, and argv tokens', () {
@@ -466,6 +510,14 @@ void main() {
       expect(
         agentLaunchToolForCommandName('antigravity-cli'),
         AgentLaunchTool.antigravity,
+      );
+      expect(
+        agentLaunchToolForCommandName('cursor-agent'),
+        AgentLaunchTool.cursorAgent,
+      );
+      expect(
+        agentLaunchToolForCommandName('/Users/demo/.local/bin/cursor-agent'),
+        AgentLaunchTool.cursorAgent,
       );
       expect(agentLaunchToolForCommandName('vim'), isNull);
       expect(agentLaunchToolForCommandName(''), isNull);

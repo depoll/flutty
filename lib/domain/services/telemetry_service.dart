@@ -147,6 +147,8 @@ class TelemetryService {
     'codex',
     'copilot_cli',
     'copilotcli',
+    'cursor_agent',
+    'cursoragent',
     'gemini_cli',
     'geminicli',
     'open_code',

@@ -521,6 +521,7 @@ branch refs/heads/fix/session-resumption
         'Gemini CLI',
         'OpenCode',
         'Antigravity',
+        'Cursor Agent',
       ]);
     });
 
@@ -538,6 +539,7 @@ branch refs/heads/fix/session-resumption
         'Gemini CLI',
         'OpenCode',
         'Antigravity',
+        'Cursor Agent',
         'Custom Tool',
       ]);
     });
@@ -635,6 +637,20 @@ branch refs/heads/fix/session-resumption
         ),
         "cd '/Users/depoll/Code/flutty' && "
         "codex --yolo resume '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d'",
+      );
+    });
+
+    test('resumes Cursor Agent with the discovered chat id', () {
+      const info = ToolSessionInfo(
+        toolName: 'Cursor Agent',
+        sessionId: 'f21ed2df-500d-46a5-b55f-12b64268491f',
+        workingDirectory: '/Users/depoll/Code/flutty',
+      );
+
+      expect(
+        AgentSessionDiscoveryService().buildResumeCommand(info),
+        "cd '/Users/depoll/Code/flutty' && "
+        "cursor-agent --resume 'f21ed2df-500d-46a5-b55f-12b64268491f'",
       );
     });
   });
@@ -947,6 +963,64 @@ cwd: /tmp/demo
 ''');
 
       expect(metadata.parsedAny, isFalse);
+    });
+  });
+
+  group('parseCursorSessionMetadata', () {
+    test('uses title, cwd, and updatedAtMs epoch milliseconds', () {
+      final metadata = parseCursorSessionMetadata('''
+{
+  "schemaVersion": 1,
+  "createdAtMs": 1783404550969,
+  "hasConversation": true,
+  "title": "Copilot Theming Fix",
+  "updatedAtMs": 1783405351095,
+  "cwd": "/Users/depoll/Code/flutty"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.summary, 'Copilot Theming Fix');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.hasConversation, isTrue);
+      expect(
+        metadata.updatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1783405351095),
+      );
+    });
+
+    test('falls back to createdAtMs when updatedAtMs is absent', () {
+      final metadata = parseCursorSessionMetadata('''
+{
+  "createdAtMs": 1783404550969,
+  "title": "New chat",
+  "cwd": "/tmp/project"
+}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(
+        metadata.updatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1783404550969),
+      );
+    });
+
+    test('marks empty chats as not having a conversation', () {
+      final metadata = parseCursorSessionMetadata('''
+{
+  "title": "Empty",
+  "hasConversation": false,
+  "cwd": "/tmp/project"
+}
+''');
+
+      expect(metadata.hasConversation, isFalse);
+    });
+
+    test('defaults hasConversation to true and parsedAny false on garbage', () {
+      final metadata = parseCursorSessionMetadata('not json');
+      expect(metadata.parsedAny, isFalse);
+      expect(metadata.hasConversation, isTrue);
     });
   });
 
@@ -1711,6 +1785,50 @@ branch refs/heads/main
         );
       },
     );
+
+    test('Cursor discovery resolves chat id, title, and cwd', () async {
+      final client = _MockSshClient();
+      const metaPath =
+          '/Users/demo/.cursor/chats/7fb0188e9fe01ef050275e8289ce9696/'
+          'f21ed2df-500d-46a5-b55f-12b64268491f/meta.json';
+      const chatId = 'f21ed2df-500d-46a5-b55f-12b64268491f';
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.cursor/chats')) {
+          return _buildExecSession(stdout: metaPath);
+        }
+        if (command.contains(metaPath)) {
+          return _buildExecSession(
+            stdout: _remoteSnapshotLine(metaPath, '''
+{"schemaVersion":1,"createdAtMs":1783404550969,"hasConversation":true,"title":"Copilot Theming Fix","updatedAtMs":1783405351095,"cwd":"/Users/depoll/Code/flutty"}
+''', mtime: 1777243460),
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'Cursor Agent',
+      );
+
+      expect(result.sessions, hasLength(1));
+      final info = result.sessions.single;
+      expect(info.toolName, 'Cursor Agent');
+      expect(info.sessionId, chatId);
+      expect(info.summary, 'Copilot Theming Fix');
+      expect(info.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(
+        info.lastActive,
+        DateTime.fromMillisecondsSinceEpoch(1783405351095),
+      );
+      expect(
+        discovery.buildResumeCommand(info),
+        "cd '/Users/depoll/Code/flutty' && cursor-agent --resume '$chatId'",
+      );
+    });
 
     test('toolName limits discovery to the requested provider', () async {
       final client = _MockSshClient();

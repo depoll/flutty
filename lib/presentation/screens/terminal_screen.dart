@@ -36,6 +36,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/app_review_demo_service.dart';
 import '../../domain/services/clipboard_content_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
@@ -7596,6 +7597,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final host = _host;
     if (host == null) {
       return (command: null, handled: false);
+    }
+    if (isAppReviewDemoHost(host)) {
+      final sessionName =
+          _initialTmuxSessionName ?? host.tmuxSessionName ?? 'review-workspace';
+      _applyPreparedRemoteMuxCommand(session, (
+        backend: RemoteMuxBackend.monkeyMux,
+        command: 'app-review-demo-monkeymux',
+        sessionName: sessionName,
+        tool: null,
+      ));
+      _suppressRemoteMuxDetectionConnectionId = session.connectionId;
+      return (command: null, handled: true);
     }
 
     final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
