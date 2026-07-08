@@ -20,7 +20,7 @@ dependencies:
   go_router: ^17.2.3
   
   # Database
-  drift: ^2.34.0
+  drift: ^2.34.1
   sqlite3_flutter_libs: ^0.6.0+eol
   path_provider: ^2.1.6
   path: ^1.9.1
@@ -58,14 +58,14 @@ dependencies:
   flutter_svg: ^2.3.0
   google_fonts: ^8.1.0
   flutter_local_notifications: ^22.0.1
-  webview_flutter: ^4.14.0
+  webview_flutter: ^4.14.1
   webview_flutter_android: ^4.12.0
   
   # Utilities
   uuid: ^4.5.3
   intl: ^0.20.3
   collection: ^1.19.1
-  equatable: ^2.0.7
+  equatable: ^2.1.0
   pasteboard: ^0.5.0
   url_launcher: ^6.3.2
   package_info_plus: ^10.2.0
@@ -94,6 +94,11 @@ dev_dependencies:
   # Code generation
   build_runner: ^2.15.0
   drift_dev: ^2.31.0
+  # Pin: the current Flutter SDK caps analyzer at 12.x, so drift_dev is held at
+  # 2.34.0 (2.34.1+ needs analyzer ^13). drift_dev 2.34.0 calls
+  # DartPlaceholder.when(), which sqlparser removed in 0.44.6, so keep sqlparser
+  # at 0.44.5. Remove this pin once a newer Flutter SDK unblocks drift_dev.
+  sqlparser: 0.44.5
   
   # Testing
   mocktail: ^1.0.4
