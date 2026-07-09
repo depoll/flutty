@@ -546,6 +546,12 @@ platform :ios do
       screenshots_path: SCREENSHOTS_PATH,
       skip_binary_upload: true,
       skip_screenshots: false,
+      # Clear previously uploaded screenshots and app previews before
+      # uploading the current set. Without this, deliver *appends* the new
+      # screenshots to whatever is already on App Store Connect, so each sync
+      # leaves stale screenshots from older versions behind and the listing
+      # ends up with duplicates from different versions.
+      overwrite_screenshots: true,
       submit_for_review: false,
       run_precheck_before_submit: false,
       automatic_release: false,
