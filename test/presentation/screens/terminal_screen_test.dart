@@ -1424,14 +1424,23 @@ void main() {
         );
 
         await pumpScreen(tester);
-        // A real CLI (gh, `ls --hyperlink`, build tools, …) emits an OSC 8
-        // hyperlink whose label is plain text and whose URL is hidden, and its
-        // TUI enables SGR mouse tracking. Tapping the label must open the URL
-        // locally rather than forwarding a mouse click to the host (which would
-        // make the remote process open it server-side over SSH).
+        // Copilot CLI emits an OSC 8 hyperlink, closes it at the end of the
+        // label, and immediately erases the rest of that rendered TUI row. It
+        // also enables SGR mouse tracking. Tapping the label must still open the
+        // URL locally rather than forwarding an inert click to the host.
         session.terminal!
           ..write('\x1b[?1003h\x1b[?1006h')
-          ..write('\x1b]8;;$url\x07Issue #1\x1b]8;;\x07');
+          ..write(
+            [
+              '\x1b[4;2H',
+              '\x1b[4m',
+              '\x1b]8;id=md-link;$url\x07',
+              'Issue #1',
+              '\x1b[0m',
+              '\x1b]8;;\x07',
+              '\x1b[K',
+            ].join(),
+          );
         await tester.pumpAndSettle();
 
         final render = tester
@@ -1451,7 +1460,7 @@ void main() {
 
         // Tapping the hyperlink label opens locally and forwards nothing.
         shellWrites.clear();
-        await tester.tapAt(cellCenter(const CellOffset(3, 0)));
+        await tester.tapAt(cellCenter(const CellOffset(3, 3)));
         await tester.pumpAndSettle();
 
         expect(launchedUrls, [url]);
