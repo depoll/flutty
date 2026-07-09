@@ -143,8 +143,13 @@ void main() {
       expect(homeScreenShortcutHostIconName, 'ic_shortcut_host');
     });
 
-    test('is null on iOS (no bundled asset-catalog icon)', () {
+    test('is the asset-catalog template image on iOS', () {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      expect(homeScreenShortcutHostIconName, 'ic_shortcut_host');
+    });
+
+    test('is null on other platforms', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       expect(homeScreenShortcutHostIconName, isNull);
     });
   });
