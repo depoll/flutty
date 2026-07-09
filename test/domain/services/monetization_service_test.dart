@@ -13,6 +13,7 @@ import 'package:in_app_purchase_storekit/store_kit_wrappers.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -28,6 +29,39 @@ class MockInAppPurchaseAndroidPlatformAddition extends Mock
     implements InAppPurchaseAndroidPlatformAddition {}
 
 class _FakePurchaseParam extends Fake implements PurchaseParam {}
+
+class _CapturingDiagnosticsLogger implements DiagnosticsLogger {
+  final List<({String category, String message, Map<String, Object?> fields})>
+  entries = [];
+
+  @override
+  void debug(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => entries.add((category: category, message: message, fields: fields));
+
+  @override
+  void info(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => entries.add((category: category, message: message, fields: fields));
+
+  @override
+  void warning(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => entries.add((category: category, message: message, fields: fields));
+
+  @override
+  void error(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => entries.add((category: category, message: message, fields: fields));
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -565,6 +599,65 @@ void main() {
         ]),
       );
     });
+
+    test(
+      'catalog diagnostics record when the App Store omits the monthly plan',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        // The App Store returns only the annual product; the monthly product
+        // is reported as not found (e.g. it is not in a returnable state in
+        // App Store Connect), which is what makes the paywall show annual only.
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: [
+              AppStoreProductDetails.fromSKProduct(
+                SKProductWrapper(
+                  productIdentifier: MonetizationProductIds.iosAnnualProd,
+                  localizedTitle: 'MonkeySSH Pro Annual',
+                  localizedDescription: 'Annual MonkeySSH Pro subscription',
+                  priceLocale: _usdPriceLocale,
+                  price: '50.00',
+                  subscriptionPeriod: SKProductSubscriptionPeriodWrapper(
+                    numberOfUnits: 1,
+                    unit: SKSubscriptionPeriodUnit.year,
+                  ),
+                ),
+              ),
+            ],
+            notFoundIDs: [MonetizationProductIds.iosMonthlyProd],
+          ),
+        );
+
+        final diagnostics = _CapturingDiagnosticsLogger();
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+          packageNameLoader: () async => 'xyz.depollsoft.monkeyssh',
+          diagnostics: diagnostics,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+
+        final catalogEntry = diagnostics.entries.lastWhere(
+          (entry) =>
+              entry.category == 'monetization' &&
+              entry.message == 'catalog_loaded',
+        );
+        expect(catalogEntry.fields['annualLoaded'], isTrue);
+        expect(catalogEntry.fields['monthlyLoaded'], isFalse);
+        expect(catalogEntry.fields['notFoundCount'], 1);
+        expect(catalogEntry.fields['offerCount'], 1);
+        // The breadcrumb must never leak raw product identifiers.
+        expect(
+          catalogEntry.fields.values.whereType<String>(),
+          everyElement(isNot(contains('monkeyssh_pro'))),
+        );
+      },
+    );
 
     test(
       'concurrent initialize calls wait for the same in-flight work',
@@ -1410,6 +1503,132 @@ void main() {
         expect(service.currentState.isLoading, isFalse);
       },
     );
+
+    test('restore without StoreKit purchases finalizes via the grace period '
+        'instead of blocking on the restore timeout', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      await settings.setString(
+        SettingKeys.monetizationActiveProductId,
+        MonetizationProductIds.iosMonthlyProd,
+      );
+      // StoreKit2 emits nothing on the purchase stream when there is
+      // nothing to restore, so the restore must resolve on its own.
+      when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {});
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+        restoreTimeout: const Duration(seconds: 30),
+        restoreEmptyResultGracePeriod: const Duration(milliseconds: 20),
+      );
+      addTearDown(service.dispose);
+
+      // The outer timeout guards the test: without the grace finalization
+      // this would block for the full 30s restore timeout.
+      final result = await service.restorePurchases().timeout(
+        const Duration(seconds: 5),
+      );
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('No active'));
+      expect(service.currentState.isProUnlocked, isFalse);
+      expect(service.currentState.isLoading, isFalse);
+      expect(
+        await settings.getBool(SettingKeys.monetizationProUnlocked),
+        isFalse,
+      );
+      expect(
+        await settings.getString(SettingKeys.monetizationActiveProductId),
+        isNull,
+      );
+    });
+
+    test('restore finalizes immediately when StoreKit reports an empty '
+        'purchase list', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      await settings.setString(
+        SettingKeys.monetizationActiveProductId,
+        MonetizationProductIds.iosMonthlyProd,
+      );
+      when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {
+        // StoreKit1 emits an empty list when nothing can be restored.
+        purchaseController.add(const <PurchaseDetails>[]);
+      });
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+        restoreTimeout: const Duration(seconds: 30),
+        // A long grace period proves the empty-list path resolves without
+        // waiting for either the grace period or the restore timeout.
+        restoreEmptyResultGracePeriod: const Duration(seconds: 30),
+      );
+      addTearDown(service.dispose);
+
+      final result = await service.restorePurchases().timeout(
+        const Duration(seconds: 5),
+      );
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('No active'));
+      expect(service.currentState.isProUnlocked, isFalse);
+      expect(
+        await settings.getBool(SettingKeys.monetizationProUnlocked),
+        isFalse,
+      );
+    });
+
+    test('restore applies a restored StoreKit subscription and keeps the '
+        'entitlement', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      final purchase = MockPurchaseDetails();
+      when(
+        () => purchase.productID,
+      ).thenReturn(MonetizationProductIds.iosMonthlyProd);
+      when(() => purchase.status).thenReturn(PurchaseStatus.restored);
+      when(() => purchase.pendingCompletePurchase).thenReturn(true);
+      when(() => purchase.transactionDate).thenReturn('1712732400000');
+      when(
+        () => inAppPurchase.completePurchase(purchase),
+      ).thenAnswer((_) async {});
+      when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {
+        purchaseController.add([purchase]);
+      });
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+        restoreTimeout: const Duration(seconds: 30),
+        // Long enough that the observed purchase resolves the restore
+        // before the empty-result finalization could ever run.
+        restoreEmptyResultGracePeriod: const Duration(seconds: 5),
+      );
+      addTearDown(service.dispose);
+
+      final result = await service.restorePurchases().timeout(
+        const Duration(seconds: 5),
+      );
+
+      expect(result.success, isTrue);
+      expect(service.currentState.isProUnlocked, isTrue);
+      expect(
+        service.currentState.activeProductId,
+        MonetizationProductIds.iosMonthlyProd,
+      );
+      expect(
+        await settings.getBool(SettingKeys.monetizationProUnlocked),
+        isTrue,
+      );
+    });
 
     test(
       'purchase finalization failure resolves the pending purchase',
