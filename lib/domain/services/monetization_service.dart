@@ -12,6 +12,7 @@ import 'package:in_app_purchase_storekit/store_kit_wrappers.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/monetization.dart';
+import 'diagnostics_log_service.dart';
 import 'settings_service.dart';
 
 const _lifetimeAlreadyActiveMessage =
@@ -30,13 +31,17 @@ class MonetizationService {
     bool? allowDebugUnlock,
     Duration purchaseTimeout = const Duration(seconds: 60),
     Duration restoreTimeout = const Duration(seconds: 45),
+    Duration restoreEmptyResultGracePeriod = const Duration(seconds: 2),
     Future<String> Function()? packageNameLoader,
+    DiagnosticsLogger? diagnostics,
   }) : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance,
        _androidPlatformAddition = androidPlatformAddition,
        _allowDebugUnlock = allowDebugUnlock ?? kDebugMode,
        _purchaseTimeout = purchaseTimeout,
        _restoreTimeout = restoreTimeout,
-       _packageNameLoader = packageNameLoader ?? _loadPackageName;
+       _restoreEmptyResultGracePeriod = restoreEmptyResultGracePeriod,
+       _packageNameLoader = packageNameLoader ?? _loadPackageName,
+       _diagnostics = diagnostics ?? DiagnosticsLogService.instance;
 
   final SettingsService _settings;
   final InAppPurchase _inAppPurchase;
@@ -44,7 +49,15 @@ class MonetizationService {
   final bool _allowDebugUnlock;
   final Duration _purchaseTimeout;
   final Duration _restoreTimeout;
+  // Grace period to wait after an Apple restore finishes before concluding
+  // that there was nothing to restore. StoreKit delivers restored
+  // transactions through the purchase stream on a channel separate from the
+  // `restorePurchases` reply, so this absorbs that cross-channel delivery lag
+  // instead of blocking on the full [_restoreTimeout].
+  final Duration _restoreEmptyResultGracePeriod;
   final Future<String> Function() _packageNameLoader;
+  final DiagnosticsLogger _diagnostics;
+  Timer? _restoreEmptyResultTimer;
   final _controller = StreamController<MonetizationState>.broadcast();
   final _purchaseOptionsByOfferId = <String, _MonetizationPurchaseOption>{};
 
@@ -183,13 +196,19 @@ class MonetizationService {
       return;
     }
 
+    final requestedProductIds = await _productIdsForCurrentStorefront();
     final response = await _inAppPurchase.queryProductDetails(
-      await _productIdsForCurrentStorefront(),
+      requestedProductIds,
     );
     final catalog = _buildMonetizationCatalog(response.productDetails);
     _purchaseOptionsByOfferId
       ..clear()
       ..addAll(catalog.purchaseOptionsByOfferId);
+    _logCatalogLoaded(
+      requestedProductIds: requestedProductIds,
+      response: response,
+      offers: catalog.offers,
+    );
 
     _emit(
       _state.copyWith(
@@ -200,6 +219,40 @@ class MonetizationService {
             ? null
             : 'Could not load purchase options. Try again.',
       ),
+    );
+  }
+
+  /// Records a safe, primitive breadcrumb describing which store products the
+  /// current storefront actually returned.
+  ///
+  /// This deliberately logs only counts and booleans (never product IDs,
+  /// prices, or any user content) so a diagnostics export can reveal cases
+  /// where the store omits an expected plan — for example an App Store
+  /// subscription that is not in a returnable state, which surfaces in the app
+  /// as a paywall that is missing its monthly or annual option.
+  void _logCatalogLoaded({
+    required Set<String> requestedProductIds,
+    required ProductDetailsResponse response,
+    required List<MonetizationOffer> offers,
+  }) {
+    final billingPeriods = offers.map((offer) => offer.billingPeriod).toSet();
+    _diagnostics.info(
+      'monetization',
+      'catalog_loaded',
+      fields: {
+        'platform': defaultTargetPlatform.name,
+        'requestedCount': requestedProductIds.length,
+        'loadedProductCount': response.productDetails.length,
+        'offerCount': offers.length,
+        'notFoundCount': response.notFoundIDs.length,
+        'hasError': response.error != null,
+        'monthlyLoaded': billingPeriods.contains(
+          MonetizationBillingPeriod.monthly,
+        ),
+        'annualLoaded': billingPeriods.contains(
+          MonetizationBillingPeriod.annual,
+        ),
+      },
     );
   }
 
@@ -337,11 +390,28 @@ class MonetizationService {
     _restoreInFlight = true;
     _restoreObservedPurchaseUpdate = false;
     _emit(_state.copyWith(isLoading: true, lastError: null));
-    await _inAppPurchase.restorePurchases();
+    try {
+      await _inAppPurchase.restorePurchases();
+    } on Object catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint('restorePurchases failed: $error\n$stackTrace');
+      }
+    }
+
+    // StoreKit has finished the restore/sync by the time the call above
+    // completes. A real subscription restore delivers its transaction through
+    // the purchase stream (which resolves [completer]). When there is nothing
+    // to restore, StoreKit1 emits an empty purchase list and StoreKit2 emits
+    // nothing at all, so give any in-flight stream event a brief moment to be
+    // processed and then finalize as "nothing to restore" instead of blocking
+    // on the full restore timeout.
+    _scheduleEmptyRestoreFinalization(completer);
 
     return completer.future.timeout(
       _restoreTimeout,
       onTimeout: () async {
+        _restoreEmptyResultTimer?.cancel();
+        _restoreEmptyResultTimer = null;
         _pendingPurchaseResult = null;
         _pendingOfferId = null;
         _pendingPurchaseFlowStarted = false;
@@ -358,6 +428,45 @@ class MonetizationService {
           _noActiveStorePurchaseMessage,
         );
       },
+    );
+  }
+
+  void _scheduleEmptyRestoreFinalization(
+    Completer<MonetizationActionResult> completer,
+  ) {
+    _restoreEmptyResultTimer?.cancel();
+    _restoreEmptyResultTimer = Timer(_restoreEmptyResultGracePeriod, () {
+      _restoreEmptyResultTimer = null;
+      if (_pendingPurchaseResult == completer) {
+        unawaited(_finishRestoreWithoutPurchases());
+      }
+    });
+  }
+
+  /// Resolves a pending Apple restore that produced no restorable purchases.
+  ///
+  /// Clears any stale cached subscription entitlement (preserving a lifetime
+  /// unlock) and completes the pending action with the no-purchase message.
+  /// No-ops if a purchase update was already observed so the normal
+  /// purchase-handling path can resolve the restore instead.
+  Future<void> _finishRestoreWithoutPurchases() async {
+    _restoreEmptyResultTimer?.cancel();
+    _restoreEmptyResultTimer = null;
+    final completer = _pendingPurchaseResult;
+    if (completer == null ||
+        completer.isCompleted ||
+        !_restoreInFlight ||
+        _restoreObservedPurchaseUpdate) {
+      return;
+    }
+    await _clearCachedStoreEntitlement(preserveLifetime: true);
+    // A restored transaction may have arrived while clearing; if so, let the
+    // purchase-handling path resolve the restore with the real entitlement.
+    if (_restoreObservedPurchaseUpdate) {
+      return;
+    }
+    _resolvePendingPurchase(
+      const MonetizationActionResult.failure(_noActiveStorePurchaseMessage),
     );
   }
 
@@ -386,6 +495,8 @@ class MonetizationService {
 
   /// Releases store listeners held by this service.
   Future<void> dispose() async {
+    _restoreEmptyResultTimer?.cancel();
+    _restoreEmptyResultTimer = null;
     await _purchaseSubscription?.cancel();
     await _controller.close();
   }
@@ -396,6 +507,13 @@ class MonetizationService {
       defaultTargetPlatform == TargetPlatform.macOS;
 
   void _handlePurchaseUpdates(List<PurchaseDetails> purchases) {
+    if (purchases.isEmpty) {
+      // StoreKit1 emits an empty list when a restore finishes with no
+      // transactions to restore. Resolve the pending restore right away
+      // instead of waiting for the restore timeout to elapse.
+      unawaited(_finishRestoreWithoutPurchases());
+      return;
+    }
     for (final purchase in purchases) {
       if (!MonetizationProductIds.allKnown.contains(purchase.productID)) {
         continue;
@@ -559,6 +677,8 @@ class MonetizationService {
   }
 
   void _resolvePendingPurchase(MonetizationActionResult result) {
+    _restoreEmptyResultTimer?.cancel();
+    _restoreEmptyResultTimer = null;
     final completer = _pendingPurchaseResult;
     if (completer == null || completer.isCompleted) {
       return;
