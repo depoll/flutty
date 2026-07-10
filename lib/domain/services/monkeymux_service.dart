@@ -336,6 +336,18 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
     String? extraFlags,
+  }) => _currentPaneContext(
+    session,
+    sessionName,
+    priority: priority,
+    refreshWorkingDirectory: false,
+  );
+
+  Future<TmuxPaneContext?> _currentPaneContext(
+    SshSession session,
+    String sessionName, {
+    required SshExecPriority priority,
+    required bool refreshWorkingDirectory,
   }) async {
     if (isAppReviewDemoSession(session)) {
       final active = _appReviewDemoMuxState(
@@ -348,6 +360,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     }
     final response = await _runControlCommand(session, sessionName, {
       'type': 'query_active_context',
+      if (refreshWorkingDirectory) 'refreshCwd': true,
     }, priority: priority);
     return TmuxPaneContext(
       currentPath: _nonEmpty(response.currentPath),
@@ -361,11 +374,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
     String? extraFlags,
-  }) async => (await currentPaneContext(
+  }) async => (await _currentPaneContext(
     session,
     sessionName,
     priority: priority,
-    extraFlags: extraFlags,
+    refreshWorkingDirectory: true,
   ))?.currentPath;
 
   @override
