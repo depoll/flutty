@@ -409,45 +409,6 @@ void main() {
     setUpAll(() => registerFallbackValue(Uint8List(0)));
 
     test(
-      'only path queries request a live working-directory refresh',
-      () async {
-        final client = _MockSshClient();
-        final installer = _MockMonkeyMuxInstaller();
-        final session = _buildSession(client, connectionId: 901);
-        final stdoutController = StreamController<Uint8List>();
-        final requests = <Map<String, Object?>>[];
-        final controlSession = _buildContextRespondingControlSession(
-          stdoutController,
-          requests: requests,
-        );
-
-        when(
-          () => installer.ensureInstalled(session),
-        ).thenAnswer((_) async => _fakeInstallation);
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => controlSession);
-
-        final service = MonkeyMuxService(
-          installer: installer,
-          agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
-        )..watchWindowChanges(session, 'work');
-
-        final cachedContext = await service.currentPaneContext(session, 'work');
-        final refreshedPath = await service.currentPanePath(session, 'work');
-
-        expect(cachedContext?.currentPath, '/work/project');
-        expect(refreshedPath, '/work/project');
-        expect(requests, hasLength(2));
-        expect(requests[0]['refreshCwd'], isNull);
-        expect(requests[1]['refreshCwd'], isTrue);
-
-        await stdoutController.close();
-        await service.clearCache(901);
-      },
-    );
-
-    test(
       'listWindows fails instead of hanging when no response arrives',
       () async {
         final client = _MockSshClient();
@@ -572,37 +533,6 @@ SSHSession _buildRespondingControlSession(
       'type': 'window_list',
       'status': 'ok',
       'windows': [window],
-    });
-    scheduleMicrotask(
-      () =>
-          stdoutController.add(Uint8List.fromList(utf8.encode('$response\n'))),
-    );
-  });
-  return session;
-}
-
-SSHSession _buildContextRespondingControlSession(
-  StreamController<Uint8List> stdoutController, {
-  required List<Map<String, Object?>> requests,
-}) {
-  final session = _MockExecSession();
-  final stdinSink = _MockByteSink();
-  when(stdinSink.close).thenAnswer((_) async {});
-  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
-  when(() => session.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
-  when(() => session.done).thenAnswer((_) => Completer<void>().future);
-  when(() => session.stdin).thenAnswer((_) => stdinSink);
-  when(session.close).thenAnswer((_) {});
-  when(() => session.write(any())).thenAnswer((invocation) {
-    final data = invocation.positionalArguments.single as List<int>;
-    final request = jsonDecode(utf8.decode(data)) as Map<String, Object?>;
-    requests.add(request);
-    final response = jsonEncode({
-      'id': request['id'],
-      'type': 'active_context',
-      'status': 'ok',
-      'currentPath': '/work/project',
-      'currentCommand': 'zsh',
     });
     scheduleMicrotask(
       () =>

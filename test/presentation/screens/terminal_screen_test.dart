@@ -466,6 +466,7 @@ Host _buildHost({
   required int id,
   String? autoConnectCommand,
   String? tmuxSessionName,
+  String? tmuxWorkingDirectory,
   String? tmuxExtraFlags,
   RemoteMuxBackend? remoteMuxBackend,
 }) => Host(
@@ -476,6 +477,7 @@ Host _buildHost({
   username: 'root',
   autoConnectCommand: autoConnectCommand,
   tmuxSessionName: tmuxSessionName,
+  tmuxWorkingDirectory: tmuxWorkingDirectory,
   tmuxExtraFlags: tmuxExtraFlags,
   isFavorite: false,
   createdAt: DateTime(2026),
@@ -5594,6 +5596,45 @@ void main() {
         TargetPlatform.android,
         TargetPlatform.iOS,
       }),
+    );
+
+    testWidgets(
+      'new windows use the configured host directory without reading the active pane',
+      (tester) async {
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: 'work',
+          tmuxWorkingDirectory: '/home/demo/configured',
+          remoteMuxBackend: RemoteMuxBackend.tmux,
+        );
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.tap(find.text('New Window'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Empty window'));
+        await tester.pump();
+
+        verify(
+          () => tmuxService.createWindow(
+            session,
+            'work',
+            workingDirectory: '/home/demo/configured',
+          ),
+        ).called(1);
+        verifyNever(
+          () => tmuxService.currentPanePath(
+            session,
+            'work',
+            priority: any(named: 'priority'),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(
