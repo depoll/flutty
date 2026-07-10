@@ -56,7 +56,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.94"
+	monkeyMuxVersion                  = "0.1.93"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -301,7 +301,6 @@ type controlMessage struct {
 	PixelWidth  int      `json:"pixelWidth,omitempty"`
 	PixelHeight int      `json:"pixelHeight,omitempty"`
 	Redraw      bool     `json:"redraw,omitempty"`
-	RefreshCwd  bool     `json:"refreshCwd,omitempty"`
 	// HaveImageSignatures maps a Kitty protocol image id (as a string) to the
 	// FNV-1a-32 signature of the base64-decoded payload the client already
 	// holds. Sent with select_window so the replay can skip re-transmitting
@@ -3516,13 +3515,17 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 		s.resizeWithRedraw(request.Width, request.Height, request.Redraw)
 		client.send(controlResponse{ID: request.ID, Type: "resized", Status: "ok"})
 	case "query_active_context":
-		currentPath, currentCommand, err := s.activeWindowContext(
-			request.RefreshCwd,
-		)
-		if err != nil {
-			client.sendError(request, err)
+		s.mu.Lock()
+		window := s.windowByIDLocked(s.activeID)
+		if window == nil || window.closed {
+			s.mu.Unlock()
+			client.sendError(request, errors.New("no active window"))
 			return
 		}
+		window.refreshProcessMetadataLocked(time.Now())
+		currentPath := window.cwd
+		currentCommand := window.currentCommandLocked()
+		s.mu.Unlock()
 		client.send(controlResponse{
 			ID:             request.ID,
 			Type:           "active_context",
@@ -3567,65 +3570,6 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 	default:
 		client.sendError(request, fmt.Errorf("unsupported command %q", request.Type))
 	}
-}
-
-func (s *muxServer) activeWindowContext(
-	refreshWorkingDirectory bool,
-) (string, string, error) {
-	// Cwd discovery can spawn lsof, so probe without holding the server lock and
-	// reject the result if the active window or its foreground process changed.
-	const maxAttempts = 2
-	for range maxAttempts {
-		s.mu.Lock()
-		window := s.windowByIDLocked(s.activeID)
-		if window == nil || window.closed {
-			s.mu.Unlock()
-			return "", "", errors.New("no active window")
-		}
-		window.refreshProcessMetadataLocked(time.Now())
-		if !refreshWorkingDirectory {
-			currentPath := window.cwd
-			currentCommand := window.currentCommandLocked()
-			s.mu.Unlock()
-			return currentPath, currentCommand, nil
-		}
-		windowID := window.id
-		processID := window.activeForegroundPidLocked()
-		if processID <= 0 {
-			processID = window.metadataProcessIDLocked()
-		}
-		s.mu.Unlock()
-
-		currentPath := ""
-		if processID > 0 {
-			currentPath = normalizedMetadataPath(
-				processWorkingDirectoryForMetadata(processID),
-			)
-		}
-
-		s.mu.Lock()
-		window = s.windowByIDLocked(windowID)
-		if window == nil || window.closed || s.activeID != windowID {
-			s.mu.Unlock()
-			continue
-		}
-		activeProcessID := window.activeForegroundPidLocked()
-		if activeProcessID <= 0 {
-			activeProcessID = window.metadataProcessIDLocked()
-		}
-		if activeProcessID != processID {
-			s.mu.Unlock()
-			continue
-		}
-		if currentPath != "" {
-			window.cwd = currentPath
-		}
-		currentPath = window.cwd
-		currentCommand := window.currentCommandLocked()
-		s.mu.Unlock()
-		return currentPath, currentCommand, nil
-	}
-	return "", "", errors.New("active context changed while reading working directory")
 }
 
 func (s *muxServer) addControl(client *controlClient) {
