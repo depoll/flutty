@@ -25,8 +25,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1.316.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
       - name: Compute version
         id: version
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           VERSION_LINE="$(grep '^version:' pubspec.yaml | head -n 1)"
           if [ -z "$VERSION_LINE" ]; then
@@ -34,7 +44,13 @@ jobs:
             exit 1
           fi
 
-          BUILD_NAME="$(printf '%s' "$VERSION_LINE" | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1 | xargs)"
+          BASE_VERSION="$(printf '%s' "$VERSION_LINE" | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1 | xargs)"
+          VERSION_OUTPUT="$RUNNER_TEMP/internal-release-version"
+          bundle exec ruby scripts/resolve_next_app_store_patch_version.rb \
+            "$BASE_VERSION" \
+            xyz.depollsoft.monkeyssh \
+            "$VERSION_OUTPUT"
+          BUILD_NAME="$(cat "$VERSION_OUTPUT")"
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
           BUILD_CODENAME=$(python3 scripts/version_codename.py "$BUILD_NAME")
           BUILD_DISPLAY="$BUILD_NAME"
