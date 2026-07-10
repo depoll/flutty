@@ -546,9 +546,6 @@ platform :ios do
       screenshots_path: SCREENSHOTS_PATH,
       skip_binary_upload: true,
       skip_screenshots: false,
-      # Metadata sync must use the existing editable App Store version instead
-      # of inheriting the marketing version from the IPA uploaded by this lane.
-      skip_app_version_update: true,
       # Clear previously uploaded screenshots and app previews before
       # uploading the current set. Without this, deliver *appends* the new
       # screenshots to whatever is already on App Store Connect, so each sync
