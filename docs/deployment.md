@@ -1,6 +1,7 @@
 # Deployment Guide
 
-This guide covers setting up automated deployment to TestFlight, Play Store internal testing, internal-only production release candidates, and public store releases.
+This guide covers automated deployment to TestFlight, Play Store internal
+testing, and public store releases.
 
 ## App Variants
 
@@ -111,31 +112,33 @@ Triggered on push to `main`. Builds the **private** flavor and deploys to:
 
 This ensures TestFlight and Play Store internal testing always reflect the latest `main`.
 
-### Release Internal (`release-internal.yml`)
-
-Manually triggered from the Actions tab with a version input.
-
-Builds the **production** flavor and deploys it to internal-only channels:
-- **iOS**: TestFlight internal testers for the production `MonkeySSH` app
-- **Android**: Play Store internal testing track for the production `xyz.depollsoft.monkeyssh` app
-
-Metadata is synced as part of the deploy so the production store listing stays aligned while the binary remains limited to internal testers.
-
-Use this workflow to validate a release candidate on the non-private app before promoting a later build publicly.
-
 ### Release (`release.yml`)
 
 Triggered by:
 - Creating a GitHub Release (tag format: `vX.Y.Z`)
-- Manual workflow dispatch with version input
+- Manual workflow dispatch
 
-Builds the **production** flavor and deploys to:
-- **iOS**: App Store (submitted, not auto-released)
-- **Android**: Play Store production track
+Published GitHub releases deploy both platforms to production using the tag as
+the exact version. Manual runs provide:
 
-Metadata is synced automatically on release deploys. Android listing icons are
-managed as Play Store metadata; iOS App Store icons come from the submitted app
-build's asset catalog.
+- **Channel**: `production` (default) or `internal`
+- **Platforms**: independent iOS and Android toggles, both enabled by default
+- **Version**: optional exact `x.y.z` override
+
+For production iOS releases without an override, the workflow selects the next
+available patch version from App Store Connect. It uploads metadata,
+screenshots, App Preview videos, and the binary together, submits the version
+for review, and releases it automatically after approval. Starting another
+release while a review is active cancels that review and advances the App Store
+version before uploading the replacement release.
+
+Production Android releases upload the listing and AAB to the Play production
+track as a completed rollout, send the changes for Google review, and publish
+automatically after approval. Internal runs upload to TestFlight and Play
+internal without changing the production store listings.
+
+Android listing icons are managed as Play Store metadata; iOS App Store icons
+come from the submitted app build's asset catalog.
 
 Android release workflows fail early if the signing secrets or local `android/app/key.properties` configuration are missing or incomplete. This prevents release builds from silently falling back to the debug keystore.
 
@@ -157,10 +160,10 @@ view show the latest status for each supported channel:
 | `iOS Private / TestFlight` | PR `/deploy`, Deploy Private |
 | `Android Private / Play Internal` | PR `/deploy`, Deploy Private |
 | `Android Private / Internal App Sharing` | PR Preview Internal App Sharing |
-| `iOS Production / TestFlight` | Release Internal |
-| `Android Production / Play Internal` | Release Internal |
-| `iOS Production / App Store` | Release |
-| `Android Production / Play Production` | Release |
+| `iOS Production / TestFlight` | Release (`internal` channel) |
+| `Android Production / Play Internal` | Release (`internal` channel) |
+| `iOS Production / App Store` | Release (`production` channel) |
+| `Android Production / Play Production` | Release (`production` channel) |
 | `iOS Private / App Store Metadata` | Sync Metadata |
 | `iOS Production / App Store Metadata` | Sync Metadata |
 | `Android Private / Play Store Metadata` | Sync Metadata |

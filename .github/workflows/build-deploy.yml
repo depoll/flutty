@@ -173,6 +173,14 @@ on:
         required: false
       APP_STORE_CONNECT_API_KEY_CONTENT:
         required: false
+      APP_REVIEW_CONTACT_FIRST_NAME:
+        required: false
+      APP_REVIEW_CONTACT_LAST_NAME:
+        required: false
+      APP_REVIEW_CONTACT_EMAIL:
+        required: false
+      APP_REVIEW_CONTACT_PHONE:
+        required: false
       FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON:
         required: false
       FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON:
@@ -1100,6 +1108,10 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          APP_REVIEW_CONTACT_FIRST_NAME: ${{ secrets.APP_REVIEW_CONTACT_FIRST_NAME }}
+          APP_REVIEW_CONTACT_LAST_NAME: ${{ secrets.APP_REVIEW_CONTACT_LAST_NAME }}
+          APP_REVIEW_CONTACT_EMAIL: ${{ secrets.APP_REVIEW_CONTACT_EMAIL }}
+          APP_REVIEW_CONTACT_PHONE: ${{ secrets.APP_REVIEW_CONTACT_PHONE }}
           FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
           FLUTTY_VERSION_CODENAME: ${{ inputs.build-codename }}
           FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
@@ -1136,6 +1148,18 @@ jobs:
             if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
               bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
             elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
+              APP_STORE_VERSION_OUTPUT="$RUNNER_TEMP/app-store-release-version"
+              bundle exec ruby ../scripts/resolve_next_app_store_patch_version.rb \
+                "$FLUTTY_BUILD_NAME" \
+                xyz.depollsoft.monkeyssh \
+                "$APP_STORE_VERSION_OUTPUT" \
+                "$FLUTTY_BUILD_NAME" \
+                prepare
+              PREPARED_VERSION="$(cat "$APP_STORE_VERSION_OUTPUT")"
+              if [ "$PREPARED_VERSION" != "$FLUTTY_BUILD_NAME" ]; then
+                echo "::error title=App Store version mismatch::Prepared $PREPARED_VERSION but built $FLUTTY_BUILD_NAME."
+                exit 1
+              fi
               bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
             fi
           elif [ -z "$REUSED_IPA_PATH" ]; then
