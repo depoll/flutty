@@ -84,7 +84,8 @@ jobs:
       flavor: production
       deploy-ios-to: testflight
       deploy-android-to: internal
-      sync-metadata: true
+      # Store listings are synced separately and may be locked during review.
+      sync-metadata: false
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
