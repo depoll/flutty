@@ -94,6 +94,42 @@ void main() {
     });
   });
 
+  testWidgets('keeps window title size stable across selection', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              TmuxWindowTitleText(
+                key: Key('active-window-title'),
+                title: 'Active workspace',
+                isActive: true,
+              ),
+              TmuxWindowTitleText(
+                key: Key('inactive-window-title'),
+                title: 'Inactive workspace',
+                isActive: false,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    Text titleText(Key key) => tester.widget<Text>(
+      find.descendant(of: find.byKey(key), matching: find.byType(Text)),
+    );
+
+    final activeTitle = titleText(const Key('active-window-title'));
+    final inactiveTitle = titleText(const Key('inactive-window-title'));
+    expect(activeTitle.style?.fontSize, inactiveTitle.style?.fontSize);
+    expect(activeTitle.style?.fontFamily, inactiveTitle.style?.fontFamily);
+    expect(activeTitle.style?.fontWeight, FontWeight.w600);
+    expect(inactiveTitle.style?.fontWeight, FontWeight.w500);
+  });
+
   group('tmux navigator UI', () {
     final windows = [
       const TmuxWindow(

@@ -2,7 +2,44 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/theme.dart';
 import '../../domain/models/tmux_state.dart';
+
+/// Consistent terminal-native title text for a remote multiplexer window.
+///
+/// Selection changes weight only; the font family and size remain stable so a
+/// title never jumps when its window becomes active.
+class TmuxWindowTitleText extends StatelessWidget {
+  /// Creates a remote-window title.
+  const TmuxWindowTitleText({
+    required this.title,
+    required this.isActive,
+    this.fontSize = 13,
+    super.key,
+  });
+
+  /// Window title text.
+  final String title;
+
+  /// Whether the window is currently active.
+  final bool isActive;
+
+  /// Title size shared by active and inactive states.
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) => Text(
+    title,
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+    style: FluttyTheme.monoStyle.copyWith(
+      fontSize: fontSize,
+      fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+      color: Theme.of(context).colorScheme.onSurface,
+      height: 1.2,
+    ),
+  );
+}
 
 /// Compact status badge for a tmux window.
 class TmuxWindowStatusBadge extends StatefulWidget {

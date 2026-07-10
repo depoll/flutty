@@ -1856,16 +1856,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: isActive
-                  ? theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    )
-                  : null,
-            ),
+            child: TmuxWindowTitleText(title: title, isActive: isActive),
           ),
         ],
       ),

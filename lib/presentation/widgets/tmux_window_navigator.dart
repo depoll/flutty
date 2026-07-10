@@ -898,15 +898,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              window.displayTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: isActive
-                  ? theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    )
-                  : null,
+            child: TmuxWindowTitleText(
+              title: window.displayTitle,
+              isActive: isActive,
             ),
           ),
         ],

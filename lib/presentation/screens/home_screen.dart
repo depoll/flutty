@@ -4297,18 +4297,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: window.isActive
-                          ? theme.colorScheme.primary
-                          : theme.colorScheme.onSurface,
-                      fontWeight: window.isActive
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
+                  TmuxWindowTitleText(
+                    title: title,
+                    isActive: window.isActive,
+                    fontSize: 12,
                   ),
                   if (secondaryTitle != null)
                     Text(
