@@ -183,12 +183,13 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
   WidgetTester tester, {
   bool hasPro = false,
   List<Snippet> snippets = const [],
+  Size surfaceSize = const Size(420, 900),
 }) async {
   final database = AppDatabase.forTesting(NativeDatabase.memory());
   final encryptionService = SecretEncryptionService.forTesting();
   addTearDown(database.close);
   addTearDown(() => tester.binding.setSurfaceSize(null));
-  await tester.binding.setSurfaceSize(const Size(420, 900));
+  await tester.binding.setSurfaceSize(surfaceSize);
 
   final hostRepository = _FakeHostRepository(
     host: _testHost(
@@ -291,11 +292,6 @@ Future<void> _tapBottomSave(WidgetTester tester) async {
     const Key('host-save-button'),
     skipOffstage: false,
   );
-  await tester.scrollUntilVisible(
-    saveButton,
-    200,
-    scrollable: find.byType(Scrollable).first,
-  );
   await tester.ensureVisible(saveButton);
   tester.widget<FilledButton>(saveButton).onPressed!();
   await tester.pump();
@@ -346,6 +342,31 @@ void main() {
   });
 
   group('HostEditScreen', () {
+    testWidgets('keeps save and test actions in thumb reach on mobile', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester);
+
+      final saveButton = find.byKey(const Key('host-save-button'));
+      final testButton = find.byKey(const Key('host-test-button'));
+
+      expect(saveButton, findsOneWidget);
+      expect(testButton, findsOneWidget);
+      expect(tester.getBottomRight(saveButton).dy, lessThanOrEqualTo(900));
+      expect(tester.getBottomRight(testButton).dy, lessThanOrEqualTo(900));
+      expect(find.text('Test Connection'), findsNothing);
+      expect(find.text('Test'), findsOneWidget);
+    });
+
+    testWidgets('keeps inline actions at the wide breakpoint', (tester) async {
+      await _pumpHostCreateScreen(tester, surfaceSize: const Size(600, 900));
+
+      expect(find.byKey(const Key('host-save-button')), findsOneWidget);
+      expect(find.byKey(const Key('host-test-button')), findsOneWidget);
+      expect(find.text('Test Connection'), findsOneWidget);
+      expect(find.text('Test'), findsNothing);
+    });
+
     testWidgets(
       'scrolls to the first base field and summarizes validation errors',
       (tester) async {
@@ -1311,6 +1332,12 @@ void main() {
         expect(yoloFinder, findsOneWidget);
         expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
 
+        await tester.scrollUntilVisible(
+          yoloFinder,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(yoloFinder);
         await tester.tap(yoloFinder);
         await tester.pump();
 

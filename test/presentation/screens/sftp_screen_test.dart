@@ -602,6 +602,79 @@ void main() {
       },
     );
 
+    testWidgets('groups file actions behind open and manage choices', (
+      tester,
+    ) async {
+      final sshClient = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final monetizationService = _MockMonetizationService();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'demo.example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(sshClient.sftp).thenAnswer((_) async => sftp);
+      when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+      when(() => sftp.listdir('/home/demo')).thenAnswer(
+        (_) async => [
+          SftpName(
+            filename: 'picture.png',
+            longname: 'picture.png',
+            attr: SftpFileAttrs(
+              size: _onePixelPngBytes.length,
+              mode: const SftpFileMode.value(1 << 15),
+            ),
+          ),
+        ],
+      );
+      when(sftp.close).thenAnswer((_) async {});
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+          ],
+          child: const MaterialApp(
+            home: SftpScreen(hostId: 1, connectionId: 7),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('More actions for picture.png'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Open…'), findsOneWidget);
+      expect(find.text('Download'), findsOneWidget);
+      expect(find.text('Copy as path'), findsOneWidget);
+      expect(find.text('Manage file'), findsOneWidget);
+      expect(find.text('Rename'), findsNothing);
+      expect(find.text('Delete'), findsNothing);
+
+      await tester.tap(find.text('Manage file'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Info'), findsOneWidget);
+      expect(find.text('Rename'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+      expect(find.text('Download'), findsNothing);
+    });
+
     testWidgets('handles stale SSH errors while opening the browser', (
       tester,
     ) async {

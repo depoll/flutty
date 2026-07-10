@@ -61,6 +61,44 @@ String _telemetryAgentToolName(String toolName) {
   return tool?.name ?? toolName.toLowerCase().replaceAll(' ', '_');
 }
 
+/// Confirms a destructive remote-window close.
+Future<bool> confirmCloseRemoteWindow({
+  required BuildContext context,
+  required String windowTitle,
+  required bool closesLastWindow,
+}) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        final colorScheme = Theme.of(dialogContext).colorScheme;
+        return AlertDialog(
+          title: const Text('Close window?'),
+          content: Text(
+            closesLastWindow
+                ? 'Close "$windowTitle"? This ends the remote workspace and '
+                      'any work running in it.'
+                : 'Close "$windowTitle"? Any work running in this window '
+                      'will stop.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: colorScheme.error,
+                foregroundColor: colorScheme.onError,
+              ),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    ) ??
+    false;
+
 /// Shows the tmux window navigator bottom sheet.
 ///
 /// Returns the action the user selected, or `null` if dismissed.
@@ -607,8 +645,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     Navigator.pop(context, TmuxSwitchWindowAction(windowIndex));
   }
 
-  void _closeWindow(int windowIndex) {
-    Navigator.pop(context, TmuxCloseWindowAction(windowIndex));
+  Future<void> _closeWindow(TmuxWindow window) async {
+    final confirmed = await confirmCloseRemoteWindow(
+      context: context,
+      windowTitle: window.displayTitle,
+      closesLastWindow: (_windows?.length ?? 0) <= 1,
+    );
+    if (mounted && confirmed) {
+      Navigator.pop(context, TmuxCloseWindowAction(window.index));
+    }
   }
 
   void _createNewWindow({String? command, String? name}) {
@@ -812,8 +857,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
-      dense: true,
+      dense: false,
       visualDensity: _tmuxNavigatorDenseVisualDensity,
+      minTileHeight: 48,
       minVerticalPadding: 2,
       contentPadding: const EdgeInsets.only(left: 16, right: 4),
       horizontalTitleGap: 10,
@@ -884,11 +930,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-            padding: EdgeInsets.zero,
+            style: IconButton.styleFrom(
+              fixedSize: const Size.square(44),
+              visualDensity: VisualDensity.standard,
+              padding: EdgeInsets.zero,
+            ),
             tooltip: 'Close window',
-            onPressed: () => _closeWindow(window.index),
+            onPressed: () => unawaited(_closeWindow(window)),
           ),
         ],
       ),

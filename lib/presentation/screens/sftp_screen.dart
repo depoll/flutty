@@ -1609,92 +1609,185 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     );
     showModalBottomSheet<void>(
       context: context,
-      builder: (context) => SafeArea(
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (file.attr.isDirectory) ...[
+              ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: const Text('Info'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => _showFileInfo(file),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.copy_all_outlined),
+                title: const Text('Copy as path'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => unawaited(_copyRemotePath(file)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('Rename'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => _showRenameDialog(file),
+                ),
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.delete_outline,
+                  color: Theme.of(sheetContext).colorScheme.error,
+                ),
+                title: Text(
+                  'Delete',
+                  style: TextStyle(
+                    color: Theme.of(sheetContext).colorScheme.error,
+                  ),
+                ),
+                onTap: () =>
+                    _afterClosingOptions(sheetContext, () => _deleteFile(file)),
+              ),
+            ] else ...[
+              ListTile(
+                leading: Icon(
+                  previewKind == null
+                      ? Icons.edit_outlined
+                      : Icons.open_in_new_outlined,
+                ),
+                title: Text(previewKind == null ? 'Edit' : 'Open…'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  previewKind == null
+                      ? () => unawaited(_editTextFile(file))
+                      : () => _showOpenFileOptions(file, previewKind),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('Download'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => unawaited(_downloadFile(file)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.copy_all_outlined),
+                title: const Text('Copy as path'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => unawaited(_copyRemotePath(file)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.tune_outlined),
+                title: const Text('Manage file'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => _showManageFileOptions(file),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showOpenFileOptions(SftpName file, SftpPreviewKind previewKind) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: const Text('Info'),
-              onTap: () {
-                Navigator.pop(context);
-                _showFileInfo(file);
-              },
-            ),
-            if (previewKind != null)
-              ListTile(
-                leading: Icon(
-                  previewKind == SftpPreviewKind.video
-                      ? Icons.video_file_outlined
-                      : Icons.image_outlined,
-                ),
-                title: Text(
-                  previewKind == SftpPreviewKind.video
-                      ? 'Preview video'
-                      : 'View',
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  switch (previewKind) {
-                    case SftpPreviewKind.image:
-                      unawaited(_previewImageFile(file));
-                    case SftpPreviewKind.video:
-                      unawaited(_previewVideoFile(file));
-                  }
-                },
-              ),
-            if (!file.attr.isDirectory)
-              ListTile(
-                leading: const Icon(Icons.edit_outlined),
-                title: const Text('Edit'),
-                onTap: () {
-                  Navigator.pop(context);
-                  unawaited(_editTextFile(file));
-                },
-              ),
-            if (!file.attr.isDirectory)
-              ListTile(
-                leading: const Icon(Icons.download),
-                title: const Text('Download'),
-                onTap: () {
-                  Navigator.pop(context);
-                  unawaited(_downloadFile(file));
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.copy_all_outlined),
-              title: const Text('Copy as path'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _copyRemotePath(file);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline),
-              title: const Text('Rename'),
-              onTap: () {
-                Navigator.pop(context);
-                _showRenameDialog(file);
-              },
-            ),
-            ListTile(
               leading: Icon(
-                Icons.delete_outline,
-                color: Theme.of(context).colorScheme.error,
+                previewKind == SftpPreviewKind.video
+                    ? Icons.video_file_outlined
+                    : Icons.image_outlined,
               ),
               title: Text(
-                'Delete',
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                previewKind == SftpPreviewKind.video
+                    ? 'Preview video'
+                    : 'View image',
               ),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteFile(file);
-              },
+              onTap: () => _afterClosingOptions(sheetContext, () {
+                switch (previewKind) {
+                  case SftpPreviewKind.image:
+                    unawaited(_previewImageFile(file));
+                  case SftpPreviewKind.video:
+                    unawaited(_previewVideoFile(file));
+                }
+              }),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Open in editor'),
+              onTap: () => _afterClosingOptions(
+                sheetContext,
+                () => unawaited(_editTextFile(file)),
+              ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  void _showManageFileOptions(SftpName file) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) {
+        final colorScheme = Theme.of(sheetContext).colorScheme;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: const Text('Info'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => _showFileInfo(file),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('Rename'),
+                onTap: () => _afterClosingOptions(
+                  sheetContext,
+                  () => _showRenameDialog(file),
+                ),
+              ),
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: colorScheme.error),
+                title: Text(
+                  'Delete',
+                  style: TextStyle(color: colorScheme.error),
+                ),
+                onTap: () =>
+                    _afterClosingOptions(sheetContext, () => _deleteFile(file)),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _afterClosingOptions(BuildContext sheetContext, VoidCallback action) {
+    Navigator.pop(sheetContext);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        action();
+      }
+    });
   }
 
   void _showFileInfo(SftpName file) {

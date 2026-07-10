@@ -32,6 +32,7 @@ import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
+import 'package:monkeyssh/presentation/screens/port_forwards_screen.dart';
 import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
@@ -515,6 +516,167 @@ void main() {
       await tester.pump();
 
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
+    });
+  });
+
+  group('HomeScreen adaptive actions', () {
+    testWidgets('moves populated host creation to a mobile FAB', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(400, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        find.widgetWithText(FloatingActionButton, 'Add Host'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(FilledButton, 'Add Host'), findsNothing);
+    });
+
+    testWidgets('exposes port forwards as a fifth home destination', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(400, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+            allPortForwardsProvider.overrideWith(
+              (ref) => Stream.value(const <PortForward>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.byIcon(Icons.alt_route_outlined));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+        4,
+      );
+      expect(find.byType(PortForwardsPanel), findsOneWidget);
+      expect(find.text('no forwards yet'), findsOneWidget);
+      expect(
+        find.widgetWithText(FloatingActionButton, 'Add Forward'),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    });
+
+    testWidgets('keeps all five destinations usable at narrow widths', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(320, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+          size: const Size(320, 640),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final navigationBar = tester.widget<NavigationBar>(
+        find.byType(NavigationBar),
+      );
+      expect(navigationBar.destinations, hasLength(5));
+      expect(find.text('Forwards'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('keeps desktop navigation readable at 200 percent text', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(800, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            transferIntentServiceProvider.overrideWith(
+              (ref) => _TestTransferIntentService(),
+            ),
+            homeScreenShortcutServiceProvider.overrideWith(
+              (ref) => _TestHomeScreenShortcutService(),
+            ),
+            pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+              (ref) => Stream<Set<int>>.value(const <int>{}),
+            ),
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+          child: MaterialApp(
+            home: Builder(
+              builder: (context) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: const TextScaler.linear(2)),
+                child: const HomeScreen(),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Port Forwards'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 
@@ -1013,6 +1175,46 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('groups secondary host actions under Manage host', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(400, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+
+    await tester.pumpWidget(
+      buildMobileHomeScreen(
+        db: db,
+        overrides: [
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith(
+            (ref) =>
+                Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.byTooltip('Host actions'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connect'), findsOneWidget);
+    expect(find.text('New connection'), findsOneWidget);
+    expect(find.text('Manage host'), findsOneWidget);
+    expect(find.text('Delete host'), findsNothing);
+
+    await tester.tap(find.text('Manage host'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Edit host'), findsOneWidget);
+    expect(find.text('Duplicate'), findsOneWidget);
+    expect(find.text('Delete host'), findsOneWidget);
+    expect(find.text('Connect'), findsNothing);
   });
 
   testWidgets('updates the tmux badge when host session info loads later', (
@@ -1587,12 +1789,15 @@ void main() {
         const HostCliLaunchPreferences(startInYoloMode: true),
       );
 
-      await tester.tap(find.text('work · 1 windows'));
+      await tester.tap(find.byKey(const ValueKey('recent-agents-7')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(find.text('AI Sessions'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('AI Sessions'), findsOneWidget);
+      final closeWindowButton = find.byTooltip('Close window');
+      expect(closeWindowButton, findsOneWidget);
+      final closeWindowSize = tester.getSize(closeWindowButton);
+      expect(closeWindowSize.width, greaterThanOrEqualTo(44));
+      expect(closeWindowSize.height, greaterThanOrEqualTo(44));
       await tester.drag(find.text('work · 1 windows'), const Offset(0, -120));
       await tester.pump();
       await tester.tap(find.text('Codex'));

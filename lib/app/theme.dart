@@ -18,6 +18,7 @@ abstract final class FluttyTheme {
   static const _textSecondary = Color(0xFF8A8A9A);
   static const _errorColor = Color(0xFFFF4757);
   static const _warningColor = Color(0xFFFFBE00);
+  static const _minimumTextContrastRatio = 4.55;
 
   // Light theme equivalents
   static const _backgroundLight = Color(0xFFF8F9FC);
@@ -79,22 +80,34 @@ abstract final class FluttyTheme {
     final background =
         terminalTheme?.background ??
         (isDark ? _backgroundDark : _backgroundLight);
-    final textPrimary =
-        terminalTheme?.foreground ?? (isDark ? _textPrimary : Colors.black87);
-    final textSecondary = terminalTheme == null
-        ? (isDark ? _textSecondary : Colors.black54)
-        : _blend(background, textPrimary, isDark ? 0.62 : 0.84);
     final surface =
         terminalTheme?.background ?? (isDark ? _surfaceDark : _surfaceLight);
+    final textPrimary = _opaqueAgainst(
+      terminalTheme?.foreground ?? (isDark ? _textPrimary : Colors.black87),
+      background,
+    );
     final card = terminalTheme == null
         ? (isDark ? _cardDark : _cardLight)
         : _blend(background, textPrimary, isDark ? 0.07 : 0.025);
     final border = terminalTheme == null
         ? (isDark ? _borderDark : _borderLight)
         : _blend(background, textPrimary, isDark ? 0.18 : 0.16);
-    final primary = terminalTheme == null
+    final rawTextSecondary = terminalTheme == null
+        ? (isDark ? _textSecondary : Colors.black54)
+        : _blend(background, textPrimary, isDark ? 0.62 : 0.84);
+    final textSecondary = _ensureMinimumContrast(
+      _opaqueAgainst(rawTextSecondary, background),
+      against: [background, surface, card],
+      minimumRatio: _minimumTextContrastRatio,
+    );
+    final rawPrimary = terminalTheme == null
         ? _accentTeal
         : _resolveTerminalAccent(terminalTheme);
+    final primary = _ensureMinimumContrast(
+      rawPrimary,
+      against: [background, surface, card],
+      minimumRatio: _minimumTextContrastRatio,
+    );
     final primarySoft = terminalTheme == null
         ? _accentTealSoft
         : _blend(background, primary, isDark ? 0.55 : 0.28);
@@ -111,28 +124,27 @@ abstract final class FluttyTheme {
     final snackBarForeground = _readableTextColor(snackBarBackground);
     final tooltipBackground = isDark ? card : overlayBackground;
     final tooltipForeground = _readableTextColor(tooltipBackground);
-    final onPrimary = terminalTheme == null
-        ? Colors.white
-        : _readableTextColor(primary);
-    final onTertiary = terminalTheme == null
-        ? Colors.black
-        : _readableTextColor(warning);
-    final onError = terminalTheme == null
-        ? Colors.white
-        : _readableTextColor(error);
+    final onPrimary = _readableTextColor(primary);
+    final onTertiary = _readableTextColor(warning);
+    final onError = _readableTextColor(error);
 
     final colorScheme = ColorScheme(
       brightness: brightness,
       primary: primary,
       onPrimary: onPrimary,
+      primaryContainer: primarySoft,
+      onPrimaryContainer: _readableTextColor(primarySoft),
       secondary: card,
       onSecondary: textPrimary,
+      secondaryContainer: card,
+      onSecondaryContainer: textPrimary,
       tertiary: warning,
       onTertiary: onTertiary,
       error: error,
       onError: onError,
       surface: surface,
       onSurface: textPrimary,
+      onSurfaceVariant: textSecondary,
       surfaceContainerHighest: card,
       outline: border,
       outlineVariant: border.withAlpha(isDark ? 128 : 180),
@@ -263,7 +275,7 @@ abstract final class FluttyTheme {
           vertical: 16,
         ),
         labelStyle: TextStyle(color: textSecondary),
-        hintStyle: TextStyle(color: textSecondary.withAlpha(150)),
+        hintStyle: TextStyle(color: textSecondary),
         prefixIconColor: textSecondary,
       ),
 
@@ -338,12 +350,14 @@ abstract final class FluttyTheme {
       chipTheme: ChipThemeData(
         backgroundColor: card,
         selectedColor: primarySoft,
-        labelStyle: _inter(
-          fontSize: 13,
-          fontWeight: FontWeight.w500,
-          // Material 3 InputChip leaves the label transparent if labelStyle
-          // is supplied without a color, so pin one here.
-          color: textPrimary,
+        labelStyle: WidgetStateTextStyle.resolveWith(
+          (states) => _inter(
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+            color: states.contains(WidgetState.selected)
+                ? _readableTextColor(primarySoft)
+                : textPrimary,
+          ),
         ),
         side: BorderSide(color: border),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -564,6 +578,58 @@ abstract final class FluttyTheme {
 
   static Color _blend(Color background, Color foreground, double amount) =>
       Color.lerp(background, foreground, amount)!;
+
+  static Color _opaqueAgainst(Color foreground, Color background) =>
+      Color.alphaBlend(foreground, background).withAlpha(255);
+
+  static Color _ensureMinimumContrast(
+    Color color, {
+    required List<Color> against,
+    required double minimumRatio,
+  }) {
+    final opaqueColor = color.withAlpha(255);
+    if (_minimumContrastRatio(opaqueColor, against) >= minimumRatio) {
+      return opaqueColor;
+    }
+
+    Color? bestColor;
+    var bestBlendAmount = double.infinity;
+    for (final target in const [Colors.white, Colors.black]) {
+      if (_minimumContrastRatio(target, against) < minimumRatio) {
+        continue;
+      }
+
+      var low = 0.0;
+      var high = 1.0;
+      for (var i = 0; i < 16; i++) {
+        final amount = (low + high) / 2;
+        final candidate = Color.lerp(opaqueColor, target, amount)!;
+        if (_minimumContrastRatio(candidate, against) >= minimumRatio) {
+          high = amount;
+        } else {
+          low = amount;
+        }
+      }
+      if (high < bestBlendAmount) {
+        bestBlendAmount = high;
+        bestColor = Color.lerp(opaqueColor, target, high)!.withAlpha(255);
+      }
+    }
+
+    if (bestColor != null) {
+      return bestColor;
+    }
+    return _minimumContrastRatio(Colors.white, against) >=
+            _minimumContrastRatio(Colors.black, against)
+        ? Colors.white
+        : Colors.black;
+  }
+
+  static double _minimumContrastRatio(Color color, List<Color> backgrounds) =>
+      backgrounds
+          .map((background) => _contrastRatio(color, background))
+          .reduce((a, b) => a < b ? a : b);
+
   static Color _resolveTerminalAccent(TerminalThemeData theme) {
     // Prefer the theme's cursor color when its designer chose a strongly
     // saturated, sufficiently contrasty value. Themes that use a near-neutral

@@ -182,7 +182,9 @@ saturated signal (teal) plus two functional status hues (red, amber).
 - **Signal Teal** (`#14756C`): The single accent, sampled from the app icon.
   Primary buttons, FAB, active tab/indicator, focused input border, selected
   states, links. The one bright thing on a screen — use it where the eye should
-  land, nowhere else.
+  land, nowhere else. It is the identity seed; the resolved Material role may
+  shift only in luminance, preserving its hue, until it clears 4.5:1 against
+  every active app surface.
 - **Soft Teal** (`#58A38C`): The lighter accent. Selected chips, accent
   gradients, and tints where full Signal Teal would be too loud.
 
@@ -299,8 +301,9 @@ dark surfaces, use a tonal step or a Hairline border instead.
 
 ### Buttons
 - **Shape:** Rounded 12px (`rounded.md`); padding 24×16px.
-- **Primary (FilledButton):** Signal Teal background, white label, Inter 600
-  15px, flat (elevation 0) with the teal glow on dark.
+- **Primary (FilledButton):** Contrast-resolved Signal Teal background,
+  black-or-white readable label, Inter 600 15px, flat (elevation 0) with the
+  teal glow on dark.
 - **Secondary (OutlinedButton):** Transparent fill, 1.5px Hairline border,
   Terminal White label.
 - **Tertiary (TextButton):** Signal Teal label, no fill, 16×12px padding.
@@ -353,11 +356,12 @@ MonkeySSH's defining trait is that the **entire app theme can be re-derived from
 the active terminal theme**. Background, surfaces, text, and borders are computed
 by blending the terminal's own colors, and the accent is chosen by a
 contrast-aware scorer (preferring a saturated cursor color, otherwise the most
-vivid, sufficiently contrasty ANSI color). A built-in readable-text helper picks
-black or white per surface so labels never fall below contrast. When building new
-surfaces, **consume the resolved `ColorScheme`/`ThemeData` — never hardcode the
-hex values above** — so every screen automatically follows both the app default
-and any terminal-driven theme.
+vivid ANSI color), then adjusted along that hue until text-facing use clears
+WCAG AA on the background, surface, and raised surface. A built-in readable-text
+helper picks black or white per filled role. When building new surfaces,
+**consume the resolved `ColorScheme`/`ThemeData` — never hardcode the hex values
+above** — so every screen automatically follows both the app default and any
+terminal-driven theme.
 
 ### Signature Motif: The Cursor Block ▮
 A solid block glyph (▮, U+25AE) is MonkeySSH's brand mark — the blinking cursor

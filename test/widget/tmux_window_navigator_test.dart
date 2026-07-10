@@ -344,6 +344,19 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
 
+      final closeWindowButtons = find.byTooltip('Close window');
+      expect(closeWindowButtons, findsNWidgets(windows.length));
+      final closeWindowSize = tester.getSize(closeWindowButtons.first);
+      expect(closeWindowSize.width, greaterThanOrEqualTo(44));
+      expect(closeWindowSize.height, greaterThanOrEqualTo(44));
+      await tester.tap(closeWindowButtons.first);
+      await tester.pumpAndSettle();
+      expect(find.text('Close window?'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(Scrollable).last, const Offset(0, -120));
+      await tester.pumpAndSettle();
+
       expect(find.text('Recent AI Sessions'), findsOneWidget);
       expect(find.text('Claude Code'), findsOneWidget);
       expect(find.byIcon(Icons.expand_more), findsOneWidget);
@@ -448,6 +461,8 @@ void main() {
       );
 
       await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(Scrollable).last, const Offset(0, -120));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Recent AI Sessions'));
       await tester.pump();

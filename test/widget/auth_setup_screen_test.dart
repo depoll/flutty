@@ -68,6 +68,11 @@ void main() {
     await tester.enterText(find.byType(TextField).first, '1234');
     await tester.pump();
 
+    expect(tester.widget<ElevatedButton>(nextButton).onPressed, isNull);
+
+    await tester.enterText(find.byType(TextField).first, '123456');
+    await tester.pump();
+
     expect(tester.widget<ElevatedButton>(nextButton).onPressed, isNotNull);
   });
 
@@ -97,7 +102,7 @@ void main() {
 
     await tester.tap(find.text('PIN Code'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).first, '1234');
+    await tester.enterText(find.byType(TextField).first, '123456');
     await tester.pump();
     await tester.tap(find.widgetWithText(ElevatedButton, 'Next'));
     await tester.pumpAndSettle();

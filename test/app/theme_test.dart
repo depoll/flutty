@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/app/theme.dart';
-import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/terminal_theme_service.dart';
@@ -33,8 +32,11 @@ void main() {
       expect(theme.colorScheme.onSurface, terminalTheme.foreground);
       expect(theme.textTheme.titleLarge?.color, terminalTheme.foreground);
       expect(
-        _terminalAccentCandidates(terminalTheme),
-        contains(theme.colorScheme.primary),
+        _minimumContrastRatio(theme.colorScheme.primary, [
+          theme.scaffoldBackgroundColor,
+          theme.colorScheme.surfaceContainerHighest,
+        ]),
+        greaterThanOrEqualTo(4.5),
       );
     });
 
@@ -130,12 +132,18 @@ void main() {
                 ? Brightness.dark
                 : Brightness.light,
           );
+          final primary = theme.colorScheme.primary;
           expect(
-            theme.colorScheme.primary,
-            terminalTheme.cursor,
-            reason:
-                '${terminalTheme.name} should drive Material primary from '
-                'its saturated cursor color.',
+            _hueDistance(primary, terminalTheme.cursor),
+            lessThan(1),
+            reason: '${terminalTheme.name} should retain its cursor hue.',
+          );
+          expect(
+            _minimumContrastRatio(primary, [
+              theme.scaffoldBackgroundColor,
+              theme.colorScheme.surfaceContainerHighest,
+            ]),
+            greaterThanOrEqualTo(4.5),
           );
         }
       },
@@ -151,22 +159,70 @@ void main() {
       // should come from the saturated candidate list instead.
       expect(theme.colorScheme.primary, isNot(TerminalThemes.dracula.cursor));
       expect(
-        _terminalAccentCandidates(TerminalThemes.dracula),
-        contains(theme.colorScheme.primary),
+        HSLColor.fromColor(theme.colorScheme.primary).saturation,
+        greaterThan(0.4),
       );
     });
+
+    test(
+      'keeps text-facing theme roles opaque and WCAG AA across palettes',
+      () {
+        final themes = <ThemeData>[
+          FluttyTheme.light,
+          FluttyTheme.dark,
+          for (final terminalTheme in TerminalThemes.all)
+            FluttyTheme.fromTerminalTheme(
+              terminalTheme,
+              brightness: terminalTheme.isDark
+                  ? Brightness.dark
+                  : Brightness.light,
+            ),
+        ];
+
+        for (final theme in themes) {
+          final surfaces = [
+            theme.scaffoldBackgroundColor,
+            theme.colorScheme.surface,
+            theme.colorScheme.surfaceContainerHighest,
+          ];
+          final textColors = [
+            theme.colorScheme.primary,
+            theme.colorScheme.onSurfaceVariant,
+            theme.inputDecorationTheme.hintStyle!.color!,
+            theme.textTheme.bodyMedium!.color!,
+            theme.textTheme.bodySmall!.color!,
+          ];
+
+          for (final color in textColors) {
+            expect(color.a, 1);
+            expect(
+              _minimumContrastRatio(color, surfaces),
+              greaterThanOrEqualTo(4.5),
+              reason:
+                  '${theme.colorScheme.brightness} theme role $color should '
+                  'remain readable on every app surface.',
+            );
+          }
+        }
+      },
+    );
   });
 }
 
-Set<Color> _terminalAccentCandidates(TerminalThemeData theme) => {
-  theme.blue,
-  theme.cyan,
-  theme.magenta,
-  theme.green,
-  theme.brightBlue,
-  theme.brightCyan,
-  theme.brightMagenta,
-  theme.cursor,
-  theme.yellow,
-  theme.red,
-};
+double _hueDistance(Color a, Color b) {
+  final difference = (HSLColor.fromColor(a).hue - HSLColor.fromColor(b).hue)
+      .abs();
+  return difference > 180 ? 360 - difference : difference;
+}
+
+double _minimumContrastRatio(Color color, List<Color> backgrounds) =>
+    backgrounds
+        .map((background) => _contrastRatio(color, background))
+        .reduce((a, b) => a < b ? a : b);
+
+double _contrastRatio(Color a, Color b) {
+  final lighter = a.computeLuminance() > b.computeLuminance() ? a : b;
+  final darker = identical(lighter, a) ? b : a;
+  return (lighter.computeLuminance() + 0.05) /
+      (darker.computeLuminance() + 0.05);
+}

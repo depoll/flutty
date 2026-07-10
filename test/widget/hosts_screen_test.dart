@@ -253,10 +253,15 @@ void main() {
     expect(find.text('New connection'), findsOneWidget);
     expect(find.text('Disconnect'), findsNothing);
     expect(find.text('Disconnect all'), findsNothing);
-    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Manage host'), findsOneWidget);
+
+    await tester.tap(find.text('Manage host'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Edit host'), findsOneWidget);
     expect(find.text('Duplicate'), findsOneWidget);
     expect(find.text('Export Encrypted File (Pro)'), findsOneWidget);
-    expect(find.text('Delete'), findsOneWidget);
+    expect(find.text('Delete host'), findsOneWidget);
   });
 
   testWidgets(

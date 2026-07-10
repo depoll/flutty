@@ -47,14 +47,14 @@ class BrandErrorState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 32, color: colorScheme.onSurface.withAlpha(150)),
+            Icon(icon, size: 32, color: colorScheme.onSurfaceVariant),
             const SizedBox(height: FluttyTheme.spacingMd),
             Text(
               title,
               textAlign: TextAlign.center,
               style: FluttyTheme.displayMono(
                 fontSize: 16,
-                color: colorScheme.onSurface.withAlpha(230),
+                color: colorScheme.onSurface,
               ),
             ),
             if (message != null) ...[
@@ -63,7 +63,7 @@ class BrandErrorState extends StatelessWidget {
                 message!,
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurface.withAlpha(170),
+                  color: colorScheme.onSurfaceVariant,
                 ),
               ),
             ],
