@@ -163,7 +163,7 @@ class _KeyListTile extends StatelessWidget {
         _getKeyTypeLabel(),
         style: FluttyTheme.monoStyle.copyWith(
           fontSize: 11,
-          color: theme.colorScheme.onSurface.withAlpha(160),
+          color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
       trailing: PopupMenuButton<String>(

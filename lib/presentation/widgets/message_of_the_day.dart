@@ -49,7 +49,7 @@ class MessageOfTheDay extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final promptStyle = FluttyTheme.monoStyle.copyWith(
       fontSize: 12,
-      color: colorScheme.onSurface.withAlpha(110),
+      color: colorScheme.onSurfaceVariant,
     );
     final messageStyle = FluttyTheme.monoStyle.copyWith(
       fontSize: 12,
@@ -73,10 +73,7 @@ class MessageOfTheDay extends StatelessWidget {
               baseline: TextBaseline.alphabetic,
               child: Padding(
                 padding: const EdgeInsets.only(left: 4),
-                child: CursorBlock(
-                  size: 13,
-                  color: colorScheme.onSurface.withAlpha(140),
-                ),
+                child: CursorBlock(size: 13, color: colorScheme.primary),
               ),
             ),
           ],

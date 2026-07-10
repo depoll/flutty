@@ -1776,6 +1776,27 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
+  Future<void> _confirmCloseWindow(TmuxWindow window) async {
+    final confirmed = await confirmCloseRemoteWindow(
+      context: context,
+      windowTitle: window.displayTitle,
+      closesLastWindow: (_windows?.length ?? 0) <= 1,
+    );
+    if (!mounted || !confirmed) {
+      return;
+    }
+
+    unawaited(widget.onAction(TmuxCloseWindowAction(window.index)));
+    setState(() {
+      _windows = _windows?.where((w) => w.index != window.index).toList();
+      if (_pendingSelectedWindowIndex == window.index) {
+        _pendingSelectedWindowIndex = null;
+        _pendingSelectionTimer?.cancel();
+        _pendingSelectionTimer = null;
+      }
+    });
+  }
+
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
     final title = _redactStoreScreenshotIdentities
@@ -1794,8 +1815,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
-      dense: true,
+      dense: false,
       visualDensity: _denseTileVisualDensity,
+      minTileHeight: 48,
       minVerticalPadding: 2,
       contentPadding: const EdgeInsets.only(left: 12, right: 4),
       horizontalTitleGap: 10,
@@ -1866,23 +1888,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-            padding: EdgeInsets.zero,
+            style: IconButton.styleFrom(
+              fixedSize: const Size.square(44),
+              visualDensity: VisualDensity.standard,
+              padding: EdgeInsets.zero,
+            ),
             tooltip: 'Close window',
-            onPressed: () {
-              widget.onAction(TmuxCloseWindowAction(window.index));
-              setState(() {
-                _windows = _windows
-                    ?.where((w) => w.index != window.index)
-                    .toList();
-                if (_pendingSelectedWindowIndex == window.index) {
-                  _pendingSelectedWindowIndex = null;
-                  _pendingSelectionTimer?.cancel();
-                  _pendingSelectionTimer = null;
-                }
-              });
-            },
+            onPressed: () => unawaited(_confirmCloseWindow(window)),
           ),
         ],
       ),

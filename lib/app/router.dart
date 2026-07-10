@@ -331,6 +331,9 @@ bool _portForwardBrowserLaunchIsValid(PortForwardBrowserLaunch launch) =>
 
 HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
   'connections' => HomeScreenTab.connections,
+  'keys' => HomeScreenTab.keys,
+  'snippets' => HomeScreenTab.snippets,
+  'port-forwards' => HomeScreenTab.portForwards,
   _ => HomeScreenTab.hosts,
 };
 

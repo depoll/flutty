@@ -1822,9 +1822,7 @@ void main() {
         await tester.pump();
         await tester.pump();
 
-        await tester.tap(find.byIcon(Icons.more_vert));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
+        await openTerminalOverflowSubmenu(tester, 'Tools');
         final browserItem = terminalMenuItemButton('Open Forwarded Browser');
         expect(browserItem, findsOneWidget);
 
@@ -1865,6 +1863,21 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
+    testWidgets('overflow menu explains terminal controls and gestures', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await openTerminalOverflowSubmenu(tester, 'Options');
+      await tester.tap(terminalMenuItemButton('Controls & Gestures'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('terminal controls'), findsOneWidget);
+      expect(find.text('Resize text'), findsOneWidget);
+      expect(find.text('Extra keys'), findsOneWidget);
+      expect(find.text('Select output'), findsOneWidget);
+    });
+
     testWidgets(
       'overflow menu shows Create Snippet when system selection has text',
       (tester) async {
@@ -1874,7 +1887,7 @@ void main() {
 
         Finder createSnippetItem() => terminalMenuItemButton('Create Snippet');
 
-        await openTerminalOverflowMenu(tester);
+        await openTerminalOverflowSubmenu(tester, 'Tools');
         expect(createSnippetItem(), findsNothing);
 
         await tester.tapAt(const Offset(2, 2));
@@ -1894,7 +1907,7 @@ void main() {
         );
         await tester.pump();
 
-        await openTerminalOverflowMenu(tester);
+        await openTerminalOverflowSubmenu(tester, 'Tools');
         expect(createSnippetItem(), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
@@ -3875,7 +3888,13 @@ void main() {
           (widget) => widget is IconButton && widget.tooltip == 'Close window',
         );
         expect(closeWindowButton, findsOneWidget);
+        final closeWindowSize = tester.getSize(closeWindowButton);
+        expect(closeWindowSize.width, greaterThanOrEqualTo(44));
+        expect(closeWindowSize.height, greaterThanOrEqualTo(44));
         await tester.tap(closeWindowButton);
+        await tester.pumpAndSettle();
+        expect(find.text('Close window?'), findsOneWidget);
+        await tester.tap(find.widgetWithText(FilledButton, 'Close'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 

@@ -3877,11 +3877,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ),
   ];
 
+  List<Widget> _terminalToolsMenuItems(BuildContext context) => [
+    if (isPortForwardBrowserSupported())
+      _terminalOverflowMenuItem(
+        context: context,
+        icon: Icons.open_in_browser_outlined,
+        label: 'Open Forwarded Browser',
+        action: 'open_port_forward_browser',
+      ),
+    if (_workingDirectoryPath != null)
+      _terminalOverflowMenuItem(
+        context: context,
+        icon: Icons.folder_copy_outlined,
+        label: 'Copy Current Directory',
+        action: 'copy_working_directory',
+      ),
+    if (_currentTerminalSelectionText() != null)
+      _terminalOverflowMenuItem(
+        context: context,
+        icon: Icons.code_rounded,
+        label: 'Create Snippet',
+        action: 'create_snippet',
+      ),
+  ];
+
   List<Widget> _terminalOptionsMenuItems({
     required BuildContext context,
     required bool hasTerminalInfo,
     required bool isMobile,
   }) => [
+    _terminalOverflowMenuItem(
+      context: context,
+      icon: Icons.palette_outlined,
+      label: 'Change Theme',
+      action: 'change_theme',
+    ),
     if (hasTerminalInfo)
       _terminalOverflowMenuItem(
         context: context,
@@ -3912,6 +3942,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       label: 'Shell Completion Popups',
       checked: ref.read(shellCompletionsNotifierProvider),
       action: 'toggle_shell_completions',
+    ),
+    if (!isMobile)
+      _terminalOverflowMenuItem(
+        context: context,
+        icon: _isNativeSelectionMode
+            ? Icons.deselect_rounded
+            : Icons.select_all_rounded,
+        label: _isNativeSelectionMode
+            ? 'Exit Native Selection'
+            : 'Native Selection',
+        action: 'native_select',
+      ),
+    _terminalOverflowMenuItem(
+      context: context,
+      icon: Icons.help_outline_rounded,
+      label: 'Controls & Gestures',
+      action: 'terminal_help',
     ),
   ];
 
@@ -10576,18 +10623,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   label: 'Snippets',
                   action: 'snippets',
                 ),
-                _terminalOverflowMenuItem(
+                _terminalOverflowSubmenuButton(
                   context: context,
-                  icon: Icons.palette_outlined,
-                  label: 'Change Theme',
-                  action: 'change_theme',
+                  isMobile: isMobile,
+                  icon: Icons.paste_rounded,
+                  label: 'Paste',
+                  menuChildren: _terminalPastingMenuItems(context),
                 ),
-                if (isPortForwardBrowserSupported())
-                  _terminalOverflowMenuItem(
+                if (isPortForwardBrowserSupported() ||
+                    _workingDirectoryPath != null ||
+                    _currentTerminalSelectionText() != null)
+                  _terminalOverflowSubmenuButton(
                     context: context,
-                    icon: Icons.open_in_browser_outlined,
-                    label: 'Open Forwarded Browser',
-                    action: 'open_port_forward_browser',
+                    isMobile: isMobile,
+                    icon: Icons.build_outlined,
+                    label: 'Tools',
+                    menuChildren: _terminalToolsMenuItems(context),
                   ),
                 _terminalOverflowSubmenuButton(
                   context: context,
@@ -10599,39 +10650,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     hasTerminalInfo: statusChips.isNotEmpty,
                     isMobile: isMobile,
                   ),
-                ),
-                _terminalOverflowMenuDivider(context),
-                if (!isMobile)
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: _isNativeSelectionMode
-                        ? Icons.deselect_rounded
-                        : Icons.select_all_rounded,
-                    label: _isNativeSelectionMode
-                        ? 'Exit Native Selection'
-                        : 'Native Selection',
-                    action: 'native_select',
-                  ),
-                if (_workingDirectoryPath != null)
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.folder_copy_outlined,
-                    label: 'Copy Current Directory',
-                    action: 'copy_working_directory',
-                  ),
-                if (_currentTerminalSelectionText() != null)
-                  _terminalOverflowMenuItem(
-                    context: context,
-                    icon: Icons.code_rounded,
-                    label: 'Create Snippet',
-                    action: 'create_snippet',
-                  ),
-                _terminalOverflowSubmenuButton(
-                  context: context,
-                  isMobile: isMobile,
-                  icon: Icons.paste_rounded,
-                  label: 'Paste',
-                  menuChildren: _terminalPastingMenuItems(context),
                 ),
                 _terminalOverflowMenuDivider(context),
                 _terminalOverflowMenuItem(
@@ -11775,6 +11793,71 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return paneDirectory;
   }
 
+  Future<void> _showTerminalControlsHelp() => showModalBottomSheet<void>(
+    context: context,
+    requestFocus: terminalOverlayRouteRequestFocus(context),
+    showDragHandle: true,
+    builder: (sheetContext) {
+      final theme = Theme.of(sheetContext);
+      return SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                child: Text(
+                  'terminal controls',
+                  style: FluttyTheme.displayMono(
+                    fontSize: 18,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              const ListTile(
+                leading: Icon(Icons.touch_app_outlined),
+                title: Text('Type'),
+                subtitle: Text(
+                  'Tap the terminal or use the keyboard button to start typing.',
+                ),
+              ),
+              const ListTile(
+                leading: Icon(Icons.pinch_outlined),
+                title: Text('Resize text'),
+                subtitle: Text(
+                  'Pinch the terminal or remote editor to adjust text size.',
+                ),
+              ),
+              const ListTile(
+                leading: Icon(Icons.keyboard_alt_outlined),
+                title: Text('Extra keys'),
+                subtitle: Text(
+                  'Use Fn for modifiers, navigation keys, and saved snippets.',
+                ),
+              ),
+              const ListTile(
+                leading: Icon(Icons.select_all_outlined),
+                title: Text('Select output'),
+                subtitle: Text(
+                  'Select terminal text to copy, share, or save as a snippet.',
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                child: FilledButton(
+                  onPressed: () => Navigator.pop(sheetContext),
+                  child: const Text('Done'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
@@ -11809,6 +11892,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!enabled) {
           _hideShellCompletionPopup();
         }
+        break;
+      case 'terminal_help':
+        await _showTerminalControlsHelp();
         break;
       case 'native_select':
         _toggleNativeSelectionMode();

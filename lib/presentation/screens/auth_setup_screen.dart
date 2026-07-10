@@ -245,7 +245,7 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
         onChanged: (_) => setState(() => _error = null),
         onSubmitted: (_) {
-          if (_pinController.text.length >= 4) {
+          if (_pinController.text.length >= 6) {
             setState(() {
               _step = 2;
               _error = null;
@@ -262,7 +262,7 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
           ),
           const Spacer(),
           ElevatedButton(
-            onPressed: _pinController.text.length >= 4
+            onPressed: _pinController.text.length >= 6
                 ? () => setState(() {
                     _step = 2;
                     _error = null;

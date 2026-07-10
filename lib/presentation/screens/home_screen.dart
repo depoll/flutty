@@ -51,7 +51,9 @@ import '../widgets/panel_header.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import '../widgets/snippet_folder_dialog.dart';
+import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'port_forwards_screen.dart';
 import 'snippet_edit_screen.dart';
 import 'transfer_screen.dart';
 
@@ -61,6 +63,8 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
 const _connectionTileHorizontalPadding = 16.0;
 const _connectionTileMinLeadingWidth = 40.0;
 const _connectionTileHorizontalTitleGap = 16.0;
+const _mobileBreakpoint = 600.0;
+const _compactPanelActionBreakpoint = 520.0;
 const _connectionPreviewLeadingInset =
     _connectionTileHorizontalPadding +
     _connectionTileMinLeadingWidth +
@@ -79,6 +83,9 @@ enum HomeScreenTab {
 
   /// Snippet management.
   snippets,
+
+  /// SSH port-forward management.
+  portForwards,
 }
 
 /// The main home screen - Termius-style sidebar layout.
@@ -158,9 +165,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   final Queue<int> _pendingHomeScreenShortcutHostIds = Queue<int>();
   int? _activeHomeScreenShortcutHostId;
   bool _isHandlingHomeScreenShortcut = false;
-
-  // Breakpoint for switching between mobile and desktop layout
-  static const double _mobileBreakpoint = 600;
 
   @override
   void initState() {
@@ -510,6 +514,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           selectedIcon: Icon(Icons.code_rounded),
           label: 'Snippets',
         ),
+        NavigationDestination(
+          icon: Icon(Icons.alt_route_outlined),
+          selectedIcon: Icon(Icons.alt_route_rounded),
+          label: 'Forwards',
+        ),
       ],
     ),
   );
@@ -613,6 +622,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     selected: _selectedIndex == 3,
                     onTap: () => setState(() => _selectedIndex = 3),
                   ),
+                  _NavItem(
+                    icon: Icons.alt_route_rounded,
+                    label: 'Port Forwards',
+                    selected: _selectedIndex == 4,
+                    onTap: () => setState(() => _selectedIndex = 4),
+                  ),
 
                   const Spacer(),
 
@@ -660,6 +675,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           1 => const _ConnectionsPanel(),
           2 => const _KeysPanel(),
           3 => const SnippetsPanel(),
+          4 => const _PortForwardsHomePanel(),
           _ => const HostsPanel(),
         },
       ),
@@ -719,16 +735,20 @@ class _NavItem extends StatelessWidget {
                   size: 20,
                   color: selected
                       ? colorScheme.primary
-                      : colorScheme.onSurface.withAlpha(150),
+                      : colorScheme.onSurfaceVariant,
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  label,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: selected
-                        ? colorScheme.primary
-                        : colorScheme.onSurface.withAlpha(200),
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: selected
+                          ? colorScheme.primary
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
                 ),
               ],
@@ -738,6 +758,54 @@ class _NavItem extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AdaptivePanelShell extends StatelessWidget {
+  const _AdaptivePanelShell({
+    required this.title,
+    required this.child,
+    this.headerActions = const [],
+    this.compactAction,
+  });
+
+  final String title;
+  final Widget child;
+  final List<Widget> headerActions;
+  final Widget? compactAction;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final isCompact = constraints.maxWidth < _compactPanelActionBreakpoint;
+      final compactAction = this.compactAction;
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          PanelHeader(
+            title: title,
+            actions: isCompact ? const [] : headerActions,
+          ),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  bottom: isCompact && compactAction != null ? 88 : 0,
+                  child: child,
+                ),
+                if (isCompact && compactAction != null)
+                  Positioned(
+                    right: FluttyTheme.spacingMd,
+                    bottom: FluttyTheme.spacingMd,
+                    child: compactAction,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class _TelemetryOptInPromptCard extends ConsumerWidget {
@@ -873,25 +941,27 @@ class HostsPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final hostsAsync = ref.watch(allHostsProvider);
+    final hasHosts = hostsAsync.asData?.value.isNotEmpty ?? false;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Header bar
-        PanelHeader(
-          title: 'hosts',
-          actions: [
-            _ActionButton(
-              icon: Icons.add,
-              label: 'Add Host',
-              onTap: () => context.push('/hosts/add'),
-              primary: true,
-            ),
-          ],
+    return _AdaptivePanelShell(
+      title: 'hosts',
+      headerActions: [
+        _ActionButton(
+          icon: Icons.add,
+          label: 'Add Host',
+          onTap: () => context.push('/hosts/add'),
+          primary: true,
         ),
-
-        Expanded(child: _buildHostsBody(context, ref, hostsAsync)),
       ],
+      compactAction: hasHosts
+          ? FloatingActionButton.extended(
+              heroTag: 'home-add-host',
+              onPressed: () => context.push('/hosts/add'),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Host'),
+            )
+          : null,
+      child: _buildHostsBody(context, ref, hostsAsync),
     );
   }
 
@@ -1015,6 +1085,7 @@ class HostsPanel extends ConsumerWidget {
 enum _HostContextAction {
   connect,
   newConnection,
+  manage,
   toggleHomeScreen,
   disconnect,
   edit,
@@ -1160,7 +1231,7 @@ class _HostRow extends ConsumerWidget {
                               : '${host.username}@${host.hostname}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 11,
-                            color: colorScheme.onSurface.withAlpha(160),
+                            color: colorScheme.onSurfaceVariant,
                           ),
                         ),
                         if (connectionAttemptMessage != null) ...[
@@ -1192,7 +1263,7 @@ class _HostRow extends ConsumerWidget {
                           ':${host.port}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 10,
-                            color: colorScheme.onSurface.withAlpha(160),
+                            color: colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ),
@@ -1380,7 +1451,6 @@ class _HostRow extends ConsumerWidget {
     WidgetRef ref,
     Offset globalPosition,
   ) async {
-    final colorScheme = Theme.of(context).colorScheme;
     final pinnedHomeScreenShortcutHostIds = ref.read(
       pinnedHomeScreenShortcutHostIdsProvider,
     );
@@ -1399,7 +1469,7 @@ class _HostRow extends ConsumerWidget {
     if (overlayBox == null) {
       return;
     }
-    final selection = await showMenu<_HostContextAction>(
+    var selection = await showMenu<_HostContextAction>(
       context: context,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 0, 0),
@@ -1431,56 +1501,14 @@ class _HostRow extends ConsumerWidget {
               title: Text(disconnectLabel),
             ),
           ),
-        if (supportsHomeScreenShortcutActions)
-          PopupMenuItem<_HostContextAction>(
-            value: _HostContextAction.toggleHomeScreen,
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(
-                isPinnedToHomeScreen ? Icons.home_rounded : Icons.home_outlined,
-              ),
-              title: Text(
-                isPinnedToHomeScreen
-                    ? 'Remove from Home Screen'
-                    : 'Add to Home Screen',
-              ),
-            ),
-          ),
         const PopupMenuDivider(),
         const PopupMenuItem<_HostContextAction>(
-          value: _HostContextAction.edit,
+          value: _HostContextAction.manage,
           child: ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.edit_outlined),
-            title: Text('Edit'),
-          ),
-        ),
-        const PopupMenuItem<_HostContextAction>(
-          value: _HostContextAction.duplicate,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.copy),
-            title: Text('Duplicate'),
-          ),
-        ),
-        PopupMenuItem<_HostContextAction>(
-          value: _HostContextAction.export,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
-            title: Text(
-              useShareSheet
-                  ? 'Share Encrypted (Pro)'
-                  : 'Export Encrypted File (Pro)',
-            ),
-          ),
-        ),
-        PopupMenuItem<_HostContextAction>(
-          value: _HostContextAction.delete,
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.delete_outline, color: colorScheme.error),
-            title: Text('Delete', style: TextStyle(color: colorScheme.error)),
+            leading: Icon(Icons.tune_outlined),
+            title: Text('Manage host'),
+            trailing: Icon(Icons.chevron_right),
           ),
         ),
       ],
@@ -1489,6 +1517,15 @@ class _HostRow extends ConsumerWidget {
     if (!context.mounted || selection == null) {
       return;
     }
+    if (selection == _HostContextAction.manage) {
+      selection = await _showManageHostActions(
+        context,
+        isPinnedToHomeScreen: isPinnedToHomeScreen,
+      );
+      if (!context.mounted || selection == null) {
+        return;
+      }
+    }
 
     switch (selection) {
       case _HostContextAction.connect:
@@ -1496,6 +1533,8 @@ class _HostRow extends ConsumerWidget {
         return;
       case _HostContextAction.newConnection:
         await _openNewConnection(context, ref);
+        return;
+      case _HostContextAction.manage:
         return;
       case _HostContextAction.toggleHomeScreen:
         await _toggleHomeScreenShortcut(
@@ -1521,6 +1560,84 @@ class _HostRow extends ConsumerWidget {
         return;
     }
   }
+
+  Future<_HostContextAction?> _showManageHostActions(
+    BuildContext context, {
+    required bool isPinnedToHomeScreen,
+  }) => showModalBottomSheet<_HostContextAction>(
+    context: context,
+    builder: (sheetContext) {
+      final colorScheme = Theme.of(sheetContext).colorScheme;
+      void select(_HostContextAction action) =>
+          Navigator.pop(sheetContext, action);
+
+      return SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                child: Text(
+                  host.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: FluttyTheme.displayMono(
+                    fontSize: 16,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit host'),
+                onTap: () => select(_HostContextAction.edit),
+              ),
+              ListTile(
+                leading: const Icon(Icons.copy),
+                title: const Text('Duplicate'),
+                onTap: () => select(_HostContextAction.duplicate),
+              ),
+              const Divider(),
+              if (supportsHomeScreenShortcutActions)
+                ListTile(
+                  leading: Icon(
+                    isPinnedToHomeScreen
+                        ? Icons.home_rounded
+                        : Icons.home_outlined,
+                  ),
+                  title: Text(
+                    isPinnedToHomeScreen
+                        ? 'Remove from Home Screen'
+                        : 'Add to Home Screen',
+                  ),
+                  onTap: () => select(_HostContextAction.toggleHomeScreen),
+                ),
+              ListTile(
+                leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
+                title: Text(
+                  useShareSheet
+                      ? 'Share Encrypted (Pro)'
+                      : 'Export Encrypted File (Pro)',
+                ),
+                onTap: () => select(_HostContextAction.export),
+              ),
+              const Divider(),
+              ListTile(
+                leading: Icon(Icons.delete_outline, color: colorScheme.error),
+                title: Text(
+                  'Delete host',
+                  style: TextStyle(color: colorScheme.error),
+                ),
+                onTap: () => select(_HostContextAction.delete),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
 
   Future<void> _toggleHomeScreenShortcut(
     BuildContext context,
@@ -1908,6 +2025,30 @@ class _ConnectionsPanel extends ConsumerWidget {
   );
 }
 
+class _PortForwardsHomePanel extends StatelessWidget {
+  const _PortForwardsHomePanel();
+
+  @override
+  Widget build(BuildContext context) => _AdaptivePanelShell(
+    title: 'port forwards',
+    headerActions: [
+      _ActionButton(
+        icon: Icons.add,
+        label: 'Add Forward',
+        onTap: () => context.push('/port-forwards/add'),
+        primary: true,
+      ),
+    ],
+    compactAction: FloatingActionButton.extended(
+      heroTag: 'home-add-port-forward',
+      onPressed: () => context.push('/port-forwards/add'),
+      icon: const Icon(Icons.add),
+      label: const Text('Add Forward'),
+    ),
+    child: const PortForwardsPanel(),
+  );
+}
+
 class _ConnectionPreviewText extends StatelessWidget {
   const _ConnectionPreviewText({
     required this.endpoint,
@@ -1983,13 +2124,10 @@ class _ActionButton extends StatelessWidget {
 
     return TextButton.icon(
       onPressed: onTap,
-      icon: Icon(icon, size: 16, color: colorScheme.onSurface.withAlpha(150)),
+      icon: Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
       label: Text(
         label,
-        style: TextStyle(
-          fontSize: 13,
-          color: colorScheme.onSurface.withAlpha(150),
-        ),
+        style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant),
       ),
     );
   }
@@ -2018,11 +2156,7 @@ class _SmallIconButton extends StatelessWidget {
         child: ConstrainedBox(
           constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           child: Center(
-            child: Icon(
-              icon,
-              size: 16,
-              color: colorScheme.onSurface.withAlpha(120),
-            ),
+            child: Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
           ),
         ),
       ),
@@ -2051,38 +2185,37 @@ class _KeysPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final keysAsync = ref.watch(allKeysProvider);
+    final hasKeys = keysAsync.asData?.value.isNotEmpty ?? false;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Header bar
-        PanelHeader(
-          title: 'keys',
-          actions: [
-            _ActionButton(
-              icon: Icons.add,
-              label: 'Add Key',
-              onTap: () => context.push('/keys/add'),
-              primary: true,
-            ),
-          ],
-        ),
-
-        // Keys list
-        Expanded(
-          child: keysAsync.when(
-            loading: () => const BrandListSkeleton(),
-            error: (_, _) => BrandErrorState(
-              title: 'couldn’t load keys',
-              message: 'Your SSH keys didn’t load.',
-              onRetry: () => ref.invalidate(allKeysProvider),
-            ),
-            data: (keys) => keys.isEmpty
-                ? _buildEmptyState(context)
-                : _buildKeysList(context, ref, keys),
-          ),
+    return _AdaptivePanelShell(
+      title: 'keys',
+      headerActions: [
+        _ActionButton(
+          icon: Icons.add,
+          label: 'Add Key',
+          onTap: () => context.push('/keys/add'),
+          primary: true,
         ),
       ],
+      compactAction: hasKeys
+          ? FloatingActionButton.extended(
+              heroTag: 'home-add-key',
+              onPressed: () => context.push('/keys/add'),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Key'),
+            )
+          : null,
+      child: keysAsync.when(
+        loading: () => const BrandListSkeleton(),
+        error: (_, _) => BrandErrorState(
+          title: 'couldn’t load keys',
+          message: 'Your SSH keys didn’t load.',
+          onRetry: () => ref.invalidate(allKeysProvider),
+        ),
+        data: (keys) => keys.isEmpty
+            ? _buildEmptyState(context)
+            : _buildKeysList(context, ref, keys),
+      ),
     );
   }
 
@@ -2175,7 +2308,7 @@ class _KeyRow extends ConsumerWidget {
                       sshKey.keyType.toUpperCase(),
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(160),
+                        color: colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -2393,50 +2526,80 @@ class _SnippetsPanelState extends ConsumerState<SnippetsPanel> {
   Widget build(BuildContext context) {
     final snippetsAsync = ref.watch(allSnippetsProvider);
     final foldersAsync = ref.watch(allSnippetFoldersProvider);
+    final hasContent =
+        (snippetsAsync.asData?.value.isNotEmpty ?? false) ||
+        (foldersAsync.asData?.value.isNotEmpty ?? false);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Header bar
-        PanelHeader(
-          title: 'snippets',
-          actions: [
-            _ActionButton(
-              icon: Icons.create_new_folder_outlined,
-              label: 'New Folder',
-              onTap: () => unawaited(_createFolder(context)),
+    return _AdaptivePanelShell(
+      title: 'snippets',
+      headerActions: [
+        _ActionButton(
+          icon: Icons.create_new_folder_outlined,
+          label: 'New Folder',
+          onTap: () => unawaited(_createFolder(context)),
+        ),
+        const SizedBox(width: 8),
+        _ActionButton(
+          icon: Icons.add,
+          label: 'Add Snippet',
+          onTap: () => _addSnippet(context),
+          primary: true,
+        ),
+      ],
+      compactAction: hasContent
+          ? FloatingActionButton.extended(
+              heroTag: 'home-create-snippet-content',
+              onPressed: () => _showCreateActions(context),
+              icon: const Icon(Icons.add),
+              label: const Text('New'),
+            )
+          : null,
+      child: snippetsAsync.when(
+        loading: () => const BrandListSkeleton(),
+        error: (_, _) => BrandErrorState(
+          title: 'couldn’t load snippets',
+          message: 'Your snippets didn’t load.',
+          onRetry: () => ref.invalidate(allSnippetsProvider),
+        ),
+        data: (snippets) => foldersAsync.when(
+          loading: () => const BrandListSkeleton(),
+          error: (_, _) => BrandErrorState(
+            title: 'couldn’t load folders',
+            message: 'Your snippet folders didn’t load.',
+            onRetry: () => ref.invalidate(allSnippetFoldersProvider),
+          ),
+          data: (folders) => _buildSnippetsBody(context, snippets, folders),
+        ),
+      ),
+    );
+  }
+
+  void _showCreateActions(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.add),
+              title: const Text('Add Snippet'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _addSnippet(context);
+              },
             ),
-            const SizedBox(width: 8),
-            _ActionButton(
-              icon: Icons.add,
-              label: 'Add Snippet',
-              onTap: () => _addSnippet(context),
-              primary: true,
+            ListTile(
+              leading: const Icon(Icons.create_new_folder_outlined),
+              title: const Text('New Folder'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                unawaited(_createFolder(context));
+              },
             ),
           ],
         ),
-
-        // Snippets list
-        Expanded(
-          child: snippetsAsync.when(
-            loading: () => const BrandListSkeleton(),
-            error: (_, _) => BrandErrorState(
-              title: 'couldn’t load snippets',
-              message: 'Your snippets didn’t load.',
-              onRetry: () => ref.invalidate(allSnippetsProvider),
-            ),
-            data: (snippets) => foldersAsync.when(
-              loading: () => const BrandListSkeleton(),
-              error: (_, _) => BrandErrorState(
-                title: 'couldn’t load folders',
-                message: 'Your snippet folders didn’t load.',
-                onRetry: () => ref.invalidate(allSnippetFoldersProvider),
-              ),
-              data: (folders) => _buildSnippetsBody(context, snippets, folders),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
@@ -2862,7 +3025,7 @@ class _SnippetRow extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                       style: FluttyTheme.monoStyle.copyWith(
                         fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(150),
+                        color: colorScheme.onSurfaceVariant,
                       ),
                     ),
                     if (folderName case final folderName?) ...[
@@ -2872,7 +3035,7 @@ class _SnippetRow extends ConsumerWidget {
                           Icon(
                             Icons.folder_outlined,
                             size: 12,
-                            color: colorScheme.onSurface.withAlpha(140),
+                            color: colorScheme.onSurfaceVariant,
                           ),
                           const SizedBox(width: 4),
                           Flexible(
@@ -2881,7 +3044,7 @@ class _SnippetRow extends ConsumerWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: theme.textTheme.labelSmall?.copyWith(
-                                color: colorScheme.onSurface.withAlpha(120),
+                                color: colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -3316,6 +3479,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         'Copilot CLI, or OpenCode sessions.',
   );
 
+  Future<void> _openRecentAgentSessions() async {
+    if (!_hasAgentSessionAccess) {
+      await _handleLockedAiSessionsTap();
+      return;
+    }
+    setState(() {
+      _expanded = true;
+      _showSessions = true;
+      _hasInitializedSessionProviders = true;
+    });
+    _persistUiState();
+    await _prefetchPreferredSessionProvider();
+  }
+
   String? _resolveRecentSessionScopeWorkingDirectory(SshSession session) {
     final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
     return resolveAgentSessionScopeWorkingDirectory(
@@ -3615,12 +3792,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 children: [
                   _buildMuxSummaryIcon(theme),
                   const SizedBox(width: 4),
-                  Text(
-                    _sessionName != null
-                        ? '$_sessionName · ${windows.length} windows'
-                        : '${_muxBackend.label} · ${windows.length} windows',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                  Expanded(
+                    child: Text(
+                      _sessionName != null
+                          ? '$_sessionName · ${windows.length} windows'
+                          : '${_muxBackend.label} · ${windows.length} windows',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                   if (alertCount > 0) ...[
@@ -3639,7 +3820,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                       ),
                     ),
                   ],
-                  const Spacer(),
+                  TextButton.icon(
+                    key: ValueKey<String>(
+                      'recent-agents-${widget.connectionId}',
+                    ),
+                    onPressed: () => unawaited(_openRecentAgentSessions()),
+                    style: TextButton.styleFrom(
+                      foregroundColor: theme.colorScheme.onSurfaceVariant,
+                      minimumSize: const Size(44, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      textStyle: theme.textTheme.labelSmall,
+                    ),
+                    icon: const Icon(Icons.smart_toy_outlined, size: 14),
+                    label: const Text('Agents'),
+                  ),
                   Icon(
                     _expanded ? Icons.expand_less : Icons.expand_more,
                     size: 16,
@@ -3800,6 +3994,18 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       );
     }
     return Icon(Icons.window_outlined, size: 14, color: color);
+  }
+
+  Future<void> _confirmCloseWindow(TmuxWindow window) async {
+    final confirmed = await confirmCloseRemoteWindow(
+      context: context,
+      windowTitle: window.displayTitle,
+      closesLastWindow: (_windows?.length ?? 0) <= 1,
+    );
+    if (!mounted || !confirmed) {
+      return;
+    }
+    _closeWindow(window.index);
   }
 
   void _closeWindow(int windowIndex) {
@@ -4121,14 +4327,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               padding: const EdgeInsets.only(left: 6, right: 6),
               child: TmuxWindowStatusBadge(window: window),
             ),
-            // Close button.
-            GestureDetector(
-              onTap: () => _closeWindow(window.index),
-              child: Icon(
-                Icons.close,
-                size: 14,
-                color: theme.colorScheme.onSurfaceVariant,
+            IconButton(
+              tooltip: 'Close window',
+              icon: const Icon(Icons.close, size: 16),
+              color: theme.colorScheme.onSurfaceVariant,
+              style: IconButton.styleFrom(
+                fixedSize: const Size.square(44),
+                visualDensity: VisualDensity.standard,
+                padding: EdgeInsets.zero,
               ),
+              onPressed: () => unawaited(_confirmCloseWindow(window)),
             ),
           ],
         ),

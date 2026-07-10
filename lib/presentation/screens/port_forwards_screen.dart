@@ -21,34 +21,43 @@ class PortForwardsScreen extends ConsumerWidget {
   const PortForwardsScreen({super.key});
 
   @override
+  Widget build(BuildContext context, WidgetRef ref) => Scaffold(
+    appBar: AppBar(title: const Text('Port Forwards')),
+    body: const PortForwardsPanel(),
+    floatingActionButton: FloatingActionButton.extended(
+      onPressed: () => context.push('/port-forwards/add'),
+      icon: const Icon(Icons.add),
+      label: const Text('Add Forward'),
+    ),
+  );
+}
+
+/// Port-forward content shared by the standalone screen and the home shell.
+class PortForwardsPanel extends ConsumerWidget {
+  /// Creates the port-forward list panel.
+  const PortForwardsPanel({super.key});
+
+  @override
   Widget build(BuildContext context, WidgetRef ref) {
     final portForwardsAsync = ref.watch(allPortForwardsProvider);
     final hostsAsync = ref.watch(allHostsProvider);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Port Forwards')),
-      body: portForwardsAsync.when(
+    return portForwardsAsync.when(
+      loading: () => const BrandListSkeleton(),
+      error: (_, _) => BrandErrorState(
+        title: 'couldn’t load forwards',
+        message: 'Your port forwards didn’t load.',
+        onRetry: () => ref.invalidate(allPortForwardsProvider),
+      ),
+      data: (portForwards) => hostsAsync.when(
         loading: () => const BrandListSkeleton(),
         error: (_, _) => BrandErrorState(
-          title: 'couldn’t load forwards',
-          message: 'Your port forwards didn’t load.',
-          onRetry: () => ref.invalidate(allPortForwardsProvider),
+          title: 'couldn’t load hosts',
+          message: 'Your saved hosts didn’t load.',
+          onRetry: () => ref.invalidate(allHostsProvider),
         ),
-        data: (portForwards) => hostsAsync.when(
-          loading: () => const BrandListSkeleton(),
-          error: (_, _) => BrandErrorState(
-            title: 'couldn’t load hosts',
-            message: 'Your saved hosts didn’t load.',
-            onRetry: () => ref.invalidate(allHostsProvider),
-          ),
-          data: (hosts) =>
-              _buildPortForwardsList(context, ref, portForwards, hosts),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => context.push('/port-forwards/add'),
-        icon: const Icon(Icons.add),
-        label: const Text('Add Forward'),
+        data: (hosts) =>
+            _buildPortForwardsList(context, ref, portForwards, hosts),
       ),
     );
   }

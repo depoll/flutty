@@ -35,6 +35,10 @@ import '../widgets/unsaved_changes_guard.dart';
 import 'transfer_screen.dart';
 
 const _hostFieldHelperMaxLines = 4;
+const _hostEditWideActionBreakpoint = 600.0;
+const _hostEditFormPadding = 16.0;
+const _hostEditInlineActionBreakpoint =
+    _hostEditWideActionBreakpoint - (_hostEditFormPadding * 2);
 const _hostStartupModeOptions = <HostStartupMode>[
   HostStartupMode.none,
   HostStartupMode.monkeyMux,
@@ -424,13 +428,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               ),
             ],
           ),
+          bottomNavigationBar: isLoading
+              ? null
+              : LayoutBuilder(
+                  builder: (context, constraints) =>
+                      constraints.maxWidth < _hostEditWideActionBreakpoint
+                      ? _buildCompactActionBar(isEditing)
+                      : const SizedBox.shrink(),
+                ),
           body: isLoading
               ? const Center(child: CircularProgressIndicator())
               : Form(
                   key: _formKey,
                   child: SingleChildScrollView(
                     controller: _scrollController,
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(_hostEditFormPadding),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -793,28 +805,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         _buildPortForwardsSection(context, isEditing),
                         const SizedBox(height: 32),
 
-                        // Save button
-                        FilledButton.icon(
-                          key: const Key('host-save-button'),
-                          onPressed: _isBusy ? null : _saveHost,
-                          icon: _isBusy
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.save),
-                          label: Text(isEditing ? 'Save Changes' : 'Add Host'),
-                        ),
-                        const SizedBox(height: 16),
-
-                        // Test connection button
-                        OutlinedButton.icon(
-                          onPressed: _isBusy ? null : _testConnection,
-                          icon: const Icon(Icons.network_check),
-                          label: const Text('Test Connection'),
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            if (constraints.maxWidth <
+                                _hostEditInlineActionBreakpoint) {
+                              return const SizedBox.shrink();
+                            }
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _buildSaveButton(
+                                  isEditing: isEditing,
+                                  compact: false,
+                                ),
+                                const SizedBox(height: 16),
+                                _buildTestButton(compact: false),
+                              ],
+                            );
+                          },
                         ),
                       ],
                     ),
@@ -824,6 +832,60 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       ),
     );
   }
+
+  Widget _buildCompactActionBar(bool isEditing) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          decoration: BoxDecoration(
+            border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
+          ),
+          child: Row(
+            children: [
+              Expanded(child: _buildTestButton(compact: true)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildSaveButton(isEditing: isEditing, compact: true),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSaveButton({required bool isEditing, required bool compact}) =>
+      FilledButton.icon(
+        key: const Key('host-save-button'),
+        onPressed: _isBusy ? null : _saveHost,
+        icon: _isBusy
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(isEditing ? Icons.save : Icons.add),
+        label: Text(
+          compact
+              ? isEditing
+                    ? 'Save'
+                    : 'Add Host'
+              : isEditing
+              ? 'Save Changes'
+              : 'Add Host',
+        ),
+      );
+
+  Widget _buildTestButton({required bool compact}) => OutlinedButton.icon(
+    key: const Key('host-test-button'),
+    onPressed: _isBusy ? null : _testConnection,
+    icon: const Icon(Icons.network_check),
+    label: Text(compact ? 'Test' : 'Test Connection'),
+  );
 
   HostStartupMode _resolveStartupMode({
     required Host host,

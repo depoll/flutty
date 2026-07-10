@@ -78,7 +78,7 @@ class BrandEmptyState extends StatelessWidget {
                 style: FluttyTheme.displayMono(
                   fontSize: 15,
                   fontWeight: FontWeight.w500,
-                  color: colorScheme.onSurface.withAlpha(160),
+                  color: colorScheme.onSurfaceVariant,
                   letterSpacing: 0,
                 ),
               ),
@@ -86,7 +86,7 @@ class BrandEmptyState extends StatelessWidget {
                 text: r':~$',
                 style: FluttyTheme.displayMono(
                   fontSize: 15,
-                  color: colorScheme.onSurface.withAlpha(110),
+                  color: colorScheme.onSurfaceVariant,
                   letterSpacing: 0,
                 ),
               ),
@@ -95,10 +95,7 @@ class BrandEmptyState extends StatelessWidget {
                 baseline: TextBaseline.alphabetic,
                 child: Padding(
                   padding: const EdgeInsets.only(left: 6),
-                  child: CursorBlock(
-                    size: 16,
-                    color: colorScheme.onSurface.withAlpha(170),
-                  ),
+                  child: CursorBlock(size: 16, color: colorScheme.primary),
                 ),
               ),
             ],
@@ -108,16 +105,14 @@ class BrandEmptyState extends StatelessWidget {
         Text(
           title,
           textAlign: TextAlign.center,
-          style: FluttyTheme.displayMono(
-            color: colorScheme.onSurface.withAlpha(230),
-          ),
+          style: FluttyTheme.displayMono(color: colorScheme.onSurface),
         ),
         const SizedBox(height: FluttyTheme.spacingSm),
         Text(
           message,
           textAlign: TextAlign.center,
           style: theme.textTheme.bodyMedium?.copyWith(
-            color: colorScheme.onSurface.withAlpha(140),
+            color: colorScheme.onSurfaceVariant,
           ),
         ),
         if (primaryLabel != null && onPrimary != null) ...[
