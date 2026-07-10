@@ -499,7 +499,10 @@ platform :ios do
       localized_build_info: localized_build_info,
     )
 
-    sync_metadata(app_identifier: app_id) unless skip_meta
+    sync_metadata(
+      app_identifier: app_id,
+      app_version: ENV['FLUTTY_BUILD_NAME'],
+    ) unless skip_meta
   end
 
   desc 'Build, sign, and upload to App Store'
@@ -527,6 +530,7 @@ platform :ios do
   desc 'Sync metadata and screenshots to App Store Connect (no build required)'
   lane :sync_metadata do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
+    app_version = options[:app_version].to_s
     meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
 
     patch_deliver_review_attachment_fetch
@@ -557,6 +561,7 @@ platform :ios do
       automatic_release: false,
       force: true,
     }
+    deliver_options[:app_version] = app_version unless app_version.empty?
     unless review_contact_information.empty?
       deliver_options[:app_review_information] = review_contact_information
     end
